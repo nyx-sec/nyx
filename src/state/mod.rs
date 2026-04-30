@@ -183,10 +183,10 @@ pub fn collect_closure_released_var_names(
             }
             if let Some(rcv) = info.call.receiver.as_deref() {
                 local.insert(rcv.to_string());
-            } else if let Some((rcv, _)) = callee.rsplit_once('.') {
-                if !rcv.is_empty() {
-                    local.insert(rcv.to_string());
-                }
+            } else if let Some((rcv, _)) = callee.rsplit_once('.')
+                && !rcv.is_empty()
+            {
+                local.insert(rcv.to_string());
             }
         }
         if !local.is_empty() {

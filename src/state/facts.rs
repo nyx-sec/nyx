@@ -72,6 +72,7 @@ pub struct StateFinding {
 /// `state-unauthed-access` finding is suppressed on those spans because
 /// the user-controlled input has already been proved unable to escape
 /// into a privileged location.
+#[allow(clippy::too_many_arguments)]
 pub fn extract_findings(
     result: &DataflowResult<ProductState, TransferEvent>,
     cfg: &Cfg,

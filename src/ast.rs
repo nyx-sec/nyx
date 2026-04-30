@@ -469,10 +469,10 @@ fn build_taint_diag(
             .iter()
             .find(|f| f.label_caps.contains(crate::labels::Cap::DATA_EXFIL))
             .and_then(|f| {
-                if let (Some(uses), Some(var)) = (f.destination_uses.as_ref(), last_var) {
-                    if let Some(idx) = uses.iter().position(|u| u == var) {
-                        return f.destination_fields.get(idx).cloned();
-                    }
+                if let (Some(uses), Some(var)) = (f.destination_uses.as_ref(), last_var)
+                    && let Some(idx) = uses.iter().position(|u| u == var)
+                {
+                    return f.destination_fields.get(idx).cloned();
                 }
                 f.destination_fields.first().cloned()
             })
