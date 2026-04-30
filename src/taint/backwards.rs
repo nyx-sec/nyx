@@ -802,8 +802,7 @@ mod tests {
             .push(DataLabel::Source(Cap::DATA_EXFIL));
 
         let ctx = BackwardsCtx::new(&ssa, &cfg, Lang::JavaScript);
-        let flows =
-            analyse_sink_backwards(&ctx, SsaValue(1), NodeIndex::new(1), Cap::DATA_EXFIL);
+        let flows = analyse_sink_backwards(&ctx, SsaValue(1), NodeIndex::new(1), Cap::DATA_EXFIL);
         assert_eq!(flows.len(), 1, "exactly one DATA_EXFIL flow expected");
         assert!(flows[0].is_confirmation(), "must confirm at the source");
         assert_eq!(flows[0].sink_caps, Cap::DATA_EXFIL);

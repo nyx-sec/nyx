@@ -34,12 +34,7 @@ pub static RULES: &[LabelRule] = &[
     // through `SourceKind::Cookie` (Sensitive), so flow into outbound request
     // payloads activates the `DATA_EXFIL` cap added below.
     LabelRule {
-        matchers: &[
-            "request.cookies",
-            "request.session",
-            "cookies",
-            "session",
-        ],
+        matchers: &["request.cookies", "request.session", "cookies", "session"],
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
@@ -195,11 +190,7 @@ pub static RULES: &[LabelRule] = &[
     // RestClient instance).  Suffix-match keeps the rule compact; source
     // sensitivity gates noise from plain user input.
     LabelRule {
-        matchers: &[
-            "HttpClient.post",
-            "HttpClient.put",
-            "HttpClient.patch",
-        ],
+        matchers: &["HttpClient.post", "HttpClient.put", "HttpClient.patch"],
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
     },

@@ -1594,9 +1594,7 @@ mod tests {
             no_kw_present,
         );
         assert!(
-            result
-                .iter()
-                .any(|m| m.label == DataLabel::Sink(Cap::SSRF)),
+            result.iter().any(|m| m.label == DataLabel::Sink(Cap::SSRF)),
             "expected SSRF gate match, got {result:?}"
         );
     }
@@ -1613,9 +1611,7 @@ mod tests {
             no_kw_present,
         );
         assert!(
-            result
-                .iter()
-                .any(|m| m.label == DataLabel::Sink(Cap::SSRF)),
+            result.iter().any(|m| m.label == DataLabel::Sink(Cap::SSRF)),
             "expected SSRF gate match, got {result:?}"
         );
         assert!(

@@ -90,9 +90,7 @@ pub(super) fn extract_destination_field_pairs(
                 let Some(name) = text_of(child, code) else {
                     continue;
                 };
-                if fields.iter().any(|&f| f == name)
-                    && !out.iter().any(|(_, v)| v == &name)
-                {
+                if fields.iter().any(|&f| f == name) && !out.iter().any(|(_, v)| v == &name) {
                     out.push((name.clone(), name));
                 }
             }
@@ -1919,10 +1917,7 @@ fn is_known_shell(name: &str) -> bool {
 fn is_shell_command_flag(shell: &str, flag: &str) -> bool {
     let leaf = shell.rsplit('/').next().unwrap_or(shell);
     let is_cmd = matches!(leaf, "cmd" | "cmd.exe");
-    let is_powershell = matches!(
-        leaf,
-        "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
-    );
+    let is_powershell = matches!(leaf, "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe");
     if is_cmd {
         return matches!(flag, "/c" | "/C" | "/k" | "/K");
     }

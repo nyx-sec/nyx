@@ -188,20 +188,18 @@ pub static RULES: &[LabelRule] = &[
 ///
 /// Identifier-based activation is enabled via the macro-arg fallback in
 /// `cfg::mod::classify_gated_sink` for `lang == "php"`.
-pub static GATED_SINKS: &[SinkGate] = &[
-    SinkGate {
-        callee_matcher: "curl_setopt",
-        arg_index: 1,
-        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
-        dangerous_prefixes: &[],
-        label: DataLabel::Sink(Cap::DATA_EXFIL),
-        case_sensitive: true,
-        payload_args: &[2],
-        keyword_name: None,
-        dangerous_kwargs: &[],
-        activation: GateActivation::ValueMatch,
-    },
-];
+pub static GATED_SINKS: &[SinkGate] = &[SinkGate {
+    callee_matcher: "curl_setopt",
+    arg_index: 1,
+    dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+    dangerous_prefixes: &[],
+    label: DataLabel::Sink(Cap::DATA_EXFIL),
+    case_sensitive: true,
+    payload_args: &[2],
+    keyword_name: None,
+    dangerous_kwargs: &[],
+    activation: GateActivation::ValueMatch,
+}];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // control-flow

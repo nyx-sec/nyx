@@ -251,12 +251,7 @@ pub static RULES: &[LabelRule] = &[
     // the injection vector; positional bind params are bound as `$1..$N`.
     // See javascript.rs for the full rationale.
     LabelRule {
-        matchers: &[
-            "sequelize.query",
-            "knex.raw",
-            "$queryRaw",
-            "$executeRaw",
-        ],
+        matchers: &["sequelize.query", "knex.raw", "$queryRaw", "$executeRaw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },

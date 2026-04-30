@@ -3899,10 +3899,8 @@ fn ssa_summaries_param_to_gate_filters_round_trip() {
     use crate::summary::ssa_summary::SsaFuncSummary;
 
     let mut sum = SsaFuncSummary::default();
-    sum.param_to_gate_filters
-        .push((0, Cap::SSRF));
-    sum.param_to_gate_filters
-        .push((1, Cap::DATA_EXFIL));
+    sum.param_to_gate_filters.push((0, Cap::SSRF));
+    sum.param_to_gate_filters.push((1, Cap::DATA_EXFIL));
 
     let json = serde_json::to_string(&sum).expect("serialize");
     let restored: SsaFuncSummary = serde_json::from_str(&json).expect("deserialize");

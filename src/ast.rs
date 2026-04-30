@@ -513,9 +513,7 @@ fn build_taint_diag(
             .as_deref()
             .map(|f| format!(" ({f} field)"))
             .unwrap_or_default();
-        format!(
-            "sensitive data flows from {short_source} \u{2192} {sink_display}{suffix}"
-        )
+        format!("sensitive data flows from {short_source} \u{2192} {sink_display}{suffix}")
     } else {
         format!("unsanitised {kind_label} flows from {short_source} \u{2192} {sink_display}")
     };

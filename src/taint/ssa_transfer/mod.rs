@@ -4058,10 +4058,7 @@ pub(super) fn transfer_inst(
             //   - URL_ENCODE: URL components only.
             //   - JSON_PARSE: parser inputs only.
             if info.call.is_constructor && !return_bits.is_empty() {
-                let strip = Cap::FILE_IO
-                    | Cap::FMT_STRING
-                    | Cap::URL_ENCODE
-                    | Cap::JSON_PARSE;
+                let strip = Cap::FILE_IO | Cap::FMT_STRING | Cap::URL_ENCODE | Cap::JSON_PARSE;
                 return_bits &= !strip;
                 if return_bits.is_empty() {
                     return_origins.clear();
@@ -5411,22 +5408,19 @@ fn collect_block_events(
                             // summary, and the callback pipeline still needs
                             // those positions to pair source caps against
                             // param_to_sink.
-                            let cb_resolved =
-                                resolve_callee(transfer, cb_callee, caller_func, 0);
+                            let cb_resolved = resolve_callee(transfer, cb_callee, caller_func, 0);
                             let mut matching_sink_caps = Cap::empty();
-                            let cb_param_to_sink_sites: Vec<(
-                                usize,
-                                SmallVec<[SinkSite; 1]>,
-                            )> = if let Some(ref r) = cb_resolved {
-                                matching_sink_caps = r
-                                    .param_to_sink
-                                    .iter()
-                                    .filter(|(_, caps)| !(src_caps & *caps).is_empty())
-                                    .fold(Cap::empty(), |acc, (_, c)| acc | *c);
-                                r.param_to_sink_sites.clone()
-                            } else {
-                                vec![]
-                            };
+                            let cb_param_to_sink_sites: Vec<(usize, SmallVec<[SinkSite; 1]>)> =
+                                if let Some(ref r) = cb_resolved {
+                                    matching_sink_caps = r
+                                        .param_to_sink
+                                        .iter()
+                                        .filter(|(_, caps)| !(src_caps & *caps).is_empty())
+                                        .fold(Cap::empty(), |acc, (_, c)| acc | *c);
+                                    r.param_to_sink_sites.clone()
+                                } else {
+                                    vec![]
+                                };
                             if matching_sink_caps.is_empty() {
                                 // Gate-fallback: classify_gated_sink yields the
                                 // callback callee's payload positions + sink
@@ -5460,15 +5454,12 @@ fn collect_block_events(
                                 // The callback callee's `param_to_sink_sites`
                                 // drives attribution when available; cap-only
                                 // fallback yields `primary_sink_site = None`.
-                                let cb_tainted: Vec<(
-                                    SsaValue,
-                                    Cap,
-                                    SmallVec<[TaintOrigin; 2]>,
-                                )> = vec![(
-                                    inst.value,
-                                    src_caps & matching_sink_caps,
-                                    SmallVec::from_elem(origin, 1),
-                                )];
+                                let cb_tainted: Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)> =
+                                    vec![(
+                                        inst.value,
+                                        src_caps & matching_sink_caps,
+                                        SmallVec::from_elem(origin, 1),
+                                    )];
                                 let cb_sites = pick_primary_sink_sites_from_resolved(
                                     matching_sink_caps,
                                     &cb_param_to_sink_sites,
@@ -5697,8 +5688,7 @@ fn collect_block_events(
         // where param 0 reaches a non-gated SHELL_ESCAPE sink and the
         // gate-filter list only carries the SSRF gate for param 1.
         let multi_gate = info.call.gate_filters.len() > 1;
-        let summary_per_position =
-            !multi_gate && !sink_info.param_to_gate_filters.is_empty();
+        let summary_per_position = !multi_gate && !sink_info.param_to_gate_filters.is_empty();
         type FilterEntry<'a> = (Cap, Option<&'a [usize]>, Option<&'a [String]>);
         // Per-position dispatch source for the summary-per-position branch.
         // First, every entry from `param_to_gate_filters` (cap-narrowed by
@@ -8100,11 +8090,7 @@ fn is_call_data_exfil_destination_trusted(
 /// instruction's own used SSA values rather than a positional Call arg
 /// list.  Falls back to the node-attached `string_prefix` when no abstract
 /// fact is available.
-fn is_inst_data_exfil_destination_trusted(
-    inst: &SsaInst,
-    abs: &AbstractState,
-    cfg: &Cfg,
-) -> bool {
+fn is_inst_data_exfil_destination_trusted(inst: &SsaInst, abs: &AbstractState, cfg: &Cfg) -> bool {
     let opts = crate::utils::detector_options::current();
     let trusted = &opts.data_exfil.trusted_destinations;
     if trusted.is_empty() {

@@ -27,9 +27,7 @@ mod common;
 use common::scan_fixture_dir;
 use nyx_scanner::commands::scan::Diag;
 use nyx_scanner::utils::config::AnalysisMode;
-use nyx_scanner::utils::detector_options::{
-    DataExfilDetectorOptions, DetectorOptions, reinstall,
-};
+use nyx_scanner::utils::detector_options::{DataExfilDetectorOptions, DetectorOptions, reinstall};
 use std::path::PathBuf;
 
 fn js_fixture_dir() -> PathBuf {

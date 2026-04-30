@@ -53,7 +53,8 @@ fn assert_data_exfil_fires_no_ssrf(file: &str) {
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
     );
     assert_eq!(
-        plain_taint, 0,
+        plain_taint,
+        0,
         "{file}: fixed-URL call with tainted body must NOT emit SSRF \
          (taint-unsanitised-flow), got {plain_taint}.\n\
          Diags: {:#?}",
@@ -128,7 +129,8 @@ fn ssrf_url_only_emits_ssrf_not_data_exfil() {
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
     );
     assert_eq!(
-        exfil, 0,
+        exfil,
+        0,
         "tainted-URL HttpClient.send must NOT emit DATA_EXFIL, got {exfil}.\n\
          Diags: {:#?}",
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),

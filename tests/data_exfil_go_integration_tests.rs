@@ -48,7 +48,8 @@ fn http_post_body_data_exfil_emits_data_exfil_not_ssrf() {
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
     );
     assert_eq!(
-        plain_taint, 0,
+        plain_taint,
+        0,
         "fixed-URL http.Post with tainted body must NOT emit SSRF \
          (taint-unsanitised-flow), got {plain_taint}.\n\
          Diags: {:#?}",
@@ -74,7 +75,8 @@ fn http_post_form_emits_data_exfil_not_ssrf() {
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
     );
     assert_eq!(
-        plain_taint, 0,
+        plain_taint,
+        0,
         "fixed-URL http.PostForm with tainted form data must NOT emit SSRF, got {plain_taint}.\n\
          Diags: {:#?}",
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
@@ -104,7 +106,8 @@ fn new_request_do_two_step_emits_data_exfil() {
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
     );
     assert_eq!(
-        plain_taint, 0,
+        plain_taint,
+        0,
         "two-step NewRequest → Do with hardcoded URL must NOT emit SSRF, got {plain_taint}.\n\
          Diags: {:#?}",
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
@@ -136,7 +139,8 @@ fn map_assign_data_exfil_emits_through_url_values() {
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
     );
     assert_eq!(
-        plain_taint, 0,
+        plain_taint,
+        0,
         "fixed-URL http.PostForm with tainted map must NOT emit SSRF, got {plain_taint}.\n\
          Diags: {:#?}",
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
@@ -164,7 +168,8 @@ fn ssrf_url_tainted_emits_ssrf_not_data_exfil() {
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
     );
     assert_eq!(
-        exfil, 0,
+        exfil,
+        0,
         "tainted-URL NewRequest → Do must NOT emit DATA_EXFIL, got {exfil}.\n\
          Diags: {:#?}",
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
@@ -182,7 +187,8 @@ fn http_post_plain_user_input_does_not_emit_data_exfil() {
         .filter(|d| d.id.starts_with("taint-data-exfiltration"))
         .count();
     assert_eq!(
-        exfil, 0,
+        exfil,
+        0,
         "plain user input echoed into a Go http.Post body must NOT emit \
          taint-data-exfiltration, got {exfil}.\n\
          Diags: {:#?}",

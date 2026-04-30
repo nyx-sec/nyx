@@ -83,20 +83,18 @@ pub static RULES: &[LabelRule] = &[
 /// `cfg::mod::classify_gated_sink` for `lang == "c"`.  Header-parsing
 /// libraries (e.g. libmicrohttpd, mongoose) lack a stable surface and are
 /// left to project-specific config.
-pub static GATED_SINKS: &[SinkGate] = &[
-    SinkGate {
-        callee_matcher: "curl_easy_setopt",
-        arg_index: 1,
-        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
-        dangerous_prefixes: &[],
-        label: DataLabel::Sink(Cap::DATA_EXFIL),
-        case_sensitive: true,
-        payload_args: &[2],
-        keyword_name: None,
-        dangerous_kwargs: &[],
-        activation: GateActivation::ValueMatch,
-    },
-];
+pub static GATED_SINKS: &[SinkGate] = &[SinkGate {
+    callee_matcher: "curl_easy_setopt",
+    arg_index: 1,
+    dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+    dangerous_prefixes: &[],
+    label: DataLabel::Sink(Cap::DATA_EXFIL),
+    case_sensitive: true,
+    payload_args: &[2],
+    keyword_name: None,
+    dangerous_kwargs: &[],
+    activation: GateActivation::ValueMatch,
+}];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // control-flow

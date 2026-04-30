@@ -1025,11 +1025,9 @@ impl CfgAnalysis for UnguardedSink {
             // itself the dangerous operation.  Skip this suppression so the
             // structural finding survives in closed-world contexts where no
             // taint source has been resolved yet.
-            let has_shell_array_gate = sink_info
-                .call
-                .gate_filters
-                .iter()
-                .any(|gf| gf.label_caps.contains(Cap::SHELL_ESCAPE) && gf.destination_uses.is_some());
+            let has_shell_array_gate = sink_info.call.gate_filters.iter().any(|gf| {
+                gf.label_caps.contains(Cap::SHELL_ESCAPE) && gf.destination_uses.is_some()
+            });
             if !has_taint
                 && !has_shell_array_gate
                 && ssa_all_sink_operands_const_or_param(ctx, *sink)

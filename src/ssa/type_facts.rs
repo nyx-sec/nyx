@@ -515,10 +515,9 @@ fn is_rust_request_builder_constructor(base: &str) -> bool {
     // collapse (`reqwest::Client::new.post`, `Client::post`, etc.).
     const REQWEST_CLIENT_VERBS: &[&str] =
         &["post", "get", "put", "delete", "patch", "head", "request"];
-    if REQWEST_CLIENT_VERBS
-        .iter()
-        .any(|v| base.ends_with(&format!("Client::new.{v}")) || base.ends_with(&format!("Client::{v}")))
-    {
+    if REQWEST_CLIENT_VERBS.iter().any(|v| {
+        base.ends_with(&format!("Client::new.{v}")) || base.ends_with(&format!("Client::{v}"))
+    }) {
         return true;
     }
     false

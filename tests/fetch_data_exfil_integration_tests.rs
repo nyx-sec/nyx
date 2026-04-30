@@ -98,7 +98,8 @@ fn fetch_body_plain_user_input_does_not_emit_data_exfil() {
         .filter(|d| d.id.starts_with("taint-data-exfiltration"))
         .count();
     assert_eq!(
-        exfil, 0,
+        exfil,
+        0,
         "plain user input echoed into a fetch body must NOT emit \
          taint-data-exfiltration, got {exfil}.\n\
          Diags: {:#?}",
@@ -157,7 +158,8 @@ fn fetch_body_int_value_does_not_emit_data_exfil() {
         .filter(|d| d.id.starts_with("taint-data-exfiltration"))
         .count();
     assert_eq!(
-        exfil, 0,
+        exfil,
+        0,
         "int-typed body must NOT emit taint-data-exfiltration, got {exfil}.\n\
          Diags: {:#?}",
         diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
@@ -214,9 +216,9 @@ fn sarif_distinguishes_data_exfil_rule_id_from_ssrf() {
     // destination field via `properties.data_exfil_field`.  At least one
     // result has to advertise `body`, fixtures that reach `headers` /
     // `json` are out of scope for this assertion but must not be silenced.
-    let body_field_seen = exfil_results.iter().any(|r| {
-        r["properties"]["data_exfil_field"].as_str() == Some("body")
-    });
+    let body_field_seen = exfil_results
+        .iter()
+        .any(|r| r["properties"]["data_exfil_field"].as_str() == Some("body"));
     assert!(
         body_field_seen,
         "expected at least one taint-data-exfiltration SARIF result with \

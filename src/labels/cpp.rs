@@ -100,20 +100,18 @@ pub static RULES: &[LabelRule] = &[
 /// HTTP wrappers (cpr, Boost.Beast) layer over libcurl or directly over the
 /// socket; their ergonomic surfaces differ enough that adding gates per-
 /// library is left for a follow-up driven by the corpus.
-pub static GATED_SINKS: &[SinkGate] = &[
-    SinkGate {
-        callee_matcher: "curl_easy_setopt",
-        arg_index: 1,
-        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
-        dangerous_prefixes: &[],
-        label: DataLabel::Sink(Cap::DATA_EXFIL),
-        case_sensitive: true,
-        payload_args: &[2],
-        keyword_name: None,
-        dangerous_kwargs: &[],
-        activation: GateActivation::ValueMatch,
-    },
-];
+pub static GATED_SINKS: &[SinkGate] = &[SinkGate {
+    callee_matcher: "curl_easy_setopt",
+    arg_index: 1,
+    dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+    dangerous_prefixes: &[],
+    label: DataLabel::Sink(Cap::DATA_EXFIL),
+    case_sensitive: true,
+    payload_args: &[2],
+    keyword_name: None,
+    dangerous_kwargs: &[],
+    activation: GateActivation::ValueMatch,
+}];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // control-flow

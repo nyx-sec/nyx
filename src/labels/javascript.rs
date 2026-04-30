@@ -303,12 +303,7 @@ pub static RULES: &[LabelRule] = &[
     // also accept a separate bind-params object/array but the bind-params
     // interface is non-positional in those APIs, so they stay flat for now.
     LabelRule {
-        matchers: &[
-            "sequelize.query",
-            "knex.raw",
-            "$queryRaw",
-            "$executeRaw",
-        ],
+        matchers: &["sequelize.query", "knex.raw", "$queryRaw", "$executeRaw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
