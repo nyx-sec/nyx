@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 458
+    "corpus_size": 477
   },
   "cases": [
     {
@@ -14474,6 +14474,576 @@
       ],
       "disabled": false,
       "notes": "Vulnerable counterpart to py-auth-realrepo-005: same FastAPI route shape but no `dependencies=[Depends(...)]` keyword arg.  Regression guard: the dependency-injection recogniser must not blanket-suppress every FastAPI route."
+    },
+    {
+      "case_id": "js-data_exfil-001",
+      "file": "javascript/data_exfil/exfil_fetch_cookie_body.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [6, 9]
+      ],
+      "expected_source_lines": [
+        [5, 5]
+      ],
+      "tags": [
+        "data_exfil",
+        "fetch",
+        "cookie"
+      ],
+      "disabled": false,
+      "notes": "Cookie source flows into fetch body at hardcoded URL; DATA_EXFIL must fire and SSRF must not."
+    },
+    {
+      "case_id": "js-data_exfil-002",
+      "file": "javascript/data_exfil/exfil_fetch_external_destination.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [6, 9]
+      ],
+      "expected_source_lines": [
+        [5, 5]
+      ],
+      "tags": [
+        "data_exfil",
+        "fetch",
+        "cookie",
+        "external-destination"
+      ],
+      "disabled": false,
+      "notes": "Cookie source flows into fetch body at attacker-controlled host; DATA_EXFIL fires, SSRF does not."
+    },
+    {
+      "case_id": "js-data_exfil-003",
+      "file": "javascript/data_exfil/exfil_xhr_send_header.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [8, 8]
+      ],
+      "expected_source_lines": [
+        [5, 5]
+      ],
+      "tags": [
+        "data_exfil",
+        "xhr",
+        "header"
+      ],
+      "disabled": false,
+      "notes": "Authorization header source flows into XMLHttpRequest.send body at hardcoded URL."
+    },
+    {
+      "case_id": "ts-data_exfil-001",
+      "file": "typescript/data_exfil/exfil_fetch_cookie_body.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [6, 9]
+      ],
+      "expected_source_lines": [
+        [5, 5]
+      ],
+      "tags": [
+        "data_exfil",
+        "fetch",
+        "cookie"
+      ],
+      "disabled": false,
+      "notes": "TypeScript variant of js-data_exfil-001."
+    },
+    {
+      "case_id": "ts-data_exfil-002",
+      "file": "typescript/data_exfil/exfil_fetch_header_body.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [6, 9]
+      ],
+      "expected_source_lines": [
+        [5, 5]
+      ],
+      "tags": [
+        "data_exfil",
+        "fetch",
+        "header"
+      ],
+      "disabled": false,
+      "notes": "Authorization header flows into fetch body at hardcoded URL."
+    },
+    {
+      "case_id": "py-data_exfil-001",
+      "file": "python/data_exfil/exfil_requests_post_env_dict.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [14, 14]
+      ],
+      "expected_source_lines": [
+        [12, 13]
+      ],
+      "tags": [
+        "data_exfil",
+        "requests",
+        "env",
+        "container"
+      ],
+      "disabled": false,
+      "notes": "Env-config secrets accumulate into a dict, then flow as the json kwarg of requests.post; container-taint round-trip."
+    },
+    {
+      "case_id": "py-data_exfil-002",
+      "file": "python/data_exfil/exfil_httpx_async_post_env.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [12, 15]
+      ],
+      "expected_source_lines": [
+        [11, 11]
+      ],
+      "tags": [
+        "data_exfil",
+        "httpx",
+        "async",
+        "env"
+      ],
+      "disabled": false,
+      "notes": "Env-config secret flows into httpx.AsyncClient().post json kwarg via the type-qualified HttpClient.post matcher."
+    },
+    {
+      "case_id": "java-data_exfil-001",
+      "file": "java/data_exfil/DataExfilJdkHttpClient.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [16, 20]
+      ],
+      "expected_source_lines": [
+        [13, 14]
+      ],
+      "tags": [
+        "data_exfil",
+        "jdk-httpclient",
+        "cookie"
+      ],
+      "disabled": false,
+      "notes": "Servlet cookie value flows through BodyPublishers.ofString into HttpClient.send body."
+    },
+    {
+      "case_id": "java-data_exfil-002",
+      "file": "java/data_exfil/DataExfilOkHttp.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [15, 21]
+      ],
+      "expected_source_lines": [
+        [13, 13]
+      ],
+      "tags": [
+        "data_exfil",
+        "okhttp",
+        "session"
+      ],
+      "disabled": false,
+      "notes": "HttpSession attribute wraps via RequestBody.create and binds to OkHttp Request.Builder.post; chain-normalized newCall.execute fires DATA_EXFIL."
+    },
+    {
+      "case_id": "go-data_exfil-001",
+      "file": "go/data_exfil/exfil_http_post_cookie_body.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [12, 12]
+      ],
+      "expected_source_lines": [
+        [10, 11]
+      ],
+      "tags": [
+        "data_exfil",
+        "http-post",
+        "cookie"
+      ],
+      "disabled": false,
+      "notes": "Cookie value flows via strings.NewReader into http.Post body at hardcoded URL."
+    },
+    {
+      "case_id": "rs-data_exfil-001",
+      "file": "rust/data_exfil/exfil_reqwest_form_env.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [5, 8]
+      ],
+      "expected_source_lines": [
+        [5, 5]
+      ],
+      "tags": [
+        "data_exfil",
+        "reqwest",
+        "form",
+        "env"
+      ],
+      "disabled": false,
+      "notes": "env::var secret flows into reqwest .form() body chain via the form.send body-bind matcher."
+    },
+    {
+      "case_id": "rb-data_exfil-001",
+      "file": "ruby/data_exfil/exfil_net_http_post_cookie.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [9, 9]
+      ],
+      "expected_source_lines": [
+        [7, 7]
+      ],
+      "tags": [
+        "data_exfil",
+        "net-http",
+        "cookie"
+      ],
+      "disabled": false,
+      "notes": "request.cookies value flows into Net::HTTP.post body at hardcoded URL."
+    },
+    {
+      "case_id": "c-data_exfil-001",
+      "file": "c/data_exfil/exfil_curl_postfields_env.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "data_exfil",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [14, 14]
+      ],
+      "expected_source_lines": [
+        [9, 9]
+      ],
+      "tags": [
+        "data_exfil",
+        "curl",
+        "gated-sink",
+        "env"
+      ],
+      "disabled": false,
+      "notes": "getenv secret flows into curl_easy_setopt CURLOPT_POSTFIELDS body; gated-sink fires only at the body-binding setopt."
+    },
+    {
+      "case_id": "js-safe-data_exfil-001",
+      "file": "javascript/safe/safe_data_exfil_sanitizer_wrap.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "data_exfil",
+        "safe",
+        "sanitizer-wrap"
+      ],
+      "disabled": false,
+      "notes": "Cookie source routed through default forwarding-wrapper sanitizer (logEvent); DATA_EXFIL must not fire."
+    },
+    {
+      "case_id": "js-safe-data_exfil-002",
+      "file": "javascript/safe/safe_data_exfil_user_input_echo.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "data_exfil",
+        "safe",
+        "user-input-gate"
+      ],
+      "disabled": false,
+      "notes": "Plain user input echoed into fetch body at fixed URL; sensitivity-gate suppresses Plain-tier sources for Cap::DATA_EXFIL."
+    },
+    {
+      "case_id": "py-safe-data_exfil-001",
+      "file": "python/safe/safe_data_exfil_user_input_echo.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "data_exfil",
+        "safe",
+        "user-input-gate"
+      ],
+      "disabled": false,
+      "notes": "Flask form-field echoed into requests.post json at fixed URL; sensitivity-gate suppresses Plain-tier user input."
+    },
+    {
+      "case_id": "go-safe-data_exfil-001",
+      "file": "go/safe/safe_data_exfil_user_input_echo.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "data_exfil",
+        "safe",
+        "user-input-gate"
+      ],
+      "disabled": false,
+      "notes": "FormValue plain user input echoed into http.Post body at fixed URL; sensitivity-gate suppresses Plain-tier sources."
+    },
+    {
+      "case_id": "rb-safe-data_exfil-001",
+      "file": "ruby/safe/safe_data_exfil_user_input_echo.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "data_exfil",
+        "safe",
+        "user-input-gate"
+      ],
+      "disabled": false,
+      "notes": "params plain user input echoed into RestClient.post body at fixed URL; sensitivity-gate suppresses Plain-tier sources."
+    },
+    {
+      "case_id": "c-safe-data_exfil-001",
+      "file": "c/safe/safe_data_exfil_user_input_echo.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-201",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-data-exfiltration"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "data_exfil",
+        "safe",
+        "user-input-gate"
+      ],
+      "disabled": false,
+      "notes": "fgets stdin user input echoed into curl_easy_setopt CURLOPT_POSTFIELDS at fixed URL; sensitivity-gate suppresses Plain-tier sources."
     }
   ]
 }

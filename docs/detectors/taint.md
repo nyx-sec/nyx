@@ -222,3 +222,43 @@ enabled = false
 ```
 
 `enabled = false` strips `Cap::DATA_EXFIL` from sink caps before event emission, so no `taint-data-exfiltration` finding reaches the report. The decision is per-project — other projects loaded by the same `nyx serve` instance keep their own settings.
+
+## DATA_EXFIL sinks per language
+
+Sinks Nyx ships with for `Cap::DATA_EXFIL`. The body, headers, or json payload arg fires; the URL arg routes through the SSRF gate and emits `taint-unsanitised-flow` instead.
+
+| Language | Sinks | Example |
+|---|---|---|
+| JavaScript, TypeScript | `fetch(url, {body, headers, json})` body-bind, `XMLHttpRequest.prototype.send`, type-qualified `HttpClient.send` | `fetch('/upload', {method: 'POST', body: req.cookies.session})` |
+| Python | `requests.post / put / patch` body and json kwargs, `httpx.AsyncClient().post` json kwarg, `aiohttp.ClientSession().post` body, dict round-trip into json | `requests.post('https://api.internal/ingest', json={'k': os.environ.get('SECRET')})` |
+| Java | `HttpClient.send` with `BodyPublishers.ofString`, OkHttp `newCall(req).execute` body chain, Apache `HttpClient.execute(HttpPost)`, `RestTemplate.postForEntity / exchange`, `WebClient.post().bodyValue / body` | `client.send(HttpRequest.newBuilder().uri(...).POST(BodyPublishers.ofString(token)).build(), ...)` |
+| Go | `http.Post(url, ct, body)` body arg, `http.PostForm` form arg, `(*http.Client).Do(req)` after `http.NewRequest`, `(*http.Request).Body` assignment | `http.Post("https://analytics.internal/track", "text/plain", strings.NewReader(c.Value))` |
+| Rust | `reqwest::Client.post().body / json / form / multipart().send()`, `ureq::post().send_string / send_form / send_json`, `surf::post().body_string / body_json`, `hyper::Request::builder().body()` | `reqwest::Client::new().post(url).form(&secret).send()` |
+| Ruby | `Net::HTTP.post(uri, body)` body arg, `Net::HTTP::Post.new(uri).body=`, `RestClient.post / put`, `HTTParty.post(url, body: ...)` body | `Net::HTTP.post(URI('https://analytics.internal/track'), "session=#{request.cookies[:auth]}")` |
+| C, C++ | `curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body)` and `CURLOPT_COPYPOSTFIELDS` gated sinks (macro-arg activation), `CURLOPT_POSTFIELDSIZE` body-bind | `curl_easy_setopt(curl, CURLOPT_POSTFIELDS, getenv("AUTH_TOKEN"));` |
+| PHP | `curl_setopt($ch, CURLOPT_POSTFIELDS, $body)`, `Guzzle\Client.post($url, ['body' => $tainted])`, `Symfony\HttpClient->request('POST', $url, ['body' => $tainted])` | `curl_setopt($ch, CURLOPT_POSTFIELDS, $_COOKIE['session']);` |
+
+Add project-specific sinks with `nyx config add-rule --kind sink --cap data_exfil --matcher <name>` or the equivalent TOML rule.
+
+## DATA_EXFIL calibration ranges
+
+`taint-data-exfiltration` is calibrated below the other taint classes on purpose.
+
+| Source kind | Severity | Confidence ceiling |
+|---|---|---|
+| Cookie, environment variable | High | Medium |
+| Header | Medium | Medium |
+| File system, database | Medium | Medium |
+| Caught exception | Medium | Low |
+
+Path-validated flows (`path_validated: true`) drop one severity tier. Confidence drops to Low when the abstract or symbolic domain cannot corroborate a concrete string reaching the outbound payload (for example, when the body comes from a callee with no summary).
+
+Attack-surface score ranges:
+
+| Finding shape | Score |
+|---|---|
+| High DATA_EXFIL, cookie or env source, body confirmed | around 76 |
+| Medium DATA_EXFIL, header, fs, db, or caught-exception source | 40 to 45 |
+| Low DATA_EXFIL, no abstract corroboration, path-validated | 18 to 25 |
+
+For reference: High SSRF, SQLi, cmdi land at 76 to 81; Medium taint with env source lands at 45 to 50; AST-only patterns sit around 10. Data-exfil sits below the direct-compromise classes but above informational AST patterns.

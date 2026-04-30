@@ -616,6 +616,8 @@ function sinkCapKey(finding: FindingView): string | null {
   if (/\bfetch\b|\baxios\b|http\.|request\.|urlopen|curl/.test(snippet))
     return 'ssrf';
 
+  if (rule.includes('data-exfiltration') || rule.includes('exfil'))
+    return 'data-exfil';
   if (rule.includes('xss')) return 'xss';
   if (rule.includes('sql')) return 'sql';
   if (rule.includes('cmd') || rule.includes('command')) return 'cmd-inject';
@@ -662,6 +664,11 @@ const TAINT_REMEDIATION: Record<string, string[]> = {
     'Do not pass user input to eval / new Function / exec.',
     'Replace dynamic code generation with a parser over an allowlisted grammar.',
     'If scripting is required, sandbox it (VM / Web Worker with no DOM, seccomp).',
+  ],
+  'data-exfil': [
+    'Do not put cookies, session tokens, or env secrets into outbound request bodies.',
+    'If the forward is intentional, allowlist the destination in `[detectors.data_exfil].trusted_destinations` or route through a named wrapper the engine treats as a data-exfil sanitizer.',
+    'Use dedicated server-to-server credentials for the upstream call instead of forwarding the user session.',
   ],
 };
 
