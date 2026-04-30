@@ -1118,6 +1118,7 @@ fn clone_preserves_all_sub_structs() {
             arg_string_literals: vec![Some("lit".into())],
             destination_uses: None,
             gate_filters: Vec::new(),
+            is_constructor: false,
         },
         taint: TaintMeta {
             labels: {

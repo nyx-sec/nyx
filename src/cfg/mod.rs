@@ -313,6 +313,15 @@ pub struct CallMeta {
     /// [`Self::destination_uses`]).
     #[serde(default)]
     pub gate_filters: Vec<GateFilter>,
+    /// True when this call expression is a constructor invocation
+    /// (e.g. JS/TS `new Stripe(key)`, PHP `new PDO(...)`).  The SSA Call
+    /// transfer uses this to narrow the constructed value's caps: a wrapper
+    /// object instance is structurally not a path string, format string,
+    /// URL component, or JSON input, so out-of-process side-effect bits
+    /// (FILE_IO, FMT_STRING, URL_ENCODE, JSON_PARSE) on the arguments
+    /// must not survive into the constructed object.
+    #[serde(default)]
+    pub is_constructor: bool,
 }
 
 /// One gate's contribution at a call site whose callee matches multiple
@@ -1581,6 +1590,89 @@ pub(super) fn push_node<'a>(
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels = classify_all(lang, &text, extra);
 
+    // Rust chain-text classification.  The default `text` for a Rust
+    // CallMethod is `{root_receiver}.{method}`, where `root_receiver`
+    // is the leftmost identifier after walking through every nested
+    // call/method receiver.  That convention loses the intermediate
+    // chain methods, so a body-binding chain like
+    // `Client::post(url).body(payload).send()` reduces to
+    // `Client::post.send` and rules keyed on `body.send` /
+    // `RequestBuilder.body` cannot fire.
+    //
+    // Reclassify against the call-AST's source text (with paren groups
+    // stripped) so suffix matchers covering chain shapes
+    // (`body.send`, `body_string`, `Request::builder.body`, ...) attach.
+    // Strictly additive: we union new labels with the existing ones,
+    // never override.  Limited to Rust to avoid disturbing the other
+    // languages' chain conventions.
+    if lang == "rust" {
+        if let Some(cn) = find_call_node(ast, lang) {
+            if let Some(chain_raw) = text_of(cn, code) {
+                // Multi-line Rust chains (`Client::new()\n  .post(url)\n
+                // .body(p)\n  .send()`) preserve interior whitespace in
+                // the source slice, which would prevent suffix matchers
+                // like `body.send` from firing.  Strip whitespace before
+                // normalizing paren groups, mirroring the same trick
+                // used by `find_chained_inner_call` for JS/TS chains.
+                let chain_compact: String =
+                    chain_raw.chars().filter(|c| !c.is_whitespace()).collect();
+                let chain_text =
+                    crate::labels::normalize_chained_call_for_classify(&chain_compact);
+                if chain_text != text {
+                    let chain_labels = classify_all(lang, &chain_text, extra);
+                    for l in chain_labels {
+                        if !labels.contains(&l) {
+                            labels.push(l);
+                        }
+                    }
+                }
+                // Also try classification against the chain with
+                // trailing identity methods peeled.  Rust chains often
+                // end in `.unwrap()` / `.expect("...")` / `.await` /
+                // `.clone()` etc., which obscure the body-bind verb
+                // for suffix matchers.  E.g. hyper's
+                // `Request::builder().method(..).uri(..).body(p).unwrap()`
+                // peels to `...body`, allowing a simpler `body` /
+                // `Request::builder.body` matcher to fire.
+                let peeled = crate::ssa::type_facts::peel_identity_suffix(&chain_text);
+                if peeled != chain_text && peeled != text {
+                    let peeled_labels = classify_all(lang, &peeled, extra);
+                    for l in peeled_labels {
+                        if !labels.contains(&l) {
+                            labels.push(l);
+                        }
+                    }
+                }
+                // Pattern synthesis: the hyper request-builder chain
+                // (`hyper::Request::builder().method(..).uri(..).body(p)`)
+                // can interleave `.method`, `.uri`, `.header`, `.version`
+                // etc. between `Request::builder` and the body-bind step.
+                // Suffix matchers can't span those, so synthesise a
+                // DATA_EXFIL sink whenever the chain begins with
+                // `Request::builder` and ends in a body-binding verb.
+                // Strictly additive: no labels are removed, only added,
+                // and the synthesis only fires when an explicit Sink
+                // hasn't already attached.
+                let chain_for_synth = if peeled != chain_text { &peeled } else { &chain_text };
+                if !labels
+                    .iter()
+                    .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(crate::labels::Cap::DATA_EXFIL)))
+                    && (chain_for_synth.contains("Request::builder.")
+                        || chain_for_synth.contains("hyper::Request::builder."))
+                {
+                    let last_seg =
+                        chain_for_synth.rsplit('.').next().unwrap_or(chain_for_synth);
+                    if matches!(
+                        last_seg,
+                        "body" | "body_mut" | "body_string" | "body_json" | "body_bytes"
+                    ) {
+                        labels.push(DataLabel::Sink(crate::labels::Cap::DATA_EXFIL));
+                    }
+                }
+            }
+        }
+    }
+
     // If the outermost call didn't classify, try inner/nested calls.
     // E.g. `str(eval(expr))`, `str` is not a sink, but `eval` is.
     // When the callee is overridden, save the original for container ops
@@ -2444,6 +2536,21 @@ pub(super) fn push_node<'a>(
     // just bloat every labeled Call node.
     let callee_span = inner_callee_span.or(inner_text_span).filter(|s| *s != span);
 
+    // Constructor detection: a `new X(...)` call carries different cap
+    // semantics than a plain function call. The SSA Call transfer uses
+    // this flag to narrow the constructed value's caps so out-of-process
+    // side-effect bits (FILE_IO, FMT_STRING, URL_ENCODE, JSON_PARSE) on
+    // the arguments don't survive into a wrapper-object instance.
+    // Recognised forms:
+    //   * JS/TS `new_expression`
+    //   * Java/C++ `object_creation_expression`
+    //   * PHP `object_creation_expression`
+    let is_constructor = ast.kind() == "new_expression"
+        || ast.kind() == "object_creation_expression"
+        || call_ast.is_some_and(|cn| {
+            matches!(cn.kind(), "new_expression" | "object_creation_expression")
+        });
+
     let idx = g.add_node(NodeInfo {
         kind,
         call: CallMeta {
@@ -2459,6 +2566,7 @@ pub(super) fn push_node<'a>(
             arg_string_literals,
             destination_uses,
             gate_filters,
+            is_constructor,
         },
         taint: TaintMeta {
             labels,

@@ -184,6 +184,7 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         TypeKind::Url => 10,
         TypeKind::HttpClient => 11,
         TypeKind::LocalCollection => 12,
+        TypeKind::RequestBuilder => 13,
         // the analysis DTO types carry per-field structural info that the
         // bitset domain can't represent.  Collapse to Unknown so callers
         // still see "any type possible" rather than crashing on an
@@ -208,6 +209,7 @@ fn type_kind_from_index(idx: u32) -> Option<TypeKind> {
         10 => Some(TypeKind::Url),
         11 => Some(TypeKind::HttpClient),
         12 => Some(TypeKind::LocalCollection),
+        13 => Some(TypeKind::RequestBuilder),
         _ => None,
     }
 }

@@ -1179,6 +1179,7 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::Url => "Url".into(),
         TypeKind::HttpClient => "HttpClient".into(),
         TypeKind::LocalCollection => "LocalCollection".into(),
+        TypeKind::RequestBuilder => "RequestBuilder".into(),
         TypeKind::Dto(_) => "Dto".into(),
     }
 }

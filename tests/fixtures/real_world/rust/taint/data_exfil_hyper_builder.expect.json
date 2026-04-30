@@ -1,0 +1,31 @@
+{
+  "description": "DATA_EXFIL: env::var flows to hyper::Request::builder().body() chain.",
+  "tags": ["taint", "data_exfil", "hyper"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "severity": null,
+      "must_match": true,
+      "line_range": [5, 12],
+      "evidence_contains": [],
+      "notes": "env-config secret flows into hyper Request::builder().body() body-bind, fires DATA_EXFIL"
+    },
+    {
+      "rule_id": "rs.quality.unwrap",
+      "severity": null,
+      "must_match": true,
+      "line_range": [5, 7],
+      "evidence_contains": [],
+      "notes": ".unwrap() on env::var Result"
+    },
+    {
+      "rule_id": "rs.quality.unwrap",
+      "severity": null,
+      "must_match": true,
+      "line_range": [7, 12],
+      "evidence_contains": [],
+      "notes": ".unwrap() on Request::builder().body() Result"
+    }
+  ]
+}

@@ -25,6 +25,15 @@ pub enum TypeKind {
     FileHandle,
     Url,
     HttpClient,
+    /// A pre-network HTTP request builder produced by `Client::post(url)`,
+    /// `surf::post(url)`, `Request::builder()`, `ureq::post(url)`, etc.
+    /// The body-bind methods (`body`, `json`, `form`, `multipart`,
+    /// `body_string`, `body_json`, `body_bytes`) and terminal verbs
+    /// (`send`, `send_string`, `send_json`, `send_form`) are sinks for
+    /// `DATA_EXFIL` when receiver-typed.  Distinct from `HttpClient` so
+    /// type-qualified resolution can attach builder-only rules without
+    /// over-firing on plain client objects.
+    RequestBuilder,
     /// A local, in-memory collection (HashMap, HashSet, Vec, etc.).
     /// The auth sink gate uses this so calls like `map.insert(...)`
     /// are treated as bookkeeping rather than cross-tenant sinks. No
@@ -76,6 +85,7 @@ impl TypeKind {
             Self::DatabaseConnection => Some("DatabaseConnection"),
             Self::FileHandle => Some("FileHandle"),
             Self::Url => Some("URL"),
+            Self::RequestBuilder => Some("RequestBuilder"),
             _ => None,
         }
     }
@@ -347,6 +357,10 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // so the auth sink gate recognises
                 // `let x = factory_fn(); x.insert(..)`.
                 Some(TypeKind::LocalCollection)
+            } else if is_rust_request_builder_constructor(base) {
+                // HTTP request-builder constructors across reqwest, surf,
+                // ureq, hyper.  See [`is_rust_request_builder_constructor`].
+                Some(TypeKind::RequestBuilder)
             } else {
                 None
             }
@@ -454,6 +468,55 @@ fn is_rust_local_collection_constructor(base: &str) -> bool {
             .iter()
             .any(|verb| base.ends_with(&format!("{ty}::{verb}")))
     })
+}
+
+/// Does the peeled Rust callee correspond to a known HTTP request-builder
+/// constructor / factory?  Covers:
+/// * surf free verbs (`surf::post`, `surf::get`, ...) ,
+/// * ureq free verbs (`ureq::post`, ...) ,
+/// * hyper `Request::builder` ,
+/// * reqwest `Client::post(url)` / `Client::get(url)` etc. (the `Client`
+///   instance is itself an `HttpClient` but the verb call on it returns a
+///   `RequestBuilder` whose chained methods bind body/json/form/etc.).
+///
+/// reqwest's `Client::new` keeps its existing `HttpClient` mapping ,
+/// it produces the client, not a builder.
+fn is_rust_request_builder_constructor(base: &str) -> bool {
+    // surf free verbs that return Request (acts as a builder).
+    const SURF_VERBS: &[&str] = &[
+        "post", "get", "put", "delete", "patch", "head", "connect", "trace",
+    ];
+    if SURF_VERBS
+        .iter()
+        .any(|v| base.ends_with(&format!("surf::{v}")))
+    {
+        return true;
+    }
+    // ureq free verbs that return Request.
+    const UREQ_VERBS: &[&str] = &["post", "get", "put", "delete", "patch", "head"];
+    if UREQ_VERBS
+        .iter()
+        .any(|v| base.ends_with(&format!("ureq::{v}")))
+    {
+        return true;
+    }
+    // hyper request builder.
+    if base.ends_with("Request::builder") || base.ends_with("hyper::Request::builder") {
+        return true;
+    }
+    // reqwest Client verb-on-instance.  `Client::post(url)` /
+    // `Client::get(url)` chained-form returns a RequestBuilder.  We match
+    // the constructor-style segment used by chain text after CFG receiver
+    // collapse (`reqwest::Client::new.post`, `Client::post`, etc.).
+    const REQWEST_CLIENT_VERBS: &[&str] =
+        &["post", "get", "put", "delete", "patch", "head", "request"];
+    if REQWEST_CLIENT_VERBS
+        .iter()
+        .any(|v| base.ends_with(&format!("Client::new.{v}")) || base.ends_with(&format!("Client::{v}")))
+    {
+        return true;
+    }
+    false
 }
 
 pub fn is_identity_method(callee: &str) -> bool {

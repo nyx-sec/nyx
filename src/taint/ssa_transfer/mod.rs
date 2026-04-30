@@ -4026,6 +4026,48 @@ pub(super) fn transfer_inst(
                 }
             }
 
+            // Constructor cap narrowing: a `new X(...)` call returns an object
+            // instance, not a string. Caps that name a string-shaped sink
+            // pattern (path argument, format string, URL component, JSON
+            // input) cannot fire on a wrapper object, so they must not
+            // survive the construction. Without this narrowing, a tainted
+            // argument to `new SdkClient(secret)` propagates `Cap::all()`
+            // into the wrapper, every method call on the wrapper inherits
+            // those bits via receiver propagation, and any downstream
+            // `fs.write*` / `printf` / `JSON.parse` on a string property
+            // returned by an SDK method (e.g. `client.create().id`) flags
+            // a phantom flow that has no real path-traversal etc. payload.
+            //
+            // Caps preserved (legitimately travel through wrappers):
+            //   - SHELL_ESCAPE / SQL_QUERY / CODE_EXEC / DESERIALIZE: a
+            //     wrapper that captures a tainted command/query string can
+            //     replay it via methods, the bit must survive the wrap.
+            //   - SSRF / DATA_EXFIL: URL/payload concerns persist on URL or
+            //     content-bearing objects.
+            //   - UNAUTHORIZED_ID: ownership obligation persists on a
+            //     wrapper that carries a request-bound identifier.
+            //   - ENV_VAR: provenance marker, never a sink trigger by
+            //     itself.
+            //   - HTML_ESCAPE: kept for safety, conservative dual concern
+            //     (a wrapper used as a string in template rendering).
+            //   - CRYPTO: kept conservatively.
+            //
+            // Caps stripped on construction:
+            //   - FILE_IO: path strings only.
+            //   - FMT_STRING: printf-style format args only.
+            //   - URL_ENCODE: URL components only.
+            //   - JSON_PARSE: parser inputs only.
+            if info.call.is_constructor && !return_bits.is_empty() {
+                let strip = Cap::FILE_IO
+                    | Cap::FMT_STRING
+                    | Cap::URL_ENCODE
+                    | Cap::JSON_PARSE;
+                return_bits &= !strip;
+                if return_bits.is_empty() {
+                    return_origins.clear();
+                }
+            }
+
             // Write result
             if return_bits.is_empty() {
                 state.remove(inst.value);

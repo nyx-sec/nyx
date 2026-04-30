@@ -19,6 +19,34 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // Inbound HTTP request metadata: headers, cookies, query strings,
+    // and body extractors.  These only carry caller-supplied bytes when
+    // the framework binds them (the framework-conditional rules attach
+    // the same labels for axum / actix / rocket extractors).  Including
+    // the bare suffix matchers here means a `req.headers().get("h")`
+    // chain in non-framework code (e.g. internal helpers that take an
+    // `&HeaderMap`) still surfaces as a Source.  `infer_source_kind`
+    // routes these to `Header` / `Cookie` (Sensitive), enabling
+    // DATA_EXFIL gating downstream.
+    LabelRule {
+        matchers: &[
+            // Type-qualified (receiver typed as HttpRequest, HeaderMap, ...)
+            "HttpRequest.headers",
+            "HttpRequest.cookie",
+            "HttpRequest.cookies",
+            "Request.headers",
+            "Request.cookies",
+            "Request.uri",
+            // Bare HeaderMap / cookie-jar accessors.
+            "headers.get",
+            "headers.get_all",
+            "CookieJar.get",
+            "CookieJar.get_private",
+            "CookieJar.get_signed",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: false,
+    },
     // ───────── Sanitizers ──────────
     LabelRule {
         matchers: &["html_escape::encode_safe", "sanitize_", "sanitize_html"],
@@ -75,6 +103,34 @@ pub static RULES: &[LabelRule] = &[
             "reqwest::Client.head",
             "reqwest::Client.patch",
             "reqwest::Client.request",
+            // Chained constructor + verb form: `reqwest::Client::new()
+            // .post(url)` reduces (via root-receiver collapse) to chain
+            // text `Client::new.post`, so existing `Client.post` matchers
+            // miss it.  Cover the chained shape directly.
+            "Client::new.get",
+            "Client::new.post",
+            "Client::new.put",
+            "Client::new.delete",
+            "Client::new.head",
+            "Client::new.patch",
+            "Client::new.request",
+            // surf free verbs are themselves SSRF gates ,  the URL is
+            // their first positional argument.
+            "surf::get",
+            "surf::post",
+            "surf::put",
+            "surf::delete",
+            "surf::head",
+            "surf::patch",
+            "surf::connect",
+            "surf::trace",
+            // ureq free verbs are HTTP request initiators.
+            "ureq::get",
+            "ureq::post",
+            "ureq::put",
+            "ureq::delete",
+            "ureq::patch",
+            "ureq::head",
             // Type-qualified (receiver typed as HttpClient)
             "HttpClient.get",
             "HttpClient.post",
@@ -87,6 +143,68 @@ pub static RULES: &[LabelRule] = &[
             "HttpClient.send",
         ],
         label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+    },
+    // Cross-boundary data exfiltration sinks.  Outbound HTTP egress where
+    // a Sensitive source (env, header, cookie, file, db) reaching the
+    // request body / payload is a leak distinct from SSRF.  Plain user
+    // input is silenced by the source-sensitivity gate, so these only
+    // fire when the source carries operator-bound state.
+    //
+    // Body-binding methods on the request builder: `body`, `json`, `form`,
+    // `multipart` (reqwest); `body_string`, `body_json`, `body_bytes`
+    // (surf); `send_string`, `send_json`, `send_form` (ureq, which
+    // combines body-bind and dispatch).  Plus `.send()` on an HttpClient
+    // / RequestBuilder, where the chain receiver is typed.  Chain text
+    // matchers like `body.send` cover the all-in-one form
+    // `Client::post(url).body(payload).send()`.
+    LabelRule {
+        matchers: &[
+            // Type-qualified terminal verbs (split form, typed receiver).
+            "HttpClient.send",
+            "HttpClient.execute",
+            "RequestBuilder.send",
+            // Type-qualified body-bind methods on a typed RequestBuilder.
+            "RequestBuilder.body",
+            "RequestBuilder.json",
+            "RequestBuilder.form",
+            "RequestBuilder.multipart",
+            "RequestBuilder.body_string",
+            "RequestBuilder.body_json",
+            "RequestBuilder.body_bytes",
+            "RequestBuilder.send_string",
+            "RequestBuilder.send_json",
+            "RequestBuilder.send_form",
+            // surf / ureq method names that are unambiguous in Rust ,
+            // they only appear on HTTP request builders, so a bare-name
+            // suffix matcher is safe.
+            "body_string",
+            "body_json",
+            "body_bytes",
+            "send_string",
+            "send_json",
+            "send_form",
+            // Reqwest chain shapes.  After paren-group strip the chain
+            // text becomes `Client::post.body.send`, so the body-bind
+            // verb sits before `.send` and a `body.send` suffix matcher
+            // pins exfil-only firing to chains that actually bind a body.
+            "body.send",
+            "json.send",
+            "form.send",
+            "multipart.send",
+            // hyper Request::builder().method(...).body(payload) ,  the
+            // body-bind step is the leak point.  `.unwrap` is a common
+            // trailing identity method; we cover both shapes.
+            "Request::builder.body",
+            "Request::builder.method.body",
+            "Request::builder.method.body.unwrap",
+            "Request::builder.body.unwrap",
+            // Two-step reqwest where the user has a dedicated `Client`
+            // variable and uses `.execute(req)` on it.
+            "Client::new.send",
+            "Client::new.execute",
+        ],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
     },
     LabelRule {

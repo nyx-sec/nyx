@@ -1,0 +1,31 @@
+{
+  "description": "Regression: URL-only chain (no body-bind) fires SSRF only, no DATA_EXFIL.",
+  "tags": ["taint", "ssrf", "regression"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [8, 9],
+      "evidence_contains": [],
+      "notes": "URL flows to reqwest Client::new().post(&url) — SSRF must fire"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [8, 9],
+      "evidence_contains": [],
+      "notes": "No body-binding step in chain — DATA_EXFIL must NOT fire"
+    },
+    {
+      "rule_id": "rs.quality.unwrap",
+      "severity": null,
+      "must_match": true,
+      "line_range": [8, 9],
+      "evidence_contains": [],
+      "notes": ".unwrap() on env::var Result"
+    }
+  ]
+}
