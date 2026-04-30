@@ -28,6 +28,21 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // Sensitive request state: cookies and session stores carry auth material
+    // / CSRF tokens / signed user ids the operator did not intend to leak.
+    // `infer_source_kind` routes substrings containing "cookie" or "session"
+    // through `SourceKind::Cookie` (Sensitive), so flow into outbound request
+    // payloads activates the `DATA_EXFIL` cap added below.
+    LabelRule {
+        matchers: &[
+            "request.cookies",
+            "request.session",
+            "cookies",
+            "session",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: false,
+    },
     // ───────── Sanitizers ──────────
     LabelRule {
         matchers: &["CGI.escapeHTML", "ERB::Util.html_escape"],
@@ -133,6 +148,59 @@ pub static RULES: &[LabelRule] = &[
     LabelRule {
         matchers: &["HttpClient.request", "HttpClient.get", "HttpClient.post"],
         label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+    },
+    // ── Cross-boundary data exfiltration ──────────────────────────────────
+    //
+    // Body-bearing outbound HTTP verb methods.  A flat Sink(DATA_EXFIL) here
+    // composes with the SSRF rule above via multi-label classification:
+    // `Net::HTTP.post(uri, payload)` reports SSRF on the URL flow (arg 0)
+    // and DATA_EXFIL on the body flow (arg 1+) as separate findings.  The
+    // source-sensitivity gate in `effective_sink_caps` strips DATA_EXFIL
+    // when the contributing source is `Plain` (raw `params`), so this only
+    // fires for sensitive sources (cookies / session / env / headers /
+    // file / db reads).
+    //
+    // Covered clients:
+    // * `Net::HTTP.post(uri, data, headers)` — stdlib
+    // * `Net::HTTP::Post.new(path)` body= setter — emitted as
+    //   `Net::HTTP::Post.body=` after Ruby setter normalisation; flat rule
+    //   ensures any tainted assignment to `.body` smears into the request
+    // * `RestClient.post(url, payload, headers)` — rest-client gem
+    // * `Faraday.post(url, body, headers)` — faraday
+    // * `HTTParty.post(url, body: ..., headers: ...)` — already a Sink(SSRF)
+    //   above, DATA_EXFIL adds independently
+    // * `Typhoeus.post(url, body: ...)` — typhoeus
+    LabelRule {
+        matchers: &[
+            "Net::HTTP.post",
+            "RestClient.post",
+            "RestClient.put",
+            "RestClient.patch",
+            "Faraday.post",
+            "Faraday.put",
+            "Faraday.patch",
+            "HTTParty.post",
+            "HTTParty.put",
+            "HTTParty.patch",
+            "Typhoeus.post",
+            "Typhoeus.put",
+            "Typhoeus.patch",
+        ],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+    },
+    // Generic outbound-method suffix matchers for chained / typed receivers
+    // (e.g. `client.post(payload)` where `client` is a configured Faraday or
+    // RestClient instance).  Suffix-match keeps the rule compact; source
+    // sensitivity gates noise from plain user input.
+    LabelRule {
+        matchers: &[
+            "HttpClient.post",
+            "HttpClient.put",
+            "HttpClient.patch",
+        ],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
     },
     LabelRule {

@@ -321,6 +321,10 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     m.insert("python", python::GATED_SINKS);
     m.insert("py", python::GATED_SINKS);
     m.insert("go", go::GATED_SINKS);
+    m.insert("php", php::GATED_SINKS);
+    m.insert("c", c::GATED_SINKS);
+    m.insert("cpp", cpp::GATED_SINKS);
+    m.insert("c++", cpp::GATED_SINKS);
     m
 });
 
@@ -577,6 +581,20 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
         || cl.contains("location")
         || cl.contains("document.url")
         || cl.contains("document.referrer")
+        // PHP superglobals: the AST text preserves the `$` (member-text
+        // extraction reads the `variable_name` node verbatim) so we match
+        // both `$_POST` and the `_POST` form some collectors emit.
+        // `$_REQUEST` already matches via the `request` substring above;
+        // `$_COOKIE` / `$_SESSION` route through the Cookie tier earlier in
+        // the function.  `$_SERVER` is operator-state-bearing (auth headers
+        // etc.) so it stays Sensitive by falling through to the Unknown
+        // bucket.
+        || cl == "$_get"
+        || cl == "$_post"
+        || cl == "$_files"
+        || cl == "_get"
+        || cl == "_post"
+        || cl == "_files"
     {
         return SourceKind::UserInput;
     }

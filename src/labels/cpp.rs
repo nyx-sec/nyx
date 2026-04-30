@@ -1,4 +1,4 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig};
+use crate::labels::{Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, SinkGate};
 use phf::{Map, phf_map};
 
 pub static RULES: &[LabelRule] = &[
@@ -88,6 +88,30 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["curl_easy_perform", "connect"],
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
+    },
+];
+
+/// Gated sinks for C++.
+///
+/// Mirror of the C gate set: `curl_easy_setopt` with `CURLOPT_POSTFIELDS` /
+/// `CURLOPT_COPYPOSTFIELDS` at arg 1 binds the request body at arg 2.
+/// Identifier-based activation is enabled via the macro-arg fallback in
+/// `cfg::mod::classify_gated_sink` for `lang == "cpp" / "c++"`.  Modern C++
+/// HTTP wrappers (cpr, Boost.Beast) layer over libcurl or directly over the
+/// socket; their ergonomic surfaces differ enough that adding gates per-
+/// library is left for a follow-up driven by the corpus.
+pub static GATED_SINKS: &[SinkGate] = &[
+    SinkGate {
+        callee_matcher: "curl_easy_setopt",
+        arg_index: 1,
+        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
     },
 ];
 

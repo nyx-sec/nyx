@@ -1,4 +1,6 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig, RuntimeLabelRule};
+use crate::labels::{
+    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+};
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
 
@@ -137,6 +139,67 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["file_get_contents", "curl_exec"],
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
+    },
+    // ── Cross-boundary data exfiltration ──────────────────────────────────
+    //
+    // Body-bearing outbound HTTP verb methods on the major PHP HTTP clients.
+    // Flat sinks here compose with the SSRF rule on `curl_exec` /
+    // `file_get_contents` via multi-label classification.  The
+    // source-sensitivity gate in `effective_sink_caps` strips DATA_EXFIL
+    // when the contributing source is `Plain` (`$_GET`, `$_POST`, `$_REQUEST`),
+    // so this only fires for sensitive sources (cookies / sessions /
+    // server-side state / env / file / db reads).
+    //
+    // Covered clients:
+    // * `Guzzle\Client::post/put/patch` — guzzlehttp/guzzle
+    //   matched by suffix on the verb method (chained `$client->post(...)`).
+    // * `Symfony\HttpClient::request` — symfony/http-client
+    //   request($method, $url, ['body' => $payload, 'json' => $data, ...])
+    // * `Http::post` — Laravel HTTP facade (over Guzzle)
+    LabelRule {
+        matchers: &[
+            "Client.post",
+            "Client.put",
+            "Client.patch",
+            "Client.request",
+            "HttpClient.post",
+            "HttpClient.put",
+            "HttpClient.patch",
+            "HttpClient.request",
+            "Http.post",
+            "Http.put",
+            "Http.patch",
+        ],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+    },
+];
+
+/// Gated sinks for PHP.
+///
+/// `curl_setopt($ch, CURLOPT_POSTFIELDS, $payload)` is the canonical
+/// non-OO PHP HTTP-egress payload binding.  The activation arg (index 1) is
+/// a `define`d constant: `CURLOPT_POSTFIELDS` (and the byref-copying variant
+/// `CURLOPT_COPYPOSTFIELDS`) carry the request body, while other CURLOPT_*
+/// constants designate URL / auth / TLS / behaviour, none of which is
+/// DATA_EXFIL-relevant.  Gating on the constant identifier keeps the rule
+/// from over-firing on `curl_setopt($ch, CURLOPT_URL, $url)` (covered
+/// elsewhere by the `curl_exec` SSRF flat sink).
+///
+/// Identifier-based activation is enabled via the macro-arg fallback in
+/// `cfg::mod::classify_gated_sink` for `lang == "php"`.
+pub static GATED_SINKS: &[SinkGate] = &[
+    SinkGate {
+        callee_matcher: "curl_setopt",
+        arg_index: 1,
+        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
     },
 ];
 

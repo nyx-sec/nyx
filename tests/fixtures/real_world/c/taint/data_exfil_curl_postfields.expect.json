@@ -1,0 +1,13 @@
+{
+  "description": "curl_easy_setopt(handle, CURLOPT_POSTFIELDS, body) gated sink: the activation arg (CURLOPT_POSTFIELDS) is matched as a preprocessor-macro identifier via the macro-arg fallback, so DATA_EXFIL fires only at the body-binding setopt call (not at the CURLOPT_URL setopt above it). getenv(\"AUTH_TOKEN\") is Sensitivity::Sensitive so DATA_EXFIL must fire.",
+  "tags": ["taint", "data-exfil", "curl", "gated-sink", "sensitivity-gate", "macro-activation"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [4, 12],
+      "notes": "getenv(\"AUTH_TOKEN\") → SourceKind::EnvironmentConfig → Sensitivity::Sensitive — DATA_EXFIL fires on the curl_easy_setopt body-binding call gated by CURLOPT_POSTFIELDS."
+    }
+  ]
+}

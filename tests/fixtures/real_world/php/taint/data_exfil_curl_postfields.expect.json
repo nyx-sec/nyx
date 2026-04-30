@@ -1,0 +1,13 @@
+{
+  "description": "curl_setopt($ch, CURLOPT_POSTFIELDS, $payload) gated sink: the activation arg (CURLOPT_POSTFIELDS) is matched as a define-style identifier via the macro-arg fallback, narrowing the gate so DATA_EXFIL fires only at the body-binding setopt call. The cookie source is Sensitivity::Sensitive so DATA_EXFIL must fire. The CURLOPT_RETURNTRANSFER setopt on the next line must NOT trigger the gate (different option, not a body slot).",
+  "tags": ["taint", "data-exfil", "curl", "gated-sink", "sensitivity-gate", "macro-activation"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [3, 10],
+      "notes": "$_COOKIE['auth_token'] → SourceKind::Cookie → Sensitivity::Sensitive — DATA_EXFIL fires on the curl_setopt body-binding call gated by CURLOPT_POSTFIELDS."
+    }
+  ]
+}

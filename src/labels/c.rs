@@ -1,4 +1,4 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig};
+use crate::labels::{Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, SinkGate};
 use phf::{Map, phf_map};
 
 pub static RULES: &[LabelRule] = &[
@@ -66,6 +66,35 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["curl_easy_perform"],
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
+    },
+];
+
+/// Gated sinks for C.
+///
+/// `curl_easy_setopt(handle, option, payload)` is libcurl's option-binding
+/// interface; the option identifier at arg 1 selects which slot the payload
+/// fills.  `CURLOPT_POSTFIELDS` and `CURLOPT_COPYPOSTFIELDS` carry the
+/// request body, while other CURLOPT_* constants designate URL / auth / TLS
+/// behaviour and are not DATA_EXFIL-relevant.  Gating on the macro identifier
+/// keeps the rule from over-firing on `curl_easy_setopt(h, CURLOPT_URL, url)`
+/// (covered separately by the `curl_easy_perform` SSRF flat sink).
+///
+/// Identifier-based activation is enabled via the macro-arg fallback in
+/// `cfg::mod::classify_gated_sink` for `lang == "c"`.  Header-parsing
+/// libraries (e.g. libmicrohttpd, mongoose) lack a stable surface and are
+/// left to project-specific config.
+pub static GATED_SINKS: &[SinkGate] = &[
+    SinkGate {
+        callee_matcher: "curl_easy_setopt",
+        arg_index: 1,
+        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
     },
 ];
 

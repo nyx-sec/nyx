@@ -1,0 +1,13 @@
+{
+  "description": "RestClient.post() with a fixed destination URL and a plain user-input body (params[:message]). DATA_EXFIL must NOT fire: the body source is Sensitivity::Plain and the source-sensitivity gate suppresses Plain-tier sources for Cap::DATA_EXFIL. Pairs with data_exfil_net_http_post.rb to assert per-tier routing for Ruby.",
+  "tags": ["taint", "data-exfil", "rest-client", "sensitivity-gate", "cap-attribution"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_not_match": true,
+      "line_range": [3, 9],
+      "notes": "Body source is plain user input (params → Sensitivity::Plain). DATA_EXFIL fires only on Sensitive-tier sources — plain user input echoed into a request body is not data exfiltration."
+    }
+  ]
+}

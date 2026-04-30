@@ -204,7 +204,14 @@ pub(super) fn extract_const_string_arg(
 ) -> Option<String> {
     let args = call_node.child_by_field_name("arguments")?;
     let mut cursor = args.walk();
-    let arg = args.named_children(&mut cursor).nth(index)?;
+    let mut arg = args.named_children(&mut cursor).nth(index)?;
+    // PHP / Go wrap each positional argument in an `argument` node; unwrap so
+    // the kind-match below sees the inner literal.
+    if arg.kind() == "argument" && arg.named_child_count() == 1 {
+        if let Some(inner) = arg.named_child(0) {
+            arg = inner;
+        }
+    }
     match arg.kind() {
         // `string` / `string_literal` cover JS/TS, Python, Java, PHP, C/C++, Ruby, Rust;
         // `interpreted_string_literal` / `raw_string_literal` cover Go's
@@ -232,6 +239,39 @@ pub(super) fn extract_const_string_arg(
             } else {
                 None
             }
+        }
+        _ => None,
+    }
+}
+
+/// Extract a macro-constant or `define`d identifier name at argument position
+/// `index` (0-based).  Used for languages where activation values are
+/// preprocessor symbols rather than string literals — currently C, C++, and
+/// PHP define-constants like `CURLOPT_POSTFIELDS` whose syntactic form is an
+/// `identifier` / `name` node, not a `string`.
+///
+/// Returns `None` for any non-identifier shape so dynamic-activation
+/// semantics still apply when the activation arg is a runtime value
+/// (variable, expression, function call).
+pub(super) fn extract_const_macro_arg(
+    call_node: Node,
+    index: usize,
+    code: &[u8],
+) -> Option<String> {
+    let args = call_node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let mut arg = args.named_children(&mut cursor).nth(index)?;
+    if arg.kind() == "argument" && arg.named_child_count() == 1 {
+        if let Some(inner) = arg.named_child(0) {
+            arg = inner;
+        }
+    }
+    match arg.kind() {
+        // C/C++ identifier / PHP `name` node for define-style constants.
+        // Scoped C++ identifiers (`Curl::OPT_POSTFIELDS`) and PHP namespaced
+        // names also surface here so the dangerous_values match catches them.
+        "identifier" | "name" | "qualified_name" | "scoped_identifier" => {
+            text_of(arg, code).map(|s| s.to_string())
         }
         _ => None,
     }

@@ -52,8 +52,9 @@ use literals::has_sql_placeholders;
 use literals::{
     arg0_kind_and_interpolation, call_ident_of, def_use, detect_go_replace_call_sanitizer,
     detect_rust_replace_chain_sanitizer, extract_arg_callees, extract_arg_string_literals,
-    extract_arg_uses, extract_const_keyword_arg, extract_const_string_arg,
-    extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
+    extract_arg_uses, extract_const_keyword_arg, extract_const_macro_arg,
+    extract_const_string_arg, extract_destination_field_pairs, extract_destination_kwarg_pairs,
+    extract_kwargs,
     extract_literal_rhs, extract_shell_array_payload_idents, find_call_node,
     find_call_node_deep, find_chained_inner_call, has_keyword_arg, has_only_literal_args,
     is_parameterized_query_call, java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
@@ -1873,7 +1874,22 @@ pub(super) fn push_node<'a>(
             let matches = classify_gated_sink(
                 lang,
                 &gate_callee_text,
-                |idx| extract_const_string_arg(cn, idx, code),
+                |idx| {
+                    extract_const_string_arg(cn, idx, code).or_else(|| {
+                        // C/C++ preprocessor macros and PHP `define`d constants
+                        // surface as identifier nodes, not string literals.
+                        // Falling back to the macro-arg extractor for those
+                        // languages lets gates like `curl_easy_setopt` /
+                        // `curl_setopt` activate on a `CURLOPT_POSTFIELDS`
+                        // ident match instead of firing conservatively on
+                        // every positional arg.
+                        if matches!(lang, "c" | "cpp" | "c++" | "php") {
+                            extract_const_macro_arg(cn, idx, code)
+                        } else {
+                            None
+                        }
+                    })
+                },
                 |kw| extract_const_keyword_arg(cn, kw, code),
                 |kw| has_keyword_arg(cn, kw, code),
             );

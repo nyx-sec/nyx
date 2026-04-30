@@ -1,0 +1,13 @@
+{
+  "description": "Net::HTTP.post(uri, body) with the body interpolating a session cookie value. Destination is fixed so SSRF must NOT fire on the URL flow, but DATA_EXFIL MUST fire — request.cookies is Sensitivity::Sensitive and the auth-bearing operator state is leaving the process via the outbound payload.",
+  "tags": ["taint", "data-exfil", "net-http", "sensitivity-gate", "cap-attribution"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [4, 7],
+      "notes": "request.cookies[:auth_token] → SourceKind::Cookie → Sensitivity::Sensitive — DATA_EXFIL fires on the body of Net::HTTP.post."
+    }
+  ]
+}
