@@ -112,6 +112,38 @@ fn new_request_do_two_step_emits_data_exfil() {
 }
 
 #[test]
+fn map_assign_data_exfil_emits_through_url_values() {
+    // Container-taint DATA_EXFIL: cookies populate a `url.Values` map
+    // across multiple keys, then the map flows into `http.PostForm`'s
+    // form-data channel.  The Elements heap slot must round-trip the
+    // cap from each `form.Set(k, v)` write to the sink-side load so
+    // DATA_EXFIL fires on the body channel even though `form` itself is
+    // not directly tainted by an Assign.  SSRF must NOT fire because
+    // the destination URL is a hardcoded literal.
+    let diags = diags_for("data_exfil_map_assign.go");
+    let exfil = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-data-exfiltration"))
+        .count();
+    let plain_taint = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-unsanitised-flow"))
+        .count();
+    assert!(
+        exfil >= 1,
+        "expected at least one taint-data-exfiltration finding for map_assign cookies → http.PostForm, got 0.\n\
+         Diags: {:#?}",
+        diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        plain_taint, 0,
+        "fixed-URL http.PostForm with tainted map must NOT emit SSRF, got {plain_taint}.\n\
+         Diags: {:#?}",
+        diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
 fn ssrf_url_tainted_emits_ssrf_not_data_exfil() {
     // Tainted query param flows into NewRequest's URL position with a
     // hardcoded body; SSRF must fire on the URL flow and DATA_EXFIL

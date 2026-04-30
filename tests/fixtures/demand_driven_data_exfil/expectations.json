@@ -1,0 +1,16 @@
+{
+  "required_findings": [
+    { "id_prefix": "taint-data-exfiltration", "min_count": 1 }
+  ],
+  "forbidden_findings": [],
+  "noise_budget": {
+    "max_total_findings": 4,
+    "max_high_findings": 2
+  },
+  "performance_expectations": {
+    "max_ms_no_index": 1500,
+    "max_ms_index_cold": 2000,
+    "max_ms_index_warm": 800,
+    "ci_mode": "lenient"
+  }
+}

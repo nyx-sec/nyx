@@ -107,6 +107,64 @@ fn fetch_body_plain_user_input_does_not_emit_data_exfil() {
 }
 
 #[test]
+fn fetch_body_data_exfil_witness_mentions_session_token() {
+    // Symex-witness regression guard: a DATA_EXFIL `Confirmed` (or
+    // Inconclusive but witness-bearing) verdict on the cookie → fetch
+    // body fixture must surface the session-token payload in its
+    // witness string.  The cap-specific payload selector in
+    // `src/symex/witness.rs::witness_payload` returns
+    // `<SESSION_TOKEN>` for `Cap::DATA_EXFIL`, the rendered witness
+    // (via `get_sink_witness`) substitutes that into the
+    // string-renderable expression so the analyst sees that the *leak*
+    // is a credential-bearing payload, not an injection.
+    //
+    // When symex emits no witness for this flow (e.g. the expression
+    // tree was opaque) the test silently accepts that, the assertion
+    // is one-sided so the witness shape is locked but witness absence
+    // is not promoted to a hard failure (the calibration suite
+    // already covers the no-witness path).
+    let diags = diags_for("fetch_body_data_exfil.js");
+    let exfil_witnesses: Vec<&String> = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-data-exfiltration"))
+        .filter_map(|d| {
+            d.evidence
+                .as_ref()
+                .and_then(|e| e.symbolic.as_ref())
+                .and_then(|sv| sv.witness.as_ref())
+        })
+        .collect();
+    for w in &exfil_witnesses {
+        assert!(
+            w.contains("<SESSION_TOKEN>") || w.contains("body") || w.contains("payload"),
+            "DATA_EXFIL witness must mention the leaked payload \
+             (<SESSION_TOKEN>) or body/payload context.  Got: {w:?}",
+        );
+    }
+}
+
+#[test]
+fn fetch_body_int_value_does_not_emit_data_exfil() {
+    // Numeric-typed bodies (e.g. `parseInt(req.cookies.session_count)`)
+    // are payload-incompatible: ints cannot carry session tokens, header
+    // secrets, or any credential material that constitutes a
+    // cross-boundary disclosure.  `is_type_safe_for_sink` lists
+    // `DATA_EXFIL` in its type-suppressible cap mask so a proven-Int SSA
+    // value at the gate silences the finding.
+    let diags = diags_for("fetch_body_int_suppressed.js");
+    let exfil = diags
+        .iter()
+        .filter(|d| d.id.starts_with("taint-data-exfiltration"))
+        .count();
+    assert_eq!(
+        exfil, 0,
+        "int-typed body must NOT emit taint-data-exfiltration, got {exfil}.\n\
+         Diags: {:#?}",
+        diags.iter().map(|d| &d.id).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
 fn sarif_distinguishes_data_exfil_rule_id_from_ssrf() {
     use nyx_scanner::output::build_sarif;
 

@@ -190,9 +190,10 @@ impl TypeFactResult {
 ///
 /// Suppression policy:
 /// * [`TypeKind::Int`] (and float, treated as numeric): suppresses
-///   `SQL_QUERY`, `FILE_IO`, `SHELL_ESCAPE`, `HTML_ESCAPE`, `SSRF` ,
-///   numeric values cannot carry the metacharacters required to drive
-///   any of these injection classes.
+///   `SQL_QUERY`, `FILE_IO`, `SHELL_ESCAPE`, `HTML_ESCAPE`, `SSRF`,
+///   `DATA_EXFIL`, numeric values cannot carry the metacharacters
+///   required to drive any of these injection classes, nor can they
+///   encode credentials/tokens that meaningfully constitute leakage.
 /// * [`TypeKind::Bool`]: suppresses every type-suppressible bit ,
 ///   `true`/`false` cannot carry a payload of any kind.
 pub fn is_type_safe_for_sink(
@@ -201,8 +202,12 @@ pub fn is_type_safe_for_sink(
     type_facts: &TypeFactResult,
 ) -> bool {
     use crate::labels::Cap;
-    let type_suppressible =
-        Cap::SQL_QUERY | Cap::FILE_IO | Cap::SHELL_ESCAPE | Cap::HTML_ESCAPE | Cap::SSRF;
+    let type_suppressible = Cap::SQL_QUERY
+        | Cap::FILE_IO
+        | Cap::SHELL_ESCAPE
+        | Cap::HTML_ESCAPE
+        | Cap::SSRF
+        | Cap::DATA_EXFIL;
     if !sink_caps.intersects(type_suppressible) {
         return false;
     }
@@ -1294,9 +1299,10 @@ mod tests {
     }
 
     /// Int-typed values must suppress every type-suppressible
-    /// cap, including the freshly-added `SSRF` bit.  Numeric IDs
-    /// cannot rewrite a URL host, cannot form path traversal sequences,
-    /// cannot carry SQL/HTML/shell metacharacters.
+    /// cap, including the freshly-added `SSRF` and `DATA_EXFIL` bits.
+    /// Numeric IDs cannot rewrite a URL host, cannot form path
+    /// traversal sequences, cannot carry SQL/HTML/shell metacharacters,
+    /// and do not encode credentials worth exfiltrating.
     #[test]
     fn int_suppresses_every_type_suppressible_cap() {
         use crate::labels::Cap;
@@ -1310,6 +1316,7 @@ mod tests {
             Cap::SHELL_ESCAPE,
             Cap::HTML_ESCAPE,
             Cap::SSRF,
+            Cap::DATA_EXFIL,
         ] {
             assert!(
                 is_type_safe_for_sink(&[SsaValue(0)], cap, &result),
@@ -1345,6 +1352,7 @@ mod tests {
             Cap::SHELL_ESCAPE,
             Cap::HTML_ESCAPE,
             Cap::SSRF,
+            Cap::DATA_EXFIL,
         ] {
             assert!(
                 is_type_safe_for_sink(&[SsaValue(0)], cap, &result),
@@ -1381,14 +1389,14 @@ mod tests {
     /// `is_type_safe_for_sink` requires an intentional matrix edit + a
     /// test update.  Truth values:
     ///
-    /// | TypeKind  | SQL | FILE | SHELL | HTML | SSRF | CODE_EXEC | DESERIALIZE |
-    /// |-----------|-----|------|-------|------|------|-----------|-------------|
-    /// | Int       |  Y  |  Y   |   Y   |  Y   |  Y   |     N     |      N      |
-    /// | Bool      |  Y  |  Y   |   Y   |  Y   |  Y   |     N     |      N      |
-    /// | String    |  N  |  N   |   N   |  N   |  N   |     N     |      N      |
-    /// | Url       |  N  |  N   |   N   |  N   |  N   |     N     |      N      |
-    /// | Object    |  N  |  N   |   N   |  N   |  N   |     N     |      N      |
-    /// | Unknown   |  N  |  N   |   N   |  N   |  N   |     N     |      N      |
+    /// | TypeKind  | SQL | FILE | SHELL | HTML | SSRF | DATA_EXFIL | CODE_EXEC | DESERIALIZE |
+    /// |-----------|-----|------|-------|------|------|------------|-----------|-------------|
+    /// | Int       |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     N     |      N      |
+    /// | Bool      |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     N     |      N      |
+    /// | String    |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
+    /// | Url       |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
+    /// | Object    |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
+    /// | Unknown   |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
     #[test]
     fn type_kind_cap_suppression_matrix() {
         use crate::labels::Cap;
@@ -1398,40 +1406,41 @@ mod tests {
             ("SHELL_ESCAPE", Cap::SHELL_ESCAPE),
             ("HTML_ESCAPE", Cap::HTML_ESCAPE),
             ("SSRF", Cap::SSRF),
+            ("DATA_EXFIL", Cap::DATA_EXFIL),
             ("CODE_EXEC", Cap::CODE_EXEC),
             ("DESERIALIZE", Cap::DESERIALIZE),
         ];
         // (kind_name, kind, [suppress for each cap in `caps` order])
-        let rows: &[(&str, TypeKind, [bool; 7])] = &[
+        let rows: &[(&str, TypeKind, [bool; 8])] = &[
             (
                 "Int",
                 TypeKind::Int,
-                [true, true, true, true, true, false, false],
+                [true, true, true, true, true, true, false, false],
             ),
             (
                 "Bool",
                 TypeKind::Bool,
-                [true, true, true, true, true, false, false],
+                [true, true, true, true, true, true, false, false],
             ),
             (
                 "String",
                 TypeKind::String,
-                [false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false],
             ),
             (
                 "Url",
                 TypeKind::Url,
-                [false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false],
             ),
             (
                 "Object",
                 TypeKind::Object,
-                [false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false],
             ),
             (
                 "Unknown",
                 TypeKind::Unknown,
-                [false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false],
             ),
         ];
         for (kind_name, kind, expected) in rows {
@@ -1463,6 +1472,7 @@ mod tests {
             Cap::SHELL_ESCAPE,
             Cap::HTML_ESCAPE,
             Cap::SSRF,
+            Cap::DATA_EXFIL,
             Cap::CODE_EXEC,
             Cap::DESERIALIZE,
         ] {

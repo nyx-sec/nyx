@@ -104,7 +104,33 @@ fn demand_driven_suite() {
         "no_source: no backwards-confirmed notes on a source-free fixture"
     );
 
-    // ── 5. backwards OFF is a strict no-op: no confirmed notes.
+    // ── 5. data_exfil cap parity: the backwards engine must
+    //         round-trip `Cap::DATA_EXFIL` exactly like SQL/CMD/SSRF.
+    //         The forward engine fires `taint-data-exfiltration`
+    //         on a cookie → fetch-body flow; backwards must reach
+    //         the request.cookies source and confirm.
+    set_backwards(true);
+    let dir = fixture_path("demand_driven_data_exfil");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+    let exfil_confirmed = diags
+        .iter()
+        .filter(|d| {
+            d.id.starts_with("taint-data-exfiltration")
+                && has_backwards_note(d, "backwards-confirmed")
+        })
+        .count();
+    assert!(
+        exfil_confirmed >= 1,
+        "data_exfil: expected ≥1 backwards-confirmed taint-data-exfiltration finding; got diags: {}",
+        diags
+            .iter()
+            .map(|d| format!("{}:{}", d.id, d.line))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    // ── 6. backwards OFF is a strict no-op: no confirmed notes.
     set_backwards(false);
     let dir = fixture_path("demand_driven_reach_source");
     let diags = scan_fixture_dir(&dir, AnalysisMode::Full);

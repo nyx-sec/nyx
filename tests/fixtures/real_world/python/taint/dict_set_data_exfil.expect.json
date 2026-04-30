@@ -1,0 +1,19 @@
+{
+  "description": "Container-taint DATA_EXFIL: payload dict accumulates os.environ.get() secrets across multiple keys, then flows into requests.post(json=payload). The SSA heap Elements slot carries the cap from each `payload[k] = ...` store to the sink-side heap-load, so DATA_EXFIL must fire on the json field. Mirrors `array_push_data_exfil.js` / `map_assign_data_exfil.go` for cross-language container-taint coverage.",
+  "tags": ["taint", "data-exfil", "requests", "container", "heap-elements", "env", "edge-case"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [18, 22],
+      "notes": "Dict population with env secrets, then requests.post(json=...). Container-taint round-trip must fire DATA_EXFIL on the json field."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [18, 22],
+      "notes": "Destination URL is a fixed literal — body taint must not surface as SSRF."
+    }
+  ]
+}
