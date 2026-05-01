@@ -667,7 +667,7 @@ const TAINT_REMEDIATION: Record<string, string[]> = {
   ],
   'data-exfil': [
     'Do not put cookies, session tokens, or env secrets into outbound request bodies.',
-    'If the forward is intentional, allowlist the destination in `[detectors.data_exfil].trusted_destinations` or route through a named wrapper the engine treats as a data-exfil sanitizer.',
+    'If the forward is intentional, allowlist the destination under `detectors.data_exfil.trusted_destinations` or route through a named wrapper the engine treats as a data-exfil sanitizer.',
     'Use dedicated server-to-server credentials for the upstream call instead of forwarding the user session.',
   ],
 };
