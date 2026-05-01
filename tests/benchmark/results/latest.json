@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-04-30T23:44:32Z",
+  "timestamp": "2026-05-01T20:48:51Z",
   "scanner_version": "0.5.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:228d1577d9560cfa08521e783ec513509363470455743a43a4102df713af1849",
-  "corpus_size": 477,
-  "cases_run": 476,
+  "ground_truth_hash": "sha256:47e2dbd1bdb36a115d6c6249038fec8332ebfc0c295eff6cfb1373776395ef42",
+  "corpus_size": 479,
+  "cases_run": 478,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -553,6 +553,25 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "cpp-buf-003",
+      "file": "cpp/buffer_overflow/buffer_reinterpret_cast_struct_alias.cpp",
+      "language": "cpp",
+      "vuln_class": "buffer_overflow",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "cpp.memory.reinterpret_cast"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "cpp.memory.reinterpret_cast"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "cpp-cmdi-001",
       "file": "cpp/cmdi/cmdi_system.cpp",
       "language": "cpp",
@@ -956,6 +975,21 @@
     {
       "case_id": "cpp-safe-018",
       "file": "cpp/safe/safe_builder_const_host.cpp",
+      "language": "cpp",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cpp-safe-019",
+      "file": "cpp/safe/safe_reinterpret_cast_byte_pointer.cpp",
       "language": "cpp",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -8558,22 +8592,22 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 238,
+    "tp": 239,
     "fp": 7,
     "fn_": 0,
-    "tn": 231,
-    "precision": 0.9714285714285714,
+    "tn": 232,
+    "precision": 0.9715447154471545,
     "recall": 1.0,
-    "f1": 0.9855072463768115
+    "f1": 0.9855670103092783
   },
   "aggregate_rule_level": {
-    "tp": 236,
+    "tp": 237,
     "fp": 7,
     "fn_": 2,
-    "tn": 231,
-    "precision": 0.9711934156378601,
-    "recall": 0.9915966386554622,
-    "f1": 0.9812889812889812
+    "tn": 232,
+    "precision": 0.9713114754098361,
+    "recall": 0.9916317991631799,
+    "f1": 0.9813664596273292
   },
   "by_language": {
     "c": {
@@ -8586,10 +8620,10 @@
       "f1": 1.0
     },
     "cpp": {
-      "tp": 18,
+      "tp": 19,
       "fp": 0,
       "fn_": 0,
-      "tn": 15,
+      "tn": 16,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8678,7 +8712,7 @@
       "f1": 1.0
     },
     "buffer_overflow": {
-      "tp": 6,
+      "tp": 7,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -8798,7 +8832,7 @@
       "tp": 0,
       "fp": 7,
       "fn_": 0,
-      "tn": 231,
+      "tn": 232,
       "precision": 0.0,
       "recall": 1.0,
       "f1": 0.0
@@ -8851,31 +8885,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 74,
+      "tp": 73,
       "fp": 106,
-      "fn_": 164,
-      "tn": 132,
-      "precision": 0.4111111111111111,
-      "recall": 0.31092436974789917,
-      "f1": 0.354066985645933
+      "fn_": 166,
+      "tn": 133,
+      "precision": 0.40782122905027934,
+      "recall": 0.3054393305439331,
+      "f1": 0.3492822966507177
     },
     ">=Low": {
-      "tp": 76,
-      "fp": 133,
-      "fn_": 162,
-      "tn": 105,
-      "precision": 0.36363636363636365,
-      "recall": 0.31932773109243695,
-      "f1": 0.34004474272930646
+      "tp": 75,
+      "fp": 132,
+      "fn_": 164,
+      "tn": 107,
+      "precision": 0.36231884057971014,
+      "recall": 0.3138075313807531,
+      "f1": 0.3363228699551569
     },
     ">=Medium": {
-      "tp": 76,
-      "fp": 123,
-      "fn_": 162,
-      "tn": 115,
-      "precision": 0.38190954773869346,
-      "recall": 0.31932773109243695,
-      "f1": 0.34782608695652173
+      "tp": 75,
+      "fp": 122,
+      "fn_": 164,
+      "tn": 117,
+      "precision": 0.38071065989847713,
+      "recall": 0.3138075313807531,
+      "f1": 0.34403669724770647
     }
   }
 }

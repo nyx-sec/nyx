@@ -916,6 +916,24 @@ impl<'a> ParsedSource<'a> {
                     {
                         continue;
                     }
+                    // Layer E: C++ `reinterpret_cast<T>(x)` when T is a
+                    // type explicitly defined as safe by the C++ aliasing
+                    // rules — byte-pointer family (`char*`, `unsigned
+                    // char*`, `uint8_t*`, `std::byte*`, etc., per
+                    // [basic.lval]/11), `void*`, the integer round-trip
+                    // types `uintptr_t` / `intptr_t`, and the BSD-socket
+                    // `sockaddr` family (POSIX intentionally type-puns
+                    // `sockaddr*` <-> `sockaddr_in*` etc.).  A pattern
+                    // rule cannot tell these from genuinely dangerous
+                    // strict-aliasing UB casts, so it over-fires
+                    // dramatically on serialization, hashing, and
+                    // socket-API code where the cast is the canonical
+                    // (and standard-blessed) idiom.
+                    if self.lang_slug == "cpp"
+                        && is_cpp_cast_target_type_safe(cq.meta.id, cap.node, self.bytes)
+                    {
+                        continue;
+                    }
                     let point = cap.node.start_position();
                     out.push(Diag {
                         path: self.path.to_string_lossy().into_owned(),
@@ -2603,6 +2621,208 @@ fn is_string_literal_with_text(node: tree_sitter::Node, text: &str, bytes: &[u8]
     false
 }
 
+/// C++-only Layer E: structural suppression of `cpp.memory.reinterpret_cast`
+/// when the cast's target type is explicitly defined as safe by the C++
+/// aliasing rules.
+///
+/// `reinterpret_cast<T>(x)` is *not* always undefined behaviour — the C++
+/// standard ([basic.lval]/11) explicitly permits accessing any object
+/// representation through a pointer to `char`, `unsigned char`, or
+/// `std::byte` (and, by long-standing convention, `int8_t` / `uint8_t`).
+/// `void*` is similarly safe because reads / writes are illegal through it
+/// (the program must always cast back before dereferencing).  The integer
+/// round-trip `uintptr_t` / `intptr_t` is guaranteed lossless by the
+/// standard.  POSIX additionally type-puns the `sockaddr` family — the
+/// BSD-socket API takes `struct sockaddr *` and the program must cast from
+/// `sockaddr_in*` / `sockaddr_in6*` / `sockaddr_un*` / `sockaddr_storage*`,
+/// which is the API's intended use.
+///
+/// The pattern rule `cpp.memory.reinterpret_cast` cannot distinguish these
+/// well-defined casts from genuinely dangerous strict-aliasing UB casts
+/// (`reinterpret_cast<MyStruct*>(buf)`), so it over-fires by ~70% on
+/// real-repo serialization, hashing, IPC, and socket-API code where the
+/// cast is the canonical (and standard-blessed) idiom.  Suppressing the
+/// well-defined target-type set is a layer-2 structural fix (per the
+/// bughunt depth hierarchy): the engine recognises the property
+/// (well-defined target type) that makes the cast safe in C++ and
+/// suppresses based on it.  Genuine strict-aliasing risk casts (target is
+/// a user struct / class type) keep firing.
+///
+/// Shapes recognised (any pointer depth `>= 1` unless noted):
+///   - `char*`, `signed char*`, `unsigned char*`, `wchar_t*`
+///   - `uint8_t*`, `int8_t*`, `std::byte*`, `byte*`
+///   - `void*`
+///   - `uintptr_t`, `std::uintptr_t`, `intptr_t`, `std::intptr_t` (no
+///     pointer depth required — the standard guarantees the lossless
+///     round-trip even for the integer form)
+///   - `sockaddr*`, `struct sockaddr*`, `sockaddr_in*`, `sockaddr_in6*`,
+///     `sockaddr_un*`, `sockaddr_storage*` (any of the BSD-socket
+///     address-structure family)
+///
+/// Conservative refusals (kept firing): user-defined struct / class
+/// pointer targets, template type parameters (`T*`), and any target the
+/// normaliser cannot identify.
+fn is_cpp_cast_target_type_safe(
+    rule_id: &str,
+    cap_node: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    if rule_id != "cpp.memory.reinterpret_cast" {
+        return false;
+    }
+    // `cap_node` is the `(identifier) @n` "reinterpret_cast" capture (the
+    // pattern's index-0 capture, by query-string order — see Layer A's
+    // `c.index == 0` selection in `run_ast_queries`).  Walk up via
+    // `find_enclosing_call` to reach the outer `call_expression`.  Its
+    // `function` field is a `template_function` whose `arguments` field is
+    // the `template_argument_list` carrying the target type.
+    let call = find_enclosing_call(cap_node);
+    let Some(call) = call else { return false };
+    let func = call.child_by_field_name("function");
+    let Some(func) = func else { return false };
+    if func.kind() != "template_function" {
+        return false;
+    }
+    let targs = func.child_by_field_name("arguments");
+    let Some(targs) = targs else { return false };
+    if targs.kind() != "template_argument_list" {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(&bytes[targs.byte_range()]) else {
+        return false;
+    };
+    let inner = text.trim().trim_start_matches('<').trim_end_matches('>').trim();
+    cpp_cast_target_type_is_safe(inner)
+}
+
+/// Normalise a C++ cast target type string and report whether it names a
+/// well-defined-by-aliasing-rules type per the policy in
+/// [`is_cpp_cast_target_type_safe`].  Public to the module so the unit
+/// tests can pin the canonical and adversarial shapes.
+pub(crate) fn cpp_cast_target_type_is_safe(s: &str) -> bool {
+    // Collapse all internal whitespace (tabs, newlines, multiple spaces)
+    // to single spaces so the normalised form is `const char *` with one
+    // space between every token.
+    let normalised: String = {
+        let mut out = String::with_capacity(s.len());
+        let mut prev_ws = true;
+        for ch in s.chars() {
+            if ch.is_whitespace() {
+                if !prev_ws {
+                    out.push(' ');
+                    prev_ws = true;
+                }
+            } else {
+                out.push(ch);
+                prev_ws = false;
+            }
+        }
+        out.trim().to_string()
+    };
+    let Some(base) = strip_pointer_and_cv(&normalised) else {
+        return false;
+    };
+    // Check for the integer round-trip types (no pointer depth required).
+    if matches!(
+        base.as_str(),
+        "uintptr_t" | "intptr_t" | "std::uintptr_t" | "std::intptr_t"
+    ) {
+        return true;
+    }
+    // All other safe targets require at least one pointer level.
+    if !normalised.contains('*') {
+        return false;
+    }
+    matches!(
+        base.as_str(),
+        "char"
+            | "signed char"
+            | "unsigned char"
+            | "wchar_t"
+            | "uint8_t"
+            | "int8_t"
+            | "std::byte"
+            | "byte"
+            | "void"
+            | "sockaddr"
+            | "struct sockaddr"
+            | "sockaddr_in"
+            | "sockaddr_in6"
+            | "sockaddr_un"
+            | "sockaddr_storage"
+            | "struct sockaddr_in"
+            | "struct sockaddr_in6"
+            | "struct sockaddr_un"
+            | "struct sockaddr_storage"
+    )
+}
+
+/// Strip a single C++ cast target's leading/trailing `const`/`volatile`
+/// qualifiers and trailing `*` characters (any depth).  Returns the bare
+/// base type identifier on success.  Returns `None` if anything left over
+/// after pointer/cv stripping is not a plain identifier or scoped name
+/// (e.g. function-pointer `void(*)(int)` or template `vector<int>`).
+fn strip_pointer_and_cv(s: &str) -> Option<String> {
+    let mut t: &str = s.trim();
+    // Strip leading `const` / `volatile`, possibly multiple.
+    loop {
+        let after = t
+            .strip_prefix("const ")
+            .or_else(|| t.strip_prefix("volatile "));
+        match after {
+            Some(rest) => t = rest.trim_start(),
+            None => break,
+        }
+    }
+    // Repeatedly strip trailing `*` and trailing cv-qualifiers in either
+    // order — `T*`, `T* const`, `T*const`, `T const*`, `T**`, `const T*`
+    // are all reachable.  The loop terminates when neither suffix
+    // matches.
+    loop {
+        let mut progressed = false;
+        // Strip trailing const/volatile that appears AFTER any `*` or
+        // before the first `*` (e.g. `T const`).  Forms: ` const`, ` volatile`.
+        loop {
+            let after = t
+                .trim_end()
+                .strip_suffix(" const")
+                .or_else(|| t.trim_end().strip_suffix(" volatile"));
+            match after {
+                Some(rest) => {
+                    t = rest;
+                    progressed = true;
+                }
+                None => break,
+            }
+        }
+        // Strip trailing `*`s.
+        let trimmed = t.trim_end();
+        if let Some(stripped) = trimmed.strip_suffix('*') {
+            t = stripped;
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+    let base = t.trim();
+    if base.is_empty() {
+        return None;
+    }
+    // Refuse anything that contains characters typical of compound
+    // type forms we don't want to reason about: parens (function
+    // pointer), angle brackets (template instantiation), brackets
+    // (array), commas (multiple arguments).  Accept identifier
+    // characters, `_`, `:` (for `std::byte`), spaces (for `unsigned
+    // char` / `struct sockaddr`).
+    for ch in base.chars() {
+        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == ':' || ch == ' ') {
+            return None;
+        }
+    }
+    Some(base.to_string())
+}
+
 /// Check if a string node contains interpolation (e.g., PHP `"Hello $name"`).
 fn has_interpolation(node: tree_sitter::Node) -> bool {
     for i in 0..node.child_count() as u32 {
@@ -3596,6 +3816,162 @@ fn first_c_capture<'tree>(
         .find(|c| c.index == 0)
         .expect("capture index 0")
         .node
+}
+
+#[cfg(test)]
+fn first_cpp_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    query_str: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_cpp::LANGUAGE);
+    let query = tree_sitter::Query::new(&lang, query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    m.captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0")
+        .node
+}
+
+#[test]
+fn cpp_cast_target_type_is_safe_recognises_canonical_shapes() {
+    use crate::ast::cpp_cast_target_type_is_safe as f;
+    // Byte-pointer family — C++ explicitly permits byte-level access.
+    assert!(f("char*"));
+    assert!(f("char *"));
+    assert!(f("const char*"));
+    assert!(f("const char *"));
+    assert!(f("unsigned char*"));
+    assert!(f("const unsigned char*"));
+    assert!(f("signed char*"));
+    assert!(f("uint8_t*"));
+    assert!(f("const uint8_t*"));
+    assert!(f("int8_t*"));
+    assert!(f("std::byte*"));
+    assert!(f("const std::byte*"));
+    assert!(f("byte*"));
+    assert!(f("wchar_t*"));
+    // void* — well-defined target.
+    assert!(f("void*"));
+    assert!(f("void **"));
+    assert!(f("const void*"));
+    // Integer round-trip — no pointer required.
+    assert!(f("uintptr_t"));
+    assert!(f("std::uintptr_t"));
+    assert!(f("intptr_t"));
+    assert!(f("std::intptr_t"));
+    // BSD socket family — POSIX intentionally type-puns these.
+    assert!(f("sockaddr*"));
+    assert!(f("struct sockaddr*"));
+    assert!(f("sockaddr_in*"));
+    assert!(f("sockaddr_in6*"));
+    assert!(f("sockaddr_un*"));
+    assert!(f("sockaddr_storage*"));
+
+    // Multi-token / extra whitespace — normaliser should collapse it.
+    assert!(f("const   uint8_t *"));
+    assert!(f("uint8_t  * const"));
+    assert!(f("const  unsigned   char *"));
+
+    // Pointer-to-pointer of safe base — still safe (any depth >= 1).
+    assert!(f("char**"));
+    assert!(f("uint8_t**"));
+
+    // Non-safe shapes — must NOT be suppressed.
+    assert!(!f("MyStruct*"));
+    assert!(!f("InstanceType*"));
+    assert!(!f("DBImpl*"));
+    assert!(!f("C*"));
+    assert!(!f("CPP*"));
+    assert!(!f("T*"));
+    assert!(!f("secp256k1_keypair*"));
+    assert!(!f("PIP_ADAPTER_ADDRESSES"));
+    assert!(!f("std::vector<int>*"));
+    assert!(!f("void(*)(int)"));
+    assert!(!f("char[10]"));
+    // Bare integer (no pointer) is only safe for the round-trip
+    // types — `int`, `size_t`, `uint64_t` should NOT match.
+    assert!(!f("int"));
+    assert!(!f("size_t"));
+    assert!(!f("uint64_t"));
+    assert!(!f("char")); // bare char without pointer
+    assert!(!f("uint8_t")); // bare uint8_t without pointer
+}
+
+#[test]
+fn cpp_reinterpret_cast_layer_e_recognises_byte_pointer_targets() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_cpp::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(call_expression
+                 function: (template_function
+                   name: (identifier) @n (#eq? @n "reinterpret_cast")))
+               @vuln"#;
+
+    // reinterpret_cast<uint8_t*>(p) — the leveldb / serialization shape.
+    let code = b"void f(int* p) { auto q = reinterpret_cast<uint8_t*>(p); (void)q; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<uint8_t*> must be suppressed (byte-pointer target)"
+    );
+
+    // reinterpret_cast<const std::byte*>(p) — qualified scoped name.
+    let code = b"#include <cstddef>\nvoid f(int* p) { auto q = reinterpret_cast<const std::byte*>(p); (void)q; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<const std::byte*> must be suppressed"
+    );
+
+    // reinterpret_cast<void*>(0x08000000) — synthetic-address shape.
+    let code = b"void* f() { return reinterpret_cast<void*>(0x08000000); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<void*> must be suppressed (synthetic address)"
+    );
+
+    // reinterpret_cast<uintptr_t>(p) — integer round-trip.
+    let code = b"#include <cstdint>\nuintptr_t f(int* p) { return reinterpret_cast<uintptr_t>(p); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<uintptr_t> must be suppressed (integer round-trip)"
+    );
+
+    // reinterpret_cast<sockaddr*>(&addr) — POSIX socket-API shape.
+    let code = b"struct sockaddr_in { int x; };\nstruct sockaddr;\nvoid f(struct sockaddr_in* a) { auto* s = reinterpret_cast<sockaddr*>(a); (void)s; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<sockaddr*> must be suppressed (BSD socket pun)"
+    );
+
+    // reinterpret_cast<MyStruct*>(buf) — strict-aliasing UB risk, must NOT
+    // be suppressed.
+    let code = b"struct MyStruct { int a; };\nMyStruct* f(char* buf) { return reinterpret_cast<MyStruct*>(buf); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        !is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<MyStruct*> must NOT be suppressed (genuine strict-aliasing risk)"
+    );
+
+    // Other rule ids are unaffected.
+    assert!(
+        !is_cpp_cast_target_type_safe("cpp.memory.const_cast", cap, code),
+        "Layer E must only fire for cpp.memory.reinterpret_cast"
+    );
 }
 
 #[test]
