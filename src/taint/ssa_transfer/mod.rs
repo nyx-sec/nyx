@@ -5752,7 +5752,7 @@ fn collect_block_events(
             // Per-filter destination allowlist for DATA_EXFIL.  When this
             // filter would emit Cap::DATA_EXFIL and the call's destination
             // arg has a trusted static prefix (configured via
-            // [detectors.data_exfil.trusted_destinations]), drop the bit
+            // detectors.data_exfil.trusted_destinations), drop the bit
             // for this filter only.  Other gates on the same call site
             // (notably SSRF) are unaffected.  Mirrors the semantics of
             // is_call_data_exfil_destination_trusted but operates per-gate
@@ -7584,8 +7584,8 @@ fn is_abstract_safe_for_sink(
 
     // DATA_EXFIL, destination allowlist via configured trusted prefixes.
     // Mirrors the SSRF prefix-lock above but consults the user-configured
-    // [detectors.data_exfil] trusted_destinations list.  Strict-additive:
-    // when no destinations are configured this is a no-op.
+    // [detectors.data_exfil] table's trusted_destinations key.  Strict-
+    // additive: when no destinations are configured this is a no-op.
     if sink_caps.intersects(Cap::DATA_EXFIL)
         && is_inst_data_exfil_destination_trusted(inst, abs, cfg)
     {
@@ -7720,7 +7720,7 @@ fn is_call_abstract_safe(
 
     // DATA_EXFIL, destination-allowlist match.  Mirrors the SSRF arm above
     // for the Call path.  Strict-additive: a no-op when
-    // [detectors.data_exfil.trusted_destinations] is empty.
+    // detectors.data_exfil.trusted_destinations is empty.
     if sink_caps.intersects(Cap::DATA_EXFIL)
         && is_call_data_exfil_destination_trusted(inst, args, abs, cfg)
     {

@@ -594,6 +594,9 @@ function sinkCapKey(finding: FindingView): string | null {
   const snippet = (finding.evidence?.sink?.snippet || '').toLowerCase();
   const rule = finding.rule_id.toLowerCase();
 
+  if (rule.includes('data-exfiltration') || rule.includes('exfil'))
+    return 'data-exfil';
+
   if (
     /innerhtml|outerhtml|document\.write|dangerouslysetinnerhtml/.test(snippet)
   )
@@ -615,9 +618,6 @@ function sinkCapKey(finding: FindingView): string | null {
   if (/readfile|fs\.|open\s*\(|path\.join/.test(snippet)) return 'path';
   if (/\bfetch\b|\baxios\b|http\.|request\.|urlopen|curl/.test(snippet))
     return 'ssrf';
-
-  if (rule.includes('data-exfiltration') || rule.includes('exfil'))
-    return 'data-exfil';
   if (rule.includes('xss')) return 'xss';
   if (rule.includes('sql')) return 'sql';
   if (rule.includes('cmd') || rule.includes('command')) return 'cmd-inject';

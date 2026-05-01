@@ -7,13 +7,13 @@
 //!      boundary; the default sanitizer rule for `logEvent` clears the
 //!      cap.
 //!   2. Per-project destination allowlist. With
-//!      `[detectors.data_exfil.trusted_destinations] = ["https://api.internal/"]`
+//!      `detectors.data_exfil.trusted_destinations = ["https://api.internal/"]`
 //!      installed via the runtime, a `fetch('https://api.internal/...',
 //!      {body: tainted})` call has the cap suppressed for that gate only;
 //!      a `fetch('https://untrusted.example.com/...', ...)` call on a
 //!      destination NOT in the allowlist still emits the finding.
 //!   3. Detector-class enabled toggle. When
-//!      `[detectors.data_exfil.enabled] = false` is installed, no
+//!      `detectors.data_exfil.enabled = false` is installed, no
 //!      `taint-data-exfiltration` finding is emitted regardless of which
 //!      gate would have fired.
 //!
