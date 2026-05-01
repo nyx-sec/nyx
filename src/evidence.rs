@@ -481,18 +481,24 @@ fn compute_taint_confidence(diag: &Diag) -> Confidence {
 /// but the leak class needs corroboration that a real string body actually
 /// leaves the process (otherwise we surface every `fetch(..., {body: x})`
 /// where `x` happens to be Sensitive-tagged).  This routing is deliberately
-/// capped at Medium and only fires Medium when the abstract / symbolic
-/// domain confirmed a string body.
+/// capped at Medium and only fires Medium when the symbolic execution
+/// verdict confirms the path (abstract interpretation participates only as
+/// a sink-suppression filter inside SSA taint and does not surface a
+/// separate verdict here).
 ///
 /// Routing:
 ///   * Source < Sensitive → Low (caller already strips DATA_EXFIL for
 ///     Plain sources, but defensively floor here).
-///   * Symbolic verdict `Confirmed` → Medium (abstract domain produced a
-///     witness that a tainted string reaches the body argument).
+///   * Symbolic verdict `Confirmed` → Medium (symex produced a witness
+///     that a tainted string reaches the body argument).
 ///   * Symbolic verdict `Inconclusive` / `NotAttempted` / no symbolic
 ///     analysis → Low (instruction's "Inconclusive" tier; the `Confidence`
 ///     enum has no separate Inconclusive variant so it floors to Low).
 ///   * Symbolic verdict `Infeasible` → Low (path proven dead).
+///
+/// After routing, a `path_validated` guard on the diag drops the result
+/// one tier (Medium → Low; Low stays Low) and `apply_engine_notes_cap`
+/// applies the standard engine-notes cap.
 fn compute_data_exfil_confidence(diag: &Diag) -> Confidence {
     let ev = match &diag.evidence {
         Some(e) => e,
