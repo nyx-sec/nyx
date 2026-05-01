@@ -85,6 +85,75 @@ fn inner_call_override_narrows_classification_span() {
     );
 }
 
+/// Ruby (and any language without an `expression_statement` wrapper)
+/// reaches `push_node` with `ast.kind() == "call"` (`Kind::CallMethod`)
+/// for top-level statement-position calls.  The inner-call fallback at
+/// `push_node` line ~1690 must include `Kind::CallFn | Kind::CallMethod
+/// | Kind::CallMacro` in its kind gate, otherwise an unclassified outer
+/// wrapper around a sink (e.g. `YAML.safe_load(File.read(filename))`,
+/// `String.new(File.read(x))`, `JSON.parse(File.read(x))` — every
+/// chain-style sink wrapper used in real Ruby helpers) loses the inner
+/// sink's classification entirely.  Cross-function summary extraction
+/// then misses the wrapper's `param_to_sink` and downstream callers
+/// silently lose detection.  Regression guard for CVE-2023-38337
+/// (rswag-api `parse_file → load_yaml/load_json → File.read` chain)
+/// and CVE-2021-21288 (CarrierWave `download → OpenURI.open_uri`).
+#[test]
+fn ruby_inner_call_fallback_classifies_wrapper_around_file_read() {
+    let src = b"def f(x)\n  YAML.safe_load(File.read(x))\nend\n";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "ruby", ts_lang);
+
+    // The outer call `YAML.safe_load(...)` does not classify by itself;
+    // the fallback must descend into its argument list and pick up the
+    // inner `File.read(x)` Sink(FILE_IO) label.
+    let sink = cfg
+        .node_indices()
+        .find(|&i| cfg[i].call.callee.as_deref() == Some("File.read"))
+        .expect(
+            "inner-call fallback should override the outer YAML.safe_load callee with File.read",
+        );
+
+    let info = &cfg[sink];
+    assert!(
+        info.taint.labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(crate::labels::Cap::FILE_IO))),
+        "wrapper-around-File.read node must carry the FILE_IO sink label"
+    );
+    // outer_callee should preserve the original callee text so cross-fn
+    // summary lookup can still find the wrapping function.
+    assert_eq!(
+        info.call.outer_callee.as_deref(),
+        Some("YAML.safe_load"),
+        "outer_callee must preserve the original wrapping callee"
+    );
+}
+
+/// Identical-shape regression guard for the *bare-function* call
+/// variant (`outer(File.read(x))`) — exercises the `Kind::CallFn`
+/// branch of the gate, where Ruby/Python/etc.'s top-level free
+/// function calls lacking a method receiver land.
+#[test]
+fn ruby_inner_call_fallback_classifies_bare_outer_around_file_read() {
+    let src = b"def f(x)\n  outer(File.read(x))\nend\n";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "ruby", ts_lang);
+
+    let sink = cfg
+        .node_indices()
+        .find(|&i| cfg[i].call.callee.as_deref() == Some("File.read"))
+        .expect("inner-call fallback must override `outer` callee with File.read");
+
+    let info = &cfg[sink];
+    assert!(
+        info.taint.labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(crate::labels::Cap::FILE_IO))),
+        "wrapper-around-File.read node must carry FILE_IO sink label"
+    );
+}
+
 /// `classification_span()` must fall back to `ast.span` when no narrower
 /// sub-expression was recorded, so existing structural code paths keep
 /// working unchanged for nodes whose classification applies to the whole

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 479
+    "corpus_size": 485
   },
   "cases": [
     {
@@ -3433,6 +3433,44 @@
       "notes": "SSRF via HTTParty.get() with user-controlled URL"
     },
     {
+      "case_id": "ruby-ssrf-003",
+      "file": "ruby/ssrf/ssrf_open_uri.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "open-uri",
+        "ssrf"
+      ],
+      "disabled": false,
+      "notes": "SSRF via OpenURI.open_uri() with user-controlled URL — canonical low-level URI fetcher; CarrierWave / Paperclip / similar gems route SSRF-vulnerable downloads through it"
+    },
+    {
       "case_id": "js-ssrf-safe-001",
       "file": "javascript/ssrf/safe_ssrf_hardcoded.js",
       "language": "javascript",
@@ -4051,6 +4089,42 @@
       ],
       "disabled": false,
       "notes": "Path traversal via send_file() with user-controlled path"
+    },
+    {
+      "case_id": "ruby-path_traversal-002",
+      "file": "ruby/path_traversal/path_traversal_yaml_load_file_read.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "wrapper-sink",
+        "path-traversal"
+      ],
+      "disabled": false,
+      "notes": "Path traversal via cross-fn helper that wraps File.read inside YAML.safe_load (the `outer(File.read(x))` shape used in real Ruby helpers — rswag CVE-2023-38337 chain). Regression guard for the inner-call fallback fix in src/cfg/mod.rs::push_node so a wrapper around an FILE_IO sink continues to surface in summary extraction."
     },
     {
       "case_id": "ruby-sqli-001",
@@ -10187,6 +10261,140 @@
       ],
       "disabled": false,
       "notes": "CVE-2020-8130 patched counterpart: open(fn, ...) replaced with File.open(fn, ...); File.open never pipes a leading |. Fixture additionally hardcodes the filename + pattern (patched-fix simplification) so the regression guard is class-clean \u2014 see vulnerable.rb header for rationale."
+    },
+    {
+      "case_id": "cve-rb-2021-21288-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2021-21288/vulnerable.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          64,
+          64
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          64,
+          64
+        ]
+      ],
+      "tags": [
+        "cve",
+        "carrierwave",
+        "ssrf",
+        "open-uri"
+      ],
+      "disabled": false,
+      "notes": "CVE-2021-21288: CarrierWave Downloader::Base#download passed an attacker-controlled URL straight into OpenURI.open_uri (only host-normalised via process_uri). open-uri follows redirects without an allowlist, so any uploader exposing a remote_url field reached internal services / cloud metadata / file:// URIs. Fixed in 2.1.1 / 1.3.2 by routing through SsrfFilter.get. MIT"
+    },
+    {
+      "case_id": "cve-rb-2021-21288-patched",
+      "file": "cve_corpus/ruby/CVE-2021-21288/patched.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "carrierwave",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2021-21288 patched counterpart: OpenURI.open_uri replaced with SsrfFilter.get(uri, ...) which validates the resolved host against private IP ranges before issuing the request. The upstream skip_ssrf_protection? escape hatch (default returns false) is omitted as a patched-fix simplification."
+    },
+    {
+      "case_id": "cve-rb-2023-38337-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2023-38337/vulnerable.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          58,
+          58
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          54,
+          54
+        ]
+      ],
+      "tags": [
+        "cve",
+        "rswag",
+        "path_traversal",
+        "rack-middleware"
+      ],
+      "disabled": true,
+      "disabled_reason": "Vulnerable case detects (env['PATH_INFO'] → File.read via parse_file/load_yaml/load_json cross-fn flow), but the patched counterpart fires the same finding because Nyx does not yet recognise `File.expand_path(...) + start_with?(<expr>)` as a path-traversal sanitiser. Three pieces are needed: (1) extend classify_path_assertion to accept non-literal start_with? args (returning an opaque PrefixLock), (2) extend `unless`-polarity handling so the surviving past-unless block inherits the assertion narrowing, (3) extend `is_path_safe_for_sink` (FILE_IO only) to honour `normalized=Yes && prefix_lock.is_some()` as a safety condition. Tracked in CVE_DEFERRED.md.",
+      "notes": "CVE-2023-38337: rswag-api Rack middleware concatenated env['PATH_INFO'] into the swagger root path with no validation; GET /../config/secrets.yml served arbitrary YAML/JSON files. Fixed in 2.10.1 by File.expand_path + start_with? rooted-path check. MIT"
+    },
+    {
+      "case_id": "cve-rb-2023-38337-patched",
+      "file": "cve_corpus/ruby/CVE-2023-38337/patched.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "rswag",
+        "patched",
+        "negative"
+      ],
+      "disabled": true,
+      "disabled_reason": "See vulnerable counterpart's disabled_reason — patched fixture currently fires `taint-unsanitised-flow` because the File.expand_path + start_with?(@config.resolve_swagger_root(env)) sanitiser pattern is not recognised. Re-enable once the path-traversal sanitiser recognition lands.",
+      "notes": "CVE-2023-38337 patched counterpart: filename = File.expand_path(File.join(root, path)); unless filename.start_with?(root); return reject; end. Stays clean once Nyx recognises the canonicalize+rooted-path pattern."
     },
     {
       "case_id": "cve-java-2015-7501-vulnerable",

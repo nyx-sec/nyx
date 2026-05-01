@@ -1681,12 +1681,31 @@ pub(super) fn push_node<'a>(
     // When the callee is overridden, save the original for container ops
     // (e.g. `parts.add(req.getParameter(...))`, callee becomes
     // "req.getParameter" but outer_callee preserves "parts.add").
+    //
+    // Statement-level calls in languages without a separate
+    // `expression_statement` wrapper (Ruby, where `body_statement` directly
+    // contains the call AST node) reach `push_node` with `ast.kind() ==
+    // "call"` (`Kind::CallMethod`) rather than `Kind::CallWrapper`.  Without
+    // including the call kinds in the gate, an unclassified outer wrapper
+    // around a sink (e.g. `YAML.safe_load(File.read(filename))` or
+    // `String.new(File.read(x))`) loses the inner sink's classification
+    // entirely — the outer call becomes a non-sink node, and the inner call
+    // is not emitted as a standalone CFG node because it sits inside the
+    // outer's `argument_list`.  Cross-function summary extraction then
+    // misses the `param_to_sink` for the wrapper helper, breaking detection
+    // of every chain-style sink wrapper used in real Ruby CVEs (rswag
+    // CVE-2023-38337, the Marshal/JSON/YAML-of-File.read pattern, etc.).
     let mut outer_callee: Option<String> = None;
     let mut inner_callee_span: Option<(usize, usize)> = None;
     if labels.is_empty()
         && matches!(
             lookup(lang, ast.kind()),
-            Kind::CallWrapper | Kind::Assignment | Kind::Return
+            Kind::CallWrapper
+                | Kind::Assignment
+                | Kind::Return
+                | Kind::CallFn
+                | Kind::CallMethod
+                | Kind::CallMacro
         )
         && let Some((inner_text, inner_label, inner_span)) =
             find_classifiable_inner_call(ast, lang, code, extra)

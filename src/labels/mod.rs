@@ -1692,6 +1692,16 @@ mod tests {
     }
 
     #[test]
+    fn classify_ruby_openuri_open_uri_is_ssrf_sink() {
+        // OpenURI.open_uri is the canonical low-level URI fetcher that
+        // URI.open delegates to. CarrierWave / Paperclip / similar gems
+        // route SSRF-vulnerable downloads through it directly.
+        // CVE-2021-21288 (CarrierWave) regression guard.
+        let result = classify("ruby", "OpenURI.open_uri", None);
+        assert_eq!(result, Some(DataLabel::Sink(Cap::SSRF)));
+    }
+
+    #[test]
     fn unpack_matcher_strips_exact_sigil() {
         let (m, exact) = unpack_matcher(b"=open");
         assert_eq!(m, b"open");

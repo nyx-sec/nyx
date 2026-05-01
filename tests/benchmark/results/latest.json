@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-01T20:48:51Z",
+  "timestamp": "2026-05-01T22:09:13Z",
   "scanner_version": "0.5.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,10 +9,10 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:47e2dbd1bdb36a115d6c6249038fec8332ebfc0c295eff6cfb1373776395ef42",
-  "corpus_size": 479,
-  "cases_run": 478,
-  "cases_skipped": 1,
+  "ground_truth_hash": "sha256:4a1bf4e67ef2f3db2231971c39c9f42d7eeb10edc4b4b2d90c38372c4b5d404d",
+  "corpus_size": 485,
+  "cases_run": 482,
+  "cases_skipped": 3,
   "outcomes": [
     {
       "case_id": "c-buf-001",
@@ -1797,6 +1797,40 @@
         "taint-unsanitised-flow (source 44:7)"
       ],
       "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-rb-2021-21288-patched",
+      "file": "cve_corpus/ruby/CVE-2021-21288/patched.rb",
+      "language": "ruby",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-rb-2021-21288-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2021-21288/vulnerable.rb",
+      "language": "ruby",
+      "vuln_class": "ssrf",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 64:29)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 64:29)"
+      ],
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -7286,6 +7320,27 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "ruby-path_traversal-002",
+      "file": "ruby/path_traversal/path_traversal_yaml_load_file_read.rb",
+      "language": "ruby",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 3:1)",
+        "taint-unsanitised-flow (source 7:1)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 3:1)",
+        "taint-unsanitised-flow (source 7:1)"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "ruby-safe-001",
       "file": "ruby/safe/safe_constant.rb",
       "language": "ruby",
@@ -7563,6 +7618,25 @@
     {
       "case_id": "ruby-ssrf-002",
       "file": "ruby/ssrf/ssrf_net_http.rb",
+      "language": "ruby",
+      "vuln_class": "ssrf",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 4:3)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 4:3)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "ruby-ssrf-003",
+      "file": "ruby/ssrf/ssrf_open_uri.rb",
       "language": "ruby",
       "vuln_class": "ssrf",
       "is_vulnerable": true,
@@ -8592,22 +8666,22 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 239,
+    "tp": 242,
     "fp": 7,
     "fn_": 0,
-    "tn": 232,
-    "precision": 0.9715447154471545,
+    "tn": 233,
+    "precision": 0.9718875502008032,
     "recall": 1.0,
-    "f1": 0.9855670103092783
+    "f1": 0.985743380855397
   },
   "aggregate_rule_level": {
-    "tp": 237,
+    "tp": 240,
     "fp": 7,
     "fn_": 2,
-    "tn": 232,
-    "precision": 0.9713114754098361,
-    "recall": 0.9916317991631799,
-    "f1": 0.9813664596273292
+    "tn": 233,
+    "precision": 0.97165991902834,
+    "recall": 0.9917355371900827,
+    "f1": 0.9815950920245398
   },
   "by_language": {
     "c": {
@@ -8674,10 +8748,10 @@
       "f1": 1.0
     },
     "ruby": {
-      "tp": 20,
+      "tp": 23,
       "fp": 0,
       "fn_": 0,
-      "tn": 21,
+      "tn": 22,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8811,7 +8885,7 @@
       "f1": 1.0
     },
     "path_traversal": {
-      "tp": 25,
+      "tp": 26,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -8832,7 +8906,7 @@
       "tp": 0,
       "fp": 7,
       "fn_": 0,
-      "tn": 232,
+      "tn": 233,
       "precision": 0.0,
       "recall": 1.0,
       "f1": 0.0
@@ -8865,13 +8939,13 @@
       "f1": 1.0
     },
     "ssrf": {
-      "tp": 26,
+      "tp": 28,
       "fp": 0,
       "fn_": 2,
       "tn": 0,
       "precision": 1.0,
-      "recall": 0.9285714285714286,
-      "f1": 0.962962962962963
+      "recall": 0.9333333333333333,
+      "f1": 0.9655172413793104
     },
     "xss": {
       "tp": 23,
@@ -8886,30 +8960,30 @@
   "by_confidence": {
     ">=High": {
       "tp": 73,
-      "fp": 106,
-      "fn_": 166,
-      "tn": 133,
-      "precision": 0.40782122905027934,
-      "recall": 0.3054393305439331,
-      "f1": 0.3492822966507177
+      "fp": 109,
+      "fn_": 169,
+      "tn": 131,
+      "precision": 0.4010989010989011,
+      "recall": 0.30165289256198347,
+      "f1": 0.34433962264150947
     },
     ">=Low": {
-      "tp": 75,
-      "fp": 132,
-      "fn_": 164,
-      "tn": 107,
-      "precision": 0.36231884057971014,
-      "recall": 0.3138075313807531,
-      "f1": 0.3363228699551569
+      "tp": 74,
+      "fp": 134,
+      "fn_": 168,
+      "tn": 106,
+      "precision": 0.3557692307692308,
+      "recall": 0.30578512396694213,
+      "f1": 0.3288888888888889
     },
     ">=Medium": {
-      "tp": 75,
-      "fp": 122,
-      "fn_": 164,
-      "tn": 117,
-      "precision": 0.38071065989847713,
-      "recall": 0.3138075313807531,
-      "f1": 0.34403669724770647
+      "tp": 74,
+      "fp": 125,
+      "fn_": 168,
+      "tn": 115,
+      "precision": 0.37185929648241206,
+      "recall": 0.30578512396694213,
+      "f1": 0.3356009070294785
     }
   }
 }

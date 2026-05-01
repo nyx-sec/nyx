@@ -127,11 +127,15 @@ pub static RULES: &[LabelRule] = &[
     },
     // URI.open is the network-capable Kernel#open wrapper, more specific than
     // plain `open` (excluded to avoid file I/O false positives).
+    // OpenURI.open_uri is the canonical low-level URI fetcher that URI.open
+    // delegates to — every SSRF-vulnerable Ruby download helper (CarrierWave
+    // pre-2.1.1 / 1.3.2, Paperclip, etc.) ultimately reaches it.
     LabelRule {
         matchers: &[
             "Net::HTTP.get",
             "Net::HTTP.post",
             "URI.open",
+            "OpenURI.open_uri",
             "HTTParty.get",
             "HTTParty.post",
         ],
