@@ -1,11 +1,13 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig, RuntimeLabelRule};
+use crate::labels::{
+    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+};
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
 
 pub static RULES: &[LabelRule] = &[
     // ─────────── Sources ───────────
     LabelRule {
-        matchers: &["os.Getenv"],
+        matchers: &["os.Getenv", "os.LookupEnv", "os.Environ"],
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
@@ -16,8 +18,12 @@ pub static RULES: &[LabelRule] = &[
             "r.URL",
             "r.Body",
             "r.Header",
+            "r.Header.Get",
+            "r.Header.Values",
             "r.URL.Query",
             "r.URL.Query.Get",
+            "r.Cookie",
+            "r.Cookies",
             "Request.FormValue",
             "Request.URL",
         ],
@@ -97,27 +103,20 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
+    // ── Outbound HTTP clients (SSRF) ───────────────────────────────────
+    //
+    // These are modeled as destination-aware gated sinks in `GATED_SINKS`
+    // below.  Flat Sink rules would over-flag every positional argument as
+    // SSRF (so a tainted body in `http.Post(url, contentType, body)` would
+    // fire SSRF on the body), and the gate machinery short-circuits when a
+    // flat Sink label is already attached to the callee, blocking DATA_EXFIL
+    // body-flow gates from running.
+    //
+    // `net.Dial` / `net.DialTimeout` keep their flat-sink modeling: the
+    // first positional arg is the network address with no body / payload
+    // companion, so the over-flag concern does not apply.
     LabelRule {
-        matchers: &[
-            "http.Get",
-            "http.Post",
-            "http.Head",
-            "http.NewRequest",
-            "http.NewRequestWithContext",
-            "net.Dial",
-            "net.DialTimeout",
-            // `http.DefaultClient` is the package-level default `*http.Client`.
-            // Idiomatic Go SSRF sinks (Owncast CVE-2023-3188) use the
-            // `http.DefaultClient.Get(url)` form rather than the bare
-            // `http.Get(url)` helper, so the suffix-matched callee text needs
-            // an explicit entry here, bare `Get/Post/Do/Head` would
-            // over-match unrelated method names.
-            "http.DefaultClient.Get",
-            "http.DefaultClient.Post",
-            "http.DefaultClient.Head",
-            "http.DefaultClient.Do",
-            "http.DefaultClient.PostForm",
-        ],
+        matchers: &["net.Dial", "net.DialTimeout"],
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
     },
@@ -132,6 +131,343 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Sink(Cap::CRYPTO),
         case_sensitive: false,
+    },
+];
+
+/// Argument-role-aware Go sinks.  Two classes coexist on the outbound HTTP
+/// surface, mirroring the JS/TS modeling:
+///
+///   * SSRF on the URL-bearing position of a one-shot request (`http.Get`,
+///     `http.Post`, `http.NewRequest`, `http.DefaultClient.*`).
+///   * `Cap::DATA_EXFIL` on the body / payload position when the source is
+///     Sensitive (cookies, headers, env, db reads).  Gates fire only when
+///     taint reaches the body argument, so a tainted URL alone never
+///     activates DATA_EXFIL and a tainted body alone never activates SSRF.
+///
+/// `http.NewRequest` / `http.NewRequestWithContext` carry an SSRF gate on
+/// their URL position only.  In Go's two-step idiom the actual network
+/// call happens at `client.Do(req)`; body taint flows from the body
+/// argument through the returned `*http.Request` via default arg → return
+/// propagation, and then activates the `http.DefaultClient.Do` DATA_EXFIL
+/// gate below.  Modeling NewRequest as a body propagator (rather than a
+/// body sink) avoids duplicate findings on the idiomatic
+/// `req, _ := http.NewRequest(...); client.Do(req)` shape.
+pub static GATED_SINKS: &[SinkGate] = &[
+    // ── SSRF gates (URL-bearing position) ────────────────────────────────
+    // `http.Get(url)` — url is arg 0.
+    SinkGate {
+        callee_matcher: "http.Get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.Head(url)` — url is arg 0.
+    SinkGate {
+        callee_matcher: "http.Head",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.Post(url, contentType, body)` — url is arg 0.
+    SinkGate {
+        callee_matcher: "http.Post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.PostForm(url, data)` — url is arg 0.
+    SinkGate {
+        callee_matcher: "http.PostForm",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.NewRequest(method, url, body)` — url is arg 1.
+    SinkGate {
+        callee_matcher: "http.NewRequest",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.NewRequestWithContext(ctx, method, url, body)` — url is arg 2.
+    SinkGate {
+        callee_matcher: "http.NewRequestWithContext",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.DefaultClient.Get(url)` / `.Head(url)` — url is arg 0.
+    SinkGate {
+        callee_matcher: "http.DefaultClient.Get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "http.DefaultClient.Head",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.DefaultClient.Post(url, contentType, body)` — url is arg 0.
+    SinkGate {
+        callee_matcher: "http.DefaultClient.Post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.DefaultClient.PostForm(url, data)` — url is arg 0.
+    SinkGate {
+        callee_matcher: "http.DefaultClient.PostForm",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── DATA_EXFIL gates (body-bearing position) ─────────────────────────
+    // `http.Post(url, contentType, body)` — body is arg 2.
+    SinkGate {
+        callee_matcher: "http.Post",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.PostForm(url, data)` — `data` (arg 1) is `url.Values`.  Form
+    // bodies serialize the same operator state cookies / headers do, so a
+    // tainted Sensitive value reaching the form payload is DATA_EXFIL.
+    SinkGate {
+        callee_matcher: "http.PostForm",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.DefaultClient.Do(req)` — `req` (arg 0) is the `*http.Request`
+    // value.  Body taint introduced via either `http.NewRequest(_, _, body)`
+    // (default arg → return propagation) or a later `req.Body = body` field
+    // write reaches this sink through the request value.
+    SinkGate {
+        callee_matcher: "http.DefaultClient.Do",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.DefaultClient.PostForm(url, data)` — same as `http.PostForm`
+    // but invoked through the package-level default `*http.Client`.
+    SinkGate {
+        callee_matcher: "http.DefaultClient.PostForm",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `http.DefaultClient.Post(url, contentType, body)` — body is arg 2.
+    SinkGate {
+        callee_matcher: "http.DefaultClient.Post",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── Common third-party HTTP clients ─────────────────────────────────
+    //
+    // `go-resty/resty`: `client.R().SetBody(body).Post(url)` style.
+    // `SetBody(body)` carries the body into the chained request; the
+    // network call happens at the verb method.  We model the verb
+    // methods (Get / Post / Put / Patch / Delete / Send / Execute) as
+    // DATA_EXFIL gates with `payload_args: &[]` (empty), which engages
+    // the receiver-tainted fallback in `collect_tainted_sink_vars`.  A
+    // builder receiver carrying body taint from `SetBody` activates the
+    // sink without us needing a positional body arg.
+    SinkGate {
+        callee_matcher: "resty.Request.Post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "resty.Request.Put",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "resty.Request.Patch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `imroc/req`: `req.Post(url, req.BodyJSON(payload))`, the `BodyJSON`
+    // / `BodyXML` helpers wrap a tainted payload and pass it as arg 1+ of
+    // the verb call.  Since the helper return value carries the body
+    // taint, gating the verb on every payload arg is sufficient.
+    SinkGate {
+        callee_matcher: "req.Post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "req.Put",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
     },
 ];
 

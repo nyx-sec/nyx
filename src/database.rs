@@ -2516,6 +2516,7 @@ fn ssa_summaries_round_trip() {
                 field_points_to: Default::default(),
                 return_path_facts: smallvec::SmallVec::new(),
                 typed_call_receivers: vec![],
+                param_to_gate_filters: vec![],
             },
         ),
         (
@@ -2550,6 +2551,7 @@ fn ssa_summaries_round_trip() {
                 field_points_to: Default::default(),
                 return_path_facts: smallvec::SmallVec::new(),
                 typed_call_receivers: vec![],
+                param_to_gate_filters: vec![],
             },
         ),
     ];
@@ -2722,6 +2724,7 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
             field_points_to: Default::default(),
             return_path_facts: smallvec::SmallVec::new(),
             typed_call_receivers: vec![],
+            param_to_gate_filters: vec![],
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash_v1, &sums_v1)
@@ -2758,6 +2761,7 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
             field_points_to: Default::default(),
             return_path_facts: smallvec::SmallVec::new(),
             typed_call_receivers: vec![],
+            param_to_gate_filters: vec![],
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash_v2, &sums_v2)
@@ -2815,6 +2819,7 @@ fn clear_drops_ssa_summaries_table() {
             field_points_to: Default::default(),
             return_path_facts: smallvec::SmallVec::new(),
             typed_call_receivers: vec![],
+            param_to_gate_filters: vec![],
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash, &sums)
@@ -2871,6 +2876,7 @@ fn make_test_callee_body(
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::new(),
             field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
         },
         opt: crate::ssa::OptimizeResult {
             const_values: std::collections::HashMap::new(),
@@ -3086,6 +3092,7 @@ fn make_test_ssa_summary() -> crate::summary::ssa_summary::SsaFuncSummary {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        param_to_gate_filters: vec![],
     }
 }
 
@@ -3845,5 +3852,61 @@ fn ssa_summaries_pre_phase5_blob_decodes_with_empty_field_points_to() {
     assert!(
         sum.field_points_to.is_empty(),
         "missing field_points_to must default to empty",
+    );
+}
+
+/// Pre-`param_to_gate_filters` blob compatibility: a summary serialised
+/// before this field existed deserialises with the empty default.
+/// `#[serde(default)]` on the field means old SQLite blobs round-trip
+/// without a schema migration, the new field is stored inside the JSON
+/// `summary` column so SQL-level columns are unchanged.
+#[test]
+fn ssa_summaries_pre_gate_filters_blob_decodes_with_empty_param_to_gate_filters() {
+    use crate::summary::ssa_summary::SsaFuncSummary;
+
+    // Hand-craft JSON without the `param_to_gate_filters` key.
+    let pre_gate_filters_json = r#"{
+        "param_to_return": [],
+        "param_to_sink": [],
+        "source_caps": 0,
+        "param_to_sink_param": [],
+        "param_container_to_return": [],
+        "param_to_container_store": [],
+        "return_type": null,
+        "return_abstract": null,
+        "source_to_callback": [],
+        "receiver_to_return": null,
+        "receiver_to_sink": 0,
+        "abstract_transfer": [],
+        "param_return_paths": [],
+        "return_path_facts": [],
+        "typed_call_receivers": []
+    }"#;
+    let sum: SsaFuncSummary = serde_json::from_str(pre_gate_filters_json).unwrap();
+    assert!(
+        sum.param_to_gate_filters.is_empty(),
+        "missing param_to_gate_filters must default to empty",
+    );
+}
+
+/// Round-trip: a summary with a populated `param_to_gate_filters`
+/// survives JSON serialise + deserialise, including the per-position
+/// cap-mask values needed to preserve SSRF-vs-DATA_EXFIL splits across
+/// the function-summary boundary.
+#[test]
+fn ssa_summaries_param_to_gate_filters_round_trip() {
+    use crate::labels::Cap;
+    use crate::summary::ssa_summary::SsaFuncSummary;
+
+    let mut sum = SsaFuncSummary::default();
+    sum.param_to_gate_filters.push((0, Cap::SSRF));
+    sum.param_to_gate_filters.push((1, Cap::DATA_EXFIL));
+
+    let json = serde_json::to_string(&sum).expect("serialize");
+    let restored: SsaFuncSummary = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(
+        restored.param_to_gate_filters,
+        vec![(0, Cap::SSRF), (1, Cap::DATA_EXFIL)],
+        "per-position cap masks must round-trip exactly",
     );
 }

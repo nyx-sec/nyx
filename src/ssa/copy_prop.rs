@@ -215,6 +215,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let (eliminated, copy_map) = copy_propagate(&mut body, &cfg);
@@ -296,6 +298,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let (eliminated, copy_map) = copy_propagate(&mut body, &cfg);
@@ -366,6 +370,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         (cfg, body)
     }
@@ -488,6 +494,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let (eliminated, _map) = copy_propagate(&mut body, &cfg);
         assert_eq!(eliminated, 0, "two-operand Assign is not a copy");
@@ -567,6 +575,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let (eliminated, _) = copy_propagate(&mut body, &cfg);
         assert_eq!(eliminated, 1, "v1 should be eliminated");
@@ -664,6 +674,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let (eliminated, _map) = copy_propagate(&mut body, &cfg);
         assert_eq!(eliminated, 1);
@@ -712,6 +724,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let (eliminated, map) = copy_propagate(&mut body, &cfg);
         assert_eq!(eliminated, 0);

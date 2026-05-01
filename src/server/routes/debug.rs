@@ -445,6 +445,7 @@ mod tests {
                         field_points_to: Default::default(),
                         return_path_facts: smallvec::SmallVec::new(),
                         typed_call_receivers: vec![],
+                        param_to_gate_filters: vec![],
                     },
                 )],
             )
@@ -516,6 +517,8 @@ mod tests {
                 exception_edges: vec![],
                 field_interner: crate::ssa::ir::FieldInterner::default(),
                 field_writes: std::collections::HashMap::new(),
+
+                synthetic_externals: std::collections::HashSet::new(),
             },
             false,
             false,
@@ -538,6 +541,8 @@ mod tests {
                 exception_edges: vec![],
                 field_interner: crate::ssa::ir::FieldInterner::default(),
                 field_writes: std::collections::HashMap::new(),
+
+                synthetic_externals: std::collections::HashSet::new(),
             },
             true,
             true,
@@ -560,6 +565,8 @@ mod tests {
                 exception_edges: vec![],
                 field_interner: crate::ssa::ir::FieldInterner::default(),
                 field_writes: std::collections::HashMap::new(),
+
+                synthetic_externals: std::collections::HashSet::new(),
             },
             true,
             false,
@@ -656,6 +663,7 @@ mod tests {
                         field_points_to: Default::default(),
                         return_path_facts: smallvec::SmallVec::new(),
                         typed_call_receivers: vec![],
+                        param_to_gate_filters: vec![],
                     },
                 )],
             )

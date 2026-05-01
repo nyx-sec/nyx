@@ -1,0 +1,23 @@
+{
+  "description": "DATA_EXFIL: env::var flows to surf::post().body_string() chain.",
+  "tags": ["taint", "data_exfil", "surf"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "severity": null,
+      "must_match": true,
+      "line_range": [5, 9],
+      "evidence_contains": [],
+      "notes": "env-config secret flows into surf .body_string body-bind, fires DATA_EXFIL"
+    },
+    {
+      "rule_id": "rs.quality.unwrap",
+      "severity": null,
+      "must_match": true,
+      "line_range": [5, 7],
+      "evidence_contains": [],
+      "notes": ".unwrap() on env::var Result"
+    }
+  ]
+}

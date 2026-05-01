@@ -33,6 +33,7 @@ fn parse_and_analyse<A: CfgAnalysis>(
         body_const_facts: None,
         type_facts: None,
         auth_decorators: &[],
+        closure_released_var_names: None,
     };
     analysis.run(&ctx)
 }
@@ -61,6 +62,7 @@ fn parse_and_run_all(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<CfgFi
         body_const_facts: None,
         type_facts: None,
         auth_decorators: &[],
+        closure_released_var_names: None,
     };
     run_all(&ctx)
 }
@@ -94,6 +96,7 @@ fn parse_and_run_all_with_taint(
         body_const_facts: None,
         type_facts: None,
         auth_decorators: &[],
+        closure_released_var_names: None,
     };
     run_all(&ctx)
 }
@@ -211,6 +214,7 @@ fn parse_and_analyse_with_ssa<A: CfgAnalysis>(
         body_const_facts: facts.as_ref(),
         type_facts: facts.as_ref().map(|f| &f.type_facts),
         auth_decorators: &[],
+        closure_released_var_names: None,
     };
     analysis.run(&ctx)
 }
@@ -1225,6 +1229,7 @@ fn config_sanitizer_suppresses_unguarded_sink() {
         body_const_facts: None,
         type_facts: None,
         auth_decorators: &[],
+        closure_released_var_names: None,
     };
     let findings = run_all(&ctx);
 
@@ -1703,6 +1708,7 @@ fn cfg_only_no_taint_produces_low_severity() {
         body_const_facts: None,
         type_facts: None,
         auth_decorators: &[],
+        closure_released_var_names: None,
     };
     let findings = guards::UnguardedSink.run(&ctx);
 

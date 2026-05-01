@@ -1,0 +1,19 @@
+{
+  "description": "Session-id forwarder: req.cookies.session (Sensitive-tier source) flows into a fixed-URL fetch body. SSRF must NOT fire (destination is hardcoded), but Cap::DATA_EXFIL MUST fire — auth-bearing operator state is leaving the process via the outbound payload. Pairs with fetch_tainted_body_safe.js (Plain source, silenced) to assert the source-sensitivity gate routes per-tier rather than globally.",
+  "tags": ["taint", "data-exfil", "fetch", "sensitivity-gate", "cookie", "cap-attribution"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [10, 17],
+      "notes": "fetch URL is a fixed literal — body taint must not fire as SSRF."
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [10, 17],
+      "notes": "req.cookies.session → SourceKind::Cookie → Sensitivity::Sensitive — DATA_EXFIL fires on the body field."
+    }
+  ]
+}

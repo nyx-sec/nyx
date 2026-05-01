@@ -31,6 +31,15 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // Sensitive operator state: HTTP session attributes commonly carry
+    // auth tokens / CSRF tokens / signed user ids.  Routed through the
+    // `Cookie` source-kind heuristic so DATA_EXFIL fires when these
+    // values leave the process via an outbound request body.
+    LabelRule {
+        matchers: &["HttpSession.getAttribute", "session.getAttribute"],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: false,
+    },
     // ───────── Sanitizers ──────────
     LabelRule {
         matchers: &["HtmlUtils.htmlEscape", "StringEscapeUtils.escapeHtml4"],
@@ -119,6 +128,79 @@ pub static RULES: &[LabelRule] = &[
             "postForEntity",
         ],
         label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+    },
+    // ── Cross-boundary data exfiltration ──────────────────────────────────
+    //
+    // Outbound HTTP egress points where a Sensitive source (cookie, header,
+    // env, session attribute, db read) reaching the request body / payload
+    // is a cross-boundary disclosure distinct from SSRF.  The flat-rule
+    // model relies on default arg → return propagation through builder
+    // chains: `HttpRequest.newBuilder().uri(u).POST(BodyPublishers.ofString(p)).build()`
+    // smears `p`-taint into the returned request, which then activates the
+    // sink at `client.send(req)`.
+    //
+    // Type-qualified resolution maps `restTemplate.postForObject(...)` →
+    // `HttpClient.postForObject` via the JAVA_HIERARCHY (RestTemplate,
+    // OkHttpClient, WebClient, CloseableHttpClient all subtype HttpClient),
+    // so a single set of `HttpClient.<method>` rules covers every framework
+    // in scope.  Plain user input is silenced by the source-sensitivity
+    // gate in `effective_sink_caps`, so this fires only on cookies / headers
+    // / env / session / db.
+    LabelRule {
+        matchers: &[
+            // java.net.http: client.send(req) consumes a request that
+            // carries body-taint via BodyPublishers.ofString/ofByteArray/
+            // ofInputStream through the builder chain.
+            "HttpClient.send",
+            "HttpClient.sendAsync",
+            // Spring RestTemplate verbs that take a body / entity.
+            "postForObject",
+            "postForEntity",
+            "RestTemplate.exchange",
+            "RestTemplate.put",
+            "RestTemplate.patchForObject",
+            // Apache HttpClient: httpClient.execute(req) where req is an
+            // HttpPost / HttpPut / HttpPatch with .setEntity(StringEntity(p)).
+            // CloseableHttpClient subtypes HttpClient so type-qualified
+            // resolution rewrites client.execute → HttpClient.execute.
+            "HttpClient.execute",
+            // Spring WebClient body-binding step:
+            // webClient.post().uri(u).bodyValue(payload).retrieve().
+            // bodyValue is the explicit body-bind verb; default propagation
+            // carries the tainted body into the chain return so the sink
+            // attaches at the body-bind site itself (no cross-call needed).
+            "bodyValue",
+            // Apache HttpClient body-binding: the `setEntity` step on
+            // HttpPost / HttpPut / HttpPatch mutates the request rather
+            // than returning the builder, so the receiver's SSA value at
+            // the later `httpClient.execute(req)` does not carry body
+            // taint via the default smear (which threads through return
+            // values, not field mutations).  Firing DATA_EXFIL at the
+            // setEntity call itself catches the body-binding directly.
+            // The matcher is specific enough to avoid collisions —
+            // `setEntity` is Apache-HttpClient-specific.
+            "setEntity",
+            // OkHttp builder body-binding shortcut: when the chain
+            // doesn't roll through `.post(body).build()` (e.g. a helper
+            // function returns the Builder mid-chain), `RequestBody`
+            // is bound via `.post(body)` / `.put(body)` / `.patch(body)`
+            // / `.delete(body)` directly on the Builder.  These methods
+            // also exist on unrelated classes (NIO, Streams) but in the
+            // OkHttp idiom the receiver type is `Request.Builder`; the
+            // receiver-type widening from `Request.Builder` → HttpClient
+            // isn't currently modeled, so we fall back to suffix-name
+            // matchers and accept some receiver-agnostic firing risk.
+            // Conservative: omit these for v1 to avoid over-fire on
+            // non-OkHttp `post`/`put`/`patch` calls.
+            // OkHttp two-step: client.newCall(req).execute() / .enqueue().
+            // Chain normalization strips `()` between dots so the tree-
+            // sitter callee text `client.newCall(req).execute` matches the
+            // suffix `newCall.execute` after normalization.
+            "newCall.execute",
+            "newCall.enqueue",
+        ],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
     },
     LabelRule {

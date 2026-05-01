@@ -712,6 +712,10 @@ pub struct Config {
     pub output: OutputConfig,
     pub performance: PerformanceConfig,
     pub analysis: AnalysisRulesConfig,
+    /// Per-detector knobs ([detectors.*] in nyx.conf).  Currently exposes
+    /// `[detectors.data_exfil]` for cross-boundary leak suppression.
+    #[serde(default)]
+    pub detectors: crate::utils::detector_options::DetectorOptions,
     pub server: ServerConfig,
     pub runs: RunsConfig,
     pub profiles: HashMap<String, ScanProfile>,
@@ -1017,6 +1021,17 @@ pub(crate) fn merge_configs(mut default: Config, user: Config) -> Config {
     for (name, profile) in user.profiles {
         default.profiles.insert(name, profile);
     }
+
+    // --- DetectorOptions ---
+    // Wholesale replace: each `[detectors.*]` field uses #[serde(default)],
+    // so any omitted field already inherits the documented defaults during
+    // user-config deserialization.  trusted_destinations is union-merged so
+    // the user adds to (rather than replaces) any future built-in defaults.
+    default.detectors.data_exfil.enabled = user.detectors.data_exfil.enabled;
+    extend_dedup(
+        &mut default.detectors.data_exfil.trusted_destinations,
+        user.detectors.data_exfil.trusted_destinations,
+    );
 
     // --- AnalysisRulesConfig ---
     // Engine options: wholesale replace.  User's engine block is already

@@ -1,0 +1,19 @@
+{
+  "description": "requests.post(taintedUrl, json={fixed}) — destination-aware case for Python. URL is tainted (SSRF), body is fixed. SSRF must fire and the cross-boundary data-exfiltration class (Cap::DATA_EXFIL) must NOT fire — the two classes share the callee but cap attribution is per-position.",
+  "tags": ["taint", "ssrf", "requests", "destination-aware", "cap-attribution"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [13, 18],
+      "notes": "request.args.get('target') → requests.post(target, json={...}) — tainted URL fires SSRF."
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_not_match": true,
+      "line_range": [13, 18],
+      "notes": "Body json kwarg is a fixed literal — DATA_EXFIL must NOT fire on this site (regression guard for per-cap attribution)."
+    }
+  ]
+}

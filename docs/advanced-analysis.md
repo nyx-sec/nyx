@@ -245,6 +245,19 @@ cross-function body expansion.  See `DEFAULT_BACKWARDS_DEPTH`,
 `BACKWARDS_VALUE_BUDGET`, and `MAX_BACKWARDS_CALLEE_BLOCKS` in
 `src/taint/backwards.rs` for the exact bounds.
 
+**Cap parity.** The walk treats `DemandState.caps` as opaque bitflags,
+every cap defined in `src/labels/mod.rs` round-trips identically through
+the demand transfer.  Including `Cap::DATA_EXFIL` (bit 13): a
+`taint-data-exfiltration` forward finding receives `backwards-confirmed`
+exactly like a `taint-unsanitised-flow` SQL/CMD/SSRF finding when its
+demand walk reaches a Sensitive source.  The cap-routing logic in
+`src/ast.rs` then surfaces the rule id correctly regardless of which
+direction confirmed the flow.  See
+`tests/backwards_analysis_tests.rs::demand_driven_suite` (the
+`data_exfil` sub-case) and
+`taint::backwards::tests::driver_walks_data_exfil_source_to_sink` for
+the regression guards.
+
 **Source**: [`src/taint/backwards.rs`](https://github.com/elicpeter/nyx/blob/master/src/taint/backwards.rs).
 
 ---

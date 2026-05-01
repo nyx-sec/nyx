@@ -1,0 +1,13 @@
+{
+  "description": "Constructor cap narrowing: env secret flowing through `new Stripe(key)` must not propagate FILE_IO into the wrapper, so SDK-method-returned property values written to a file do not flag a phantom path-traversal flow.",
+  "tags": ["taint", "file_io", "constructor", "sdk", "negative", "regression-fp"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [9, 16],
+      "notes": "process.env.STRIPE_SECRET_KEY → new Stripe(key) → stripe.prices.create() → price.id → fs.writeFileSync — wrapper-object construction strips FILE_IO."
+    }
+  ]
+}

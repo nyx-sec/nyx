@@ -52,10 +52,11 @@ use literals::has_sql_placeholders;
 use literals::{
     arg0_kind_and_interpolation, call_ident_of, def_use, detect_go_replace_call_sanitizer,
     detect_rust_replace_chain_sanitizer, extract_arg_callees, extract_arg_string_literals,
-    extract_arg_uses, extract_const_keyword_arg, extract_const_string_arg,
-    extract_destination_field_idents, extract_kwargs, extract_literal_rhs, find_call_node,
-    find_call_node_deep, find_chained_inner_call, has_keyword_arg, has_only_literal_args,
-    is_parameterized_query_call, java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
+    extract_arg_uses, extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
+    extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
+    extract_literal_rhs, extract_shell_array_payload_idents, find_call_node, find_call_node_deep,
+    find_chained_inner_call, has_keyword_arg, has_only_literal_args, is_parameterized_query_call,
+    java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
     js_chain_outer_method_for_inner, ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
 use params::{
@@ -312,6 +313,15 @@ pub struct CallMeta {
     /// [`Self::destination_uses`]).
     #[serde(default)]
     pub gate_filters: Vec<GateFilter>,
+    /// True when this call expression is a constructor invocation
+    /// (e.g. JS/TS `new Stripe(key)`, PHP `new PDO(...)`).  The SSA Call
+    /// transfer uses this to narrow the constructed value's caps: a wrapper
+    /// object instance is structurally not a path string, format string,
+    /// URL component, or JSON input, so out-of-process side-effect bits
+    /// (FILE_IO, FMT_STRING, URL_ENCODE, JSON_PARSE) on the arguments
+    /// must not survive into the constructed object.
+    #[serde(default)]
+    pub is_constructor: bool,
 }
 
 /// One gate's contribution at a call site whose callee matches multiple
@@ -329,6 +339,15 @@ pub struct GateFilter {
     /// considers SSA values whose `var_name` matches one of `names` (object-
     /// literal destination fields lifted at CFG time).  `None` ⇒ whole arg.
     pub destination_uses: Option<Vec<String>>,
+    /// Parallel to [`Self::destination_uses`]: for each entry, the
+    /// destination object-literal field name (e.g. `"body"`, `"headers"`,
+    /// `"json"`) where the corresponding ident was bound.  Empty when
+    /// `destination_uses` is `None` or the gate had no
+    /// `object_destination_fields` configured.  Consumed by diag rendering
+    /// to embed the destination field in `DATA_EXFIL` messages and SARIF
+    /// `properties.data_exfil_field`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub destination_fields: Vec<String>,
 }
 
 /// Taint-classification and variable-flow metadata.
@@ -450,6 +469,13 @@ pub struct NodeInfo {
     /// up the field's declared `TypeKind`.  Strictly additive, when
     /// `None`, the legacy copy-prop semantics apply.
     pub member_field: Option<String>,
+    /// True when this assignment / declaration's RHS is a function or
+    /// lambda literal (`obj.handler = (e) => {...}`, `let f = function(){}`).
+    /// State analysis uses this to suppress resource-ownership transfer:
+    /// storing a function reference into a property does not move the
+    /// resources captured by the closure body, so the lifecycle of those
+    /// captures must remain unchanged on the assignment node.
+    pub rhs_is_function_literal: bool,
 }
 
 impl NodeInfo {
@@ -1564,6 +1590,92 @@ pub(super) fn push_node<'a>(
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels = classify_all(lang, &text, extra);
 
+    // Rust chain-text classification.  The default `text` for a Rust
+    // CallMethod is `{root_receiver}.{method}`, where `root_receiver`
+    // is the leftmost identifier after walking through every nested
+    // call/method receiver.  That convention loses the intermediate
+    // chain methods, so a body-binding chain like
+    // `Client::post(url).body(payload).send()` reduces to
+    // `Client::post.send` and rules keyed on `body.send` /
+    // `RequestBuilder.body` cannot fire.
+    //
+    // Reclassify against the call-AST's source text (with paren groups
+    // stripped) so suffix matchers covering chain shapes
+    // (`body.send`, `body_string`, `Request::builder.body`, ...) attach.
+    // Strictly additive: we union new labels with the existing ones,
+    // never override.  Limited to Rust to avoid disturbing the other
+    // languages' chain conventions.
+    if lang == "rust" {
+        if let Some(cn) = find_call_node(ast, lang) {
+            if let Some(chain_raw) = text_of(cn, code) {
+                // Multi-line Rust chains (`Client::new()\n  .post(url)\n
+                // .body(p)\n  .send()`) preserve interior whitespace in
+                // the source slice, which would prevent suffix matchers
+                // like `body.send` from firing.  Strip whitespace before
+                // normalizing paren groups, mirroring the same trick
+                // used by `find_chained_inner_call` for JS/TS chains.
+                let chain_compact: String =
+                    chain_raw.chars().filter(|c| !c.is_whitespace()).collect();
+                let chain_text = crate::labels::normalize_chained_call_for_classify(&chain_compact);
+                if chain_text != text {
+                    let chain_labels = classify_all(lang, &chain_text, extra);
+                    for l in chain_labels {
+                        if !labels.contains(&l) {
+                            labels.push(l);
+                        }
+                    }
+                }
+                // Also try classification against the chain with
+                // trailing identity methods peeled.  Rust chains often
+                // end in `.unwrap()` / `.expect("...")` / `.await` /
+                // `.clone()` etc., which obscure the body-bind verb
+                // for suffix matchers.  E.g. hyper's
+                // `Request::builder().method(..).uri(..).body(p).unwrap()`
+                // peels to `...body`, allowing a simpler `body` /
+                // `Request::builder.body` matcher to fire.
+                let peeled = crate::ssa::type_facts::peel_identity_suffix(&chain_text);
+                if peeled != chain_text && peeled != text {
+                    let peeled_labels = classify_all(lang, &peeled, extra);
+                    for l in peeled_labels {
+                        if !labels.contains(&l) {
+                            labels.push(l);
+                        }
+                    }
+                }
+                // Pattern synthesis: the hyper request-builder chain
+                // (`hyper::Request::builder().method(..).uri(..).body(p)`)
+                // can interleave `.method`, `.uri`, `.header`, `.version`
+                // etc. between `Request::builder` and the body-bind step.
+                // Suffix matchers can't span those, so synthesise a
+                // DATA_EXFIL sink whenever the chain begins with
+                // `Request::builder` and ends in a body-binding verb.
+                // Strictly additive: no labels are removed, only added,
+                // and the synthesis only fires when an explicit Sink
+                // hasn't already attached.
+                let chain_for_synth = if peeled != chain_text {
+                    &peeled
+                } else {
+                    &chain_text
+                };
+                if !labels
+                    .iter()
+                    .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(crate::labels::Cap::DATA_EXFIL)))
+                    && (chain_for_synth.contains("Request::builder.")
+                        || chain_for_synth.contains("hyper::Request::builder."))
+                {
+                    let last_seg =
+                        chain_for_synth.rsplit('.').next().unwrap_or(chain_for_synth);
+                    if matches!(
+                        last_seg,
+                        "body" | "body_mut" | "body_string" | "body_json" | "body_bytes"
+                    ) {
+                        labels.push(DataLabel::Sink(crate::labels::Cap::DATA_EXFIL));
+                    }
+                }
+            }
+        }
+    }
+
     // If the outermost call didn't classify, try inner/nested calls.
     // E.g. `str(eval(expr))`, `str` is not a sink, but `eval` is.
     // When the callee is overridden, save the original for container ops
@@ -1727,7 +1839,23 @@ pub(super) fn push_node<'a>(
     let mut sink_payload_args: Option<Vec<usize>> = None;
     let mut destination_uses: Option<Vec<String>> = None;
     let mut gate_filters: Vec<GateFilter> = Vec::new();
-    if labels.is_empty() {
+    // Gates run when no flat `Sink` label is already present, OR when a
+    // matching gate restricts the payload-arg set on top of an existing flat
+    // sink.  Source / Sanitizer labels are orthogonal — a callee like
+    // Python's `requests.post` is a `Source` for its response object AND a
+    // gated `Sink` for its URL/body argument positions; both should attach.
+    //
+    // Payload-arg refinement: when a flat sink matches a callee that ALSO
+    // has a gate entry restricting `payload_args`, the gate's `payload_args`
+    // are propagated to `sink_payload_args` so only those positions are
+    // taint-checked.  Example: `execSync(cmd, { env: process.env })` matches
+    // the bare `execSync` flat `Sink(SHELL_ESCAPE)` AND the gate `=execSync`
+    // with `payload_args: &[0]`; without the refinement, the flat rule's
+    // implicit "all args" would flag `process.env` flowing into the options
+    // object's `env` field.  The gate's labels themselves are deduped so a
+    // single capability never double-attributes.
+    let has_sink_label = labels.iter().any(|l| matches!(l, DataLabel::Sink(_)));
+    {
         let gate_call = call_ast.or_else(|| find_call_node_deep(ast, lang, 4));
         if let Some(cn) = gate_call {
             let gate_callee_text = if call_ast.is_some() {
@@ -1746,7 +1874,22 @@ pub(super) fn push_node<'a>(
             let matches = classify_gated_sink(
                 lang,
                 &gate_callee_text,
-                |idx| extract_const_string_arg(cn, idx, code),
+                |idx| {
+                    extract_const_string_arg(cn, idx, code).or_else(|| {
+                        // C/C++ preprocessor macros and PHP `define`d constants
+                        // surface as identifier nodes, not string literals.
+                        // Falling back to the macro-arg extractor for those
+                        // languages lets gates like `curl_easy_setopt` /
+                        // `curl_setopt` activate on a `CURLOPT_POSTFIELDS`
+                        // ident match instead of firing conservatively on
+                        // every positional arg.
+                        if matches!(lang, "c" | "cpp" | "c++" | "php") {
+                            extract_const_macro_arg(cn, idx, code)
+                        } else {
+                            None
+                        }
+                    })
+                },
                 |kw| extract_const_keyword_arg(cn, kw, code),
                 |kw| has_keyword_arg(cn, kw, code),
             );
@@ -1758,11 +1901,23 @@ pub(super) fn push_node<'a>(
                 //   * a `GateFilter` carrying that gate's specific
                 //     `(label_caps, payload_args, destination_uses)` so
                 //     the SSA sink scan can attribute taint per-cap.
+                //
+                // When a flat sink already matches, gate labels are deduped
+                // so the same capability isn't attributed twice (once flat,
+                // once gated).  Their `payload_args` still flow into
+                // `sink_payload_args` so the gate's arg-position restriction
+                // applies on top of the flat sink.
                 let mut union_payload: Vec<usize> = Vec::new();
                 for gm in &matches {
-                    labels.push(gm.label);
+                    if has_sink_label {
+                        if !labels.contains(&gm.label) {
+                            labels.push(gm.label);
+                        }
+                    } else {
+                        labels.push(gm.label);
+                    }
 
-                    let payload_vec: Vec<usize> =
+                    let mut payload_vec: Vec<usize> =
                         if gm.payload_args == crate::labels::ALL_ARGS_PAYLOAD {
                             // Dynamic-activation sentinel: every positional arg is
                             // conservatively a payload.  Expand using the actual
@@ -1780,18 +1935,56 @@ pub(super) fn push_node<'a>(
                     // checks to identifiers under those fields.  Non-object
                     // arg forms return `None` from the extractor and the gate
                     // falls back to whole-arg positional filtering.
+                    //
+                    // The pair form preserves which object-literal field each
+                    // ident was bound to (e.g. `body` vs `headers` vs `json`)
+                    // so diag rendering can attribute `DATA_EXFIL` findings to
+                    // a specific destination field.
                     let mut dest_uses: Option<Vec<String>> = None;
+                    let mut dest_fields: Vec<String> = Vec::new();
                     if !gm.object_destination_fields.is_empty() {
+                        let mut all_pairs: Vec<(String, String)> = Vec::new();
+                        let mut had_object_match = false;
                         for &pos in gm.payload_args {
-                            if let Some(names) = extract_destination_field_idents(
+                            if let Some(pairs) = extract_destination_field_pairs(
                                 cn,
                                 pos,
                                 gm.object_destination_fields,
                                 code,
                             ) {
-                                dest_uses = Some(names);
+                                all_pairs.extend(pairs);
+                                had_object_match = true;
                                 break;
                             }
+                        }
+
+                        // Direct kwargs: languages where destination-bearing
+                        // fields are passed as `keyword_argument` siblings of
+                        // the positional args (Python `data=`, Ruby kwargs).
+                        // SSA lowering folds kwarg idents into the implicit
+                        // args group at index `arity`, so we expand
+                        // `payload_vec` to include that position; the
+                        // `destination_filter` then narrows to the kwarg
+                        // ident's `var_name`.
+                        let kwarg_pairs =
+                            extract_destination_kwarg_pairs(cn, gm.object_destination_fields, code);
+                        if !kwarg_pairs.is_empty() {
+                            let arity = extract_arg_uses(cn, code).len();
+                            if !payload_vec.contains(&arity) {
+                                payload_vec.push(arity);
+                            }
+                            for pair in kwarg_pairs {
+                                if !all_pairs.iter().any(|(_, v)| v == &pair.1) {
+                                    all_pairs.push(pair);
+                                }
+                            }
+                        }
+
+                        if had_object_match || !all_pairs.is_empty() {
+                            let (fields, vars): (Vec<String>, Vec<String>) =
+                                all_pairs.into_iter().unzip();
+                            dest_uses = Some(vars);
+                            dest_fields = fields;
                         }
                     }
 
@@ -1809,6 +2002,7 @@ pub(super) fn push_node<'a>(
                         label_caps,
                         payload_args: payload_vec,
                         destination_uses: dest_uses,
+                        destination_fields: dest_fields,
                     });
                 }
                 if !union_payload.is_empty() {
@@ -1819,6 +2013,65 @@ pub(super) fn push_node<'a>(
                 // consulting `gate_filters`.  When multiple gates match,
                 // per-position filters live in `gate_filters` and the legacy
                 // field is intentionally left `None`.
+                if gate_filters.len() == 1 {
+                    destination_uses = gate_filters[0].destination_uses.clone();
+                }
+            }
+        }
+    }
+
+    // ── Inline shell-array sink synthesis ────────────────────────────────
+    //
+    // Recognise `[<shell>, "-c", <payload>]` (and `cmd /c <payload>`)
+    // appearing as an argument to *any* call.  The shell-array shape itself
+    // is the gate, regardless of callee, so this fires through user-defined
+    // wrappers like `execInContainer(id, ["bash", "-c", `echo ${tainted}`])`
+    // without needing per-wrapper summary annotations.  Only fires for JS/TS
+    // because the array-literal grammar (`array` node) and shell-form usage
+    // are JS/TS conventions; other languages use different shapes for
+    // shell-exec wrappers.
+    //
+    // The inner array also covers Dockerode's
+    // `container.exec({Cmd: [shell, "-c", payload]})`: the helper looks
+    // inside object-literal args for shell-array values under any field.
+    //
+    // Existing FP carve-outs are preserved.  `["ls", "-la"]` doesn't match
+    // (element 0 is not a known shell).  `untaintedArrayVariable` doesn't
+    // match (variable, not literal).  `execSync(cmd, { env: process.env })`
+    // doesn't match (string + object args, no shell-array literal).  When
+    // the payload elements are constant strings the helper returns no
+    // match, so a literal `["bash", "-c", "ls -la"]` doesn't fire either.
+    if matches!(lang, "javascript" | "js" | "typescript" | "ts") {
+        if let Some(cn) = call_ast.or_else(|| find_call_node_deep(ast, lang, 4)) {
+            let shell_matches = extract_shell_array_payload_idents(cn, code);
+            if !shell_matches.is_empty() {
+                let shell_label = DataLabel::Sink(Cap::SHELL_ESCAPE);
+                let already_has_shell_sink = labels.iter().any(|l| match l {
+                    DataLabel::Sink(c) => c.contains(Cap::SHELL_ESCAPE),
+                    _ => false,
+                });
+                if !already_has_shell_sink {
+                    labels.push(shell_label);
+                }
+
+                let mut union_payload: Vec<usize> = sink_payload_args.clone().unwrap_or_default();
+                for sm in shell_matches {
+                    if !union_payload.contains(&sm.arg_position) {
+                        union_payload.push(sm.arg_position);
+                    }
+                    gate_filters.push(GateFilter {
+                        label_caps: Cap::SHELL_ESCAPE,
+                        payload_args: vec![sm.arg_position],
+                        destination_uses: Some(sm.payload_idents),
+                        destination_fields: Vec::new(),
+                    });
+                }
+                if !union_payload.is_empty() {
+                    sink_payload_args = Some(union_payload);
+                }
+                // Legacy single-gate path: when this is the only gate filter,
+                // populate the top-level destination_uses too so the SSA
+                // fast-path stays consistent with the multi-gate behaviour.
                 if gate_filters.len() == 1 {
                     destination_uses = gate_filters[0].destination_uses.clone();
                 }
@@ -2296,6 +2549,20 @@ pub(super) fn push_node<'a>(
     // just bloat every labeled Call node.
     let callee_span = inner_callee_span.or(inner_text_span).filter(|s| *s != span);
 
+    // Constructor detection: a `new X(...)` call carries different cap
+    // semantics than a plain function call. The SSA Call transfer uses
+    // this flag to narrow the constructed value's caps so out-of-process
+    // side-effect bits (FILE_IO, FMT_STRING, URL_ENCODE, JSON_PARSE) on
+    // the arguments don't survive into a wrapper-object instance.
+    // Recognised forms:
+    //   * JS/TS `new_expression`
+    //   * Java/C++ `object_creation_expression`
+    //   * PHP `object_creation_expression`
+    let is_constructor = ast.kind() == "new_expression"
+        || ast.kind() == "object_creation_expression"
+        || call_ast
+            .is_some_and(|cn| matches!(cn.kind(), "new_expression" | "object_creation_expression"));
+
     let idx = g.add_node(NodeInfo {
         kind,
         call: CallMeta {
@@ -2311,6 +2578,7 @@ pub(super) fn push_node<'a>(
             arg_string_literals,
             destination_uses,
             gate_filters,
+            is_constructor,
         },
         taint: TaintMeta {
             labels,
@@ -2339,6 +2607,7 @@ pub(super) fn push_node<'a>(
         is_eq_with_const: detect_eq_with_const(ast, lang),
         is_numeric_length_access: detect_numeric_length_access(ast, lang, code),
         member_field: detect_member_field_assignment(ast, code),
+        rhs_is_function_literal: rhs_is_function_literal(ast, lang),
     });
 
     debug!(
@@ -2404,7 +2673,10 @@ fn rhs_is_function_literal(ast: Node, lang: &str) -> bool {
     if candidate.is_none() {
         // Walk one level into declarations whose direct child is the
         // declarator (variable_declaration → variable_declarator →
-        // value).
+        // value), or expression-statement wrappers whose direct child is
+        // an assignment_expression / assignment with a `right` field
+        // (JS `expression_statement > assignment_expression`, Python
+        // `expression_statement > assignment`).
         let mut cursor = ast.walk();
         for c in ast.children(&mut cursor) {
             if matches!(
@@ -2414,6 +2686,11 @@ fn rhs_is_function_literal(ast: Node, lang: &str) -> bool {
                 candidate = c
                     .child_by_field_name("value")
                     .or_else(|| c.child_by_field_name("init"));
+                if candidate.is_some() {
+                    break;
+                }
+            } else if matches!(lookup(lang, c.kind()), Kind::Assignment) {
+                candidate = c.child_by_field_name("right");
                 if candidate.is_some() {
                     break;
                 }
@@ -4417,7 +4694,23 @@ fn apply_promisify_labels(
             let Some(alias) = aliases.get(&callee) else {
                 continue;
             };
-            let wrapped_labels = classify_all(lang, &alias.wrapped, extra);
+            // Inherit both flat and gated labels from the wrapped callee.
+            // Gated sinks (e.g. `child_process.exec`) carry the same
+            // capability semantics as flat sinks, just with arg-position
+            // filtering at the call site; the promisify alias should
+            // surface the wrapped function's sink class regardless of
+            // which arm originally classified it.
+            let mut wrapped_labels: Vec<crate::labels::DataLabel> =
+                classify_all(lang, &alias.wrapped, extra)
+                    .into_iter()
+                    .collect();
+            for gm in
+                classify_gated_sink(lang, &alias.wrapped, |_| None, |_| None, |_| false).iter()
+            {
+                if !wrapped_labels.contains(&gm.label) {
+                    wrapped_labels.push(gm.label);
+                }
+            }
             if wrapped_labels.is_empty() {
                 continue;
             }

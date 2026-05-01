@@ -1,6 +1,6 @@
 {
-  "description": "fetch() with a fixed destination URL and an attacker-controlled body. SSRF must NOT fire (destination is not attacker-influenced) and the cross-boundary data-exfiltration class (Cap::DATA_EXFIL) MUST fire on the body field.",
-  "tags": ["taint", "data-exfil", "fetch", "destination-aware", "cap-attribution"],
+  "description": "fetch() with a fixed destination URL and a plain user-input body (req.body.message). SSRF must NOT fire (destination is not attacker-influenced) and DATA_EXFIL must NOT fire either: plain user input echoed back via an outbound body is not a cross-boundary disclosure (the source-sensitivity gate suppresses Plain-tier sources for Cap::DATA_EXFIL).",
+  "tags": ["taint", "data-exfil", "fetch", "destination-aware", "cap-attribution", "sensitivity-gate"],
   "modes": ["full"],
   "expected": [
     {
@@ -11,9 +11,9 @@
     },
     {
       "rule_id": "taint-data-exfiltration",
-      "must_match": true,
+      "must_not_match": true,
       "line_range": [7, 14],
-      "notes": "Body field carries req.body.message → must fire DATA_EXFIL (sensitive data leaving the process via outbound request payload)."
+      "notes": "Body source is plain user input (req.body.message → Sensitivity::Plain). DATA_EXFIL fires only on Sensitive-tier sources (cookies, headers, env, db, file) — plain user input echoed into a request body is not data exfiltration. See fetch_body_user_input_silenced.js for the unit-level regression."
     }
   ]
 }

@@ -44,6 +44,34 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // Session stores: session cookies / DRF / Django auth carry auth material
+    // the operator did not intend to leak.  `infer_source_kind` maps `session`
+    // callees to `SourceKind::Cookie` (Sensitive) so flowing into an outbound
+    // request payload fires `DATA_EXFIL`.  Case-sensitive: lowercase `session`
+    // here is the Flask global / Django request attribute; the capitalised
+    // `requests.Session` constructor is a client object, not a source, and
+    // must not be tagged.
+    //
+    // The matchers cover both attribute access (`request.session.user_id`,
+    // resolved as the attribute text) and the bare `session.<method>`
+    // pattern that follows `from flask import session`.  The `=session`
+    // exact-match form fires only when the call is the bare top-level
+    // `session(...)` so accidental field projections like
+    // `obj.client.session` (Phase 2 chained-receiver lowering) don't get
+    // mis-labelled as sources.
+    LabelRule {
+        matchers: &[
+            "request.session",
+            "flask_request.session",
+            "flask.session",
+            "django.contrib.sessions",
+            "=session",
+            "session.get",
+            "session.pop",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
     // Django-specific sources (case-sensitive to avoid request.get() dict method FP)
     LabelRule {
         matchers: &[
@@ -208,58 +236,25 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: false,
     },
+    // Outbound HTTP — flat SSRF sinks for read-shaped methods (GET / HEAD)
+    // that don't carry a body.  Body-bearing methods (POST / PUT / PATCH /
+    // DELETE / request) are modelled via destination-aware gates in
+    // GATED_SINKS so SSRF activation can be narrowed to the URL position
+    // and the cross-boundary `DATA_EXFIL` cap can attach to body kwargs as
+    // a separate gate.  `urllib.request.urlopen` stays flat: its argument
+    // is a Request object whose payload-vs-URL split happens at
+    // `urllib.request.Request` construction (gated below).
     LabelRule {
         matchers: &[
             "urllib.request.urlopen",
             "requests.get",
-            "requests.post",
-            "requests.put",
-            "requests.delete",
-            "requests.patch",
             "requests.head",
-            "requests.request",
             "httpx.get",
-            "httpx.post",
-            "httpx.put",
-            "httpx.delete",
-            "httpx.patch",
             "httpx.head",
-            "httpx.request",
-        ],
-        label: DataLabel::Sink(Cap::SSRF),
-        case_sensitive: false,
-    },
-    // aiohttp HTTP client, SSRF sinks
-    LabelRule {
-        matchers: &[
             "aiohttp.get",
-            "aiohttp.post",
-            "aiohttp.put",
-            "aiohttp.delete",
-            "aiohttp.request",
-        ],
-        label: DataLabel::Sink(Cap::SSRF),
-        case_sensitive: false,
-    },
-    // Type-qualified SSRF sinks: when the receiver is tracked as
-    // TypeKind::HttpClient (e.g. `client = requests.Session()`,
-    // `client = httpx.Client()`, or `s = aiohttp.ClientSession()`),
-    // resolve_type_qualified_labels() constructs `"HttpClient.<method>"`
-    // call texts so the receiver-name is no longer load-bearing.  Matches
-    // the existing Rust HttpClient.<method> sink set so both languages
-    // stay in step on the type-aware SSRF model.  Motivated by the
-    // upstream LMDeploy CVE-2026-33626 shape:
-    //   client = requests.Session()
-    //   response = client.get(url, ...)
-    LabelRule {
-        matchers: &[
+            "aiohttp.head",
             "HttpClient.get",
-            "HttpClient.post",
-            "HttpClient.put",
-            "HttpClient.delete",
-            "HttpClient.patch",
             "HttpClient.head",
-            "HttpClient.request",
             "HttpClient.send",
         ],
         label: DataLabel::Sink(Cap::SSRF),
@@ -331,6 +326,687 @@ pub static GATED_SINKS: &[SinkGate] = &[
         keyword_name: None,
         dangerous_kwargs: &[("shell", &["True", "true"])],
         activation: GateActivation::ValueMatch,
+    },
+    // ── Outbound HTTP clients (SSRF + cross-boundary data exfiltration) ───
+    //
+    // Body-bearing methods (POST / PUT / PATCH / DELETE / request) are
+    // gated by destination so that:
+    //   * SSRF fires only when taint reaches the URL position (arg 0).
+    //   * `DATA_EXFIL` fires only when taint reaches a body kwarg (`data` /
+    //     `json` / `files` for requests / aiohttp; `content` / `data` /
+    //     `json` / `files` for httpx).
+    // The pair lets a single `requests.post(taintedUrl, data=secret)` call
+    // report SSRF on the URL flow and DATA_EXFIL on the body flow as
+    // independent findings rather than a conflated combined cap.
+    //
+    // CFG-level kwarg-aware extraction (see `extract_destination_kwarg_pairs`)
+    // walks `keyword_argument` siblings and routes matching idents into the
+    // gate's `destination_uses` so the SSA sink scan only fires when the
+    // body kwarg itself is tainted.
+    //
+    // The source-sensitivity gate in `ast.rs` strips DATA_EXFIL when the
+    // contributing source is `Sensitivity::Plain` (raw `request.args`,
+    // `request.form`), so plain user input forwarded to a POST body does
+    // not surface — only sensitive sources (cookies, sessions, env, headers)
+    // produce a DATA_EXFIL finding.
+    SinkGate {
+        callee_matcher: "requests.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.put",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.put",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.patch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.patch",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.delete",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.delete",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json", "files"],
+        },
+    },
+    // requests.request(method, url, ...) — note the URL is at arg 1, not
+    // arg 0; method is at arg 0.  Body kwargs at arg 2+ via kwarg expansion.
+    SinkGate {
+        callee_matcher: "requests.request",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.request",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json", "files"],
+        },
+    },
+    // httpx — `content` is httpx's raw-bytes body kwarg; `data` covers
+    // form-encoded; `json` covers JSON-encoded; `files` covers multipart.
+    SinkGate {
+        callee_matcher: "httpx.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.put",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.put",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.patch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.patch",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.delete",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.delete",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    // httpx.request(method, url, ...) — same shape as requests.request.
+    SinkGate {
+        callee_matcher: "httpx.request",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.request",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    // Type-qualified variants: `requests.Session()`, `httpx.Client()`,
+    // `httpx.AsyncClient()`, `aiohttp.ClientSession()` instances all resolve
+    // to the synthetic `HttpClient.<method>` callee text via
+    // `resolve_type_qualified_labels`.  Covering both module-level and
+    // type-qualified forms ensures `s = requests.Session(); s.post(url, data=x)`
+    // and `client = httpx.AsyncClient(); await client.post(url, json=x)` both
+    // fire SSRF on the URL and DATA_EXFIL on the body kwarg.
+    SinkGate {
+        callee_matcher: "HttpClient.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.put",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.put",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.patch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.patch",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.delete",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.delete",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.request",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HttpClient.request",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    // aiohttp module-level (`aiohttp.post`, `aiohttp.put`, etc.) — uncommon
+    // in real code (idiomatic usage is `async with aiohttp.ClientSession()`),
+    // covered for completeness.  ClientSession.<method> dispatches via the
+    // type-qualified `HttpClient.<method>` gates above.
+    SinkGate {
+        callee_matcher: "aiohttp.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "aiohttp.post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "aiohttp.put",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "aiohttp.put",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "aiohttp.request",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "aiohttp.request",
+        arg_index: 2,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json"],
+        },
+    },
+    // Chained-construction variants: `httpx.AsyncClient().post(url, json=x)`
+    // / `httpx.Client().post(url, ...)` / `aiohttp.ClientSession().post(...)`.
+    // Chain-normalisation strips `()` between dots so the callee text
+    // becomes `httpx.AsyncClient.post`; gate matching applies to that
+    // normalised form so the chained shape is covered without binding to
+    // an intermediate variable.
+    SinkGate {
+        callee_matcher: "httpx.AsyncClient.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.AsyncClient.post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.Client.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "httpx.Client.post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["content", "data", "json", "files"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "aiohttp.ClientSession.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "aiohttp.ClientSession.post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.Session.post",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "requests.Session.post",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data", "json", "files"],
+        },
+    },
+    // urllib.request.urlopen(req) — when req is a `urllib.request.Request`
+    // built with the `data` kwarg, that kwarg becomes the POST body.  The
+    // gate fires on `Request(url, data=tainted)` directly: the constructor
+    // does not egress, but the convention is that wrapping data in a Request
+    // means egress is imminent (the urllib.request.Request → urlopen path).
+    // This is a heuristic — the real egress happens at urlopen, but tracking
+    // the data flow through the constructor is a fair static approximation.
+    SinkGate {
+        callee_matcher: "urllib.request.Request",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["data"],
+        },
     },
 ];
 

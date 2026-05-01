@@ -85,6 +85,8 @@ mod cross_file_tests {
                 exception_edges: vec![],
                 field_interner: crate::ssa::ir::FieldInterner::default(),
                 field_writes: std::collections::HashMap::new(),
+
+                synthetic_externals: std::collections::HashSet::new(),
             },
             opt: crate::ssa::OptimizeResult {
                 const_values: std::collections::HashMap::new(),
@@ -832,6 +834,8 @@ mod primary_sink_location_tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         }
     }
 
@@ -963,6 +967,8 @@ mod goto_succ_propagation_tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let cfg: Cfg = Graph::new();
@@ -1053,6 +1059,8 @@ mod goto_succ_propagation_tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let cfg: Cfg = Graph::new();
         let interner = SymbolInterner::new();
@@ -1112,6 +1120,8 @@ mod goto_succ_propagation_tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         }
     }
 
@@ -1298,6 +1308,8 @@ mod goto_succ_propagation_tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         }
     }
 
@@ -1423,6 +1435,8 @@ mod receiver_candidates_field_proj_tests {
             exception_edges: vec![],
             field_interner: interner,
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         }
     }
 
@@ -1508,6 +1522,8 @@ mod receiver_candidates_field_proj_tests {
             exception_edges: vec![],
             field_interner: interner,
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let cands =
             super::super::receiver_candidates_for_type_lookup(SsaValue(0), Some(&body), Lang::Go);
@@ -1550,6 +1566,7 @@ mod fanout_merge_tests {
             param_return_paths: vec![],
             points_to: Default::default(),
             field_points_to: Default::default(),
+            param_to_gate_filters: vec![],
         }
     }
 
@@ -1909,6 +1926,7 @@ mod field_write_tests {
             exception_edges: vec![],
             field_interner,
             field_writes,
+            synthetic_externals: HashSet::new(),
         };
         (body, cache_id)
     }
@@ -2206,6 +2224,7 @@ mod field_write_tests {
                 m.insert(SsaValue(2), (SsaValue(0), cache_id));
                 m
             },
+            synthetic_externals: HashSet::new(),
         };
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(0));
         // v0 is Const → empty pt, the hook should not insert anything.
@@ -2437,6 +2456,8 @@ mod container_elem_tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: HashMap::new(),
+
+            synthetic_externals: HashSet::new(),
         };
 
         // Run pointer analysis first to confirm the result of `shift()`
@@ -2575,6 +2596,8 @@ mod container_elem_tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: HashMap::new(),
+
+            synthetic_externals: HashSet::new(),
         };
 
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(7));
@@ -2715,6 +2738,8 @@ mod container_elem_tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: HashMap::new(),
+
+            synthetic_externals: HashSet::new(),
         };
 
         let interner = SymbolInterner::new();
@@ -2838,6 +2863,8 @@ mod cross_call_field_tests {
             exception_edges: vec![],
             field_interner,
             field_writes: HashMap::new(),
+
+            synthetic_externals: HashSet::new(),
         };
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(7));
         (body, cache_id, pf)
@@ -3210,6 +3237,8 @@ mod field_taint_origin_cap_tests {
             exception_edges: vec![],
             field_interner,
             field_writes: HashMap::new(),
+
+            synthetic_externals: HashSet::new(),
         };
         (body, cache_id, cfg, n_proj)
     }
@@ -3533,6 +3562,7 @@ mod pointer_lattice_worklist_tests {
             exception_edges: vec![],
             field_interner,
             field_writes,
+            synthetic_externals: HashSet::new(),
         };
 
         let mut interner = SymbolInterner::new();

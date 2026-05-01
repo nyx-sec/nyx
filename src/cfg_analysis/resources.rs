@@ -442,6 +442,23 @@ impl CfgAnalysis for ResourceMisuse {
                     if pair.resource_name == "mutex" && !has_explicit_lock_acquire(ctx, acquire) {
                         continue;
                     }
+                    // Suppress when a sibling closure / event handler in
+                    // this file releases the same variable.  Common JS/TS
+                    // shape: `const ws = new WebSocket(url);
+                    // socket.on("close", () => ws.close())`.  The release
+                    // node lives in a nested body the per-body CFG can't
+                    // see, so the structural "no release on this exit
+                    // path" check fires erroneously.  Match by acquired
+                    // variable name; closure captures share the binding
+                    // name with the outer handle.
+                    if let Some(acq_var) = ctx.cfg[acquire].taint.defines.as_deref()
+                        && ctx
+                            .closure_released_var_names
+                            .map(|s| s.contains(acq_var))
+                            .unwrap_or(false)
+                    {
+                        continue;
+                    }
                     let info = &ctx.cfg[acquire];
                     let callee_desc = info.call.callee.as_deref().unwrap_or("(acquire)");
 

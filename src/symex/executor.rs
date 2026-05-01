@@ -1382,6 +1382,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let empty_succs = HashMap::new();
@@ -1441,6 +1443,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let empty_succs = HashMap::new();
@@ -1573,6 +1577,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let finding = make_finding(n0, n1);
@@ -1680,6 +1686,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         // Finding path goes through B0 → B1 → B3
@@ -1826,6 +1834,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let finding = Finding {
@@ -1938,6 +1948,8 @@ mod tests {
             exception_edges: vec![(b0, b2)],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let mut exc_succs: HashMap<BlockId, SmallVec<[BlockId; 2]>> = HashMap::new();
@@ -2004,6 +2016,8 @@ mod tests {
             exception_edges: vec![(b0, b2)],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let mut exc_succs: HashMap<BlockId, SmallVec<[BlockId; 2]>> = HashMap::new();
@@ -2111,6 +2125,8 @@ mod tests {
             exception_edges: vec![(b1, b2)],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let finding = Finding {

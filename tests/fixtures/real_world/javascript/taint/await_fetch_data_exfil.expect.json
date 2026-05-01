@@ -1,0 +1,19 @@
+{
+  "description": "Async/await DATA_EXFIL parity: an `await fetch(URL, {body: ...})` call with a Sensitive cookie source must fire DATA_EXFIL on the body field (no SSRF — destination is a fixed literal). Awaits do not strip taint; the cap split is preserved across the await edge identically to the synchronous fetch path.",
+  "tags": ["taint", "data-exfil", "fetch", "async", "await", "cookie", "edge-case"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [13, 16],
+      "notes": "req.cookies.session → JSON.stringify into await fetch body. Await must not silence the cap."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [13, 16],
+      "notes": "fetch URL is a fixed literal — body taint must not fire as SSRF."
+    }
+  ]
+}

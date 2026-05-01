@@ -753,6 +753,8 @@ fn origin_sort_key(o: &TaintOrigin) -> (usize, usize, u8, usize) {
         crate::labels::SourceKind::Database => 3,
         crate::labels::SourceKind::CaughtException => 4,
         crate::labels::SourceKind::Unknown => 5,
+        crate::labels::SourceKind::Cookie => 6,
+        crate::labels::SourceKind::Header => 7,
     };
     (span_start, span_end, kind_tag, o.node.index())
 }

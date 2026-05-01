@@ -697,6 +697,34 @@ fn benchmark_evaluation() {
         "Rule-level F1 {:.3} fell below threshold 0.920 (baseline 0.970)",
         rule.f1,
     );
+
+    // ── Per-class floors ────────────────────────────────────────────
+    // DATA_EXFIL: 13 TP fixtures across 8 languages.  Baseline at the
+    // 0.5.x → next-minor ship is P=1.000 R=1.000 F1=1.000 with 6 paired
+    // safe fixtures (sensitivity-gate, sanitizer-wrap) holding FP=0 on
+    // the data_exfil-class noise budget.  Floor at 0.85 absorbs a one-
+    // case regression (~0.077 on 13 cases) while still catching a
+    // structural break.  When you land a durable improvement, tighten
+    // this floor; do not relax it to paper over a regression.
+    if let Some(de) = results.by_vuln_class.get("data_exfil") {
+        assert!(
+            de.f1 >= 0.85,
+            "data_exfil rule-level F1 {:.3} fell below threshold 0.85 (baseline 1.000)",
+            de.f1,
+        );
+        assert!(
+            de.recall >= 0.85,
+            "data_exfil rule-level recall {:.3} fell below threshold 0.85 (baseline 1.000)",
+            de.recall,
+        );
+        assert!(
+            de.precision >= 0.85,
+            "data_exfil rule-level precision {:.3} fell below threshold 0.85 (baseline 1.000)",
+            de.precision,
+        );
+    } else {
+        panic!("data_exfil class missing from by_vuln_class breakdown");
+    }
 }
 
 // ── Confidence-threshold scoring ─────────────────────────────────────

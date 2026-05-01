@@ -4026,6 +4026,45 @@ pub(super) fn transfer_inst(
                 }
             }
 
+            // Constructor cap narrowing: a `new X(...)` call returns an object
+            // instance, not a string. Caps that name a string-shaped sink
+            // pattern (path argument, format string, URL component, JSON
+            // input) cannot fire on a wrapper object, so they must not
+            // survive the construction. Without this narrowing, a tainted
+            // argument to `new SdkClient(secret)` propagates `Cap::all()`
+            // into the wrapper, every method call on the wrapper inherits
+            // those bits via receiver propagation, and any downstream
+            // `fs.write*` / `printf` / `JSON.parse` on a string property
+            // returned by an SDK method (e.g. `client.create().id`) flags
+            // a phantom flow that has no real path-traversal etc. payload.
+            //
+            // Caps preserved (legitimately travel through wrappers):
+            //   - SHELL_ESCAPE / SQL_QUERY / CODE_EXEC / DESERIALIZE: a
+            //     wrapper that captures a tainted command/query string can
+            //     replay it via methods, the bit must survive the wrap.
+            //   - SSRF / DATA_EXFIL: URL/payload concerns persist on URL or
+            //     content-bearing objects.
+            //   - UNAUTHORIZED_ID: ownership obligation persists on a
+            //     wrapper that carries a request-bound identifier.
+            //   - ENV_VAR: provenance marker, never a sink trigger by
+            //     itself.
+            //   - HTML_ESCAPE: kept for safety, conservative dual concern
+            //     (a wrapper used as a string in template rendering).
+            //   - CRYPTO: kept conservatively.
+            //
+            // Caps stripped on construction:
+            //   - FILE_IO: path strings only.
+            //   - FMT_STRING: printf-style format args only.
+            //   - URL_ENCODE: URL components only.
+            //   - JSON_PARSE: parser inputs only.
+            if info.call.is_constructor && !return_bits.is_empty() {
+                let strip = Cap::FILE_IO | Cap::FMT_STRING | Cap::URL_ENCODE | Cap::JSON_PARSE;
+                return_bits &= !strip;
+                if return_bits.is_empty() {
+                    return_origins.clear();
+                }
+            }
+
             // Write result
             if return_bits.is_empty() {
                 state.remove(inst.value);
@@ -4314,16 +4353,41 @@ pub(super) fn transfer_inst(
             // summary-extraction mode so baseline probes keep their
             // intrinsic-source contract. Gate is set by the caller, e.g.
             // always-on for JS/TS, only AnonymousFunction bodies for Java.
+            //
+            // The `Param` branch fires for both real formal parameters and
+            // synthetic externals injected by lowering for free / closure-
+            // captured variables (`SsaBody.synthetic_externals`).  Only real
+            // formals should receive the heuristic seed: a closure capturing
+            // an out-of-scope `userId` / `cmd` / `payload` is NOT a handler
+            // entry point — the variable is supplied by the enclosing scope
+            // and seeding it here produces phantom sources anchored to the
+            // function's declaration line.
             if transfer.auto_seed_handler_params
                 && !seeded_from_scope
                 && matches!(&inst.op, SsaOp::Param { .. })
+                && !ssa.synthetic_externals.contains(&inst.value)
             {
                 if let Some(var_name) = ssa
                     .value_defs
                     .get(inst.value.0 as usize)
                     .and_then(|vd| vd.var_name.as_deref())
                 {
-                    if crate::labels::is_js_ts_handler_param_name(var_name) {
+                    // Direct match: the Param's name itself is a handler
+                    // identifier (e.g. `input`, `cmd`, `userId`).
+                    //
+                    // Root-prefix match: dotted-path Params produced by
+                    // lowering for member-expression uses inside the body
+                    // (`input.cmd` — an unbacked phantom Param) inherit the
+                    // seed when their *root* is a handler-param formal.
+                    // Without this, the field-aware suppression downstream
+                    // sees `input.cmd` as a "clean field" and strips
+                    // `input`'s taint, even though `input.cmd` is just a
+                    // structural projection of the auto-seeded formal.
+                    let root_is_handler = var_name
+                        .split_once('.')
+                        .map(|(root, _)| crate::labels::is_js_ts_handler_param_name(root))
+                        .unwrap_or(false);
+                    if crate::labels::is_js_ts_handler_param_name(var_name) || root_is_handler {
                         let origin = TaintOrigin {
                             node: inst.cfg_node,
                             source_kind: SourceKind::UserInput,
@@ -5245,6 +5309,15 @@ fn collect_block_events(
         let sink_info = resolve_sink_info(info, transfer);
         let mut sink_caps = sink_info.caps;
 
+        // [detectors.data_exfil] enabled toggle.  When the detector class is
+        // disabled per-project, strip Cap::DATA_EXFIL from sink_caps so no
+        // taint-data-exfiltration event is emitted regardless of which gate
+        // would have fired.  Strict-additive: defaults to enabled, no effect
+        // for projects that don't opt in.
+        if !crate::utils::detector_options::current().data_exfil.enabled {
+            sink_caps &= !Cap::DATA_EXFIL;
+        }
+
         // Type-qualified sink resolution: when normal sink resolution found nothing,
         // try using the receiver's inferred type to construct a qualified callee name.
         if sink_caps.is_empty() {
@@ -5324,50 +5397,83 @@ fn collect_block_events(
                     for &(cb_idx, src_caps) in &resolved.source_to_callback {
                         let cb_name = info.arg_callees.get(cb_idx).and_then(|ac| ac.as_ref());
                         if let Some(cb_callee) = cb_name {
-                            if let Some(cb_resolved) =
-                                resolve_callee(transfer, cb_callee, caller_func, 0)
-                            {
-                                let matching_sink_caps = cb_resolved
-                                    .param_to_sink
-                                    .iter()
-                                    .filter(|(_, caps)| !(src_caps & *caps).is_empty())
-                                    .fold(Cap::empty(), |acc, (_, c)| acc | *c);
-                                if !matching_sink_caps.is_empty() {
-                                    let source_kind =
-                                        crate::labels::infer_source_kind(src_caps, callee);
-                                    let origin = TaintOrigin {
-                                        node: inst.cfg_node,
-                                        source_kind,
-                                        source_span: None,
-                                    };
-                                    // Pick callback-path sink sites.
-                                    // The callback callee's `param_to_sink_sites`
-                                    // drives attribution when available; cap-only
-                                    // fallback yields `primary_sink_site = None`.
-                                    let cb_tainted: Vec<(
-                                        SsaValue,
-                                        Cap,
-                                        SmallVec<[TaintOrigin; 2]>,
-                                    )> = vec![(
+                            // First try the standard summary-based resolution
+                            // path (covers user-defined functions and built-ins
+                            // that landed in label-derived summaries upstream).
+                            // If that yields no matching sink caps, fall back
+                            // to gated-sink classification on the callback
+                            // callee's name — gated sinks (e.g.
+                            // `child_process.exec` post-fix) carry their
+                            // payload positions in the gate, not in any
+                            // summary, and the callback pipeline still needs
+                            // those positions to pair source caps against
+                            // param_to_sink.
+                            let cb_resolved = resolve_callee(transfer, cb_callee, caller_func, 0);
+                            let mut matching_sink_caps = Cap::empty();
+                            let cb_param_to_sink_sites: Vec<(usize, SmallVec<[SinkSite; 1]>)> =
+                                if let Some(ref r) = cb_resolved {
+                                    matching_sink_caps = r
+                                        .param_to_sink
+                                        .iter()
+                                        .filter(|(_, caps)| !(src_caps & *caps).is_empty())
+                                        .fold(Cap::empty(), |acc, (_, c)| acc | *c);
+                                    r.param_to_sink_sites.clone()
+                                } else {
+                                    vec![]
+                                };
+                            if matching_sink_caps.is_empty() {
+                                // Gate-fallback: classify_gated_sink yields the
+                                // callback callee's payload positions + sink
+                                // caps directly when the name matches a gated
+                                // sink rule.
+                                let lang_str = transfer.lang.as_str();
+                                let gates = crate::labels::classify_gated_sink(
+                                    lang_str,
+                                    cb_callee,
+                                    |_| None,
+                                    |_| None,
+                                    |_| false,
+                                );
+                                for gm in gates.iter() {
+                                    if let DataLabel::Sink(bits) = gm.label {
+                                        if !(src_caps & bits).is_empty() {
+                                            matching_sink_caps |= bits;
+                                        }
+                                    }
+                                }
+                            }
+                            if !matching_sink_caps.is_empty() {
+                                let source_kind =
+                                    crate::labels::infer_source_kind(src_caps, callee);
+                                let origin = TaintOrigin {
+                                    node: inst.cfg_node,
+                                    source_kind,
+                                    source_span: None,
+                                };
+                                // Pick callback-path sink sites.
+                                // The callback callee's `param_to_sink_sites`
+                                // drives attribution when available; cap-only
+                                // fallback yields `primary_sink_site = None`.
+                                let cb_tainted: Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)> =
+                                    vec![(
                                         inst.value,
                                         src_caps & matching_sink_caps,
                                         SmallVec::from_elem(origin, 1),
                                     )];
-                                    let cb_sites = pick_primary_sink_sites_from_resolved(
-                                        matching_sink_caps,
-                                        &cb_resolved.param_to_sink_sites,
-                                    );
-                                    emit_ssa_taint_events(
-                                        events,
-                                        inst.cfg_node,
-                                        cb_tainted,
-                                        matching_sink_caps,
-                                        false,
-                                        None,
-                                        true,
-                                        cb_sites,
-                                    );
-                                }
+                                let cb_sites = pick_primary_sink_sites_from_resolved(
+                                    matching_sink_caps,
+                                    &cb_param_to_sink_sites,
+                                );
+                                emit_ssa_taint_events(
+                                    events,
+                                    inst.cfg_node,
+                                    cb_tainted,
+                                    matching_sink_caps,
+                                    false,
+                                    None,
+                                    true,
+                                    cb_sites,
+                                );
                             }
                         }
                     }
@@ -5563,8 +5669,62 @@ fn collect_block_events(
         // loop with the legacy `(sink_caps, info.call.sink_payload_args,
         // info.call.destination_uses)` triple, preserving prior behavior
         // for every non-multi-gate site.
+        //
+        // Cross-file wrapper case: when the resolved callee summary carries
+        // [`SinkInfo::param_to_gate_filters`] (the wrapper's body contains
+        // an inner multi-gate sink whose per-position cap split was lifted
+        // at extraction time), expand one filter pass per `(param_idx,
+        // label_caps)` entry restricted to that single arg position.  This
+        // preserves SSRF-vs-DATA_EXFIL attribution across a
+        // `fn forward(url, body) { fetch(url, {body}) }` wrapper that is
+        // NOT itself a known gated sink.
+        //
+        // Params NOT covered by `param_to_gate_filters` retain coverage
+        // via their `param_to_sink` entry, expanded per-position so the
+        // emitted event's `sink_caps` reflects the param-specific cap
+        // mask rather than the aggregate union.  This matters for
+        // wrappers that mix gated sinks with label-based sinks
+        // (e.g. `fn dispatch(cmd, url) { execSync(cmd); fetch(url) }`),
+        // where param 0 reaches a non-gated SHELL_ESCAPE sink and the
+        // gate-filter list only carries the SSRF gate for param 1.
         let multi_gate = info.call.gate_filters.len() > 1;
+        let summary_per_position = !multi_gate && !sink_info.param_to_gate_filters.is_empty();
         type FilterEntry<'a> = (Cap, Option<&'a [usize]>, Option<&'a [String]>);
+        // Per-position dispatch source for the summary-per-position branch.
+        // First, every entry from `param_to_gate_filters` (cap-narrowed by
+        // the inner gate); then, for any param_to_sink index NOT mentioned
+        // in `param_to_gate_filters`, an entry using that param's
+        // `param_to_sink` cap mask.
+        struct PerPosEntry {
+            idx: [usize; 1],
+            caps: Cap,
+        }
+        let per_position_entries: Vec<PerPosEntry> = if summary_per_position {
+            let mut out: Vec<PerPosEntry> =
+                Vec::with_capacity(sink_info.param_to_gate_filters.len());
+            for (idx, caps) in &sink_info.param_to_gate_filters {
+                out.push(PerPosEntry {
+                    idx: [*idx],
+                    caps: *caps,
+                });
+            }
+            for (idx, caps) in &sink_info.param_to_sink {
+                if sink_info
+                    .param_to_gate_filters
+                    .iter()
+                    .any(|(i, _)| *i == *idx)
+                {
+                    continue;
+                }
+                out.push(PerPosEntry {
+                    idx: [*idx],
+                    caps: *caps,
+                });
+            }
+            out
+        } else {
+            Vec::new()
+        };
         let filter_iter: smallvec::SmallVec<[FilterEntry<'_>; 2]> = if multi_gate {
             info.call
                 .gate_filters
@@ -5577,11 +5737,37 @@ fn collect_block_events(
                     )
                 })
                 .collect()
+        } else if summary_per_position {
+            per_position_entries
+                .iter()
+                .map(|e| (sink_caps & e.caps, Some(e.idx.as_slice()), None))
+                .collect()
         } else {
             smallvec::smallvec![(sink_caps, None, None)]
         };
 
         for (filter_caps, positions_override, destination_override) in filter_iter {
+            let mut filter_caps = filter_caps;
+
+            // Per-filter destination allowlist for DATA_EXFIL.  When this
+            // filter would emit Cap::DATA_EXFIL and the call's destination
+            // arg has a trusted static prefix (configured via
+            // detectors.data_exfil.trusted_destinations), drop the bit
+            // for this filter only.  Other gates on the same call site
+            // (notably SSRF) are unaffected.  Mirrors the semantics of
+            // is_call_data_exfil_destination_trusted but operates per-gate
+            // so a multi-gate fetch site keeps SSRF attribution while
+            // dropping DATA_EXFIL when the destination is trusted.
+            if filter_caps.intersects(Cap::DATA_EXFIL) {
+                if let SsaOp::Call { ref args, .. } = inst.op {
+                    if let Some(ref abs) = state.abstract_state {
+                        if is_call_data_exfil_destination_trusted(inst, args, abs, cfg) {
+                            filter_caps &= !Cap::DATA_EXFIL;
+                        }
+                    }
+                }
+            }
+
             if filter_caps.is_empty() {
                 continue;
             }
@@ -6464,6 +6650,15 @@ struct SinkInfo {
     /// coordinates.  Used to attribute findings to the dangerous
     /// callee-internal instruction.
     param_to_sink_sites: Vec<(usize, SmallVec<[SinkSite; 1]>)>,
+    /// Per-parameter gate-filter cap masks lifted from the callee's
+    /// inner multi-gate sink call sites. Mirrors
+    /// [`crate::summary::ssa_summary::SsaFuncSummary::param_to_gate_filters`].
+    /// When non-empty, the dispatcher in [`collect_block_events`]
+    /// expands one filter pass per `(param_idx, label_caps)` entry so
+    /// a wrapper carrying multiple gate classes (e.g. SSRF on the URL
+    /// arg + DATA_EXFIL on the body arg) attributes findings per cap
+    /// instead of joining them.
+    param_to_gate_filters: Vec<(usize, Cap)>,
 }
 
 fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
@@ -6479,6 +6674,7 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
             caps: label_sink_caps,
             param_to_sink: vec![],
             param_to_sink_sites: vec![],
+            param_to_gate_filters: vec![],
         };
     }
 
@@ -6500,6 +6696,7 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
             caps: r.sink_caps,
             param_to_sink: r.param_to_sink,
             param_to_sink_sites: r.param_to_sink_sites,
+            param_to_gate_filters: r.param_to_gate_filters,
         };
     }
 
@@ -6525,6 +6722,7 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
                 caps: r.sink_caps,
                 param_to_sink: r.param_to_sink,
                 param_to_sink_sites: r.param_to_sink_sites,
+                param_to_gate_filters: r.param_to_gate_filters,
             };
         }
     }
@@ -6533,6 +6731,7 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
         caps: Cap::empty(),
         param_to_sink: vec![],
         param_to_sink_sites: vec![],
+        param_to_gate_filters: vec![],
     }
 }
 
@@ -7383,6 +7582,16 @@ fn is_abstract_safe_for_sink(
         }
     }
 
+    // DATA_EXFIL, destination allowlist via configured trusted prefixes.
+    // Mirrors the SSRF prefix-lock above but consults the user-configured
+    // [detectors.data_exfil] table's trusted_destinations key.  Strict-
+    // additive: when no destinations are configured this is a no-op.
+    if sink_caps.intersects(Cap::DATA_EXFIL)
+        && is_inst_data_exfil_destination_trusted(inst, abs, cfg)
+    {
+        return true;
+    }
+
     // SHELL_ESCAPE, static-map finite-domain safety.  When every tainted
     // payload value is proved by the static-HashMap-lookup analysis to come
     // from a bounded set of metacharacter-free literals, the call cannot
@@ -7507,6 +7716,15 @@ fn is_call_abstract_safe(
                 return true;
             }
         }
+    }
+
+    // DATA_EXFIL, destination-allowlist match.  Mirrors the SSRF arm above
+    // for the Call path.  Strict-additive: a no-op when
+    // detectors.data_exfil.trusted_destinations is empty.
+    if sink_caps.intersects(Cap::DATA_EXFIL)
+        && is_call_data_exfil_destination_trusted(inst, args, abs, cfg)
+    {
+        return true;
     }
 
     // SHELL_ESCAPE, static-map finite-domain safety on every non-empty arg
@@ -7785,6 +8003,118 @@ fn is_static_map_shell_safe(
     })
 }
 
+/// `DATA_EXFIL` destination-allowlist match.
+///
+/// Returns `true` when `prefix` (the proven static prefix of an outbound
+/// destination URL, sourced from either the abstract string domain or an
+/// inline literal seen by CFG) starts with one of the user-configured
+/// trusted destinations.  Used by the abstract sink-suppression code to
+/// drop the [`Cap::DATA_EXFIL`] bit on legitimate forwarding pipelines
+/// (telemetry, internal APIs, analytics) without affecting other caps on
+/// the same call.
+///
+/// Match semantics: a trusted destination entry is treated as a string
+/// prefix.  An empty entry never matches (empty prefix would match
+/// every URL, which is never a useful allowlist).  Entries should be
+/// origin-pinned (e.g. `https://api.internal/`) so partial-host
+/// collisions cannot occur.
+fn is_string_prefix_trusted_destination(prefix: &str, trusted: &[String]) -> bool {
+    if prefix.is_empty() {
+        return false;
+    }
+    trusted
+        .iter()
+        .any(|t| !t.is_empty() && prefix.starts_with(t.as_str()))
+}
+
+/// Check whether the call site's destination argument (positional arg 0) is
+/// a known trusted destination per
+/// [`crate::utils::detector_options::DataExfilDetectorOptions::trusted_destinations`].
+///
+/// Returns `true` when the URL argument has a static prefix matching one
+/// of the configured trusted entries.  Three sources are consulted in
+/// order:
+///
+/// 1. The CFG node's syntactic literal (`info.call.arg_string_literals[0]`),
+///    populated for any positional argument that is a syntactic string
+///    literal at the call site.  Catches the common case
+///    `fetch('https://api.internal/...', {...})` whose URL never enters
+///    the abstract domain because it is not bound to an identifier.
+/// 2. The inline template-literal prefix attached to the call node
+///    directly (matches the SSRF prefix-lock fallback).
+/// 3. The abstract string-domain prefix of arg 0's SSA value group.
+///    Catches identifier-bound URLs like
+///    `let url = \`https://api.internal/${id}\`; fetch(url, {...})`.
+///
+/// Returns `false` when no trusted destinations are configured.
+fn is_call_data_exfil_destination_trusted(
+    inst: &SsaInst,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+    cfg: &Cfg,
+) -> bool {
+    let opts = crate::utils::detector_options::current();
+    let trusted = &opts.data_exfil.trusted_destinations;
+    if trusted.is_empty() {
+        return false;
+    }
+    let node_info = &cfg[inst.cfg_node];
+    if let Some(Some(lit)) = node_info.call.arg_string_literals.first() {
+        if is_string_prefix_trusted_destination(lit, trusted) {
+            return true;
+        }
+    }
+    if let Some(prefix) = node_info.string_prefix.as_deref() {
+        if is_string_prefix_trusted_destination(prefix, trusted) {
+            return true;
+        }
+    }
+    if let Some(first_arg) = args.first() {
+        if !first_arg.is_empty()
+            && first_arg.iter().all(|v| {
+                abs.get(*v)
+                    .string
+                    .prefix
+                    .as_deref()
+                    .is_some_and(|p| is_string_prefix_trusted_destination(p, trusted))
+            })
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Non-Call variant of [`is_call_data_exfil_destination_trusted`]: used by
+/// [`is_abstract_safe_for_sink`] where the destination is read off the
+/// instruction's own used SSA values rather than a positional Call arg
+/// list.  Falls back to the node-attached `string_prefix` when no abstract
+/// fact is available.
+fn is_inst_data_exfil_destination_trusted(inst: &SsaInst, abs: &AbstractState, cfg: &Cfg) -> bool {
+    let opts = crate::utils::detector_options::current();
+    let trusted = &opts.data_exfil.trusted_destinations;
+    if trusted.is_empty() {
+        return false;
+    }
+    let node_info = &cfg[inst.cfg_node];
+    if let Some(prefix) = node_info.string_prefix.as_deref() {
+        if is_string_prefix_trusted_destination(prefix, trusted) {
+            return true;
+        }
+    }
+    let used = inst_use_values(inst);
+    if used.is_empty() {
+        return false;
+    }
+    used.iter().all(|v| {
+        abs.get(*v)
+            .string
+            .prefix
+            .as_deref()
+            .is_some_and(|p| is_string_prefix_trusted_destination(p, trusted))
+    })
+}
+
 /// SSRF safety: prefix includes scheme + full host + path separator.
 ///
 /// Soundness: if the prefix contains `scheme://host/`, the attacker cannot
@@ -8026,6 +8356,21 @@ struct ResolvedSummary {
     /// retained; in that case `param_to_sink` alone still drives sink
     /// detection.
     param_to_sink_sites: Vec<(usize, SmallVec<[SinkSite; 1]>)>,
+    /// Per-parameter gate-filter cap masks lifted from the callee's
+    /// inner multi-gate sink call sites.  Mirrors
+    /// [`crate::summary::ssa_summary::SsaFuncSummary::param_to_gate_filters`].
+    ///
+    /// Each `(param_idx, label_caps)` entry says "this caller-side
+    /// parameter flows to a callee-internal gated sink whose narrowed
+    /// caps are `label_caps`".  When non-empty, the multi-gate dispatch
+    /// in [`collect_block_events`] expands one filter pass per entry so
+    /// the emitted event's `sink_caps` reflect the gate-specific cap
+    /// rather than the aggregate union, preserving SSRF-vs-DATA_EXFIL
+    /// (and similar) attribution through wrapper functions.
+    ///
+    /// Empty for label, local-summary, FuncSummary, and interop paths,
+    /// these forms do not retain per-gate cap detail.
+    param_to_gate_filters: Vec<(usize, Cap)>,
     propagates_taint: bool,
     propagating_params: Vec<usize>,
     /// Parameter indices whose container identity flows to return value.
@@ -8229,18 +8574,34 @@ fn resolve_callee_full(
                     param_return_paths: vec![],
                     points_to: Default::default(),
                     field_points_to: Default::default(),
+                    param_to_gate_filters: vec![],
                 });
             }
-            // Try label classification for the bound function (by leaf name)
+            // Try label classification for the bound function (by leaf name).
+            // Consult both flat rules (`classify_all`) and gated sinks: a
+            // callback bound to a gated sink (e.g. passing
+            // `child_process.exec` directly as the callback) still needs to
+            // surface its `Sink` capability so the source/callback pairing
+            // logic can match `param_to_sink` against the caller's source.
+            // The gate's `payload_args` translate directly into
+            // `param_to_sink` index entries.
             let labels = crate::labels::classify_all(
                 transfer.lang.as_str(),
                 &real_key.name,
                 transfer.extra_labels,
             );
-            if !labels.is_empty() {
+            let gate_matches = crate::labels::classify_gated_sink(
+                transfer.lang.as_str(),
+                &real_key.name,
+                |_| None,
+                |_| None,
+                |_| false,
+            );
+            if !labels.is_empty() || !gate_matches.is_empty() {
                 let mut source_caps = Cap::empty();
                 let mut sanitizer_caps = Cap::empty();
                 let mut sink_caps = Cap::empty();
+                let mut param_to_sink: Vec<(usize, Cap)> = vec![];
                 for lbl in &labels {
                     match lbl {
                         DataLabel::Source(bits) => source_caps |= *bits,
@@ -8248,11 +8609,25 @@ fn resolve_callee_full(
                         DataLabel::Sink(bits) => sink_caps |= *bits,
                     }
                 }
+                for gm in gate_matches.iter() {
+                    if let DataLabel::Sink(bits) = gm.label {
+                        sink_caps |= bits;
+                        // Map the gate's payload_args to per-param sink entries
+                        // so source-to-callback pairing can match by index.
+                        // Skip the dynamic-activation sentinel — without a
+                        // concrete arity we can't enumerate positions here.
+                        if gm.payload_args != crate::labels::ALL_ARGS_PAYLOAD {
+                            for &idx in gm.payload_args {
+                                param_to_sink.push((idx, bits));
+                            }
+                        }
+                    }
+                }
                 return Some(ResolvedSummary {
                     source_caps,
                     sanitizer_caps,
                     sink_caps,
-                    param_to_sink: vec![],
+                    param_to_sink,
                     param_to_sink_sites: vec![],
                     propagates_taint: false,
                     propagating_params: vec![],
@@ -8270,6 +8645,7 @@ fn resolve_callee_full(
                     param_return_paths: vec![],
                     points_to: Default::default(),
                     field_points_to: Default::default(),
+                    param_to_gate_filters: vec![],
                 });
             }
         }
@@ -8414,6 +8790,7 @@ fn resolve_callee_full(
                 param_return_paths: vec![],
                 points_to: Default::default(),
                 field_points_to: Default::default(),
+                param_to_gate_filters: vec![],
             });
         }
     } else {
@@ -8463,6 +8840,7 @@ fn resolve_callee_full(
             param_return_paths: vec![],
             points_to: Default::default(),
             field_points_to: Default::default(),
+            param_to_gate_filters: vec![],
         };
         match widened.len() {
             0 => {}
@@ -8533,6 +8911,7 @@ fn resolve_callee_full(
                 param_return_paths: vec![],
                 points_to: Default::default(),
                 field_points_to: Default::default(),
+                param_to_gate_filters: vec![],
             });
         }
     }
@@ -8714,6 +9093,7 @@ fn convert_ssa_to_resolved_for_caller(
         param_return_paths: ssa_sum.param_return_paths.clone(),
         points_to: ssa_sum.points_to.clone(),
         field_points_to: ssa_sum.field_points_to.clone(),
+        param_to_gate_filters: ssa_sum.param_to_gate_filters.clone(),
     }
 }
 
@@ -8807,6 +9187,20 @@ fn merge_resolved_summaries_fanout(
             slot.1 |= caps;
         } else {
             acc.source_to_callback.push((idx, caps));
+        }
+    }
+
+    // param_to_gate_filters: dedup-union (idx, caps) pairs.  Each
+    // implementer may carry its own per-position cap split; the union
+    // preserves cap attribution from any implementer reachable via
+    // virtual dispatch.
+    for (idx, caps) in r.param_to_gate_filters {
+        if !acc
+            .param_to_gate_filters
+            .iter()
+            .any(|&(i, c)| i == idx && c == caps)
+        {
+            acc.param_to_gate_filters.push((idx, caps));
         }
     }
 

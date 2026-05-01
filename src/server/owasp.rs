@@ -104,6 +104,14 @@ pub fn issue_categories(
 }
 
 fn issue_category_label(rule_id: &str) -> &'static str {
+    // `taint-data-exfiltration` and the legacy `taint-unsanitised-flow`
+    // share the `taint` family token, but the exfil class targets a
+    // different threat (sensitive data leaving the trust boundary, not
+    // attacker payload entering it).  Surface it as its own bucket so the
+    // dashboard category badge matches the rule semantics.
+    if rule_id.starts_with("taint-data-exfiltration") {
+        return "Data Exfiltration";
+    }
     match extract_family(rule_id) {
         "sqli" => "SQL Injection",
         "xss" => "Cross-Site Scripting",
@@ -219,6 +227,26 @@ mod tests {
         assert_eq!(out[1].count, 3);
         assert_eq!(out[2].code, "A02");
         assert_eq!(out[2].count, 2);
+    }
+
+    #[test]
+    fn issue_category_label_routes_data_exfil_to_dedicated_bucket() {
+        // `taint-data-exfiltration` shares the `taint` family token with
+        // `taint-unsanitised-flow`, but exfil findings need their own
+        // dashboard badge so analysts can pivot on the leak class.
+        assert_eq!(
+            issue_category_label("taint-data-exfiltration"),
+            "Data Exfiltration"
+        );
+        assert_eq!(
+            issue_category_label("taint-data-exfiltration (source 1:1)"),
+            "Data Exfiltration"
+        );
+        // Generic taint findings stay in the broader bucket.
+        assert_eq!(
+            issue_category_label("taint-unsanitised-flow"),
+            "Tainted Flow"
+        );
     }
 
     #[test]

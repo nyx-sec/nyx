@@ -1,0 +1,22 @@
+{
+  "required_findings": [
+    { "id_prefix": "taint-unsanitised-flow", "min_count": 1 },
+    { "id_prefix": "taint-data-exfiltration", "min_count": 1 }
+  ],
+  "forbidden_findings": [
+    {
+      "id_prefix": "taint-data-exfiltration",
+      "file_glob": "**/caller_url_tainted.go"
+    },
+    {
+      "id_prefix": "taint-unsanitised-flow",
+      "file_glob": "**/caller_body_tainted.go"
+    }
+  ],
+  "performance_expectations": {
+    "max_ms_no_index": 1500,
+    "max_ms_index_cold": 2000,
+    "max_ms_index_warm": 800,
+    "ci_mode": "lenient"
+  }
+}

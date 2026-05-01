@@ -77,6 +77,13 @@ pub fn run_state_analysis(
     // m.Lock()`) and routes them through `chain_proxies` instead.  Pass
     // `None` to disable, strict-additive.
     ptr_proxy_hints: Option<&std::collections::HashMap<String, crate::pointer::PtrProxyHint>>,
+    // Names of variables whose `.close()`/release calls live in a nested
+    // closure (event handler, deferred callback) that the per-body CFG
+    // can't observe directly.  Used to suppress resource-leak findings
+    // for handles whose cleanup is registered as a callback (`ws.on(
+    // "close", () => ws2.close())`).  Pass `None` for languages or
+    // shapes that don't need this.
+    closure_released_var_names: Option<&std::collections::HashSet<String>>,
 ) -> Vec<StateFinding> {
     let _span = tracing::debug_span!("run_state_analysis").entered();
 
@@ -116,7 +123,97 @@ pub fn run_state_analysis(
         func_summaries,
         enable_auth,
         path_safe_suppressed_sink_spans,
+        closure_released_var_names,
     )
+}
+
+/// Build a per-body map of variable names whose release calls
+/// (`.close`, `.destroy`, `.end`, `.release`, …) appear inside a
+/// **descendant** body (a closure / event handler nested inside the
+/// body that opens the handle).
+///
+/// Returned: `body_id → set of var names released somewhere inside
+/// that body's nested-closure subtree`.  Used by the structural
+/// ResourceMisuse pass and the state-model leak pass to suppress
+/// findings whose cleanup lives in a callback the per-body CFG can't
+/// follow (`socket.on("close", () => ws.close())`).
+///
+/// Restricted to descendants — sibling methods on the same class
+/// don't share resource ownership, so a release in `queryAndClose`
+/// must NOT silence a leak in sibling `queryAndLeak`.  Only true
+/// nested-closure parent / child relationships participate.
+pub fn collect_closure_released_var_names(
+    bodies: &[crate::cfg::BodyCfg],
+    lang: Lang,
+) -> std::collections::HashMap<crate::cfg::BodyId, std::collections::HashSet<String>> {
+    use crate::cfg::{BodyId, StmtKind};
+    use petgraph::visit::IntoNodeReferences;
+
+    // Step 1: collect releases per body.  Only nested (non-toplevel)
+    // closures are eligible — top-level bodies' own releases are
+    // already tracked by the dataflow.
+    let pairs = rules::resource_pairs(lang);
+    let mut per_body: std::collections::HashMap<BodyId, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    for body in bodies {
+        if body.meta.parent_body_id.is_none() {
+            continue;
+        }
+        let mut local = std::collections::HashSet::new();
+        for (_idx, info) in body.graph.node_references() {
+            if info.kind != StmtKind::Call {
+                continue;
+            }
+            let Some(callee) = info.call.callee.as_deref() else {
+                continue;
+            };
+            let cl = callee.to_ascii_lowercase();
+            let is_release = pairs.iter().any(|p| {
+                p.release.iter().any(|r| {
+                    let rl = r.to_ascii_lowercase();
+                    if let Some(method) = rl.strip_prefix('.') {
+                        cl.ends_with(&format!(".{method}"))
+                    } else {
+                        cl == rl || cl.ends_with(&format!(".{rl}"))
+                    }
+                })
+            });
+            if !is_release {
+                continue;
+            }
+            if let Some(rcv) = info.call.receiver.as_deref() {
+                local.insert(rcv.to_string());
+            } else if let Some((rcv, _)) = callee.rsplit_once('.')
+                && !rcv.is_empty()
+            {
+                local.insert(rcv.to_string());
+            }
+        }
+        if !local.is_empty() {
+            per_body.insert(body.meta.id, local);
+        }
+    }
+
+    // Step 2: roll up into ancestor bodies.  Walk each non-top body's
+    // parent chain and union its release set into every ancestor's
+    // entry.  Class methods at the same nesting level (siblings under a
+    // class body) do not roll up into each other — they have distinct
+    // BodyId entries and the chain only flows through `parent_body_id`.
+    let mut rollup: std::collections::HashMap<BodyId, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
+    let by_id: std::collections::HashMap<BodyId, &crate::cfg::BodyCfg> =
+        bodies.iter().map(|b| (b.meta.id, b)).collect();
+    for body in bodies {
+        let Some(local) = per_body.get(&body.meta.id) else {
+            continue;
+        };
+        let mut cur = body.meta.parent_body_id;
+        while let Some(pid) = cur {
+            rollup.entry(pid).or_default().extend(local.iter().cloned());
+            cur = by_id.get(&pid).and_then(|b| b.meta.parent_body_id);
+        }
+    }
+    rollup
 }
 
 /// Build resource method summaries by pre-scanning all method bodies for known

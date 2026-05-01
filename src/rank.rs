@@ -206,7 +206,16 @@ pub fn rank_diags(diags: &mut [Diag]) {
 
 /// Bonus based on analysis kind inferred from rule ID + evidence.
 fn analysis_kind_bonus(rule_id: &str, evidence: Option<&Evidence>) -> f64 {
-    if rule_id.starts_with("taint-") {
+    if rule_id.starts_with("taint-data-exfiltration") {
+        // DATA_EXFIL ranks below SSRF / SQLi / CMDi: the leak class is
+        // a softer signal than direct payload-driven exploitation, so
+        // the taint-class bonus is trimmed (-3) to seat data-exfil
+        // findings between general taint flows and AST/CFG patterns.
+        // The source-kind bonus (`evidence_strength`) already separates
+        // cookie / env / header from less attacker-relevant origins,
+        // so this bonus is the only ranking discount applied.
+        7.0
+    } else if rule_id.starts_with("taint-") {
         // Taint-confirmed flow is the strongest signal
         10.0
     } else if rule_id.starts_with("state-") {

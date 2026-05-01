@@ -678,12 +678,30 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
         if info.kind == StmtKind::If {
             if let Some(cond_text) = &info.condition_text {
                 let kind = classify_condition(cond_text);
+                // For `AllowlistCheck`, also confirm a target identifier was
+                // extractable.  When the receiver-method form carries a
+                // string-literal arg (`filePath.includes("/")`,
+                // `path.contains("..")`), `extract_allowlist_target` returns
+                // `None` because the argument isn't an identifier.  Those
+                // shapes are presence-checks, not real allowlist tests against
+                // a collection variable, and shouldn't dominate every
+                // downstream sink as a structural guard with `Cap::all()`.
+                // `classify_condition` itself stays unchanged (an existing
+                // test locks in its broad return for the receiver-method form,
+                // and the SSA branch-narrowing layer reads the kind for its
+                // own purposes).
+                let allowlist_has_target = if kind == PredicateKind::AllowlistCheck {
+                    crate::taint::path_state::classify_condition_with_target(cond_text)
+                        .1
+                        .is_some()
+                } else {
+                    true
+                };
                 if matches!(
                     kind,
-                    PredicateKind::AllowlistCheck
-                        | PredicateKind::TypeCheck
-                        | PredicateKind::ValidationCall
-                ) {
+                    PredicateKind::TypeCheck | PredicateKind::ValidationCall,
+                ) || (kind == PredicateKind::AllowlistCheck && allowlist_has_target)
+                {
                     result.push((idx, Cap::all()));
                 } else if cond_indirect_validator_callee(info, ctx).is_some() {
                     // Indirect-validator pattern:
@@ -995,7 +1013,25 @@ impl CfgAnalysis for UnguardedSink {
             // is the only other operand.  The simpler `is_all_args_constant`
             // check above rejects that mixed shape because it forbids real
             // parameters in operand position.
-            if !has_taint && ssa_all_sink_operands_const_or_param(ctx, *sink) {
+            //
+            // Exemption: shell-array gate filters.  The
+            // `extract_shell_array_payload_idents` detector recognises
+            // `[<shell>, "-c", <payload>]` arrays at any call site and emits a
+            // `Sink(SHELL_ESCAPE)` label with `destination_uses` narrowed to
+            // the payload-element idents.  When the array shape itself is the
+            // gate, an unrelated reassign-to-const elsewhere in the body
+            // (`const flag = true; if (flag) {}`) does not erase the
+            // shell-exec intent — the construction of `[bash, -c, x]` is by
+            // itself the dangerous operation.  Skip this suppression so the
+            // structural finding survives in closed-world contexts where no
+            // taint source has been resolved yet.
+            let has_shell_array_gate = sink_info.call.gate_filters.iter().any(|gf| {
+                gf.label_caps.contains(Cap::SHELL_ESCAPE) && gf.destination_uses.is_some()
+            });
+            if !has_taint
+                && !has_shell_array_gate
+                && ssa_all_sink_operands_const_or_param(ctx, *sink)
+            {
                 continue;
             }
 

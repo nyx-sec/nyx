@@ -218,6 +218,14 @@ pub struct Evidence {
     /// under-budget findings and skipped during serialization in that case.
     #[serde(default, skip_serializing_if = "smallvec::SmallVec::is_empty")]
     pub engine_notes: smallvec::SmallVec<[crate::engine_notes::EngineNote; 2]>,
+
+    /// For `Cap::DATA_EXFIL` findings, the destination object-literal field
+    /// the tainted value reached (e.g. `"body"`, `"headers"`, `"json"`).
+    /// `None` for non-exfil findings, for exfil findings whose payload arg
+    /// was not an object literal, or when the sink was resolved through a
+    /// summary path that did not preserve destination metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_exfil_field: Option<String>,
 }
 
 fn is_zero_u16(v: &u16) -> bool {
@@ -301,7 +309,15 @@ pub fn compute_confidence(diag: &Diag) -> Confidence {
 
     let id = &diag.id;
 
-    let base = if id.starts_with("taint-") {
+    let base = if id.starts_with("taint-data-exfiltration") {
+        // DATA_EXFIL is calibrated independently from the generic taint path:
+        // the value at risk is the leak of an *already-sensitive* source, not
+        // the construction of an attacker payload, so the points-based scoring
+        // tuned for code-exec / SSRF / SQLi over-credits these findings.  Route
+        // to a narrower decision tree that asks "did we corroborate a real
+        // string body leaving the process?" instead.
+        compute_data_exfil_confidence(diag)
+    } else if id.starts_with("taint-") {
         compute_taint_confidence(diag)
     } else if id.starts_with("state-") {
         match id.as_str() {
@@ -458,13 +474,71 @@ fn compute_taint_confidence(diag: &Diag) -> Confidence {
     }
 }
 
+/// Confidence routing for `taint-data-exfiltration` findings.
+///
+/// The generic taint scorer ranks DATA_EXFIL too aggressively: a Sensitive
+/// source plus a sink call is enough to push it into the Medium/High band,
+/// but the leak class needs corroboration that a real string body actually
+/// leaves the process (otherwise we surface every `fetch(..., {body: x})`
+/// where `x` happens to be Sensitive-tagged).  This routing is deliberately
+/// capped at Medium and only fires Medium when the symbolic execution
+/// verdict confirms the path (abstract interpretation participates only as
+/// a sink-suppression filter inside SSA taint and does not surface a
+/// separate verdict here).
+///
+/// Routing:
+///   * Source < Sensitive → Low (caller already strips DATA_EXFIL for
+///     Plain sources, but defensively floor here).
+///   * Symbolic verdict `Confirmed` → Medium (symex produced a witness
+///     that a tainted string reaches the body argument).
+///   * Symbolic verdict `Inconclusive` / `NotAttempted` / no symbolic
+///     analysis → Low (instruction's "Inconclusive" tier; the `Confidence`
+///     enum has no separate Inconclusive variant so it floors to Low).
+///   * Symbolic verdict `Infeasible` → Low (path proven dead).
+///
+/// After routing, a `path_validated` guard on the diag drops the result
+/// one tier (Medium → Low; Low stays Low) and `apply_engine_notes_cap`
+/// applies the standard engine-notes cap.
+fn compute_data_exfil_confidence(diag: &Diag) -> Confidence {
+    let ev = match &diag.evidence {
+        Some(e) => e,
+        None => return Confidence::Low,
+    };
+
+    let is_sensitive = ev
+        .source_kind
+        .map(|k| k.sensitivity() >= crate::labels::Sensitivity::Sensitive)
+        .unwrap_or(false);
+    if !is_sensitive {
+        return Confidence::Low;
+    }
+
+    let mut base = match ev.symbolic.as_ref().map(|s| s.verdict) {
+        Some(Verdict::Confirmed) => Confidence::Medium,
+        Some(Verdict::Infeasible) => Confidence::Low,
+        Some(Verdict::Inconclusive) | Some(Verdict::NotAttempted) | None => Confidence::Low,
+    };
+
+    // Guarded flow: drop a tier.  A validation predicate on the path means
+    // the leak may be unreachable in practice, so the corroborated witness
+    // is downgraded one step (Medium → Low; Low stays Low).
+    if diag.path_validated && base > Confidence::Low {
+        base = Confidence::Low;
+    }
+
+    apply_engine_notes_cap(diag, base)
+}
+
 /// Score a structured `SourceKind` value.
 ///
 /// UserInput=+3, EnvironmentConfig=+2, Unknown/FileSystem=+1, Database/CaughtException=0.
 fn structured_source_kind_score(kind: crate::labels::SourceKind) -> i32 {
     use crate::labels::SourceKind;
     match kind {
-        SourceKind::UserInput => 3,
+        // Cookie / Header carry auth material, score them at the same
+        // ranking weight as direct user input rather than the lower
+        // FileSystem/Database tiers.
+        SourceKind::UserInput | SourceKind::Cookie | SourceKind::Header => 3,
         SourceKind::EnvironmentConfig => 2,
         SourceKind::Unknown | SourceKind::FileSystem => 1,
         SourceKind::Database | SourceKind::CaughtException => 0,
@@ -538,6 +612,8 @@ pub fn generate_explanation(diag: &Diag) -> Option<String> {
         use crate::labels::SourceKind;
         match kind {
             SourceKind::UserInput => "user input",
+            SourceKind::Cookie => "cookie",
+            SourceKind::Header => "request header",
             SourceKind::EnvironmentConfig => "environment/config",
             SourceKind::Database => "database",
             SourceKind::FileSystem => "file system",

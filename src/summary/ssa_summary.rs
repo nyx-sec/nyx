@@ -158,6 +158,39 @@ pub struct SsaFuncSummary {
     /// (caller_param_index, sink_arg_position, sink_caps).
     #[serde(default)]
     pub param_to_sink_param: Vec<(usize, usize, Cap)>,
+    /// Per-parameter gate-filter cap masks lifted from inner multi-gate
+    /// sink call sites.
+    ///
+    /// When a function body contains a callee whose
+    /// [`crate::cfg::CallMeta::gate_filters`] carries more than one entry
+    /// (e.g. `fetch` is both an `SSRF` gate on the URL arg and a
+    /// `DATA_EXFIL` gate on the body arg), the multi-gate dispatch in
+    /// [`super::super::collect_block_events`] cap-narrows the event's
+    /// `sink_caps` to the specific gate's `label_caps`.  Each
+    /// `(param_idx, label_caps)` entry records that this function's
+    /// parameter `param_idx` flowed into a gated sink whose narrowed
+    /// caps were `label_caps`.
+    ///
+    /// Cross-file callers consume this list to preserve per-position cap
+    /// attribution through wrapper functions: a wrapper
+    /// `fn forward(url, body) { fetch(url, {body}) }` records
+    /// `[(0, SSRF), (1, DATA_EXFIL)]` so a caller of `forward` splits
+    /// URL-tainted SSRF findings from body-tainted DATA_EXFIL findings
+    /// instead of conflating both caps onto every parameter.
+    ///
+    /// `Vec<(param_idx, label_caps)>` is sufficient at cross-file
+    /// granularity, the corresponding `payload_args` and
+    /// `destination_uses` are intra-file context that does not survive
+    /// the function-summary boundary (field idents reference SSA
+    /// values from the callee body).
+    ///
+    /// Empty (the default) for callees whose internal sinks carry zero
+    /// or one gate filter, the existing
+    /// [`Self::param_to_sink`] /
+    /// [`Self::param_to_sink_param`] machinery already records those
+    /// cases without per-position cap conflict.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_to_gate_filters: Vec<(usize, Cap)>,
     /// Parameter indices whose container identity flows to the return value
     /// (e.g., function returns the same container it received as input).
     ///

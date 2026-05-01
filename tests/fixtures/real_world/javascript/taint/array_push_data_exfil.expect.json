@@ -1,0 +1,19 @@
+{
+  "description": "Container-taint DATA_EXFIL: tokens array pushed with req.cookies.session is JSON-stringified into a fetch body. The SSA heap Elements slot carries the cap from `tokens.push(...)` to the sink-side `collect_tainted_sink_values` heap-load, so DATA_EXFIL must fire on the body field even though `payload` itself is not directly tainted by an Assign.",
+  "tags": ["taint", "data-exfil", "fetch", "container", "heap-elements", "cookie", "edge-case"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [12, 17],
+      "notes": "tokens.push(req.cookies.session) → JSON.stringify({batch: tokens}) → fetch body. Heap Elements taint must round-trip through the container."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [12, 17],
+      "notes": "fetch URL is a fixed literal — body taint must not surface as SSRF."
+    }
+  ]
+}

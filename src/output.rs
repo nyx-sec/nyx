@@ -207,6 +207,18 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 props.insert("confidence".into(), json!(conf.to_string()));
             }
 
+            // `DATA_EXFIL` findings carry the destination object-literal
+            // field the leak reached (`body` / `headers` / `json`); surface
+            // it so SARIF consumers can pivot per-destination without
+            // reparsing the message.
+            if let Some(field) = d
+                .evidence
+                .as_ref()
+                .and_then(|ev| ev.data_exfil_field.as_deref())
+            {
+                props.insert("data_exfil_field".into(), json!(field));
+            }
+
             // Alternative-path cross-references.  When the dedup pass
             // at `taint::analyse_file` preserves both a validated and
             // an unvalidated flow for the same `(body, sink, source)`,

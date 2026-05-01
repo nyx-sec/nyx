@@ -320,6 +320,11 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     m.insert("ts", typescript::GATED_SINKS);
     m.insert("python", python::GATED_SINKS);
     m.insert("py", python::GATED_SINKS);
+    m.insert("go", go::GATED_SINKS);
+    m.insert("php", php::GATED_SINKS);
+    m.insert("c", c::GATED_SINKS);
+    m.insert("cpp", cpp::GATED_SINKS);
+    m.insert("c++", cpp::GATED_SINKS);
     m
 });
 
@@ -473,6 +478,10 @@ pub fn lookup(lang: &str, raw: &str) -> Kind {
 pub enum SourceKind {
     /// Direct user input (request params, argv, stdin, form data)
     UserInput,
+    /// HTTP cookie value (carries session / auth material)
+    Cookie,
+    /// HTTP request header (may carry auth tokens, user-agent fingerprints)
+    Header,
     /// Environment variables and configuration
     EnvironmentConfig,
     /// File system reads
@@ -485,9 +494,80 @@ pub enum SourceKind {
     Unknown,
 }
 
+/// Sensitivity classification of a taint source.  Drives detector classes
+/// like `DATA_EXFIL` that only fire when the source carries information
+/// the operator did not intend to leak.  Plain user input echoed back into
+/// an outbound request is not data exfiltration, the user already controls
+/// it, surfacing it as a leak is noise.
+///
+/// The threshold for `DATA_EXFIL` is `>= Sensitive`, plain user input is
+/// suppressed.  Projects that legitimately classify a request body as
+/// sensitive (e.g. an API gateway forwarding pre-authenticated user tokens
+/// out of a request body) can override via custom rules in `nyx.conf`,
+/// either by re-classifying the source or by adding a Sanitizer rule for
+/// `Cap::DATA_EXFIL` on the legitimate forwarding path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Sensitivity {
+    /// Attacker-controlled but not secret in itself, request bodies, query
+    /// strings, form fields, argv.  Echoing this to an outbound request is
+    /// not data exfiltration.
+    Plain,
+    /// Carries operator state the user should not see leak out, cookies,
+    /// auth headers, env, file system reads, database rows.
+    Sensitive,
+    /// Reserved for future explicit secret classifications (API keys,
+    /// credential stores, key material).  No source currently produces
+    /// this, but the threshold check in `effective_sink_caps` already
+    /// handles it monotonically.
+    Secret,
+}
+
+impl SourceKind {
+    /// Return the sensitivity tier this source kind belongs to.  Drives the
+    /// `Cap::DATA_EXFIL` cap-suppression decision in `ast.rs`.
+    pub fn sensitivity(self) -> Sensitivity {
+        match self {
+            // Plain user-controlled input, the user already has the data,
+            // surfacing it back to them via an outbound request is not a
+            // disclosure.
+            SourceKind::UserInput => Sensitivity::Plain,
+            // Operator-bound state, leaking these via an outbound request
+            // is a real cross-boundary disclosure.
+            SourceKind::Cookie
+            | SourceKind::Header
+            | SourceKind::EnvironmentConfig
+            | SourceKind::FileSystem
+            | SourceKind::Database => Sensitivity::Sensitive,
+            // Caught exceptions can carry stack traces, db errors, internal
+            // paths, treat them as sensitive by default.
+            SourceKind::CaughtException => Sensitivity::Sensitive,
+            // Conservative default for unclassified sources, surface
+            // findings rather than silently drop them.
+            SourceKind::Unknown => Sensitivity::Sensitive,
+        }
+    }
+}
+
 /// Infer the source kind from capabilities and callee name.
 pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
     let cl = callee.to_ascii_lowercase();
+
+    // Cookie / Header are checked *before* the generic user-input bucket
+    // because they imply higher sensitivity (auth material, session ids).
+    // The generic UserInput substrings (`request`, `header`, `cookie`)
+    // would otherwise swallow these.
+    //
+    // Session stores carry auth material (CSRF tokens, signed user ids) of
+    // the same sensitivity tier as raw cookies, so route them through the
+    // `Cookie` arm.  The substring is checked AFTER excluding the
+    // capitalised `Session` constructor (covered by the `request` /
+    // `requests` checks below not firing for `Session` builders).
+    if cl.contains("cookie") || cl.contains("session") {
+        return SourceKind::Cookie;
+    }
+    if cl.contains("header") {
+        return SourceKind::Header;
+    }
 
     // User input patterns
     if cl.contains("argv")
@@ -498,11 +578,23 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
         || cl.contains("params")
         || cl.contains("input")
         || cl.contains("body")
-        || cl.contains("header")
-        || cl.contains("cookie")
         || cl.contains("location")
         || cl.contains("document.url")
         || cl.contains("document.referrer")
+        // PHP superglobals: the AST text preserves the `$` (member-text
+        // extraction reads the `variable_name` node verbatim) so we match
+        // both `$_POST` and the `_POST` form some collectors emit.
+        // `$_REQUEST` already matches via the `request` substring above;
+        // `$_COOKIE` / `$_SESSION` route through the Cookie tier earlier in
+        // the function.  `$_SERVER` is operator-state-bearing (auth headers
+        // etc.) so it stays Sensitive by falling through to the Unknown
+        // bucket.
+        || cl == "$_get"
+        || cl == "$_post"
+        || cl == "$_files"
+        || cl == "_get"
+        || cl == "_post"
+        || cl == "_files"
     {
         return SourceKind::UserInput;
     }
@@ -542,6 +634,8 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
 pub fn severity_for_source_kind(kind: SourceKind) -> crate::patterns::Severity {
     match kind {
         SourceKind::UserInput => crate::patterns::Severity::High,
+        SourceKind::Cookie => crate::patterns::Severity::High,
+        SourceKind::Header => crate::patterns::Severity::High,
         SourceKind::EnvironmentConfig => crate::patterns::Severity::High,
         SourceKind::FileSystem => crate::patterns::Severity::Medium,
         SourceKind::Database => crate::patterns::Severity::Medium,
@@ -986,11 +1080,20 @@ pub fn classify_gated_sink(
         None => return out,
     };
 
+    // Match against the original callee text AND a chain-normalised form
+    // that strips `()` between dots so a chained construction like
+    // `httpx.AsyncClient().post` matches a gate matcher of
+    // `httpx.AsyncClient.post`.  Mirrors the normalisation applied by
+    // `classify` for flat label rules.
     let callee_bytes = callee_text.as_bytes();
+    let normalized = normalize_chained_call(callee_text);
+    let normalized_bytes = normalized.as_bytes();
 
     for gate in *gates {
         let matcher = gate.callee_matcher.as_bytes();
-        if !match_suffix_cs(callee_bytes, matcher, gate.case_sensitive) {
+        if !match_suffix_cs(callee_bytes, matcher, gate.case_sensitive)
+            && !match_suffix_cs(normalized_bytes, matcher, gate.case_sensitive)
+        {
             continue;
         }
 
@@ -1473,26 +1576,69 @@ mod tests {
     // CVE Hunt Session 2 (Go CVE-2023-3188 Owncast SSRF):
     // `http.DefaultClient.Get/Post/Head/Do/PostForm` is the idiomatic Go
     // SSRF sink shape (`http.DefaultClient` is the package-level shared
-    // `*http.Client`). Bare `Get`/`Post` matchers would over-match
-    // unrelated method names; the explicit `http.DefaultClient.*` matcher
-    // restricts the suffix-match to the stdlib helper while leaving
-    // user-defined `myClient.Get` alone (no false positives).
+    // `*http.Client`).  These callees migrated from a flat `Sink(SSRF)`
+    // rule to destination-aware gated sinks so that DATA_EXFIL gates can
+    // coexist on the same callee (e.g. `http.DefaultClient.Post(url, _,
+    // body)` carries SSRF on arg 0 and DATA_EXFIL on arg 2).  The
+    // assertions below check the gate registration rather than the flat
+    // classifier output.
     #[test]
-    fn classify_go_http_default_client_get_is_ssrf_sink() {
-        let result = classify("go", "http.DefaultClient.Get", None);
-        assert_eq!(result, Some(DataLabel::Sink(Cap::SSRF)));
+    fn classify_go_http_default_client_get_is_ssrf_gate() {
+        let no_kw = |_: &str| None;
+        let no_kw_present = |_: &str| false;
+        let result = classify_gated_sink(
+            "go",
+            "http.DefaultClient.Get",
+            |_| None,
+            no_kw,
+            no_kw_present,
+        );
+        assert!(
+            result.iter().any(|m| m.label == DataLabel::Sink(Cap::SSRF)),
+            "expected SSRF gate match, got {result:?}"
+        );
     }
 
     #[test]
-    fn classify_go_http_default_client_post_is_ssrf_sink() {
-        let result = classify("go", "http.DefaultClient.Post", None);
-        assert_eq!(result, Some(DataLabel::Sink(Cap::SSRF)));
+    fn classify_go_http_default_client_post_is_ssrf_and_data_exfil_gate() {
+        let no_kw = |_: &str| None;
+        let no_kw_present = |_: &str| false;
+        let result = classify_gated_sink(
+            "go",
+            "http.DefaultClient.Post",
+            |_| None,
+            no_kw,
+            no_kw_present,
+        );
+        assert!(
+            result.iter().any(|m| m.label == DataLabel::Sink(Cap::SSRF)),
+            "expected SSRF gate match, got {result:?}"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|m| m.label == DataLabel::Sink(Cap::DATA_EXFIL)),
+            "expected DATA_EXFIL gate match, got {result:?}"
+        );
     }
 
     #[test]
-    fn classify_go_http_default_client_do_is_ssrf_sink() {
-        let result = classify("go", "http.DefaultClient.Do", None);
-        assert_eq!(result, Some(DataLabel::Sink(Cap::SSRF)));
+    fn classify_go_http_default_client_do_is_data_exfil_gate() {
+        let no_kw = |_: &str| None;
+        let no_kw_present = |_: &str| false;
+        let result = classify_gated_sink(
+            "go",
+            "http.DefaultClient.Do",
+            |_| None,
+            no_kw,
+            no_kw_present,
+        );
+        assert!(
+            result
+                .iter()
+                .any(|m| m.label == DataLabel::Sink(Cap::DATA_EXFIL)),
+            "expected DATA_EXFIL gate match, got {result:?}"
+        );
     }
 
     #[test]

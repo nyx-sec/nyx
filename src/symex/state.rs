@@ -353,6 +353,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let witness = state.get_sink_witness(&finding, &ssa);
@@ -393,6 +395,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         assert_eq!(state.get_sink_witness(&finding, &ssa), None);
@@ -430,6 +434,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         assert_eq!(state.get_sink_witness(&finding, &ssa), None);
@@ -470,6 +476,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         state.widen_at_loop_head(BlockId(0), &ssa);
@@ -513,6 +521,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         state.widen_at_loop_head(BlockId(0), &ssa);
@@ -556,6 +566,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         state.widen_at_loop_head(BlockId(0), &ssa);

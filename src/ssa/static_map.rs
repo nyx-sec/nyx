@@ -440,6 +440,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let cfg: Cfg = Graph::new();
         let const_values = HashMap::new();

@@ -1,0 +1,19 @@
+{
+  "description": "Async DATA_EXFIL parity: client.post(URL).body(secret).send().await preserves the cap split identically to the synchronous .send() case. The chained-call normalization peels the trailing .await so the body-binding matcher resolves; awaiting cannot strip taint.",
+  "tags": ["taint", "data-exfil", "reqwest", "async", "await", "edge-case"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [9, 14],
+      "notes": "env::var secret → .body(secret).send().await must fire DATA_EXFIL on the body channel."
+    },
+    {
+      "rule_id": "rs.quality.unwrap",
+      "must_match": true,
+      "line_range": [9, 10],
+      "notes": ".unwrap() on env::var Result"
+    }
+  ]
+}

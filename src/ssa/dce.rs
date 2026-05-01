@@ -217,6 +217,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -265,6 +267,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -314,6 +318,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -359,6 +365,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -396,6 +404,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -460,6 +470,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: interner,
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -527,6 +539,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: interner,
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -587,6 +601,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -637,6 +653,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -724,6 +742,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);
@@ -801,6 +821,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let removed = eliminate_dead_defs(&mut body, &cfg);

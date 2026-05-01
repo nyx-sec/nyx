@@ -635,6 +635,19 @@ impl DefaultTransfer<'_> {
     fn apply_assignment(&self, _node_idx: NodeIndex, info: &NodeInfo, state: &mut ProductState) {
         // Ownership transfer: if `defines` reassigns a tracked resource
         // variable from a `uses` variable, transfer the lifecycle.
+        //
+        // Skip when the RHS is a function or lambda literal: storing a
+        // closure into a property (`ws.onclose = () => { ... }`,
+        // `obj.handler = function(){...}`) does not move ownership of the
+        // resources the closure body references — those identifiers appear
+        // in `info.taint.uses` only because `def_use` walks the literal's
+        // body, not because the assignment itself reads them.  Without this
+        // gate, the first OPEN-tracked capture inside the closure body gets
+        // marked MOVED and the property's symbol becomes the new OPEN
+        // owner, which then surfaces as a spurious leak on the property.
+        if info.rhs_is_function_literal {
+            return;
+        }
         if let Some(ref def) = info.taint.defines
             && let Some(def_sym) = self.get_sym(info, def)
         {

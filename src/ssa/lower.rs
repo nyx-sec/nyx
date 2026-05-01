@@ -239,18 +239,25 @@ fn lower_to_ssa_inner(
 
     // 6. Rename variables (dominator tree preorder walk)
     let dom_tree_children = build_dom_tree_children(num_blocks, &doms, &block_graph);
-    let (mut ssa_blocks, mut value_defs, cfg_node_map, field_interner, field_writes) =
-        rename_variables(
-            cfg,
-            &blocks_nodes,
-            &block_succs,
-            &block_preds,
-            &phi_placements,
-            &dom_tree_children,
-            &filtered_edges,
-            &external_vars,
-            &nop_nodes,
-        );
+    let (
+        mut ssa_blocks,
+        mut value_defs,
+        cfg_node_map,
+        field_interner,
+        field_writes,
+        synthetic_externals,
+    ) = rename_variables(
+        cfg,
+        &blocks_nodes,
+        &block_succs,
+        &block_preds,
+        &phi_placements,
+        &dom_tree_children,
+        &filtered_edges,
+        &external_vars,
+        formal_params,
+        &nop_nodes,
+    );
 
     // 6b. Fill any missing phi operands with a shared Undef sentinel so
     // every phi has exactly one operand per predecessor. See
@@ -306,6 +313,7 @@ fn lower_to_ssa_inner(
         exception_edges,
         field_interner,
         field_writes,
+        synthetic_externals,
     };
 
     // 9. Catch-block reachability invariant.
@@ -927,6 +935,7 @@ fn rename_variables(
     dom_tree_children: &[Vec<usize>],
     filtered_edges: &[(NodeIndex, NodeIndex, EdgeKind)],
     external_vars: &[String],
+    formal_params: &[String],
     nop_nodes: &HashSet<NodeIndex>,
 ) -> (
     Vec<SsaBlock>,
@@ -934,6 +943,7 @@ fn rename_variables(
     HashMap<NodeIndex, SsaValue>,
     crate::ssa::ir::FieldInterner,
     HashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)>,
+    HashSet<SsaValue>,
 ) {
     let num_blocks = blocks_nodes.len();
     let mut next_value: u32 = 0;
@@ -1679,6 +1689,27 @@ fn rename_variables(
     // Inject synthetic Param instructions at START of block 0 for external variables.
     // These create SSA definitions so the rename pass can reference them.
     // Pre-seed var_stacks so process_block sees them.
+    //
+    // `external_vars` contains both real formal parameters and free / closure-
+    // captured variables (variables read by the body but not declared as a
+    // formal and not assigned anywhere).  Both end up emitted as
+    // [`SsaOp::Param`] in block 0; we record the SSA values that correspond
+    // to free vars in `synthetic_externals` so downstream analyses (the JS/TS
+    // handler-name auto-seed in particular) can avoid treating closure
+    // captures as if they were parameters of the function under analysis.
+    //
+    // **Conservative behaviour when `formal_params` is empty.** Several
+    // call sites (`lower_to_ssa`, `lower_to_ssa_scoped_nop`) don't supply
+    // formal parameter names; in that case we cannot distinguish formals
+    // from free vars structurally, so we leave `synthetic_externals` empty
+    // and the auto-seed pass keeps its pre-fix behaviour of treating every
+    // `Param` op as a candidate.  Only callers that pass a non-empty
+    // `formal_params` slice (`lower_to_ssa_with_params`, used by the
+    // findings pipeline's per-function lowering) opt into the
+    // closure-capture distinction.
+    let mut synthetic_externals: HashSet<SsaValue> = HashSet::new();
+    let formal_set: HashSet<&str> = formal_params.iter().map(|s| s.as_str()).collect();
+    let track_synthetic = !formal_params.is_empty();
     if !external_vars.is_empty() {
         let entry_cfg_node = blocks_nodes[0][0];
         let mut synthetic_body = Vec::with_capacity(external_vars.len());
@@ -1691,7 +1722,8 @@ fn rename_variables(
                 cfg_node: entry_cfg_node,
                 block: BlockId(0),
             });
-            let op = if is_receiver_name(var) {
+            let is_receiver = is_receiver_name(var);
+            let op = if is_receiver {
                 SsaOp::SelfParam
             } else {
                 let op = SsaOp::Param {
@@ -1700,6 +1732,28 @@ fn rename_variables(
                 positional_idx += 1;
                 op
             };
+            // A non-receiver var is "synthetic" (a free / closure capture)
+            // when it is *not* one of the function's declared formals AND
+            // not a dotted access on a formal (`input.cmd` where `input` is
+            // a formal — it represents a structural projection of the
+            // formal, not a free variable; the auto-seed should still treat
+            // it as part of the formal's own taint surface).  Receivers are
+            // intentionally excluded: `this` / `self` represent the implicit
+            // receiver, which always belongs to the function.
+            //
+            // Only fire when the caller supplied formal-parameter names; see
+            // the `track_synthetic` rationale above.
+            let root_is_formal = var
+                .split_once('.')
+                .map(|(root, _)| formal_set.contains(root))
+                .unwrap_or(false);
+            if track_synthetic
+                && !is_receiver
+                && !formal_set.contains(var.as_str())
+                && !root_is_formal
+            {
+                synthetic_externals.insert(v);
+            }
             synthetic_body.push(SsaInst {
                 value: v,
                 op,
@@ -1784,6 +1838,7 @@ fn rename_variables(
         cfg_node_map,
         field_interner,
         field_writes,
+        synthetic_externals,
     )
 }
 

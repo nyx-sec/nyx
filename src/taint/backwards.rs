@@ -752,6 +752,7 @@ mod tests {
             exception_edges: Vec::new(),
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         (ssa, cfg)
@@ -764,6 +765,47 @@ mod tests {
         assert_eq!(d.depth, 0);
         assert_eq!(d.validated_true, 0);
         assert_eq!(d.validated_false, 0);
+    }
+
+    /// Regression guard: the cap-routing logic must round-trip
+    /// `Cap::DATA_EXFIL` exactly like every other cap.  The backwards
+    /// engine treats the demand as opaque bits, so if a future change
+    /// accidentally narrows the type of `caps` (e.g. a hardcoded mask)
+    /// the data-exfiltration cap stops surviving the walk.
+    #[test]
+    fn demand_state_roundtrips_data_exfil_cap() {
+        let d = DemandState::new(Cap::DATA_EXFIL);
+        assert_eq!(d.caps, Cap::DATA_EXFIL);
+        assert!(d.caps.contains(Cap::DATA_EXFIL));
+        // Sanity: combined demand keeps the bit alongside SSRF (the two
+        // most-frequently-co-occurring caps on outbound HTTP gates).
+        let combined = DemandState::new(Cap::DATA_EXFIL | Cap::SSRF);
+        assert!(combined.caps.contains(Cap::DATA_EXFIL));
+        assert!(combined.caps.contains(Cap::SSRF));
+    }
+
+    /// The backwards driver must classify a `DATA_EXFIL`-capable source
+    /// even when the sink demand is *exactly* `DATA_EXFIL` (no other
+    /// caps).  Mirrors `driver_walks_source_to_sink` but pins the cap so
+    /// a future change that intersects with a wider mask (and thus
+    /// silently widens the demand) is caught.
+    #[test]
+    fn driver_walks_data_exfil_source_to_sink() {
+        let (ssa, mut cfg) = build_trivial_source_body();
+        // Tag the source CFG node with a Source(DATA_EXFIL) label so
+        // the cap-match path (the one that actually rules end-to-end
+        // routing) exercises the bit.
+        let src_node = NodeIndex::new(0);
+        cfg[src_node]
+            .taint
+            .labels
+            .push(DataLabel::Source(Cap::DATA_EXFIL));
+
+        let ctx = BackwardsCtx::new(&ssa, &cfg, Lang::JavaScript);
+        let flows = analyse_sink_backwards(&ctx, SsaValue(1), NodeIndex::new(1), Cap::DATA_EXFIL);
+        assert_eq!(flows.len(), 1, "exactly one DATA_EXFIL flow expected");
+        assert!(flows[0].is_confirmation(), "must confirm at the source");
+        assert_eq!(flows[0].sink_caps, Cap::DATA_EXFIL);
     }
 
     #[test]
@@ -800,6 +842,7 @@ mod tests {
             exception_edges: Vec::new(),
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let demand = DemandState::new(Cap::all());
         let (step, next) = backward_transfer(&ssa, SsaValue(0), &demand);
@@ -832,6 +875,7 @@ mod tests {
             exception_edges: Vec::new(),
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let demand = DemandState::new(Cap::all());
         let (step, _next) = backward_transfer(&ssa, SsaValue(0), &demand);
@@ -919,6 +963,7 @@ mod tests {
             exception_edges: Vec::new(),
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let demand = DemandState::new(Cap::all());
@@ -1007,6 +1052,7 @@ mod tests {
             exception_edges: Vec::new(),
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let ctx = BackwardsCtx::new(&ssa, &cfg, Lang::JavaScript);

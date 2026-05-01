@@ -92,6 +92,22 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
+    // Conventional forwarding wrappers, telemetry / analytics / metrics dispatch.
+    // See javascript.rs for rationale; mirrored here so TypeScript projects pick
+    // up the same convention.  Override per-project via
+    // [analysis.languages.typescript] custom rules.
+    LabelRule {
+        matchers: &[
+            "serializeForUpstream",
+            "forwardPayload",
+            "tracker.send",
+            "analytics.track",
+            "metrics.report",
+            "logEvent",
+        ],
+        label: DataLabel::Sanitizer(Cap::DATA_EXFIL),
+        case_sensitive: false,
+    },
     // Conventional project-local HTML escapers.  Suffix word-boundary match
     // fires on bare calls to locally defined helpers (`function escapeHtml(x)`
     // invoked as `escapeHtml(x)`) across codebases that follow the common
@@ -113,18 +129,21 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
+    // Shell-exec sinks. Qualified `child_process.*` and bare forms are both
+    // flat sinks; receiver-name collisions are handled via EXCLUDES; the
+    // `=*` gates in `GATED_SINKS` below restrict checked args to arg 0
+    // (command string) so `execSync(cmd, { env: process.env })` no longer
+    // flags `process.env` flowing into the options object.  See
+    // javascript.rs for full rationale.
     LabelRule {
         matchers: &[
             "child_process.exec",
             "child_process.execSync",
             "child_process.spawn",
             "child_process.execFile",
-            // Bare forms from destructured imports:
-            //   const { exec, execSync } = require('child_process')
             "exec",
             "execSync",
             "execFile",
-            // Common promisified wrappers around child_process.exec
             "execAsync",
             "execPromise",
         ],
@@ -227,16 +246,12 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
     },
-    // ORM / query builder raw-SQL entry points
+    // ORM / query builder raw-SQL entry points.  `$queryRawUnsafe` /
+    // `$executeRawUnsafe` are gated below — only arg 0 (the SQL template) is
+    // the injection vector; positional bind params are bound as `$1..$N`.
+    // See javascript.rs for the full rationale.
     LabelRule {
-        matchers: &[
-            "sequelize.query",
-            "knex.raw",
-            "$queryRaw",
-            "$queryRawUnsafe",
-            "$executeRaw",
-            "$executeRawUnsafe",
-        ],
+        matchers: &["sequelize.query", "knex.raw", "$queryRaw", "$executeRaw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
@@ -264,6 +279,9 @@ pub static EXCLUDES: &[&str] = &[
     "req.app",
     "req.route",
     "req.next",
+    // Dockerode container API — see javascript.rs EXCLUDES for rationale.
+    "container.exec",
+    "exec.start",
 ];
 
 pub static GATED_SINKS: &[SinkGate] = &[
@@ -476,6 +494,113 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
             object_destination_fields: &["body", "headers", "json"],
+        },
+    },
+    // ── Shell-exec sinks (SHELL_ESCAPE) ──────────────────────────────────
+    // See javascript.rs for the rationale.  Only arg 0 (command string)
+    // carries the shell-injection payload; bare forms use `=` exact-only
+    // matching so they don't collide with any `<receiver>.exec` method.
+    // Qualified `child_process.*` forms stay as flat sinks; gates only fire
+    // when no flat sink classifies the call, so the bare destructured-import
+    // forms below are the only place where shell-exec needs gating.
+    SinkGate {
+        callee_matcher: "=exec",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "=execSync",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "=execFile",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "=execAsync",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "=execPromise",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── Prisma raw-SQL with positional bind params (SQL_QUERY) ───────────
+    // See javascript.rs for rationale.
+    SinkGate {
+        callee_matcher: "$queryRawUnsafe",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "$executeRawUnsafe",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
         },
     },
 ];

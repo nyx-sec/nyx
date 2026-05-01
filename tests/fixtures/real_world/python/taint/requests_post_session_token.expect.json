@@ -1,0 +1,13 @@
+{
+  "description": "Session-token forwarder: flask `session` (Sensitive-tier source) flows into a fixed-URL requests.post body. SSRF must NOT fire (destination is hardcoded), but Cap::DATA_EXFIL MUST fire — auth-bearing operator state is leaving the process via the outbound payload. Mirrors the JS fetch_session_forward case for Python.",
+  "tags": ["taint", "data-exfil", "requests", "sensitivity-gate", "session", "cap-attribution"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [12, 18],
+      "notes": "session.get('user_token') → SourceKind::Cookie → Sensitivity::Sensitive — DATA_EXFIL fires on the json kwarg of requests.post."
+    }
+  ]
+}

@@ -373,11 +373,26 @@ pub(crate) fn first_member_label(
             if let Some(full) = member_expr_text(n, code) {
                 // Try the full text first, then progressively strip the last segment
                 // to match rules like "process.env" from "process.env.CMD".
+                //
+                // The strip-and-retry only ever yields a sound label for Sources:
+                // `process.env.CMD` → strip → `process.env` makes sense because
+                // the receiver itself IS the source.  Sinks and Sanitizers, by
+                // contrast, name the *operation* — `connection.query`, `eval`,
+                // `exec` — and stripping a trailing segment to match them is
+                // not semantically valid (e.g. `exec.start` should never be
+                // treated as a SHELL_ESCAPE sink because of bare `exec`).  We
+                // accept any label on a full-text match (the behaviour callers
+                // already depend on for Source/Sink labels alike), but only
+                // accept Source labels after segment stripping.
                 let mut candidate = full.as_str();
+                let mut first = true;
                 loop {
                     if let Some(lbl) = classify(lang, candidate, extra_labels) {
-                        return Some(lbl);
+                        if first || matches!(lbl, DataLabel::Source(_)) {
+                            return Some(lbl);
+                        }
                     }
+                    first = false;
                     match candidate.rsplit_once('.') {
                         Some((prefix, _)) => candidate = prefix,
                         None => break,

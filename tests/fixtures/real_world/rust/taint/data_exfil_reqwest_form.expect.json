@@ -1,0 +1,23 @@
+{
+  "description": "DATA_EXFIL: env::var flows to reqwest Client::post().form(&secret).send() chain.",
+  "tags": ["taint", "data_exfil", "reqwest"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "severity": null,
+      "must_match": true,
+      "line_range": [4, 10],
+      "evidence_contains": [],
+      "notes": "env-config secret flows into reqwest .form() body-bind chain, fires DATA_EXFIL"
+    },
+    {
+      "rule_id": "rs.quality.unwrap",
+      "severity": null,
+      "must_match": true,
+      "line_range": [4, 6],
+      "evidence_contains": [],
+      "notes": ".unwrap() on env::var Result"
+    }
+  ]
+}

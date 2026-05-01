@@ -1,0 +1,14 @@
+{
+  "description": "Shell-injection via [shell, '-c', tainted] array passed through a user-defined wrapper. Detection must fire at the array literal site without per-wrapper summary annotation.",
+  "tags": ["taint", "shell-injection", "shell-array", "typescript"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [24, 29],
+      "evidence_contains": [],
+      "notes": "TP: req.query.name flows through the third array element of a [bash, -c, ...] shell-array passed to an opaque wrapper. The shell-array shape itself is the gate."
+    }
+  ]
+}

@@ -19,19 +19,29 @@ fn sanitize_desc(s: &str) -> String {
 /// convergence node where all execution paths join before leaving the function.
 ///
 /// **Invariant:** Only terminal exits carry the complete merged lifecycle state
-/// needed for leak analysis.  Return nodes are intermediate (they flow into the
-/// terminal exit) and must NOT be analyzed for terminal resource state.
-///
-/// Detection is purely topological: a node inside a function is terminal when
-/// it has no successor within the same function scope.  This works for both
-/// per-body graphs (Exit node is a sink) and legacy supergraphs (the
-/// synthesized Return's successor is the file-level Exit with
+/// needed for leak analysis.  Return nodes are intermediate in per-body graphs
+/// (they flow into the synthetic Exit node) but become terminal in legacy
+/// supergraphs (their successor is the file-level Exit with
 /// `enclosing_func = None`).
+///
+/// Detection combines a kind filter with a topological check.  Only nodes
+/// whose `StmtKind` actually terminates execution (`Exit`, `Return`, `Throw`)
+/// are considered, then we require that they have no successor in the same
+/// function scope.  Without the kind filter, dangling Seq nodes left behind
+/// when nested function literals (e.g. `obj.fn = () => {...}`) get a
+/// placeholder in the parent graph would be misclassified as terminal exits
+/// and produce spurious resource-leak findings at the function-literal span.
 fn is_terminal_function_exit(
     idx: petgraph::graph::NodeIndex,
     info: &crate::cfg::NodeInfo,
     cfg: &Cfg,
 ) -> bool {
+    if !matches!(
+        info.kind,
+        StmtKind::Exit | StmtKind::Return | StmtKind::Throw
+    ) {
+        return false;
+    }
     info.ast.enclosing_func.is_some()
         && !cfg
             .neighbors_directed(idx, petgraph::Direction::Outgoing)
@@ -62,6 +72,7 @@ pub struct StateFinding {
 /// `state-unauthed-access` finding is suppressed on those spans because
 /// the user-controlled input has already been proved unable to escape
 /// into a privileged location.
+#[allow(clippy::too_many_arguments)]
 pub fn extract_findings(
     result: &DataflowResult<ProductState, TransferEvent>,
     cfg: &Cfg,
@@ -70,6 +81,7 @@ pub fn extract_findings(
     func_summaries: &crate::cfg::FuncSummaries,
     enable_auth: bool,
     path_safe_suppressed_sink_spans: &std::collections::HashSet<(usize, usize)>,
+    closure_released_var_names: Option<&std::collections::HashSet<String>>,
 ) -> Vec<StateFinding> {
     let mut findings = Vec::new();
 
@@ -192,6 +204,23 @@ pub fn extract_findings(
             // (Go `defer f.Close()`). The deferred call guarantees cleanup
             // at function exit even though transfer didn't mark it CLOSED.
             if deferred_close_vars.contains(&sym) {
+                continue;
+            }
+
+            // Suppress leaks for variables whose release call lives in a
+            // nested closure (callback / event handler) outside this
+            // body's CFG.  Common JS/TS shape:
+            //   const ws = new WebSocket(url);
+            //   socket.on("close", () => ws.close());
+            // The per-body resource analysis cannot observe the close
+            // inside the registered handler body; without this gate the
+            // handle reads as a definite leak.  Match by variable name —
+            // closure-captured handles share the binding name with the
+            // handle in the outer scope.
+            if closure_released_var_names
+                .map(|s| s.contains(var_name))
+                .unwrap_or(false)
+            {
                 continue;
             }
 
@@ -557,6 +586,7 @@ mod tests {
             &HashMap::new(),
             false,
             &std::collections::HashSet::new(),
+            None,
         );
 
         assert_eq!(findings.len(), 1);
@@ -617,6 +647,7 @@ mod tests {
             &HashMap::new(),
             false,
             &std::collections::HashSet::new(),
+            None,
         );
 
         assert!(findings.is_empty());
@@ -751,6 +782,7 @@ mod tests {
             &HashMap::new(),
             false,
             &std::collections::HashSet::new(),
+            None,
         );
 
         assert!(
@@ -816,6 +848,7 @@ mod tests {
             &HashMap::new(),
             false,
             &std::collections::HashSet::new(),
+            None,
         );
 
         assert_eq!(

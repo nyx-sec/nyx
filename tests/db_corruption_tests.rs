@@ -38,12 +38,17 @@ fn test_cfg() -> Config {
 }
 
 fn seed_project(root: &Path) {
+    // Use the qualified `child_process.exec` form so the seed produces a
+    // taint finding under the post-fix label rules (bare `exec` as a flat
+    // sink was removed because it suffix-matched any `<recv>.exec`, e.g.
+    // Dockerode `container.exec`).  The qualified form is the canonical
+    // Node.js stdlib path and stays a flat sink.
     std::fs::write(
         root.join("cmdi.js"),
-        b"const cp = require('child_process');\n\
+        b"const child_process = require('child_process');\n\
           const express = require('express');\n\
           const app = express();\n\
-          app.get('/x', (req, res) => { cp.exec(req.query.cmd); res.send('ok'); });\n",
+          app.get('/x', (req, res) => { child_process.exec(req.query.cmd); res.send('ok'); });\n",
     )
     .unwrap();
 }

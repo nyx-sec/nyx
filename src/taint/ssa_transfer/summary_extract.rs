@@ -387,6 +387,15 @@ pub fn extract_ssa_func_summary_full(
     let mut param_to_return = Vec::new();
     let mut param_to_sink: Vec<(usize, SmallVec<[SinkSite; 1]>)> = Vec::new();
     let mut param_to_sink_param = Vec::new();
+    // Per-param gate-filter cap masks lifted from inner multi-gate sink calls.
+    // Populated when the per-param probe reaches a sink whose CFG node carries
+    // [`crate::cfg::CallMeta::gate_filters`] with more than one entry, the
+    // multi-gate dispatch in `collect_block_events` has already cap-narrowed
+    // `event.sink_caps` to the matching gate's `label_caps`, so we record the
+    // pair as-is.  Cross-file callers consume this list to preserve per-position
+    // cap attribution through wrapper functions like
+    // `fn forward(url, body) { fetch(url, {body}) }`.
+    let mut param_to_gate_filters: Vec<(usize, Cap)> = Vec::new();
     // Per-param return-path decomposition.  Populated only when the param
     // has ≥2 distinct return-block predicate hashes, a single-return-path
     // callee is already precise via `param_to_return`.
@@ -541,6 +550,28 @@ pub fn extract_ssa_func_summary_full(
             for pos in extract_sink_arg_positions(event, ssa) {
                 param_to_sink_param.push((idx, pos, event.sink_caps));
             }
+            // Per-position gate-filter cap lifting.
+            //
+            // When the sink callee carries multiple gate filters (e.g. `fetch`
+            // is both an SSRF gate on the URL arg and a `DATA_EXFIL` gate on
+            // the body arg), the multi-gate dispatch has already filtered
+            // `event.sink_caps` down to the specific gate's `label_caps` for
+            // this probe.  Recording `(idx, event.sink_caps)` preserves that
+            // narrowing across the function-summary boundary so a caller of
+            // the wrapper splits SSRF from DATA_EXFIL findings instead of
+            // joining them under a single union.
+            //
+            // Single-gate / no-gate sinks are skipped, the existing
+            // `param_to_sink` machinery already records those without
+            // per-position cap conflict.
+            if !event.sink_caps.is_empty()
+                && cfg[event.sink_node].call.gate_filters.len() > 1
+                && !param_to_gate_filters
+                    .iter()
+                    .any(|&(i, c)| i == idx && c == event.sink_caps)
+            {
+                param_to_gate_filters.push((idx, event.sink_caps));
+            }
             if event.sink_caps.is_empty() {
                 continue;
             }
@@ -641,6 +672,7 @@ pub fn extract_ssa_func_summary_full(
         param_to_sink,
         source_caps,
         param_to_sink_param,
+        param_to_gate_filters,
         param_container_to_return,
         param_to_container_store,
         return_type,

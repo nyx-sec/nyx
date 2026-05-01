@@ -32,6 +32,7 @@ pub fn handle_command(
             );
         }
         let _ = crate::utils::analysis_options::install(config.analysis.engine);
+        let _ = crate::utils::detector_options::install(config.detectors.clone());
     };
 
     match command {
@@ -293,6 +294,9 @@ pub fn handle_command(
                     "analysis-engine runtime already installed; CLI engine flags ignored"
                 );
             }
+            // Detector knobs (currently `[detectors.data_exfil]`) are
+            // resolved straight from config; no CLI overrides yet.
+            let _ = crate::utils::detector_options::install(config.detectors.clone());
 
             // ── --explain-engine: print resolved config and exit ────────
             if explain_engine {

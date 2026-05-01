@@ -1,0 +1,23 @@
+{
+  "description": "DATA_EXFIL: env::var flows to ureq::post().send_string() chain.",
+  "tags": ["taint", "data_exfil", "ureq"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "severity": null,
+      "must_match": true,
+      "line_range": [4, 8],
+      "evidence_contains": [],
+      "notes": "env-config secret flows into ureq .send_string, fires DATA_EXFIL"
+    },
+    {
+      "rule_id": "rs.quality.unwrap",
+      "severity": null,
+      "must_match": true,
+      "line_range": [4, 6],
+      "evidence_contains": [],
+      "notes": ".unwrap() on env::var Result"
+    }
+  ]
+}

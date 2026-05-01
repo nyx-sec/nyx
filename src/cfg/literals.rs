@@ -38,25 +38,27 @@ pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
     }
 }
 
-/// Extract identifiers from specified fields of an object-literal argument.
+/// Extract `(field_name, ident_name)` pairs from specified fields of an
+/// object-literal argument.
 ///
 /// Returns:
-/// * `Some(names)` if the positional argument at `index` IS an object literal
-///   (JS `object`, TS `object`, Python `dictionary`). `names` contains
-///   identifiers lifted from pair values whose key matches any entry in
-///   `fields` (case-sensitive; JS/TS identifiers). When no destination-field
-///   pairs are present, returns `Some(vec![])`, the sink is effectively
-///   silenced because no destination identifier exists.
+/// * `Some(pairs)` if the positional argument at `index` IS an object literal
+///   (JS `object`, TS `object`, Python `dictionary`). Each pair is
+///   `(field_name, ident_name)` where `field_name` is the matched key from
+///   `fields` and `ident_name` is an identifier lifted from that pair's
+///   value expression. When no destination-field pairs are present, returns
+///   `Some(vec![])`, the sink is effectively silenced because no destination
+///   identifier exists.
 /// * `None` if the arg is absent, is not an object literal (plain string
 ///   / ident / expression), or has splat/spread children that break static
 ///   per-field reasoning. Callers fall back to the whole-arg positional
 ///   filter in this case.
-pub(super) fn extract_destination_field_idents(
+pub(super) fn extract_destination_field_pairs(
     call_node: Node,
     arg_index: usize,
     fields: &[&str],
     code: &[u8],
-) -> Option<Vec<String>> {
+) -> Option<Vec<(String, String)>> {
     if fields.is_empty() {
         return None;
     }
@@ -71,7 +73,7 @@ pub(super) fn extract_destination_field_idents(
         return None;
     }
 
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<(String, String)> = Vec::new();
     let mut c = arg.walk();
     for child in arg.named_children(&mut c) {
         match child.kind() {
@@ -88,8 +90,8 @@ pub(super) fn extract_destination_field_idents(
                 let Some(name) = text_of(child, code) else {
                     continue;
                 };
-                if fields.iter().any(|&f| f == name) && !out.contains(&name) {
-                    out.push(name);
+                if fields.iter().any(|&f| f == name) && !out.iter().any(|(_, v)| v == &name) {
+                    out.push((name.clone(), name));
                 }
             }
             "pair" => {
@@ -124,8 +126,8 @@ pub(super) fn extract_destination_field_idents(
                 let mut paths: Vec<String> = Vec::new();
                 collect_idents_with_paths(val_node, code, &mut idents, &mut paths);
                 for name in paths.into_iter().chain(idents) {
-                    if !out.contains(&name) {
-                        out.push(name);
+                    if !out.iter().any(|(_, v)| v == &name) {
+                        out.push((key.clone(), name));
                     }
                 }
             }
@@ -133,6 +135,62 @@ pub(super) fn extract_destination_field_idents(
         }
     }
     Some(out)
+}
+
+/// Extract `(field_name, ident_name)` pairs from `keyword_argument` /
+/// `named_argument` children of a call whose keyword name matches one of
+/// `fields`.  Used for languages where destination-bearing fields are passed
+/// as direct kwargs rather than wrapped in a dict literal, e.g. Python
+/// `requests.post(url, data=tainted, json=safe)` where `data` and `json` are
+/// `keyword_argument` siblings of the positional URL.
+///
+/// Returns the union of matching kwargs, preserving the kwarg name in the
+/// `field` slot so callers can still attribute findings per-field.  Empty
+/// when no matching kwargs exist or the call has no `arguments` field.
+pub(super) fn extract_destination_kwarg_pairs(
+    call_node: Node,
+    fields: &[&str],
+    code: &[u8],
+) -> Vec<(String, String)> {
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut cursor = args_node.walk();
+    for child in args_node.named_children(&mut cursor) {
+        let kind = child.kind();
+        if kind != "keyword_argument" && kind != "named_argument" {
+            continue;
+        }
+        let named_count = child.named_child_count();
+        let name_node = child
+            .child_by_field_name("name")
+            .or_else(|| child.named_child(0));
+        let value_node = child
+            .child_by_field_name("value")
+            .or_else(|| child.named_child(named_count.saturating_sub(1) as u32));
+        let (Some(nn), Some(vn)) = (name_node, value_node) else {
+            continue;
+        };
+        let Some(name) = text_of(nn, code) else {
+            continue;
+        };
+        if !fields.iter().any(|&f| f == name) {
+            continue;
+        }
+        let mut idents = Vec::new();
+        let mut paths = Vec::new();
+        collect_idents_with_paths(vn, code, &mut idents, &mut paths);
+        for ident in paths.into_iter().chain(idents) {
+            if !out.iter().any(|(_, v)| v == &ident) {
+                out.push((name.clone(), ident));
+            }
+        }
+    }
+    out
 }
 
 /// Extract the string-literal content at argument position `index` (0-based).
@@ -144,7 +202,14 @@ pub(super) fn extract_const_string_arg(
 ) -> Option<String> {
     let args = call_node.child_by_field_name("arguments")?;
     let mut cursor = args.walk();
-    let arg = args.named_children(&mut cursor).nth(index)?;
+    let mut arg = args.named_children(&mut cursor).nth(index)?;
+    // PHP / Go wrap each positional argument in an `argument` node; unwrap so
+    // the kind-match below sees the inner literal.
+    if arg.kind() == "argument" && arg.named_child_count() == 1 {
+        if let Some(inner) = arg.named_child(0) {
+            arg = inner;
+        }
+    }
     match arg.kind() {
         // `string` / `string_literal` cover JS/TS, Python, Java, PHP, C/C++, Ruby, Rust;
         // `interpreted_string_literal` / `raw_string_literal` cover Go's
@@ -172,6 +237,39 @@ pub(super) fn extract_const_string_arg(
             } else {
                 None
             }
+        }
+        _ => None,
+    }
+}
+
+/// Extract a macro-constant or `define`d identifier name at argument position
+/// `index` (0-based).  Used for languages where activation values are
+/// preprocessor symbols rather than string literals — currently C, C++, and
+/// PHP define-constants like `CURLOPT_POSTFIELDS` whose syntactic form is an
+/// `identifier` / `name` node, not a `string`.
+///
+/// Returns `None` for any non-identifier shape so dynamic-activation
+/// semantics still apply when the activation arg is a runtime value
+/// (variable, expression, function call).
+pub(super) fn extract_const_macro_arg(
+    call_node: Node,
+    index: usize,
+    code: &[u8],
+) -> Option<String> {
+    let args = call_node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let mut arg = args.named_children(&mut cursor).nth(index)?;
+    if arg.kind() == "argument" && arg.named_child_count() == 1 {
+        if let Some(inner) = arg.named_child(0) {
+            arg = inner;
+        }
+    }
+    match arg.kind() {
+        // C/C++ identifier / PHP `name` node for define-style constants.
+        // Scoped C++ identifiers (`Curl::OPT_POSTFIELDS`) and PHP namespaced
+        // names also surface here so the dangerous_values match catches them.
+        "identifier" | "name" | "qualified_name" | "scoped_identifier" => {
+            text_of(arg, code).map(|s| s.to_string())
         }
         _ => None,
     }
@@ -1546,6 +1644,59 @@ pub(super) fn def_use(
             (None, uses, vec![])
         }
 
+        // for-in / for-of / Python `for x in iter:` ─────────────────────────
+        //
+        // Tree-sitter classifies these as `Kind::For` with a `left`/`right`
+        // field pair (binding pattern + iterable).  Without an explicit
+        // arm here, the default branch collects every ident as a `use` and
+        // never registers the iteration binding as a `define`, so taint
+        // entering the iterable does not propagate into the body's
+        // references to the binding (`for (const [a, b] of obj) { sink(a) }`
+        // would lose the flow at `a`).
+        //
+        // C-style `for_statement` has no `left`/`right` fields (it uses
+        // `initializer`/`condition`/`increment`), so this path falls through
+        // to the default-collecting behaviour for those, preserving today's
+        // semantics.
+        Kind::For => {
+            let left = ast.child_by_field_name("left");
+            let right = ast.child_by_field_name("right");
+            if left.is_none() && right.is_none() {
+                // C-style for, defer to default ident collection.
+                let mut idents = Vec::new();
+                let mut paths = Vec::new();
+                collect_idents_with_paths(ast, code, &mut idents, &mut paths);
+                let mut uses = paths;
+                uses.extend(idents);
+                return (None, uses, vec![]);
+            }
+
+            let mut defs: Option<String> = None;
+            let mut extra_defs: Vec<String> = Vec::new();
+            let mut uses: Vec<String> = Vec::new();
+
+            if let Some(pat) = left {
+                let mut idents = Vec::new();
+                let mut paths = Vec::new();
+                collect_idents_with_paths(pat, code, &mut idents, &mut paths);
+                let first = paths.pop().or_else(|| idents.first().cloned());
+                for ident in &idents {
+                    if first.as_ref() != Some(ident) {
+                        extra_defs.push(ident.clone());
+                    }
+                }
+                defs = first;
+            }
+            if let Some(val) = right {
+                let mut idents = Vec::new();
+                let mut paths = Vec::new();
+                collect_idents_with_paths(val, code, &mut idents, &mut paths);
+                uses.extend(paths);
+                uses.extend(idents);
+            }
+            (defs, uses, extra_defs)
+        }
+
         // everything else – no definition, but may read vars
         _ => {
             let mut idents = Vec::new();
@@ -1556,4 +1707,226 @@ pub(super) fn def_use(
             (None, uses, vec![])
         }
     }
+}
+
+/// One match from [`extract_shell_array_payload_idents`].
+///
+/// `arg_position` is the positional argument index of the call where the
+/// shell-array literal was found.  `payload_idents` is the union of
+/// identifiers (and dotted paths) lifted from the array's payload elements
+/// (positions 2+ for POSIX `sh -c <cmd>` form; positions 2+ for `cmd /c <cmd>`
+/// likewise).  Empty `payload_idents` means the payload is a constant string,
+/// which the caller should treat as benign (no SHELL_ESCAPE finding possible).
+#[derive(Debug, Clone)]
+pub(super) struct ShellArrayMatch {
+    pub arg_position: usize,
+    pub payload_idents: Vec<String>,
+}
+
+/// Detect inline shell-execution array literals at a call site.
+///
+/// Recognises the pattern `[<shell>, "-c", <payload>]` (POSIX shells) and
+/// `[<cmd-shell>, "/c"|"/C", <payload>]` (Windows `cmd.exe`) appearing as
+/// either:
+///   * a direct positional argument of `call_node`, or
+///   * the value of any field within an object-literal positional argument
+///     (covers `container.exec({Cmd: ["bash", "-c", x]})` form).
+///
+/// Returns one [`ShellArrayMatch`] per detected shell-array.  Empty when the
+/// call has no shell-array literals.
+///
+/// The shell-name list is intentionally narrow (POSIX shells + Windows
+/// `cmd.exe`/`powershell`) to avoid false positives on benign array literals
+/// like `["ls", "-la"]` or `["git", "rev-parse", "HEAD"]`, where element 0 is
+/// not a shell.  Element 1 must be a literal `-c` (POSIX) or `/c`/`/C` (cmd);
+/// otherwise the array is not in shell-exec form regardless of element 0.
+///
+/// Identifiers from elements at positions 2+ are lifted via
+/// [`collect_idents_with_paths`] so template-literal interpolations
+/// (`` `echo ${x}` ``), member-expressions (`obj.field`), and bare idents are
+/// all captured.  Dedup is preserved across array elements so a single ident
+/// referenced in multiple payload positions appears once.
+pub(super) fn extract_shell_array_payload_idents(
+    call_node: Node,
+    code: &[u8],
+) -> Vec<ShellArrayMatch> {
+    let mut out = Vec::new();
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return out;
+    };
+    let mut cursor = args_node.walk();
+    for (idx, child) in args_node.named_children(&mut cursor).enumerate() {
+        let kind = child.kind();
+        // Splats break positional indexing; bail conservatively on the whole call.
+        if kind == "spread_element"
+            || kind == "dictionary_splat"
+            || kind == "list_splat"
+            || kind == "splat_argument"
+            || kind == "hash_splat_argument"
+        {
+            return Vec::new();
+        }
+        if kind == "keyword_argument" || kind == "named_argument" {
+            continue;
+        }
+
+        // Direct array-literal arg.
+        if let Some(idents) = shell_array_payload_idents_of(child, code) {
+            out.push(ShellArrayMatch {
+                arg_position: idx,
+                payload_idents: idents,
+            });
+            continue;
+        }
+
+        // Object-literal arg whose field value is a shell-array literal.
+        // Covers `container.exec({Cmd: [...]})` form.  Field name is not
+        // restricted to `Cmd` / `cmd`: the shell-shape itself is the gate,
+        // and the payload extraction is per-array.
+        if matches!(kind, "object" | "dictionary") {
+            let mut cc = child.walk();
+            for pair in child.named_children(&mut cc) {
+                if pair.kind() != "pair" {
+                    continue;
+                }
+                let Some(val_node) = pair.child_by_field_name("value") else {
+                    continue;
+                };
+                let val_node = unwrap_parens(val_node);
+                if let Some(idents) = shell_array_payload_idents_of(val_node, code) {
+                    out.push(ShellArrayMatch {
+                        arg_position: idx,
+                        payload_idents: idents,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// If `node` is an array literal of shape `[<shell>, "-c", *]` (POSIX shells)
+/// or `[<cmd-shell>, "/c", *]` (Windows cmd.exe), return the identifiers
+/// referenced in the payload elements (positions 2+).  Otherwise return
+/// `None`.  Returning `Some(vec![])` means the payload is a constant string
+/// — caller should still skip emitting a sink (no taint can reach a literal).
+fn shell_array_payload_idents_of(node: Node, code: &[u8]) -> Option<Vec<String>> {
+    let node = unwrap_parens(node);
+    if node.kind() != "array" {
+        return None;
+    }
+    // Walk named children to skip commas and other trivia.
+    let mut cursor = node.walk();
+    let elems: Vec<Node> = node.named_children(&mut cursor).collect();
+    if elems.len() < 3 {
+        return None;
+    }
+    let shell = const_string_value(elems[0], code)?;
+    if !is_known_shell(&shell) {
+        return None;
+    }
+    let flag = const_string_value(elems[1], code)?;
+    if !is_shell_command_flag(&shell, &flag) {
+        return None;
+    }
+    // Lift identifiers from the payload elements (positions 2+).  Constants
+    // contribute nothing.  An empty result means the entire payload is
+    // statically benign.
+    let mut idents: Vec<String> = Vec::new();
+    let mut paths: Vec<String> = Vec::new();
+    for elem in &elems[2..] {
+        collect_idents_with_paths(*elem, code, &mut idents, &mut paths);
+    }
+    let mut combined = paths;
+    combined.extend(idents);
+    // Dedup (preserve first-seen order).
+    let mut seen = std::collections::HashSet::new();
+    combined.retain(|s| seen.insert(s.clone()));
+    if combined.is_empty() {
+        // Static payload — no taint can reach it. Return None so the caller
+        // does not emit a useless sink filter.
+        return None;
+    }
+    Some(combined)
+}
+
+/// Extract a constant string value from `node`, handling JS/TS `string` /
+/// `template_string` (no interpolation) forms.  Returns `None` for dynamic
+/// values, identifiers, or expressions.
+fn const_string_value(node: Node, code: &[u8]) -> Option<String> {
+    let node = unwrap_parens(node);
+    match node.kind() {
+        "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal" => {
+            let raw = text_of(node, code)?;
+            if raw.len() >= 2 {
+                Some(raw[1..raw.len() - 1].to_string())
+            } else {
+                None
+            }
+        }
+        "template_string" => {
+            let mut c = node.walk();
+            if node
+                .named_children(&mut c)
+                .any(|ch| ch.kind() == "template_substitution")
+            {
+                return None;
+            }
+            let raw = text_of(node, code)?;
+            if raw.len() >= 2 {
+                Some(raw[1..raw.len() - 1].to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Known shell executable names that activate the shell-array detector.
+/// Scoped narrowly to POSIX shells + Windows command interpreters, listing
+/// only canonical names so benign arrays like `["ls", ...]`, `["git", ...]`,
+/// or `["python", ...]` do not match.
+fn is_known_shell(name: &str) -> bool {
+    // Strip directory prefix for matching: `/bin/bash` → `bash`.
+    let leaf = name.rsplit('/').next().unwrap_or(name);
+    matches!(
+        leaf,
+        "bash"
+            | "sh"
+            | "zsh"
+            | "dash"
+            | "ksh"
+            | "fish"
+            | "ash"
+            | "tcsh"
+            | "csh"
+            | "cmd"
+            | "cmd.exe"
+            | "powershell"
+            | "powershell.exe"
+            | "pwsh"
+            | "pwsh.exe"
+    )
+}
+
+/// True when `flag` is the "execute the following string as a shell command"
+/// switch for the given `shell`.  POSIX shells use `-c`; cmd.exe accepts
+/// `/c` / `/C`; PowerShell uses `-Command` (also `-c` as alias) and
+/// `-EncodedCommand`.
+fn is_shell_command_flag(shell: &str, flag: &str) -> bool {
+    let leaf = shell.rsplit('/').next().unwrap_or(shell);
+    let is_cmd = matches!(leaf, "cmd" | "cmd.exe");
+    let is_powershell = matches!(leaf, "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe");
+    if is_cmd {
+        return matches!(flag, "/c" | "/C" | "/k" | "/K");
+    }
+    if is_powershell {
+        return matches!(
+            flag,
+            "-c" | "-Command" | "-command" | "-EncodedCommand" | "-encodedcommand"
+        );
+    }
+    // POSIX shells.
+    flag == "-c"
 }

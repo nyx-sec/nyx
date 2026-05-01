@@ -49,10 +49,12 @@ score = severity_base + analysis_kind + evidence_strength + state_bonus - valida
 | Component | Values |
 |---|---|
 | Severity base | High=60, Medium=30, Low=10 |
-| Analysis kind | taint=+10, state=+8, cfg with evidence=+5, cfg without evidence=+3, ast=+0 |
+| Analysis kind | taint=+10, taint-data-exfiltration=+7, state=+8, cfg with evidence=+5, cfg without evidence=+3, ast=+0 |
 | Evidence strength | +1 per evidence item up to 4; +2 to +6 for source kind |
 | State bonus | use-after-close / unauthed=+6, double-close=+3, must-leak=+2, may-leak=+1 |
 | Validation penalty | -5 if path-validated |
+
+DATA_EXFIL is calibrated below other taint classes by design. Severity is High only when the source carries credential / session material (cookies, env vars); other Sensitive sources (request headers, file system, database, caught exception) downgrade to Medium. Confidence is capped at Medium and only fires Medium when the abstract / symbolic domain corroborates a concrete string body reaching the outbound payload; otherwise it falls to Low. A guarded flow (`path_validated`) drops a confidence tier. The intent is to seat data-exfiltration findings below SSRF / SQLi / command-injection but above informational AST patterns.
 
 Source-kind contributions (taint only):
 
@@ -71,7 +73,9 @@ Approximate score ranges:
 | High taint with user input | 76 to 81 |
 | High state (use-after-close) | ~74 |
 | High CFG structural | 63 to 68 |
+| High DATA_EXFIL (cookie / env source, body confirmed) | ~76 |
 | Medium taint with env source | 45 to 50 |
+| Medium DATA_EXFIL (header / fs / db / caught-exception source) | 40 to 45 |
 | Medium state (resource leak) | ~40 |
 | Low AST-only pattern | ~10 |
 

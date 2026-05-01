@@ -666,6 +666,8 @@ mod tests {
                 exception_edges: vec![],
                 field_interner: self.field_interner,
                 field_writes: std::collections::HashMap::new(),
+
+                synthetic_externals: std::collections::HashSet::new(),
             }
         }
     }
@@ -880,6 +882,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: FieldInterner::new(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let facts = analyse_body(&body, body_id());
         assert!(facts.is_trivial());

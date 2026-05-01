@@ -1,0 +1,38 @@
+{
+  "description": "Regression guard: static shell payloads, non-shell arrays, canonical Dockerode argv, opaque array vars, and execSync(cmd, { env: process.env }) must not fire SHELL_ESCAPE.",
+  "tags": ["taint", "shell-injection", "shell-array", "regression-guard", "typescript"],
+  "modes": ["full"],
+  "strict_unexpected": ["taint-unsanitised-flow"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [13, 18],
+      "notes": "Constant shell payload — no idents in element 2, detector emits no sink filter."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [20, 26],
+      "notes": "First element is not a known shell — detector ignores even though element 2 is tainted."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [28, 34],
+      "notes": "Canonical Dockerode argv form — constant array, locked in by EXCLUDES."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [37, 43],
+      "notes": "Opaque variable, not a literal — detector inspects only literal arrays."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [46, 49],
+      "notes": "execSync(cmd, { env: process.env }) — arg 1 is the options object, not the command. Locked in by =execSync gate's payload_args: &[0]."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "description": "requests.post() with a fixed destination URL and a plain user-input body (request.form). DATA_EXFIL must NOT fire: plain user input echoed back via an outbound body is not a cross-boundary disclosure (the source-sensitivity gate suppresses Plain-tier sources for Cap::DATA_EXFIL). Pairs with requests_post_session_token.py to assert per-tier routing for Python.",
+  "tags": ["taint", "data-exfil", "requests", "sensitivity-gate", "cap-attribution"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_not_match": true,
+      "line_range": [13, 19],
+      "notes": "Body source is plain user input (request.form → Sensitivity::Plain). DATA_EXFIL fires only on Sensitive-tier sources (cookies, sessions, headers, env) — plain user input echoed into a request body is not data exfiltration."
+    }
+  ]
+}

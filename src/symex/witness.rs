@@ -204,8 +204,15 @@ fn sink_cap(finding: &Finding, cfg: &Cfg) -> Cap {
 
 /// Select a witness payload string based on the vulnerability class.
 fn witness_payload(cap: Cap) -> &'static str {
-    // Check bits in priority order (most specific first)
-    if cap.intersects(Cap::CODE_EXEC) {
+    // Check bits in priority order (most specific first).
+    //
+    // `DATA_EXFIL` is checked before the action-class caps (CODE_EXEC, SQL,
+    // etc.) because a data-exfil sink reflects what the *attacker reads*,
+    // not what they *do*: the witness needs to look like a leaked secret
+    // ("<SESSION_TOKEN>") rather than an injected payload ("' OR 1=1 --").
+    if cap.intersects(Cap::DATA_EXFIL) {
+        "<SESSION_TOKEN>"
+    } else if cap.intersects(Cap::CODE_EXEC) {
         "require('child_process').execSync('id')"
     } else if cap.intersects(Cap::HTML_ESCAPE) {
         "<script>alert('xss')</script>"
@@ -639,7 +646,19 @@ mod tests {
             witness_payload(Cap::DESERIALIZE),
             "malicious_serialized_object"
         );
+        assert_eq!(witness_payload(Cap::DATA_EXFIL), "<SESSION_TOKEN>");
         assert_eq!(witness_payload(Cap::CRYPTO), "TAINTED"); // fallback
+    }
+
+    #[test]
+    fn test_witness_payload_data_exfil_wins_over_action_caps() {
+        // A `fetch` call's body slot can carry both DATA_EXFIL (the leak
+        // class) and the underlying action cap (e.g. SSRF) when the same
+        // sink is multi-gated.  The witness should reflect the *leaked*
+        // value (a session token) rather than an injection payload, the
+        // attacker is reading data, not writing it.
+        let combined = Cap::DATA_EXFIL | Cap::SSRF;
+        assert_eq!(witness_payload(combined), "<SESSION_TOKEN>");
     }
 
     #[test]
@@ -776,6 +795,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let finding = Finding {
@@ -831,6 +852,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
         let cfg = Cfg::new();
         let finding = Finding {
@@ -892,6 +915,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let finding = Finding {
@@ -954,6 +979,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let finding = Finding {

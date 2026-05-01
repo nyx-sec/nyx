@@ -125,6 +125,13 @@ pub struct AnalysisContext<'a> {
     /// the function-declaration level, the gap only matters when the
     /// auth call has to live inside the body.
     pub auth_decorators: &'a [String],
+    /// Names of variables whose `.close()` / release calls live in a
+    /// nested closure body somewhere else in the file (e.g.
+    /// `socket.on("close", () => ws.close())`).  ResourceMisuse uses this
+    /// to suppress `cfg-resource-leak` for handles whose cleanup happens
+    /// in a callback the per-body CFG can't observe.  When `None`, no
+    /// closure-based suppression is applied.
+    pub closure_released_var_names: Option<&'a std::collections::HashSet<String>>,
 }
 
 pub trait CfgAnalysis {

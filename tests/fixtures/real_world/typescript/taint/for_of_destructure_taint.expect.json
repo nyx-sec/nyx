@@ -1,0 +1,14 @@
+{
+  "description": "Regression guard for for-of array-destructure taint propagation. Without the fix, taint stops at `files` and never reaches `filePath` inside the loop body.",
+  "tags": ["taint", "shell-injection", "for-of", "destructure", "typescript"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [12, 16],
+      "evidence_contains": [],
+      "notes": "TP: req.body.files → Object.entries → destructured filePath → exec template literal. Fires only when the for_in_statement's pattern bindings are registered as defines."
+    }
+  ]
+}

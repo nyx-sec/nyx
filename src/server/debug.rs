@@ -1179,6 +1179,7 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::Url => "Url".into(),
         TypeKind::HttpClient => "HttpClient".into(),
         TypeKind::LocalCollection => "LocalCollection".into(),
+        TypeKind::RequestBuilder => "RequestBuilder".into(),
         TypeKind::Dto(_) => "Dto".into(),
     }
 }
@@ -1872,6 +1873,7 @@ function consume() {
                 field_points_to: Default::default(),
                 return_path_facts: smallvec::SmallVec::new(),
                 typed_call_receivers: vec![],
+                param_to_gate_filters: vec![],
             },
         );
 
@@ -2026,6 +2028,8 @@ async function recentAuditLogs() {
             exception_edges: vec![],
             field_interner,
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let facts = analyse_body(&body, BodyId(0));

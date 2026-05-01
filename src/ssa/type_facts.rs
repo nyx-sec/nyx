@@ -25,6 +25,15 @@ pub enum TypeKind {
     FileHandle,
     Url,
     HttpClient,
+    /// A pre-network HTTP request builder produced by `Client::post(url)`,
+    /// `surf::post(url)`, `Request::builder()`, `ureq::post(url)`, etc.
+    /// The body-bind methods (`body`, `json`, `form`, `multipart`,
+    /// `body_string`, `body_json`, `body_bytes`) and terminal verbs
+    /// (`send`, `send_string`, `send_json`, `send_form`) are sinks for
+    /// `DATA_EXFIL` when receiver-typed.  Distinct from `HttpClient` so
+    /// type-qualified resolution can attach builder-only rules without
+    /// over-firing on plain client objects.
+    RequestBuilder,
     /// A local, in-memory collection (HashMap, HashSet, Vec, etc.).
     /// The auth sink gate uses this so calls like `map.insert(...)`
     /// are treated as bookkeeping rather than cross-tenant sinks. No
@@ -76,6 +85,7 @@ impl TypeKind {
             Self::DatabaseConnection => Some("DatabaseConnection"),
             Self::FileHandle => Some("FileHandle"),
             Self::Url => Some("URL"),
+            Self::RequestBuilder => Some("RequestBuilder"),
             _ => None,
         }
     }
@@ -180,9 +190,10 @@ impl TypeFactResult {
 ///
 /// Suppression policy:
 /// * [`TypeKind::Int`] (and float, treated as numeric): suppresses
-///   `SQL_QUERY`, `FILE_IO`, `SHELL_ESCAPE`, `HTML_ESCAPE`, `SSRF` ,
-///   numeric values cannot carry the metacharacters required to drive
-///   any of these injection classes.
+///   `SQL_QUERY`, `FILE_IO`, `SHELL_ESCAPE`, `HTML_ESCAPE`, `SSRF`,
+///   `DATA_EXFIL`, numeric values cannot carry the metacharacters
+///   required to drive any of these injection classes, nor can they
+///   encode credentials/tokens that meaningfully constitute leakage.
 /// * [`TypeKind::Bool`]: suppresses every type-suppressible bit ,
 ///   `true`/`false` cannot carry a payload of any kind.
 pub fn is_type_safe_for_sink(
@@ -191,8 +202,12 @@ pub fn is_type_safe_for_sink(
     type_facts: &TypeFactResult,
 ) -> bool {
     use crate::labels::Cap;
-    let type_suppressible =
-        Cap::SQL_QUERY | Cap::FILE_IO | Cap::SHELL_ESCAPE | Cap::HTML_ESCAPE | Cap::SSRF;
+    let type_suppressible = Cap::SQL_QUERY
+        | Cap::FILE_IO
+        | Cap::SHELL_ESCAPE
+        | Cap::HTML_ESCAPE
+        | Cap::SSRF
+        | Cap::DATA_EXFIL;
     if !sink_caps.intersects(type_suppressible) {
         return false;
     }
@@ -222,6 +237,13 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
         Lang::Java => match suffix {
             "URL" | "URI" => Some(TypeKind::Url),
             "newHttpClient" | "newBuilder" if callee.contains("HttpClient") => {
+                Some(TypeKind::HttpClient)
+            }
+            // Apache HttpClient idiomatic factory:
+            // `CloseableHttpClient client = HttpClients.createDefault();`
+            // `HttpClients` contains the substring `HttpClient` so this
+            // doesn't widen to unrelated `createDefault` calls.
+            "createDefault" | "custom" if callee.contains("HttpClient") => {
                 Some(TypeKind::HttpClient)
             }
             "OkHttpClient" | "WebClient" | "RestTemplate" => Some(TypeKind::HttpClient),
@@ -340,6 +362,10 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // so the auth sink gate recognises
                 // `let x = factory_fn(); x.insert(..)`.
                 Some(TypeKind::LocalCollection)
+            } else if is_rust_request_builder_constructor(base) {
+                // HTTP request-builder constructors across reqwest, surf,
+                // ureq, hyper.  See [`is_rust_request_builder_constructor`].
+                Some(TypeKind::RequestBuilder)
             } else {
                 None
             }
@@ -447,6 +473,54 @@ fn is_rust_local_collection_constructor(base: &str) -> bool {
             .iter()
             .any(|verb| base.ends_with(&format!("{ty}::{verb}")))
     })
+}
+
+/// Does the peeled Rust callee correspond to a known HTTP request-builder
+/// constructor / factory?  Covers:
+/// * surf free verbs (`surf::post`, `surf::get`, ...) ,
+/// * ureq free verbs (`ureq::post`, ...) ,
+/// * hyper `Request::builder` ,
+/// * reqwest `Client::post(url)` / `Client::get(url)` etc. (the `Client`
+///   instance is itself an `HttpClient` but the verb call on it returns a
+///   `RequestBuilder` whose chained methods bind body/json/form/etc.).
+///
+/// reqwest's `Client::new` keeps its existing `HttpClient` mapping ,
+/// it produces the client, not a builder.
+fn is_rust_request_builder_constructor(base: &str) -> bool {
+    // surf free verbs that return Request (acts as a builder).
+    const SURF_VERBS: &[&str] = &[
+        "post", "get", "put", "delete", "patch", "head", "connect", "trace",
+    ];
+    if SURF_VERBS
+        .iter()
+        .any(|v| base.ends_with(&format!("surf::{v}")))
+    {
+        return true;
+    }
+    // ureq free verbs that return Request.
+    const UREQ_VERBS: &[&str] = &["post", "get", "put", "delete", "patch", "head"];
+    if UREQ_VERBS
+        .iter()
+        .any(|v| base.ends_with(&format!("ureq::{v}")))
+    {
+        return true;
+    }
+    // hyper request builder.
+    if base.ends_with("Request::builder") || base.ends_with("hyper::Request::builder") {
+        return true;
+    }
+    // reqwest Client verb-on-instance.  `Client::post(url)` /
+    // `Client::get(url)` chained-form returns a RequestBuilder.  We match
+    // the constructor-style segment used by chain text after CFG receiver
+    // collapse (`reqwest::Client::new.post`, `Client::post`, etc.).
+    const REQWEST_CLIENT_VERBS: &[&str] =
+        &["post", "get", "put", "delete", "patch", "head", "request"];
+    if REQWEST_CLIENT_VERBS.iter().any(|v| {
+        base.ends_with(&format!("Client::new.{v}")) || base.ends_with(&format!("Client::{v}"))
+    }) {
+        return true;
+    }
+    false
 }
 
 pub fn is_identity_method(callee: &str) -> bool {
@@ -1076,6 +1150,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::from([
@@ -1189,6 +1265,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::new();
@@ -1220,9 +1298,10 @@ mod tests {
     }
 
     /// Int-typed values must suppress every type-suppressible
-    /// cap, including the freshly-added `SSRF` bit.  Numeric IDs
-    /// cannot rewrite a URL host, cannot form path traversal sequences,
-    /// cannot carry SQL/HTML/shell metacharacters.
+    /// cap, including the freshly-added `SSRF` and `DATA_EXFIL` bits.
+    /// Numeric IDs cannot rewrite a URL host, cannot form path
+    /// traversal sequences, cannot carry SQL/HTML/shell metacharacters,
+    /// and do not encode credentials worth exfiltrating.
     #[test]
     fn int_suppresses_every_type_suppressible_cap() {
         use crate::labels::Cap;
@@ -1236,6 +1315,7 @@ mod tests {
             Cap::SHELL_ESCAPE,
             Cap::HTML_ESCAPE,
             Cap::SSRF,
+            Cap::DATA_EXFIL,
         ] {
             assert!(
                 is_type_safe_for_sink(&[SsaValue(0)], cap, &result),
@@ -1271,6 +1351,7 @@ mod tests {
             Cap::SHELL_ESCAPE,
             Cap::HTML_ESCAPE,
             Cap::SSRF,
+            Cap::DATA_EXFIL,
         ] {
             assert!(
                 is_type_safe_for_sink(&[SsaValue(0)], cap, &result),
@@ -1307,14 +1388,14 @@ mod tests {
     /// `is_type_safe_for_sink` requires an intentional matrix edit + a
     /// test update.  Truth values:
     ///
-    /// | TypeKind  | SQL | FILE | SHELL | HTML | SSRF | CODE_EXEC | DESERIALIZE |
-    /// |-----------|-----|------|-------|------|------|-----------|-------------|
-    /// | Int       |  Y  |  Y   |   Y   |  Y   |  Y   |     N     |      N      |
-    /// | Bool      |  Y  |  Y   |   Y   |  Y   |  Y   |     N     |      N      |
-    /// | String    |  N  |  N   |   N   |  N   |  N   |     N     |      N      |
-    /// | Url       |  N  |  N   |   N   |  N   |  N   |     N     |      N      |
-    /// | Object    |  N  |  N   |   N   |  N   |  N   |     N     |      N      |
-    /// | Unknown   |  N  |  N   |   N   |  N   |  N   |     N     |      N      |
+    /// | TypeKind  | SQL | FILE | SHELL | HTML | SSRF | DATA_EXFIL | CODE_EXEC | DESERIALIZE |
+    /// |-----------|-----|------|-------|------|------|------------|-----------|-------------|
+    /// | Int       |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     N     |      N      |
+    /// | Bool      |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     N     |      N      |
+    /// | String    |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
+    /// | Url       |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
+    /// | Object    |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
+    /// | Unknown   |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
     #[test]
     fn type_kind_cap_suppression_matrix() {
         use crate::labels::Cap;
@@ -1324,40 +1405,41 @@ mod tests {
             ("SHELL_ESCAPE", Cap::SHELL_ESCAPE),
             ("HTML_ESCAPE", Cap::HTML_ESCAPE),
             ("SSRF", Cap::SSRF),
+            ("DATA_EXFIL", Cap::DATA_EXFIL),
             ("CODE_EXEC", Cap::CODE_EXEC),
             ("DESERIALIZE", Cap::DESERIALIZE),
         ];
         // (kind_name, kind, [suppress for each cap in `caps` order])
-        let rows: &[(&str, TypeKind, [bool; 7])] = &[
+        let rows: &[(&str, TypeKind, [bool; 8])] = &[
             (
                 "Int",
                 TypeKind::Int,
-                [true, true, true, true, true, false, false],
+                [true, true, true, true, true, true, false, false],
             ),
             (
                 "Bool",
                 TypeKind::Bool,
-                [true, true, true, true, true, false, false],
+                [true, true, true, true, true, true, false, false],
             ),
             (
                 "String",
                 TypeKind::String,
-                [false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false],
             ),
             (
                 "Url",
                 TypeKind::Url,
-                [false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false],
             ),
             (
                 "Object",
                 TypeKind::Object,
-                [false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false],
             ),
             (
                 "Unknown",
                 TypeKind::Unknown,
-                [false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false],
             ),
         ];
         for (kind_name, kind, expected) in rows {
@@ -1389,6 +1471,7 @@ mod tests {
             Cap::SHELL_ESCAPE,
             Cap::HTML_ESCAPE,
             Cap::SSRF,
+            Cap::DATA_EXFIL,
             Cap::CODE_EXEC,
             Cap::DESERIALIZE,
         ] {
@@ -1487,6 +1570,8 @@ mod tests {
             exception_edges: vec![],
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::new();

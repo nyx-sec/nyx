@@ -4,7 +4,7 @@ use crate::ssa::type_facts::TypeKind;
 use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Unique identifier for an SSA value (one per definition point).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -353,6 +353,26 @@ pub struct SsaBody {
     /// cleanly with an empty map (no migration needed).
     #[serde(default)]
     pub field_writes: HashMap<SsaValue, (SsaValue, FieldId)>,
+    /// SSA values that lowering injected for **free / closure-captured**
+    /// variables (variables referenced by the body but not declared as
+    /// formal parameters and not assigned within the body).
+    ///
+    /// Lowering models every external use as an [`SsaOp::Param`] in block
+    /// 0 so the rename pass can reference it.  Real formal parameters and
+    /// closure captures end up using the same op variant; this side-table
+    /// distinguishes the two so downstream analyses (in particular the
+    /// JS/TS handler-name auto-seed in
+    /// [`crate::taint::ssa_transfer`]) can avoid treating closure
+    /// captures as if they were the function's own parameters.  Without
+    /// this distinction, a lambda body that references an out-of-scope
+    /// `userId` / `cmd` / `payload` would have the synthetic Param
+    /// auto-seeded as `UserInput`, producing a phantom source on the
+    /// enclosing function's declaration line.
+    ///
+    /// `#[serde(default)]` for backward compatibility with summary blobs
+    /// produced before this field existed.
+    #[serde(default)]
+    pub synthetic_externals: HashSet<SsaValue>,
 }
 
 impl SsaBody {
@@ -560,6 +580,7 @@ mod tests {
             exception_edges: vec![],
             field_interner: FieldInterner::new(),
             field_writes: HashMap::new(),
+            synthetic_externals: HashSet::new(),
         };
         let fid = body.intern_field("mu");
         body.blocks[0].body.push(SsaInst {

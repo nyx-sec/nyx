@@ -1,0 +1,13 @@
+{
+  "description": "Async DATA_EXFIL via httpx.AsyncClient: os.environ.get() (EnvironmentConfig — Sensitive-tier) flows into the json kwarg of an async client.post() call against a fixed URL. The receiver type resolves to HttpClient so the gated DATA_EXFIL fires via the type-qualified `HttpClient.post` matcher; the destination is hardcoded so SSRF must NOT fire.",
+  "tags": ["taint", "data-exfil", "httpx", "async", "type-qualified", "sensitivity-gate"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_match": true,
+      "line_range": [15, 20],
+      "notes": "os.environ → SourceKind::EnvironmentConfig → Sensitivity::Sensitive — DATA_EXFIL fires on the json kwarg of HttpClient.post."
+    }
+  ]
+}

@@ -213,6 +213,26 @@ CLI flag map (each pair is `--enable / --no-enable`):
 
 **Explain effective engine**: pass `--explain-engine` to print the resolved engine configuration (profile + config + CLI overrides) and exit without scanning.
 
+### `[detectors.data_exfil]`
+
+Per-project tuning for the `taint-data-exfiltration` rule. All fields are optional.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Set `false` to strip `Cap::DATA_EXFIL` from sink caps before emission. No `taint-data-exfiltration` finding reaches the report. Other taint classes are not affected. |
+| `trusted_destinations` | [string] | `[]` | URL prefixes that drop `Cap::DATA_EXFIL` on the call site. Matched against the abstract-string domain prefix of the destination arg, so a literal URL or a template literal with a static prefix both work. Use full origins or origin-pinned paths and include the trailing `/`, otherwise `https://api.` matches `https://api.evil.example.com/` too. |
+
+```toml
+[detectors.data_exfil]
+enabled = true
+trusted_destinations = [
+  "https://api.internal/",
+  "https://telemetry.example.com/",
+]
+```
+
+For the sanitizer convention, source sensitivity gate, and per-language sink coverage, see [Detectors / Taint / DATA_EXFIL](detectors/taint.md#data_exfil-suppression-layers).
+
 ### `[analysis.languages.<slug>]`
 
 Per-language custom rules. `<slug>` is one of: `rust`, `javascript`, `typescript`, `python`, `go`, `java`, `c`, `cpp`, `php`, `ruby`.
@@ -232,7 +252,8 @@ kind = "sanitizer"        # "source" | "sanitizer" | "sink"
 cap = "html_escape"       # "env_var" | "html_escape" | "shell_escape" |
                           # "url_encode" | "json_parse" | "file_io" |
                           # "fmt_string" | "sql_query" | "deserialize" |
-                          # "ssrf" | "code_exec" | "crypto" | "all"
+                          # "ssrf" | "data_exfil" | "code_exec" | "crypto" |
+                          # "unauthorized_id" | "all"
 ```
 
 ---

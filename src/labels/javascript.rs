@@ -98,6 +98,26 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
+    // Conventional forwarding wrappers, telemetry / analytics / metrics dispatch.
+    // Treating these as Sanitizer(DATA_EXFIL) encodes the project convention
+    // that a payload routed through a named forwarding boundary is an
+    // explicit, expected egress (the developer named the function), not the
+    // accidental cross-boundary leak DATA_EXFIL is meant to catch.  Users who
+    // do not follow this convention can override per-project via
+    // [analysis.languages.javascript] custom rules; the convention is
+    // documented in docs/detectors/taint.md so projects can extend it.
+    LabelRule {
+        matchers: &[
+            "serializeForUpstream",
+            "forwardPayload",
+            "tracker.send",
+            "analytics.track",
+            "metrics.report",
+            "logEvent",
+        ],
+        label: DataLabel::Sanitizer(Cap::DATA_EXFIL),
+        case_sensitive: false,
+    },
     // Conventional project-local HTML escapers.  Suffix word-boundary match
     // fires on bare calls to locally defined helpers (`function escapeHtml(x)`
     // invoked as `escapeHtml(x)`) across codebases that follow the common
@@ -128,6 +148,23 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::URL_ENCODE),
         case_sensitive: false,
     },
+    // Shell-exec sinks. Qualified `child_process.*` and bare destructured-
+    // import forms (`exec`, `execSync`, `execFile`, ...) are both modeled as
+    // flat sinks here so module-aliased call sites like `cp.exec(...)`
+    // (where `cp = require('child_process')`) still fire via suffix match.
+    // The bare-form FPs that motivated tightening are addressed elsewhere:
+    //
+    //   * `container.exec(...)` (Dockerode) and `exec.start(...)` (the
+    //     resulting `exec` handle) — `container.exec` is excluded via the
+    //     EXCLUDES list below; `exec.start` is suppressed by restricting
+    //     `first_member_label`'s suffix-strip-and-retry to `Source` labels
+    //     only (see `cfg/helpers.rs`).
+    //   * `execSync(cmd, { env: process.env })` flagging `process.env`
+    //     flowing into the options arg — addressed by the
+    //     `=exec`/`=execSync`/`=execFile`/... gates in `GATED_SINKS` below
+    //     which set `payload_args: &[0]`.  The cfg pass propagates a gate's
+    //     payload_args restriction onto the matching flat sink so only arg
+    //     0 (the command string) is taint-checked at the call site.
     LabelRule {
         matchers: &[
             "child_process.exec",
@@ -136,8 +173,9 @@ pub static RULES: &[LabelRule] = &[
             "child_process.execFile",
             // Bare forms from destructured imports:
             //   const { exec, execSync } = require('child_process')
-            // Note: bare `exec` suffix-matches RegExp.prototype.exec() too,
-            // but in practice tainted data rarely flows to regexp.exec().
+            // and module-aliased calls like `cp.exec(...)`.  Receiver-name
+            // collisions (`container.exec`, etc.) are suppressed via
+            // EXCLUDES; arg-position restriction comes from the `=*` gates.
             "exec",
             "execSync",
             "execFile",
@@ -250,16 +288,22 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
     },
-    // ORM / query builder raw-SQL entry points
+    // ORM / query builder raw-SQL entry points.
+    //
+    // `$queryRaw` / `$executeRaw` are tagged-template forms; the SQL is
+    // assembled from a template literal so taint reaching arg 0 is the
+    // injection vector and modeling them as flat sinks is correct.
+    //
+    // `$queryRawUnsafe` / `$executeRawUnsafe` accept positional bind
+    // parameters: `tx.$queryRawUnsafe(sqlTemplate, p1, p2, ...)` binds
+    // p1..pN as `$1..$N` (PostgreSQL prepared-statement params) and the SQL
+    // template at arg 0 is the only injection point.  These are modeled as
+    // gated sinks below (`payload_args: &[0]`) so taint flowing only into
+    // the bind params no longer fires.  `sequelize.query` and `knex.raw`
+    // also accept a separate bind-params object/array but the bind-params
+    // interface is non-positional in those APIs, so they stay flat for now.
     LabelRule {
-        matchers: &[
-            "sequelize.query",
-            "knex.raw",
-            "$queryRaw",
-            "$queryRawUnsafe",
-            "$executeRaw",
-            "$executeRawUnsafe",
-        ],
+        matchers: &["sequelize.query", "knex.raw", "$queryRaw", "$executeRaw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
@@ -295,6 +339,17 @@ pub static EXCLUDES: &[&str] = &[
     "req.session.regenerate",
     "req.session.save",
     "req.session.reload",
+    // Dockerode container API: `container.exec({ Cmd: [...] })` is the
+    // canonical non-shell exec path (the Cmd array is passed directly to
+    // the kernel via `execve`, no shell parsing).  `exec.start(...)` is
+    // the follow-on stream attach.  Suffix-matching the bare `exec` rule
+    // would otherwise classify every `<receiver>.exec(...)` method call
+    // — including these — as a SHELL_ESCAPE sink.  These patterns name
+    // the Dockerode SDK methods specifically; if a project happens to
+    // also expose its own `container.exec` shell wrapper, override via
+    // [analysis.languages.javascript] custom rules.
+    "container.exec",
+    "exec.start",
 ];
 
 pub static GATED_SINKS: &[SinkGate] = &[
@@ -575,6 +630,128 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {
             object_destination_fields: &["body", "headers", "json"],
+        },
+    },
+    // ── Shell-exec sinks (SHELL_ESCAPE) ──────────────────────────────────
+    //
+    // Only arg 0 (the command string) is a shell-injection payload.
+    // `options.env` / `options.cwd` / etc. at arg 1+ are not.  Bare forms
+    // (`exec`, `execSync`, `execFile`, `execAsync`, `execPromise`) use the
+    // `=` exact-only sigil so they match the destructured-import shape
+    // (`const { exec } = require('child_process'); exec(cmd)`) without
+    // colliding with any `<receiver>.exec` method (Dockerode's
+    // `container.exec`, `RegExp.prototype.exec`, etc.).
+    // Qualified `child_process.*` forms stay as flat sinks (see RULES above);
+    // gates run only when no flat sink already classifies the call, so adding
+    // them here would never fire.  The bare destructured-import forms below
+    // are the only place where shell-exec needs gating, since `classify_all`
+    // can't safely register a bare `exec` rule without colliding with every
+    // `<receiver>.exec` method (Dockerode `container.exec`,
+    // `RegExp.prototype.exec`, etc.).
+    SinkGate {
+        callee_matcher: "=exec",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "=execSync",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "=execFile",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "=execAsync",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "=execPromise",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SHELL_ESCAPE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── Prisma raw-SQL with positional bind params (SQL_QUERY) ───────────
+    //
+    // `tx.$queryRawUnsafe(sqlTemplate, p1, p2, ...)` binds `p1..pN` as
+    // PostgreSQL `$1..$N` prepared-statement parameters; only arg 0 (the
+    // SQL template) is the injection vector.  Flat sinks here flagged taint
+    // flowing only into bind params, which is equivalent to a parameterised
+    // query and not exploitable.  Suffix-match (no `=` sigil) so
+    // `tx.$queryRawUnsafe`, `prisma.$queryRawUnsafe`, etc. all qualify.
+    SinkGate {
+        callee_matcher: "$queryRawUnsafe",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "$executeRawUnsafe",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
         },
     },
 ];

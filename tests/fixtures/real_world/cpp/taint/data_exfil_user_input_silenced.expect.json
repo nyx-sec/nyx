@@ -1,0 +1,13 @@
+{
+  "description": "curl_easy_setopt CURLOPT_POSTFIELDS body-binding with a plain user-input source (std::getline from std::cin). DATA_EXFIL must NOT fire: the body source is Sensitivity::Plain (raw user input) and the source-sensitivity gate suppresses Plain-tier sources for Cap::DATA_EXFIL. Pairs with data_exfil_curl_postfields.cpp to assert per-tier routing for C++.",
+  "tags": ["taint", "data-exfil", "curl", "gated-sink", "sensitivity-gate", "cap-attribution"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "must_not_match": true,
+      "line_range": [4, 12],
+      "notes": "Body source is plain user input (std::getline from std::cin → Sensitivity::Plain). DATA_EXFIL fires only on Sensitive-tier sources — plain user input echoed into a request body is not data exfiltration."
+    }
+  ]
+}

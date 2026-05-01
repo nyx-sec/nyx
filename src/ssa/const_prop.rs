@@ -638,6 +638,8 @@ mod tests {
             exception_edges: Vec::new(),
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
+
+            synthetic_externals: std::collections::HashSet::new(),
         }
     }
 
