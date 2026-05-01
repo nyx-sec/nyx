@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 485
+    "corpus_size": 487
   },
   "cases": [
     {
@@ -12497,6 +12497,64 @@
       ],
       "disabled": false,
       "notes": "Composer-style autoloader: closure / method takes a file path parameter and `include`s it. Pattern rule is heuristic without taint and over-fires; suppress when included variable is a formal parameter of the immediately enclosing function with no reassignment. Distilled from nextcloud composer/ClassLoader.php (32 copies), Router.php, Installer.php, Template/Base.php."
+    },
+    {
+      "case_id": "php-safe-019",
+      "file": "php/safe/safe_md5_sha1_non_crypto_use.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-327",
+      "provenance": "real-repo-precision-2026-05-01",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "php.crypto.md5",
+        "php.crypto.sha1"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "real-repo-precision-2026-05-01",
+        "weak-hash",
+        "non-crypto-use",
+        "etag",
+        "cache-key"
+      ],
+      "disabled": false,
+      "notes": "md5() / sha1() pervasively used for non-cryptographic purposes — ETag generation, cache-key / array-index hashing, dedup fingerprints, content-addressed identifier derivation. Layer F suppression recognises the consuming context (variable LHS, member-access LHS, subscript LHS, array element key, lookup-verb argument, return-from-method, hash-as-index) and refuses to fire. Distilled from nextcloud apps/dav CalDavBackend, contactsinteraction Card, Files/Cache, theming Util / CommonThemeTrait, encryption KeyManager; phpmyadmin src/Controllers/Database/StructureController, Controllers/Table/{RelationController, SearchController, ZoomSearchController}, src/Display/Results, Database/MultiTableQuery, Favorites/RecentFavoriteTables."
+    },
+    {
+      "case_id": "php-crypto-001",
+      "file": "php/crypto/crypto_md5_password_hash.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "crypto",
+      "cwe": "CWE-327",
+      "provenance": "real-repo-precision-2026-05-01",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "php.crypto.md5",
+        "php.crypto.sha1"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "real-repo-precision-2026-05-01",
+        "weak-hash",
+        "credential-storage"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart to php-safe-019: md5 / sha1 used to store / sign / digest credentials, tokens, signatures. Consumer names contain crypto-keyword substrings (`password`, `token`, `signature`, `pw_hash`, `digest`) so Layer F suppression refuses to fire."
     },
     {
       "case_id": "c-safe-014",

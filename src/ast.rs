@@ -934,6 +934,27 @@ impl<'a> ParsedSource<'a> {
                     {
                         continue;
                     }
+                    // Layer F: PHP `md5()` / `sha1()` flagged as weak hash
+                    // functions, but used in a non-cryptographic context
+                    // (ETag generation, cache-key / array-index hashing,
+                    // identifier fingerprinting, deduplication).  The
+                    // pattern rule cannot distinguish weak-hash crypto
+                    // misuse from these idiomatic uses, so it over-fires
+                    // on every `md5(...)` callsite regardless of the
+                    // surrounding consuming context.  Suppress when the
+                    // call's *consuming context* yields a name that
+                    // matches a recognised non-cryptographic identifier
+                    // pattern (variable / field / array-key / method
+                    // suffix).  Genuine weak-hash crypto misuse —
+                    // `$password_hash = md5(...)`, `$signature = md5(...)`,
+                    // `$tokenHash = md5(...)` — keeps firing because the
+                    // name contains an excluded crypto-keyword substring.
+                    if (cq.meta.id == "php.crypto.md5" || cq.meta.id == "php.crypto.sha1")
+                        && self.lang_slug == "php"
+                        && is_php_weak_hash_non_crypto_use(cap.node, self.bytes)
+                    {
+                        continue;
+                    }
                     let point = cap.node.start_position();
                     out.push(Diag {
                         path: self.path.to_string_lossy().into_owned(),
@@ -2823,6 +2844,545 @@ fn strip_pointer_and_cv(s: &str) -> Option<String> {
     Some(base.to_string())
 }
 
+/// PHP-only Layer F: structural suppression of `php.crypto.md5` /
+/// `php.crypto.sha1` when the call's *consuming context* yields a name
+/// that matches a recognised non-cryptographic identifier pattern.
+///
+/// The pattern rule fires syntactically on every `md5(...)` /
+/// `sha1(...)` callsite regardless of how the result is used.  In real
+/// PHP code these functions are pervasively used for non-cryptographic
+/// purposes — ETag generation (HTTP cache validators), array/cache-key
+/// hashing, dedup fingerprints, content addressing for templates — and
+/// those uses do not realise the "weak hash function" risk the rule
+/// names.  Suppress only when the consuming context yields a name from
+/// a recognised non-crypto suffix set, while keeping every callsite
+/// whose name contains a crypto-keyword substring (`password`,
+/// `secret`, `token`, `signature`, `hmac`, `digest`, `salt`, …).
+///
+/// Consuming contexts inspected (walk up through transparent wrappers
+/// — `binary_expression` for concat / equality, `parenthesized_expression`,
+/// `conditional_expression`, `argument`):
+///   - `assignment_expression` (covers `=`, `??=`, `+=`, …) — resolve
+///     the LHS to a final identifier (variable name, member-access
+///     property name, or string-literal subscript index).
+///   - `array_element_initializer` — the key is a string literal whose
+///     contents are the consuming name.
+///   - `subscript_expression` where the call sits in the index position
+///     — using a hash as an array index is intrinsically non-crypto.
+///   - `return_statement` — resolve the enclosing
+///     `function_definition` / `method_declaration` name (with the
+///     conventional `get` prefix stripped).
+///
+/// All other consuming forms (bare expression statements, comparison
+/// operands without an LHS, lambda returns, arguments to user-defined
+/// helpers) keep firing.
+fn is_php_weak_hash_non_crypto_use(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let call = if cap_node.kind() == "function_call_expression" {
+        cap_node
+    } else {
+        let mut cur = cap_node;
+        let mut found = None;
+        for _ in 0..4 {
+            if cur.kind() == "function_call_expression" {
+                found = Some(cur);
+                break;
+            }
+            match cur.parent() {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        match found {
+            Some(c) => c,
+            None => return false,
+        }
+    };
+
+    let mut cur = call;
+    let mut steps = 0u32;
+    while let Some(parent) = cur.parent() {
+        if steps > 16 {
+            return false;
+        }
+        steps += 1;
+        match parent.kind() {
+            // Transparent wrappers — keep walking to find the consumer.
+            //
+            // Function-call-shaped wrappers (`arguments`,
+            // `function_call_expression`, `member_call_expression`,
+            // `nullsafe_member_call_expression`) are treated as
+            // transparent only when there is at most one md5/sha1
+            // call in the wrapped argument list — the surrounding
+            // call's outer context (LHS / array key / return method)
+            // is what classifies the use.  This catches the common
+            // `$arr['etag'] = $q->createNamedParameter(md5($x))` and
+            // `'short_id' => substr(md5($x), 0, 8)` shapes without
+            // walking through arbitrary identity-bending wrappers
+            // (because crypto compound names — `verify_signature`,
+            // `password_hash`, `hmac_init` — invariably end up bound
+            // to crypto-keyworded LHS names which the exclude list
+            // catches at the consumer).
+            "binary_expression"
+            | "parenthesized_expression"
+            | "conditional_expression"
+            | "argument"
+            | "arguments"
+            | "function_call_expression"
+            | "encapsed_string" => {}
+            "assignment_expression" | "augmented_assignment_expression" => {
+                let lhs = parent
+                    .child_by_field_name("left")
+                    .or_else(|| parent.named_child(0));
+                let Some(lhs) = lhs else {
+                    return false;
+                };
+                return resolve_php_lvalue_name(lhs, bytes)
+                    .map(|n| name_is_non_crypto(&n))
+                    .unwrap_or(false);
+            }
+            "array_element_initializer" => {
+                if parent.named_child_count() < 2 {
+                    return false;
+                }
+                let key = parent.named_child(0);
+                let Some(key) = key else {
+                    return false;
+                };
+                let Some(key_text) = string_literal_text(key, bytes) else {
+                    return false;
+                };
+                return name_is_non_crypto(&key_text);
+            }
+            "subscript_expression" => {
+                // tree-sitter-php: subscript_expression has the receiver as
+                // the first named child and the index as the second.  If our
+                // call sits past the receiver's end byte, we are the index.
+                let r0 = parent.named_child(0);
+                let Some(r0) = r0 else {
+                    cur = parent;
+                    continue;
+                };
+                if call.start_byte() >= r0.end_byte() {
+                    return true;
+                }
+                // Otherwise we're inside the receiver chain; the surrounding
+                // `assignment_expression` (if any) will resolve the LHS name.
+            }
+            "member_call_expression" | "nullsafe_member_call_expression" => {
+                // The md5/sha1 result is being passed as an argument to a
+                // method call.  When the method name is a recognised
+                // key/cache/lookup verb (`get`, `set`, `has`, `delete`,
+                // `fetch`, `store`, `find`, `getItem`, `setItem`, …), the
+                // result is being used as a non-cryptographic lookup key —
+                // canonical for cache backends, hash maps, and storage
+                // adapters where the developer is hashing arbitrary input
+                // to a fixed-length, character-safe key.  Genuine
+                // crypto-comparison wrappers (`hash_equals`, `verify`,
+                // `password_verify`) keep firing because their method
+                // name does not match the verb set.
+                let name_node = parent
+                    .child_by_field_name("name")
+                    .or_else(|| {
+                        // Fallback: last named child is the method name.
+                        let count = parent.named_child_count();
+                        if count == 0 {
+                            None
+                        } else {
+                            parent.named_child(count as u32 - 1)
+                        }
+                    });
+                if let Some(nn) = name_node
+                    && nn.kind() == "name"
+                    && let Ok(method) = std::str::from_utf8(&bytes[nn.byte_range()])
+                    && method_is_lookup_verb(method)
+                {
+                    return true;
+                }
+                // Otherwise treat as transparent so the OUTER consumer can
+                // classify (`$x = $cache->get(sha1($k))` resolves LHS `x`).
+            }
+            "return_statement" => {
+                let mut p = parent;
+                for _ in 0..10 {
+                    let Some(pp) = p.parent() else {
+                        return false;
+                    };
+                    p = pp;
+                    let kind = p.kind();
+                    if kind == "method_declaration" || kind == "function_definition" {
+                        let Some(nn) = p
+                            .child_by_field_name("name")
+                            .or_else(|| find_named_child_of_kind(p, "name"))
+                        else {
+                            return false;
+                        };
+                        let Ok(name) = std::str::from_utf8(&bytes[nn.byte_range()]) else {
+                            return false;
+                        };
+                        return method_name_is_non_crypto(name);
+                    }
+                    if kind == "anonymous_function"
+                        || kind == "arrow_function"
+                        || kind == "anonymous_function_creation_expression"
+                    {
+                        return false;
+                    }
+                }
+                return false;
+            }
+            // Halt at scope / statement boundaries we cannot resolve through.
+            "expression_statement"
+            | "compound_statement"
+            | "method_declaration"
+            | "function_definition"
+            | "anonymous_function"
+            | "anonymous_function_creation_expression"
+            | "arrow_function"
+            | "program" => return false,
+            _ => return false,
+        }
+        cur = parent;
+    }
+    false
+}
+
+/// Resolve the final identifier of a PHP l-value expression to a string
+/// suitable for [`name_is_non_crypto`] classification.
+///
+/// Handles:
+///   - `$variable` (`variable_name` → inner name child)
+///   - `$obj->property` (`member_access_expression` → name field)
+///   - `$arr['literal_key']` (`subscript_expression` → string-literal index)
+///   - `Class::$static` / `self::$prop` (`scoped_property_access_expression`)
+///
+/// Returns `None` for unrecognised l-value shapes (dynamic property
+/// access, computed indices, function-call l-values, etc.); the caller
+/// then falls back to keeping the finding.
+fn resolve_php_lvalue_name(lhs: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
+    let lhs = unwrap_php_paren(lhs);
+    match lhs.kind() {
+        "variable_name" => {
+            let name_node = lhs.named_child(0)?;
+            std::str::from_utf8(&bytes[name_node.byte_range()])
+                .ok()
+                .map(String::from)
+        }
+        "member_access_expression" => {
+            let n = lhs
+                .child_by_field_name("name")
+                .or_else(|| {
+                    let count = lhs.named_child_count();
+                    if count == 0 {
+                        None
+                    } else {
+                        lhs.named_child(count as u32 - 1)
+                    }
+                })?;
+            // Property access can name a `name` (bare ident) or a
+            // `variable_name` (dynamic ${$x} — which we don't resolve).
+            if n.kind() == "name" {
+                std::str::from_utf8(&bytes[n.byte_range()])
+                    .ok()
+                    .map(String::from)
+            } else {
+                None
+            }
+        }
+        "subscript_expression" => {
+            if lhs.named_child_count() >= 2 {
+                let idx = lhs.named_child(1)?;
+                if let Some(txt) = string_literal_text(idx, bytes) {
+                    return Some(txt);
+                }
+            }
+            // Dynamic / non-literal index: recurse into the receiver
+            // so `$columnNamesHashes[$col]` resolves to
+            // `columnNamesHashes`.  This handles canonical
+            // `$lookup_by_hash[$key] = md5($key)` shapes.
+            let r = lhs.named_child(0)?;
+            resolve_php_lvalue_name(r, bytes)
+        }
+        "scoped_property_access_expression" => {
+            let count = lhs.named_child_count();
+            if count == 0 {
+                return None;
+            }
+            let prop = lhs.named_child(count as u32 - 1)?;
+            // The static property is a `variable_name`.  Reuse this
+            // function recursively to extract the bare name.
+            resolve_php_lvalue_name(prop, bytes)
+        }
+        _ => None,
+    }
+}
+
+/// Return the textual contents of a PHP string literal node (`string`
+/// or `encapsed_string`), stripping surrounding quotes.  Returns `None`
+/// for any non-string node and for interpolated `encapsed_string`s
+/// containing template variables.
+fn string_literal_text(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
+    if node.kind() != "string" && node.kind() != "encapsed_string" {
+        return None;
+    }
+    if has_interpolation(node) {
+        return None;
+    }
+    for i in 0..node.named_child_count() as u32 {
+        if let Some(c) = node.named_child(i)
+            && (c.kind() == "string_content" || c.kind() == "string_value")
+        {
+            return std::str::from_utf8(&bytes[c.byte_range()])
+                .ok()
+                .map(String::from);
+        }
+    }
+    if let Ok(s) = std::str::from_utf8(&bytes[node.byte_range()]) {
+        let trimmed = s.trim_matches(|c| c == '\'' || c == '"');
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
+fn unwrap_php_paren(mut node: tree_sitter::Node) -> tree_sitter::Node {
+    for _ in 0..4 {
+        if node.kind() == "parenthesized_expression"
+            && let Some(inner) = node.named_child(0)
+        {
+            node = inner;
+            continue;
+        }
+        break;
+    }
+    node
+}
+
+/// Classify a PHP identifier as non-cryptographic by name.  Two-tier
+/// check: any name containing a crypto-keyword substring is hard-rejected
+/// (kept as a finding); the remaining names are accepted when their
+/// form ends in a recognised non-crypto suffix at a word boundary
+/// (underscore, digit, camelCase transition) or via a long-enough
+/// stand-alone suffix (≥4 chars).
+///
+/// The crypto-keyword exclude list uses substring match (not just
+/// suffix) so compound names like `hashedPassword` / `tokenHash` /
+/// `sigStore` are conservatively kept.  False rejections of safe
+/// shapes are acceptable; false acceptances of crypto shapes are not.
+pub(crate) fn name_is_non_crypto(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    static CRYPTO_EXCLUDES: &[&str] = &[
+        "password",
+        "passwd",
+        "pw_hash",
+        "pwhash",
+        "pwdhash",
+        "pwd_hash",
+        "passhash",
+        "pass_hash",
+        "secret",
+        "token",
+        "signature",
+        "signed",
+        "hmac",
+        "digest",
+        "verifier",
+        "challenge",
+        "csrf",
+        "salt",
+        "nonce_secret",
+        "auth_code",
+        "authcode",
+        "auth_key",
+        "authkey",
+        "private",
+        "credential",
+        "creds",
+        "encryption",
+        "decryption",
+        "encryptkey",
+        "decryptkey",
+        "encrypt_key",
+        "decrypt_key",
+    ];
+    for ex in CRYPTO_EXCLUDES {
+        if lower.contains(ex) {
+            return false;
+        }
+    }
+    // `sig` / `mac` are excluded only at word boundaries — the substrings
+    // appear in legitimate non-crypto names (`signal`, `unsigned`,
+    // `assignee`, `design`, `magic`).
+    if lower == "sig" || lower.ends_with("_sig") || lower.ends_with("sig_") {
+        return false;
+    }
+    if lower == "mac" || lower.ends_with("_mac") {
+        return false;
+    }
+    // Permissive safe-suffix recognition.
+    static SAFE_SUFFIXES: &[&str] = &[
+        "hash",
+        "hashes",
+        "etag",
+        "etags",
+        "md5",
+        "sha1",
+        "fingerprint",
+        "fingerprints",
+        "cachekey",
+        "cache_key",
+        "cacheid",
+        "cache_id",
+        "id",
+        "uid",
+        "uuid",
+        "guid",
+        "key",
+        "keys",
+        "name_hash",
+        "checksum",
+        "slot",
+        "bucket",
+        "seed",
+        "marker",
+        "tag",
+        "gravatar",
+        "hashid",
+        "opaque",
+        "shortid",
+        "short_id",
+        "fnv",
+        "fingerprintkey",
+        "anchor",
+        "version",
+        "buster",
+        "cachebuster",
+        "cache_buster",
+        "revision",
+        "rev",
+    ];
+    let bytes_orig = name.as_bytes();
+    for s in SAFE_SUFFIXES {
+        if lower == *s {
+            return true;
+        }
+        if !lower.ends_with(s) {
+            continue;
+        }
+        let prev_pos = lower.len() - s.len();
+        if prev_pos == 0 {
+            return true;
+        }
+        let prev_char_orig = bytes_orig[prev_pos - 1] as char;
+        // Word boundary: underscore, digit, etc.
+        if !prev_char_orig.is_ascii_alphabetic() {
+            return true;
+        }
+        // CamelCase boundary: suffix starts with an uppercase letter
+        // in the original casing (`storageId`, `tableHash`, `sqlMd5`).
+        let suffix_first_orig = bytes_orig[prev_pos] as char;
+        if suffix_first_orig.is_ascii_uppercase() {
+            return true;
+        }
+        // Long stand-alone suffix (≥4 chars) — accept without boundary.
+        if s.len() >= 4 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Like [`name_is_non_crypto`] but with a leading `get` prefix stripped
+/// to recognise the canonical `getETag` / `getHash` / `getCacheKey`
+/// accessor naming convention.  Pass the original-case name through so
+/// downstream camelCase-boundary detection still works.
+fn method_name_is_non_crypto(name: &str) -> bool {
+    let stripped = name
+        .strip_prefix("get")
+        .or_else(|| name.strip_prefix("Get"))
+        .unwrap_or(name);
+    if name_is_non_crypto(stripped) {
+        return true;
+    }
+    // Some accessors keep the prefix (e.g., `recoveryKeyId`,
+    // `formatPath` returning a hashed-path identifier).  Also try the
+    // raw name for camelCase-boundary suffix detection.
+    name_is_non_crypto(name)
+}
+
+/// Recognise PHP method names that signal a lookup / cache / store /
+/// container key-or-value operation.  When `md5(...)` / `sha1(...)` is
+/// passed to such a method, the result is being used as a content-
+/// addressed key — not for cryptographic strength.  The verb set is
+/// purposely narrow so cryptographic comparison helpers
+/// (`hash_equals`, `verify`, `password_verify`, `decryptWith`) keep
+/// firing.
+fn method_is_lookup_verb(method: &str) -> bool {
+    let lower = method.to_ascii_lowercase();
+    static VERBS: &[&str] = &[
+        "get",
+        "set",
+        "has",
+        "delete",
+        "remove",
+        "fetch",
+        "store",
+        "put",
+        "save",
+        "exists",
+        "find",
+        "lookup",
+        "getitem",
+        "setitem",
+        "hasitem",
+        "deleteitem",
+        "addtag",
+        "addtotag",
+        "key",
+        "keyfor",
+        "containskey",
+        "haskey",
+        "loadbykey",
+        "fetchbykey",
+        "getbykey",
+        "setbykey",
+        "deletebykey",
+        "incr",
+        "incrby",
+        "decr",
+        "decrby",
+        "expire",
+        "ttl",
+        "namespacekey",
+        "cachekey",
+    ];
+    if VERBS.contains(&lower.as_str()) {
+        return true;
+    }
+    // Composite forms like `getCacheKey`, `setCacheKey`, `getRoute` —
+    // very common in cache adapters, accept any name ending in one of
+    // a few non-crypto-typed-result suffixes preceded by a get/set/has
+    // verb.
+    static SUFFIX_HINTS: &[&str] = &[
+        "cachekey", "key", "id", "hash", "etag", "uid", "tag", "fingerprint",
+    ];
+    if let Some(rest) = lower
+        .strip_prefix("get")
+        .or_else(|| lower.strip_prefix("set"))
+        .or_else(|| lower.strip_prefix("has"))
+        .or_else(|| lower.strip_prefix("create"))
+        .or_else(|| lower.strip_prefix("build"))
+    {
+        for h in SUFFIX_HINTS {
+            if rest.ends_with(h) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Check if a string node contains interpolation (e.g., PHP `"Hello $name"`).
 fn has_interpolation(node: tree_sitter::Node) -> bool {
     for i in 0..node.child_count() as u32 {
@@ -3770,6 +4330,207 @@ fn php_unserialize_allowed_classes_recognises_safe_forms() {
         !is_php_unserialize_allowed_classes_restricted(cap, code),
         "dynamic options variable should NOT be suppressed"
     );
+}
+
+#[test]
+fn php_weak_hash_non_crypto_use_recognises_canonical_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(function_call_expression function: (name) @n (#match? @n "^(md5|sha1)$")) @vuln"#;
+
+    // ETag concat returned from getETag() — return-statement enclosing
+    // method name path.
+    let code = b"<?php\nclass C { public function getETag(): string { return '\"' . md5($this->data) . '\"'; } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "getETag concat should be suppressed"
+    );
+
+    // Array element value with a string-literal key whose name is non-crypto.
+    let code = b"<?php\nfunction f($x) { return ['table_name_hash' => md5($x)]; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "array element with `*_hash` key should be suppressed"
+    );
+
+    // Subscript LHS with a string-literal index `'etag'`.
+    let code = b"<?php\nfunction f($x, &$row) { $row['etag'] = md5($x); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "subscript LHS with 'etag' key should be suppressed"
+    );
+
+    // Member-access LHS named `storageId` (camelCase boundary on `Id` suffix).
+    let code = b"<?php\nclass C { function f() { $this->storageId = md5($this->id); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "member-access LHS `storageId` should be suppressed"
+    );
+
+    // Null-coalescing assignment with subscript LHS.
+    let code = b"<?php\nfunction f($t, &$tables) { $tables[$t]['hash'] ??= md5($t); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "??= subscript LHS with 'hash' key should be suppressed"
+    );
+
+    // Call result used as an array index.
+    let code = b"<?php\nfunction f($a, $x) { return $a[md5($x)]; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "md5 used as subscript index should be suppressed"
+    );
+
+    // Cache-style lookup verb (`$cache->get(sha1(...))`).
+    let code = b"<?php\nclass C { public $cache; function f($u) { return $this->cache->get(sha1($u)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "method call to lookup-verb `get(sha1(..))` should be suppressed"
+    );
+
+    // Createnamedparameter wrapper around md5 inside an array element value.
+    let code = b"<?php\nclass C { public $q; function f($d) { $this->q->insert('t')->values(['etag' => $this->q->createNamedParameter(md5($d))]); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "wrapper-call inside array element with `etag` key should be suppressed"
+    );
+
+    // Dynamic-index subscript LHS with a non-crypto receiver name.
+    let code = b"<?php\nfunction f($cols) { $columnNamesHashes = []; foreach ($cols as $c) { $columnNamesHashes[$c] = md5($c); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "subscript LHS with dynamic index — receiver name `*Hashes` should drive suppression"
+    );
+
+    // Crypto consumer — keep firing.  $this->password = md5($pwd).
+    let code = b"<?php\nclass C { public $password; function f($p) { $this->password = md5($p); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_weak_hash_non_crypto_use(cap, code),
+        "$this->password = md5(...) is crypto storage and must NOT be suppressed"
+    );
+
+    // Compound name with crypto-keyword substring.  $tokenHash = md5(...).
+    let code = b"<?php\nfunction f($x) { $tokenHash = md5($x); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_weak_hash_non_crypto_use(cap, code),
+        "$tokenHash compound name must NOT be suppressed (contains 'token')"
+    );
+
+    // pw_hash compound — must NOT be suppressed.
+    let code = b"<?php\nfunction f($p) { $pw_hash = md5($p); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_weak_hash_non_crypto_use(cap, code),
+        "$pw_hash compound name must NOT be suppressed"
+    );
+
+    // Bare statement / unrecognised consumer — keep firing.
+    let code = b"<?php\nfunction f($x) { var_dump(md5($x)); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_weak_hash_non_crypto_use(cap, code),
+        "var_dump(md5(...)) has no recognisable consumer name and must NOT be suppressed"
+    );
+}
+
+#[test]
+fn name_is_non_crypto_recognises_word_boundary_suffixes() {
+    // Whole-word and underscore boundaries.
+    assert!(name_is_non_crypto("hash"));
+    assert!(name_is_non_crypto("etag"));
+    assert!(name_is_non_crypto("table_name_hash"));
+    assert!(name_is_non_crypto("table_id"));
+    assert!(name_is_non_crypto("cache_key"));
+
+    // CamelCase boundaries.
+    assert!(name_is_non_crypto("storageId"));
+    assert!(name_is_non_crypto("tableHash"));
+    assert!(name_is_non_crypto("sqlMd5"));
+    assert!(name_is_non_crypto("cacheBuster"));
+
+    // Long stand-alone suffix (≥4) without word boundary.
+    assert!(name_is_non_crypto("columnnameshashes"));
+    assert!(name_is_non_crypto("tablefingerprint"));
+
+    // Non-letter previous char — digit.
+    assert!(name_is_non_crypto("v1id"));
+
+    // Keep firing on crypto-keyword compound names.
+    assert!(!name_is_non_crypto("password_hash"));
+    assert!(!name_is_non_crypto("hashedPassword"));
+    assert!(!name_is_non_crypto("tokenHash"));
+    assert!(!name_is_non_crypto("signatureHash"));
+    assert!(!name_is_non_crypto("pw_hash"));
+    assert!(!name_is_non_crypto("digest"));
+    assert!(!name_is_non_crypto("hmac"));
+    assert!(!name_is_non_crypto("salt"));
+    assert!(!name_is_non_crypto("private_key"));
+
+    // Words that LOOK like an `id` suffix but lack a word boundary —
+    // do NOT classify (no boundary, length-2 suffix).
+    assert!(!name_is_non_crypto("said"));
+    assert!(!name_is_non_crypto("void"));
+    assert!(!name_is_non_crypto("rapid"));
+
+    // Unrecognised generic names.
+    assert!(!name_is_non_crypto("x"));
+    assert!(!name_is_non_crypto("result"));
+    assert!(!name_is_non_crypto("output"));
+    assert!(!name_is_non_crypto(""));
+}
+
+#[test]
+fn method_is_lookup_verb_recognises_cache_verbs() {
+    // Direct verb match.
+    assert!(method_is_lookup_verb("get"));
+    assert!(method_is_lookup_verb("set"));
+    assert!(method_is_lookup_verb("has"));
+    assert!(method_is_lookup_verb("delete"));
+    assert!(method_is_lookup_verb("fetch"));
+    assert!(method_is_lookup_verb("getItem"));
+    assert!(method_is_lookup_verb("setItem"));
+
+    // Composite forms — verb prefix + non-crypto suffix.
+    assert!(method_is_lookup_verb("getCacheKey"));
+    assert!(method_is_lookup_verb("setCacheKey"));
+    assert!(method_is_lookup_verb("buildKey"));
+    assert!(method_is_lookup_verb("createId"));
+    assert!(method_is_lookup_verb("hasFingerprint"));
+
+    // Crypto-comparison helpers — keep firing.
+    assert!(!method_is_lookup_verb("hash_equals"));
+    assert!(!method_is_lookup_verb("verify"));
+    assert!(!method_is_lookup_verb("password_verify"));
+    assert!(!method_is_lookup_verb("decrypt"));
+    assert!(!method_is_lookup_verb("encrypt"));
+    assert!(!method_is_lookup_verb("sign"));
+    assert!(!method_is_lookup_verb("invoke"));
+    assert!(!method_is_lookup_verb("doSomething"));
 }
 
 #[test]

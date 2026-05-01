@@ -986,6 +986,25 @@ fn fp_guard_php_unserialize_allowed_classes() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, PHP `md5()` / `sha1()` weak-hash pattern rule firing
+/// syntactically on every callsite.  Real-world PHP uses these
+/// functions pervasively for non-cryptographic purposes (ETag
+/// generation, cache-key / array-index hashing, dedup fingerprints).
+/// Layer F suppression recognises the consuming context — variable
+/// LHS, member-access LHS, subscript LHS, array element key,
+/// lookup-verb argument, return-from-method, hash-as-index — and
+/// refuses to fire.  Distilled from nextcloud apps/dav (CalDavBackend,
+/// CardDavBackend, CardDav PhotoCache), apps/contactsinteraction,
+/// apps/theming (Util / CommonThemeTrait), apps/encryption KeyManager,
+/// apps/files Cache, and phpmyadmin Controllers/Database / Table /
+/// Display / Favorites.
+#[test]
+fn fp_guard_php_md5_sha1_non_crypto_use() {
+    let dir = fixture_path("fp_guards/php_md5_sha1_non_crypto_use");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, JS / TS local-collection receivers.  Pinned from the
 /// excalidraw element-manipulation cluster (66 → ~9 on
 /// `js.auth.missing_ownership_check` over the repo).  The fix lives at

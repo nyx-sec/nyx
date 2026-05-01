@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-01T22:09:13Z",
+  "timestamp": "2026-05-01T23:10:09Z",
   "scanner_version": "0.5.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:4a1bf4e67ef2f3db2231971c39c9f42d7eeb10edc4b4b2d90c38372c4b5d404d",
-  "corpus_size": 485,
-  "cases_run": 482,
+  "ground_truth_hash": "sha256:ff37fedb1f876da19f2ee2c0160967b074e0d4f41e774f15c871c5fb22f6a9f6",
+  "corpus_size": 487,
+  "cases_run": 484,
   "cases_skipped": 3,
   "outcomes": [
     {
@@ -4391,6 +4391,33 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "php-crypto-001",
+      "file": "php/crypto/crypto_md5_password_hash.php",
+      "language": "php",
+      "vuln_class": "crypto",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "php.crypto.md5",
+        "php.crypto.sha1",
+        "php.crypto.sha1",
+        "php.crypto.md5",
+        "php.crypto.sha1"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "php.crypto.md5",
+        "php.crypto.sha1",
+        "php.crypto.sha1",
+        "php.crypto.md5",
+        "php.crypto.sha1"
+      ],
+      "security_finding_count": 5,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "php-deser-001",
       "file": "php/deser/deser_unserialize.php",
       "language": "php",
@@ -4744,6 +4771,21 @@
     {
       "case_id": "php-safe-018",
       "file": "php/safe/safe_include_param_passthrough.php",
+      "language": "php",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "php-safe-019",
+      "file": "php/safe/safe_md5_sha1_non_crypto_use.php",
       "language": "php",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -8666,22 +8708,22 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 242,
+    "tp": 243,
     "fp": 7,
     "fn_": 0,
-    "tn": 233,
-    "precision": 0.9718875502008032,
+    "tn": 234,
+    "precision": 0.972,
     "recall": 1.0,
-    "f1": 0.985743380855397
+    "f1": 0.9858012170385395
   },
   "aggregate_rule_level": {
-    "tp": 240,
+    "tp": 241,
     "fp": 7,
     "fn_": 2,
-    "tn": 233,
-    "precision": 0.97165991902834,
-    "recall": 0.9917355371900827,
-    "f1": 0.9815950920245398
+    "tn": 234,
+    "precision": 0.9717741935483871,
+    "recall": 0.9917695473251029,
+    "f1": 0.9816700610997964
   },
   "by_language": {
     "c": {
@@ -8730,10 +8772,10 @@
       "f1": 0.9166666666666666
     },
     "php": {
-      "tp": 18,
+      "tp": 19,
       "fp": 0,
       "fn_": 0,
-      "tn": 19,
+      "tn": 20,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8822,7 +8864,7 @@
       "f1": 1.0
     },
     "crypto": {
-      "tp": 1,
+      "tp": 2,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -8906,7 +8948,7 @@
       "tp": 0,
       "fp": 7,
       "fn_": 0,
-      "tn": 233,
+      "tn": 234,
       "precision": 0.0,
       "recall": 1.0,
       "f1": 0.0
@@ -8959,31 +9001,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 73,
+      "tp": 71,
       "fp": 109,
-      "fn_": 169,
-      "tn": 131,
-      "precision": 0.4010989010989011,
-      "recall": 0.30165289256198347,
-      "f1": 0.34433962264150947
+      "fn_": 172,
+      "tn": 132,
+      "precision": 0.39444444444444443,
+      "recall": 0.29218106995884774,
+      "f1": 0.33569739952718675
     },
     ">=Low": {
-      "tp": 74,
+      "tp": 73,
       "fp": 134,
-      "fn_": 168,
-      "tn": 106,
-      "precision": 0.3557692307692308,
-      "recall": 0.30578512396694213,
-      "f1": 0.3288888888888889
+      "fn_": 170,
+      "tn": 107,
+      "precision": 0.3526570048309179,
+      "recall": 0.3004115226337449,
+      "f1": 0.3244444444444444
     },
     ">=Medium": {
-      "tp": 74,
+      "tp": 73,
       "fp": 125,
-      "fn_": 168,
-      "tn": 115,
-      "precision": 0.37185929648241206,
-      "recall": 0.30578512396694213,
-      "f1": 0.3356009070294785
+      "fn_": 170,
+      "tn": 116,
+      "precision": 0.3686868686868687,
+      "recall": 0.3004115226337449,
+      "f1": 0.3310657596371882
     }
   }
 }
