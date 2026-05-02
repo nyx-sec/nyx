@@ -576,6 +576,7 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
         || cl.contains("form")
         || cl.contains("query")
         || cl.contains("params")
+        || cl.contains("param")
         || cl.contains("input")
         || cl.contains("body")
         || cl.contains("location")

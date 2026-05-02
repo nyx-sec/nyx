@@ -420,17 +420,65 @@ fn build_taint_diag(
     // rule paths (Java HTTP clients where type-qualified resolution
     // attaches both `SSRF` and `DATA_EXFIL` Sink labels to the same call,
     // e.g. `client.send(req)` covering both URL and body channels of the
-    // request value) produce a single dual-cap event.  In that case the
-    // source's sensitivity tier disambiguates: a Sensitive source
-    // (cookie, header, env, db, session) leaking into an outbound
-    // request is canonically DATA_EXFIL even if the sink also carries
-    // an SSRF label, because operator-bound state is not URL-shaped
-    // attacker input.  Plain user input keeps SSRF routing (the typical
-    // user-controlled-URL pattern).
+    // request value) produce a single dual-cap event.  Disambiguate using
+    // the flow path: when a body-bind verb (`.body(`, `.json(`, `.form(`,
+    // `.multipart(`, `BodyPublishers`, `setEntity`, `bodyValue`, etc.)
+    // appears anywhere in the SSA flow steps or the sink chain text, the
+    // taint reached an outbound payload field, route to DATA_EXFIL.  When
+    // no body-bind verb is on the path (Sensitive-tier source flowing
+    // straight into the URL position via `.get`/`.post`/`.send`), this is
+    // a real SSRF and routes to taint-unsanitised-flow regardless of
+    // source sensitivity.  Source sensitivity is still required for the
+    // DATA_EXFIL route, plain user input echoed into a request body is
+    // not exfiltration.
+    let flow_has_body_bind = {
+        let body_bind_substrings = [
+            ".body(",
+            ".json(",
+            ".form(",
+            ".multipart(",
+            ".bodyvalue(",
+            ".setentity(",
+            "bodypublishers",
+            "body_string",
+            "body_json",
+            "body_bytes",
+            "send_string",
+            "send_json",
+            "send_form",
+        ];
+        let chain_lower = call_site_callee.to_ascii_lowercase();
+        let in_sink = body_bind_substrings.iter().any(|m| chain_lower.contains(m));
+        let in_steps = finding.flow_steps.iter().any(|step| {
+            cfg_graph[step.cfg_node]
+                .call
+                .callee
+                .as_deref()
+                .map(|c| {
+                    let lc = c.to_ascii_lowercase();
+                    body_bind_substrings.iter().any(|m| lc.contains(m))
+                })
+                .unwrap_or(false)
+        });
+        in_sink || in_steps
+    };
+    // Java HTTP-client builder pattern hides the body-bind step inside a
+    // builder chain whose intermediate calls collapse to `HttpRequest.build`
+    // in the flow.  When the source is unambiguously credential-bearing
+    // (cookies, session attributes, caught exceptions carrying stack
+    // frames) and the sink fires DATA_EXFIL, treat that as exfil even
+    // when no body-bind verb is visible in the flow.  Env vars stay
+    // ambiguous (they often carry URL config) so they still require an
+    // explicit body-bind hit on the path.
+    let source_is_credential_bearing = matches!(
+        finding.source_kind,
+        crate::labels::SourceKind::Cookie | crate::labels::SourceKind::CaughtException
+    );
     let is_data_exfil_rule = effective_caps.contains(crate::labels::Cap::DATA_EXFIL)
         && !effective_caps.contains(crate::labels::Cap::UNAUTHORIZED_ID)
         && (!effective_caps.contains(crate::labels::Cap::SSRF)
-            || finding.source_kind.sensitivity() >= crate::labels::Sensitivity::Sensitive);
+            || (finding.source_kind.sensitivity() >= crate::labels::Sensitivity::Sensitive
+                && (flow_has_body_bind || source_is_credential_bearing)));
 
     let diag_id = if effective_caps.contains(crate::labels::Cap::UNAUTHORIZED_ID) {
         "rs.auth.missing_ownership_check.taint".to_string()
@@ -3229,6 +3277,8 @@ pub(crate) fn name_is_non_crypto(name: &str) -> bool {
         "decryptkey",
         "encrypt_key",
         "decrypt_key",
+        "apikey",
+        "api_key",
     ];
     for ex in CRYPTO_EXCLUDES {
         if lower.contains(ex) {
@@ -3262,8 +3312,6 @@ pub(crate) fn name_is_non_crypto(name: &str) -> bool {
         "uid",
         "uuid",
         "guid",
-        "key",
-        "keys",
         "name_hash",
         "checksum",
         "slot",
@@ -4522,6 +4570,19 @@ fn name_is_non_crypto_recognises_word_boundary_suffixes() {
     assert!(!name_is_non_crypto("hmac"));
     assert!(!name_is_non_crypto("salt"));
     assert!(!name_is_non_crypto("private_key"));
+
+    // Bare `key`/`keys` and `apiKey` shapes are crypto-credential
+    // candidates and must keep firing; specific safe forms like
+    // `cache_key`/`cachekey` are still suppressed via their own
+    // entries in `SAFE_SUFFIXES`.
+    assert!(!name_is_non_crypto("key"));
+    assert!(!name_is_non_crypto("keys"));
+    assert!(!name_is_non_crypto("apiKey"));
+    assert!(!name_is_non_crypto("api_key"));
+    assert!(!name_is_non_crypto("apiKeyHash"));
+    assert!(!name_is_non_crypto("api_key_hash"));
+    assert!(name_is_non_crypto("cache_key"));
+    assert!(name_is_non_crypto("cachekey"));
 
     // Words that LOOK like an `id` suffix but lack a word boundary —
     // do NOT classify (no boundary, length-2 suffix).

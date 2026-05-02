@@ -566,6 +566,57 @@ fn count_call_args(text: &str) -> Option<usize> {
     Some(count)
 }
 
+/// Extract the first top-level argument from `args_part`, the substring
+/// immediately following the open paren of a call expression.  Walks
+/// paren/bracket/brace depth and skips quoted strings so nested calls and
+/// punctuation inside string literals do not confuse the scan.  Returns
+/// the trimmed argument substring up to the first top-level `,` or
+/// matching `)`, or `None` when no balanced close paren is found.
+///
+/// Robust against trailing wrapper parens such as
+/// `(!ALLOWED.includes(cmd))` where naïve `strip_suffix(')')` would leave
+/// `cmd)` and lose the argument.
+fn first_call_arg(args_part: &str) -> Option<&str> {
+    let bytes = args_part.as_bytes();
+    let mut depth: usize = 1;
+    let mut end: Option<usize> = None;
+    let mut first_comma: Option<usize> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(i);
+                    break;
+                }
+            }
+            b',' if depth == 1 && first_comma.is_none() => first_comma = Some(i),
+            b'"' | b'\'' => {
+                let quote = b;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let end = end?;
+    let cut = first_comma.unwrap_or(end);
+    Some(args_part[..cut].trim())
+}
+
 /// Extract the validated variable from a condition text.
 ///
 /// Handles two patterns:
@@ -592,11 +643,10 @@ fn extract_validation_target(text: &str) -> Option<String> {
         }
     }
 
-    // Function call pattern: `func(x, ...)`, extract first argument
-    // Strip closing paren if present
-    let args_inner = args_part.trim_end().strip_suffix(')').unwrap_or(args_part);
-    // Take text up to first comma (first argument)
-    let first_arg = args_inner.split(',').next()?.trim();
+    // Function call pattern: `func(x, ...)`, extract first argument with
+    // balanced-paren scan so trailing wrapper parens (`(validate(x))`) do
+    // not corrupt the argument substring.
+    let first_arg = first_call_arg(args_part)?;
 
     // Strip reference operators (e.g. `&x` → `x`)
     let first_arg = first_arg.strip_prefix('&').unwrap_or(first_arg).trim();
@@ -630,11 +680,11 @@ fn extract_allowlist_target(text: &str) -> Option<String> {
         if let Some(pos) = lower.find(method) {
             let args_start = pos + method.len();
             let args_part = &trimmed[args_start..];
-            let inner = args_part.strip_suffix(')').unwrap_or(args_part);
-            let first_arg = inner.split(',').next()?.trim();
-            let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
-            if !first_arg.is_empty() && is_identifier(first_arg) {
-                return Some(first_arg.to_string());
+            if let Some(first_arg) = first_call_arg(args_part) {
+                let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
+                if !first_arg.is_empty() && is_identifier(first_arg) {
+                    return Some(first_arg.to_string());
+                }
             }
         }
     }
@@ -643,11 +693,11 @@ fn extract_allowlist_target(text: &str) -> Option<String> {
     if let Some(pos) = lower.find("in_array(") {
         let args_start = pos + "in_array(".len();
         let args_part = &trimmed[args_start..];
-        let inner = args_part.strip_suffix(')').unwrap_or(args_part);
-        let first_arg = inner.split(',').next()?.trim();
-        let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
-        if !first_arg.is_empty() && is_identifier(first_arg) {
-            return Some(first_arg.to_string());
+        if let Some(first_arg) = first_call_arg(args_part) {
+            let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
+            if !first_arg.is_empty() && is_identifier(first_arg) {
+                return Some(first_arg.to_string());
+            }
         }
     }
 
@@ -1061,6 +1111,32 @@ mod tests {
             classify_condition("allowedSet.has(key)"),
             PredicateKind::AllowlistCheck
         );
+    }
+
+    #[test]
+    fn extract_allowlist_target_negated_paren_wrapper() {
+        // Tree-sitter records the if-condition as `(!ALLOWED.includes(cmd))`,
+        // including the surrounding parens.  Naïve `strip_suffix(')')` left
+        // `cmd)` and `is_identifier` rejected the trailing `)`, dropping the
+        // structural guard for `cfg-unguarded-sink` suppression.  The
+        // balanced-paren scan must return `Some("cmd")`.
+        let (kind, target) = classify_condition_with_target("(!ALLOWED.includes(cmd))");
+        assert_eq!(kind, PredicateKind::AllowlistCheck);
+        assert_eq!(target.as_deref(), Some("cmd"));
+    }
+
+    #[test]
+    fn extract_allowlist_target_java_contains_paren_wrapper() {
+        let (kind, target) = classify_condition_with_target("(!ALLOWED.contains(cmd))");
+        assert_eq!(kind, PredicateKind::AllowlistCheck);
+        assert_eq!(target.as_deref(), Some("cmd"));
+    }
+
+    #[test]
+    fn extract_allowlist_target_in_array_paren_wrapper() {
+        let (kind, target) = classify_condition_with_target("(!in_array($cmd, $allowed))");
+        assert_eq!(kind, PredicateKind::AllowlistCheck);
+        assert_eq!(target.as_deref(), Some("cmd"));
     }
 
     // ── TypeCheck classification ──────────────────────────────────────
