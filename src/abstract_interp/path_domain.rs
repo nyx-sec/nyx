@@ -1869,7 +1869,7 @@ mod tests {
     }
 
     #[test]
-    fn assertion_opaque_prefix_lock_js_startsWith() {
+    fn assertion_opaque_prefix_lock_js_starts_with() {
         assert_eq!(
             classify_path_assertion("resolved.startsWith(uploadsDir)"),
             PathAssertion::PrefixLock(OPAQUE_PREFIX_LOCK.to_string())
