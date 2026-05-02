@@ -12,3 +12,12 @@ edition = "2021"
 [dependencies]
 serde = "1"
 tokio = { version = "1", features = ["full"] }
+
+# These deps are manifest-only regression markers. The point of this
+# fixture is that the manifest names NO Rust web framework, so
+# `lang_has_web_framework("rust")` returns `Some(false)`. `serde` and
+# `tokio` populate the dependency list without tripping that signal,
+# proving the gate ignores non-web crates. src/lib.rs deliberately
+# uses neither.
+[package.metadata.cargo-machete]
+ignored = ["serde", "tokio"]

@@ -436,10 +436,10 @@ pub(super) fn has_object_arg_property(
     let mut c = arg.walk();
     for child in arg.named_children(&mut c) {
         match child.kind() {
-            "shorthand_property_identifier" | "shorthand_property_identifier_pattern" => {
-                if text_of(child, code).as_deref() == Some(prop_name) {
-                    return true;
-                }
+            "shorthand_property_identifier" | "shorthand_property_identifier_pattern"
+                if text_of(child, code).as_deref() == Some(prop_name) =>
+            {
+                return true;
             }
             "pair" => {
                 if let Some(key_node) = child.child_by_field_name("key") {

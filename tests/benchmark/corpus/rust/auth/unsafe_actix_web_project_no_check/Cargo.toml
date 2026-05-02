@@ -13,3 +13,11 @@ edition = "2021"
 
 [dependencies]
 actix-web = "4"
+
+# `actix-web` is a manifest-only regression marker: nyx's
+# `lang_has_web_framework("rust")` reads the dependency list to derive
+# `Some(true)`, which keeps the param-name arm of missing_ownership_check
+# active. No `use actix_web::*` line exists in src/lib.rs, so machete
+# correctly sees it as code-unused — the dep is real for our purposes.
+[package.metadata.cargo-machete]
+ignored = ["actix-web"]
