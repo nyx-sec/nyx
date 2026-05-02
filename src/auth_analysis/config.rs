@@ -9,6 +9,17 @@ pub struct AuthAnalysisRules {
     pub admin_path_patterns: Vec<String>,
     pub admin_guard_names: Vec<String>,
     pub login_guard_names: Vec<String>,
+    /// Typed-extractor wrapper names that carry route-level
+    /// authorization (capability/policy enforcement) rather than mere
+    /// authentication.  Match by `matches_name` (last-segment +
+    /// case-insensitive `starts_with`), so a single pattern like
+    /// `"Guarded"` covers `Guarded`, `GuardedData`, `GuardedRoute`.
+    /// Consulted only by `inject_guard_checks` for typed-extractor
+    /// route-level injection — distinct from `login_guard_names` /
+    /// `admin_guard_names` so the pattern doesn't pollute regular call
+    /// recognition (where a function like `guarded_load(..)` would
+    /// otherwise be wrongly classified as a login guard).
+    pub policy_guard_names: Vec<String>,
     pub authorization_check_names: Vec<String>,
     pub mutation_indicator_names: Vec<String>,
     pub read_indicator_names: Vec<String>,
@@ -54,6 +65,7 @@ impl AuthAnalysisRules {
             admin_path_patterns: Vec::new(),
             admin_guard_names: Vec::new(),
             login_guard_names: Vec::new(),
+            policy_guard_names: Vec::new(),
             authorization_check_names: Vec::new(),
             mutation_indicator_names: Vec::new(),
             read_indicator_names: Vec::new(),
@@ -353,6 +365,19 @@ impl AuthAnalysisRules {
             .any(|pattern| matches_name(name, pattern))
     }
 
+    /// Typed-extractor wrapper that proves the request passed a
+    /// route-level capability/policy check (e.g. meilisearch's
+    /// `GuardedData<ActionPolicy<X>, _>`).  Distinct from
+    /// `is_login_guard` because policy enforcement is more than mere
+    /// authentication, it includes the per-action permission decision
+    /// the Policy term encodes.  Used only by `inject_guard_checks`
+    /// for typed-extractor route-level injection.
+    pub fn is_policy_guard(&self, name: &str) -> bool {
+        self.policy_guard_names
+            .iter()
+            .any(|pattern| matches_name(name, pattern))
+    }
+
     pub fn is_authorization_check(&self, name: &str) -> bool {
         if self
             .authorization_check_names
@@ -482,6 +507,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "ensure_authenticated".into(),
                 "require_auth".into(),
             ],
+            policy_guard_names: Vec::new(),
             authorization_check_names: vec![
                 "check_membership".into(),
                 "has_membership".into(),
@@ -595,6 +621,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "login_required".into(),
                 "login_required!".into(),
             ],
+            policy_guard_names: Vec::new(),
             authorization_check_names: vec![
                 "authorize".into(),
                 "authorize!".into(),
@@ -762,6 +789,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "requireAuth".into(),
                 "ensureAuthenticated".into(),
             ],
+            policy_guard_names: Vec::new(),
             authorization_check_names: vec![
                 "CheckMembership".into(),
                 "HasMembership".into(),
@@ -853,6 +881,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "Authenticated".into(),
                 "isAuthenticated".into(),
             ],
+            policy_guard_names: Vec::new(),
             authorization_check_names: vec![
                 "checkMembership".into(),
                 "hasMembership".into(),
@@ -951,6 +980,14 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "RequireLogin".into(),
                 "RequireAuth".into(),
             ],
+            // `Guarded` (case-insensitive starts_with) recognises
+            // typed-extractor wrappers like meilisearch's
+            // `GuardedData<ActionPolicy<{ actions::KEYS_GET }>, _>` as
+            // route-level policy guards (capability enforcement).  The
+            // wrapper proves the request passed a permission check, so
+            // any sink in the handler is route-gated even when the
+            // engine cannot model the inner Policy term.
+            policy_guard_names: vec!["Guarded".into()],
             authorization_check_names: vec![
                 "check_membership".into(),
                 "has_membership".into(),
@@ -1120,6 +1157,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "ensureAuth".into(),
                 "require_login".into(),
             ],
+            policy_guard_names: Vec::new(),
             authorization_check_names: vec![
                 "checkMembership".into(),
                 "hasWorkspaceMembership".into(),
@@ -1271,6 +1309,10 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
         extend_unique(
             &mut rules.login_guard_names,
             &lang_cfg.auth.login_guard_names,
+        );
+        extend_unique(
+            &mut rules.policy_guard_names,
+            &lang_cfg.auth.policy_guard_names,
         );
         extend_unique(
             &mut rules.authorization_check_names,

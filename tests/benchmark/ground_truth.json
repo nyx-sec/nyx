@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 500
+    "corpus_size": 502
   },
   "cases": [
     {
@@ -14675,6 +14675,61 @@
       ],
       "disabled": false,
       "notes": "Negative-counterpart guard for the LocalCollection / parameter-name fixes: handler takes a HashMap typed param (in-memory bookkeeping) but ALSO calls `db.update_owner(req.target_user_id, ...)` (real DbMutation).  The cache mutation must not blanket-suppress the persistent-store mutation \u2014 the rule must still fire on `db.update_owner`."
+    },
+    {
+      "case_id": "rs-auth-realrepo-014",
+      "file": "rust/auth/safe_actix_guarded_data_extractor.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "real-repo-precision-2026-05-02",
+        "noise-budget-zero"
+      ],
+      "disabled": false,
+      "notes": "Meilisearch `GuardedData<ActionPolicy<{ actions::KEYS_GET }>, Data<AuthController>>` typed extractor on actix-web routes registered via `#[routes::path(..)]` attribute macros (no `.route()` builder, so `collect_routes` doesn't attach the handler).  The new typed-extractor fallback pass in `actix_web::extract` walks every Function-kind unit and applies `guard_calls_for_handler`; the `Guarded`-prefix `policy_guard_names` recogniser injects `AuthCheckKind::Other` with `is_route_level: true`, so `auth_check_covers_subject`'s route-level short-circuit suppresses missing-ownership-check on path-derived sinks."
+    },
+    {
+      "case_id": "rs-auth-realrepo-015",
+      "file": "rust/auth/unsafe_actix_no_guarded_data_extractor.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-285",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "Medium",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Negative-counterpart guard for the `GuardedData` typed-extractor recogniser: same handler shape but the wrapper is replaced by a bare `Data<AuthController>` (no policy enforcement implied).  An over-broad `policy_guard_names` recogniser would silence this; the Guarded-prefix matcher must NOT fire on bare `Data<...>`, so the rule still flags the path-derived `uid` flowing into `auth_controller.get_key`."
     },
     {
       "case_id": "ruby-safe-ar-query-shapes-001",

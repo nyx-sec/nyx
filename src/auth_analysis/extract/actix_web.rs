@@ -1,7 +1,7 @@
 use super::AuthExtractor;
 use super::axum::{
-    GuardFramework, apply_aliases, dedup_call_sites, expanded_guard_call_sites,
-    guard_calls_for_handler, inject_guard_checks, rust_param_aliases,
+    GuardFramework, apply_aliases, apply_typed_extractor_guards_to_units, dedup_call_sites,
+    expanded_guard_call_sites, guard_calls_for_handler, inject_guard_checks, rust_param_aliases,
 };
 use super::common::{
     attach_route_handler, call_name, collect_top_level_units, named_children, resolve_handler_node,
@@ -36,6 +36,13 @@ impl AuthExtractor for ActixWebExtractor {
 
         collect_top_level_units(root, bytes, rules, &mut model);
         collect_routes(root, root, bytes, path, rules, &mut model);
+        apply_typed_extractor_guards_to_units(
+            root,
+            bytes,
+            rules,
+            &mut model,
+            GuardFramework::ActixWeb,
+        );
 
         model
     }

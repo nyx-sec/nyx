@@ -35,6 +35,7 @@ impl AuthExtractor for AxumExtractor {
 
         collect_top_level_units(root, bytes, rules, &mut model);
         collect_routes(root, root, bytes, path, rules, &mut model);
+        apply_typed_extractor_guards_to_units(root, bytes, rules, &mut model, GuardFramework::Axum);
 
         model
     }
@@ -391,7 +392,61 @@ fn classify_rocket_param(
 /// non-route functions, and a false positive there suppresses
 /// downstream `V.id` flagging entirely; that path uses a structural
 /// recogniser keyed on the `<PREFIX>User<SUFFIX>?` shape.
+///
+/// Recognition is **outer-wrapper based**: classify by the outermost
+/// type name only, not by substring-anywhere on the whole text.  This
+/// avoids both directions of leakage:
+/// * A bare data-only extractor like `web::Path<u64>` early-returns
+///   `None` regardless of inner type tokens (preserves existing
+///   behaviour).
+/// * A policy-bearing wrapper like
+///   `GuardedData<ActionPolicy<X>, Data<AuthController>>` is
+///   classified by the outer `GuardedData`, not by whether the inner
+///   `Data<AuthController>` happens to lowercase-contain "auth".  The
+///   wrapper proves capability enforcement → `AuthCheckKind::Other`
+///   (the route-level short-circuit in `auth_check_covers_subject`
+///   suppresses missing-ownership-check for non-LoginGuard kinds).
 fn classify_guard_type(type_text: &str) -> Option<AuthCheckKind> {
+    let outer = outermost_type_name(type_text);
+    let outer_lower = outer.to_ascii_lowercase();
+
+    // Bare data-only extractors are *not* auth-bearing regardless of
+    // their inner generic args.  Outer-name match (case-insensitive
+    // exact) — `Path<u64>` / `web::Path<...>` / `Query<X>` /
+    // `Json<X>` / `Form<X>` / `State<X>` / `Extension<X>` /
+    // `Data<X>`.
+    if is_data_only_extractor_outer(&outer_lower) {
+        return None;
+    }
+
+    // Policy/guard-bearing outer wrapper.  Names containing
+    // `guarded` (e.g. `GuardedData`, `GuardedRoute`) signal the
+    // wrapper enforced a capability/permission check at request
+    // construction.  Distinct from `LoginGuard` because Policy
+    // enforcement is more than authentication, it's authorization.
+    if outer_lower.contains("guarded") || outer_lower.contains("guard") {
+        if outer_lower.contains("admin") {
+            return Some(AuthCheckKind::AdminGuard);
+        }
+        return Some(AuthCheckKind::Other);
+    }
+
+    if outer_lower.contains("admin") {
+        return Some(AuthCheckKind::AdminGuard);
+    }
+    if outer_lower.contains("user")
+        || outer_lower.contains("auth")
+        || outer_lower.contains("session")
+        || outer_lower.contains("identity")
+        || outer_lower.contains("principal")
+    {
+        return Some(AuthCheckKind::LoginGuard);
+    }
+
+    // Backwards-compat fallback: legacy whole-text substring check
+    // for unusual shapes whose outer wrapper is generic but whose
+    // qualified path still mentions an auth token.  Preserves
+    // pre-2026-05-02 behaviour for non-Guarded wrappers.
     let lower = type_text.to_ascii_lowercase();
     if is_extractor_wrapper(&lower) {
         return None;
@@ -407,6 +462,49 @@ fn classify_guard_type(type_text: &str) -> Option<AuthCheckKind> {
     } else {
         None
     }
+}
+
+/// Outermost type name: text before the first `<`, with reference
+/// markers (`&`, `&mut`, `&'a`, etc.) and module-path prefix
+/// (`std::collections::`) stripped.  Returns the empty string for
+/// inputs that don't parse as a type.
+fn outermost_type_name(type_text: &str) -> &str {
+    let trimmed = type_text.trim();
+    let mut after_refs = trimmed;
+    loop {
+        let next = after_refs
+            .trim_start_matches('&')
+            .trim_start_matches("mut ")
+            .trim_start();
+        // Strip any single lifetime token like `'a ` after the `&`.
+        let next = if let Some(rest) = next.strip_prefix('\'') {
+            rest.split_once(' ')
+                .map(|(_, after)| after.trim_start())
+                .unwrap_or(rest)
+        } else {
+            next
+        };
+        if next == after_refs {
+            break;
+        }
+        after_refs = next;
+    }
+    let prefix = after_refs.split('<').next().unwrap_or(after_refs).trim();
+    prefix.rsplit("::").next().unwrap_or(prefix).trim()
+}
+
+/// Outer wrapper name (lowercase, exact-match) that the engine treats
+/// as a bare data-only extractor: yielding the inner type to the
+/// handler without any auth side-effect.  Matched on the outer name
+/// only so policy-bearing wrappers carrying a data extractor as one
+/// of their generic args (e.g.
+/// `GuardedData<Policy, web::Path<u64>>`) are not mis-suppressed by
+/// the inner `Path<...>`.
+fn is_data_only_extractor_outer(outer_lower: &str) -> bool {
+    matches!(
+        outer_lower,
+        "path" | "query" | "json" | "form" | "extension" | "state" | "data" | "reqdata"
+    )
 }
 
 fn classify_rocket_guard_type(
@@ -612,6 +710,14 @@ pub(crate) fn inject_guard_checks(
     for call in guard_calls {
         let kind = if rules.is_admin_guard(&call.name, &call.args) {
             AuthCheckKind::AdminGuard
+        } else if rules.is_policy_guard(&call.name) {
+            // Policy/capability-bearing typed extractor (e.g.
+            // meilisearch's `GuardedData<ActionPolicy<X>, _>`).
+            // Recorded as `Other` so the route-level short-circuit in
+            // `auth_check_covers_subject` covers any sink in the
+            // handler — the wrapper proves authorization, not just
+            // authentication.
+            AuthCheckKind::Other
         } else if rules.is_login_guard(&call.name) {
             AuthCheckKind::LoginGuard
         } else {
@@ -631,5 +737,153 @@ pub(crate) fn inject_guard_checks(
             // for any non-login-guard match.
             is_route_level: true,
         });
+    }
+}
+
+/// Walk every `Function`-kind unit in `model` and inject route-level
+/// guard checks for any parameter whose type is recognised as a
+/// typed auth/policy extractor (e.g. meilisearch's `GuardedData<P, D>`,
+/// `axum::extract::State<AuthCtx>`).  Complements the route-walk path
+/// in `collect_routes`: handlers registered by attribute macros
+/// (`#[routes::path(...)]`, `#[get("/path")]`) or by external
+/// service-config builders are never matched as route registrations
+/// here, so their typed-extractor guards would otherwise never be
+/// injected and `missing_ownership_check` would fire on every
+/// id-shaped sink they contain.
+///
+/// `RouteHandler`-kind units already had their guards injected during
+/// the route walk and are skipped to avoid duplicate `AuthCheck`
+/// entries.
+pub(crate) fn apply_typed_extractor_guards_to_units(
+    root: Node<'_>,
+    bytes: &[u8],
+    rules: &AuthAnalysisRules,
+    model: &mut crate::auth_analysis::model::AuthorizationModel,
+    framework: GuardFramework,
+) {
+    use crate::auth_analysis::model::AnalysisUnitKind;
+    let function_nodes = collect_function_definition_nodes(root);
+    for unit_idx in 0..model.units.len() {
+        let span = {
+            let unit = &model.units[unit_idx];
+            if unit.kind == AnalysisUnitKind::RouteHandler {
+                continue;
+            }
+            unit.span
+        };
+        let Some(handler_node) = function_nodes
+            .iter()
+            .find(|node| node.start_byte() == span.0 && node.end_byte() == span.1)
+            .copied()
+        else {
+            continue;
+        };
+        let guard_calls = guard_calls_for_handler(handler_node, "", bytes, framework);
+        if guard_calls.is_empty() {
+            continue;
+        }
+        let unit = &mut model.units[unit_idx];
+        inject_guard_checks(unit, &guard_calls, rules);
+    }
+}
+
+fn collect_function_definition_nodes<'tree>(root: Node<'tree>) -> Vec<Node<'tree>> {
+    let mut out = Vec::new();
+    walk_function_definitions(root, &mut out);
+    out
+}
+
+fn walk_function_definitions<'tree>(node: Node<'tree>, out: &mut Vec<Node<'tree>>) {
+    match node.kind() {
+        // Free / impl / trait fn definitions in tree-sitter-rust.
+        "function_item" => out.push(node),
+        _ => {}
+    }
+    for child in named_children(node) {
+        walk_function_definitions(child, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outermost_type_name_strips_refs_and_module_prefix() {
+        assert_eq!(outermost_type_name("GuardedData<P, D>"), "GuardedData");
+        assert_eq!(outermost_type_name("&GuardedData<P, D>"), "GuardedData");
+        assert_eq!(outermost_type_name("&'a mut GuardedData<P, D>"), "GuardedData");
+        assert_eq!(outermost_type_name("web::Path<u64>"), "Path");
+        assert_eq!(outermost_type_name("std::sync::Arc<Mutex<T>>"), "Arc");
+        assert_eq!(outermost_type_name(""), "");
+        assert_eq!(outermost_type_name("Bare"), "Bare");
+    }
+
+    #[test]
+    fn classify_guard_type_recognises_guarded_data_outer_wrapper() {
+        // Real meilisearch shape with both an admin-token-bearing inner
+        // type and a Data inner extractor — must classify as `Other`
+        // (route-level policy), not LoginGuard (filtered out by
+        // `has_prior_subject_auth`) and not None (over-suppression
+        // would happen if the inner `Data<>` early-return fired).
+        let kind = classify_guard_type(
+            "GuardedData<ActionPolicy<{ actions::KEYS_GET }>, Data<AuthController>>",
+        );
+        assert_eq!(kind, Some(AuthCheckKind::Other));
+    }
+
+    #[test]
+    fn classify_guard_type_data_only_extractor_outer_returns_none() {
+        // Outer `Data<>` is a bare actix data extractor — not auth.
+        // Even though the inner type lower-cases to contain "auth",
+        // the outer-wrapper recognition correctly returns None.
+        assert_eq!(
+            classify_guard_type("Data<AuthController>"),
+            None,
+            "outer Data<> is a bare data extractor, not auth-bearing"
+        );
+        assert_eq!(classify_guard_type("web::Path<UserId>"), None);
+        assert_eq!(classify_guard_type("Json<CreateUser>"), None);
+        assert_eq!(classify_guard_type("Form<LoginForm>"), None);
+    }
+
+    #[test]
+    fn classify_guard_type_preserves_existing_login_guard_recognition() {
+        assert_eq!(
+            classify_guard_type("LocalUserView"),
+            Some(AuthCheckKind::LoginGuard)
+        );
+        assert_eq!(
+            classify_guard_type("Authenticated"),
+            Some(AuthCheckKind::LoginGuard)
+        );
+        assert_eq!(
+            classify_guard_type("AdminUser"),
+            Some(AuthCheckKind::AdminGuard)
+        );
+        assert_eq!(
+            classify_guard_type("CurrentUser"),
+            Some(AuthCheckKind::LoginGuard)
+        );
+    }
+
+    #[test]
+    fn classify_guard_type_admin_guarded_takes_admin_priority() {
+        // `AdminGuard` outer wrapper has both "admin" and "guard" tokens
+        // — admin-priority rule wins inside the Guarded branch.
+        assert_eq!(
+            classify_guard_type("AdminGuard<P, D>"),
+            Some(AuthCheckKind::AdminGuard)
+        );
+        assert_eq!(
+            classify_guard_type("GuardedAdmin<X>"),
+            Some(AuthCheckKind::AdminGuard)
+        );
+    }
+
+    #[test]
+    fn classify_guard_type_unknown_outer_returns_none() {
+        assert_eq!(classify_guard_type("MyCustomWrapper<T>"), None);
+        assert_eq!(classify_guard_type(""), None);
     }
 }
