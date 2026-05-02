@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-01T23:10:09Z",
+  "timestamp": "2026-05-01T23:56:30Z",
   "scanner_version": "0.5.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,10 +9,10 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:ff37fedb1f876da19f2ee2c0160967b074e0d4f41e774f15c871c5fb22f6a9f6",
-  "corpus_size": 487,
-  "cases_run": 484,
-  "cases_skipped": 3,
+  "ground_truth_hash": "sha256:d6518c829c0625ef127f30bfafee03b1d39ce44218ac0f7aaf793ae4d69d51f0",
+  "corpus_size": 490,
+  "cases_run": 489,
+  "cases_skipped": 1,
   "outcomes": [
     {
       "case_id": "c-buf-001",
@@ -1829,6 +1829,40 @@
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "taint-unsanitised-flow (source 64:29)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-rb-2023-38337-patched",
+      "file": "cve_corpus/ruby/CVE-2023-38337/patched.rb",
+      "language": "ruby",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-rb-2023-38337-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2023-38337/vulnerable.rb",
+      "language": "ruby",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 54:5)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 54:5)"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -3989,6 +4023,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "js-safe-021",
+      "file": "javascript/safe/safe_canonicalise_rooted_startsWith.js",
+      "language": "javascript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "js-safe-data_exfil-001",
       "file": "javascript/safe/safe_data_exfil_sanitizer_wrap.js",
       "language": "javascript",
@@ -5595,6 +5644,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-safe-022",
+      "file": "python/safe/safe_canonicalise_rooted_startswith.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-safe-data_exfil-001",
       "file": "python/safe/safe_data_exfil_user_input_echo.py",
       "language": "python",
@@ -5892,6 +5956,21 @@
     {
       "case_id": "rb-safe-016",
       "file": "ruby/safe/safe_cross_function_dotdot.rb",
+      "language": "ruby",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "rb-safe-021",
+      "file": "ruby/safe/safe_canonicalise_rooted_unless.rb",
       "language": "ruby",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -8708,22 +8787,22 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 243,
+    "tp": 244,
     "fp": 7,
     "fn_": 0,
-    "tn": 234,
-    "precision": 0.972,
+    "tn": 238,
+    "precision": 0.9721115537848606,
     "recall": 1.0,
-    "f1": 0.9858012170385395
+    "f1": 0.9858585858585859
   },
   "aggregate_rule_level": {
-    "tp": 241,
+    "tp": 242,
     "fp": 7,
     "fn_": 2,
-    "tn": 234,
-    "precision": 0.9717741935483871,
-    "recall": 0.9917695473251029,
-    "f1": 0.9816700610997964
+    "tn": 238,
+    "precision": 0.9718875502008032,
+    "recall": 0.9918032786885246,
+    "f1": 0.9817444219066938
   },
   "by_language": {
     "c": {
@@ -8766,7 +8845,7 @@
       "tp": 22,
       "fp": 4,
       "fn_": 0,
-      "tn": 22,
+      "tn": 23,
       "precision": 0.8461538461538461,
       "recall": 1.0,
       "f1": 0.9166666666666666
@@ -8784,16 +8863,16 @@
       "tp": 28,
       "fp": 0,
       "fn_": 0,
-      "tn": 29,
+      "tn": 30,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
     },
     "ruby": {
-      "tp": 23,
+      "tp": 24,
       "fp": 0,
       "fn_": 0,
-      "tn": 22,
+      "tn": 24,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8927,7 +9006,7 @@
       "f1": 1.0
     },
     "path_traversal": {
-      "tp": 26,
+      "tp": 27,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -8948,7 +9027,7 @@
       "tp": 0,
       "fp": 7,
       "fn_": 0,
-      "tn": 234,
+      "tn": 238,
       "precision": 0.0,
       "recall": 1.0,
       "f1": 0.0
@@ -9001,31 +9080,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 71,
+      "tp": 74,
       "fp": 109,
-      "fn_": 172,
-      "tn": 132,
-      "precision": 0.39444444444444443,
-      "recall": 0.29218106995884774,
-      "f1": 0.33569739952718675
+      "fn_": 170,
+      "tn": 136,
+      "precision": 0.40437158469945356,
+      "recall": 0.30327868852459017,
+      "f1": 0.34660421545667447
     },
     ">=Low": {
-      "tp": 73,
-      "fp": 134,
-      "fn_": 170,
-      "tn": 107,
-      "precision": 0.3526570048309179,
-      "recall": 0.3004115226337449,
-      "f1": 0.3244444444444444
+      "tp": 75,
+      "fp": 135,
+      "fn_": 169,
+      "tn": 110,
+      "precision": 0.35714285714285715,
+      "recall": 0.3073770491803279,
+      "f1": 0.3303964757709251
     },
     ">=Medium": {
-      "tp": 73,
-      "fp": 125,
-      "fn_": 170,
-      "tn": 116,
-      "precision": 0.3686868686868687,
-      "recall": 0.3004115226337449,
-      "f1": 0.3310657596371882
+      "tp": 75,
+      "fp": 126,
+      "fn_": 169,
+      "tn": 119,
+      "precision": 0.373134328358209,
+      "recall": 0.3073770491803279,
+      "f1": 0.3370786516853933
     }
   }
 }

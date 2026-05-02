@@ -207,6 +207,34 @@ impl PathFact {
         !self.is_bottom && self.dotdot == Tri::No && self.absolute == Tri::No
     }
 
+    /// True iff the fact proves the path stays inside a trusted region
+    /// for path-traversal purposes (the FILE_IO sink-suppression
+    /// predicate).
+    ///
+    /// Accepts either of two structural invariants:
+    ///
+    /// * `dotdot = No && absolute = No` — the relative-and-`..`-free
+    ///   shape recognised by [`is_path_safe`].  Cannot escape to an
+    ///   attacker-controlled absolute location.
+    /// * `dotdot = No && prefix_lock.is_some()` — a canonicalised path
+    ///   (typically `File.expand_path` / `realpath` / `fs::canonicalize`)
+    ///   that has been verified-rooted by a `starts_with`-style guard
+    ///   against some prefix.  The prefix may be opaque
+    ///   ([`OPAQUE_PREFIX_LOCK`]); the structural guarantee is the same:
+    ///   the path is provably inside the locked subtree.
+    ///
+    /// This relaxation closes the rswag CVE-2023-38337 patched-counterpart
+    /// FP shape (`File.expand_path(File.join(root, p)) + start_with? root`)
+    /// and the equivalent Python (`os.path.realpath + .startswith(root)`)
+    /// and JS (`path.resolve + .startsWith(root)`) idioms, all of which
+    /// produce absolute paths but are sound against `..` traversal.
+    pub fn is_path_traversal_safe(&self) -> bool {
+        if self.is_bottom || self.dotdot != Tri::No {
+            return false;
+        }
+        self.absolute == Tri::No || self.prefix_lock.is_some()
+    }
+
     /// True iff the fact has a prefix lock equal to or contained under
     /// `root`.  Used by sink-suppression to confirm that a path derived
     /// from a locked root is provably still under that root.
@@ -390,6 +418,16 @@ pub enum PathAssertion {
     /// Not a path-assertion idiom.
     None,
 }
+
+/// Sentinel root attached to a [`PathFact::prefix_lock`] when the
+/// `starts_with`-style guard's argument is non-literal (a method call,
+/// field access, configured root from the application).  The structural
+/// invariant — "verified rooted under SOME prefix" — is what the sink-
+/// suppression layer needs; the *exact* prefix bytes are not.  Combined
+/// with a `dotdot=No` proof from canonicalisation or `..`-rejection, an
+/// opaque prefix-lock is sufficient to prove the path stays inside a
+/// trusted region.
+pub const OPAQUE_PREFIX_LOCK: &str = "__nyx_opaque_prefix__";
 
 /// Recognise a Rust path-rejection branch idiom from the raw condition text.
 ///
@@ -651,19 +689,39 @@ fn split_top_level_or(text: &str) -> smallvec::SmallVec<[&str; 4]> {
     out
 }
 
-/// Recognise a Rust path-positive-assertion branch idiom.
+/// Recognise a path-positive-assertion branch idiom (language-agnostic).
+///
+/// Returns:
+///
+/// * `PrefixLock(<literal>)` when the condition is a `starts_with`-style
+///   call with a literal prefix of length ≥ 2.  Sibling single-character
+///   prefixes (`"/"`, `"\\"`) are absolute-axis rejections, not locks.
+/// * `PrefixLock(`[`OPAQUE_PREFIX_LOCK`]`)` when the call has a
+///   non-empty, *non-literal* argument (method call, field access, local
+///   variable).  The opaque marker certifies the structural invariant
+///   "verified rooted under some prefix" without committing to bytes,
+///   which is exactly what FILE_IO sink-suppression needs to combine with
+///   a `dotdot=No` proof — the upstream code path
+///   `File.expand_path(...) + start_with?(<config_root>)` is the
+///   motivating example.
+/// * `None` otherwise.
 pub fn classify_path_assertion(text: &str) -> PathAssertion {
     let trimmed = text.trim();
-    if let Some(needle) = extract_starts_with_arg(trimmed) {
-        // Positive assertion: a literal-prefix `starts_with` on a locked
-        // root.  Sibling slash ("/") and backslash ("\\") are also
-        // classified as rejections above; prefix-lock only fires when the
-        // prefix is multi-character (i.e. carries real locking info).
-        if needle.len() >= 2 {
-            return PathAssertion::PrefixLock(needle);
+    match extract_starts_with_arg(trimmed) {
+        Some(needle) if needle.len() >= 2 => PathAssertion::PrefixLock(needle),
+        // Single-char literal (`"/"`, `"\\"`) is an absolute-axis
+        // rejection idiom handled by `classify_path_rejection_axes`, not
+        // a positive prefix-lock — fall through to None.
+        Some(_) => PathAssertion::None,
+        // No literal recovered: check for a non-literal argument
+        // (method call, field access, configured root) and attach the
+        // opaque marker so the structural "verified rooted under SOME
+        // prefix" invariant is recorded for downstream sink suppression.
+        None if has_starts_with_call_with_nonempty_arg(trimmed) => {
+            PathAssertion::PrefixLock(OPAQUE_PREFIX_LOCK.to_string())
         }
+        None => PathAssertion::None,
     }
-    PathAssertion::None
 }
 
 /// Recognise a *structural* one-argument enum-variant constructor.
@@ -1134,6 +1192,69 @@ fn extract_starts_with_arg(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Detect a `starts_with`-style call with a non-empty argument, where the
+/// argument is *not* recovered as a string literal by
+/// [`extract_starts_with_arg`] (so it's a method call, field access, local
+/// variable, etc.).  Used by [`classify_path_assertion`] to attach an
+/// opaque prefix-lock when the application validates with a configured
+/// root rather than an inline string literal.
+///
+/// Whitespace-tolerant.  Conservative: returns `false` for any shape where
+/// the argument cannot be confirmed non-empty.
+fn has_starts_with_call_with_nonempty_arg(text: &str) -> bool {
+    // Method-call forms with parens.  The argument-presence check is
+    // simple: after the opening `(`, the first non-whitespace byte must
+    // not be `)` (empty arg list).
+    for method in [
+        ".starts_with(",
+        ".start_with?(",
+        ".startsWith(",
+        ".startswith(",
+    ] {
+        if let Some(idx) = text.find(method) {
+            let after = &text[idx + method.len()..];
+            if first_non_ws_byte(after).is_some_and(|b| b != b')') {
+                return true;
+            }
+        }
+    }
+    // Ruby paren-less call: `r.start_with? <expr>`.  Tree-sitter still
+    // serialises the source text verbatim, so a space (or tab) follows
+    // the `?`.  Require a non-empty, non-clause-terminator token after.
+    if let Some(idx) = text.find(".start_with?") {
+        let rest = &text[idx + ".start_with?".len()..];
+        // Skip the `(` form (already covered above) and any whitespace.
+        let after = rest.trim_start();
+        if !after.is_empty() {
+            let first = after.as_bytes()[0];
+            // `(` belongs to the parenthesised form; clause terminators
+            // (`&&` / `||` / `)` / `]` / `;` / `,`) mean the call has no
+            // arguments at this position.
+            if !matches!(first, b'(' | b'&' | b'|' | b')' | b']' | b';' | b',') {
+                return true;
+            }
+        }
+    }
+    // Go free-function form `strings.HasPrefix(<recv>, <prefix>)`.  The
+    // second argument must exist and be non-empty.
+    if let Some(idx) = text.find("strings.HasPrefix(") {
+        let inner = &text[idx + "strings.HasPrefix(".len()..];
+        if let Some(comma_idx) = top_level_comma(inner) {
+            let after_comma = inner[comma_idx + 1..].trim_start();
+            if !after_comma.is_empty() && !after_comma.starts_with(')') {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Return the first non-whitespace byte of `text`, or `None` if the slice
+/// is empty or all-whitespace.
+fn first_non_ws_byte(text: &str) -> Option<u8> {
+    text.bytes().find(|b| !b.is_ascii_whitespace())
 }
 
 /// Find the index of the first top-level `,` in a slice (depth 0, ignoring
@@ -1714,6 +1835,109 @@ mod tests {
             classify_path_assertion("p.starts_with('/')"),
             PathAssertion::None
         );
+    }
+
+    #[test]
+    fn assertion_opaque_prefix_lock_method_call_arg() {
+        // rswag CVE-2023-38337 patched shape: `start_with?` with a
+        // configured-root method call as argument.  The exact bytes are
+        // unknown to the analyser, but the structural invariant "rooted
+        // under SOME prefix" is captured via the opaque marker.
+        assert_eq!(
+            classify_path_assertion("filename.start_with? @config.resolve_swagger_root(env)"),
+            PathAssertion::PrefixLock(OPAQUE_PREFIX_LOCK.to_string())
+        );
+    }
+
+    #[test]
+    fn assertion_opaque_prefix_lock_paren_method_call() {
+        // Same shape, parenthesised: `r.start_with?(some_root)`.
+        assert_eq!(
+            classify_path_assertion("filename.start_with?(@config.root)"),
+            PathAssertion::PrefixLock(OPAQUE_PREFIX_LOCK.to_string())
+        );
+    }
+
+    #[test]
+    fn assertion_opaque_prefix_lock_python_startswith() {
+        // Python: `os.path.realpath(p).startswith(safe_root)` where
+        // `safe_root` is a local variable, not a literal.
+        assert_eq!(
+            classify_path_assertion("p.startswith(safe_root)"),
+            PathAssertion::PrefixLock(OPAQUE_PREFIX_LOCK.to_string())
+        );
+    }
+
+    #[test]
+    fn assertion_opaque_prefix_lock_js_startsWith() {
+        assert_eq!(
+            classify_path_assertion("resolved.startsWith(uploadsDir)"),
+            PathAssertion::PrefixLock(OPAQUE_PREFIX_LOCK.to_string())
+        );
+    }
+
+    #[test]
+    fn assertion_opaque_prefix_lock_go_hasprefix() {
+        assert_eq!(
+            classify_path_assertion("strings.HasPrefix(p, safeRoot)"),
+            PathAssertion::PrefixLock(OPAQUE_PREFIX_LOCK.to_string())
+        );
+    }
+
+    #[test]
+    fn assertion_no_lock_on_empty_arg() {
+        // `r.starts_with()` (degenerate) should not produce a lock.
+        assert_eq!(
+            classify_path_assertion("r.starts_with()"),
+            PathAssertion::None
+        );
+    }
+
+    #[test]
+    fn is_path_traversal_safe_relative_dotdot_free() {
+        let f = PathFact::default()
+            .with_dotdot_cleared()
+            .with_absolute_cleared();
+        assert!(f.is_path_traversal_safe());
+    }
+
+    #[test]
+    fn is_path_traversal_safe_canonicalised_with_prefix_lock() {
+        // `File.expand_path + start_with?(root)` shape: dotdot=No,
+        // absolute=Yes, prefix_lock=Some.  The relaxed predicate should
+        // accept this even though the strict `is_path_safe` rejects it.
+        let f = PathFact::default()
+            .with_dotdot_cleared()
+            .with_prefix_lock("__nyx_opaque_prefix__");
+        assert!(!f.is_path_safe(), "absolute axis still Maybe blocks strict");
+        // Setting absolute=Yes via expand_path-style transfer:
+        let mut f2 = f.clone();
+        f2.absolute = Tri::Yes;
+        assert!(!f2.is_path_safe(), "absolute=Yes blocks strict predicate");
+        assert!(
+            f2.is_path_traversal_safe(),
+            "prefix_lock + dotdot=No is sufficient under relaxed predicate"
+        );
+    }
+
+    #[test]
+    fn is_path_traversal_safe_rejects_dotdot_maybe() {
+        let f = PathFact::default().with_prefix_lock("/var/app/");
+        // dotdot still Maybe — relaxed predicate must still reject.
+        assert!(!f.is_path_traversal_safe());
+    }
+
+    #[test]
+    fn is_path_traversal_safe_rejects_absolute_without_lock() {
+        let mut f = PathFact::default().with_dotdot_cleared();
+        f.absolute = Tri::Yes;
+        // No prefix_lock — relaxed predicate must reject.
+        assert!(!f.is_path_traversal_safe());
+    }
+
+    #[test]
+    fn is_path_traversal_safe_rejects_bottom() {
+        assert!(!PathFact::bottom().is_path_traversal_safe());
     }
 
     #[test]

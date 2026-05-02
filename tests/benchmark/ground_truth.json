@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 487
+    "corpus_size": 490
   },
   "cases": [
     {
@@ -10363,8 +10363,6 @@
         "path_traversal",
         "rack-middleware"
       ],
-      "disabled": true,
-      "disabled_reason": "Vulnerable case detects (env['PATH_INFO'] → File.read via parse_file/load_yaml/load_json cross-fn flow), but the patched counterpart fires the same finding because Nyx does not yet recognise `File.expand_path(...) + start_with?(<expr>)` as a path-traversal sanitiser. Three pieces are needed: (1) extend classify_path_assertion to accept non-literal start_with? args (returning an opaque PrefixLock), (2) extend `unless`-polarity handling so the surviving past-unless block inherits the assertion narrowing, (3) extend `is_path_safe_for_sink` (FILE_IO only) to honour `normalized=Yes && prefix_lock.is_some()` as a safety condition. Tracked in CVE_DEFERRED.md.",
       "notes": "CVE-2023-38337: rswag-api Rack middleware concatenated env['PATH_INFO'] into the swagger root path with no validation; GET /../config/secrets.yml served arbitrary YAML/JSON files. Fixed in 2.10.1 by File.expand_path + start_with? rooted-path check. MIT"
     },
     {
@@ -10392,8 +10390,6 @@
         "patched",
         "negative"
       ],
-      "disabled": true,
-      "disabled_reason": "See vulnerable counterpart's disabled_reason — patched fixture currently fires `taint-unsanitised-flow` because the File.expand_path + start_with?(@config.resolve_swagger_root(env)) sanitiser pattern is not recognised. Re-enable once the path-traversal sanitiser recognition lands.",
       "notes": "CVE-2023-38337 patched counterpart: filename = File.expand_path(File.join(root, path)); unless filename.start_with?(root); return reject; end. Stays clean once Nyx recognises the canonicalize+rooted-path pattern."
     },
     {
@@ -12064,6 +12060,35 @@
       "notes": "Python equivalent of rs-safe-014: direct-return sanitiser with `\"..\" in s` / `s.startswith(...)` rejection chain returning empty string."
     },
     {
+      "case_id": "py-safe-022",
+      "file": "python/safe/safe_canonicalise_rooted_startswith.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "pathfact-cross-language",
+        "path-sanitizer",
+        "canonicalise-and-rooted",
+        "opaque-prefix-lock",
+        "negated-form"
+      ],
+      "disabled": false,
+      "notes": "Pins `os.path.realpath` + `if not target.startswith(<non-literal>)` shape (rswag CVE-2023-38337 sibling). Combined dotdot=No (from realpath) + opaque PrefixLock (from non-literal startswith guard) suppresses FILE_IO under is_path_traversal_safe with the negated-form polarity flip."
+    },
+    {
       "case_id": "py-safe-016",
       "file": "python/safe/safe_cross_function_dotdot.py",
       "language": "python",
@@ -12116,6 +12141,35 @@
       ],
       "disabled": false,
       "notes": "JS direct-return sanitiser.  Standalone `nyx scan --index off` is clean, but the benchmark harness (single-thread + state/auth analysis enabled) reproduces a FP \u2014 diverges from production scan path.  Disabled until benchmark/binary parity is re-established."
+    },
+    {
+      "case_id": "js-safe-021",
+      "file": "javascript/safe/safe_canonicalise_rooted_startsWith.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "pathfact-cross-language",
+        "path-sanitizer",
+        "canonicalise-and-rooted",
+        "opaque-prefix-lock",
+        "negated-form"
+      ],
+      "disabled": false,
+      "notes": "Pins `path.resolve` + `if (!target.startsWith(<non-literal>))` shape (rswag CVE-2023-38337 sibling). Combined dotdot=No (from path.resolve) + opaque PrefixLock (from non-literal startsWith guard) suppresses FILE_IO under is_path_traversal_safe with the negated-form polarity flip."
     },
     {
       "case_id": "ts-safe-014",
@@ -12305,6 +12359,34 @@
       ],
       "disabled": false,
       "notes": "Ruby equivalent of rs-safe-014: direct-return sanitiser with `include?` / `start_with?` rejection."
+    },
+    {
+      "case_id": "rb-safe-021",
+      "file": "ruby/safe/safe_canonicalise_rooted_unless.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "pathfact-cross-language",
+        "path-sanitizer",
+        "canonicalise-and-rooted",
+        "opaque-prefix-lock"
+      ],
+      "disabled": false,
+      "notes": "Pins `File.expand_path` + `unless filename.start_with? <non-literal>` shape (rswag CVE-2023-38337 patched). Combined dotdot=No (from expand_path) + opaque PrefixLock (from non-literal start_with? guard) suppresses FILE_IO under is_path_traversal_safe."
     },
     {
       "case_id": "rb-safe-015",

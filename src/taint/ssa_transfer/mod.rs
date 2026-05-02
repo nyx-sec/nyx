@@ -987,6 +987,7 @@ fn compute_succ_states(
                     &effective_vars,
                     ssa,
                     Some(transfer.interner),
+                    effective_negated,
                 );
 
                 // Validation-call err-check narrowing.  When the condition
@@ -1522,7 +1523,13 @@ fn resolve_var_to_ssa_value(var_name: &str, ssa: &SsaBody, block: BlockId) -> Op
 /// variables) and updates its [`PathFact`] according to the classified
 /// rejection / assertion idiom.
 ///
-/// Gated on `transfer.lang == Lang::Rust` by the caller.
+/// `negated` reflects the effective negation of `cond_text`: when true,
+/// the condition's surface form is `!<cond_text>` (or `not <cond_text>`)
+/// and the True/False successor states correspond to the *rejection* /
+/// *surviving* arms inverted relative to the unwrapped condition.  The
+/// narrowing functions are written against the unwrapped condition; this
+/// flag lets the caller route prefix-lock / rejection-axis narrowing to
+/// the arm where the unwrapped condition holds.
 #[cfg(test)]
 fn apply_path_fact_branch_narrowing(
     true_state: &mut SsaTaintState,
@@ -1538,6 +1545,7 @@ fn apply_path_fact_branch_narrowing(
         effective_vars,
         ssa,
         None,
+        false,
     );
 }
 
@@ -1548,6 +1556,7 @@ fn apply_path_fact_branch_narrowing_with_interner(
     effective_vars: &[String],
     ssa: &SsaBody,
     interner: Option<&SymbolInterner>,
+    negated: bool,
 ) {
     use crate::abstract_interp::PathFact;
     use crate::abstract_interp::path_domain::{
@@ -1572,6 +1581,13 @@ fn apply_path_fact_branch_narrowing_with_interner(
     // the condition, the false branch (where the sink is reached after
     // the rejection-arm terminates) is the validated arm by
     // construction.
+    //
+    // Note: the rejection classifier (`classify_path_rejection_axes`)
+    // already accounts for the `!filepath.IsLocal(p)` Go idiom in its
+    // text-level `has_negated_filepath_is_local` matcher; cond_text
+    // retains the leading `!` per `extract_condition_raw`, so the
+    // classifier's polarity convention is independent of
+    // `condition_negated`.  Don't flip rejection narrowing here.
     if !rejection_axes.is_empty()
         && let Some(intern) = interner
     {
@@ -1632,6 +1648,12 @@ fn apply_path_fact_branch_narrowing_with_interner(
         }
     };
 
+    // Apply rejection axes to the false branch.  The rejection classifier
+    // (`has_negated_filepath_is_local` + `classify_path_rejection_atom`)
+    // is text-level and uses cond_text *with* any leading `!` retained, so
+    // its polarity convention is "false branch = safe arm" regardless of
+    // `condition_negated`.  Flipping here would double-correct the
+    // `!filepath.IsLocal(p)` case.
     for v in &targets {
         if let Some(ref mut abs) = false_state.abstract_state {
             let mut av = abs.get(*v);
@@ -1640,7 +1662,23 @@ fn apply_path_fact_branch_narrowing_with_interner(
                 abs.set(*v, av);
             }
         }
-        if let Some(ref mut abs) = true_state.abstract_state {
+    }
+
+    // Apply prefix-lock assertion to the cond-holds branch.  Unlike the
+    // rejection classifier, `classify_path_assertion` is naive about
+    // leading negation — it just searches cond_text for a
+    // `starts_with`-like substring.  When `condition_negated` is true
+    // (e.g. `if !target.startsWith(ROOT) { return; }`) the assertion
+    // actually holds on the *false* CFG edge, where the sink is reached.
+    // Flip the destination state in that case so the lock attaches to
+    // the surviving block.
+    let assertion_state = if negated {
+        &mut *false_state
+    } else {
+        &mut *true_state
+    };
+    for v in &targets {
+        if let Some(ref mut abs) = assertion_state.abstract_state {
             let mut av = abs.get(*v);
             narrow_true(&mut av.path);
             if !av.is_top() {
@@ -7654,11 +7692,12 @@ fn is_abstract_safe_for_sink(
 }
 
 /// Check every tainted leaf flowing into `inst`'s used values carries a
-/// PathFact proving it is dotdot-free and non-absolute.
+/// PathFact proving it cannot perform path traversal.
 ///
-/// Core gate for the rs-safe-0** FP closure (see [`PathFact::is_path_safe`]).
-/// Traces through Assign chains so `Path::new(sanitised)` still resolves
-/// to the sanitised string's fact.
+/// Core gate for the rs-safe-0** FP closure plus the canonicalised+rooted
+/// shape (see [`PathFact::is_path_traversal_safe`]).  Traces through
+/// Assign chains so `Path::new(sanitised)` still resolves to the
+/// sanitised string's fact.
 fn is_path_safe_for_sink(
     inst: &SsaInst,
     state: &SsaTaintState,
@@ -7670,7 +7709,9 @@ fn is_path_safe_for_sink(
     if leaves.is_empty() {
         return false;
     }
-    let safe = leaves.iter().all(|v| abs.get(*v).path.is_path_safe());
+    let safe = leaves
+        .iter()
+        .all(|v| abs.get(*v).path.is_path_traversal_safe());
     if safe {
         // Publish the suppression to the file-level set so the
         // state-analysis pass can suppress `state-unauthed-access` on
@@ -7925,7 +7966,7 @@ fn trace_single_leaf(
             // existing trace-through-args behaviour.
             let proves_path_safe = state.abstract_state.as_ref().is_some_and(|abs_state| {
                 let f = abs_state.get(v).path;
-                !f.is_top() && f.is_path_safe()
+                !f.is_top() && f.is_path_traversal_safe()
             });
             if is_source || proves_path_safe {
                 leaves.push(v);
