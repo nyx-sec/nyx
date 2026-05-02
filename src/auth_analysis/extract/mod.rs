@@ -71,8 +71,7 @@ pub fn extract_authorization_model(
     //
     // Three-valued: `Some(true)` keeps step 3 firing, `Some(false)`
     // suppresses it, `None` means no detection ran ─ behavior unchanged.
-    model.lang_web_framework_signal =
-        compute_web_framework_signal(lang, framework_ctx, bytes);
+    model.lang_web_framework_signal = compute_web_framework_signal(lang, framework_ctx, bytes);
 
     // **Dedup units by span across extractors.**  Multiple extractors
     // (e.g. Flask + Django on a Python file) each call

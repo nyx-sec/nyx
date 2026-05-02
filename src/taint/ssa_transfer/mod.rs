@@ -6408,7 +6408,9 @@ fn propagate_validated_params_to_return(
 
     let mut any_arg_tainted = false;
     for &p in validated_params {
-        let Some(arg_vals) = args.get(p) else { continue };
+        let Some(arg_vals) = args.get(p) else {
+            continue;
+        };
         for &v in arg_vals {
             if state.get(v).is_some_and(|t| !t.caps.is_empty()) {
                 any_arg_tainted = true;

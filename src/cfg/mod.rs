@@ -90,7 +90,11 @@ pub fn extract_param_meta_with_destructured_for_test<'a>(
     func_node: tree_sitter::Node<'a>,
     lang: &str,
     code: &'a [u8],
-) -> Vec<(String, Option<crate::ssa::type_facts::TypeKind>, Vec<String>)> {
+) -> Vec<(
+    String,
+    Option<crate::ssa::type_facts::TypeKind>,
+    Vec<String>,
+)> {
     extract_param_meta(func_node, lang, code)
 }
 

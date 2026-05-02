@@ -177,7 +177,11 @@ pub(super) fn extract_param_meta<'a>(
 /// idioms (`Path<i64>`, `@PathVariable Long userId`, Rust extractor
 /// wrappers) from accidentally surfacing the type identifier as a
 /// destructured sibling.
-fn sibling_names_for_destructure(pattern: Node<'_>, remaining: &[String], lang: &str) -> Vec<String> {
+fn sibling_names_for_destructure(
+    pattern: Node<'_>,
+    remaining: &[String],
+    lang: &str,
+) -> Vec<String> {
     if remaining.is_empty() {
         return Vec::new();
     }

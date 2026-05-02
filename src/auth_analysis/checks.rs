@@ -20,7 +20,9 @@ pub fn run_checks(model: &AuthorizationModel, rules: &AuthAnalysisRules) -> Vec<
     findings.extend(check_ownership_gaps(model, rules, web_signal));
     findings.extend(check_partial_batch_authorization(model, rules, web_signal));
     findings.extend(check_stale_authorization(model, rules, web_signal));
-    findings.extend(check_token_override_without_validation(model, rules, web_signal));
+    findings.extend(check_token_override_without_validation(
+        model, rules, web_signal,
+    ));
     findings.sort_by(|a, b| a.span.cmp(&b.span).then_with(|| a.rule_id.cmp(&b.rule_id)));
     findings.dedup_by(|a, b| a.span == b.span && a.rule_id == b.rule_id);
     findings
@@ -1221,7 +1223,10 @@ mod tests {
 
         let mut unit_t = empty_unit();
         unit_t.params.push("team".into());
-        assert!(is_caller_scope_entity_subject(&member("team", "id"), &unit_t));
+        assert!(is_caller_scope_entity_subject(
+            &member("team", "id"),
+            &unit_t
+        ));
 
         let mut unit_w = empty_unit();
         unit_w.params.push("workspace".into());
@@ -1232,7 +1237,10 @@ mod tests {
 
         let mut unit_r = empty_unit();
         unit_r.params.push("repo".into());
-        assert!(is_caller_scope_entity_subject(&member("repo", "id"), &unit_r));
+        assert!(is_caller_scope_entity_subject(
+            &member("repo", "id"),
+            &unit_r
+        ));
     }
 
     /// Pitfall guards for `is_caller_scope_entity_subject`.
@@ -1262,7 +1270,10 @@ mod tests {
         // is_actor_context_subject).  They must not be widened here.
         let mut unit_u = empty_unit();
         unit_u.params.push("user".into());
-        assert!(!is_caller_scope_entity_subject(&member("user", "id"), &unit_u));
+        assert!(!is_caller_scope_entity_subject(
+            &member("user", "id"),
+            &unit_u
+        ));
 
         let mut unit_m = empty_unit();
         unit_m.params.push("member".into());

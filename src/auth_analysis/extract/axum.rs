@@ -812,7 +812,10 @@ mod tests {
     fn outermost_type_name_strips_refs_and_module_prefix() {
         assert_eq!(outermost_type_name("GuardedData<P, D>"), "GuardedData");
         assert_eq!(outermost_type_name("&GuardedData<P, D>"), "GuardedData");
-        assert_eq!(outermost_type_name("&'a mut GuardedData<P, D>"), "GuardedData");
+        assert_eq!(
+            outermost_type_name("&'a mut GuardedData<P, D>"),
+            "GuardedData"
+        );
         assert_eq!(outermost_type_name("web::Path<u64>"), "Path");
         assert_eq!(outermost_type_name("std::sync::Arc<Mutex<T>>"), "Arc");
         assert_eq!(outermost_type_name(""), "");

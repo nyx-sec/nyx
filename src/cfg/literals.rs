@@ -711,7 +711,10 @@ pub(super) fn find_chained_inner_call<'a>(
     // `_.template(t)(data)` evade the chained-inner rebinding because
     // the outer's function field is a `call_expression`, not the
     // `member_expression` shape the original branch below expects.
-    if matches!(lookup(lang, function.kind()), Kind::CallFn | Kind::CallMethod) {
+    if matches!(
+        lookup(lang, function.kind()),
+        Kind::CallFn | Kind::CallMethod
+    ) {
         // Recurse: the inner call may itself be chained.
         if let Some(inner) = find_chained_inner_call(function, lang, code) {
             return Some(inner);

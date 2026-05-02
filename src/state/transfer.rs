@@ -2071,7 +2071,10 @@ mod tests {
 
         let info = NodeInfo {
             kind: StmtKind::Call,
-            ast: AstMeta { span: (0, 30), ..Default::default() },
+            ast: AstMeta {
+                span: (0, 30),
+                ..Default::default()
+            },
             taint: TaintMeta {
                 uses: vec!["t".into(), "f".into()],
                 ..Default::default()
@@ -2107,8 +2110,14 @@ mod tests {
 
         let info = NodeInfo {
             kind: StmtKind::Call,
-            ast: AstMeta { span: (0, 30), ..Default::default() },
-            taint: TaintMeta { uses: vec!["c".into()], ..Default::default() },
+            ast: AstMeta {
+                span: (0, 30),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                uses: vec!["c".into()],
+                ..Default::default()
+            },
             call: CallMeta {
                 callee: Some("t.Helper".into()),
                 ..Default::default()
@@ -2139,8 +2148,14 @@ mod tests {
 
         let info = NodeInfo {
             kind: StmtKind::Call,
-            ast: AstMeta { span: (0, 30), ..Default::default() },
-            taint: TaintMeta { uses: vec!["f".into()], ..Default::default() },
+            ast: AstMeta {
+                span: (0, 30),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                uses: vec!["f".into()],
+                ..Default::default()
+            },
             call: CallMeta {
                 callee: Some("log.Print".into()),
                 ..Default::default()
@@ -2168,7 +2183,10 @@ mod tests {
 
         let info = NodeInfo {
             kind: StmtKind::Call,
-            ast: AstMeta { span: (0, 30), ..Default::default() },
+            ast: AstMeta {
+                span: (0, 30),
+                ..Default::default()
+            },
             taint: TaintMeta {
                 defines: Some("b.cpuprof".into()),
                 ..Default::default()
@@ -2199,7 +2217,10 @@ mod tests {
 
         let info = NodeInfo {
             kind: StmtKind::Call,
-            ast: AstMeta { span: (0, 30), ..Default::default() },
+            ast: AstMeta {
+                span: (0, 30),
+                ..Default::default()
+            },
             taint: TaintMeta {
                 defines: Some("f".into()),
                 ..Default::default()

@@ -94,10 +94,7 @@ impl FrameworkContext {
                 "python",
             ),
             "java" => (&[DetectedFramework::Spring], "java"),
-            "go" => (
-                &[DetectedFramework::Gin, DetectedFramework::Echo],
-                "go",
-            ),
+            "go" => (&[DetectedFramework::Gin, DetectedFramework::Echo], "go"),
             "ruby" | "rb" => (
                 &[DetectedFramework::Rails, DetectedFramework::Sinatra],
                 "ruby",
@@ -588,11 +585,7 @@ fn lang_has_web_framework_three_valued_for_rust() {
     assert_eq!(ctx.lang_has_web_framework("python"), None);
 
     // Cargo.toml present and names axum → Some(true).
-    fs::write(
-        root.join("Cargo.toml"),
-        "[dependencies]\naxum = \"0.7\"\n",
-    )
-    .unwrap();
+    fs::write(root.join("Cargo.toml"), "[dependencies]\naxum = \"0.7\"\n").unwrap();
     let ctx = detect_frameworks(root);
     assert_eq!(ctx.lang_has_web_framework("rust"), Some(true));
 }

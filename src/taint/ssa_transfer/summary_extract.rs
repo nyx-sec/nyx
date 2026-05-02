@@ -194,7 +194,8 @@ pub fn extract_ssa_func_summary_full(
     // sibling reaching `validated_must` proves the slot's caps were
     // narrowed before reaching the return.
     let run_probe = |seed: HashMap<BindingKey, VarTaint>,
-                     probe_param_names: Option<&[&str]>| -> (
+                     probe_param_names: Option<&[&str]>|
+     -> (
         Cap,
         Vec<SsaTaintEvent>,
         Option<crate::abstract_interp::AbstractValue>,
@@ -541,8 +542,7 @@ pub fn extract_ssa_func_summary_full(
         for sib in slot_siblings {
             slot_names.push(sib.as_str());
         }
-        let (return_caps, events, _, per_return_obs) =
-            run_probe(seed, Some(slot_names.as_slice()));
+        let (return_caps, events, _, per_return_obs) = run_probe(seed, Some(slot_names.as_slice()));
 
         // Subtract baseline source_caps, we only want param-contributed caps
         let param_return_caps = return_caps & !source_caps;
