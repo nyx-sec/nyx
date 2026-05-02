@@ -130,7 +130,7 @@ Sources, sanitizers, and sinks are linked by named capabilities. A sanitizer onl
 | `shell_escape` | | `shlex.quote`, `shell_escape::escape` | `system`, `Command::new`, `eval` |
 | `url_encode` | | `encodeURIComponent` | `location.href`, HTTP client URL arg |
 | `json_parse` | | `JSON.parse` | |
-| `file_io` | | `os.path.realpath`, `filepath.Clean` | `open`, `fs::read_to_string`, `send_file` |
+| `file_io` | | `os.path.realpath`, `filepath.Clean`, canonicalise + `starts_with`-rooted guard | `open`, `fs::read_to_string`, `send_file` |
 | `fmt_string` | | | `printf(var)` |
 | `sql_query` | | parameterized query binders | `cursor.execute`, `db.query` with concatenation |
 | `deserialize` | | | `pickle.loads`, `yaml.load`, `Marshal.load` |

@@ -82,7 +82,7 @@ Modifiers in the ±5 range nudge the result for trend (only after the second sca
 
 It's a Nyx-finding-pressure metric, not a security audit. Score 100 means Nyx didn't find anything under its current rules and language coverage; it doesn't certify the absence of vulnerabilities. The score doesn't see runtime config, IAM, secret stores, dependency CVEs, or anything outside the source tree being scanned. A repo of mostly Kotlin (where Nyx coverage is thin) will score artificially well because most of the code never gets evaluated.
 
-The current ceilings are calibrated for v0.5 scanner false-positive rates. As symex coverage and rule precision improve, the ceilings tighten. Calibration data and the rationale behind each tunable lives in [health-score-audit.md](health-score-audit.md).
+Ceilings are calibrated for the current scanner false-positive rates. As symex coverage and rule precision improve, the ceilings tighten. Calibration data and the rationale behind each tunable lives in [health-score-audit.md](health-score-audit.md).
 
 ### Findings and Finding detail
 
