@@ -2743,17 +2743,36 @@ pub(crate) fn cpp_cast_target_type_is_safe(s: &str) -> bool {
     let Some(base) = strip_pointer_and_cv(&normalised) else {
         return false;
     };
-    // Check for the integer round-trip types (no pointer depth required).
-    if matches!(
-        base.as_str(),
-        "uintptr_t" | "intptr_t" | "std::uintptr_t" | "std::intptr_t"
-    ) {
-        return true;
+    // Pointer-indirection depth = count of `*` tokens in the normalised
+    // form (whitespace already collapsed; compound forms with parens /
+    // brackets / templates are filtered by `strip_pointer_and_cv`).
+    let depth = normalised.chars().filter(|c| *c == '*').count();
+
+    // Depth 0 (value cast): only the pointer<->integer round-trip types
+    // are well-defined.  Aliasing *through* a `uintptr_t*` / `intptr_t*`
+    // is **not** covered by the standard exemption — only converting a
+    // pointer value to/from the integer type is defined behaviour
+    // ([basic.compound]/3).  Therefore we accept these names only at
+    // depth 0.
+    if depth == 0 {
+        return matches!(
+            base.as_str(),
+            "uintptr_t" | "intptr_t" | "std::uintptr_t" | "std::intptr_t"
+        );
     }
-    // All other safe targets require at least one pointer level.
-    if !normalised.contains('*') {
+
+    // Depth >= 2 (pointer-to-pointer and beyond) is never safe: the
+    // [basic.lval]/11 aliasing exemption is for accessing an object's
+    // representation as bytes through a single pointer indirection.
+    // Reading a `char*` object through a `char**` is a strict-aliasing
+    // violation, and the same logic applies to `void**`, `uint8_t**`,
+    // etc.
+    if depth != 1 {
         return false;
     }
+
+    // Depth 1: standard aliasing exemption for byte-view access plus
+    // POSIX socket type-punning and the opaque `void*` target.
     matches!(
         base.as_str(),
         "char"
@@ -2906,22 +2925,31 @@ fn is_php_weak_hash_non_crypto_use(cap_node: tree_sitter::Node, bytes: &[u8]) ->
         }
         steps += 1;
         match parent.kind() {
-            // Transparent wrappers — keep walking to find the consumer.
+            // Transparent wrappers — keep walking to find the
+            // consumer.  These node kinds preserve the value flowing
+            // out of the md5/sha1 call without transforming its
+            // semantics, so we let the OUTER context (LHS name,
+            // array key, return method, etc.) classify the use.
             //
-            // Function-call-shaped wrappers (`arguments`,
-            // `function_call_expression`, `member_call_expression`,
-            // `nullsafe_member_call_expression`) are treated as
-            // transparent only when there is at most one md5/sha1
-            // call in the wrapped argument list — the surrounding
-            // call's outer context (LHS / array key / return method)
-            // is what classifies the use.  This catches the common
-            // `$arr['etag'] = $q->createNamedParameter(md5($x))` and
-            // `'short_id' => substr(md5($x), 0, 8)` shapes without
-            // walking through arbitrary identity-bending wrappers
-            // (because crypto compound names — `verify_signature`,
-            // `password_hash`, `hmac_init` — invariably end up bound
-            // to crypto-keyworded LHS names which the exclude list
-            // catches at the consumer).
+            // - `binary_expression`: concat (`'foo_' . md5($x)`),
+            //   equality (`md5($x) === $stored`), arithmetic.
+            // - `parenthesized_expression`: redundant parens.
+            // - `conditional_expression`: `$cond ? md5($x) : ''`.
+            // - `argument` / `arguments`: positional / wrapped arg
+            //   lists — the enclosing call (`substr(md5($x), 0, 8)`,
+            //   `$q->createNamedParameter(md5($x))`) is what matters.
+            // - `function_call_expression`: identity-shaped wrappers
+            //   such as `substr(...)`, `strtolower(...)`,
+            //   `urlencode(...)` which propagate the hash to its
+            //   real consumer.
+            // - `encapsed_string`: `"prefix-{md5($x)}"` interpolation.
+            //
+            // `member_call_expression` / `nullsafe_member_call_expression`
+            // are NOT in this transparent set — they have their own
+            // arm below that performs lookup-verb classification on
+            // the method name (`->get(md5($k))`, `->set(...)`, …)
+            // before optionally falling through to the outer
+            // consumer.
             "binary_expression"
             | "parenthesized_expression"
             | "conditional_expression"
@@ -4622,9 +4650,11 @@ fn cpp_cast_target_type_is_safe_recognises_canonical_shapes() {
     assert!(f("wchar_t*"));
     // void* — well-defined target.
     assert!(f("void*"));
-    assert!(f("void **"));
     assert!(f("const void*"));
-    // Integer round-trip — no pointer required.
+    // Integer round-trip — value cast only (depth 0).  Aliasing
+    // *through* a `uintptr_t*` / `intptr_t*` is NOT covered by the
+    // standard exemption — only the pointer<->integer value
+    // conversion is well-defined.
     assert!(f("uintptr_t"));
     assert!(f("std::uintptr_t"));
     assert!(f("intptr_t"));
@@ -4642,9 +4672,20 @@ fn cpp_cast_target_type_is_safe_recognises_canonical_shapes() {
     assert!(f("uint8_t  * const"));
     assert!(f("const  unsigned   char *"));
 
-    // Pointer-to-pointer of safe base — still safe (any depth >= 1).
-    assert!(f("char**"));
-    assert!(f("uint8_t**"));
+    // Pointer-to-pointer is NOT covered by the [basic.lval]/11
+    // aliasing exemption — accessing a `char*` object through a
+    // `char**` is a strict-aliasing violation.  Same for `void**`,
+    // `uint8_t**`, etc.
+    assert!(!f("char**"));
+    assert!(!f("uint8_t**"));
+    assert!(!f("void**"));
+    assert!(!f("void **"));
+    // Pointer-to-integer-roundtrip-type (`uintptr_t*`, `intptr_t*`)
+    // is also not safe: only the pointer<->integer **value** cast is
+    // well-defined, not aliasing through a pointer-to-uintptr_t.
+    assert!(!f("uintptr_t*"));
+    assert!(!f("intptr_t*"));
+    assert!(!f("std::uintptr_t*"));
 
     // Non-safe shapes — must NOT be suppressed.
     assert!(!f("MyStruct*"));
