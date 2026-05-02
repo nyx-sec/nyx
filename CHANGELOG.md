@@ -4,7 +4,7 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
-## [0.6.0] - TBD
+## [0.6.0] - 2026-05-02
 
 A focused release that splits data-exfiltration off from SSRF and ships sinks for outbound HTTP request bodies across all 10 languages, with calibration tuned so plain user input echoed back upstream does not fire.
 

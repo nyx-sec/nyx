@@ -41,7 +41,7 @@ body:
     attributes:
       label: Nyx version
       description: Output of `nyx --version`.
-      placeholder: "nyx 0.5.0"
+      placeholder: "nyx 0.6.0"
     validations:
       required: true
   - type: input

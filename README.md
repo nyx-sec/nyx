@@ -115,7 +115,7 @@ Requires stable Rust 1.88+. The frontend is compiled and embedded in the binary 
 
 ## Languages
 
-All 10 languages parse via tree-sitter and run through the full pipeline, but rule depth and engine coverage are uneven. Benchmark F1 on the 492-case corpus at [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) is 100% across all ten languages, so F1 alone no longer separates the tiers. Tiering reflects rule depth, gated-sink coverage, and structural idioms the synthetic corpus does not fully stress:
+All 10 languages parse via tree-sitter and run through the full pipeline, but rule depth and engine coverage are uneven. Benchmark F1 on the 507-case corpus at [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) is 100% across all ten languages, so F1 alone no longer separates the tiers. Tiering reflects rule depth, gated-sink coverage, and structural idioms the synthetic corpus does not fully stress:
 
 | Tier | Languages | F1 | Use as a CI gate? |
 |---|---|---|---|
@@ -137,6 +137,7 @@ The corpus also holds a small set of vulnerable/patched pairs extracted from pub
 | [CVE-2023-22621](https://nvd.nist.gov/vuln/detail/CVE-2023-22621) | Strapi | JavaScript | Code execution (SSTI) |
 | [CVE-2025-64430](https://nvd.nist.gov/vuln/detail/CVE-2025-64430) | Parse Server | JavaScript | SSRF |
 | [CVE-2023-26159](https://nvd.nist.gov/vuln/detail/CVE-2023-26159) | follow-redirects | TypeScript | SSRF |
+| [GHSA-4x48-cgf9-q33f](https://github.com/advisories/GHSA-4x48-cgf9-q33f) | Novu | TypeScript | SSRF |
 | [CVE-2026-25544](https://nvd.nist.gov/vuln/detail/CVE-2026-25544) | Payload CMS | TypeScript | SQL injection |
 | [CVE-2022-30323](https://nvd.nist.gov/vuln/detail/CVE-2022-30323) | hashicorp/go-getter | Go | Command injection |
 | [CVE-2024-31450](https://nvd.nist.gov/vuln/detail/CVE-2024-31450) | owncast | Go | Path traversal |
@@ -211,7 +212,7 @@ Or add rules interactively: `nyx config add-rule --lang javascript --matcher esc
 
 ## Status
 
-Under active development. APIs, detector behavior, and configuration options may change between releases. Rule-level F1 on the 492-case corpus is the CI regression floor; per-language detail lives in [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md).
+Under active development. APIs, detector behavior, and configuration options may change between releases. Rule-level F1 on the 507-case corpus is the CI regression floor; per-language detail lives in [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md).
 
 Taint analysis is interprocedural. Persisted per-function SSA summaries carry per-return-path transforms and parameter-granularity points-to, and call-graph SCCs (including SCCs that span files) iterate to a joint fixed-point. The default `balanced` profile also runs k=1 context-sensitive inlining for intra-file callees. Symex (with cross-file and interprocedural frames) and the demand-driven backwards walk are opt-in. Enable them individually with `--symex` and `--backwards-analysis`, or together with `--engine-profile deep`.
 

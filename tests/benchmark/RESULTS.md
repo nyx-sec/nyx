@@ -8,9 +8,9 @@ Current baseline (2026-05-02):
 | Recall    | 1.000      | 1.000      | 0.944    |
 | F1        | 1.000      | 1.000      | 0.901    |
 
-Corpus: 499 cases across 10 languages, 496 evaluated (3 disabled). Per-run JSON lands in `tests/benchmark/results/` (`latest.json` plus dated snapshots). See `README.md` for what the scoring modes mean and how to run a subset.
+Corpus: 507 cases across 10 languages, 504 evaluated (3 disabled). Per-run JSON lands in `tests/benchmark/results/` (`latest.json` plus dated snapshots). See `README.md` for what the scoring modes mean and how to run a subset.
 
-The corpus is mostly synthetic 8-20 line fixtures, one vulnerability or one safe pattern per file. A smaller real-CVE replay set under `cve_corpus/` covers 20 published CVEs across all 10 languages. Both contribute to the headline numbers.
+The corpus is mostly synthetic 8-20 line fixtures, one vulnerability or one safe pattern per file. A smaller real-CVE replay set under `cve_corpus/` covers 30 published advisories across all 10 languages. Both contribute to the headline numbers.
 
 ## Real CVE coverage
 
@@ -40,6 +40,9 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2023-38337 | Ruby       | rswag                      | MIT                  | path_traversal  | detected |
 | CVE-2017-9841  | PHP        | PHPUnit                    | BSD-3-Clause         | code_exec       | detected |
 | CVE-2018-15133 | PHP        | Laravel                    | MIT                  | Deserialization | detected |
+| CVE-2018-20997 | Rust       | tar-rs                     | MIT OR Apache-2.0    | path_traversal  | detected |
+| CVE-2022-36113 | Rust       | cargo                      | MIT OR Apache-2.0    | path_traversal  | detected |
+| CVE-2024-24576 | Rust       | Rust stdlib                | MIT OR Apache-2.0    | CMDI            | detected |
 | CVE-2016-3714  | C          | ImageMagick (ImageTragick) | ImageMagick License  | CMDI            | detected |
 | CVE-2019-18634 | C          | sudo (pwfeedback)          | ISC                  | memory_safety   | detected |
 | CVE-2019-13132 | C++        | ZeroMQ libzmq              | MPL-2.0              | memory_safety   | detected |
