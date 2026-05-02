@@ -314,22 +314,25 @@ impl DefaultTransfer<'_> {
         }
 
         // ── Resource acquire ─────────────────────────────────────────────
-        // SAFE-FOR-FIELD-LHS: skip member-expression LHS acquires.  A
-        // `b.cpuprof = os.Create(...)` pattern transfers ownership to
-        // the containing struct; the local function body cannot
-        // observe the closure (which lives in a paired Stop()/dispose()
-        // method), so tracking `b.cpuprof` as a local resource is a
-        // guaranteed FP at function exit.  Mirrors the gate in
-        // src/cfg_analysis/resources.rs::run.  Production trigger:
-        // prometheus cmd/promtool/tsdb.go::startProfiling cluster
-        // (b.cpuprof, b.memprof, b.blockprof, b.mtxprof).  Recall
-        // bare-ident `f := os.Open(...)` keeps existing tracking.
+        // SAFE-FOR-FIELD-LHS (Go only): skip member-expression LHS
+        // acquires.  A `b.cpuprof = os.Create(...)` pattern transfers
+        // ownership to the containing struct; the local function body
+        // cannot observe the closure (which lives in a paired
+        // Stop()/dispose() method), so tracking `b.cpuprof` as a local
+        // resource is a guaranteed FP at function exit.  Mirrors the
+        // gate in src/cfg_analysis/resources.rs::run.  Production
+        // trigger: prometheus cmd/promtool/tsdb.go::startProfiling
+        // cluster (b.cpuprof, b.memprof, b.blockprof, b.mtxprof).
+        // Restricted to Go because TS/JS class-field acquires
+        // (`this.fd = fs.openSync(...)`) are still expected to be
+        // tracked — the leak fixtures rely on it.
         let mut direct_acquire = false;
-        let define_is_field_lhs = info
-            .taint
-            .defines
-            .as_deref()
-            .is_some_and(|d| d.contains('.'));
+        let define_is_field_lhs = self.lang == Lang::Go
+            && info
+                .taint
+                .defines
+                .as_deref()
+                .is_some_and(|d| d.contains('.'));
         let resource_pairs_iter: &[ResourcePair] = if define_is_field_lhs {
             &[]
         } else {

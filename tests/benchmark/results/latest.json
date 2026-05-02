@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-02T17:44:42Z",
+  "timestamp": "2026-05-02T19:35:12Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:de9356d1090b13d871996e1bf2a92ac45f9c2ae7ecd149e2c90c477e2acaff44",
-  "corpus_size": 502,
-  "cases_run": 499,
+  "ground_truth_hash": "sha256:de2df25545527c2c90c665a5d4db257fb8f0d7aefe16eb742ee8e70f7de55e99",
+  "corpus_size": 507,
+  "cases_run": 504,
   "cases_skipped": 3,
   "outcomes": [
     {
@@ -2758,6 +2758,42 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "go-safe-realrepo-016",
+      "file": "go/safe/safe_inner_call_close_in_arg.go",
+      "language": "go",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "FP",
+      "outcome_rule_level": "FP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [
+        "state-resource-leak-possible",
+        "state-resource-leak-possible"
+      ],
+      "all_finding_ids": [
+        "state-resource-leak-possible",
+        "state-resource-leak-possible"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "go-safe-realrepo-017",
+      "file": "go/safe/safe_struct_field_resource_owned_by_struct.go",
+      "language": "go",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "go-sqli-001",
       "file": "go/sqli/sqli_concat.go",
       "language": "go",
@@ -2915,6 +2951,27 @@
       "unexpected_rule_ids": [],
       "all_finding_ids": [],
       "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "go-vuln-realrepo-018",
+      "file": "go/safe/vuln_resource_leak_no_close.go",
+      "language": "go",
+      "vuln_class": "resource",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -6545,6 +6602,40 @@
       "non_security_finding_count": 1
     },
     {
+      "case_id": "rs-auth-realrepo-016",
+      "file": "rust/safe/safe_non_web_rust_project",
+      "language": "rust",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "rs-auth-realrepo-017",
+      "file": "rust/auth/unsafe_actix_web_project_no_check",
+      "language": "rust",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "rs-auth-typed-extractors-001",
       "file": "rust/auth/safe_typed_path_int_extractor.rs",
       "language": "rust",
@@ -8922,22 +9013,22 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 247,
-    "fp": 0,
+    "tp": 249,
+    "fp": 1,
     "fn_": 0,
-    "tn": 252,
-    "precision": 1.0,
+    "tn": 254,
+    "precision": 0.996,
     "recall": 1.0,
-    "f1": 1.0
+    "f1": 0.9979959919839679
   },
   "aggregate_rule_level": {
-    "tp": 247,
-    "fp": 0,
+    "tp": 249,
+    "fp": 1,
     "fn_": 0,
-    "tn": 252,
-    "precision": 1.0,
+    "tn": 254,
+    "precision": 0.996,
     "recall": 1.0,
-    "f1": 1.0
+    "f1": 0.9979959919839679
   },
   "by_language": {
     "c": {
@@ -8959,13 +9050,13 @@
       "f1": 1.0
     },
     "go": {
-      "tp": 26,
-      "fp": 0,
+      "tp": 27,
+      "fp": 1,
       "fn_": 0,
-      "tn": 30,
-      "precision": 1.0,
+      "tn": 31,
+      "precision": 0.9642857142857143,
       "recall": 1.0,
-      "f1": 1.0
+      "f1": 0.9818181818181818
     },
     "java": {
       "tp": 21,
@@ -9013,10 +9104,10 @@
       "f1": 1.0
     },
     "rust": {
-      "tp": 36,
+      "tp": 37,
       "fp": 0,
       "fn_": 0,
-      "tn": 40,
+      "tn": 41,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9033,7 +9124,7 @@
   },
   "by_vuln_class": {
     "auth": {
-      "tp": 18,
+      "tp": 19,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9158,14 +9249,23 @@
       "recall": 1.0,
       "f1": 1.0
     },
-    "safe": {
-      "tp": 0,
+    "resource": {
+      "tp": 1,
       "fp": 0,
       "fn_": 0,
-      "tn": 252,
+      "tn": 0,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
+    },
+    "safe": {
+      "tp": 0,
+      "fp": 1,
+      "fn_": 0,
+      "tn": 254,
+      "precision": 0.0,
+      "recall": 1.0,
+      "f1": 0.0
     },
     "secrets": {
       "tp": 1,
@@ -9215,31 +9315,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 77,
-      "fp": 110,
-      "fn_": 170,
-      "tn": 142,
-      "precision": 0.4117647058823529,
-      "recall": 0.3117408906882591,
-      "f1": 0.3548387096774193
+      "tp": 78,
+      "fp": 107,
+      "fn_": 171,
+      "tn": 148,
+      "precision": 0.42162162162162165,
+      "recall": 0.3132530120481928,
+      "f1": 0.359447004608295
     },
     ">=Low": {
-      "tp": 79,
-      "fp": 133,
-      "fn_": 168,
-      "tn": 119,
-      "precision": 0.37264150943396224,
-      "recall": 0.31983805668016196,
-      "f1": 0.3442265795206972
+      "tp": 82,
+      "fp": 126,
+      "fn_": 167,
+      "tn": 129,
+      "precision": 0.3942307692307692,
+      "recall": 0.3293172690763052,
+      "f1": 0.35886214442013126
     },
     ">=Medium": {
-      "tp": 79,
-      "fp": 127,
-      "fn_": 168,
-      "tn": 125,
-      "precision": 0.38349514563106796,
-      "recall": 0.31983805668016196,
-      "f1": 0.3487858719646799
+      "tp": 82,
+      "fp": 121,
+      "fn_": 167,
+      "tn": 134,
+      "precision": 0.4039408866995074,
+      "recall": 0.3293172690763052,
+      "f1": 0.3628318584070796
     }
   }
 }

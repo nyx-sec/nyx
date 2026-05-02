@@ -3,6 +3,7 @@ use super::rules;
 use super::{AnalysisContext, CfgAnalysis, CfgFinding, Confidence};
 use crate::cfg::{EdgeKind, StmtKind};
 use crate::patterns::Severity;
+use crate::symbol::Lang;
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 use std::collections::HashSet;
@@ -423,15 +424,19 @@ impl CfgAnalysis for ResourceMisuse {
                 if ctx.cfg[acquire].managed_resource {
                     continue;
                 }
-                // SAFE-FOR-FIELD-LHS: skip member-expression LHS
-                // acquires.  `b.cpuprof = os.Create(...)` transfers
+                // SAFE-FOR-FIELD-LHS (Go only): skip member-expression
+                // LHS acquires.  `b.cpuprof = os.Create(...)` transfers
                 // ownership to the containing struct; closure
                 // responsibility belongs to a paired Stop()/Release()
                 // method on the struct's lifecycle.  Mirrors the gate
                 // in src/state/transfer.rs::apply_call.  Production
                 // trigger: prometheus
                 // cmd/promtool/tsdb.go::startProfiling cluster.
-                if let Some(acquired_var) = ctx.cfg[acquire].taint.defines.as_deref()
+                // Restricted to Go because TS/JS class-field acquires
+                // (`this.fd = fs.openSync(...)`) are still expected to
+                // be tracked — the leak fixtures rely on it.
+                if ctx.lang == Lang::Go
+                    && let Some(acquired_var) = ctx.cfg[acquire].taint.defines.as_deref()
                     && acquired_var.contains('.')
                 {
                     continue;
