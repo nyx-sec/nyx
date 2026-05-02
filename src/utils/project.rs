@@ -57,11 +57,66 @@ pub enum DetectedFramework {
 #[derive(Debug, Clone, Default)]
 pub struct FrameworkContext {
     pub frameworks: Vec<DetectedFramework>,
+    /// Language ecosystems whose root manifest existed and was inspected.
+    /// Lets `lang_has_web_framework` distinguish "no manifest at all" from
+    /// "manifest present but listed no matching framework" — the second
+    /// case is a positive signal that the project has no HTTP boundary in
+    /// that language, the first is just absence-of-information.
+    pub inspected_langs: std::collections::HashSet<&'static str>,
 }
 
 impl FrameworkContext {
     pub fn has(&self, fw: DetectedFramework) -> bool {
         self.frameworks.contains(&fw)
+    }
+
+    /// Three-valued web-framework presence query for a language slug.
+    ///
+    /// * `Some(true)` ─ at least one framework for `lang` is in `frameworks`.
+    /// * `Some(false)` ─ a manifest for `lang` was inspected but listed no
+    ///   matching framework.  The project genuinely has no HTTP boundary
+    ///   in this language.
+    /// * `None` ─ no manifest for `lang` was inspected (e.g. single-file
+    ///   scans without a project root).  Caller should fall back to
+    ///   prior-behavior heuristics.
+    pub fn lang_has_web_framework(&self, lang: &str) -> Option<bool> {
+        let (frameworks_for_lang, manifest_lang_key): (&[DetectedFramework], &str) = match lang {
+            "javascript" | "typescript" | "js" | "ts" => (
+                &[
+                    DetectedFramework::Express,
+                    DetectedFramework::Koa,
+                    DetectedFramework::Fastify,
+                ],
+                "node",
+            ),
+            "python" | "py" => (
+                &[DetectedFramework::Flask, DetectedFramework::Django],
+                "python",
+            ),
+            "java" => (&[DetectedFramework::Spring], "java"),
+            "go" => (&[DetectedFramework::Gin, DetectedFramework::Echo], "go"),
+            "ruby" | "rb" => (
+                &[DetectedFramework::Rails, DetectedFramework::Sinatra],
+                "ruby",
+            ),
+            "php" => (&[DetectedFramework::Laravel], "php"),
+            "rust" | "rs" => (
+                &[
+                    DetectedFramework::Axum,
+                    DetectedFramework::ActixWeb,
+                    DetectedFramework::Rocket,
+                ],
+                "rust",
+            ),
+            _ => return None,
+        };
+        if frameworks_for_lang.iter().any(|fw| self.has(*fw)) {
+            return Some(true);
+        }
+        if self.inspected_langs.contains(manifest_lang_key) {
+            return Some(false);
+        }
+        None
     }
 }
 
@@ -135,17 +190,50 @@ pub fn detect_in_file_frameworks(bytes: &[u8], lang_slug: &str) -> Vec<DetectedF
                 fws.push(DetectedFramework::Rails);
             }
         }
+        // Rust is intentionally not handled here — adding axum / actix_web
+        // / rocket detection here would also flip framework-conditional
+        // *label* rules on for files in workspaces whose root Cargo.toml
+        // doesn't list the crate (e.g. meilisearch's root, which carries
+        // actix-web only in subcrates), and the existing actix label set
+        // marks `HttpResponse.json` as a `Cap::HTML_ESCAPE` sink ─ a
+        // pattern that fires on every actix route that echoes a path
+        // parameter back to the client (legitimate behavior, not XSS).
+        //
+        // The auth-analysis path uses `auth_analysis::extract`'s own
+        // per-file Rust check (see `compute_web_framework_signal`) so the
+        // signal is available without touching the label augmentation.
         _ => {}
     }
     fws
 }
 
+/// Coarse per-file signal: does the file's leading byte range mention
+/// at least one Rust web-framework symbol path (`axum::`, `actix_web::`,
+/// `rocket::`)?  Used by [`crate::auth_analysis::extract`] to gate the
+/// `is_external_input_param_name` arm of `unit_has_user_input_evidence`
+/// without affecting framework-conditional *label* rules.
+///
+/// Returns `false` for non-Rust source.
+pub fn rust_file_imports_web_framework(bytes: &[u8]) -> bool {
+    let head_len = bytes.len().min(8 * 1024);
+    let head = match std::str::from_utf8(&bytes[..head_len]) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    head.contains("axum::")
+        || head.contains("axum_extra::")
+        || head.contains("actix_web::")
+        || head.contains("rocket::")
+}
+
 /// Detect frameworks from manifest files in the project root.
 pub fn detect_frameworks(root: &Path) -> FrameworkContext {
     let mut fws = Vec::new();
+    let mut inspected: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
 
     // ── Node.js (package.json) ──
     if let Some(content) = read_bounded(&root.join("package.json")) {
+        inspected.insert("node");
         // Crude substring search in the "dependencies" block area.
         // Good enough for detection, no JSON parsing overhead.
         if content.contains("\"express\"") {
@@ -169,6 +257,7 @@ pub fn detect_frameworks(root: &Path) -> FrameworkContext {
     // ── Python ──
     for name in &["requirements.txt", "Pipfile", "pyproject.toml"] {
         if let Some(content) = read_bounded(&root.join(name)) {
+            inspected.insert("python");
             let lower = content.to_ascii_lowercase();
             if lower.contains("flask") && !fws.contains(&DetectedFramework::Flask) {
                 fws.push(DetectedFramework::Flask);
@@ -182,6 +271,7 @@ pub fn detect_frameworks(root: &Path) -> FrameworkContext {
     // ── Java (Maven / Gradle) ──
     for name in &["pom.xml", "build.gradle", "build.gradle.kts"] {
         if let Some(content) = read_bounded(&root.join(name)) {
+            inspected.insert("java");
             if (content.contains("spring-boot") || content.contains("spring-web"))
                 && !fws.contains(&DetectedFramework::Spring)
             {
@@ -192,6 +282,7 @@ pub fn detect_frameworks(root: &Path) -> FrameworkContext {
 
     // ── Go (go.mod) ──
     if let Some(content) = read_bounded(&root.join("go.mod")) {
+        inspected.insert("go");
         if content.contains("gin-gonic/gin") {
             fws.push(DetectedFramework::Gin);
         }
@@ -202,6 +293,7 @@ pub fn detect_frameworks(root: &Path) -> FrameworkContext {
 
     // ── PHP (composer.json) ──
     if let Some(content) = read_bounded(&root.join("composer.json")) {
+        inspected.insert("php");
         if content.contains("laravel/framework") {
             fws.push(DetectedFramework::Laravel);
         }
@@ -209,6 +301,7 @@ pub fn detect_frameworks(root: &Path) -> FrameworkContext {
 
     // ── Ruby (Gemfile) ──
     if let Some(content) = read_bounded(&root.join("Gemfile")) {
+        inspected.insert("ruby");
         if content.contains("'rails'") || content.contains("\"rails\"") {
             fws.push(DetectedFramework::Rails);
         }
@@ -219,6 +312,7 @@ pub fn detect_frameworks(root: &Path) -> FrameworkContext {
 
     // ── Rust (Cargo.toml) ──
     if let Some(content) = read_bounded(&root.join("Cargo.toml")) {
+        inspected.insert("rust");
         if content.contains("actix-web") {
             fws.push(DetectedFramework::ActixWeb);
         }
@@ -230,7 +324,10 @@ pub fn detect_frameworks(root: &Path) -> FrameworkContext {
         }
     }
 
-    FrameworkContext { frameworks: fws }
+    FrameworkContext {
+        frameworks: fws,
+        inspected_langs: inspected,
+    }
 }
 
 #[test]
@@ -475,6 +572,57 @@ fn framework_context_has_is_false_for_absent_framework() {
     assert!(!ctx.has(DetectedFramework::Express));
     assert!(!ctx.has(DetectedFramework::Flask));
     assert!(!ctx.has(DetectedFramework::Spring));
+}
+
+#[test]
+fn lang_has_web_framework_three_valued_for_rust() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // Cargo.toml present, no axum / actix-web / rocket → Some(false).
+    fs::write(root.join("Cargo.toml"), "[dependencies]\nserde = \"1\"\n").unwrap();
+    let ctx = detect_frameworks(root);
+    assert_eq!(ctx.lang_has_web_framework("rust"), Some(false));
+    assert_eq!(ctx.lang_has_web_framework("python"), None);
+
+    // Cargo.toml present and names axum → Some(true).
+    fs::write(root.join("Cargo.toml"), "[dependencies]\naxum = \"0.7\"\n").unwrap();
+    let ctx = detect_frameworks(root);
+    assert_eq!(ctx.lang_has_web_framework("rust"), Some(true));
+}
+
+#[test]
+fn lang_has_web_framework_none_when_manifest_absent() {
+    // No Cargo.toml at root → Rust manifest not inspected → None.
+    let tmp = tempfile::tempdir().unwrap();
+    let ctx = detect_frameworks(tmp.path());
+    assert_eq!(ctx.lang_has_web_framework("rust"), None);
+    assert_eq!(ctx.lang_has_web_framework("python"), None);
+    assert_eq!(ctx.lang_has_web_framework("ruby"), None);
+}
+
+#[test]
+fn rust_file_imports_web_framework_recognises_axum_actix_rocket() {
+    assert!(rust_file_imports_web_framework(
+        b"use axum::Router;\nfn main() {}\n"
+    ));
+    assert!(rust_file_imports_web_framework(
+        b"use actix_web::web;\nfn main() {}\n"
+    ));
+    assert!(rust_file_imports_web_framework(
+        b"use rocket::get;\nfn main() {}\n"
+    ));
+    assert!(rust_file_imports_web_framework(
+        b"use axum_extra::routing::RouterExt;\n"
+    ));
+    // Not a web framework import → false.
+    assert!(!rust_file_imports_web_framework(
+        b"use std::path::Path;\nuse serde::Deserialize;\nfn main() {}\n"
+    ));
+    // Bare crate name in a comment doesn't satisfy the `<crate>::`
+    // path prefix — substring is conservative on purpose.
+    assert!(!rust_file_imports_web_framework(
+        b"// migrating away from axum\nfn main() {}\n"
+    ));
 }
 
 #[test]

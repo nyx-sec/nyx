@@ -441,6 +441,7 @@ fn ssa_summary_serde_round_trip_identity() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let json = serde_json::to_string(&summary).unwrap();
@@ -474,6 +475,7 @@ fn ssa_summary_serde_round_trip_strip_bits() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let json = serde_json::to_string(&summary).unwrap();
@@ -504,6 +506,7 @@ fn ssa_summary_serde_round_trip_add_bits() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let json = serde_json::to_string(&summary).unwrap();
@@ -541,6 +544,7 @@ fn ssa_summary_serde_round_trip_all_variants() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let json = serde_json::to_string(&summary).unwrap();
@@ -580,6 +584,7 @@ fn global_summaries_insert_ssa_exact_key_replacement() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     gs.insert_ssa(key.clone(), v1.clone());
@@ -607,6 +612,7 @@ fn global_summaries_insert_ssa_exact_key_replacement() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     gs.insert_ssa(key.clone(), v2.clone());
@@ -654,6 +660,7 @@ fn global_summaries_merge_with_ssa_entries() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let sum_b = SsaFuncSummary {
@@ -677,6 +684,7 @@ fn global_summaries_merge_with_ssa_entries() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
 
@@ -724,6 +732,7 @@ fn global_summaries_is_empty_considers_ssa() {
             field_points_to: Default::default(),
             return_path_facts: smallvec::SmallVec::new(),
             typed_call_receivers: vec![],
+            validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
         },
     );
@@ -754,6 +763,7 @@ fn ssa_summary_serde_round_trip_param_to_sink_param() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let json = serde_json::to_string(&summary).unwrap();
@@ -799,6 +809,7 @@ fn ssa_summary_serde_round_trip_container_fields() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let json = serde_json::to_string(&summary).unwrap();
@@ -854,6 +865,7 @@ fn ssa_summary_serde_round_trip_return_abstract() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let json = serde_json::to_string(&summary).unwrap();
@@ -1375,6 +1387,7 @@ fn global_summaries_resolve_body_requires_body_present() {
             field_points_to: Default::default(),
             return_path_facts: smallvec::SmallVec::new(),
             typed_call_receivers: vec![],
+            validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
         },
     );
@@ -3519,6 +3532,7 @@ fn cf4_return_path_transform_serde_round_trip() {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     };
     let json = serde_json::to_string(&summary).unwrap();

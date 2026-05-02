@@ -127,6 +127,9 @@ fn parse_flask_route_decorator(
     };
 
     let callee = text(function, bytes);
+    if callee_is_test_decorator(&callee) {
+        return None;
+    }
     let method_name = bare_method_name(&callee);
     let arguments = decorator_expr.child_by_field_name("arguments")?;
     let args = named_children(arguments);
@@ -171,6 +174,45 @@ fn parse_methods_keyword(arguments: Node<'_>, bytes: &[u8]) -> Option<Vec<HttpMe
     } else {
         Some(methods)
     }
+}
+
+/// True iff the callee text matches a known Python test-framework
+/// decorator that incidentally collides with the Flask `<app>.<verb>`
+/// shape.  `unittest.mock.patch` is the dominant collision: it takes a
+/// string literal as its first positional arg (the import path of the
+/// thing being patched), and `bare_method_name("mock.patch")` is
+/// `patch`, which `parse_flask_route_decorator` previously matched as
+/// HTTP PATCH.  Every test method decorated with `@mock.patch("...")`
+/// was therefore being attached as a Flask route handler, which
+/// flipped its `unit.kind` to `RouteHandler` and made it pass
+/// `unit_has_user_input_evidence` unconditionally — flooding the
+/// pytest test suites with `missing_ownership_check` findings.
+///
+/// The denylist mirrors common mock / monkeypatch / parametrize forms.
+/// Conservative: matches only the canonical receiver chains; an
+/// imported alias `from unittest.mock import patch` then bare
+/// `@patch("x")` would still match `patch` as PATCH, but the
+/// decorator must also carry a string-literal first arg AND the
+/// route-attached unit must come back through the auth analysis to
+/// fire — handlers with a string-arg decorator are rare outside Flask
+/// itself, and the wider precondition path now covers most of those.
+fn callee_is_test_decorator(callee: &str) -> bool {
+    matches!(
+        callee,
+        "mock.patch"
+            | "mock.patch.object"
+            | "mock.patch.dict"
+            | "mock.patch.multiple"
+            | "unittest.mock.patch"
+            | "unittest.mock.patch.object"
+            | "unittest.mock.patch.dict"
+            | "unittest.mock.patch.multiple"
+            | "monkeypatch.setattr"
+            | "monkeypatch.setenv"
+            | "monkeypatch.delattr"
+            | "monkeypatch.delenv"
+            | "pytest.mark.parametrize"
+    )
 }
 
 fn keyword_argument_string(arguments: Node<'_>, bytes: &[u8], name: &str) -> Option<String> {
@@ -328,6 +370,41 @@ fn inject_middleware_auth(
             check.is_route_level = true;
             unit.auth_checks.push(check);
         }
+    }
+}
+
+#[cfg(test)]
+mod test_decorator_tests {
+    use super::callee_is_test_decorator;
+
+    /// Test-framework decorators that share their bare method name with
+    /// a Flask HTTP verb (`patch`, `delete`, ...) must be excluded
+    /// from `parse_flask_route_decorator`.  Without the denylist,
+    /// every `@mock.patch("module")` in pytest test files attaches
+    /// the test method as a Flask PATCH route handler — flooding the
+    /// auth-analysis with FPs.
+    #[test]
+    fn callee_is_test_decorator_recognises_canonical_forms() {
+        // unittest.mock variants.
+        assert!(callee_is_test_decorator("mock.patch"));
+        assert!(callee_is_test_decorator("mock.patch.object"));
+        assert!(callee_is_test_decorator("mock.patch.dict"));
+        assert!(callee_is_test_decorator("mock.patch.multiple"));
+        assert!(callee_is_test_decorator("unittest.mock.patch"));
+        assert!(callee_is_test_decorator("unittest.mock.patch.object"));
+        // pytest fixtures.
+        assert!(callee_is_test_decorator("monkeypatch.setattr"));
+        assert!(callee_is_test_decorator("monkeypatch.setenv"));
+        assert!(callee_is_test_decorator("pytest.mark.parametrize"));
+        // Negatives — real Flask decorators must still match.
+        assert!(!callee_is_test_decorator("app.route"));
+        assert!(!callee_is_test_decorator("app.get"));
+        assert!(!callee_is_test_decorator("app.post"));
+        assert!(!callee_is_test_decorator("app.patch"));
+        assert!(!callee_is_test_decorator("bp.delete"));
+        assert!(!callee_is_test_decorator("blueprint.put"));
+        assert!(!callee_is_test_decorator("router.get"));
+        assert!(!callee_is_test_decorator(""));
     }
 }
 

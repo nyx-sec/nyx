@@ -348,6 +348,20 @@ pub struct RouteRegistration {
 pub struct AuthorizationModel {
     pub routes: Vec<RouteRegistration>,
     pub units: Vec<AnalysisUnit>,
+    /// Per-language web-framework presence signal used to gate the
+    /// `is_external_input_param_name` arm of `unit_has_user_input_evidence`.
+    ///
+    /// `None` means detection did not run (single-file unit-test paths,
+    /// languages without a framework gate yet).  `Some(true)` means the
+    /// project manifest or the file's imports name a web framework that
+    /// matches this language ─ helper functions are plausibly reachable
+    /// from a route handler, so the param-name heuristic stays on.
+    /// `Some(false)` means detection ran and named no matching framework
+    /// ─ the file lives in a project with no HTTP boundary, so internal
+    /// helper params named `*_id` / `req` / `payload` are not user input.
+    ///
+    /// Currently set only for Rust by `extract_authorization_model`.
+    pub lang_web_framework_signal: Option<bool>,
 }
 
 impl AuthorizationModel {
@@ -359,5 +373,22 @@ impl AuthorizationModel {
                 route.unit_idx += unit_offset;
                 route
             }));
+        // Take the strongest signal across extractor outputs: `Some(true)`
+        // wins over `Some(false)` wins over `None`.  In practice every
+        // extractor for a given file sees the same `framework_ctx + bytes`
+        // so they all derive identical signals; this is just a defensive
+        // merge.
+        self.lang_web_framework_signal = max_signal(
+            self.lang_web_framework_signal,
+            other.lang_web_framework_signal,
+        );
+    }
+}
+
+fn max_signal(a: Option<bool>, b: Option<bool>) -> Option<bool> {
+    match (a, b) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        _ => None,
     }
 }

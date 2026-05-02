@@ -483,6 +483,15 @@ pub struct AuthAnalysisConfig {
     pub admin_path_patterns: Vec<String>,
     pub admin_guard_names: Vec<String>,
     pub login_guard_names: Vec<String>,
+    /// Typed-extractor wrapper names that prove the request passed
+    /// route-level capability/policy enforcement (e.g. meilisearch's
+    /// `GuardedData<ActionPolicy<X>, _>`).  Per-language defaults set
+    /// in `auth_analysis::config::build_auth_rules`; user nyx.toml
+    /// entries are appended.  Distinct from `login_guard_names` so the
+    /// pattern (matched as last-segment + case-insensitive
+    /// `starts_with`) doesn't pollute regular call recognition.
+    #[serde(default)]
+    pub policy_guard_names: Vec<String>,
     pub authorization_check_names: Vec<String>,
     pub mutation_indicator_names: Vec<String>,
     pub read_indicator_names: Vec<String>,
@@ -544,6 +553,7 @@ impl Default for AuthAnalysisConfig {
             admin_path_patterns: Vec::new(),
             admin_guard_names: Vec::new(),
             login_guard_names: Vec::new(),
+            policy_guard_names: Vec::new(),
             authorization_check_names: Vec::new(),
             mutation_indicator_names: Vec::new(),
             read_indicator_names: Vec::new(),
@@ -1074,6 +1084,10 @@ pub(crate) fn merge_configs(mut default: Config, user: Config) -> Config {
         extend_dedup(
             &mut entry.auth.login_guard_names,
             user_lang_cfg.auth.login_guard_names,
+        );
+        extend_dedup(
+            &mut entry.auth.policy_guard_names,
+            user_lang_cfg.auth.policy_guard_names,
         );
         extend_dedup(
             &mut entry.auth.authorization_check_names,

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 492
+    "corpus_size": 507
   },
   "cases": [
     {
@@ -9658,6 +9658,62 @@
       "notes": "CVE-2025-64430 patched counterpart: URI-backed file upload removed entirely; no http.get on user input"
     },
     {
+      "case_id": "cve-js-2023-22621-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2023-22621/vulnerable.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "code_exec",
+      "cwe": "CWE-1336",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "strapi",
+        "code_exec",
+        "ssti",
+        "lodash",
+        "template"
+      ],
+      "notes": "CVE-2023-22621: Strapi <=4.5.5 sendTemplatedEmail compiled lodash _.template on attacker-controlled email-template body (admin panel), enabling SSTI -> RCE via <% ... %> evaluate blocks. MIT"
+    },
+    {
+      "case_id": "cve-js-2023-22621-patched",
+      "file": "cve_corpus/javascript/CVE-2023-22621/patched.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "strapi",
+        "patched",
+        "negative"
+      ],
+      "notes": "CVE-2023-22621 patched counterpart: _.template called with { interpolate: <strict regex>, evaluate: false, escape: false } so the lodash evaluate block compiler is disabled."
+    },
+    {
       "case_id": "cve-ts-2023-26159-vulnerable",
       "file": "cve_corpus/typescript/CVE-2023-26159/vulnerable.ts",
       "language": "typescript",
@@ -13154,6 +13210,34 @@
       "notes": "Empty-string fallback (`process.env.X || \"\"`) is not a hardcoded secret. Distilled from /Users/elipeter/oss/cal.com/apps/api/v2/src/modules/stripe/utils/newStripeInstance.ts and ~30 sibling cal.com calendar/stripe/sendgrid integration files. Engine fix: pattern-level regex (#match? @fallback \"[^\\\"']\") in src/patterns/typescript.rs."
     },
     {
+      "case_id": "ts-safe-021",
+      "file": "typescript/safe/safe_validated_helper_chain.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "validated-flow",
+        "helper-validator",
+        "summary-propagation",
+        "cve-2026-25544"
+      ],
+      "disabled": false,
+      "notes": "Validated-flow propagation through helper chains. `sanitize` validates its first parameter via a regex allowlist; `buildQuery` interpolates the sanitised result into a SQL fragment; the handler hands the fragment to `db.execute`. Pinned by `SsaFuncSummary::validated_params_to_return` + `propagate_validated_params_to_return` (CVE-2026-25544 deep fix)."
+    },
+    {
       "case_id": "py-auth-decorator-001",
       "file": "python/safe/safe_login_required_decorator.py",
       "language": "python",
@@ -14099,6 +14183,94 @@
       "notes": "`if err != nil { c.Fatalf(...) }` / `os.Exit` / `log.Fatalf` / `panic(err)` are documented terminators (Goexit-class).  cfg-error-fallthrough must walk through them as terminating paths.  Closes the minio test-file cluster (49+34+12+11+9+7+7 hits across xl-storage_test.go, erasure-healing_test.go, format-erasure_test.go, \u2026).  Engine fix: src/cfg_analysis/error_handling.rs::call_never_returns."
     },
     {
+      "case_id": "go-safe-realrepo-016",
+      "file": "go/safe/safe_inner_call_close_in_arg.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [
+        "state-resource-leak-possible"
+      ],
+      "forbidden_rule_ids": [
+        "state-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "`require.NoError(t, f.Close())` and `errs = append(errs, f.Close())` shapes \u2014 the inner-call release was invisible because the CFG's per-statement Call node carries the OUTER callee.  Engine fix: src/state/transfer.rs::apply_call now walks info.arg_callees after the direct-release branch and marks the bare-receiver SymbolId CLOSED.  Closes 9+ hits across prometheus tsdb test files."
+    },
+    {
+      "case_id": "go-safe-realrepo-017",
+      "file": "go/safe/safe_struct_field_resource_owned_by_struct.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "`b.cpuprof = os.Create(...)` shape \u2014 member-expression LHS is an ownership transfer to the containing struct, not a local acquisition.  Closure responsibility belongs to a paired `stopProfiling()` method.  Engine fix: src/state/transfer.rs::apply_call gates the acquire on !define_is_field_lhs; src/cfg_analysis/resources.rs::run mirrors the gate.  Closes the prometheus cmd/promtool/tsdb.go::startProfiling cluster (4 findings on b.cpuprof, b.memprof, b.blockprof, b.mtxprof)."
+    },
+    {
+      "case_id": "go-vuln-realrepo-018",
+      "file": "go/safe/vuln_resource_leak_no_close.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "positive",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for the inner-call-arg / member-LHS fixes.  Bare-identifier `f := os.OpenFile(...)` with no `f.Close()` anywhere must still fire the resource-leak rule."
+    },
+    {
       "case_id": "go-auth-realrepo-001",
       "file": "go/auth/vuln_repo_findbyid_no_auth.go",
       "language": "go",
@@ -14591,6 +14763,117 @@
       ],
       "disabled": false,
       "notes": "Negative-counterpart guard for the LocalCollection / parameter-name fixes: handler takes a HashMap typed param (in-memory bookkeeping) but ALSO calls `db.update_owner(req.target_user_id, ...)` (real DbMutation).  The cache mutation must not blanket-suppress the persistent-store mutation \u2014 the rule must still fire on `db.update_owner`."
+    },
+    {
+      "case_id": "rs-auth-realrepo-014",
+      "file": "rust/auth/safe_actix_guarded_data_extractor.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "real-repo-precision-2026-05-02",
+        "noise-budget-zero"
+      ],
+      "disabled": false,
+      "notes": "Meilisearch `GuardedData<ActionPolicy<{ actions::KEYS_GET }>, Data<AuthController>>` typed extractor on actix-web routes registered via `#[routes::path(..)]` attribute macros (no `.route()` builder, so `collect_routes` doesn't attach the handler).  The new typed-extractor fallback pass in `actix_web::extract` walks every Function-kind unit and applies `guard_calls_for_handler`; the `Guarded`-prefix `policy_guard_names` recogniser injects `AuthCheckKind::Other` with `is_route_level: true`, so `auth_check_covers_subject`'s route-level short-circuit suppresses missing-ownership-check on path-derived sinks."
+    },
+    {
+      "case_id": "rs-auth-realrepo-015",
+      "file": "rust/auth/unsafe_actix_no_guarded_data_extractor.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-285",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "Medium",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Negative-counterpart guard for the `GuardedData` typed-extractor recogniser: same handler shape but the wrapper is replaced by a bare `Data<AuthController>` (no policy enforcement implied).  An over-broad `policy_guard_names` recogniser would silence this; the Guarded-prefix matcher must NOT fire on bare `Data<...>`, so the rule still flags the path-derived `uid` flowing into `auth_controller.get_key`."
+    },
+    {
+      "case_id": "rs-auth-realrepo-016",
+      "file": "rust/safe/safe_non_web_rust_project",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "real-repo-precision-2026-05-02",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check",
+        "rs.auth.stale_authorization",
+        "rs.auth.token_override_without_validation"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "shape-safe",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Real-repo precision guard distilled from zed (desktop GUI / DAP debugger / agent) crates: `<thing>_id` parameters on internal helpers AND `session.foo` chains on debug-session handles must NOT count as user-input evidence in a Rust project whose Cargo.toml names no web framework.  `lang_has_web_framework(\"rust\")` returns Some(false) and the gate suppresses both step-2 (context_inputs) and step-3 (param-name) heuristics."
+    },
+    {
+      "case_id": "rs-auth-realrepo-017",
+      "file": "rust/auth/unsafe_actix_web_project_no_check",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-285",
+      "provenance": "real-repo-precision-2026-05-02",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "High",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Regression counterpart to `rs-auth-realrepo-016`: same helper shape with no upstream auth check, but the project's manifest names `actix-web` so `lang_has_web_framework(\"rust\")` returns Some(true) and the param-name arm of `unit_has_user_input_evidence` stays on.  Asserts the project-level web-framework gate doesn't silence findings in real Rust web projects."
     },
     {
       "case_id": "ruby-safe-ar-query-shapes-001",
@@ -15585,6 +15868,165 @@
       ],
       "disabled": false,
       "notes": "fgets stdin user input echoed into curl_easy_setopt CURLOPT_POSTFIELDS at fixed URL; sensitivity-gate suppresses Plain-tier sources."
+    },
+    {
+      "case_id": "py-auth-realrepo-008",
+      "file": "python/safe/safe_django_orm_caller_scoped_entity.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "django",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Distilled from sentry api/helpers/environments.py::get_environments and api/endpoints/organization_releases.py::_filter_releases_by_query.  `<entity>.id` for a unit param named after a scope-bearing domain entity (organization, project, ...) is the ownership scope inherited from the caller, not a user-controlled target.  Pinned by is_caller_scope_entity_subject in src/auth_analysis/checks.rs.  Also exercises the keyword_argument-key fix in extract_value_refs (Environment.objects.filter(organization_id=...) — the kwarg key `organization_id` is the ORM column name, not a subject)."
+    },
+    {
+      "case_id": "py-auth-realrepo-009",
+      "file": "python/auth/vuln_user_id_param_no_auth.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "django",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart to py-auth-realrepo-008: helper takes a user-supplied `project_id` (id-like name) and queries Project.objects.filter(id=project_id) without any preceding ownership check.  Regression guard: the caller-scope-entity exemption must NOT suppress when the param is itself an id-like user input."
+    },
+    {
+      "case_id": "py-auth-realrepo-010",
+      "file": "python/safe/safe_mock_patch_test_method.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "pytest",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Distilled from airflow providers/google/tests/unit/google/cloud/hooks/test_dlp.py: pytest test method decorated with `@mock.patch(\"...\")` was being attached as a Flask `PATCH` route handler because bare_method_name(\"mock.patch\") == \"patch\".  Fix: parse_flask_route_decorator short-circuits on known test-framework decorator vocabulary (mock.patch, unittest.mock.patch, monkeypatch.setattr, pytest.mark.parametrize)."
+    },
+    {
+      "case_id": "cve-ts-2026-25544-vulnerable",
+      "file": "cve_corpus/typescript/CVE-2026-25544/vulnerable.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          80,
+          81
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          73,
+          73
+        ]
+      ],
+      "tags": [
+        "cve",
+        "payload",
+        "sqli",
+        "vulnerable"
+      ],
+      "disabled": true,
+      "disabled_reason": "Validated-flow propagation through SSA-derived values and helper-summary returns is missing.  The patched counterpart applies a regex allowlist (`SAFE_STRING_REGEX.test(value)` throw) PLUS a `replace()` escape chain inside `sanitizeValue`, then interpolates the result into a SQL template literal in `createJSONQuery` and returns the string to the handler, which calls `db.execute(sql)`.  This session landed `classify_condition` recognition of `<*regex*>.test(value)` / `<*pattern*>.test(value)` as a ValidationCall whose target is the call's first arg (covered by `path_state::tests::target_regex_test_first_arg`, `target_regex_test_pattern_receiver`, `target_test_non_regex_receiver_is_not_validation`, plus the SSA-level `regex_test_allowlist_narrowing_clears_direct_flow` integration test).  But validated_must is per-symbol and consulted only at the sink site; it does NOT propagate through the SSA Assign that templates a clean `value` into a derived `sql` string, nor does it ride a helper's `param_to_return` summary back into a caller.  Disabled until that propagation path lands.  Tracked in CVE_DEFERRED.md.",
+      "notes": "CVE-2026-25544: Payload `sanitizeValue` SQL injection via Postgres jsonb_path_exists template-string interpolation.  Vulnerable form (`@payloadcms/drizzle@v3.72.0`, MIT) lets attacker-controlled JSON-query value escape the surrounding SQL string literal because `sanitizeValue` only double-quotes it without escaping `\\`/`\"`.  Disabled pending validated-flow propagation engine work, see disabled_reason."
+    },
+    {
+      "case_id": "cve-ts-2026-25544-patched",
+      "file": "cve_corpus/typescript/CVE-2026-25544/patched.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "payload",
+        "safe",
+        "patched"
+      ],
+      "disabled": true,
+      "disabled_reason": "Sibling of cve-ts-2026-25544-vulnerable.  Disabled together until validated-flow summary propagation lands.  See vulnerable counterpart's disabled_reason for the engine gap.",
+      "notes": "Patched form of `sanitizeValue` from `@payloadcms/drizzle@v3.73.0` (MIT).  Disabled together with its vulnerable counterpart pending validated-flow propagation work."
     }
   ]
 }

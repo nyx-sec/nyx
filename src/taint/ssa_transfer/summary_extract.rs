@@ -50,6 +50,7 @@ pub fn extract_ssa_func_summary(
     module_aliases: Option<&HashMap<SsaValue, SmallVec<[String; 2]>>>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
     formal_param_names: Option<&[String]>,
+    formal_destructured_fields: Option<&[Vec<String>]>,
 ) -> crate::summary::ssa_summary::SsaFuncSummary {
     extract_ssa_func_summary_full(
         ssa,
@@ -64,6 +65,7 @@ pub fn extract_ssa_func_summary(
         locator,
         formal_param_names,
         None,
+        formal_destructured_fields,
     )
 }
 
@@ -93,6 +95,15 @@ pub fn extract_ssa_func_summary_full(
     ssa_summaries: Option<
         &HashMap<crate::symbol::FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
     >,
+    // Per-parameter destructured-binding sibling names.  Entry `i` is
+    // the list of field names destructured by the same call-site arg
+    // slot as the primary `formal_param_names[i]`, excluding the
+    // primary name.  Empty vec for non-destructured params; `None` for
+    // callers that don't carry destructure info (legacy / test paths).
+    // Drives the destructured-arg expansion in the per-param probe so
+    // taint flow through sibling bindings is visible to summary
+    // extraction (CVE-2026-25544 / @payloadcms/drizzle SQLi).
+    formal_destructured_fields: Option<&[Vec<String>]>,
 ) -> crate::summary::ssa_summary::SsaFuncSummary {
     use crate::summary::SinkSite;
     use crate::summary::ssa_summary::{SsaFuncSummary, TaintTransform};
@@ -159,13 +170,32 @@ pub fn extract_ssa_func_summary_full(
         /// Inner [`PathFact`] when the rv on this path is a one-arg
         /// variant constructor; [`None`] otherwise.
         variant_inner_fact: Option<crate::abstract_interp::PathFact>,
+        /// `true` when the per-param probe's seeded parameter var_name
+        /// is in this return block's exit `validated_must`.  `false`
+        /// for the baseline (no-seed) probe and for params not
+        /// validated on this path.  Drives
+        /// `validated_params_to_return` summary extraction.
+        param_validated_must: bool,
     }
 
     // Helper: run a taint probe with a given global_seed and return
     // the aggregate return caps, sink events, joined return abstract,
     // and the per-return-block observation list used to derive
     // per-return-path transforms.
-    let run_probe = |seed: HashMap<BindingKey, VarTaint>| -> (
+    //
+    // `probe_param_names` lists the seeded parameter's `var_name`
+    // plus any destructured-binding siblings sharing the slot
+    // (`None` for the baseline source-caps probe).  When non-empty,
+    // each return-block observation records whether ANY of those
+    // names is in the exit state's `validated_must`, which feeds
+    // `validated_params_to_return` summary extraction below.  The
+    // any-name semantics matches the slot-wide model: a destructured
+    // formal `({ a, b, c })` represents one call-site slot, and any
+    // sibling reaching `validated_must` proves the slot's caps were
+    // narrowed before reaching the return.
+    let run_probe = |seed: HashMap<BindingKey, VarTaint>,
+                     probe_param_names: Option<&[&str]>|
+     -> (
         Cap,
         Vec<SsaTaintEvent>,
         Option<crate::abstract_interp::AbstractValue>,
@@ -313,6 +343,13 @@ pub fn extract_ssa_func_summary_full(
                 // The hash is stable across runs for a given predicate
                 // shape so call sites can compare paths deterministically.
                 let (predicate_hash, known_true, known_false) = summarise_return_predicates(&exit);
+                let param_validated_must = match probe_param_names {
+                    Some(names) => names.iter().any(|name| match interner.get(name) {
+                        Some(sym) => exit.validated_must.contains(sym),
+                        None => false,
+                    }),
+                    None => false,
+                };
                 per_return.push(ReturnBlockObs {
                     derived_caps: block_derived_caps,
                     param_caps: block_param_caps,
@@ -322,6 +359,7 @@ pub fn extract_ssa_func_summary_full(
                     abstract_value: block_abs,
                     path_fact: block_path_fact,
                     variant_inner_fact: block_variant_inner,
+                    param_validated_must,
                 });
             }
         }
@@ -343,7 +381,7 @@ pub fn extract_ssa_func_summary_full(
     // Abstract values don't depend on taint seeding, so the baseline probe
     // captures the function's intrinsic abstract return value.
     let (baseline_return_caps, _baseline_events, return_abstract, baseline_obs) =
-        run_probe(HashMap::new());
+        run_probe(HashMap::new(), None);
     let source_caps = baseline_return_caps;
 
     // Per-return-path PathFact decomposition derived from the baseline
@@ -403,6 +441,12 @@ pub fn extract_ssa_func_summary_full(
         usize,
         SmallVec<[crate::summary::ssa_summary::ReturnPathTransform; 2]>,
     )> = Vec::new();
+    // Parameter indices whose taint flow to the return is fully
+    // validated by a dominating predicate on every return path.
+    // Populated below by checking each per-param probe's return-block
+    // exit states for `validated_must` containing the param's
+    // var_name.  Empty when no parameter is validated.
+    let mut validated_params_to_return: SmallVec<[usize; 2]> = SmallVec::new();
 
     for &(idx, ref var_name, _ssa_val) in &param_info {
         let mut seed = HashMap::new();
@@ -421,6 +465,37 @@ pub fn extract_ssa_func_summary_full(
             probe_taint.clone(),
         );
 
+        // Destructured-arg sibling expansion.  When the formal at slot
+        // `idx` destructures an object pattern (`({ column, operator,
+        // value })`), the SSA body emits a separate [`SsaOp::Param`]
+        // for every destructured binding (sequential indices > slot
+        // count, since the closure-capture pass treats them as
+        // free-identifier reads).  The call-site only passes ONE arg
+        // for the slot, so the engine never seeds the sibling Param
+        // ops at runtime — but the per-parameter SUMMARY probe must
+        // model "if this slot is tainted then every binding it
+        // produced is tainted too".  Seed each sibling's `var_name`
+        // with the same caps the primary received.  The probe-level
+        // `validated_must` check below treats the slot as validated
+        // when ANY sibling lands in `validated_must` on a return path.
+        //
+        // Closes the residual gap behind CVE-2026-25544 (PayloadCMS
+        // `@payloadcms/drizzle` SQLi via `createJSONQuery({ value })`):
+        // the validator helper `sanitizeValue(value, operator)` lives
+        // inside the body and the probe needs to see `value` flow
+        // through the `validated_params_to_return` channel before
+        // suppressing the caller's sink.
+        let slot_siblings: &[String] = formal_destructured_fields
+            .and_then(|d| d.get(idx))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        for sib in slot_siblings {
+            seed.insert(
+                BindingKey::new(sib.as_str(), BodyId(0)),
+                probe_taint.clone(),
+            );
+        }
+
         // Phantom-Param prefix seeding.  SSA lowering of arrow / nested
         // function bodies often exposes free-identifier member-access
         // expressions (e.g. `file._source.uri`) as their own
@@ -437,13 +512,18 @@ pub fn extract_ssa_func_summary_full(
         // `formal_var_name + "."` with the same caps the formal param
         // received: semantically "if `file` is tainted, then every
         // observable field path on `file` is tainted too".  Bounded
-        // by SSA size; cap-equivalent to direct seeding.
-        let prefix = format!("{}.", var_name);
+        // by SSA size; cap-equivalent to direct seeding.  Mirror this
+        // for each destructured sibling (`value.foo` / `column.name`
+        // member-projections inside the body).
+        let prefixes: Vec<String> = std::iter::once(var_name.clone())
+            .chain(slot_siblings.iter().cloned())
+            .map(|n| format!("{}.", n))
+            .collect();
         for block in &ssa.blocks {
             for inst in block.phis.iter().chain(block.body.iter()) {
                 if let SsaOp::Param { .. } = &inst.op {
                     if let Some(name) = inst.var_name.as_ref() {
-                        if name.starts_with(&prefix) {
+                        if prefixes.iter().any(|p| name.starts_with(p)) {
                             seed.insert(
                                 BindingKey::new(name.as_str(), BodyId(0)),
                                 probe_taint.clone(),
@@ -454,7 +534,15 @@ pub fn extract_ssa_func_summary_full(
             }
         }
 
-        let (return_caps, events, _, per_return_obs) = run_probe(seed);
+        // Build slot-wide name list for the validated_must check.
+        // Primary first, then siblings, then heap-allocated owned
+        // copies — `run_probe` only borrows for its inner loop.
+        let mut slot_names: Vec<&str> = Vec::with_capacity(1 + slot_siblings.len());
+        slot_names.push(var_name.as_str());
+        for sib in slot_siblings {
+            slot_names.push(sib.as_str());
+        }
+        let (return_caps, events, _, per_return_obs) = run_probe(seed, Some(slot_names.as_slice()));
 
         // Subtract baseline source_caps, we only want param-contributed caps
         let param_return_caps = return_caps & !source_caps;
@@ -467,6 +555,44 @@ pub fn extract_ssa_func_summary_full(
                 TaintTransform::StripBits(stripped)
             };
             param_to_return.push((idx, transform));
+        }
+
+        // Validated-param-to-return detection.
+        //
+        // When the per-param probe shows that the parameter's
+        // `var_name` is in `validated_must` on every return path that
+        // *carries the parameter's contributed caps*, record the
+        // parameter as validated.  The caller will mark each tainted
+        // argument passed to this position — and the call's own
+        // return value — as `validated_must` / `validated_may`, the
+        // same way an inline `if (!regex.test(x)) throw` would
+        // validate the surviving branch.
+        //
+        // Conservative gating:
+        //   * Skip when the param contributes no caps to the return,
+        //     a degenerate "validated but irrelevant" record.
+        //   * Skip when no return block was observed (probes that
+        //     diverged or hit `MAX_PROBE_PARAMS`).
+        //   * Require validation on every return path that *carries
+        //     param caps to the return*.  Branches that return
+        //     constants (e.g. `if (x === null) return 'NULL'`) carry
+        //     no param taint and don't need a validation predicate.
+        //   * Require ≥1 path that actually validates the param.
+        if !param_return_caps.is_empty() && !per_return_obs.is_empty() {
+            let mut any_carrying_path = false;
+            let all_carrying_validated = per_return_obs.iter().all(|obs| {
+                let carries = !(obs.derived_caps & !source_caps).is_empty()
+                    || !(obs.param_caps & !source_caps).is_empty();
+                if carries {
+                    any_carrying_path = true;
+                    obs.param_validated_must
+                } else {
+                    true
+                }
+            });
+            if any_carrying_path && all_carrying_validated {
+                validated_params_to_return.push(idx);
+            }
         }
 
         // Derive per-return-path decomposition.  For each
@@ -694,6 +820,7 @@ pub fn extract_ssa_func_summary_full(
         // extractor itself doesn't carry receiver-type info, the
         // caller patches it in.
         typed_call_receivers: Vec::new(),
+        validated_params_to_return,
     }
 }
 

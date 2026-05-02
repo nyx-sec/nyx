@@ -21,16 +21,27 @@ fn lookup_dto_class(class_name: &str) -> Option<TypeKind> {
 /// Extract parameter names + per-position [`TypeKind`] from a function
 /// AST node.  Each entry's second slot is `Some(TypeKind)` when the
 /// parameter's decorator, attribute, or static type annotation maps to
-/// a known kind, and `None` otherwise.  Strictly additive, when no
-/// type info is recoverable, behaviour is identical to the names-only
-/// path.
+/// a known kind, and `None` otherwise.  The third slot lists
+/// destructured field names bound by the same parameter slot — empty
+/// for non-destructured params and for the primary name itself.  E.g.
+/// for the JS/TS object-pattern formal `({ a, b, c })`, the entry is
+/// `("a", None, ["b", "c"])`.  Strictly additive: when the param is
+/// not a destructured pattern (or the language has no destructure
+/// concept), behaviour is identical to the pre-Phase-5 names-only path.
+///
+/// Closes the residual gap behind CVE-2026-25544 (PayloadCMS Drizzle
+/// SQL injection): a per-parameter taint probe that seeds only the
+/// primary name `column` cannot see flow through sibling destructured
+/// bindings (`value` etc.) inside the body, so summary extraction
+/// misses `validated_params_to_return` when a validator helper is
+/// applied to one of the siblings.
 pub(super) fn extract_param_meta<'a>(
     func_node: Node<'a>,
     lang: &str,
     code: &'a [u8],
-) -> Vec<(String, Option<TypeKind>)> {
+) -> Vec<(String, Option<TypeKind>, Vec<String>)> {
     let cfg = param_config(lang);
-    let mut out: Vec<(String, Option<TypeKind>)> = Vec::new();
+    let mut out: Vec<(String, Option<TypeKind>, Vec<String>)> = Vec::new();
     // Try the params_field directly on the function node first.
     // For C/C++, the parameter list is nested inside the declarator
     // (function_definition > declarator:function_declarator > parameters:parameter_list),
@@ -51,7 +62,7 @@ pub(super) fn extract_param_meta<'a>(
             if let Some(p) = func_node.child_by_field_name("parameter") {
                 if p.kind() == "identifier" {
                     if let Some(name) = text_of(p, code) {
-                        out.push((name, None));
+                        out.push((name, None, Vec::new()));
                     }
                 }
             }
@@ -62,7 +73,7 @@ pub(super) fn extract_param_meta<'a>(
     for child in params.children(&mut cursor) {
         // Self/this parameter (e.g. Rust's `self_parameter`)
         if cfg.self_param_kinds.contains(&child.kind()) {
-            out.push(("self".into(), None));
+            out.push(("self".into(), None, Vec::new()));
             continue;
         }
 
@@ -74,14 +85,26 @@ pub(super) fn extract_param_meta<'a>(
                 if let Some(node) = child.child_by_field_name(field) {
                     let mut tmp = Vec::new();
                     collect_idents(node, code, &mut tmp);
-                    let candidate = if lang == "rust" {
-                        tmp.into_iter().last()
+                    let primary = if lang == "rust" {
+                        // Rust: last ident is the binding name (e.g.
+                        // `Path(project_id): Path<i64>` → `project_id`).
+                        tmp.pop()
+                    } else if tmp.is_empty() {
+                        None
                     } else {
-                        tmp.into_iter().next()
+                        Some(tmp.remove(0))
                     };
-                    if let Some(name) = candidate {
+                    if let Some(name) = primary {
                         let ty = classify_param_type(child, lang, code);
-                        out.push((name, ty));
+                        // Surface destructured siblings only when the
+                        // pattern node is a destructure container.  For
+                        // ordinary (non-destructured) params, `tmp` is
+                        // already empty after `pop()` / `remove(0)`.
+                        // Object-pattern children of the same slot
+                        // (`{ a, b, c }`) leave the remaining names in
+                        // `tmp`, which become the slot's siblings.
+                        let siblings = sibling_names_for_destructure(node, &tmp, lang);
+                        out.push((name, ty, siblings));
                         found = true;
                         break;
                     }
@@ -92,7 +115,7 @@ pub(super) fn extract_param_meta<'a>(
                 && child.kind() == "identifier"
                 && let Some(txt) = text_of(child, code)
             {
-                out.push((txt, None));
+                out.push((txt, None, Vec::new()));
                 found = true;
             }
             // Fallback for C/C++: look for nested declarator → identifier
@@ -101,7 +124,7 @@ pub(super) fn extract_param_meta<'a>(
                 collect_idents(child, code, &mut tmp);
                 if let Some(last) = tmp.pop() {
                     let ty = classify_param_type(child, lang, code);
-                    out.push((last, ty));
+                    out.push((last, ty, Vec::new()));
                     found = true;
                 }
             }
@@ -112,12 +135,22 @@ pub(super) fn extract_param_meta<'a>(
             // *first* identifier, that is the parameter name; subsequent
             // identifiers are part of the type annotation or default
             // expression.
+            //
+            // Destructure-container case (JS arrow `({ a, b }) => …`):
+            // when the child node IS a destructure pattern itself (no
+            // `required_parameter` / `assignment_pattern` wrapper), the
+            // remaining idents after the primary are destructured
+            // bindings sharing this slot — surface them as siblings so
+            // per-parameter summary probing seeds every binding the
+            // slot produces.
             if !found {
                 let mut tmp = Vec::new();
                 collect_idents(child, code, &mut tmp);
-                if let Some(first) = tmp.into_iter().next() {
+                if !tmp.is_empty() {
+                    let first = tmp.remove(0);
                     let ty = classify_param_type(child, lang, code);
-                    out.push((first, ty));
+                    let siblings = sibling_names_for_destructure(child, &tmp, lang);
+                    out.push((first, ty, siblings));
                 }
             }
             continue;
@@ -127,11 +160,50 @@ pub(super) fn extract_param_meta<'a>(
         // where the child is an `identifier` node, not a `parameter` wrapper.
         if child.kind() == "identifier" {
             if let Some(txt) = text_of(child, code) {
-                out.push((txt, None));
+                out.push((txt, None, Vec::new()));
             }
         }
     }
     out
+}
+
+/// Return destructured field-name siblings for a parameter's pattern
+/// node, but only when the pattern is a recognised destructure
+/// container (object / record pattern).  For ordinary patterns the
+/// `remaining` slice is already empty so this is a noop.  Restricting
+/// the return to destructure containers prevents typed-parameter
+/// idioms (`Path<i64>`, `@PathVariable Long userId`, Rust extractor
+/// wrappers) from accidentally surfacing the type identifier as a
+/// destructured sibling.
+fn sibling_names_for_destructure(
+    pattern: Node<'_>,
+    remaining: &[String],
+    lang: &str,
+) -> Vec<String> {
+    if remaining.is_empty() {
+        return Vec::new();
+    }
+    if !is_destructure_container_kind(pattern.kind(), lang) {
+        return Vec::new();
+    }
+    remaining.to_vec()
+}
+
+/// Recognise tree-sitter pattern node kinds that destructure a
+/// single argument into multiple bindings — JS/TS object patterns
+/// today, plus Python's `pattern_list` / `tuple_pattern` for kwargs
+/// destructure if those ever come through this path.  Conservative:
+/// only kinds we have explicit per-language reasoning for return
+/// `true`; everything else returns `false` so the existing single-
+/// name fallback path is preserved untouched.
+fn is_destructure_container_kind(kind: &str, lang: &str) -> bool {
+    match (lang, kind) {
+        ("javascript" | "typescript", "object_pattern") => true,
+        // Future languages: array pattern (`[a, b]`) is intentionally
+        // omitted — the index-based unpacking is positional, and the
+        // names don't map cleanly to "all share slot 0".
+        _ => false,
+    }
 }
 
 /// Walk up from a function definition node and build a container path.

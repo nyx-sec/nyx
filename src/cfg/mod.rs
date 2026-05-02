@@ -54,8 +54,9 @@ use literals::{
     detect_rust_replace_chain_sanitizer, extract_arg_callees, extract_arg_string_literals,
     extract_arg_uses, extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
     extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
-    extract_literal_rhs, extract_shell_array_payload_idents, find_call_node, find_call_node_deep,
-    find_chained_inner_call, has_keyword_arg, has_only_literal_args, is_parameterized_query_call,
+    extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
+    find_call_node, find_call_node_deep, find_chained_inner_call, has_keyword_arg,
+    has_object_arg_property, has_only_literal_args, is_parameterized_query_call,
     java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
     js_chain_outer_method_for_inner, ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
@@ -67,11 +68,33 @@ use params::{
 /// Test-only re-export of [`extract_param_meta`] so the external
 /// `tests/typed_extractors_audit.rs` harness can drive the per-param
 /// classifier directly without spinning up the full scan pipeline.
+/// Projects away the destructured-siblings third tuple slot so the
+/// existing tuple-shape assertions in the audit harness keep working;
+/// the sibling info is plumbed separately through `BodyMeta`.
 pub fn extract_param_meta_for_test<'a>(
     func_node: tree_sitter::Node<'a>,
     lang: &str,
     code: &'a [u8],
 ) -> Vec<(String, Option<crate::ssa::type_facts::TypeKind>)> {
+    extract_param_meta(func_node, lang, code)
+        .into_iter()
+        .map(|(name, ty, _siblings)| (name, ty))
+        .collect()
+}
+
+/// Test-only re-export that returns the full per-slot tuple including
+/// destructured sibling names.  Used by the destructured-arg-probe
+/// regression tests in `src/taint/tests.rs` and the params unit tests
+/// in `src/cfg/cfg_tests.rs`.
+pub fn extract_param_meta_with_destructured_for_test<'a>(
+    func_node: tree_sitter::Node<'a>,
+    lang: &str,
+    code: &'a [u8],
+) -> Vec<(
+    String,
+    Option<crate::ssa::type_facts::TypeKind>,
+    Vec<String>,
+)> {
     extract_param_meta(func_node, lang, code)
 }
 
@@ -567,6 +590,17 @@ pub struct BodyMeta {
     /// `None`, downstream behaviour is identical to the pre-Phase-1
     /// engine.
     pub param_types: Vec<Option<crate::ssa::type_facts::TypeKind>>,
+    /// Per-parameter destructured-binding sibling names.  Same length
+    /// as `params`; entry `i` lists field names bound by the same
+    /// argument slot as `params[i]`, excluding the primary name itself.
+    /// Empty for non-destructured params.  Today populated only for
+    /// JS/TS object-pattern formals (`({ a, b, c })` → params=["a"],
+    /// destructured=[["b","c"]]).  Used by per-parameter taint-summary
+    /// probing in `extract_ssa_func_summary` so destructured bindings
+    /// inside the body share the slot's seeded caps and any of them
+    /// being in `validated_must` at a return path counts as the slot
+    /// being validated.  Closes the residual gap behind CVE-2026-25544.
+    pub param_destructured_fields: Vec<Vec<String>>,
     pub param_count: usize,
     pub span: (usize, usize),
     pub parent_body_id: Option<BodyId>,
@@ -1909,8 +1943,27 @@ pub(super) fn push_node<'a>(
                         }
                     })
                 },
-                |kw| extract_const_keyword_arg(cn, kw, code),
-                |kw| has_keyword_arg(cn, kw, code),
+                |kw| {
+                    // For JS/TS, options-bearing args are passed as inline
+                    // object literals (`fn(x, { evaluate: false })`) rather
+                    // than language-level keyword arguments.  When the
+                    // standard `keyword_argument`-walking extractor returns
+                    // None, fall back to inspecting arg 1's object literal
+                    // for a property named `kw`.  This lets gates like
+                    // `_.template` consult `{ evaluate: false }` literally.
+                    extract_const_keyword_arg(cn, kw, code).or_else(|| {
+                        if matches!(lang, "javascript" | "typescript") {
+                            extract_object_arg_property(cn, 1, kw, code)
+                        } else {
+                            None
+                        }
+                    })
+                },
+                |kw| {
+                    has_keyword_arg(cn, kw, code)
+                        || (matches!(lang, "javascript" | "typescript")
+                            && has_object_arg_property(cn, 1, kw, code))
+                },
             );
 
             if !matches.is_empty() {
@@ -3871,9 +3924,13 @@ pub(super) fn build_sub<'a>(
             let is_anon = is_anon_fn_name(&fn_name);
             let param_meta = extract_param_meta(ast, lang, code);
             let param_count = param_meta.len();
-            let param_names: Vec<String> = param_meta.iter().map(|(n, _)| n.clone()).collect();
+            let param_names: Vec<String> = param_meta.iter().map(|(n, _, _)| n.clone()).collect();
             let param_types: Vec<Option<crate::ssa::type_facts::TypeKind>> =
-                param_meta.iter().map(|(_, t)| t.clone()).collect();
+                param_meta.iter().map(|(_, t, _)| t.clone()).collect();
+            let param_destructured_fields: Vec<Vec<String>> = param_meta
+                .iter()
+                .map(|(_, _, siblings)| siblings.clone())
+                .collect();
 
             // ── 1b) Compute identity discriminators ───────────────────────────
             let (fn_container, fn_kind) =
@@ -4130,6 +4187,7 @@ pub(super) fn build_sub<'a>(
                     name: if is_anon { None } else { Some(fn_name.clone()) },
                     params: param_names,
                     param_types,
+                    param_destructured_fields,
                     param_count,
                     span: (ast.start_byte(), ast.end_byte()),
                     parent_body_id: Some(current_body_id),
@@ -4628,6 +4686,7 @@ pub(crate) fn build_cfg<'a>(
             name: None,
             params: Vec::new(),
             param_types: Vec::new(),
+            param_destructured_fields: Vec::new(),
             param_count: 0,
             span: (0, code.len()),
             parent_body_id: None,

@@ -377,6 +377,24 @@ pub fn classify_condition(text: &str) -> PredicateKind {
             return PredicateKind::ValidationCall;
         }
 
+        // Regex / pattern allowlist `<X>.test(value)` / `<X>.match(value)` calls
+        // where the receiver name carries a regex or pattern marker.  The
+        // standard JS / TS / Python / Java / Ruby / Go regex APIs all expose a
+        // boolean test method; the success arm (true) means `value` matches the
+        // pattern.  Conservative on receiver names so non-regex methods like
+        // `obj.test(x)` (test runner), `db.test(...)` (test column) etc. don't
+        // get pulled in.  Motivated by Payload CVE-2026-25544
+        // (`if (!SAFE_STRING_REGEX.test(value)) throw …;`).
+        if (bare == "test" || bare == "match" || bare == "matches")
+            && let Some(dot_pos) = callee_part.rfind('.')
+        {
+            let receiver = &callee_part[..dot_pos];
+            let receiver_lower = receiver.to_ascii_lowercase();
+            if receiver_lower.contains("regex") || receiver_lower.contains("pattern") {
+                return PredicateKind::ValidationCall;
+            }
+        }
+
         // Sanitizer
         if bare.contains("sanitiz") || bare.contains("escape") || bare.contains("encode") {
             return PredicateKind::SanitizerCall;
@@ -638,6 +656,19 @@ fn extract_validation_target(text: &str) -> Option<String> {
     // Check for method call pattern: `x.method(...)` or `x.method_name(...)`
     if let Some(dot_pos) = callee_part.rfind('.') {
         let receiver = callee_part[..dot_pos].trim();
+        let method = callee_part[dot_pos + 1..].trim().to_ascii_lowercase();
+        // Regex-allowlist `<re>.test(value)` / `<re>.match(value)` / `<re>.matches(value)`:
+        // the validated target is the call's first argument, not the regex
+        // receiver.  Without this special case, branch narrowing would mark
+        // the regex itself as validated and leave the user input alone.
+        if matches!(method.as_str(), "test" | "match" | "matches")
+            && let Some(first_arg) = first_call_arg(args_part)
+        {
+            let first_arg = first_arg.strip_prefix('&').unwrap_or(first_arg).trim();
+            if !first_arg.is_empty() && is_identifier(first_arg) {
+                return Some(first_arg.to_string());
+            }
+        }
         if !receiver.is_empty() && is_identifier(receiver) {
             return Some(receiver.to_string());
         }
@@ -975,6 +1006,33 @@ mod tests {
         let (kind, target) = classify_condition_with_target("!validate(&x)");
         assert_eq!(kind, PredicateKind::ValidationCall);
         assert_eq!(target.as_deref(), Some("x"));
+    }
+
+    /// Regex `<X>.test(value)` should classify as ValidationCall and the
+    /// validated target should be the call argument, not the regex
+    /// receiver.  Pinned because the receiver-as-target heuristic is the
+    /// default for method calls.  Motivated by Payload CVE-2026-25544
+    /// (`if (!SAFE_STRING_REGEX.test(value)) throw …;`).
+    #[test]
+    fn target_regex_test_first_arg() {
+        let (kind, target) = classify_condition_with_target("!SAFE_STRING_REGEX.test(value)");
+        assert_eq!(kind, PredicateKind::ValidationCall);
+        assert_eq!(target.as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn target_regex_test_pattern_receiver() {
+        let (kind, target) = classify_condition_with_target("ALLOWED_PATTERN.test(s)");
+        assert_eq!(kind, PredicateKind::ValidationCall);
+        assert_eq!(target.as_deref(), Some("s"));
+    }
+
+    /// Receiver name without a regex/pattern marker should NOT be pulled
+    /// in as a validator: `obj.test(x)` is a test runner, not a regex.
+    #[test]
+    fn target_test_non_regex_receiver_is_not_validation() {
+        let kind = classify_condition("obj.test(value)");
+        assert_eq!(kind, PredicateKind::Unknown);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-02T07:03:06Z",
+  "timestamp": "2026-05-02T19:35:12Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,10 +9,10 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:ba8f5f6e20ce478b6032b1df98e5dc57a7b7a8ced8f1d3294dc811034bc6fc3c",
-  "corpus_size": 492,
-  "cases_run": 491,
-  "cases_skipped": 1,
+  "ground_truth_hash": "sha256:de2df25545527c2c90c665a5d4db257fb8f0d7aefe16eb742ee8e70f7de55e99",
+  "corpus_size": 507,
+  "cases_run": 504,
+  "cases_skipped": 3,
   "outcomes": [
     {
       "case_id": "c-buf-001",
@@ -1479,6 +1479,40 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "cve-js-2023-22621-patched",
+      "file": "cve_corpus/javascript/CVE-2023-22621/patched.js",
+      "language": "javascript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-js-2023-22621-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2023-22621/vulnerable.js",
+      "language": "javascript",
+      "vuln_class": "code_exec",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 46:26)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 46:26)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "cve-js-2025-64430-patched",
       "file": "cve_corpus/javascript/CVE-2025-64430/patched.js",
       "language": "javascript",
@@ -2724,6 +2758,42 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "go-safe-realrepo-016",
+      "file": "go/safe/safe_inner_call_close_in_arg.go",
+      "language": "go",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "FP",
+      "outcome_rule_level": "FP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [
+        "state-resource-leak-possible",
+        "state-resource-leak-possible"
+      ],
+      "all_finding_ids": [
+        "state-resource-leak-possible",
+        "state-resource-leak-possible"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "go-safe-realrepo-017",
+      "file": "go/safe/safe_struct_field_resource_owned_by_struct.go",
+      "language": "go",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "go-sqli-001",
       "file": "go/sqli/sqli_concat.go",
       "language": "go",
@@ -2881,6 +2951,27 @@
       "unexpected_rule_ids": [],
       "all_finding_ids": [],
       "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "go-vuln-realrepo-018",
+      "file": "go/safe/vuln_resource_leak_no_close.go",
+      "language": "go",
+      "vuln_class": "resource",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -5124,6 +5215,57 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-auth-realrepo-008",
+      "file": "python/safe/safe_django_orm_caller_scoped_entity.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-009",
+      "file": "python/auth/vuln_user_id_param_no_auth.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-010",
+      "file": "python/safe/safe_mock_patch_test_method.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-cmdi-001",
       "file": "python/cmdi/cmdi_direct.py",
       "language": "python",
@@ -6406,6 +6548,77 @@
     {
       "case_id": "rs-auth-realrepo-013",
       "file": "rust/auth/unsafe_handler_local_collection_does_not_blanket_suppress.rs",
+      "language": "rust",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "rs-auth-realrepo-014",
+      "file": "rust/auth/safe_actix_guarded_data_extractor.rs",
+      "language": "rust",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "rs.quality.todo"
+      ],
+      "security_finding_count": 0,
+      "non_security_finding_count": 1
+    },
+    {
+      "case_id": "rs-auth-realrepo-015",
+      "file": "rust/auth/unsafe_actix_no_guarded_data_extractor.rs",
+      "language": "rust",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "rs.quality.todo",
+        "rs.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 1
+    },
+    {
+      "case_id": "rs-auth-realrepo-016",
+      "file": "rust/safe/safe_non_web_rust_project",
+      "language": "rust",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "rs-auth-realrepo-017",
+      "file": "rust/auth/unsafe_actix_web_project_no_check",
       "language": "rust",
       "vuln_class": "auth",
       "is_vulnerable": true,
@@ -8482,6 +8695,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "ts-safe-021",
+      "file": "typescript/safe/safe_validated_helper_chain.ts",
+      "language": "typescript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "ts-secrets-001",
       "file": "typescript/secrets/fallback_secret.ts",
       "language": "typescript",
@@ -8785,22 +9013,22 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 244,
-    "fp": 0,
+    "tp": 249,
+    "fp": 1,
     "fn_": 0,
-    "tn": 247,
-    "precision": 1.0,
+    "tn": 254,
+    "precision": 0.996,
     "recall": 1.0,
-    "f1": 1.0
+    "f1": 0.9979959919839679
   },
   "aggregate_rule_level": {
-    "tp": 244,
-    "fp": 0,
+    "tp": 249,
+    "fp": 1,
     "fn_": 0,
-    "tn": 247,
-    "precision": 1.0,
+    "tn": 254,
+    "precision": 0.996,
     "recall": 1.0,
-    "f1": 1.0
+    "f1": 0.9979959919839679
   },
   "by_language": {
     "c": {
@@ -8822,13 +9050,13 @@
       "f1": 1.0
     },
     "go": {
-      "tp": 26,
-      "fp": 0,
+      "tp": 27,
+      "fp": 1,
       "fn_": 0,
-      "tn": 30,
-      "precision": 1.0,
+      "tn": 31,
+      "precision": 0.9642857142857143,
       "recall": 1.0,
-      "f1": 1.0
+      "f1": 0.9818181818181818
     },
     "java": {
       "tp": 21,
@@ -8840,10 +9068,10 @@
       "f1": 1.0
     },
     "javascript": {
-      "tp": 22,
+      "tp": 23,
       "fp": 0,
       "fn_": 0,
-      "tn": 28,
+      "tn": 29,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8858,10 +9086,10 @@
       "f1": 1.0
     },
     "python": {
-      "tp": 28,
+      "tp": 29,
       "fp": 0,
       "fn_": 0,
-      "tn": 30,
+      "tn": 32,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8876,10 +9104,10 @@
       "f1": 1.0
     },
     "rust": {
-      "tp": 35,
+      "tp": 37,
       "fp": 0,
       "fn_": 0,
-      "tn": 39,
+      "tn": 41,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8888,7 +9116,7 @@
       "tp": 34,
       "fp": 0,
       "fn_": 0,
-      "tn": 24,
+      "tn": 25,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8896,7 +9124,7 @@
   },
   "by_vuln_class": {
     "auth": {
-      "tp": 16,
+      "tp": 19,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -8923,7 +9151,7 @@
       "f1": 1.0
     },
     "code_exec": {
-      "tp": 3,
+      "tp": 4,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9021,14 +9249,23 @@
       "recall": 1.0,
       "f1": 1.0
     },
-    "safe": {
-      "tp": 0,
+    "resource": {
+      "tp": 1,
       "fp": 0,
       "fn_": 0,
-      "tn": 247,
+      "tn": 0,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
+    },
+    "safe": {
+      "tp": 0,
+      "fp": 1,
+      "fn_": 0,
+      "tn": 254,
+      "precision": 0.0,
+      "recall": 1.0,
+      "f1": 0.0
     },
     "secrets": {
       "tp": 1,
@@ -9078,31 +9315,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 74,
-      "fp": 108,
-      "fn_": 170,
-      "tn": 139,
-      "precision": 0.4065934065934066,
-      "recall": 0.30327868852459017,
-      "f1": 0.3474178403755868
+      "tp": 78,
+      "fp": 107,
+      "fn_": 171,
+      "tn": 148,
+      "precision": 0.42162162162162165,
+      "recall": 0.3132530120481928,
+      "f1": 0.359447004608295
     },
     ">=Low": {
-      "tp": 75,
-      "fp": 129,
-      "fn_": 169,
-      "tn": 118,
-      "precision": 0.36764705882352944,
-      "recall": 0.3073770491803279,
-      "f1": 0.3348214285714286
+      "tp": 82,
+      "fp": 126,
+      "fn_": 167,
+      "tn": 129,
+      "precision": 0.3942307692307692,
+      "recall": 0.3293172690763052,
+      "f1": 0.35886214442013126
     },
     ">=Medium": {
-      "tp": 75,
-      "fp": 124,
-      "fn_": 169,
-      "tn": 123,
-      "precision": 0.3768844221105528,
-      "recall": 0.3073770491803279,
-      "f1": 0.33860045146726864
+      "tp": 82,
+      "fp": 121,
+      "fn_": 167,
+      "tn": 134,
+      "precision": 0.4039408866995074,
+      "recall": 0.3293172690763052,
+      "f1": 0.3628318584070796
     }
   }
 }

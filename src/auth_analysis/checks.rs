@@ -15,11 +15,14 @@ pub struct AuthFinding {
 
 pub fn run_checks(model: &AuthorizationModel, rules: &AuthAnalysisRules) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
+    let web_signal = model.lang_web_framework_signal;
     findings.extend(check_admin_routes(model, rules));
-    findings.extend(check_ownership_gaps(model, rules));
-    findings.extend(check_partial_batch_authorization(model, rules));
-    findings.extend(check_stale_authorization(model, rules));
-    findings.extend(check_token_override_without_validation(model, rules));
+    findings.extend(check_ownership_gaps(model, rules, web_signal));
+    findings.extend(check_partial_batch_authorization(model, rules, web_signal));
+    findings.extend(check_stale_authorization(model, rules, web_signal));
+    findings.extend(check_token_override_without_validation(
+        model, rules, web_signal,
+    ));
     findings.sort_by(|a, b| a.span.cmp(&b.span).then_with(|| a.rule_id.cmp(&b.rule_id)));
     findings.dedup_by(|a, b| a.span == b.span && a.rule_id == b.rule_id);
     findings
@@ -63,11 +66,15 @@ fn check_admin_routes(model: &AuthorizationModel, rules: &AuthAnalysisRules) -> 
     findings
 }
 
-fn check_ownership_gaps(model: &AuthorizationModel, rules: &AuthAnalysisRules) -> Vec<AuthFinding> {
+fn check_ownership_gaps(
+    model: &AuthorizationModel,
+    rules: &AuthAnalysisRules,
+    web_signal: Option<bool>,
+) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit) {
+        if !unit_has_user_input_evidence(unit, web_signal) {
             continue;
         }
         for op in &unit.operations {
@@ -115,11 +122,12 @@ fn check_ownership_gaps(model: &AuthorizationModel, rules: &AuthAnalysisRules) -
 fn check_partial_batch_authorization(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
+    web_signal: Option<bool>,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit) {
+        if !unit_has_user_input_evidence(unit, web_signal) {
             continue;
         }
         for op in &unit.operations {
@@ -169,11 +177,12 @@ fn check_partial_batch_authorization(
 fn check_stale_authorization(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
+    web_signal: Option<bool>,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit) {
+        if !unit_has_user_input_evidence(unit, web_signal) {
             continue;
         }
         for op in unit.operations.iter().filter(|operation| {
@@ -216,6 +225,7 @@ fn check_stale_authorization(
 fn check_token_override_without_validation(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
+    web_signal: Option<bool>,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
@@ -229,7 +239,7 @@ fn check_token_override_without_validation(
         // call shape happens to look token-y (`account.token = …;
         // account.save()`).  Gate on positive user-input evidence so
         // these pure backend units are never claimed as a token flow.
-        if !unit_has_user_input_evidence(unit) {
+        if !unit_has_user_input_evidence(unit, web_signal) {
             continue;
         }
         let Some(token_lookup) = unit
@@ -600,6 +610,82 @@ fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
         && !is_actor_context_subject(subject, unit)
         && !is_const_bound_subject(subject, unit)
         && !is_typed_bounded_subject(subject, unit)
+        && !is_caller_scope_entity_subject(subject, unit)
+}
+
+/// True iff `subject` is a member-access of form `<entity>.id` /
+/// `<entity>.pk` whose root identifier is a unit parameter named after
+/// a scope-bearing domain entity (`organization`, `project`, `team`,
+/// `workspace`, `tenant`, `account`, `community`, `repository`, …).
+///
+/// Such subjects are the *scope* of the operation — the ownership
+/// constraint the caller passed in — not a user-controlled target.
+/// Helpers like
+/// `def get_environments(request, organization: Organization): …
+///  Environment.objects.filter(organization_id=organization.id, …)`
+/// inherit the caller's authorization on the entity object; the call
+/// itself enforces tenant scoping.  Without this exemption, every
+/// internal helper in a multi-tenant Django/Rails/Laravel codebase
+/// flags `missing_ownership_check` because the engine cannot tell
+/// "scoping arg" from "user-targeted arg".
+///
+/// Conservative scope:
+/// * Field must be `id` or `pk` (the canonical primary-key fields).
+///   `entity.name` / `entity.slug` are deliberately excluded — those
+///   could be user-supplied display strings even on a typed entity.
+/// * Root must be exactly a unit parameter (not a derived local).
+/// * Root name must be in the scope-entity vocabulary.  Names like
+///   `user`, `member`, `actor` are deliberately omitted: those carry
+///   actor semantics and are handled separately by
+///   `is_actor_context_subject`.
+fn is_caller_scope_entity_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
+    let Some(field) = subject.field.as_deref() else {
+        return false;
+    };
+    let field_lower = field.to_ascii_lowercase();
+    if !matches!(field_lower.as_str(), "id" | "pk") {
+        return false;
+    }
+    let Some(base) = subject.base.as_deref() else {
+        return false;
+    };
+    let root = base.split('.').next().unwrap_or(base);
+    if !is_caller_scope_entity_name(root) {
+        return false;
+    }
+    unit.params.iter().any(|p| p == root)
+}
+
+/// Recognises parameter names that conventionally carry a *scope*
+/// entity — the multi-tenant ownership boundary inherited from the
+/// caller — rather than a user-controlled target identifier.  Used
+/// only by `is_caller_scope_entity_subject` to suppress
+/// `missing_ownership_check` on `<entity>.id` arguments to ORM /
+/// query / mutation calls.
+///
+/// Vocabulary matches the canonical multi-tenant primitives across
+/// Django (Sentry, Saleor), Rails (Discourse, Mastodon), and Laravel
+/// /  Symfony idioms.  Both singular and short forms are matched
+/// (`organization` / `org`, `repository` / `repo`).  Excluded:
+/// `user`, `member`, `actor` (actor semantics, covered by
+/// `is_actor_context_subject` and per-actor self-id detectors).
+fn is_caller_scope_entity_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "organization"
+            | "org"
+            | "project"
+            | "team"
+            | "workspace"
+            | "tenant"
+            | "account"
+            | "community"
+            | "group"
+            | "repository"
+            | "repo"
+            | "company"
+    )
 }
 
 /// True iff `subject` is a plain identifier whose declaration binds
@@ -852,9 +938,24 @@ fn is_id_like_name(name: &str) -> bool {
 /// pure utility helpers fail all three conditions and are skipped ,
 /// they cannot, by construction, be the entry point of an
 /// authentication-bearing flow.
-fn unit_has_user_input_evidence(unit: &AnalysisUnit) -> bool {
+fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>) -> bool {
     if unit.kind == AnalysisUnitKind::RouteHandler {
         return true;
+    }
+    // Project-level web-framework gate.  When the project's manifest
+    // was inspected and named no web framework matching the file's
+    // language, AND no per-file import override applied, the file
+    // lives in a project with no HTTP boundary.  Step 2 (context
+    // inputs) and step 3 (param-name heuristic) are both name-shape
+    // heuristics that overshoot in non-web Rust crates ─ e.g. zed's
+    // GUI test code where `session.update(cx, ...)` (a debug-session
+    // handle, not an auth session) trips `matches_session_context`
+    // and lands in `context_inputs`, opening every test method's
+    // sinks.  Refuse here, after the RouteHandler step (which is
+    // determined by framework extractors and is robust evidence on
+    // its own).
+    if web_signal == Some(false) {
+        return false;
     }
     if !unit.context_inputs.is_empty() {
         return true;
@@ -934,8 +1035,9 @@ fn is_batch_collection(subject: &ValueRef) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_check_covers_subject, is_actor_context_subject, is_external_input_param_name,
-        is_relevant_target_subject, unit_has_user_input_evidence,
+        auth_check_covers_subject, is_actor_context_subject, is_caller_scope_entity_name,
+        is_caller_scope_entity_subject, is_external_input_param_name, is_relevant_target_subject,
+        unit_has_user_input_evidence,
     };
     use crate::auth_analysis::model::{AnalysisUnit, AnalysisUnitKind, ValueRef, ValueSourceKind};
     use std::collections::{HashMap, HashSet};
@@ -1083,6 +1185,146 @@ mod tests {
         assert!(is_relevant_target_subject(&member("req", "id"), &unit));
     }
 
+    /// Real-repo regression: caller-passed scope entity used as
+    /// ownership constraint (sentry api/helpers/environments.py
+    /// `get_environments(request, organization)` and
+    /// api/endpoints/organization_releases.py
+    /// `_filter_releases_by_query(queryset, organization, query, ...)`).
+    /// The helper inherits the caller's auth on the entity object;
+    /// the `<entity>.id` arg IS the ownership scope, not a target.
+    #[test]
+    fn caller_scope_entity_subject_recognises_unit_param_id() {
+        let mut unit = empty_unit();
+        unit.params.push("organization".into());
+
+        // `organization.id` where `organization` is a unit param and
+        // matches the scope-entity vocabulary -> recognised as scope.
+        assert!(is_caller_scope_entity_subject(
+            &member("organization", "id"),
+            &unit
+        ));
+        assert!(is_caller_scope_entity_subject(
+            &member("organization", "pk"),
+            &unit
+        ));
+        // Suppression flows through to `is_relevant_target_subject`.
+        assert!(!is_relevant_target_subject(
+            &member("organization", "id"),
+            &unit
+        ));
+
+        // Other scope-entity names: project, team, workspace, ...
+        let mut unit_p = empty_unit();
+        unit_p.params.push("project".into());
+        assert!(is_caller_scope_entity_subject(
+            &member("project", "id"),
+            &unit_p
+        ));
+
+        let mut unit_t = empty_unit();
+        unit_t.params.push("team".into());
+        assert!(is_caller_scope_entity_subject(
+            &member("team", "id"),
+            &unit_t
+        ));
+
+        let mut unit_w = empty_unit();
+        unit_w.params.push("workspace".into());
+        assert!(is_caller_scope_entity_subject(
+            &member("workspace", "id"),
+            &unit_w
+        ));
+
+        let mut unit_r = empty_unit();
+        unit_r.params.push("repo".into());
+        assert!(is_caller_scope_entity_subject(
+            &member("repo", "id"),
+            &unit_r
+        ));
+    }
+
+    /// Pitfall guards for `is_caller_scope_entity_subject`.
+    #[test]
+    fn caller_scope_entity_subject_does_not_overreach() {
+        // `organization` not declared as a unit param -> not exempt.
+        let unit = empty_unit();
+        assert!(!is_caller_scope_entity_subject(
+            &member("organization", "id"),
+            &unit
+        ));
+
+        // Field other than id/pk -> not exempt (could be display name).
+        let mut unit = empty_unit();
+        unit.params.push("organization".into());
+        assert!(!is_caller_scope_entity_subject(
+            &member("organization", "name"),
+            &unit
+        ));
+        assert!(!is_caller_scope_entity_subject(
+            &member("organization", "slug"),
+            &unit
+        ));
+
+        // `user.id` / `member.id` / `actor.id` are deliberately NOT
+        // recognised as scope entities (actor semantics, handled by
+        // is_actor_context_subject).  They must not be widened here.
+        let mut unit_u = empty_unit();
+        unit_u.params.push("user".into());
+        assert!(!is_caller_scope_entity_subject(
+            &member("user", "id"),
+            &unit_u
+        ));
+
+        let mut unit_m = empty_unit();
+        unit_m.params.push("member".into());
+        assert!(!is_caller_scope_entity_subject(
+            &member("member", "id"),
+            &unit_m
+        ));
+
+        // Bare identifier -> not exempt (no field).
+        let mut unit_b = empty_unit();
+        unit_b.params.push("organization".into());
+        assert!(!is_caller_scope_entity_subject(
+            &plain("organization"),
+            &unit_b
+        ));
+    }
+
+    /// Vocabulary check for `is_caller_scope_entity_name`.  Pinned so
+    /// future widening is intentional.
+    #[test]
+    fn caller_scope_entity_name_vocabulary() {
+        // Recognised scope entities.
+        for name in [
+            "organization",
+            "Organization",
+            "ORG",
+            "project",
+            "team",
+            "workspace",
+            "tenant",
+            "account",
+            "community",
+            "group",
+            "repository",
+            "repo",
+            "company",
+        ] {
+            assert!(
+                is_caller_scope_entity_name(name),
+                "expected {name} to be recognised as scope entity"
+            );
+        }
+        // Excluded (actor semantics or generic).
+        for name in ["user", "member", "actor", "request", "self", "ctx"] {
+            assert!(
+                !is_caller_scope_entity_name(name),
+                "expected {name} NOT to be recognised as scope entity"
+            );
+        }
+    }
+
     /// Hierarchy: a parameter whose
     /// static type was recovered as `Int`/`Bool` (Spring `Long userId`,
     /// Axum `Path<i64>`, FastAPI `user_id: int`) has its name added to
@@ -1119,23 +1361,23 @@ mod tests {
         // Function with no params and no context_inputs (Celery task
         // shape), must NOT count as user-input-bearing.
         let mut unit = empty_unit();
-        assert!(!unit_has_user_input_evidence(&unit));
+        assert!(!unit_has_user_input_evidence(&unit, None));
 
         // Adding internal-typed params (apps, schema_editor, Django
         // migration RunPython callback shape) keeps the gate closed.
         unit.params.push("apps".into());
         unit.params.push("schema_editor".into());
-        assert!(!unit_has_user_input_evidence(&unit));
+        assert!(!unit_has_user_input_evidence(&unit, None));
 
         // pytest hook shape: (config, items), gate stays closed.
         let mut unit = empty_unit();
         unit.params.push("config".into());
         unit.params.push("items".into());
-        assert!(!unit_has_user_input_evidence(&unit));
+        assert!(!unit_has_user_input_evidence(&unit, None));
 
         // Adding an id-like param flips the gate open.
         unit.params.push("doc_id".into());
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
 
         // Token-named param flips the gate open (Express helper
         // `acceptInvitation(token, currentUser, roleOverride)`).
@@ -1143,23 +1385,72 @@ mod tests {
         unit.params.push("token".into());
         unit.params.push("currentUser".into());
         unit.params.push("roleOverride".into());
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
 
         // Framework request-name param flips the gate open
         // (Django/Flask `def view(request, project_id):`).
         let mut unit = empty_unit();
         unit.params.push("request".into());
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
 
         // Axum/Actix typed-extractor convention name flips it open.
         let mut unit = empty_unit();
         unit.params.push("path".into());
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
 
         // RouteHandler kind always wins, regardless of params.
         let mut unit = empty_unit();
         unit.kind = AnalysisUnitKind::RouteHandler;
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
+    }
+
+    /// Web-framework signal `Some(false)` (project's manifest was
+    /// inspected and named no web framework matching the file's
+    /// language, AND no per-file import override) suppresses both
+    /// the `context_inputs` arm and the param-name arm — both are
+    /// name-shape heuristics that overshoot in non-web Rust crates
+    /// (e.g. a debug-session handle named `session` trips
+    /// `matches_session_context` and lands in `context_inputs`).
+    /// Only RouteHandler classification (step 1) survives the gate
+    /// because that flag is set by framework extractors with concrete
+    /// route-registration evidence.
+    #[test]
+    fn web_framework_signal_gates_user_input_heuristics() {
+        // Param-name arm: helper named `<thing>_id` in a project the
+        // auth detector confirmed has no Rust web framework.  Without
+        // the gate this would flip step 3 open and flood the rule on
+        // every desktop helper.
+        let mut unit = empty_unit();
+        unit.params.push("session_id".into());
+        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, Some(true)));
+        assert!(!unit_has_user_input_evidence(&unit, Some(false)));
+
+        // Step 1 (RouteHandler) still wins regardless of the gate.
+        // RouteHandler kind is set by framework extractors (axum /
+        // actix_web / rocket) on concrete route-registration shapes —
+        // robust enough to bypass the project-level gate even when
+        // the manifest doesn't name the framework.
+        unit.kind = AnalysisUnitKind::RouteHandler;
+        assert!(unit_has_user_input_evidence(&unit, Some(false)));
+
+        // context_inputs arm: bare `session.foo` on a debug-session
+        // handle (not an auth session) lands in `context_inputs` via
+        // `matches_session_context`.  The gate suppresses this so
+        // non-web Rust crates don't fire on `session.update(cx, ...)`
+        // shapes from desktop test code.
+        let mut unit = empty_unit();
+        unit.context_inputs.push(ValueRef {
+            source_kind: ValueSourceKind::Session,
+            name: "session.update".into(),
+            base: Some("session".into()),
+            field: Some("update".into()),
+            index: None,
+            span: (0, 0),
+        });
+        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, Some(true)));
+        assert!(!unit_has_user_input_evidence(&unit, Some(false)));
     }
 
     /// `is_external_input_param_name` covers id-, token-, and

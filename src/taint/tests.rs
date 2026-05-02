@@ -4331,6 +4331,7 @@ fn ssa_summary_identity_propagation() {
                 None,
                 None,
                 None,
+                None,
             );
             assert!(
                 !summary.param_to_return.is_empty(),
@@ -4394,6 +4395,7 @@ fn ssa_summary_sanitizer_strips_bits() {
                 None,
                 None,
                 None,
+                None,
             );
             // Sanitizer should strip some bits
             for (_, transform) in &summary.param_to_return {
@@ -4450,6 +4452,7 @@ fn ssa_summary_source_adds_bits() {
                 None,
                 None,
                 None,
+                None,
             );
             assert!(
                 !summary.source_caps.is_empty(),
@@ -4503,6 +4506,7 @@ fn ssa_summary_param_to_sink() {
                 "test.rs",
                 &interner,
                 param_count,
+                None,
                 None,
                 None,
                 None,
@@ -6122,6 +6126,61 @@ async function handler(req) {
     );
 }
 
+/// Regex-allowlist `<X>.test(value)` is recognised as a ValidationCall
+/// targeting the call's first argument (not the regex receiver).
+///
+/// Shape:
+///
+/// ```js
+/// const v = req.body.x;
+/// if (!SAFE_REGEX.test(v)) { throw }
+/// db.execute(v);  // direct flow: should be silent
+/// ```
+///
+/// `classify_condition` returns ValidationCall for the `*regex*.test()`
+/// receiver shape (see `target_regex_test_first_arg` in path_state) and
+/// `extract_validation_target` overrides the default receiver-as-target
+/// rule to extract the call's first argument.  Together with the
+/// existing CFG-level negation handling in `compute_succ_states` the
+/// false branch (continue) marks `v` as validated.
+///
+/// Motivated by Payload CVE-2026-25544
+/// (`if (!SAFE_STRING_REGEX.test(value)) throw`).  Note: this test pins
+/// the direct-flow case; transitive validation through SSA-derived
+/// values (e.g. template-literal concat of `v` into `sql`) is a deeper
+/// gap tracked separately and not closed here.
+#[test]
+fn regex_test_allowlist_narrowing_clears_direct_flow() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    if (!SAFE_REGEX.test(userValue)) {
+        throw new Error('bad');
+    }
+    return await db.execute(userValue);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "regex.test allowlist narrowing should suppress direct-flow finding; got {} finding(s): {findings:?}",
+        findings.len()
+    );
+}
+
 /// Regression: `extract_ssa_func_summary` must skip `all_validated`
 /// events when populating `param_to_sink` / `param_to_sink_param`.
 ///
@@ -6202,6 +6261,282 @@ async function handler(req) {
     assert!(
         !findings.is_empty(),
         "helper-without-validator must still flag the cross-fn SSRF path",
+    );
+}
+
+/// Regression for CVE-2026-25544 deep fix
+/// (`validated_params_to_return` summary field): a helper that
+/// validates its parameter via a regex `.test(...)` allowlist and
+/// returns a string derived from the validated parameter must
+/// suppress the caller's downstream sink even when:
+///   * the caller binds the call result to a fresh variable
+///     (`const sql = sanitize(userValue)`), and
+///   * the helper's return is a *derived* template literal, not a
+///     pass-through of the parameter itself.
+///
+/// Sound because the helper only returns normally on the validating
+/// arm — control could not reach the post-call instruction unless
+/// the regex accepted the argument.  Pinned by
+/// `propagate_validated_params_to_return` marking both the arg and
+/// the call result `validated_must` / `validated_may` so the sink's
+/// `all_validated` check fires.
+#[test]
+fn validated_params_to_return_suppresses_one_hop_helper_validator() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value) => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return `safe:${value}`;
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = sanitize(userValue);
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "regex.test allowlist inside helper must suppress caller sink; got {} finding(s)",
+        findings.len()
+    );
+}
+
+/// Two-hop variant of
+/// `validated_params_to_return_suppresses_one_hop_helper_validator`:
+/// when the validator helper is itself wrapped by another helper
+/// that interpolates the validator's return into a template literal,
+/// summary extraction must still surface
+/// `validated_params_to_return` on the *outer* helper.  This pins
+/// the second-pass re-extraction (via
+/// `re_extract_summaries_with_augment_view`) plus the OR-merge of
+/// `validated_params_to_return` in `merge_sink_fields`.
+#[test]
+fn validated_params_to_return_suppresses_two_hop_helper_validator() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value) => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return value;
+};
+
+const buildQuery = (value) => {
+    const s = sanitize(value);
+    return s + '!';
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = buildQuery(userValue);
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "two-hop helper-validator must propagate validated_params_to_return through both helpers; got {} finding(s)",
+        findings.len()
+    );
+}
+
+/// Companion to
+/// `validated_params_to_return_suppresses_one_hop_helper_validator`:
+/// same shape WITHOUT the regex.test guard inside the helper must
+/// still fire.  Asserts the validated-flow propagation does not
+/// over-suppress when the helper does not actually validate.
+#[test]
+fn validated_params_to_return_does_not_suppress_unvalidated_helper() {
+    let src = br#"
+const sanitize = (value) => {
+    return `safe:${value}`;
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = sanitize(userValue);
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        !findings.is_empty(),
+        "helper without regex guard must still flag the caller sink",
+    );
+}
+
+/// Regression: per-parameter summary probe must seed every
+/// destructured object-pattern sibling sharing a slot, not only the
+/// primary name picked by `extract_param_meta`.  Without this, a
+/// helper that destructures its single argument as
+/// `({ value }) => …` cannot have `validated_params_to_return = [0]`
+/// proven, because the validator inside the body operates on the
+/// `value` binding while the probe only seeded the primary `value`
+/// (or any earlier sibling) of the object pattern.  Closes the
+/// residual blocker for CVE-2026-25544 (PayloadCMS Drizzle SQLi).
+#[test]
+fn validated_params_to_return_suppresses_destructured_object_arg_helper() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value) => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return value;
+};
+
+const buildQuery = ({ value }) => {
+    const s = sanitize(value);
+    return s + '!';
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = buildQuery({ value: userValue });
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "destructured object-pattern arg with regex.test allowlist inside the helper must suppress caller sink; got {} finding(s)",
+        findings.len()
+    );
+}
+
+/// Regression: same coverage for TypeScript object-pattern formals
+/// (`required_parameter > pattern: object_pattern`).  TS exposes the
+/// destructure under a wrapper required_parameter; JS exposes it as a
+/// direct child of formal_parameters.  Both paths must surface
+/// destructured siblings to the per-parameter probe.
+#[test]
+fn validated_params_to_return_suppresses_destructured_object_arg_helper_ts() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value: string): string => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return value;
+};
+
+const buildQuery = ({ value }: { value: string }): string => {
+    const s = sanitize(value);
+    return s + '!';
+};
+
+async function handler(req: any) {
+    const userValue = req.body.filter;
+    const sql = buildQuery({ value: userValue });
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_lang(src, "typescript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::TypeScript,
+        "test.ts",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "TS destructured object-pattern arg with regex.test allowlist must suppress caller sink; got {} finding(s)",
+        findings.len()
+    );
+}
+
+/// Regression: a destructured object-pattern formal with multiple
+/// fields must still propagate validated_params_to_return when the
+/// validation lives behind a sibling that is NOT the primary name
+/// returned by `extract_param_meta`.  In CVE-2026-25544 the primary
+/// is `column` (first ident in `{ column, operator, pathSegments,
+/// value }`) but the validator gates `value` — without sibling
+/// seeding the probe never sees the validation.
+#[test]
+fn destructured_sibling_validation_propagates_through_summary() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value) => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return value;
+};
+
+const buildQuery = ({ column, operator, value }) => {
+    return `${column} ${operator} ${sanitize(value)}`;
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = buildQuery({ column: 'col', operator: '=', value: userValue });
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "destructured-sibling validation (validator binds non-primary slot binding) must propagate through summary; got {} finding(s)",
+        findings.len()
     );
 }
 
@@ -6288,5 +6623,155 @@ const handler = (req) => {
         "test.js",
         &[],
         None,
+    );
+}
+
+/// JS arrow-function default parameters (`(a = {}, b = {}) => …`)
+/// are wrapped by tree-sitter in `assignment_pattern` nodes whose
+/// `left` field carries the actual identifier.  Without
+/// `assignment_pattern` in `PARAM_CONFIG.param_node_kinds`, the
+/// param walker skipped them, producing a parameter-less summary
+/// for any function whose params have defaults.  That broke
+/// cross-function `param_to_sink` propagation for shapes like
+/// Strapi `sendTemplatedEmail`.  Motivated by CVE-2023-22621.
+#[test]
+fn cve_2023_22621_js_default_params_extracted() {
+    use crate::cfg::extract_param_meta_for_test;
+    let src = br#"
+const sendTemplatedEmail = (emailOptions = {}, emailTemplate = {}, data = {}) => {
+  return emailTemplate;
+};
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&lang).unwrap();
+    let tree = parser.parse(&src[..], None).unwrap();
+    let root = tree.root_node();
+    let mut arrow_node: Option<tree_sitter::Node> = None;
+    fn find<'a>(n: tree_sitter::Node<'a>, out: &mut Option<tree_sitter::Node<'a>>) {
+        if n.kind() == "arrow_function" {
+            *out = Some(n);
+            return;
+        }
+        let mut c = n.walk();
+        for ch in n.named_children(&mut c) {
+            find(ch, out);
+            if out.is_some() {
+                return;
+            }
+        }
+    }
+    find(root, &mut arrow_node);
+    let arrow = arrow_node.expect("arrow function not found");
+    let params = extract_param_meta_for_test(arrow, "javascript", src);
+    let names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "emailOptions".to_string(),
+            "emailTemplate".to_string(),
+            "data".to_string()
+        ],
+        "expected all 3 default-valued arrow params extracted; got {:?}",
+        names
+    );
+}
+
+/// `_.template(tainted)` is a server-side template injection sink:
+/// lodash compiles `<% ... %>` evaluate blocks into a JS Function,
+/// so attacker-controlled input becomes RCE at render time.  Gate
+/// activates conservatively when arg 1 is missing (default lodash
+/// behavior is dangerous).  Motivated by CVE-2023-22621 (Strapi).
+#[test]
+fn cve_2023_22621_lodash_template_fires_on_tainted_input() {
+    let src = br#"
+const _ = require('lodash');
+const handler = (req, res) => {
+  _.template(req.body.tpl);
+};
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        !findings.is_empty(),
+        "expected taint flow on _.template(req.body.tpl); got 0 findings",
+    );
+}
+
+/// `_.template(tainted, { evaluate: false })` disables lodash's
+/// `<% ... %>` evaluate block compilation, so the call is no
+/// longer a code-execution sink.  The gate's `keyword_name =
+/// "evaluate"` activation reads the literal value via the JS-side
+/// closure that walks the call's arg-1 object literal (since JS
+/// has no language-level keyword args).  Motivated by Strapi's
+/// CVE-2023-22621 patch.
+#[test]
+fn cve_2023_22621_lodash_template_suppressed_by_evaluate_false() {
+    let src = br#"
+const _ = require('lodash');
+const handler = (req, res) => {
+  _.template(req.body.tpl, { evaluate: false });
+};
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "expected no taint flow when evaluate:false is set; got {} findings",
+        findings.len(),
+    );
+}
+
+/// Double-call chained form `_.template(tainted)(data)` — the outer
+/// call's `function` field is itself a call_expression rather than
+/// the member-chain shape `find_chained_inner_call` was originally
+/// written for.  The extension recognises the `f()()` pattern and
+/// rebinds gate classification to the inner call so the gated
+/// `_.template` fires even when wrapped in an immediate invocation
+/// of the compiled function.  Motivated by CVE-2023-22621.
+#[test]
+fn cve_2023_22621_lodash_template_double_call_inner_rebinding() {
+    let src = br#"
+const _ = require('lodash');
+const handler = (req, res) => {
+  const tpl = req.body.tpl;
+  _.template(tpl)({});
+};
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        !findings.is_empty(),
+        "expected taint flow via double-call chain rebinding; got 0 findings",
     );
 }
