@@ -1796,8 +1796,16 @@ fn rerun_extraction_with_augmented_summaries(
     }
 }
 
-/// OR-merge `param_to_sink` and `param_to_sink_param` from `src` into
-/// `dst`. Existing entries are preserved; only NEW entries are added.
+/// OR-merge `param_to_sink`, `param_to_sink_param`, and
+/// `validated_params_to_return` from `src` into `dst`.  Existing entries
+/// are preserved; only NEW entries are added.
+///
+/// The validated-param list grows monotonically across extraction
+/// rounds: a parameter that proves validated under any extraction
+/// pass (the augmented second pass typically resolves more
+/// cross-function summaries than the first) stays validated.  Drops
+/// here would silently lose CVE-2026-25544-class precision the
+/// re-extraction pass was specifically designed to recover.
 fn merge_sink_fields(
     dst: &mut crate::summary::ssa_summary::SsaFuncSummary,
     src: &crate::summary::ssa_summary::SsaFuncSummary,
@@ -1821,6 +1829,11 @@ fn merge_sink_fields(
             .any(|(i, p, c)| *i == idx && *p == pos && *c == caps)
         {
             dst.param_to_sink_param.push((idx, pos, caps));
+        }
+    }
+    for &idx in &src.validated_params_to_return {
+        if !dst.validated_params_to_return.contains(&idx) {
+            dst.validated_params_to_return.push(idx);
         }
     }
 }

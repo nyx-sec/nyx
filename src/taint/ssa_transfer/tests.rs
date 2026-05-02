@@ -1641,6 +1641,7 @@ mod fanout_merge_tests {
             points_to: Default::default(),
             field_points_to: Default::default(),
             param_to_gate_filters: vec![],
+            validated_params_to_return: vec![],
         }
     }
 

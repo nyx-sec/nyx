@@ -3499,7 +3499,21 @@ pub(super) fn transfer_inst(
             // `ssa/lower.rs`), which inflates `args.len()` beyond the real
             // positional arity.  The CFG's `arg_uses` is the authoritative
             // positional-arg list.
-            let arity_hint = info.call.arg_uses.len();
+            //
+            // Fallback: certain TypeScript call shapes — notably calls
+            // inside template-string substitutions (`${fn(arg)}`) — get
+            // their `arg_uses` dropped by CFG lowering even though the
+            // call's positional `args` are intact.  When that happens
+            // the strict `Some(0)` arity hint silently fails to match
+            // any callee that takes ≥1 arg, swallowing summary
+            // resolution.  Detect the asymmetry and pass `None` so
+            // `resolve_local_func_key_query`'s unique-name fallback
+            // can still pick up the lone candidate.
+            let arity_hint = if info.call.arg_uses.is_empty() && !args.is_empty() {
+                None
+            } else {
+                Some(info.call.arg_uses.len())
+            };
             // Type-aware resolution: when the SSA receiver value has a
             // known abstract type (HttpClient, URL, …), feed that into
             // the resolver as an authoritative `receiver_type`.  This
@@ -3511,7 +3525,7 @@ pub(super) fn transfer_inst(
                 callee,
                 caller_func,
                 info.call.call_ordinal,
-                Some(arity_hint),
+                arity_hint,
                 *receiver,
             );
 
@@ -3627,6 +3641,43 @@ pub(super) fn transfer_inst(
                         env.refine(inst.value, &fact);
                     }
                 }
+
+                // Validated-flow propagation through callee summaries.
+                //
+                // Runs regardless of whether inline analysis already
+                // resolved the call: inline analysis re-runs the
+                // callee's taint with caller-side seeds but does not
+                // surface the callee's symbol-keyed
+                // `validated_must` / `validated_may` state into the
+                // caller, so the summary-level signal is the only
+                // channel for propagating helper-validation across
+                // a function boundary.
+                //
+                // When the callee's body validates a parameter on
+                // every return path that carries the param's caps
+                // (regex allowlist, type check, validation call, …),
+                // a normal-returning call site is the validating arm
+                // by construction: control could not reach the
+                // post-call instruction unless the helper's
+                // predicate(s) accepted the argument.  Mark each
+                // tainted argument's `var_name` and the call's
+                // result `var_name` in the caller's
+                // `validated_must` / `validated_may` sets so
+                // subsequent sinks observe `all_validated = true`,
+                // the same way an inline `if (!regex.test(x)) throw`
+                // validates the surviving branch.  Closes the
+                // helper-validator propagation gap surfaced by
+                // CVE-2026-25544 (Payload `sanitizeValue` SQLi).
+                if !resolved.validated_params_to_return.is_empty() {
+                    propagate_validated_params_to_return(
+                        inst,
+                        args,
+                        ssa,
+                        transfer.interner,
+                        state,
+                        &resolved.validated_params_to_return,
+                    );
+                }
             }
 
             // When find_classifiable_inner_call overrides the callee (e.g.
@@ -3640,7 +3691,7 @@ pub(super) fn transfer_inst(
                         oc,
                         caller_func,
                         info.call.call_ordinal,
-                        Some(arity_hint),
+                        arity_hint,
                     ) {
                         if resolved_container_to_return.is_empty() {
                             resolved_container_to_return =
@@ -3735,6 +3786,24 @@ pub(super) fn transfer_inst(
                 if !aggregate_sanitizer_applied {
                     return_bits &= !resolved.sanitizer_caps;
                 }
+
+                // Validated-flow propagation through callee summaries.
+                //
+                // When the callee's body validates a parameter on every
+                // return path (regex allowlist, type check, validation
+                // call, etc. — see
+                // [`crate::summary::ssa_summary::SsaFuncSummary::validated_params_to_return`]),
+                // a normal-returning call site is the validating arm by
+                // construction: control could not reach the post-call
+                // instruction unless the helper's predicate(s) accepted
+                // the argument.  Mark each tainted argument's `var_name`
+                // and the call's result `var_name` in the caller's
+                // `validated_must` / `validated_may` sets so subsequent
+                // sinks observe `all_validated = true`, the same way an
+                // inline `if (!regex.test(x)) throw` validates the
+                // surviving branch.  Closes the helper-validator
+                // propagation gap surfaced by CVE-2026-25544 (Payload
+                // `sanitizeValue` SQLi).
             }
 
             // Type-qualified receiver resolution: when normal callee resolution
@@ -4236,7 +4305,7 @@ pub(super) fn transfer_inst(
                         oc,
                         caller_func,
                         info.call.call_ordinal,
-                        Some(arity_hint),
+                        arity_hint,
                     ) {
                         if !oc_sum.propagates_taint && oc_sum.source_caps.is_empty() {
                             // Outer callee blocks taint: no param→return flow,
@@ -6301,6 +6370,58 @@ fn collect_args_taint(
 /// [`Cap::UNAUTHORIZED_ID`], ownership/membership guards prove on
 /// inputs rather than the return value. Other caps and origins are
 /// untouched.
+/// Apply [`SsaFuncSummary::validated_params_to_return`] at a call site.
+///
+/// For each parameter index `p` in `validated_params`, mark the
+/// `var_name` of every tainted SSA value at `args[p]` and the call's
+/// own result `inst.value` in the caller's `validated_must` /
+/// `validated_may` sets.  Mirrors the symbol-keyed validation a direct
+/// `if (!regex.test(x)) throw` would set on the surviving branch.
+///
+/// Sound because the callee summary records `validated_params_to_return`
+/// only when the param's `var_name` is in `validated_must` at *every*
+/// return block — a normal-returning call therefore proves the
+/// validating arm.  No-op when no actual argument is tainted (avoids
+/// spuriously validating untouched names downstream).
+fn propagate_validated_params_to_return(
+    inst: &SsaInst,
+    args: &[SmallVec<[SsaValue; 2]>],
+    ssa: &SsaBody,
+    interner: &crate::state::symbol::SymbolInterner,
+    state: &mut SsaTaintState,
+    validated_params: &[usize],
+) {
+    let mark = |val: SsaValue, st: &mut SsaTaintState| {
+        let Some(name) = ssa
+            .value_defs
+            .get(val.0 as usize)
+            .and_then(|vd| vd.var_name.as_deref())
+        else {
+            return;
+        };
+        let Some(sym) = interner.get(name) else {
+            return;
+        };
+        st.validated_must.insert(sym);
+        st.validated_may.insert(sym);
+    };
+
+    let mut any_arg_tainted = false;
+    for &p in validated_params {
+        let Some(arg_vals) = args.get(p) else { continue };
+        for &v in arg_vals {
+            if state.get(v).is_some_and(|t| !t.caps.is_empty()) {
+                any_arg_tainted = true;
+                mark(v, state);
+            }
+        }
+    }
+
+    if any_arg_tainted {
+        mark(inst.value, state);
+    }
+}
+
 fn strip_cap_from_call_args(
     args: &[SmallVec<[SsaValue; 2]>],
     receiver: &Option<SsaValue>,
@@ -8676,6 +8797,14 @@ struct ResolvedSummary {
     /// `field_points_to` records. Applied at the caller call site by
     /// `apply_field_points_to_writes`.
     field_points_to: crate::summary::points_to::FieldPointsToSummary,
+    /// Parameter indices whose taint flow to the return is fully
+    /// validated by a dominating predicate inside the callee on every
+    /// return path.  Mirrors
+    /// [`crate::summary::ssa_summary::SsaFuncSummary::validated_params_to_return`].
+    /// Populated only via `convert_ssa_to_resolved`; other resolution
+    /// paths leave it empty (label / coarse-FuncSummary forms cannot
+    /// express per-path predicate validation).
+    validated_params_to_return: Vec<usize>,
 }
 
 fn resolve_callee(
@@ -8825,6 +8954,7 @@ fn resolve_callee_full(
                     points_to: Default::default(),
                     field_points_to: Default::default(),
                     param_to_gate_filters: vec![],
+                    validated_params_to_return: vec![],
                 });
             }
             // Try label classification for the bound function (by leaf name).
@@ -8896,6 +9026,7 @@ fn resolve_callee_full(
                     points_to: Default::default(),
                     field_points_to: Default::default(),
                     param_to_gate_filters: vec![],
+                    validated_params_to_return: vec![],
                 });
             }
         }
@@ -9041,6 +9172,7 @@ fn resolve_callee_full(
                 points_to: Default::default(),
                 field_points_to: Default::default(),
                 param_to_gate_filters: vec![],
+                validated_params_to_return: vec![],
             });
         }
     } else {
@@ -9091,6 +9223,7 @@ fn resolve_callee_full(
             points_to: Default::default(),
             field_points_to: Default::default(),
             param_to_gate_filters: vec![],
+            validated_params_to_return: vec![],
         };
         match widened.len() {
             0 => {}
@@ -9162,6 +9295,7 @@ fn resolve_callee_full(
                 points_to: Default::default(),
                 field_points_to: Default::default(),
                 param_to_gate_filters: vec![],
+                validated_params_to_return: vec![],
             });
         }
     }
@@ -9344,6 +9478,7 @@ fn convert_ssa_to_resolved_for_caller(
         points_to: ssa_sum.points_to.clone(),
         field_points_to: ssa_sum.field_points_to.clone(),
         param_to_gate_filters: ssa_sum.param_to_gate_filters.clone(),
+        validated_params_to_return: ssa_sum.validated_params_to_return.to_vec(),
     }
 }
 

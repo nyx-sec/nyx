@@ -325,6 +325,28 @@ pub struct SsaFuncSummary {
     /// can be joined by ordinal at call-graph build time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub typed_call_receivers: Vec<(u32, String)>,
+    /// Parameter indices whose taint flow to the return value is fully
+    /// validated by a dominating predicate (regex allowlist, type check,
+    /// validation call, etc.) on every return path inside the function.
+    ///
+    /// At a call site, each tainted argument passed to a position in
+    /// this list — and the call's own return value — are marked
+    /// `validated_must` / `validated_may` in the caller's SSA taint
+    /// state, the same way an inline `if (!regex.test(x)) throw` would
+    /// validate the surviving branch.  Sound because the call only
+    /// returns normally on the validating arm; if validation failed,
+    /// control would not reach the post-call instruction.
+    ///
+    /// Populated by
+    /// [`crate::taint::ssa_transfer::summary_extract::extract_ssa_func_summary`]
+    /// when a per-parameter probe shows the parameter's `var_name` in
+    /// `validated_must` at every return block of the helper.  Empty
+    /// (the default) for helpers that do not validate any parameter.
+    /// Closes the validated-flow propagation gap that left
+    /// CVE-2026-25544 (Payload `sanitizeValue` SQL injection) detecting
+    /// on both vulnerable and patched code.
+    #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
+    pub validated_params_to_return: SmallVec<[usize; 2]>,
 }
 
 /// A per-return-path [`PathFact`] entry.

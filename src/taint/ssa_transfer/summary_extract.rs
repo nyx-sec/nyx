@@ -159,13 +159,26 @@ pub fn extract_ssa_func_summary_full(
         /// Inner [`PathFact`] when the rv on this path is a one-arg
         /// variant constructor; [`None`] otherwise.
         variant_inner_fact: Option<crate::abstract_interp::PathFact>,
+        /// `true` when the per-param probe's seeded parameter var_name
+        /// is in this return block's exit `validated_must`.  `false`
+        /// for the baseline (no-seed) probe and for params not
+        /// validated on this path.  Drives
+        /// `validated_params_to_return` summary extraction.
+        param_validated_must: bool,
     }
 
     // Helper: run a taint probe with a given global_seed and return
     // the aggregate return caps, sink events, joined return abstract,
     // and the per-return-block observation list used to derive
     // per-return-path transforms.
-    let run_probe = |seed: HashMap<BindingKey, VarTaint>| -> (
+    //
+    // `probe_param_name` is the seeded parameter's `var_name` (or
+    // `None` for the baseline source-caps probe).  When present, each
+    // return-block observation records whether that name is in the
+    // exit state's `validated_must`, which feeds
+    // `validated_params_to_return` summary extraction below.
+    let run_probe = |seed: HashMap<BindingKey, VarTaint>,
+                     probe_param_name: Option<&str>| -> (
         Cap,
         Vec<SsaTaintEvent>,
         Option<crate::abstract_interp::AbstractValue>,
@@ -313,6 +326,13 @@ pub fn extract_ssa_func_summary_full(
                 // The hash is stable across runs for a given predicate
                 // shape so call sites can compare paths deterministically.
                 let (predicate_hash, known_true, known_false) = summarise_return_predicates(&exit);
+                let param_validated_must = match probe_param_name {
+                    Some(name) => match interner.get(name) {
+                        Some(sym) => exit.validated_must.contains(sym),
+                        None => false,
+                    },
+                    None => false,
+                };
                 per_return.push(ReturnBlockObs {
                     derived_caps: block_derived_caps,
                     param_caps: block_param_caps,
@@ -322,6 +342,7 @@ pub fn extract_ssa_func_summary_full(
                     abstract_value: block_abs,
                     path_fact: block_path_fact,
                     variant_inner_fact: block_variant_inner,
+                    param_validated_must,
                 });
             }
         }
@@ -343,7 +364,7 @@ pub fn extract_ssa_func_summary_full(
     // Abstract values don't depend on taint seeding, so the baseline probe
     // captures the function's intrinsic abstract return value.
     let (baseline_return_caps, _baseline_events, return_abstract, baseline_obs) =
-        run_probe(HashMap::new());
+        run_probe(HashMap::new(), None);
     let source_caps = baseline_return_caps;
 
     // Per-return-path PathFact decomposition derived from the baseline
@@ -403,6 +424,12 @@ pub fn extract_ssa_func_summary_full(
         usize,
         SmallVec<[crate::summary::ssa_summary::ReturnPathTransform; 2]>,
     )> = Vec::new();
+    // Parameter indices whose taint flow to the return is fully
+    // validated by a dominating predicate on every return path.
+    // Populated below by checking each per-param probe's return-block
+    // exit states for `validated_must` containing the param's
+    // var_name.  Empty when no parameter is validated.
+    let mut validated_params_to_return: SmallVec<[usize; 2]> = SmallVec::new();
 
     for &(idx, ref var_name, _ssa_val) in &param_info {
         let mut seed = HashMap::new();
@@ -454,7 +481,7 @@ pub fn extract_ssa_func_summary_full(
             }
         }
 
-        let (return_caps, events, _, per_return_obs) = run_probe(seed);
+        let (return_caps, events, _, per_return_obs) = run_probe(seed, Some(var_name.as_str()));
 
         // Subtract baseline source_caps, we only want param-contributed caps
         let param_return_caps = return_caps & !source_caps;
@@ -467,6 +494,44 @@ pub fn extract_ssa_func_summary_full(
                 TaintTransform::StripBits(stripped)
             };
             param_to_return.push((idx, transform));
+        }
+
+        // Validated-param-to-return detection.
+        //
+        // When the per-param probe shows that the parameter's
+        // `var_name` is in `validated_must` on every return path that
+        // *carries the parameter's contributed caps*, record the
+        // parameter as validated.  The caller will mark each tainted
+        // argument passed to this position — and the call's own
+        // return value — as `validated_must` / `validated_may`, the
+        // same way an inline `if (!regex.test(x)) throw` would
+        // validate the surviving branch.
+        //
+        // Conservative gating:
+        //   * Skip when the param contributes no caps to the return,
+        //     a degenerate "validated but irrelevant" record.
+        //   * Skip when no return block was observed (probes that
+        //     diverged or hit `MAX_PROBE_PARAMS`).
+        //   * Require validation on every return path that *carries
+        //     param caps to the return*.  Branches that return
+        //     constants (e.g. `if (x === null) return 'NULL'`) carry
+        //     no param taint and don't need a validation predicate.
+        //   * Require ≥1 path that actually validates the param.
+        if !param_return_caps.is_empty() && !per_return_obs.is_empty() {
+            let mut any_carrying_path = false;
+            let all_carrying_validated = per_return_obs.iter().all(|obs| {
+                let carries = !(obs.derived_caps & !source_caps).is_empty()
+                    || !(obs.param_caps & !source_caps).is_empty();
+                if carries {
+                    any_carrying_path = true;
+                    obs.param_validated_must
+                } else {
+                    true
+                }
+            });
+            if any_carrying_path && all_carrying_validated {
+                validated_params_to_return.push(idx);
+            }
         }
 
         // Derive per-return-path decomposition.  For each
@@ -694,6 +759,7 @@ pub fn extract_ssa_func_summary_full(
         // extractor itself doesn't carry receiver-type info, the
         // caller patches it in.
         typed_call_receivers: Vec::new(),
+        validated_params_to_return,
     }
 }
 

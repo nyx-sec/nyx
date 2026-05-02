@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-02T12:45:53Z",
+  "timestamp": "2026-05-02T16:14:59Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:4eb234e0ab29db13e64a55dbbfaf800c83f200d3d36939e34f4cdefd51cb82c6",
-  "corpus_size": 499,
-  "cases_run": 496,
+  "ground_truth_hash": "sha256:116220b9ac144bfb69378b48bfeaa78a4acde540657517b2e13e51df540a77cc",
+  "corpus_size": 500,
+  "cases_run": 497,
   "cases_skipped": 3,
   "outcomes": [
     {
@@ -8567,6 +8567,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "ts-safe-021",
+      "file": "typescript/safe/safe_validated_helper_chain.ts",
+      "language": "typescript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "ts-secrets-001",
       "file": "typescript/secrets/fallback_secret.ts",
       "language": "typescript",
@@ -8873,7 +8888,7 @@
     "tp": 246,
     "fp": 0,
     "fn_": 0,
-    "tn": 250,
+    "tn": 251,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -8882,7 +8897,7 @@
     "tp": 246,
     "fp": 0,
     "fn_": 0,
-    "tn": 250,
+    "tn": 251,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -8973,7 +8988,7 @@
       "tp": 34,
       "fp": 0,
       "fn_": 0,
-      "tn": 24,
+      "tn": 25,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9110,7 +9125,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 250,
+      "tn": 251,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9166,7 +9181,7 @@
       "tp": 78,
       "fp": 107,
       "fn_": 168,
-      "tn": 143,
+      "tn": 144,
       "precision": 0.42162162162162165,
       "recall": 0.3170731707317073,
       "f1": 0.36194895591647336
@@ -9175,19 +9190,19 @@
       "tp": 80,
       "fp": 131,
       "fn_": 166,
-      "tn": 119,
+      "tn": 120,
       "precision": 0.3791469194312796,
       "recall": 0.3252032520325203,
       "f1": 0.35010940919037203
     },
     ">=Medium": {
       "tp": 80,
-      "fp": 125,
+      "fp": 124,
       "fn_": 166,
-      "tn": 125,
-      "precision": 0.3902439024390244,
+      "tn": 127,
+      "precision": 0.39215686274509803,
       "recall": 0.3252032520325203,
-      "f1": 0.35476718403547675
+      "f1": 0.35555555555555557
     }
   }
 }

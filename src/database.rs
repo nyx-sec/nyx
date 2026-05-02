@@ -2516,6 +2516,7 @@ fn ssa_summaries_round_trip() {
                 field_points_to: Default::default(),
                 return_path_facts: smallvec::SmallVec::new(),
                 typed_call_receivers: vec![],
+                validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
             },
         ),
@@ -2551,6 +2552,7 @@ fn ssa_summaries_round_trip() {
                 field_points_to: Default::default(),
                 return_path_facts: smallvec::SmallVec::new(),
                 typed_call_receivers: vec![],
+                validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
             },
         ),
@@ -2724,6 +2726,7 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
             field_points_to: Default::default(),
             return_path_facts: smallvec::SmallVec::new(),
             typed_call_receivers: vec![],
+            validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
         },
     )];
@@ -2761,6 +2764,7 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
             field_points_to: Default::default(),
             return_path_facts: smallvec::SmallVec::new(),
             typed_call_receivers: vec![],
+            validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
         },
     )];
@@ -2819,6 +2823,7 @@ fn clear_drops_ssa_summaries_table() {
             field_points_to: Default::default(),
             return_path_facts: smallvec::SmallVec::new(),
             typed_call_receivers: vec![],
+            validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
         },
     )];
@@ -3092,6 +3097,7 @@ fn make_test_ssa_summary() -> crate::summary::ssa_summary::SsaFuncSummary {
         field_points_to: Default::default(),
         return_path_facts: smallvec::SmallVec::new(),
         typed_call_receivers: vec![],
+        validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
     }
 }

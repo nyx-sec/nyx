@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 499
+    "corpus_size": 500
   },
   "cases": [
     {
@@ -13208,6 +13208,34 @@
       ],
       "disabled": false,
       "notes": "Empty-string fallback (`process.env.X || \"\"`) is not a hardcoded secret. Distilled from /Users/elipeter/oss/cal.com/apps/api/v2/src/modules/stripe/utils/newStripeInstance.ts and ~30 sibling cal.com calendar/stripe/sendgrid integration files. Engine fix: pattern-level regex (#match? @fallback \"[^\\\"']\") in src/patterns/typescript.rs."
+    },
+    {
+      "case_id": "ts-safe-021",
+      "file": "typescript/safe/safe_validated_helper_chain.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "validated-flow",
+        "helper-validator",
+        "summary-propagation",
+        "cve-2026-25544"
+      ],
+      "disabled": false,
+      "notes": "Validated-flow propagation through helper chains. `sanitize` validates its first parameter via a regex allowlist; `buildQuery` interpolates the sanitised result into a SQL fragment; the handler hands the fragment to `db.execute`. Pinned by `SsaFuncSummary::validated_params_to_return` + `propagate_validated_params_to_return` (CVE-2026-25544 deep fix)."
     },
     {
       "case_id": "py-auth-decorator-001",

@@ -1873,6 +1873,7 @@ function consume() {
                 field_points_to: Default::default(),
                 return_path_facts: smallvec::SmallVec::new(),
                 typed_call_receivers: vec![],
+                validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
             },
         );

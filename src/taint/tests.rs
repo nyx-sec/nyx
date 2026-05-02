@@ -6260,6 +6260,142 @@ async function handler(req) {
     );
 }
 
+/// Regression for CVE-2026-25544 deep fix
+/// (`validated_params_to_return` summary field): a helper that
+/// validates its parameter via a regex `.test(...)` allowlist and
+/// returns a string derived from the validated parameter must
+/// suppress the caller's downstream sink even when:
+///   * the caller binds the call result to a fresh variable
+///     (`const sql = sanitize(userValue)`), and
+///   * the helper's return is a *derived* template literal, not a
+///     pass-through of the parameter itself.
+///
+/// Sound because the helper only returns normally on the validating
+/// arm — control could not reach the post-call instruction unless
+/// the regex accepted the argument.  Pinned by
+/// `propagate_validated_params_to_return` marking both the arg and
+/// the call result `validated_must` / `validated_may` so the sink's
+/// `all_validated` check fires.
+#[test]
+fn validated_params_to_return_suppresses_one_hop_helper_validator() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value) => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return `safe:${value}`;
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = sanitize(userValue);
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "regex.test allowlist inside helper must suppress caller sink; got {} finding(s)",
+        findings.len()
+    );
+}
+
+/// Two-hop variant of
+/// `validated_params_to_return_suppresses_one_hop_helper_validator`:
+/// when the validator helper is itself wrapped by another helper
+/// that interpolates the validator's return into a template literal,
+/// summary extraction must still surface
+/// `validated_params_to_return` on the *outer* helper.  This pins
+/// the second-pass re-extraction (via
+/// `re_extract_summaries_with_augment_view`) plus the OR-merge of
+/// `validated_params_to_return` in `merge_sink_fields`.
+#[test]
+fn validated_params_to_return_suppresses_two_hop_helper_validator() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value) => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return value;
+};
+
+const buildQuery = (value) => {
+    const s = sanitize(value);
+    return s + '!';
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = buildQuery(userValue);
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "two-hop helper-validator must propagate validated_params_to_return through both helpers; got {} finding(s)",
+        findings.len()
+    );
+}
+
+/// Companion to
+/// `validated_params_to_return_suppresses_one_hop_helper_validator`:
+/// same shape WITHOUT the regex.test guard inside the helper must
+/// still fire.  Asserts the validated-flow propagation does not
+/// over-suppress when the helper does not actually validate.
+#[test]
+fn validated_params_to_return_does_not_suppress_unvalidated_helper() {
+    let src = br#"
+const sanitize = (value) => {
+    return `safe:${value}`;
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = sanitize(userValue);
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        !findings.is_empty(),
+        "helper without regex guard must still flag the caller sink",
+    );
+}
+
 /// Regression: `validate*`-named callees match
 /// `InputValidatorPolarity::ErrorReturning`, bare `if (err) throw`
 /// guards the success branch (false branch).  `is_valid*`/`is_safe*`
