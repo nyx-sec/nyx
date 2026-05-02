@@ -244,6 +244,10 @@ pub const PATTERNS: &[Pattern] = &[
         confidence: Confidence::High,
     },
     // ── Tier A: Hardcoded fallback secret ──────────────────────────────
+    // The `(#match? @fallback "[^\"']")` predicate excludes empty-string
+    // fallbacks (`process.env.X || ""`), which are the dominant FP shape
+    // in production TypeScript: developers write `|| ""` to satisfy the
+    // non-undefined string type without committing a real secret.
     Pattern {
         id: "ts.secrets.fallback_secret",
         description: "Environment variable with secret-like name has hardcoded fallback value",
@@ -255,7 +259,7 @@ pub const PATTERNS: &[Pattern] = &[
                        property: (property_identifier) @key
                          (#match? @key "(?i)(secret|password|key|token)"))
                      operator: "||"
-                     right: (string) @fallback)
+                     right: (string) @fallback (#match? @fallback "[^\"']"))
                    @vuln"#,
         severity: Severity::Medium,
         tier: PatternTier::A,

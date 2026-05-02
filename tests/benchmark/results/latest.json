@@ -1,7 +1,7 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-01T23:56:30Z",
-  "scanner_version": "0.5.0",
+  "timestamp": "2026-05-02T01:06:08Z",
+  "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
     "taint_enabled": true,
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:d6518c829c0625ef127f30bfafee03b1d39ce44218ac0f7aaf793ae4d69d51f0",
-  "corpus_size": 490,
-  "cases_run": 489,
+  "ground_truth_hash": "sha256:ba8f5f6e20ce478b6032b1df98e5dc57a7b7a8ced8f1d3294dc811034bc6fc3c",
+  "corpus_size": 492,
+  "cases_run": 491,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -4025,6 +4025,21 @@
     {
       "case_id": "js-safe-021",
       "file": "javascript/safe/safe_canonicalise_rooted_startsWith.js",
+      "language": "javascript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "js-safe-022",
+      "file": "javascript/safe/safe_env_empty_fallback.js",
       "language": "javascript",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -8484,6 +8499,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "ts-safe-020",
+      "file": "typescript/safe/safe_env_empty_fallback.ts",
+      "language": "typescript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "ts-secrets-001",
       "file": "typescript/secrets/fallback_secret.ts",
       "language": "typescript",
@@ -8790,7 +8820,7 @@
     "tp": 244,
     "fp": 7,
     "fn_": 0,
-    "tn": 238,
+    "tn": 240,
     "precision": 0.9721115537848606,
     "recall": 1.0,
     "f1": 0.9858585858585859
@@ -8799,7 +8829,7 @@
     "tp": 242,
     "fp": 7,
     "fn_": 2,
-    "tn": 238,
+    "tn": 240,
     "precision": 0.9718875502008032,
     "recall": 0.9918032786885246,
     "f1": 0.9817444219066938
@@ -8845,7 +8875,7 @@
       "tp": 22,
       "fp": 4,
       "fn_": 0,
-      "tn": 23,
+      "tn": 24,
       "precision": 0.8461538461538461,
       "recall": 1.0,
       "f1": 0.9166666666666666
@@ -8890,7 +8920,7 @@
       "tp": 34,
       "fp": 0,
       "fn_": 0,
-      "tn": 23,
+      "tn": 24,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9027,7 +9057,7 @@
       "tp": 0,
       "fp": 7,
       "fn_": 0,
-      "tn": 238,
+      "tn": 240,
       "precision": 0.0,
       "recall": 1.0,
       "f1": 0.0
@@ -9080,28 +9110,28 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 74,
-      "fp": 109,
-      "fn_": 170,
-      "tn": 136,
-      "precision": 0.40437158469945356,
-      "recall": 0.30327868852459017,
-      "f1": 0.34660421545667447
+      "tp": 73,
+      "fp": 110,
+      "fn_": 171,
+      "tn": 137,
+      "precision": 0.3989071038251366,
+      "recall": 0.29918032786885246,
+      "f1": 0.3419203747072599
     },
     ">=Low": {
       "tp": 75,
-      "fp": 135,
+      "fp": 133,
       "fn_": 169,
-      "tn": 110,
-      "precision": 0.35714285714285715,
+      "tn": 114,
+      "precision": 0.3605769230769231,
       "recall": 0.3073770491803279,
-      "f1": 0.3303964757709251
+      "f1": 0.33185840707964603
     },
     ">=Medium": {
       "tp": 75,
       "fp": 126,
       "fn_": 169,
-      "tn": 119,
+      "tn": 121,
       "precision": 0.373134328358209,
       "recall": 0.3073770491803279,
       "f1": 0.3370786516853933
