@@ -1,22 +1,23 @@
 # Roadmap
 
-Nyx today is a static-only multi-language vulnerability scanner. The roadmap below extends it into a hybrid scanner that combines static analysis with controlled execution and AI-assisted reasoning.
+## Now: recall and precision on real codebases
 
-## Phase 1: Static Analysis (current)
+The current focus is straightforward. Run Nyx against real open-source repositories and real CVEs, then close the gap between what it finds and what it should find.
 
-The shipped scanner. Multi-language taint tracking on a pruned SSA IR, cross-file function summaries, points-to and abstract interpretation, symbolic execution with an optional SMT backend, and a local web UI for triage. See the [Changelog](CHANGELOG.md) for the full breakdown of what's landed through 0.5.0.
+That means:
 
-## Phase 2: Dynamic Capability
+- **Recall.** Pick CVEs with public fixes. Reproduce them on the vulnerable commit. If Nyx misses, figure out why (missing source, missing sink, lost flow across a call, dropped at a sanitizer that was not actually a sanitizer) and fix the underlying analysis, not the fixture.
+- **Precision.** Triage the noise on large repos (phpMyAdmin, Nextcloud, and others). Each false positive gets reduced to a pattern: receiver-type gate, non-crypto context for `md5`/`sha1`, type-safe sink suppression, etc. Land the gate, re-run the corpus, confirm the count drops without taking real bugs with it.
+- **Corpus discipline.** Every fix lands with a fixture (positive or negative) and a corpus row. Rule-level F1 on `tests/benchmark/corpus/` is the scoreboard. CI floors only ratchet up.
 
-| Feature | Description |
-| --- | --- |
-| Controlled dynamic execution | Local sandbox: identify entry points, spin up test harnesses, inject payloads, detect runtime crashes and command execution. Deterministic automated exploit validation: static finds `exec(user_input)`, dynamic confirms it with `; id`. |
-| Fuzzing integration | libFuzzer (C/C++), cargo-fuzz (Rust), go-fuzz, HTTP fuzzing harness. Static engine identifies interesting functions, fuzzer targets only those. |
+The scanner internals (SSA, cross-file summaries, abstract interpretation, symbolic execution, auth analysis) are in place. They get refined in service of the recall/precision work, not extended for their own sake.
 
-## Phase 3: Intelligent Reasoning Layer
+## Later: dynamic capability
 
-| Feature | Description |
-| --- | --- |
-| Semantic similarity | Embeddings for finding similar vulnerability patterns across codebases. |
-| LLM reasoning | AI-assisted detection of non-obvious logic bugs. |
-| Exploit refinement | Automated loops to refine and validate exploit chains. |
+Static analysis confirms a flow exists. Dynamic execution confirms it fires. The plan is a local sandbox that picks up entry points Nyx already identifies, builds a harness, injects a payload, and watches for the crash or shell. Pairs naturally with fuzzing (libFuzzer, cargo-fuzz, go-fuzz, HTTP) where the static engine picks the targets.
+
+Not started. Lands after the static side is honest on real corpora.
+
+## Later still: reasoning layer
+
+Embeddings for cross-codebase pattern similarity. LLM-assisted detection for logic bugs that resist taint modeling. Automated exploit refinement loops. All speculative until the foundation is solid.
