@@ -134,21 +134,32 @@ The corpus also holds a small set of vulnerable/patched pairs extracted from pub
 | [CVE-2023-48022](https://nvd.nist.gov/vuln/detail/CVE-2023-48022) | Ray | Python | Command injection |
 | [CVE-2017-18342](https://nvd.nist.gov/vuln/detail/CVE-2017-18342) | PyYAML | Python | Deserialization |
 | [CVE-2019-14939](https://nvd.nist.gov/vuln/detail/CVE-2019-14939) | mongo-express | JavaScript | Code execution (`eval`) |
+| [CVE-2023-22621](https://nvd.nist.gov/vuln/detail/CVE-2023-22621) | Strapi | JavaScript | Code execution (SSTI) |
 | [CVE-2025-64430](https://nvd.nist.gov/vuln/detail/CVE-2025-64430) | Parse Server | JavaScript | SSRF |
 | [CVE-2023-26159](https://nvd.nist.gov/vuln/detail/CVE-2023-26159) | follow-redirects | TypeScript | SSRF |
+| [CVE-2026-25544](https://nvd.nist.gov/vuln/detail/CVE-2026-25544) | Payload CMS | TypeScript | SQL injection |
 | [CVE-2022-30323](https://nvd.nist.gov/vuln/detail/CVE-2022-30323) | hashicorp/go-getter | Go | Command injection |
 | [CVE-2024-31450](https://nvd.nist.gov/vuln/detail/CVE-2024-31450) | owncast | Go | Path traversal |
 | [CVE-2023-3188](https://nvd.nist.gov/vuln/detail/CVE-2023-3188) | owncast | Go | SSRF |
 | [CVE-2015-7501](https://nvd.nist.gov/vuln/detail/CVE-2015-7501) | Apache Commons Collections | Java | Deserialization |
 | [CVE-2017-12629](https://nvd.nist.gov/vuln/detail/CVE-2017-12629) | Apache Solr | Java | Command injection |
+| [CVE-2022-1471](https://nvd.nist.gov/vuln/detail/CVE-2022-1471) | SnakeYAML | Java | Deserialization |
+| [CVE-2022-42889](https://nvd.nist.gov/vuln/detail/CVE-2022-42889) | Apache Commons Text | Java | Code execution |
 | [CVE-2013-0156](https://nvd.nist.gov/vuln/detail/CVE-2013-0156) | Ruby on Rails | Ruby | Deserialization |
 | [CVE-2020-8130](https://nvd.nist.gov/vuln/detail/CVE-2020-8130) | Rake | Ruby | Command injection |
+| [CVE-2021-21288](https://nvd.nist.gov/vuln/detail/CVE-2021-21288) | CarrierWave | Ruby | SSRF |
+| [CVE-2023-38337](https://nvd.nist.gov/vuln/detail/CVE-2023-38337) | rswag-api | Ruby | Path traversal |
 | [CVE-2017-9841](https://nvd.nist.gov/vuln/detail/CVE-2017-9841) | PHPUnit | PHP | Code execution (`eval`) |
 | [CVE-2018-15133](https://nvd.nist.gov/vuln/detail/CVE-2018-15133) | Laravel | PHP | Deserialization |
+| [CVE-2018-20997](https://nvd.nist.gov/vuln/detail/CVE-2018-20997) | tar-rs | Rust | Path traversal |
+| [CVE-2022-36113](https://nvd.nist.gov/vuln/detail/CVE-2022-36113) | cargo | Rust | Path traversal |
+| [CVE-2024-24576](https://nvd.nist.gov/vuln/detail/CVE-2024-24576) | Rust stdlib | Rust | Command injection |
 | [CVE-2016-3714](https://nvd.nist.gov/vuln/detail/CVE-2016-3714) | ImageMagick (ImageTragick) | C | Command injection |
 | [CVE-2019-18634](https://nvd.nist.gov/vuln/detail/CVE-2019-18634) | sudo (pwfeedback) | C | Memory safety |
 | [CVE-2019-13132](https://nvd.nist.gov/vuln/detail/CVE-2019-13132) | ZeroMQ libzmq | C++ | Memory safety |
 | [CVE-2022-1941](https://nvd.nist.gov/vuln/detail/CVE-2022-1941) | Protocol Buffers | C++ | Memory safety |
+| [CVE-2025-69662](https://nvd.nist.gov/vuln/detail/CVE-2025-69662) | geopandas | Python | SQL injection |
+| [CVE-2026-33626](https://nvd.nist.gov/vuln/detail/CVE-2026-33626) | LMDeploy | Python | SSRF |
 
 Fixtures live under [`tests/benchmark/cve_corpus/`](tests/benchmark/cve_corpus/) with upstream attribution headers.
 
