@@ -3455,6 +3455,33 @@ pub fn extract_value_refs(node: Node<'_>, bytes: &[u8]) -> Vec<ValueRef> {
             index: None,
             span: span(node),
         }],
+        // Keyword / named arguments: `Model.objects.filter(organization_id=org.id)`.
+        // Tree-sitter exposes a `name` child (the schema column / parameter
+        // name) and a `value` child (the actual expression).  The default
+        // recurse-all-children arm would surface `organization_id` as a
+        // bare-identifier subject, which `is_id_like_name` then flags as
+        // a scoped-identifier user-input.  But the kwarg key is the
+        // ORM/RPC schema field name, fixed at call time, never
+        // attacker-controlled.  Only the value carries a subject.
+        //
+        // Covers Python `keyword_argument`, JavaScript / TypeScript
+        // `pair` (object property syntax used as kwargs in client libs
+        // like prisma's `where: { id: foo }` is handled separately),
+        // Ruby `pair` (hash kwargs in `Model.where(field: value)`), Go
+        // composite-literal element keys, PHP / C# named arguments.
+        "keyword_argument"
+        | "keyword_arg"
+        | "named_argument"
+        | "named_arg" => {
+            if let Some(value) = node
+                .child_by_field_name("value")
+                .or_else(|| node.child_by_field_name("argument"))
+            {
+                extract_value_refs(value, bytes)
+            } else {
+                Vec::new()
+            }
+        }
         _ => {
             let mut refs = Vec::new();
             for idx in 0..node.named_child_count() {

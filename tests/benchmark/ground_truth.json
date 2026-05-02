@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 494
+    "corpus_size": 497
   },
   "cases": [
     {
@@ -15641,6 +15641,97 @@
       ],
       "disabled": false,
       "notes": "fgets stdin user input echoed into curl_easy_setopt CURLOPT_POSTFIELDS at fixed URL; sensitivity-gate suppresses Plain-tier sources."
+    },
+    {
+      "case_id": "py-auth-realrepo-008",
+      "file": "python/safe/safe_django_orm_caller_scoped_entity.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "django",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Distilled from sentry api/helpers/environments.py::get_environments and api/endpoints/organization_releases.py::_filter_releases_by_query.  `<entity>.id` for a unit param named after a scope-bearing domain entity (organization, project, ...) is the ownership scope inherited from the caller, not a user-controlled target.  Pinned by is_caller_scope_entity_subject in src/auth_analysis/checks.rs.  Also exercises the keyword_argument-key fix in extract_value_refs (Environment.objects.filter(organization_id=...) — the kwarg key `organization_id` is the ORM column name, not a subject)."
+    },
+    {
+      "case_id": "py-auth-realrepo-009",
+      "file": "python/auth/vuln_user_id_param_no_auth.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "django",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart to py-auth-realrepo-008: helper takes a user-supplied `project_id` (id-like name) and queries Project.objects.filter(id=project_id) without any preceding ownership check.  Regression guard: the caller-scope-entity exemption must NOT suppress when the param is itself an id-like user input."
+    },
+    {
+      "case_id": "py-auth-realrepo-010",
+      "file": "python/safe/safe_mock_patch_test_method.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "pytest",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Distilled from airflow providers/google/tests/unit/google/cloud/hooks/test_dlp.py: pytest test method decorated with `@mock.patch(\"...\")` was being attached as a Flask `PATCH` route handler because bare_method_name(\"mock.patch\") == \"patch\".  Fix: parse_flask_route_decorator short-circuits on known test-framework decorator vocabulary (mock.patch, unittest.mock.patch, monkeypatch.setattr, pytest.mark.parametrize)."
     }
   ]
 }

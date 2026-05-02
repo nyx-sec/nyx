@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-02T10:41:44Z",
+  "timestamp": "2026-05-02T11:45:54Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:eb4e1b811d63674614652db3c102a196df8472bf922f69a9f11ba308569fa2a3",
-  "corpus_size": 494,
-  "cases_run": 493,
+  "ground_truth_hash": "sha256:8ec76765d3ae4d78322a2446d520002ff1da70103d4b0b7e63122acc29afc3e0",
+  "corpus_size": 497,
+  "cases_run": 496,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -5158,6 +5158,57 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-auth-realrepo-008",
+      "file": "python/safe/safe_django_orm_caller_scoped_entity.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-009",
+      "file": "python/auth/vuln_user_id_param_no_auth.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-010",
+      "file": "python/safe/safe_mock_patch_test_method.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-cmdi-001",
       "file": "python/cmdi/cmdi_direct.py",
       "language": "python",
@@ -8819,19 +8870,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 245,
+    "tp": 246,
     "fp": 0,
     "fn_": 0,
-    "tn": 248,
+    "tn": 250,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 245,
+    "tp": 246,
     "fp": 0,
     "fn_": 0,
-    "tn": 248,
+    "tn": 250,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -8892,10 +8943,10 @@
       "f1": 1.0
     },
     "python": {
-      "tp": 28,
+      "tp": 29,
       "fp": 0,
       "fn_": 0,
-      "tn": 30,
+      "tn": 32,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8930,7 +8981,7 @@
   },
   "by_vuln_class": {
     "auth": {
-      "tp": 16,
+      "tp": 17,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9059,7 +9110,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 248,
+      "tn": 250,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9112,31 +9163,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 77,
+      "tp": 78,
       "fp": 107,
       "fn_": 168,
-      "tn": 141,
-      "precision": 0.41847826086956524,
-      "recall": 0.3142857142857143,
-      "f1": 0.35897435897435903
+      "tn": 143,
+      "precision": 0.42162162162162165,
+      "recall": 0.3170731707317073,
+      "f1": 0.36194895591647336
     },
     ">=Low": {
-      "tp": 79,
-      "fp": 129,
+      "tp": 80,
+      "fp": 131,
       "fn_": 166,
       "tn": 119,
-      "precision": 0.3798076923076923,
-      "recall": 0.3224489795918367,
-      "f1": 0.3487858719646799
+      "precision": 0.3791469194312796,
+      "recall": 0.3252032520325203,
+      "f1": 0.35010940919037203
     },
     ">=Medium": {
-      "tp": 79,
-      "fp": 124,
+      "tp": 80,
+      "fp": 125,
       "fn_": 166,
-      "tn": 124,
-      "precision": 0.3891625615763547,
-      "recall": 0.3224489795918367,
-      "f1": 0.35267857142857145
+      "tn": 125,
+      "precision": 0.3902439024390244,
+      "recall": 0.3252032520325203,
+      "f1": 0.35476718403547675
     }
   }
 }

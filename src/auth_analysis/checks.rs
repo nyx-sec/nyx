@@ -600,6 +600,82 @@ fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
         && !is_actor_context_subject(subject, unit)
         && !is_const_bound_subject(subject, unit)
         && !is_typed_bounded_subject(subject, unit)
+        && !is_caller_scope_entity_subject(subject, unit)
+}
+
+/// True iff `subject` is a member-access of form `<entity>.id` /
+/// `<entity>.pk` whose root identifier is a unit parameter named after
+/// a scope-bearing domain entity (`organization`, `project`, `team`,
+/// `workspace`, `tenant`, `account`, `community`, `repository`, …).
+///
+/// Such subjects are the *scope* of the operation — the ownership
+/// constraint the caller passed in — not a user-controlled target.
+/// Helpers like
+/// `def get_environments(request, organization: Organization): …
+///  Environment.objects.filter(organization_id=organization.id, …)`
+/// inherit the caller's authorization on the entity object; the call
+/// itself enforces tenant scoping.  Without this exemption, every
+/// internal helper in a multi-tenant Django/Rails/Laravel codebase
+/// flags `missing_ownership_check` because the engine cannot tell
+/// "scoping arg" from "user-targeted arg".
+///
+/// Conservative scope:
+/// * Field must be `id` or `pk` (the canonical primary-key fields).
+///   `entity.name` / `entity.slug` are deliberately excluded — those
+///   could be user-supplied display strings even on a typed entity.
+/// * Root must be exactly a unit parameter (not a derived local).
+/// * Root name must be in the scope-entity vocabulary.  Names like
+///   `user`, `member`, `actor` are deliberately omitted: those carry
+///   actor semantics and are handled separately by
+///   `is_actor_context_subject`.
+fn is_caller_scope_entity_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
+    let Some(field) = subject.field.as_deref() else {
+        return false;
+    };
+    let field_lower = field.to_ascii_lowercase();
+    if !matches!(field_lower.as_str(), "id" | "pk") {
+        return false;
+    }
+    let Some(base) = subject.base.as_deref() else {
+        return false;
+    };
+    let root = base.split('.').next().unwrap_or(base);
+    if !is_caller_scope_entity_name(root) {
+        return false;
+    }
+    unit.params.iter().any(|p| p == root)
+}
+
+/// Recognises parameter names that conventionally carry a *scope*
+/// entity — the multi-tenant ownership boundary inherited from the
+/// caller — rather than a user-controlled target identifier.  Used
+/// only by `is_caller_scope_entity_subject` to suppress
+/// `missing_ownership_check` on `<entity>.id` arguments to ORM /
+/// query / mutation calls.
+///
+/// Vocabulary matches the canonical multi-tenant primitives across
+/// Django (Sentry, Saleor), Rails (Discourse, Mastodon), and Laravel
+/// /  Symfony idioms.  Both singular and short forms are matched
+/// (`organization` / `org`, `repository` / `repo`).  Excluded:
+/// `user`, `member`, `actor` (actor semantics, covered by
+/// `is_actor_context_subject` and per-actor self-id detectors).
+fn is_caller_scope_entity_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "organization"
+            | "org"
+            | "project"
+            | "team"
+            | "workspace"
+            | "tenant"
+            | "account"
+            | "community"
+            | "group"
+            | "repository"
+            | "repo"
+            | "company"
+    )
 }
 
 /// True iff `subject` is a plain identifier whose declaration binds
@@ -934,8 +1010,9 @@ fn is_batch_collection(subject: &ValueRef) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_check_covers_subject, is_actor_context_subject, is_external_input_param_name,
-        is_relevant_target_subject, unit_has_user_input_evidence,
+        auth_check_covers_subject, is_actor_context_subject, is_caller_scope_entity_name,
+        is_caller_scope_entity_subject, is_external_input_param_name, is_relevant_target_subject,
+        unit_has_user_input_evidence,
     };
     use crate::auth_analysis::model::{AnalysisUnit, AnalysisUnitKind, ValueRef, ValueSourceKind};
     use std::collections::{HashMap, HashSet};
@@ -1081,6 +1158,137 @@ mod tests {
         // (different ValueRef shape).
         unit.const_bound_vars.insert("req".into());
         assert!(is_relevant_target_subject(&member("req", "id"), &unit));
+    }
+
+    /// Real-repo regression: caller-passed scope entity used as
+    /// ownership constraint (sentry api/helpers/environments.py
+    /// `get_environments(request, organization)` and
+    /// api/endpoints/organization_releases.py
+    /// `_filter_releases_by_query(queryset, organization, query, ...)`).
+    /// The helper inherits the caller's auth on the entity object;
+    /// the `<entity>.id` arg IS the ownership scope, not a target.
+    #[test]
+    fn caller_scope_entity_subject_recognises_unit_param_id() {
+        let mut unit = empty_unit();
+        unit.params.push("organization".into());
+
+        // `organization.id` where `organization` is a unit param and
+        // matches the scope-entity vocabulary -> recognised as scope.
+        assert!(is_caller_scope_entity_subject(
+            &member("organization", "id"),
+            &unit
+        ));
+        assert!(is_caller_scope_entity_subject(
+            &member("organization", "pk"),
+            &unit
+        ));
+        // Suppression flows through to `is_relevant_target_subject`.
+        assert!(!is_relevant_target_subject(
+            &member("organization", "id"),
+            &unit
+        ));
+
+        // Other scope-entity names: project, team, workspace, ...
+        let mut unit_p = empty_unit();
+        unit_p.params.push("project".into());
+        assert!(is_caller_scope_entity_subject(
+            &member("project", "id"),
+            &unit_p
+        ));
+
+        let mut unit_t = empty_unit();
+        unit_t.params.push("team".into());
+        assert!(is_caller_scope_entity_subject(&member("team", "id"), &unit_t));
+
+        let mut unit_w = empty_unit();
+        unit_w.params.push("workspace".into());
+        assert!(is_caller_scope_entity_subject(
+            &member("workspace", "id"),
+            &unit_w
+        ));
+
+        let mut unit_r = empty_unit();
+        unit_r.params.push("repo".into());
+        assert!(is_caller_scope_entity_subject(&member("repo", "id"), &unit_r));
+    }
+
+    /// Pitfall guards for `is_caller_scope_entity_subject`.
+    #[test]
+    fn caller_scope_entity_subject_does_not_overreach() {
+        // `organization` not declared as a unit param -> not exempt.
+        let unit = empty_unit();
+        assert!(!is_caller_scope_entity_subject(
+            &member("organization", "id"),
+            &unit
+        ));
+
+        // Field other than id/pk -> not exempt (could be display name).
+        let mut unit = empty_unit();
+        unit.params.push("organization".into());
+        assert!(!is_caller_scope_entity_subject(
+            &member("organization", "name"),
+            &unit
+        ));
+        assert!(!is_caller_scope_entity_subject(
+            &member("organization", "slug"),
+            &unit
+        ));
+
+        // `user.id` / `member.id` / `actor.id` are deliberately NOT
+        // recognised as scope entities (actor semantics, handled by
+        // is_actor_context_subject).  They must not be widened here.
+        let mut unit_u = empty_unit();
+        unit_u.params.push("user".into());
+        assert!(!is_caller_scope_entity_subject(&member("user", "id"), &unit_u));
+
+        let mut unit_m = empty_unit();
+        unit_m.params.push("member".into());
+        assert!(!is_caller_scope_entity_subject(
+            &member("member", "id"),
+            &unit_m
+        ));
+
+        // Bare identifier -> not exempt (no field).
+        let mut unit_b = empty_unit();
+        unit_b.params.push("organization".into());
+        assert!(!is_caller_scope_entity_subject(
+            &plain("organization"),
+            &unit_b
+        ));
+    }
+
+    /// Vocabulary check for `is_caller_scope_entity_name`.  Pinned so
+    /// future widening is intentional.
+    #[test]
+    fn caller_scope_entity_name_vocabulary() {
+        // Recognised scope entities.
+        for name in [
+            "organization",
+            "Organization",
+            "ORG",
+            "project",
+            "team",
+            "workspace",
+            "tenant",
+            "account",
+            "community",
+            "group",
+            "repository",
+            "repo",
+            "company",
+        ] {
+            assert!(
+                is_caller_scope_entity_name(name),
+                "expected {name} to be recognised as scope entity"
+            );
+        }
+        // Excluded (actor semantics or generic).
+        for name in ["user", "member", "actor", "request", "self", "ctx"] {
+            assert!(
+                !is_caller_scope_entity_name(name),
+                "expected {name} NOT to be recognised as scope entity"
+            );
+        }
     }
 
     /// Hierarchy: a parameter whose
