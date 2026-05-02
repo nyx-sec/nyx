@@ -794,10 +794,9 @@ fn collect_function_definition_nodes<'tree>(root: Node<'tree>) -> Vec<Node<'tree
 }
 
 fn walk_function_definitions<'tree>(node: Node<'tree>, out: &mut Vec<Node<'tree>>) {
-    match node.kind() {
-        // Free / impl / trait fn definitions in tree-sitter-rust.
-        "function_item" => out.push(node),
-        _ => {}
+    // Free / impl / trait fn definitions in tree-sitter-rust.
+    if node.kind() == "function_item" {
+        out.push(node);
     }
     for child in named_children(node) {
         walk_function_definitions(child, out);

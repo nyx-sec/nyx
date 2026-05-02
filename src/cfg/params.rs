@@ -89,12 +89,10 @@ pub(super) fn extract_param_meta<'a>(
                         // Rust: last ident is the binding name (e.g.
                         // `Path(project_id): Path<i64>` → `project_id`).
                         tmp.pop()
+                    } else if tmp.is_empty() {
+                        None
                     } else {
-                        if tmp.is_empty() {
-                            None
-                        } else {
-                            Some(tmp.remove(0))
-                        }
+                        Some(tmp.remove(0))
                     };
                     if let Some(name) = primary {
                         let ty = classify_param_type(child, lang, code);
