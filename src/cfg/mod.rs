@@ -54,8 +54,9 @@ use literals::{
     detect_rust_replace_chain_sanitizer, extract_arg_callees, extract_arg_string_literals,
     extract_arg_uses, extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
     extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
-    extract_literal_rhs, extract_shell_array_payload_idents, find_call_node, find_call_node_deep,
-    find_chained_inner_call, has_keyword_arg, has_only_literal_args, is_parameterized_query_call,
+    extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
+    find_call_node, find_call_node_deep, find_chained_inner_call, has_keyword_arg,
+    has_object_arg_property, has_only_literal_args, is_parameterized_query_call,
     java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
     js_chain_outer_method_for_inner, ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
@@ -1909,8 +1910,27 @@ pub(super) fn push_node<'a>(
                         }
                     })
                 },
-                |kw| extract_const_keyword_arg(cn, kw, code),
-                |kw| has_keyword_arg(cn, kw, code),
+                |kw| {
+                    // For JS/TS, options-bearing args are passed as inline
+                    // object literals (`fn(x, { evaluate: false })`) rather
+                    // than language-level keyword arguments.  When the
+                    // standard `keyword_argument`-walking extractor returns
+                    // None, fall back to inspecting arg 1's object literal
+                    // for a property named `kw`.  This lets gates like
+                    // `_.template` consult `{ evaluate: false }` literally.
+                    extract_const_keyword_arg(cn, kw, code).or_else(|| {
+                        if matches!(lang, "javascript" | "typescript") {
+                            extract_object_arg_property(cn, 1, kw, code)
+                        } else {
+                            None
+                        }
+                    })
+                },
+                |kw| {
+                    has_keyword_arg(cn, kw, code)
+                        || (matches!(lang, "javascript" | "typescript")
+                            && has_object_arg_property(cn, 1, kw, code))
+                },
             );
 
             if !matches.is_empty() {

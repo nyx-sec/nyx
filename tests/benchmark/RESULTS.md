@@ -24,6 +24,7 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2026-33626 | Python     | LMDeploy                   | Apache-2.0           | SSRF            | detected |
 | CVE-2019-14939 | JavaScript | mongo-express              | MIT                  | code_exec       | detected |
 | CVE-2025-64430 | JavaScript | Parse Server               | Apache-2.0           | SSRF            | detected |
+| CVE-2023-22621 | JavaScript | Strapi                     | MIT                  | code_exec (SSTI)| detected |
 | CVE-2023-26159 | TypeScript | follow-redirects           | MIT                  | SSRF            | detected |
 | GHSA-4x48-cgf9-q33f | TypeScript | Novu                       | MIT                  | SSRF            | detected |
 | CVE-2022-30323 | Go         | hashicorp/go-getter        | MPL-2.0              | CMDI            | detected |
@@ -67,6 +68,7 @@ Most recent first. Metrics are rule-level on the corpus size at that point.
 
 | Date       | Change                                                                       | Corpus | P     | R     | F1    |
 |------------|------------------------------------------------------------------------------|--------|-------|-------|-------|
+| 2026-05-02 | JS arrow `assignment_pattern` default-param extraction + JS object-literal kwarg fallback for gated sinks + double-call (`f()(x)`) chained-inner rebinding; lodash `_.template` modeled as gated CODE_EXEC sink suppressed by `{ evaluate: false }`; CVE-2023-22621 (Strapi SSTI) detected | 494 | — | — | — |
 | 2026-05-02 | `strings.ReplaceAll` recognised as CMDi sanitiser in chain-wrapper / call-site-replace shapes; clears `go-safe-009` (last open corpus FP); aggregate rule-level reaches P=R=F1=1.000 | 492 | 1.000 | 1.000 | 1.000 |
 | 2026-05-01 | PathFact opaque-prefix-lock (`canonicalise + start_with?(<expr>)` recognised across Ruby/Python/JS) + `is_path_traversal_safe` predicate + negated-form polarity flip on assertion narrowing; rswag CVE-2023-38337 detected | 490 | 0.972 | 0.992 | 0.982 |
 | 2026-05-01 | Ruby `OpenURI.open_uri` SSRF sink + inner-call fallback for statement-level Ruby calls (`YAML.safe_load(File.read(x))` shape now classifies); CVE-2021-21288 (CarrierWave) detected | 482 | 0.972 | 0.992 | 0.982 |

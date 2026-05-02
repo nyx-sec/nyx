@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-02T07:03:06Z",
+  "timestamp": "2026-05-02T10:41:44Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:ba8f5f6e20ce478b6032b1df98e5dc57a7b7a8ced8f1d3294dc811034bc6fc3c",
-  "corpus_size": 492,
-  "cases_run": 491,
+  "ground_truth_hash": "sha256:eb4e1b811d63674614652db3c102a196df8472bf922f69a9f11ba308569fa2a3",
+  "corpus_size": 494,
+  "cases_run": 493,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -1476,6 +1476,40 @@
         "taint-unsanitised-flow (source 24:5)"
       ],
       "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-js-2023-22621-patched",
+      "file": "cve_corpus/javascript/CVE-2023-22621/patched.js",
+      "language": "javascript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-js-2023-22621-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2023-22621/vulnerable.js",
+      "language": "javascript",
+      "vuln_class": "code_exec",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 46:26)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 46:26)"
+      ],
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -8785,19 +8819,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 244,
+    "tp": 245,
     "fp": 0,
     "fn_": 0,
-    "tn": 247,
+    "tn": 248,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 244,
+    "tp": 245,
     "fp": 0,
     "fn_": 0,
-    "tn": 247,
+    "tn": 248,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -8840,10 +8874,10 @@
       "f1": 1.0
     },
     "javascript": {
-      "tp": 22,
+      "tp": 23,
       "fp": 0,
       "fn_": 0,
-      "tn": 28,
+      "tn": 29,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -8923,7 +8957,7 @@
       "f1": 1.0
     },
     "code_exec": {
-      "tp": 3,
+      "tp": 4,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9025,7 +9059,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 247,
+      "tn": 248,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9078,31 +9112,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 74,
-      "fp": 108,
-      "fn_": 170,
-      "tn": 139,
-      "precision": 0.4065934065934066,
-      "recall": 0.30327868852459017,
-      "f1": 0.3474178403755868
+      "tp": 77,
+      "fp": 107,
+      "fn_": 168,
+      "tn": 141,
+      "precision": 0.41847826086956524,
+      "recall": 0.3142857142857143,
+      "f1": 0.35897435897435903
     },
     ">=Low": {
-      "tp": 75,
+      "tp": 79,
       "fp": 129,
-      "fn_": 169,
-      "tn": 118,
-      "precision": 0.36764705882352944,
-      "recall": 0.3073770491803279,
-      "f1": 0.3348214285714286
+      "fn_": 166,
+      "tn": 119,
+      "precision": 0.3798076923076923,
+      "recall": 0.3224489795918367,
+      "f1": 0.3487858719646799
     },
     ">=Medium": {
-      "tp": 75,
+      "tp": 79,
       "fp": 124,
-      "fn_": 169,
-      "tn": 123,
-      "precision": 0.3768844221105528,
-      "recall": 0.3073770491803279,
-      "f1": 0.33860045146726864
+      "fn_": 166,
+      "tn": 124,
+      "precision": 0.3891625615763547,
+      "recall": 0.3224489795918367,
+      "f1": 0.35267857142857145
     }
   }
 }

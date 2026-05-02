@@ -134,6 +134,9 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::CODE_EXEC),
         case_sensitive: false,
     },
+    // (Lodash `_.template` is modeled as a gated sink in `GATED_SINKS`
+    //  below — the gate inspects arg 1's options object so the patched
+    //  `{ evaluate: false }` form is suppressed.)
     LabelRule {
         matchers: &["innerHTML", "dangerouslySetInnerHTML"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
@@ -374,6 +377,46 @@ pub static GATED_SINKS: &[SinkGate] = &[
         case_sensitive: false,
         payload_args: &[0],
         keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // Lodash `_.template(template, options?)` — server-side template
+    // injection sink.  Lodash's template parser by default compiles
+    // `<% ... %>` evaluate blocks into a JavaScript Function via the
+    // `Function` constructor; when the template string is attacker-
+    // controlled this is RCE (Strapi CVE-2023-22621 et al.).
+    //
+    // Gate: activate on arg 0 (the template string).  Inspect arg 1's
+    // options object for `evaluate: false`; when present as a literal
+    // the evaluate-block compiler is disabled and the call is safe.
+    // Missing arg 1, missing `evaluate` key, or a dynamic value all
+    // fall through `ValueMatch`'s `None` branch and fire conservatively.
+    //
+    // The `keyword_name`-based activation reads the property value via
+    // the JS-side closure augmentation in `cfg/mod.rs`, which falls
+    // back to walking the call's arg-1 object literal when the
+    // language-default `keyword_argument` extraction yields nothing.
+    SinkGate {
+        callee_matcher: "_.template",
+        arg_index: 0,
+        dangerous_values: &["true"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::CODE_EXEC),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: Some("evaluate"),
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    SinkGate {
+        callee_matcher: "lodash.template",
+        arg_index: 0,
+        dangerous_values: &["true"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::CODE_EXEC),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: Some("evaluate"),
         dangerous_kwargs: &[],
         activation: GateActivation::ValueMatch,
     },
@@ -810,7 +853,14 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
 
 pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     params_field: "parameters",
-    param_node_kinds: &["identifier"],
+    // `identifier` covers bare params (`a`); `assignment_pattern` covers
+    // default-value params (`a = {}`). Without `assignment_pattern`,
+    // tree-sitter wraps the identifier in a node the param walker
+    // doesn't recognize, and `extract_param_meta` produces a
+    // parameter-less summary for any function whose params have
+    // defaults — breaking cross-function `param_to_sink` propagation
+    // for shapes like `(emailOptions = {}, emailTemplate = {}, data = {}) => …`.
+    param_node_kinds: &["identifier", "assignment_pattern"],
     self_param_kinds: &[],
     ident_fields: &["name", "pattern"],
 };

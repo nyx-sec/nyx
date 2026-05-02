@@ -345,6 +345,126 @@ pub(super) fn has_keyword_arg(call_node: Node, keyword_name: &str, code: &[u8]) 
     false
 }
 
+/// Extract the literal value of a property `prop_name` from the object
+/// literal at positional argument `arg_index`.  Returns `None` if the
+/// arg is absent, is not an object literal, the prop key isn't found,
+/// or the prop value isn't a literal (so callers can distinguish
+/// "present but dynamic" from "absent" only via [`has_object_arg_property`]).
+///
+/// Used by JS/TS-style "options object as kwargs" gates — e.g.
+/// `_.template(tpl, { evaluate: false })` — where the safe-flag lives
+/// in an inline object literal rather than as a dedicated kwarg node
+/// (which JS does not have).  Strict-additive: returns `None` for any
+/// non-JS-object shape, including bare identifiers passed as the
+/// options arg, so the gate falls back to the conservative dynamic
+/// branch.
+pub(super) fn extract_object_arg_property(
+    call_node: Node,
+    arg_index: usize,
+    prop_name: &str,
+    code: &[u8],
+) -> Option<String> {
+    let args = call_node.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    let arg = args.named_children(&mut cursor).nth(arg_index)?;
+    let arg = unwrap_parens(arg);
+    if !matches!(arg.kind(), "object" | "dictionary") {
+        return None;
+    }
+    let mut c = arg.walk();
+    for child in arg.named_children(&mut c) {
+        if child.kind() != "pair" {
+            continue;
+        }
+        let Some(key_node) = child.child_by_field_name("key") else {
+            continue;
+        };
+        let key_text = match key_node.kind() {
+            "string" | "string_literal" => text_of(key_node, code).map(|raw| {
+                if raw.len() >= 2 {
+                    raw[1..raw.len() - 1].to_string()
+                } else {
+                    raw
+                }
+            }),
+            "computed_property_name" => continue,
+            _ => text_of(key_node, code),
+        };
+        if key_text.as_deref() != Some(prop_name) {
+            continue;
+        }
+        let val_node = child.child_by_field_name("value")?;
+        let val_node = unwrap_parens(val_node);
+        return match val_node.kind() {
+            "true" | "false" | "null" | "undefined" | "number" | "string" | "string_literal" => {
+                text_of(val_node, code).map(|s| s.to_string())
+            }
+            // JS booleans true/false are their own node kinds (above), but
+            // some grammar versions wrap them as identifier literals; surface
+            // `undefined` similarly.
+            "identifier" => text_of(val_node, code)
+                .filter(|s| matches!(s.as_str(), "true" | "false" | "null" | "undefined")),
+            _ => None,
+        };
+    }
+    None
+}
+
+/// Return `true` if the call node's positional arg at `arg_index` is an
+/// object literal containing a property named `prop_name` (whether the
+/// value is a literal or a dynamic expression).  Used alongside
+/// [`extract_object_arg_property`] so gated-sink classification can
+/// distinguish "options key absent" (language default) from "options
+/// key present with dynamic value" (conservative dangerous).
+pub(super) fn has_object_arg_property(
+    call_node: Node,
+    arg_index: usize,
+    prop_name: &str,
+    code: &[u8],
+) -> bool {
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg) = args.named_children(&mut cursor).nth(arg_index) else {
+        return false;
+    };
+    let arg = unwrap_parens(arg);
+    if !matches!(arg.kind(), "object" | "dictionary") {
+        return false;
+    }
+    let mut c = arg.walk();
+    for child in arg.named_children(&mut c) {
+        match child.kind() {
+            "shorthand_property_identifier" | "shorthand_property_identifier_pattern" => {
+                if text_of(child, code).as_deref() == Some(prop_name) {
+                    return true;
+                }
+            }
+            "pair" => {
+                if let Some(key_node) = child.child_by_field_name("key") {
+                    let key_text = match key_node.kind() {
+                        "string" | "string_literal" => text_of(key_node, code).map(|raw| {
+                            if raw.len() >= 2 {
+                                raw[1..raw.len() - 1].to_string()
+                            } else {
+                                raw
+                            }
+                        }),
+                        "computed_property_name" => continue,
+                        _ => text_of(key_node, code),
+                    };
+                    if key_text.as_deref() == Some(prop_name) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Inspect the first positional argument of a call node and return its
 /// tree-sitter `kind()` plus a flag indicating whether any descendant is an
 /// `interpolation` node.  Skips parenthesisation (`(arg0)` is treated as
@@ -584,6 +704,26 @@ pub(super) fn find_chained_inner_call<'a>(
     let function = outer
         .child_by_field_name("function")
         .or_else(|| outer.child_by_field_name("method"))?;
+    // Direct double-call form (`f()(x)`): the outer call's `function`
+    // field IS itself a call_expression, with no intermediate
+    // member-chain.  Treat the inner call as the chain's innermost.
+    // Without this, lodash-style template-render chains like
+    // `_.template(t)(data)` evade the chained-inner rebinding because
+    // the outer's function field is a `call_expression`, not the
+    // `member_expression` shape the original branch below expects.
+    if matches!(lookup(lang, function.kind()), Kind::CallFn | Kind::CallMethod) {
+        // Recurse: the inner call may itself be chained.
+        if let Some(inner) = find_chained_inner_call(function, lang, code) {
+            return Some(inner);
+        }
+        let inner_func = function
+            .child_by_field_name("function")
+            .or_else(|| function.child_by_field_name("method"))
+            .or_else(|| function.child_by_field_name("name"))?;
+        let raw = text_of(inner_func, code)?;
+        let inner_text: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        return Some((function, inner_text));
+    }
     // The function/method field for a chained call is a member_expression
     // (JS/TS) or attribute (Python) etc.; its `object` field is the
     // receiver expression.  Only proceed when that receiver is itself a

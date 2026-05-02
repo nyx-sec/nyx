@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 492
+    "corpus_size": 494
   },
   "cases": [
     {
@@ -9656,6 +9656,62 @@
         "negative"
       ],
       "notes": "CVE-2025-64430 patched counterpart: URI-backed file upload removed entirely; no http.get on user input"
+    },
+    {
+      "case_id": "cve-js-2023-22621-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2023-22621/vulnerable.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "code_exec",
+      "cwe": "CWE-1336",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "strapi",
+        "code_exec",
+        "ssti",
+        "lodash",
+        "template"
+      ],
+      "notes": "CVE-2023-22621: Strapi <=4.5.5 sendTemplatedEmail compiled lodash _.template on attacker-controlled email-template body (admin panel), enabling SSTI -> RCE via <% ... %> evaluate blocks. MIT"
+    },
+    {
+      "case_id": "cve-js-2023-22621-patched",
+      "file": "cve_corpus/javascript/CVE-2023-22621/patched.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "strapi",
+        "patched",
+        "negative"
+      ],
+      "notes": "CVE-2023-22621 patched counterpart: _.template called with { interpolate: <strict regex>, evaluate: false, escape: false } so the lodash evaluate block compiler is disabled."
     },
     {
       "case_id": "cve-ts-2023-26159-vulnerable",

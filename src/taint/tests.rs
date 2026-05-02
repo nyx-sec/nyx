@@ -6290,3 +6290,153 @@ const handler = (req) => {
         None,
     );
 }
+
+/// JS arrow-function default parameters (`(a = {}, b = {}) => …`)
+/// are wrapped by tree-sitter in `assignment_pattern` nodes whose
+/// `left` field carries the actual identifier.  Without
+/// `assignment_pattern` in `PARAM_CONFIG.param_node_kinds`, the
+/// param walker skipped them, producing a parameter-less summary
+/// for any function whose params have defaults.  That broke
+/// cross-function `param_to_sink` propagation for shapes like
+/// Strapi `sendTemplatedEmail`.  Motivated by CVE-2023-22621.
+#[test]
+fn cve_2023_22621_js_default_params_extracted() {
+    use crate::cfg::extract_param_meta_for_test;
+    let src = br#"
+const sendTemplatedEmail = (emailOptions = {}, emailTemplate = {}, data = {}) => {
+  return emailTemplate;
+};
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&lang).unwrap();
+    let tree = parser.parse(&src[..], None).unwrap();
+    let root = tree.root_node();
+    let mut arrow_node: Option<tree_sitter::Node> = None;
+    fn find<'a>(n: tree_sitter::Node<'a>, out: &mut Option<tree_sitter::Node<'a>>) {
+        if n.kind() == "arrow_function" {
+            *out = Some(n);
+            return;
+        }
+        let mut c = n.walk();
+        for ch in n.named_children(&mut c) {
+            find(ch, out);
+            if out.is_some() {
+                return;
+            }
+        }
+    }
+    find(root, &mut arrow_node);
+    let arrow = arrow_node.expect("arrow function not found");
+    let params = extract_param_meta_for_test(arrow, "javascript", src);
+    let names: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "emailOptions".to_string(),
+            "emailTemplate".to_string(),
+            "data".to_string()
+        ],
+        "expected all 3 default-valued arrow params extracted; got {:?}",
+        names
+    );
+}
+
+/// `_.template(tainted)` is a server-side template injection sink:
+/// lodash compiles `<% ... %>` evaluate blocks into a JS Function,
+/// so attacker-controlled input becomes RCE at render time.  Gate
+/// activates conservatively when arg 1 is missing (default lodash
+/// behavior is dangerous).  Motivated by CVE-2023-22621 (Strapi).
+#[test]
+fn cve_2023_22621_lodash_template_fires_on_tainted_input() {
+    let src = br#"
+const _ = require('lodash');
+const handler = (req, res) => {
+  _.template(req.body.tpl);
+};
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        !findings.is_empty(),
+        "expected taint flow on _.template(req.body.tpl); got 0 findings",
+    );
+}
+
+/// `_.template(tainted, { evaluate: false })` disables lodash's
+/// `<% ... %>` evaluate block compilation, so the call is no
+/// longer a code-execution sink.  The gate's `keyword_name =
+/// "evaluate"` activation reads the literal value via the JS-side
+/// closure that walks the call's arg-1 object literal (since JS
+/// has no language-level keyword args).  Motivated by Strapi's
+/// CVE-2023-22621 patch.
+#[test]
+fn cve_2023_22621_lodash_template_suppressed_by_evaluate_false() {
+    let src = br#"
+const _ = require('lodash');
+const handler = (req, res) => {
+  _.template(req.body.tpl, { evaluate: false });
+};
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "expected no taint flow when evaluate:false is set; got {} findings",
+        findings.len(),
+    );
+}
+
+/// Double-call chained form `_.template(tainted)(data)` — the outer
+/// call's `function` field is itself a call_expression rather than
+/// the member-chain shape `find_chained_inner_call` was originally
+/// written for.  The extension recognises the `f()()` pattern and
+/// rebinds gate classification to the inner call so the gated
+/// `_.template` fires even when wrapped in an immediate invocation
+/// of the compiled function.  Motivated by CVE-2023-22621.
+#[test]
+fn cve_2023_22621_lodash_template_double_call_inner_rebinding() {
+    let src = br#"
+const _ = require('lodash');
+const handler = (req, res) => {
+  const tpl = req.body.tpl;
+  _.template(tpl)({});
+};
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        !findings.is_empty(),
+        "expected taint flow via double-call chain rebinding; got 0 findings",
+    );
+}
