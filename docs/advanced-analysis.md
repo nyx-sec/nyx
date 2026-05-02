@@ -96,8 +96,24 @@ hash per-argument `Cap` bits but not source-origin identity, so two
 callers with identical caps but different origins share cached
 origin-attribution.
 
-**Source**: [`src/taint/ssa_transfer.rs`](https://github.com/elicpeter/nyx/blob/master/src/taint/ssa_transfer.rs)
-(`ArgTaintSig`, `InlineCache`, `inline_analyse_callee`).
+**Helper-validator propagation.** SSA summaries carry a
+`validated_params_to_return` field listing parameter indices whose
+taint flow to the return value is fully validated by a dominating
+predicate (regex allowlist, type check, validation call) on every
+return path. At call sites, each tainted argument passed to a
+validated position — and the call's own return value — are marked
+`validated_must` / `validated_may` in the caller's SSA taint state,
+the same way an inline `if (!regex.test(x)) throw …` would validate
+the surviving branch. Sound because the summary is recorded only when
+the parameter's name is in `validated_must` at *every* return block; a
+normal-returning call therefore proves the validating arm. JS/TS
+object-pattern formals (`({ column, operator, value }) => …`) seed
+every destructured sibling in the per-parameter probe, so flow through
+any of them counts toward the slot being validated.
+
+**Source**: [`src/taint/ssa_transfer/`](https://github.com/elicpeter/nyx/tree/master/src/taint/ssa_transfer/)
+(`ArgTaintSig`, `InlineCache`, `inline_analyse_callee`,
+`propagate_validated_params_to_return`).
 
 ---
 
