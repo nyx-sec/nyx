@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 497
+    "corpus_size": 499
   },
   "cases": [
     {
@@ -15732,6 +15732,74 @@
       ],
       "disabled": false,
       "notes": "Distilled from airflow providers/google/tests/unit/google/cloud/hooks/test_dlp.py: pytest test method decorated with `@mock.patch(\"...\")` was being attached as a Flask `PATCH` route handler because bare_method_name(\"mock.patch\") == \"patch\".  Fix: parse_flask_route_decorator short-circuits on known test-framework decorator vocabulary (mock.patch, unittest.mock.patch, monkeypatch.setattr, pytest.mark.parametrize)."
+    },
+    {
+      "case_id": "cve-ts-2026-25544-vulnerable",
+      "file": "cve_corpus/typescript/CVE-2026-25544/vulnerable.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          80,
+          81
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          73,
+          73
+        ]
+      ],
+      "tags": [
+        "cve",
+        "payload",
+        "sqli",
+        "vulnerable"
+      ],
+      "disabled": true,
+      "disabled_reason": "Validated-flow propagation through SSA-derived values and helper-summary returns is missing.  The patched counterpart applies a regex allowlist (`SAFE_STRING_REGEX.test(value)` throw) PLUS a `replace()` escape chain inside `sanitizeValue`, then interpolates the result into a SQL template literal in `createJSONQuery` and returns the string to the handler, which calls `db.execute(sql)`.  This session landed `classify_condition` recognition of `<*regex*>.test(value)` / `<*pattern*>.test(value)` as a ValidationCall whose target is the call's first arg (covered by `path_state::tests::target_regex_test_first_arg`, `target_regex_test_pattern_receiver`, `target_test_non_regex_receiver_is_not_validation`, plus the SSA-level `regex_test_allowlist_narrowing_clears_direct_flow` integration test).  But validated_must is per-symbol and consulted only at the sink site; it does NOT propagate through the SSA Assign that templates a clean `value` into a derived `sql` string, nor does it ride a helper's `param_to_return` summary back into a caller.  Disabled until that propagation path lands.  Tracked in CVE_DEFERRED.md.",
+      "notes": "CVE-2026-25544: Payload `sanitizeValue` SQL injection via Postgres jsonb_path_exists template-string interpolation.  Vulnerable form (`@payloadcms/drizzle@v3.72.0`, MIT) lets attacker-controlled JSON-query value escape the surrounding SQL string literal because `sanitizeValue` only double-quotes it without escaping `\\`/`\"`.  Disabled pending validated-flow propagation engine work, see disabled_reason."
+    },
+    {
+      "case_id": "cve-ts-2026-25544-patched",
+      "file": "cve_corpus/typescript/CVE-2026-25544/patched.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "payload",
+        "safe",
+        "patched"
+      ],
+      "disabled": true,
+      "disabled_reason": "Sibling of cve-ts-2026-25544-vulnerable.  Disabled together until validated-flow summary propagation lands.  See vulnerable counterpart's disabled_reason for the engine gap.",
+      "notes": "Patched form of `sanitizeValue` from `@payloadcms/drizzle@v3.73.0` (MIT).  Disabled together with its vulnerable counterpart pending validated-flow propagation work."
     }
   ]
 }

@@ -6122,6 +6122,61 @@ async function handler(req) {
     );
 }
 
+/// Regex-allowlist `<X>.test(value)` is recognised as a ValidationCall
+/// targeting the call's first argument (not the regex receiver).
+///
+/// Shape:
+///
+/// ```js
+/// const v = req.body.x;
+/// if (!SAFE_REGEX.test(v)) { throw }
+/// db.execute(v);  // direct flow: should be silent
+/// ```
+///
+/// `classify_condition` returns ValidationCall for the `*regex*.test()`
+/// receiver shape (see `target_regex_test_first_arg` in path_state) and
+/// `extract_validation_target` overrides the default receiver-as-target
+/// rule to extract the call's first argument.  Together with the
+/// existing CFG-level negation handling in `compute_succ_states` the
+/// false branch (continue) marks `v` as validated.
+///
+/// Motivated by Payload CVE-2026-25544
+/// (`if (!SAFE_STRING_REGEX.test(value)) throw`).  Note: this test pins
+/// the direct-flow case; transitive validation through SSA-derived
+/// values (e.g. template-literal concat of `v` into `sql`) is a deeper
+/// gap tracked separately and not closed here.
+#[test]
+fn regex_test_allowlist_narrowing_clears_direct_flow() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    if (!SAFE_REGEX.test(userValue)) {
+        throw new Error('bad');
+    }
+    return await db.execute(userValue);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "regex.test allowlist narrowing should suppress direct-flow finding; got {} finding(s): {findings:?}",
+        findings.len()
+    );
+}
+
 /// Regression: `extract_ssa_func_summary` must skip `all_validated`
 /// events when populating `param_to_sink` / `param_to_sink_param`.
 ///
