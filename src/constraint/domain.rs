@@ -322,7 +322,7 @@ impl BoolState {
 pub struct ValueFact {
     /// Exact known constant (Eq constraint). `None` = unconstrained.
     pub exact: Option<ConstValue>,
-    /// Excluded constant values (Neq constraints). Bounded by [`MAX_NEQ`].
+    /// Excluded constant values (Neq constraints). Bounded by `MAX_NEQ`.
     pub excluded: SmallVec<[ConstValue; 4]>,
     /// Inclusive lower bound (`None` = −∞).
     pub lo: Option<i64>,

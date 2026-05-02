@@ -1,3 +1,15 @@
+//! Core language and function identity types.
+//!
+//! [`Lang`] is the 10-language enum (Rust, C, C++, Java, Go, PHP, Python,
+//! Ruby, TypeScript, JavaScript). [`FuncKey`] is the canonical cross-file
+//! function identity: name, arity, language, container (class/struct/module),
+//! and an optional disambiguator for overloaded functions.
+//!
+//! [`FuncKey`] is the node type in the call graph and the lookup key in
+//! [`crate::summary::GlobalSummaries`]. [`FuncKind`] distinguishes constructors,
+//! methods, closures, and free functions so callers can apply language-specific
+//! resolution heuristics.
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

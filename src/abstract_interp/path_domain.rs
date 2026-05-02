@@ -214,7 +214,7 @@ impl PathFact {
     /// Accepts either of two structural invariants:
     ///
     /// * `dotdot = No && absolute = No` — the relative-and-`..`-free
-    ///   shape recognised by [`is_path_safe`].  Cannot escape to an
+    ///   shape recognised by `is_path_safe`.  Cannot escape to an
     ///   attacker-controlled absolute location.
     /// * `dotdot = No && prefix_lock.is_some()` — a canonicalised path
     ///   (typically `File.expand_path` / `realpath` / `fs::canonicalize`)
@@ -866,7 +866,7 @@ pub fn is_structural_variant_ctor_for_lang(lang: crate::symbol::Lang, callee: &s
 /// [`crate::ssa::type_facts::peel_identity_suffix`].  Other languages do
 /// not (yet) have an equivalent grammar-driven recogniser; the rejection
 /// arm in their fixtures returns either an empty string literal (handled
-/// by [`SsaOp::Const`] seeding) or `None`/`null`/`nil` (handled by the
+/// by `SsaOp::Const` seeding) or `None`/`null`/`nil` (handled by the
 /// non-data-return skip).
 pub fn is_zero_arg_allocator_for_lang(lang: crate::symbol::Lang, _callee: &str) -> bool {
     // Currently a no-op for non-Rust languages: rejection-arm constructors

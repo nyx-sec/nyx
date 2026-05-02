@@ -29,7 +29,7 @@ pub enum ConvergenceEvent {
 /// Per-batch record for the SCC fix-point loop.
 ///
 /// Populated once per batch entry in
-/// [`crate::commands::scan::run_topo_batches`] that hits the
+/// `run_topo_batches` that hits the
 /// `has_mutual_recursion` branch.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SccBatchRecord {

@@ -200,7 +200,7 @@ fn apply_value_const(env: &mut PathEnv, v: crate::ssa::ir::SsaValue, op: CompOp,
 /// Resolution order:
 /// 1. Cross-language primitive aliases (case-insensitive)
 /// 2. Java/Ruby/Go class and framework names (case-sensitive)
-/// 3. Java type hierarchy fallback (case-sensitive, via [`TypeHierarchy`])
+/// 3. Java type hierarchy fallback (case-sensitive, via [`crate::ssa::type_facts::TypeHierarchy`])
 pub fn parse_type_name(name: &str) -> Option<TypeKind> {
     use crate::ssa::type_facts::TypeHierarchy;
 

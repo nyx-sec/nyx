@@ -1,3 +1,11 @@
+//! Subcommand handlers and top-level dispatch.
+//!
+//! [`handle_command`] is the single entry point from `main`. It installs
+//! analysis engine options from the resolved config, then routes to the
+//! appropriate subcommand module (scan, clean, config, index, list, serve).
+//! CLI flags that override config values are applied per-arm before the
+//! handler runs.
+
 pub mod clean;
 pub mod config;
 pub mod index;

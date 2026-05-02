@@ -22,7 +22,7 @@
 //!   Mutation is observable to the caller through its argument for `j`.
 //! * `Source(Param(i)) → Target(Return)`, the return value aliases
 //!   parameter `i`'s heap identity.  Adds heap-level precision on top of
-//!   the coarser [`TaintTransform::Identity`] view already carried in
+//!   the coarser [`crate::summary::ssa_summary::TaintTransform::Identity`] view already carried in
 //!   [`crate::summary::ssa_summary::SsaFuncSummary::param_to_return`].
 //!
 //! `MustAlias` is intentionally omitted, the ROI on
@@ -105,7 +105,7 @@ pub const MAX_ALIAS_EDGES: usize = 8;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PointsToSummary {
     /// Bounded edge list, deduped by `(source, target, kind)`.  The
-    /// [`serde(default)`] attribute lets summaries pre-dating points-to
+    /// `#[serde(default)]` attribute lets summaries pre-dating points-to
     /// tracking deserialise cleanly (no edges).
     #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
     pub edges: SmallVec<[AliasEdge; 4]>,
@@ -193,7 +193,7 @@ impl PointsToSummary {
     }
 
     /// Parameter indices referenced by any edge in this summary.  Used by
-    /// [`crate::summary::ssa_summary_fits_arity`] to confirm the summary
+    /// `ssa_summary_fits_arity` to confirm the summary
     /// does not reference a parameter beyond the key's declared arity
     /// (which would indicate a synthetic-param mis-attribution in
     /// extraction).

@@ -1,3 +1,11 @@
+//! Command-line interface definition via clap.
+//!
+//! Defines [`Cli`] (the top-level parser) and the [`Commands`] enum of
+//! subcommands. Helpers on [`Commands`] answer routing questions the binary
+//! needs without pattern-matching on specific arms: [`Commands::effective_format`],
+//! [`Commands::is_structured_output`], [`Commands::is_serve`], and
+//! [`Commands::is_informational`].
+
 use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 
@@ -250,7 +258,7 @@ pub enum Commands {
         #[arg(long, help_heading = "Output")]
         no_rank: bool,
 
-        /// Show inline-suppressed findings (dimmed, tagged [SUPPRESSED])
+        /// Show inline-suppressed findings (dimmed, tagged \[SUPPRESSED\])
         #[arg(long, help_heading = "Output")]
         show_suppressed: bool,
 

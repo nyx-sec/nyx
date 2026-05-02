@@ -165,7 +165,7 @@ pub struct SsaFuncSummary {
     /// [`crate::cfg::CallMeta::gate_filters`] carries more than one entry
     /// (e.g. `fetch` is both an `SSRF` gate on the URL arg and a
     /// `DATA_EXFIL` gate on the body arg), the multi-gate dispatch in
-    /// [`super::super::collect_block_events`] cap-narrows the event's
+    /// `collect_block_events` cap-narrows the event's
     /// `sink_caps` to the specific gate's `label_caps`.  Each
     /// `(param_idx, label_caps)` entry records that this function's
     /// parameter `param_idx` flowed into a gated sink whose narrowed
@@ -195,7 +195,7 @@ pub struct SsaFuncSummary {
     /// (e.g., function returns the same container it received as input).
     ///
     /// Populated by
-    /// [`crate::taint::ssa_transfer::summary_extract::extract_container_flow_summary`]
+    /// `extract_container_flow_summary`
     /// and applied at cross-file call sites to propagate the caller's
     /// points-to set for that argument onto the call's return SSA value.
     #[serde(default)]
@@ -205,7 +205,7 @@ pub struct SsaFuncSummary {
     /// (e.g., `fn storeInto(value, arr) { arr.push(value); }` → `[(0, 1)]`).
     ///
     /// Populated by
-    /// [`crate::taint::ssa_transfer::summary_extract::extract_container_flow_summary`]
+    /// `extract_container_flow_summary`
     /// and applied at cross-file call sites by writing the caller's taint on
     /// the `src_param` argument into the heap objects pointed to by the
     /// `container_param` argument.
@@ -254,7 +254,7 @@ pub struct SsaFuncSummary {
     /// Per-parameter return-path decomposition.
     ///
     /// When non-empty, supplies finer-grained per-path data than
-    /// [`Self::param_to_return`].  Each parameter maps to up to
+    /// `param_to_return`.  Each parameter maps to up to
     /// [`MAX_RETURN_PATHS`] [`ReturnPathTransform`] entries, one per
     /// distinct path-predicate gate.  Callers consult their own predicate
     /// state at the call site and apply only entries whose predicate is
@@ -262,7 +262,7 @@ pub struct SsaFuncSummary {
     /// set into the effective call-site transform.
     ///
     /// Empty when the callee has a single return path, the aggregate
-    /// [`param_to_return`] is already precise, or when extraction
+    /// `param_to_return` is already precise, or when extraction
     /// could not derive per-return state (e.g. early-exit probes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_return_paths: Vec<(usize, SmallVec<[ReturnPathTransform; 2]>)>,
@@ -338,7 +338,7 @@ pub struct SsaFuncSummary {
     /// control would not reach the post-call instruction.
     ///
     /// Populated by
-    /// [`crate::taint::ssa_transfer::summary_extract::extract_ssa_func_summary`]
+    /// `extract_ssa_func_summary`
     /// when a per-parameter probe shows the parameter's `var_name` in
     /// `validated_must` at every return block of the helper.  Empty
     /// (the default) for helpers that do not validate any parameter.

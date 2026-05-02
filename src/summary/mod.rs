@@ -1,3 +1,20 @@
+//! Per-function summaries for cross-file taint analysis.
+//!
+//! [`FuncSummary`] describes a function's boundary behaviour: which parameters
+//! flow to sinks, which sources it reads, whether it propagates taint from
+//! arguments to its return value, and what capabilities it strips. Summaries
+//! are serialized to SQLite in pass 1 and merged into [`GlobalSummaries`]
+//! before pass 2 begins.
+//!
+//! [`crate::summary::ssa_summary::SsaFuncSummary`] is a richer summary
+//! derived from the SSA taint engine and takes precedence over [`FuncSummary`]
+//! during call resolution. `GlobalSummaries::ssa_by_key` stores SSA summaries
+//! keyed by [`FuncKey`]; `GlobalSummaries::by_name` holds the fallback
+//! name-keyed map for cases where an exact key is not found.
+//!
+//! Same-name collisions across files are merged conservatively: capabilities
+//! are unioned and booleans are OR-ed so no true positive is silently dropped.
+
 pub mod points_to;
 pub mod ssa_summary;
 
@@ -669,7 +686,7 @@ impl GlobalSummaries {
     /// drop one of the two summaries entirely.
     ///
     /// We therefore inspect the existing entry first.  If the new summary
-    /// is not [`summaries_compatible`] with it, we mint a synthetic
+    /// is not `summaries_compatible` with it, we mint a synthetic
     /// disambig (top bit set to stay disjoint from byte-offset disambigs)
     /// and retry the insert under the fresh key so *both* functions are
     /// preserved.
@@ -1065,7 +1082,7 @@ impl GlobalSummaries {
 
     /// Snapshot the SSA summaries for convergence detection.
     ///
-    /// Used alongside [`snapshot_caps`] in the SCC fixed-point loop so that
+    /// Used alongside [`Self::snapshot_caps`] in the SCC fixed-point loop so that
     /// SSA-only refinements (e.g. a `StripBits` transform appearing after a
     /// cross-file sanitizer is resolved) are not invisible to convergence.
     pub fn snapshot_ssa(&self) -> &HashMap<FuncKey, SsaFuncSummary> {
@@ -1090,7 +1107,7 @@ impl GlobalSummaries {
     /// 2. Otherwise, for each wildcard prefix in scope, try
     ///    `(wildcard_prefix, name)` in the module index.  If across all
     ///    wildcards exactly one arity-filtered candidate appears → resolved.
-    /// 3. Otherwise fall through to [`resolve_callee_key_with_container`]
+    /// 3. Otherwise fall through to [`Self::resolve_callee_key_with_container`]
     ///    with no `container_hint`, meaning only the existing namespace /
     ///    arity disambiguation applies.
     ///
@@ -1168,9 +1185,9 @@ impl GlobalSummaries {
 
     /// Resolve a bare (already-normalized) callee name to a [`FuncKey`].
     ///
-    /// Thin wrapper around [`resolve_callee`] that constructs a minimal
+    /// Thin wrapper around [`Self::resolve_callee`] that constructs a minimal
     /// [`CalleeQuery`] with no qualified hints.  Kept for call sites that
-    /// only hold a string callee and an arity; prefer [`resolve_callee`]
+    /// only hold a string callee and an arity; prefer [`Self::resolve_callee`]
     /// whenever receiver / qualifier / container information is available.
     pub fn resolve_callee_key(
         &self,
@@ -1197,7 +1214,7 @@ impl GlobalSummaries {
     /// unchanged.  `container_hint` is interpreted as a syntactic
     /// container qualifier (not an authoritative receiver type), so a
     /// miss is allowed to fall through to leaf-name lookup.  New
-    /// callers should route through [`resolve_callee`] and classify
+    /// callers should route through [`Self::resolve_callee`] and classify
     /// their hint as `receiver_type` vs `namespace_qualifier` vs
     /// `receiver_var` so the resolver can apply the correct policy.
     pub fn resolve_callee_key_with_container(

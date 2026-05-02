@@ -1,3 +1,24 @@
+//! Tree-sitter parsing and two-pass analysis for all supported languages.
+//!
+//! The core type is `ParsedSource`, a thin wrapper around a parsed tree-sitter
+//! tree that carries the source bytes and language. Parsing reuses a thread-local
+//! [`tree_sitter::Parser`] so each worker thread keeps one live parser instance.
+//!
+//! ## Two-pass pipeline
+//!
+//! **Pass 1** (`extract_summaries_from_file`): builds the CFG, lowers to SSA,
+//! and extracts a [`crate::summary::FuncSummary`] per function. Summaries
+//! describe boundary behaviour: which arguments flow to sinks, which sources
+//! the function reads, what taint it strips, and what it returns.
+//!
+//! **Pass 2** (`run_rules_on_file`): reanalyses each file with the merged
+//! [`crate::summary::GlobalSummaries`] from pass 1. The taint engine runs a
+//! forward dataflow worklist over SSA, resolving cross-file calls via summaries.
+//!
+//! Parse timeouts are tracked per-thread via [`take_last_parse_timeout_ms`]
+//! so callers can surface the event as an informational diagnostic instead
+//! of silently skipping the file.
+
 #![allow(clippy::only_used_in_recursion, clippy::type_complexity)]
 
 use crate::auth_analysis;
@@ -39,7 +60,7 @@ thread_local! {
 }
 
 /// Consume and return the most recent parse-timeout event on this thread
-/// (set by [`ParsedSource::try_new`]).  Used to lift the event into a
+/// (set by `ParsedSource::try_new`).  Used to lift the event into a
 /// synthetic [`Diag`] carrying an [`crate::engine_notes::EngineNote::ParseTimeout`].
 pub fn take_last_parse_timeout_ms() -> Option<u64> {
     LAST_PARSE_TIMEOUT_MS.with(|c| c.take())
@@ -647,7 +668,7 @@ fn build_taint_diag(
 }
 
 /// Resolve a file extension to a language slug (e.g. `"rust"`,
-/// `"javascript"`).  Public façade over [`lang_for_path`] for callers
+/// `"javascript"`).  Public façade over `lang_for_path` for callers
 /// that only need the slug, used by the debug API to look up
 /// per-language rule enablement without re-parsing the file.
 pub fn lang_slug_for_path(path: &Path) -> Option<&'static str> {
@@ -3985,7 +4006,7 @@ pub struct FusedResult {
 ///
 /// When `global_summaries` is `None`, the taint engine runs with local
 /// context only (equivalent to pass 1 + partial pass 2).  A second call
-/// to [`run_taint_only`] can refine findings with the full cross-file view
+/// to `run_taint_only` can refine findings with the full cross-file view
 /// without re-parsing or re-building the CFG.
 pub fn analyse_file_fused(
     bytes: &[u8],

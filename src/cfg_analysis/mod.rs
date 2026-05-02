@@ -1,4 +1,50 @@
-#![doc = include_str!(concat!(env!("OUT_DIR"), "/cfg_analysis.md"))]
+//! CFG structural analysis: dominator-based checks over intra-procedural CFGs.
+//!
+//! Checks structural properties that the taint engine cannot: whether sinks are
+//! guarded by sanitizers or validators, whether web handlers reach privileged
+//! sinks without an auth call, whether resources are released on all exit paths,
+//! and whether error paths terminate before reaching dangerous code.
+//!
+//! A guard dominates a sink when the guard must execute before the sink on
+//! every path from function entry.
+//!
+//! # Rule IDs
+//!
+//! | Rule ID | Severity | What it checks |
+//! |---------|----------|----------------|
+//! | `cfg-unguarded-sink` | High/Medium | Sink reachable from entry without a matching guard |
+//! | `cfg-auth-gap` | High | Web handler reaches privileged sink with no auth call |
+//! | `cfg-unreachable-sink` | Medium | Sink in dead code |
+//! | `cfg-unreachable-sanitizer` | Low | Sanitizer in dead code (may have been silently disabled) |
+//! | `cfg-unreachable-source` | Low | Source in dead code |
+//! | `cfg-error-fallthrough` | High/Medium | Error path does not terminate before a dangerous call |
+//! | `cfg-resource-leak` | Medium | Resource acquired but not released on all exit paths |
+//! | `cfg-lock-not-released` | Medium | Lock acquired but not released on all exit paths |
+//!
+//! # Recognised guards
+//!
+//! `validate*`, `sanitize*`, `check_*`, `verify_*`, `assert_*`,
+//! `shell_escape`, `html_escape`, `url_encode`, `which`.
+//!
+//! # Recognised auth names
+//!
+//! `is_authenticated`, `require_auth`, `check_permission`, `authorize`,
+//! `authenticate`, `require_login`, `check_auth`, `verify_token`,
+//! `validate_token` (cross-language), plus `isAuthenticated`,
+//! `checkPermission`, `hasAuthority`, `hasRole` (Java) and
+//! `middleware.auth`, `auth.required` (Go).
+//!
+//! Custom guards and auth functions can be added as `sanitizer` rules
+//! with `cap = "all"` in `nyx.conf`.
+//!
+//! # Submodules
+//!
+//! - [`auth`]: auth-gap detection, handler classification
+//! - [`dominators`]: dominator tree computation over CFG nodes
+//! - [`error_handling`]: error-fallthrough detection
+//! - [`guards`]: guard recognition and dominator queries
+//! - [`resources`]: resource-leak and lock-not-released detection
+//! - [`rules`]: finding construction and rule ID assignment
 
 pub mod auth;
 pub mod dominators;

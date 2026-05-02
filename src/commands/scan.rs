@@ -117,10 +117,20 @@ fn fail_if_persist_errors(stage: &str, errors: Arc<Mutex<Vec<String>>>) -> NyxRe
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Diag {
+    /// Project-relative path of the file containing the finding.
     pub path: String,
+    /// 1-based line number of the sink location.
     pub line: usize,
+    /// 0-based column offset of the sink location.
     pub col: usize,
+    /// Finding severity (Critical / High / Medium / Low / Info).
     pub severity: Severity,
+    /// Rule identifier, e.g. `taint-unsanitised-flow`, `cfg-auth-gap`,
+    /// `rs.auth.missing_ownership_check`. Taint findings append a
+    /// source-location suffix (`"taint-unsanitised-flow (source 12:3)"`)
+    /// so sibling paths with the same sink have distinct IDs for
+    /// deduplication; [`crate::evidence::Evidence::sink_caps`] disambiguates
+    /// findings at the same `(path, line, col)` that reach different sinks.
     pub id: String,
     /// High-level finding category (Security, Reliability, Quality).
     pub category: FindingCategory,
@@ -871,7 +881,7 @@ static LAST_TOPO_NONRECURSIVE_REFINEMENTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Returns the cumulative count of non-recursive batch refinements
 /// (summary + ssa-summary + body + auth inserts) persisted to
-/// `global_summaries` during the most recent [`run_topo_batches`] call.
+/// `global_summaries` during the most recent `run_topo_batches` call.
 /// Reset to zero at the start of each invocation.
 pub fn last_topo_nonrecursive_refinements() -> usize {
     LAST_TOPO_NONRECURSIVE_REFINEMENTS.load(Ordering::Relaxed)

@@ -366,7 +366,7 @@ pub struct SsaTaintState {
     /// = false`).
     pub abstract_state: Option<AbstractState>,
     /// per-heap-field taint cells, keyed by
-    /// `(parent_loc, field)`.  Sorted by [`FieldTaintKey`] for O(n)
+    /// `(parent_loc, field)`.  Sorted by `FieldTaintKey` for O(n)
     /// merge-join.  Populated only when the body's
     /// [`crate::pointer::PointsToFacts`] is available
     /// (`NYX_POINTER_ANALYSIS=1`); empty otherwise so the lattice join
@@ -375,7 +375,7 @@ pub struct SsaTaintState {
     /// them.  Cross-call propagation lands during lowering via the
     /// field-granularity `PointsToSummary`.
     ///
-    /// Cell shape: [`FieldCell`] carries `taint` plus
+    /// Cell shape: `FieldCell` carries `taint` plus
     /// `validated_must` / `validated_may` flags so validation flows
     /// through abstract field / element identity.
     pub field_taint: SmallVec<[(FieldTaintKey, FieldCell); 4]>,
@@ -405,7 +405,7 @@ impl SsaTaintState {
 
     /// read the field cell at `key`.  Returns `None`
     /// when no cell has been recorded (caller should treat as
-    /// untainted).  O(log n) on the sorted [`field_taint`] list.
+    /// untainted).  O(log n) on the sorted `field_taint` list.
     pub fn get_field(&self, key: FieldTaintKey) -> Option<&FieldCell> {
         self.field_taint
             .binary_search_by_key(&key, |(k, _)| *k)

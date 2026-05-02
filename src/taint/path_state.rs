@@ -32,7 +32,7 @@ pub enum PredicateKind {
     ShellMetaValidated,
     /// Bounded-length rejection: `x.len() > N` / `x.length < N` with N >= 2.
     ///
-    /// Commonly paired with [`ShellMetaValidated`] in OR-chain rejection
+    /// Commonly paired with `ShellMetaValidated` in OR-chain rejection
     /// idioms (`if x.len() > MAX || x.contains(";") { reject }`).  Counts as
     /// a dominator guard for `cfg-unguarded-sink` purposes, but intentionally
     /// does **not** mark variables as validated, the rejection direction is

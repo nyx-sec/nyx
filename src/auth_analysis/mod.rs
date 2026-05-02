@@ -1,4 +1,60 @@
-#![doc = include_str!(concat!(env!("OUT_DIR"), "/auth_analysis.md"))]
+//! Missing authorization and ownership checks (Rust-primary).
+//!
+//! Detects request handlers that reach a privileged operation taking a scoped
+//! identifier (`*_id`, row reference, scoped resource) without a preceding
+//! ownership or membership check.
+//!
+//! Other languages have rule scaffolding (`py.auth.*`, `js.auth.*`,
+//! `rb.auth.*`, `go.auth.*`, `java.auth.*`) but only Rust has benchmark
+//! corpus coverage and validated precision. Treat non-Rust findings as preview.
+//!
+//! # Rule IDs
+//!
+//! | Rule ID | Variant |
+//! |---------|---------|
+//! | `rs.auth.missing_ownership_check` | Standalone structural analyser (default on) |
+//! | `rs.auth.missing_ownership_check.taint` | SSA/taint variant via `Cap::UNAUTHORIZED_ID` (default off) |
+//!
+//! Enable the taint variant via `scanner.enable_auth_as_taint = true` in
+//! `nyx.conf`. Run both together when enabled; if both fire for the same site,
+//! treat them as the same finding.
+//!
+//! # What counts as authorization
+//!
+//! The analyser accepts any of:
+//! - A call to a recognised authorization helper (`check_ownership`,
+//!   `has_permission`, `require_*_member`, etc.; configurable per project).
+//! - An ownership-equality check on a row reference
+//!   (`if owner_id != user.id { return 403 }`).
+//! - A self-actor reference from a typed extractor param (`Extension<Session>`,
+//!   `CurrentUser`, etc.) combined with `user.id` / `user.user_id` use.
+//! - A typed policy-guard wrapper (`GuardedData<ActionPolicy<X>, _>`);
+//!   configured via `policy_guard_names`.
+//! - A SQL query joining through an ACL table or filtering by `user_id`
+//!   predicate (detected without a SQL parser via [`sql_semantics`]).
+//! - A helper-summary lift: a called function whose body contains a
+//!   `require_*_member` call (fixed-point up to 4 iterations).
+//!
+//! # Sink classification
+//!
+//! | Class | Examples | Treatment |
+//! |-------|---------|-----------|
+//! | `InMemoryLocal` | `map.insert`, `vec.push` on local | Never a sink |
+//! | `RealtimePublish` | `realtime.publish_to_group` | Sink unless channel scope is ownership-checked |
+//! | `OutboundNetwork` | `http.post`, `reqwest::Client::post` | Sink unless sanitizer is on the path |
+//! | `CacheCrossTenant` | `redis.set` with scoped keys | Sink unless tenant is checked |
+//! | `DbMutation` | `db.insert`, `repo.save` with scoped IDs | Sink unless ownership is established |
+//! | `DbCrossTenantRead` | `db.query` returning tenant-scoped rows | Sink unless ACL-join or tenant predicate is present |
+//!
+//! # Submodules
+//!
+//! - [`checks`]: ownership-check recognition, actor-context extraction,
+//!   row-field variable tracking
+//! - [`config`]: per-language auth rule defaults and config merging
+//! - [`extract`]: handler detection, scoped-ID extraction, summary lifting
+//! - [`model`]: `AnalysisUnit`, `AuthCheck`, `SensitiveOperation`, `SinkClass`
+//! - [`sql_semantics`]: ACL-join and `user_id`-predicate detection without a
+//!   SQL parser
 
 pub mod checks;
 pub mod config;

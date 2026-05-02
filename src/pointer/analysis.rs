@@ -43,7 +43,7 @@ fn is_container_read_callee(callee: &str) -> bool {
     )
 }
 
-/// Container-write callees, mirror of [`is_container_read_callee`].
+/// Container-write callees, mirror of `is_container_read_callee`.
 pub fn is_container_write_callee(callee: &str) -> bool {
     let bare = match callee.rsplit_once('.') {
         Some((_, m)) => m,
@@ -66,7 +66,7 @@ pub fn is_container_write_callee(callee: &str) -> bool {
     )
 }
 
-/// Public re-export of [`is_container_read_callee`] for the taint engine.
+/// Public re-export of `is_container_read_callee` for the taint engine.
 pub fn is_container_read_callee_pub(callee: &str) -> bool {
     is_container_read_callee(callee)
 }
@@ -92,7 +92,7 @@ pub fn is_container_read_callee_pub(callee: &str) -> bool {
 ///
 /// Receiver (`SelfParam`) reads/writes are recorded under the
 /// [`u32::MAX`] sentinel parameter index, mirroring the convention in
-/// [`crate::summary::ssa_summary::SsaFuncSummary::receiver_to_*`].
+/// `SsaFuncSummary::receiver_to_*` fields.
 ///
 /// The container-element sentinel field [`FieldId::ELEM`] is recorded
 /// under the special name `"<elem>"` so callers can recognise the

@@ -2793,7 +2793,7 @@ fn function_params(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
     params
 }
 
-/// Variant of [`function_params`] that always includes id-like typed
+/// Variant of `function_params` that always includes id-like typed
 /// Python params (`dag_id: str`, `dag_run_id: str`).  Used by
 /// `attach_route_handler` to populate `unit.params` for RouteHandler
 /// units so middleware-injected auth checks (FastAPI
@@ -2802,7 +2802,7 @@ fn function_params(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
 /// the id-shaped ones that are *the* primary user-controlled data on
 /// REST routes.
 ///
-/// The id-like filter in [`collect_param_names`] exists to keep
+/// The id-like filter in `collect_param_names` exists to keep
 /// internal helper signatures (`def f(release_id: int, project:
 /// Project)`) from passing `unit_has_user_input_evidence`'s param
 /// heuristic, which would over-fire `missing_ownership_check`.  Route

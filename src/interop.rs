@@ -1,3 +1,13 @@
+//! Explicit cross-language call-graph bridge edges.
+//!
+//! Without an [`InteropEdge`], the call graph resolver never attempts
+//! cross-language resolution. This prevents false positives from functions
+//! in different languages that happen to share a name.
+//!
+//! An [`InteropEdge`] maps a [`CallSiteKey`] (caller language, file, function,
+//! callee symbol, call ordinal) to a [`FuncKey`] in another language. Ordinal
+//! `0` acts as a wildcard matching any call of that name from the given caller.
+
 use crate::symbol::{FuncKey, Lang};
 
 /// Identifies a specific call site within a caller function.

@@ -1,3 +1,12 @@
+//! Error types used throughout the scanner.
+//!
+//! [`NyxError`] wraps I/O, TOML parse, SQLite, tree-sitter, and connection-pool
+//! errors into a single enum. [`NyxResult<T>`] is the standard return type alias.
+//!
+//! [`ConfigError`] and [`ConfigErrorKind`] carry structured config-validation
+//! diagnostics (section, field, message, kind) so callers can format them
+//! consistently without ad-hoc string matching.
+
 use serde::Serialize;
 use serde::de::StdError;
 use std::fmt;

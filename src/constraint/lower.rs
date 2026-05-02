@@ -204,7 +204,7 @@ pub fn lower_condition(
 /// Called during SSA lowering when the full [`SsaBody`] is not yet available.
 /// Resolves variables via `var_stacks[name].last()` (the current reaching
 /// definition) instead of scanning `value_defs`. Does not use `const_values`
-/// (unavailable at lowering time); constants are seeded into [`PathEnv`]
+/// (unavailable at lowering time); constants are seeded into [`crate::constraint::PathEnv`]
 /// separately via `seed_from_optimization`.
 pub fn lower_condition_with_stacks(
     cond_info: &NodeInfo,

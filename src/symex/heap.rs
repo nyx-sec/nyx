@@ -102,7 +102,7 @@ pub struct FieldAccessRecord {
 /// Bounded symbolic heap tracking field-level symbolic values and taint.
 ///
 /// Cloned at fork points during multi-path exploration.  Bounded
-/// by [`MAX_HEAP_ENTRIES`] total entries and [`MAX_FIELDS_PER_OBJECT`] per
+/// by `MAX_HEAP_ENTRIES` total entries and `MAX_FIELDS_PER_OBJECT` per
 /// object to prevent blowup on object-heavy code.
 #[derive(Clone, Debug)]
 pub struct SymbolicHeap {
@@ -126,8 +126,8 @@ impl SymbolicHeap {
 
     /// Store a symbolic value into a heap field.
     ///
-    /// Bounded: silently drops the store if [`MAX_HEAP_ENTRIES`] or
-    /// [`MAX_FIELDS_PER_OBJECT`] would be exceeded.  `Index(*)` entries are
+    /// Bounded: silently drops the store if `MAX_HEAP_ENTRIES` or
+    /// `MAX_FIELDS_PER_OBJECT` would be exceeded.  `Index(*)` entries are
     /// bounded by [`MAX_TRACKED_INDICES`] per object; overflow collapses all
     /// indexed entries into `Elements`.
     pub fn store(&mut self, key: HeapKey, value: SymbolicValue, tainted: bool) {
