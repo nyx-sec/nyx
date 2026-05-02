@@ -1,0 +1,15 @@
+[package]
+name = "unsafe_actix_web_project_no_check"
+version = "0.1.0"
+edition = "2021"
+
+# Manifest names actix-web → `lang_has_web_framework("rust")` returns
+# `Some(true)` → the project-level web-framework signal does NOT
+# suppress the param-name arm.  The handler below is then correctly
+# flagged for taking a user-controlled `*_id` parameter and performing
+# a sink without an upstream auth check (regression guard for the
+# project-level gate ─ the gate must NOT silence findings in real
+# web projects).
+
+[dependencies]
+actix-web = "4"

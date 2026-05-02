@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 502
+    "corpus_size": 507
   },
   "cases": [
     {
@@ -14183,6 +14183,94 @@
       "notes": "`if err != nil { c.Fatalf(...) }` / `os.Exit` / `log.Fatalf` / `panic(err)` are documented terminators (Goexit-class).  cfg-error-fallthrough must walk through them as terminating paths.  Closes the minio test-file cluster (49+34+12+11+9+7+7 hits across xl-storage_test.go, erasure-healing_test.go, format-erasure_test.go, \u2026).  Engine fix: src/cfg_analysis/error_handling.rs::call_never_returns."
     },
     {
+      "case_id": "go-safe-realrepo-016",
+      "file": "go/safe/safe_inner_call_close_in_arg.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [
+        "state-resource-leak-possible"
+      ],
+      "forbidden_rule_ids": [
+        "state-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "`require.NoError(t, f.Close())` and `errs = append(errs, f.Close())` shapes \u2014 the inner-call release was invisible because the CFG's per-statement Call node carries the OUTER callee.  Engine fix: src/state/transfer.rs::apply_call now walks info.arg_callees after the direct-release branch and marks the bare-receiver SymbolId CLOSED.  Closes 9+ hits across prometheus tsdb test files."
+    },
+    {
+      "case_id": "go-safe-realrepo-017",
+      "file": "go/safe/safe_struct_field_resource_owned_by_struct.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "`b.cpuprof = os.Create(...)` shape \u2014 member-expression LHS is an ownership transfer to the containing struct, not a local acquisition.  Closure responsibility belongs to a paired `stopProfiling()` method.  Engine fix: src/state/transfer.rs::apply_call gates the acquire on !define_is_field_lhs; src/cfg_analysis/resources.rs::run mirrors the gate.  Closes the prometheus cmd/promtool/tsdb.go::startProfiling cluster (4 findings on b.cpuprof, b.memprof, b.blockprof, b.mtxprof)."
+    },
+    {
+      "case_id": "go-vuln-realrepo-018",
+      "file": "go/safe/vuln_resource_leak_no_close.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "resource",
+      "cwe": "CWE-404",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-resource-leak",
+        "state-resource-leak-possible"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "positive",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for the inner-call-arg / member-LHS fixes.  Bare-identifier `f := os.OpenFile(...)` with no `f.Close()` anywhere must still fire the resource-leak rule."
+    },
+    {
       "case_id": "go-auth-realrepo-001",
       "file": "go/auth/vuln_repo_findbyid_no_auth.go",
       "language": "go",
@@ -14730,6 +14818,62 @@
       ],
       "disabled": false,
       "notes": "Negative-counterpart guard for the `GuardedData` typed-extractor recogniser: same handler shape but the wrapper is replaced by a bare `Data<AuthController>` (no policy enforcement implied).  An over-broad `policy_guard_names` recogniser would silence this; the Guarded-prefix matcher must NOT fire on bare `Data<...>`, so the rule still flags the path-derived `uid` flowing into `auth_controller.get_key`."
+    },
+    {
+      "case_id": "rs-auth-realrepo-016",
+      "file": "rust/safe/safe_non_web_rust_project",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "real-repo-precision-2026-05-02",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check",
+        "rs.auth.stale_authorization",
+        "rs.auth.token_override_without_validation"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "shape-safe",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Real-repo precision guard distilled from zed (desktop GUI / DAP debugger / agent) crates: `<thing>_id` parameters on internal helpers AND `session.foo` chains on debug-session handles must NOT count as user-input evidence in a Rust project whose Cargo.toml names no web framework.  `lang_has_web_framework(\"rust\")` returns Some(false) and the gate suppresses both step-2 (context_inputs) and step-3 (param-name) heuristics."
+    },
+    {
+      "case_id": "rs-auth-realrepo-017",
+      "file": "rust/auth/unsafe_actix_web_project_no_check",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-285",
+      "provenance": "real-repo-precision-2026-05-02",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "High",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "real-repo-precision-2026-05-02"
+      ],
+      "disabled": false,
+      "notes": "Regression counterpart to `rs-auth-realrepo-016`: same helper shape with no upstream auth check, but the project's manifest names `actix-web` so `lang_has_web_framework(\"rust\")` returns Some(true) and the param-name arm of `unit_has_user_input_evidence` stays on.  Asserts the project-level web-framework gate doesn't silence findings in real Rust web projects."
     },
     {
       "case_id": "ruby-safe-ar-query-shapes-001",

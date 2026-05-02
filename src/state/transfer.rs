@@ -314,8 +314,28 @@ impl DefaultTransfer<'_> {
         }
 
         // ── Resource acquire ─────────────────────────────────────────────
+        // SAFE-FOR-FIELD-LHS: skip member-expression LHS acquires.  A
+        // `b.cpuprof = os.Create(...)` pattern transfers ownership to
+        // the containing struct; the local function body cannot
+        // observe the closure (which lives in a paired Stop()/dispose()
+        // method), so tracking `b.cpuprof` as a local resource is a
+        // guaranteed FP at function exit.  Mirrors the gate in
+        // src/cfg_analysis/resources.rs::run.  Production trigger:
+        // prometheus cmd/promtool/tsdb.go::startProfiling cluster
+        // (b.cpuprof, b.memprof, b.blockprof, b.mtxprof).  Recall
+        // bare-ident `f := os.Open(...)` keeps existing tracking.
         let mut direct_acquire = false;
-        for pair in self.resource_pairs {
+        let define_is_field_lhs = info
+            .taint
+            .defines
+            .as_deref()
+            .is_some_and(|d| d.contains('.'));
+        let resource_pairs_iter: &[ResourcePair] = if define_is_field_lhs {
+            &[]
+        } else {
+            self.resource_pairs
+        };
+        for pair in resource_pairs_iter {
             let is_acquire = pair.acquire.iter().any(|a| callee_matches(&callee, a));
             let is_excluded = pair
                 .exclude_acquire
@@ -365,6 +385,50 @@ impl DefaultTransfer<'_> {
                         }
                         released.push(sym);
                     }
+                }
+            }
+        }
+
+        // INNER-CALL-RELEASE-IN-ARG: walk info.arg_callees so a release
+        // method that lives in argument position is still observed.
+        // Production triggers: `require.NoError(t, f.Close())` (Go
+        // testify), `errs = append(errs, f.Close())`, JUnit
+        // `assertEquals(0, in.read())`.  Conservative: bare-receiver
+        // inner calls only (recv has no dot — chained-receiver
+        // releases are owned by chain_proxies which doesn't observe
+        // inner-call positions today); marks CLOSED only (no
+        // DoubleClose since attribution is approximate); respects
+        // in_defer for symmetry with the direct-release branch above.
+        if !info.in_defer && !info.arg_callees.is_empty() {
+            for arg_callee in &info.arg_callees {
+                let Some(arg_callee_text) = arg_callee.as_deref() else {
+                    continue;
+                };
+                let Some((recv_text, _method)) = try_chain_decompose(arg_callee_text) else {
+                    continue;
+                };
+                if recv_text.contains('.') {
+                    continue;
+                }
+                let arg_callee_lower = arg_callee_text.to_ascii_lowercase();
+                let matches_release = self.resource_pairs.iter().any(|p| {
+                    p.release
+                        .iter()
+                        .any(|r| callee_matches(&arg_callee_lower, r))
+                });
+                if !matches_release {
+                    continue;
+                }
+                let Some(sym) = self.get_sym(info, recv_text) else {
+                    continue;
+                };
+                if released.contains(&sym) {
+                    continue;
+                }
+                let current = state.resource.get(sym);
+                if current.contains(ResourceLifecycle::OPEN) {
+                    state.resource.set(sym, ResourceLifecycle::CLOSED);
+                    released.push(sym);
                 }
             }
         }
@@ -1984,5 +2048,167 @@ mod tests {
         let (state, _) = transfer.apply(NodeIndex::new(0), &info, None, ProductState::initial());
         assert_eq!(state.receiver_class_group.get(&sym_f), Some(&class_group));
         assert!(state.chain_proxies.is_empty());
+    }
+
+    #[test]
+    fn inner_call_release_in_arg_marks_closed() {
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern_scoped(None, "f");
+
+        let transfer = DefaultTransfer {
+            lang: Lang::Go,
+            resource_pairs: rules::resource_pairs(Lang::Go),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+        };
+
+        let mut state = ProductState::initial();
+        state.resource.set(sym_f, ResourceLifecycle::OPEN);
+
+        let info = NodeInfo {
+            kind: StmtKind::Call,
+            ast: AstMeta { span: (0, 30), ..Default::default() },
+            taint: TaintMeta {
+                uses: vec!["t".into(), "f".into()],
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some("require.NoError".into()),
+                ..Default::default()
+            },
+            arg_callees: vec![None, Some("f.Close".into())],
+            ..Default::default()
+        };
+
+        let (state, events) = transfer.apply(NodeIndex::new(0), &info, None, state);
+        assert!(events.is_empty());
+        assert_eq!(state.resource.get(sym_f), ResourceLifecycle::CLOSED);
+    }
+
+    #[test]
+    fn inner_call_release_in_arg_chained_receiver_skipped() {
+        let mut interner = SymbolInterner::new();
+        let sym_c = interner.intern_scoped(None, "c");
+
+        let transfer = DefaultTransfer {
+            lang: Lang::Go,
+            resource_pairs: rules::resource_pairs(Lang::Go),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+        };
+
+        let mut state = ProductState::initial();
+        state.resource.set(sym_c, ResourceLifecycle::OPEN);
+
+        let info = NodeInfo {
+            kind: StmtKind::Call,
+            ast: AstMeta { span: (0, 30), ..Default::default() },
+            taint: TaintMeta { uses: vec!["c".into()], ..Default::default() },
+            call: CallMeta {
+                callee: Some("t.Helper".into()),
+                ..Default::default()
+            },
+            arg_callees: vec![Some("c.mu.Unlock".into())],
+            ..Default::default()
+        };
+
+        let (state, _) = transfer.apply(NodeIndex::new(0), &info, None, state);
+        assert_eq!(state.resource.get(sym_c), ResourceLifecycle::OPEN);
+    }
+
+    #[test]
+    fn inner_call_release_in_arg_respects_in_defer() {
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern_scoped(None, "f");
+
+        let transfer = DefaultTransfer {
+            lang: Lang::Go,
+            resource_pairs: rules::resource_pairs(Lang::Go),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+        };
+
+        let mut state = ProductState::initial();
+        state.resource.set(sym_f, ResourceLifecycle::OPEN);
+
+        let info = NodeInfo {
+            kind: StmtKind::Call,
+            ast: AstMeta { span: (0, 30), ..Default::default() },
+            taint: TaintMeta { uses: vec!["f".into()], ..Default::default() },
+            call: CallMeta {
+                callee: Some("log.Print".into()),
+                ..Default::default()
+            },
+            arg_callees: vec![Some("f.Close".into())],
+            in_defer: true,
+            ..Default::default()
+        };
+
+        let (state, _) = transfer.apply(NodeIndex::new(0), &info, None, state);
+        assert_eq!(state.resource.get(sym_f), ResourceLifecycle::OPEN);
+    }
+
+    #[test]
+    fn member_field_lhs_acquire_skips_resource_state() {
+        let interner = SymbolInterner::new();
+
+        let transfer = DefaultTransfer {
+            lang: Lang::Go,
+            resource_pairs: rules::resource_pairs(Lang::Go),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+        };
+
+        let info = NodeInfo {
+            kind: StmtKind::Call,
+            ast: AstMeta { span: (0, 30), ..Default::default() },
+            taint: TaintMeta {
+                defines: Some("b.cpuprof".into()),
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some("os.Create".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (state, _) = transfer.apply(NodeIndex::new(0), &info, None, ProductState::initial());
+        assert!(state.resource.vars.is_empty());
+    }
+
+    #[test]
+    fn bare_ident_lhs_acquire_still_tracks() {
+        let mut interner = SymbolInterner::new();
+        let sym_f = interner.intern_scoped(None, "f");
+
+        let transfer = DefaultTransfer {
+            lang: Lang::Go,
+            resource_pairs: rules::resource_pairs(Lang::Go),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+        };
+
+        let info = NodeInfo {
+            kind: StmtKind::Call,
+            ast: AstMeta { span: (0, 30), ..Default::default() },
+            taint: TaintMeta {
+                defines: Some("f".into()),
+                ..Default::default()
+            },
+            call: CallMeta {
+                callee: Some("os.Open".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (state, _) = transfer.apply(NodeIndex::new(0), &info, None, ProductState::initial());
+        assert!(state.resource.get(sym_f).contains(ResourceLifecycle::OPEN));
     }
 }

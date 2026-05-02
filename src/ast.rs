@@ -1102,6 +1102,7 @@ impl<'a> ParsedFile<'a> {
         if !missing.is_empty() {
             let aug_ctx = crate::utils::project::FrameworkContext {
                 frameworks: missing.clone(),
+                inspected_langs: std::collections::HashSet::new(),
             };
             lang_rules
                 .extra_labels

@@ -15,11 +15,12 @@ pub struct AuthFinding {
 
 pub fn run_checks(model: &AuthorizationModel, rules: &AuthAnalysisRules) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
+    let web_signal = model.lang_web_framework_signal;
     findings.extend(check_admin_routes(model, rules));
-    findings.extend(check_ownership_gaps(model, rules));
-    findings.extend(check_partial_batch_authorization(model, rules));
-    findings.extend(check_stale_authorization(model, rules));
-    findings.extend(check_token_override_without_validation(model, rules));
+    findings.extend(check_ownership_gaps(model, rules, web_signal));
+    findings.extend(check_partial_batch_authorization(model, rules, web_signal));
+    findings.extend(check_stale_authorization(model, rules, web_signal));
+    findings.extend(check_token_override_without_validation(model, rules, web_signal));
     findings.sort_by(|a, b| a.span.cmp(&b.span).then_with(|| a.rule_id.cmp(&b.rule_id)));
     findings.dedup_by(|a, b| a.span == b.span && a.rule_id == b.rule_id);
     findings
@@ -63,11 +64,15 @@ fn check_admin_routes(model: &AuthorizationModel, rules: &AuthAnalysisRules) -> 
     findings
 }
 
-fn check_ownership_gaps(model: &AuthorizationModel, rules: &AuthAnalysisRules) -> Vec<AuthFinding> {
+fn check_ownership_gaps(
+    model: &AuthorizationModel,
+    rules: &AuthAnalysisRules,
+    web_signal: Option<bool>,
+) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit) {
+        if !unit_has_user_input_evidence(unit, web_signal) {
             continue;
         }
         for op in &unit.operations {
@@ -115,11 +120,12 @@ fn check_ownership_gaps(model: &AuthorizationModel, rules: &AuthAnalysisRules) -
 fn check_partial_batch_authorization(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
+    web_signal: Option<bool>,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit) {
+        if !unit_has_user_input_evidence(unit, web_signal) {
             continue;
         }
         for op in &unit.operations {
@@ -169,11 +175,12 @@ fn check_partial_batch_authorization(
 fn check_stale_authorization(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
+    web_signal: Option<bool>,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit) {
+        if !unit_has_user_input_evidence(unit, web_signal) {
             continue;
         }
         for op in unit.operations.iter().filter(|operation| {
@@ -216,6 +223,7 @@ fn check_stale_authorization(
 fn check_token_override_without_validation(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
+    web_signal: Option<bool>,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
@@ -229,7 +237,7 @@ fn check_token_override_without_validation(
         // call shape happens to look token-y (`account.token = …;
         // account.save()`).  Gate on positive user-input evidence so
         // these pure backend units are never claimed as a token flow.
-        if !unit_has_user_input_evidence(unit) {
+        if !unit_has_user_input_evidence(unit, web_signal) {
             continue;
         }
         let Some(token_lookup) = unit
@@ -928,9 +936,24 @@ fn is_id_like_name(name: &str) -> bool {
 /// pure utility helpers fail all three conditions and are skipped ,
 /// they cannot, by construction, be the entry point of an
 /// authentication-bearing flow.
-fn unit_has_user_input_evidence(unit: &AnalysisUnit) -> bool {
+fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>) -> bool {
     if unit.kind == AnalysisUnitKind::RouteHandler {
         return true;
+    }
+    // Project-level web-framework gate.  When the project's manifest
+    // was inspected and named no web framework matching the file's
+    // language, AND no per-file import override applied, the file
+    // lives in a project with no HTTP boundary.  Step 2 (context
+    // inputs) and step 3 (param-name heuristic) are both name-shape
+    // heuristics that overshoot in non-web Rust crates ─ e.g. zed's
+    // GUI test code where `session.update(cx, ...)` (a debug-session
+    // handle, not an auth session) trips `matches_session_context`
+    // and lands in `context_inputs`, opening every test method's
+    // sinks.  Refuse here, after the RouteHandler step (which is
+    // determined by framework extractors and is robust evidence on
+    // its own).
+    if web_signal == Some(false) {
+        return false;
     }
     if !unit.context_inputs.is_empty() {
         return true;
@@ -1327,23 +1350,23 @@ mod tests {
         // Function with no params and no context_inputs (Celery task
         // shape), must NOT count as user-input-bearing.
         let mut unit = empty_unit();
-        assert!(!unit_has_user_input_evidence(&unit));
+        assert!(!unit_has_user_input_evidence(&unit, None));
 
         // Adding internal-typed params (apps, schema_editor, Django
         // migration RunPython callback shape) keeps the gate closed.
         unit.params.push("apps".into());
         unit.params.push("schema_editor".into());
-        assert!(!unit_has_user_input_evidence(&unit));
+        assert!(!unit_has_user_input_evidence(&unit, None));
 
         // pytest hook shape: (config, items), gate stays closed.
         let mut unit = empty_unit();
         unit.params.push("config".into());
         unit.params.push("items".into());
-        assert!(!unit_has_user_input_evidence(&unit));
+        assert!(!unit_has_user_input_evidence(&unit, None));
 
         // Adding an id-like param flips the gate open.
         unit.params.push("doc_id".into());
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
 
         // Token-named param flips the gate open (Express helper
         // `acceptInvitation(token, currentUser, roleOverride)`).
@@ -1351,23 +1374,72 @@ mod tests {
         unit.params.push("token".into());
         unit.params.push("currentUser".into());
         unit.params.push("roleOverride".into());
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
 
         // Framework request-name param flips the gate open
         // (Django/Flask `def view(request, project_id):`).
         let mut unit = empty_unit();
         unit.params.push("request".into());
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
 
         // Axum/Actix typed-extractor convention name flips it open.
         let mut unit = empty_unit();
         unit.params.push("path".into());
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
 
         // RouteHandler kind always wins, regardless of params.
         let mut unit = empty_unit();
         unit.kind = AnalysisUnitKind::RouteHandler;
-        assert!(unit_has_user_input_evidence(&unit));
+        assert!(unit_has_user_input_evidence(&unit, None));
+    }
+
+    /// Web-framework signal `Some(false)` (project's manifest was
+    /// inspected and named no web framework matching the file's
+    /// language, AND no per-file import override) suppresses both
+    /// the `context_inputs` arm and the param-name arm — both are
+    /// name-shape heuristics that overshoot in non-web Rust crates
+    /// (e.g. a debug-session handle named `session` trips
+    /// `matches_session_context` and lands in `context_inputs`).
+    /// Only RouteHandler classification (step 1) survives the gate
+    /// because that flag is set by framework extractors with concrete
+    /// route-registration evidence.
+    #[test]
+    fn web_framework_signal_gates_user_input_heuristics() {
+        // Param-name arm: helper named `<thing>_id` in a project the
+        // auth detector confirmed has no Rust web framework.  Without
+        // the gate this would flip step 3 open and flood the rule on
+        // every desktop helper.
+        let mut unit = empty_unit();
+        unit.params.push("session_id".into());
+        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, Some(true)));
+        assert!(!unit_has_user_input_evidence(&unit, Some(false)));
+
+        // Step 1 (RouteHandler) still wins regardless of the gate.
+        // RouteHandler kind is set by framework extractors (axum /
+        // actix_web / rocket) on concrete route-registration shapes —
+        // robust enough to bypass the project-level gate even when
+        // the manifest doesn't name the framework.
+        unit.kind = AnalysisUnitKind::RouteHandler;
+        assert!(unit_has_user_input_evidence(&unit, Some(false)));
+
+        // context_inputs arm: bare `session.foo` on a debug-session
+        // handle (not an auth session) lands in `context_inputs` via
+        // `matches_session_context`.  The gate suppresses this so
+        // non-web Rust crates don't fire on `session.update(cx, ...)`
+        // shapes from desktop test code.
+        let mut unit = empty_unit();
+        unit.context_inputs.push(ValueRef {
+            source_kind: ValueSourceKind::Session,
+            name: "session.update".into(),
+            base: Some("session".into()),
+            field: Some("update".into()),
+            index: None,
+            span: (0, 0),
+        });
+        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, Some(true)));
+        assert!(!unit_has_user_input_evidence(&unit, Some(false)));
     }
 
     /// `is_external_input_param_name` covers id-, token-, and

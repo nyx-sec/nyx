@@ -2166,6 +2166,7 @@ mod tests {
 
         let ctx = FrameworkContext {
             frameworks: vec![DetectedFramework::Echo],
+            inspected_langs: std::collections::HashSet::new(),
         };
         let rules = go::framework_rules(&ctx);
         let extras = rules.to_vec();
@@ -2194,6 +2195,7 @@ mod tests {
 
         let ctx = FrameworkContext {
             frameworks: vec![DetectedFramework::Koa],
+            inspected_langs: std::collections::HashSet::new(),
         };
         let extras = javascript::framework_rules(&ctx);
 
@@ -2224,6 +2226,7 @@ mod tests {
 
         let ctx = FrameworkContext {
             frameworks: vec![DetectedFramework::Fastify],
+            inspected_langs: std::collections::HashSet::new(),
         };
         let extras = typescript::framework_rules(&ctx);
 
@@ -2250,6 +2253,7 @@ mod tests {
 
         let ctx = FrameworkContext {
             frameworks: vec![DetectedFramework::Sinatra],
+            inspected_langs: std::collections::HashSet::new(),
         };
         let rules = ruby::framework_rules(&ctx);
         let extras = rules.to_vec();
@@ -2274,6 +2278,7 @@ mod tests {
 
         let ctx = FrameworkContext {
             frameworks: vec![DetectedFramework::Axum],
+            inspected_langs: std::collections::HashSet::new(),
         };
         let extras = rust::framework_rules(&ctx);
 
@@ -2304,6 +2309,7 @@ mod tests {
 
         let ctx = FrameworkContext {
             frameworks: vec![DetectedFramework::ActixWeb],
+            inspected_langs: std::collections::HashSet::new(),
         };
         let extras = rust::framework_rules(&ctx);
 
@@ -2327,6 +2333,7 @@ mod tests {
 
         let ctx = FrameworkContext {
             frameworks: vec![DetectedFramework::Rocket],
+            inspected_langs: std::collections::HashSet::new(),
         };
         let extras = rust::framework_rules(&ctx);
 

@@ -423,6 +423,19 @@ impl CfgAnalysis for ResourceMisuse {
                 if ctx.cfg[acquire].managed_resource {
                     continue;
                 }
+                // SAFE-FOR-FIELD-LHS: skip member-expression LHS
+                // acquires.  `b.cpuprof = os.Create(...)` transfers
+                // ownership to the containing struct; closure
+                // responsibility belongs to a paired Stop()/Release()
+                // method on the struct's lifecycle.  Mirrors the gate
+                // in src/state/transfer.rs::apply_call.  Production
+                // trigger: prometheus
+                // cmd/promtool/tsdb.go::startProfiling cluster.
+                if let Some(acquired_var) = ctx.cfg[acquire].taint.defines.as_deref()
+                    && acquired_var.contains('.')
+                {
+                    continue;
+                }
                 // Suppress resources with a deferred release (Go `defer f.Close()`).
                 // Defer guarantees cleanup on all exit paths including early returns.
                 if let Some(acquired_var) = ctx.cfg[acquire].taint.defines.as_deref() {
