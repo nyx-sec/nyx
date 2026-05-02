@@ -1230,6 +1230,80 @@ mod goto_succ_propagation_tests {
     }
 
     #[test]
+    fn path_fact_negated_contains_dotdot_narrows_true_branch() {
+        // `if !path.contains("..") { return; } sink(path);` — the surviving
+        // (sink-reaching) arm is the TRUE branch of the IF condition.  The
+        // rejection axis (DotDot) must narrow `true_state`, not `false_state`,
+        // otherwise the unsafe arm gets dotdot=No and the sink suppression
+        // masks the bug.
+        let ssa = ssa_body_with_named_value("path");
+        let mut true_state = initial_state_with_abstract();
+        let mut false_state = initial_state_with_abstract();
+
+        super::super::apply_path_fact_branch_narrowing_with_interner(
+            &mut true_state,
+            &mut false_state,
+            "!path.contains(\"..\")",
+            &["path".to_string()],
+            &ssa,
+            None,
+            true,
+        );
+
+        let true_abs = true_state.abstract_state.as_ref().unwrap();
+        let false_abs = false_state.abstract_state.as_ref().unwrap();
+        assert_eq!(
+            true_abs.get(SsaValue(0)).path.dotdot,
+            crate::abstract_interp::Tri::No,
+            "negated-contains: TRUE arm (sink-reaching, safe) must narrow"
+        );
+        assert_eq!(
+            false_abs.get(SsaValue(0)).path.dotdot,
+            crate::abstract_interp::Tri::Maybe,
+            "negated-contains: FALSE arm (rejection arm) must NOT narrow"
+        );
+    }
+
+    #[test]
+    fn path_fact_negated_filepath_islocal_narrows_false_branch() {
+        // `if !filepath.IsLocal(p) { return; } sink(p);` — Go idiom.  The
+        // classifier consumes the `!` itself (pre-negated handler), so the
+        // safe arm remains the FALSE branch of the whole condition even
+        // though `condition_negated == true` at AST level.
+        let ssa = ssa_body_with_named_value("p");
+        let mut true_state = initial_state_with_abstract();
+        let mut false_state = initial_state_with_abstract();
+
+        super::super::apply_path_fact_branch_narrowing_with_interner(
+            &mut true_state,
+            &mut false_state,
+            "!filepath.IsLocal(p)",
+            &["p".to_string()],
+            &ssa,
+            None,
+            true,
+        );
+
+        let true_abs = true_state.abstract_state.as_ref().unwrap();
+        let false_abs = false_state.abstract_state.as_ref().unwrap();
+        assert_eq!(
+            false_abs.get(SsaValue(0)).path.dotdot,
+            crate::abstract_interp::Tri::No,
+            "!filepath.IsLocal: FALSE arm (sink-reaching, IsLocal=true) must narrow"
+        );
+        assert_eq!(
+            false_abs.get(SsaValue(0)).path.absolute,
+            crate::abstract_interp::Tri::No,
+            "!filepath.IsLocal: FALSE arm absolute axis must narrow"
+        );
+        assert_eq!(
+            true_abs.get(SsaValue(0)).path.dotdot,
+            crate::abstract_interp::Tri::Maybe,
+            "!filepath.IsLocal: TRUE arm (return) must NOT narrow"
+        );
+    }
+
+    #[test]
     fn path_fact_no_match_leaves_state_untouched() {
         let ssa = ssa_body_with_named_value("x");
         let mut true_state = initial_state_with_abstract();

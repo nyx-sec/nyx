@@ -1561,6 +1561,7 @@ fn apply_path_fact_branch_narrowing_with_interner(
     use crate::abstract_interp::PathFact;
     use crate::abstract_interp::path_domain::{
         PathAssertion, PathRejection, classify_path_assertion, classify_path_rejection_axes,
+        cond_has_pre_negated_islocal_clause,
     };
 
     let rejection_axes = classify_path_rejection_axes(cond_text);
@@ -1570,31 +1571,44 @@ fn apply_path_fact_branch_narrowing_with_interner(
         return;
     }
 
-    // Mark validated_may on the false branch when a path-rejection
+    // Resolve the "safe arm" for the rejection axes.
+    //
+    // `classify_path_rejection_axes` reports axes that hold on the FALSE
+    // branch of `cond_text` AS WRITTEN, with one exception: the
+    // `!filepath.IsLocal(...)` Go idiom is matched at the clause level
+    // and the classifier consumes the leading `!` itself (the safe arm
+    // remains the FALSE branch of the whole condition).
+    //
+    // For polarity-blind atoms like `!path.contains("..")`, the
+    // classifier ignores the leading `!` and still extracts `..`.  In
+    // that shape, AST detects the unary `!` and sets
+    // `condition_negated = true`, but the rejection axis's *true* safe
+    // arm is the TRUE branch of the whole condition.  So when
+    // `negated == true` AND no clause is the pre-negated IsLocal idiom,
+    // flip the narrow target.
+    let rejection_pre_negated = cond_has_pre_negated_islocal_clause(cond_text);
+    let rejection_safe_is_true = negated && !rejection_pre_negated;
+
+    // Mark validated_may on the safe arm when a path-rejection
     // pattern fires.  Mirrors the AllowlistCheck quirk that already
     // marks validated on the rejection-arm via `apply_branch_predicates`
     // for languages whose `.contains(...)` / membership idiom hits the
     // AllowlistCheck classifier, but normalises behaviour for shapes
     // like C `strstr(path, "..") != NULL` that hit the NullCheck arm
     // first and never get a chance to mark validation through the
-    // allowlist path.  Once the path-rejection classifier has accepted
-    // the condition, the false branch (where the sink is reached after
-    // the rejection-arm terminates) is the validated arm by
-    // construction.
-    //
-    // Note: the rejection classifier (`classify_path_rejection_axes`)
-    // already accounts for the `!filepath.IsLocal(p)` Go idiom in its
-    // text-level `has_negated_filepath_is_local` matcher; cond_text
-    // retains the leading `!` per `extract_condition_raw`, so the
-    // classifier's polarity convention is independent of
-    // `condition_negated`.  Don't flip rejection narrowing here.
+    // allowlist path.
     if !rejection_axes.is_empty()
         && let Some(intern) = interner
     {
+        let safe_state: &mut SsaTaintState = if rejection_safe_is_true {
+            &mut *true_state
+        } else {
+            &mut *false_state
+        };
         for var in effective_vars {
             if let Some(sym) = intern.get(var) {
-                false_state.validated_may.insert(sym);
-                false_state.validated_must.insert(sym);
+                safe_state.validated_may.insert(sym);
+                safe_state.validated_must.insert(sym);
             }
         }
     }
@@ -1648,14 +1662,24 @@ fn apply_path_fact_branch_narrowing_with_interner(
         }
     };
 
-    // Apply rejection axes to the false branch.  The rejection classifier
+    // Apply rejection axes to the safe arm.  The rejection classifier
     // (`has_negated_filepath_is_local` + `classify_path_rejection_atom`)
-    // is text-level and uses cond_text *with* any leading `!` retained, so
-    // its polarity convention is "false branch = safe arm" regardless of
-    // `condition_negated`.  Flipping here would double-correct the
-    // `!filepath.IsLocal(p)` case.
+    // reports axes that hold on the FALSE branch of `cond_text` AS
+    // WRITTEN, with one exception: the `!filepath.IsLocal(...)` Go idiom
+    // is matched at the clause level and the classifier consumes the
+    // leading `!` itself (safe arm remains the FALSE branch).
+    //
+    // For polarity-blind atoms like `!path.contains("..")` the classifier
+    // ignores the leading `!` but AST-level negation flips the safe arm
+    // to TRUE.  Use the same `rejection_safe_is_true` resolution as the
+    // validated-marker block above so soundness is consistent.
+    let rejection_state: &mut SsaTaintState = if rejection_safe_is_true {
+        &mut *true_state
+    } else {
+        &mut *false_state
+    };
     for v in &targets {
-        if let Some(ref mut abs) = false_state.abstract_state {
+        if let Some(ref mut abs) = rejection_state.abstract_state {
             let mut av = abs.get(*v);
             narrow_false(&mut av.path);
             if !av.is_top() {

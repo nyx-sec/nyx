@@ -487,6 +487,22 @@ pub fn classify_path_rejection_axes(text: &str) -> smallvec::SmallVec<[PathRejec
     out
 }
 
+/// True iff any top-level OR clause of `text` is the pre-negated
+/// `!filepath.IsLocal(<expr>)` Go idiom — i.e. a clause whose `!` is
+/// already consumed by [`classify_path_rejection_axes`] when reporting
+/// the safe arm.  Callers use this to decide whether AST-level negation
+/// (`condition_negated`) was already accounted for by the classifier
+/// (returns `true`) or still needs to flip the safe-arm polarity for
+/// polarity-blind atoms like `!path.contains("..")` (returns `false`).
+pub(crate) fn cond_has_pre_negated_islocal_clause(text: &str) -> bool {
+    for clause in split_top_level_or(text) {
+        if has_negated_filepath_is_local(clause.trim()) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Detect `!filepath.IsLocal(<expr>)`, Go's idiomatic path-traversal
 /// guard.  Whitespace-tolerant: `! filepath.IsLocal(`, `!filepath . IsLocal(`,
 /// etc.  Used by [`classify_path_rejection_axes`] to inject both
