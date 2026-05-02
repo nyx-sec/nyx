@@ -860,7 +860,14 @@ pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     // parameter-less summary for any function whose params have
     // defaults — breaking cross-function `param_to_sink` propagation
     // for shapes like `(emailOptions = {}, emailTemplate = {}, data = {}) => …`.
-    param_node_kinds: &["identifier", "assignment_pattern"],
+    // `object_pattern` covers destructured object formals (`({ a, b })`),
+    // which tree-sitter-javascript exposes as a direct child of
+    // `formal_parameters` (no `required_parameter` wrapper as in TS).
+    // Without it the per-parameter probe never seeds the destructured
+    // bindings and summary extraction misses `validated_params_to_return`
+    // for shapes like `({ value }) => { validate(value); ... }` —
+    // residual gap behind CVE-2026-25544.
+    param_node_kinds: &["identifier", "assignment_pattern", "object_pattern"],
     self_param_kinds: &[],
     ident_fields: &["name", "pattern"],
 };

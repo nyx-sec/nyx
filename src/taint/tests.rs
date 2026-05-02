@@ -4331,6 +4331,7 @@ fn ssa_summary_identity_propagation() {
                 None,
                 None,
                 None,
+                None,
             );
             assert!(
                 !summary.param_to_return.is_empty(),
@@ -4394,6 +4395,7 @@ fn ssa_summary_sanitizer_strips_bits() {
                 None,
                 None,
                 None,
+                None,
             );
             // Sanitizer should strip some bits
             for (_, transform) in &summary.param_to_return {
@@ -4450,6 +4452,7 @@ fn ssa_summary_source_adds_bits() {
                 None,
                 None,
                 None,
+                None,
             );
             assert!(
                 !summary.source_caps.is_empty(),
@@ -4503,6 +4506,7 @@ fn ssa_summary_param_to_sink() {
                 "test.rs",
                 &interner,
                 param_count,
+                None,
                 None,
                 None,
                 None,
@@ -6393,6 +6397,146 @@ async function handler(req) {
     assert!(
         !findings.is_empty(),
         "helper without regex guard must still flag the caller sink",
+    );
+}
+
+/// Regression: per-parameter summary probe must seed every
+/// destructured object-pattern sibling sharing a slot, not only the
+/// primary name picked by `extract_param_meta`.  Without this, a
+/// helper that destructures its single argument as
+/// `({ value }) => …` cannot have `validated_params_to_return = [0]`
+/// proven, because the validator inside the body operates on the
+/// `value` binding while the probe only seeded the primary `value`
+/// (or any earlier sibling) of the object pattern.  Closes the
+/// residual blocker for CVE-2026-25544 (PayloadCMS Drizzle SQLi).
+#[test]
+fn validated_params_to_return_suppresses_destructured_object_arg_helper() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value) => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return value;
+};
+
+const buildQuery = ({ value }) => {
+    const s = sanitize(value);
+    return s + '!';
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = buildQuery({ value: userValue });
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "destructured object-pattern arg with regex.test allowlist inside the helper must suppress caller sink; got {} finding(s)",
+        findings.len()
+    );
+}
+
+/// Regression: same coverage for TypeScript object-pattern formals
+/// (`required_parameter > pattern: object_pattern`).  TS exposes the
+/// destructure under a wrapper required_parameter; JS exposes it as a
+/// direct child of formal_parameters.  Both paths must surface
+/// destructured siblings to the per-parameter probe.
+#[test]
+fn validated_params_to_return_suppresses_destructured_object_arg_helper_ts() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value: string): string => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return value;
+};
+
+const buildQuery = ({ value }: { value: string }): string => {
+    const s = sanitize(value);
+    return s + '!';
+};
+
+async function handler(req: any) {
+    const userValue = req.body.filter;
+    const sql = buildQuery({ value: userValue });
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let file_cfg = parse_lang(src, "typescript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::TypeScript,
+        "test.ts",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "TS destructured object-pattern arg with regex.test allowlist must suppress caller sink; got {} finding(s)",
+        findings.len()
+    );
+}
+
+/// Regression: a destructured object-pattern formal with multiple
+/// fields must still propagate validated_params_to_return when the
+/// validation lives behind a sibling that is NOT the primary name
+/// returned by `extract_param_meta`.  In CVE-2026-25544 the primary
+/// is `column` (first ident in `{ column, operator, pathSegments,
+/// value }`) but the validator gates `value` — without sibling
+/// seeding the probe never sees the validation.
+#[test]
+fn destructured_sibling_validation_propagates_through_summary() {
+    let src = br#"
+const SAFE_REGEX = /^[\w]+$/;
+
+const sanitize = (value) => {
+    if (!SAFE_REGEX.test(value)) throw new Error('bad');
+    return value;
+};
+
+const buildQuery = ({ column, operator, value }) => {
+    return `${column} ${operator} ${sanitize(value)}`;
+};
+
+async function handler(req) {
+    const userValue = req.body.filter;
+    const sql = buildQuery({ column: 'col', operator: '=', value: userValue });
+    db.execute(sql);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "destructured-sibling validation (validator binds non-primary slot binding) must propagate through summary; got {} finding(s)",
+        findings.len()
     );
 }
 

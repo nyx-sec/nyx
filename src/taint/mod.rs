@@ -1406,6 +1406,7 @@ pub(crate) fn extract_intra_file_ssa_summaries(
             mod_aliases_ref,
             None,
             Some(&formal_params),
+            None,
         );
 
         // Only store if the summary has observable effects.  With
@@ -1531,6 +1532,11 @@ pub(crate) fn lower_all_functions_from_bodies(
             } else {
                 Some(&mod_aliases)
             };
+            let formal_destructured = if !body.meta.param_destructured_fields.is_empty() {
+                Some(body.meta.param_destructured_fields.as_slice())
+            } else {
+                None
+            };
             let summary = ssa_transfer::extract_ssa_func_summary(
                 &func_ssa,
                 &body.graph,
@@ -1543,6 +1549,7 @@ pub(crate) fn lower_all_functions_from_bodies(
                 mod_aliases_ref,
                 locator,
                 Some(formal_params),
+                formal_destructured,
             );
 
             // Always insert the summary, even when all fields are empty/default.
@@ -1775,6 +1782,11 @@ fn rerun_extraction_with_augmented_summaries(
             Some(&mod_aliases)
         };
 
+        let formal_destructured = if !body.meta.param_destructured_fields.is_empty() {
+            Some(body.meta.param_destructured_fields.as_slice())
+        } else {
+            None
+        };
         let new_summary = ssa_transfer::extract_ssa_func_summary_full(
             &callee.ssa,
             parent_cfg,
@@ -1788,6 +1800,7 @@ fn rerun_extraction_with_augmented_summaries(
             locator,
             Some(&body.meta.params),
             Some(&augmented_snapshot),
+            formal_destructured,
         );
 
         // OR-merge sink-only fields into the existing summary.
