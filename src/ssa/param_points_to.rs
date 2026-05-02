@@ -25,7 +25,7 @@
 //!
 //! The analysis is **flow-insensitive** and **bounded**: it does not
 //! reason about path feasibility, and it stops adding edges once the
-//! summary's [`MAX_ALIAS_EDGES`] cap is reached, the overflow flag is
+//! summary's `MAX_ALIAS_EDGES` cap is reached, the overflow flag is
 //! the conservative fallback that callers honour.
 
 use std::collections::{HashMap, HashSet};
@@ -239,7 +239,7 @@ fn returns_fresh_allocation(
 /// `formal_param_count` bounds the parameter indices written to the
 /// summary: scoped lowering synthesises `Param` ops for module-level
 /// captures at indices beyond the formal arity, and those must not leak
-/// into the summary (they would trip [`crate::summary::ssa_summary_fits_arity`]).
+/// into the summary (they would trip `ssa_summary_fits_arity`).
 pub fn analyse_param_points_to(
     ssa: &SsaBody,
     param_info: &[(usize, String, SsaValue)],

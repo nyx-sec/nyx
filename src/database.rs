@@ -626,7 +626,7 @@ pub mod index {
             })
         }
 
-        /// Like [`should_scan`] but accepts a pre-computed hash to avoid
+        /// Like `should_scan` but accepts a pre-computed hash to avoid
         /// redundant file reads.
         pub fn should_scan_with_hash(&self, path: &Path, hash: &[u8]) -> NyxResult<bool> {
             let row: Option<Vec<u8>> = self
@@ -684,7 +684,7 @@ pub mod index {
         /// (`file_id, rule_id, line, col`) to defend against upstream bugs
         /// that produce same-keyed diagnostics with differing severity or
         /// cosmetic fields. The first-seen row wins; upstream
-        /// [`crate::ast::ParsedSource::finalize_diags`] sorts so that high
+        /// `ParsedSource::finalize_diags` sorts so that high
         /// severity comes first, and this fallback preserves that ordering.
         pub fn replace_issues<'a>(
             &mut self,

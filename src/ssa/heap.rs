@@ -10,7 +10,7 @@
 //! - PointsToSet is bounded to `analysis.engine.max_pointsto` entries
 //!   (default 32, widening on overflow, see [`effective_max_pointsto`]).
 //!   Overflow drops emit an [`crate::engine_notes::EngineNote::PointsToTruncated`]
-//!   note and increment [`POINTSTO_TRUNCATION_COUNT`] so operators can
+//!   note and increment `POINTSTO_TRUNCATION_COUNT` so operators can
 //!   tell when the cap is firing on their corpus.
 //! - HeapState tracks per-(heap-object, slot) taint (monotone lattice)
 //!   - HeapSlot::Index(u64) for constant-index container access (proven by const propagation)
@@ -168,7 +168,7 @@ impl PointsToSet {
     ///
     /// Truncates to [`effective_max_pointsto`]; any heap-object member
     /// that would be admitted after the cap is reached is dropped and
-    /// counted via [`record_pointsto_truncation`].  Truncation is
+    /// counted via `record_pointsto_truncation`.  Truncation is
     /// deterministic: the merge proceeds in sorted order, so survivors
     /// are always the smallest `HeapObjectId`s across the two inputs.
     pub fn union(&self, other: &Self) -> Self {
@@ -230,7 +230,7 @@ impl PointsToSet {
     ///
     /// When the set is already at [`effective_max_pointsto`], the new id
     /// is dropped and the drop is counted via
-    /// [`record_pointsto_truncation`].
+    /// `record_pointsto_truncation`.
     pub fn insert(&mut self, id: HeapObjectId) {
         match self.ids.binary_search(&id) {
             Ok(_) => {} // already present

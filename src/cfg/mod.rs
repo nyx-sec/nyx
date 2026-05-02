@@ -6,10 +6,10 @@
 //! name, taint and gate metadata. [`EdgeKind`] distinguishes normal flow,
 //! true/false branches, and exception edges.
 //!
-//! [`build_cfg`] is the main entry point: given a parsed tree and language,
+//! `build_cfg` is the main entry point: given a parsed tree and language,
 //! it produces a [`FileCfg`] (one [`Cfg`] per function in the file) along
 //! with a [`FuncSummaries`] map for pass-1 summary extraction.
-//! [`export_summaries`] converts in-graph [`LocalFuncSummary`] values to
+//! `export_summaries` converts in-graph [`LocalFuncSummary`] values to
 //! the serializable [`crate::summary::FuncSummary`] form.
 
 #![allow(
@@ -79,7 +79,7 @@ use params::{
     is_configured_terminator,
 };
 
-/// Test-only re-export of [`extract_param_meta`] so the external
+/// Test-only re-export of `extract_param_meta` so the external
 /// `tests/typed_extractors_audit.rs` harness can drive the per-param
 /// classifier directly without spinning up the full scan pipeline.
 /// Projects away the destructured-siblings third tuple slot so the
@@ -689,7 +689,7 @@ pub struct FileCfg {
     /// per-file class / trait / interface hierarchy edges.
     /// Each entry is `(sub_container, super_container)` after
     /// language-specific normalisation.  See
-    /// [`crate::cfg::hierarchy`] for the per-language extraction
+    /// `crate::cfg::hierarchy` for the per-language extraction
     /// rules and [`crate::callgraph::TypeHierarchyIndex`] for the
     /// downstream consumer.  Empty for languages without an
     /// extractor (Go, C) and for files with no inheritance / impl

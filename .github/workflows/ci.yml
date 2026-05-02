@@ -153,6 +153,22 @@ jobs:
             exit 1
           fi
 
+  rustdoc:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - name: Check rustdoc links
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --workspace --no-deps --all-features
+
   rust-beta-build:
     name: rust-beta-build
     runs-on: ubuntu-latest

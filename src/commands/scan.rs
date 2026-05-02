@@ -129,7 +129,7 @@ pub struct Diag {
     /// `rs.auth.missing_ownership_check`. Taint findings append a
     /// source-location suffix (`"taint-unsanitised-flow (source 12:3)"`)
     /// so sibling paths with the same sink have distinct IDs for
-    /// deduplication; [`evidence::Evidence::sink_caps`] disambiguates
+    /// deduplication; [`crate::evidence::Evidence::sink_caps`] disambiguates
     /// findings at the same `(path, line, col)` that reach different sinks.
     pub id: String,
     /// High-level finding category (Security, Reliability, Quality).
@@ -881,7 +881,7 @@ static LAST_TOPO_NONRECURSIVE_REFINEMENTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Returns the cumulative count of non-recursive batch refinements
 /// (summary + ssa-summary + body + auth inserts) persisted to
-/// `global_summaries` during the most recent [`run_topo_batches`] call.
+/// `global_summaries` during the most recent `run_topo_batches` call.
 /// Reset to zero at the start of each invocation.
 pub fn last_topo_nonrecursive_refinements() -> usize {
     LAST_TOPO_NONRECURSIVE_REFINEMENTS.load(Ordering::Relaxed)

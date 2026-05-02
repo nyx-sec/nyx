@@ -69,7 +69,7 @@
 //! | Module | Role |
 //! |--------|------|
 //! | [`ast`] | Tree-sitter parsing and two-pass analysis dispatch |
-//! | [`cfg`] | CFG construction from ASTs |
+//! | [`mod@cfg`] | CFG construction from ASTs |
 //! | [`ssa`] | SSA lowering and optimization passes |
 //! | [`taint`] | Forward SSA taint analysis |
 //! | [`cfg_analysis`] | Structural CFG checks (auth gaps, resource leaks, error paths) |

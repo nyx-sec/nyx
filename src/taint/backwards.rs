@@ -149,7 +149,7 @@ pub struct BackwardsCtx<'a> {
     /// Language tag for source-kind heuristics (e.g. `os.getenv` hints).
     pub lang: Lang,
     /// Whole-program summaries: used to discover cross-file bodies and
-    /// [`SsaFuncSummary`] metadata at call instructions.
+    /// [`crate::summary::ssa_summary::SsaFuncSummary`] metadata at call instructions.
     pub global_summaries: Option<&'a GlobalSummaries>,
     /// Pre-lowered intra-file callee bodies keyed by [`FuncKey`].  Shared
     /// with the forward path so we do not lower functions twice.

@@ -71,14 +71,14 @@ pub struct SsaTaintTransfer<'a> {
     /// The [`BodyId`] of the body currently being analysed.  Used as the
     /// owning scope when writing seed entries that leave this body
     /// (e.g. [`extract_ssa_exit_state`]) and as the identity recorded on
-    /// engine notes.  Defaults to [`BodyId(0)`] (top-level) for inline
+    /// engine notes.  Defaults to `BodyId(0)` (top-level) for inline
     /// probes and unit tests that analyse a single synthetic body.
     pub owner_body_id: BodyId,
     /// The [`BodyId`] of this body's lexical parent, if any.  Drives the
     /// `Param`-op reader's lookup into [`Self::global_seed`]: we read
     /// from the parent's scope first (the seed entries produced by
     /// [`extract_ssa_exit_state`] on the parent body), then fall back to
-    /// [`BodyId(0)`] to pick up JS/TS two-level re-keyed entries (see
+    /// `BodyId(0)` to pick up JS/TS two-level re-keyed entries (see
     /// [`filter_seed_to_toplevel`]).  `None` for the top-level body and
     /// for probes with no surrounding scope.
     pub parent_body_id: Option<BodyId>,
@@ -176,7 +176,7 @@ pub struct SsaTaintTransfer<'a> {
     /// to detect handler-style flows that have no registered caller.
     pub auto_seed_handler_params: bool,
     /// Cross-file callee bodies sourced from
-    /// [`GlobalSummaries::bodies_iter`].  Populated in pass 2 to enable
+    /// [`GlobalSummaries`].  Populated in pass 2 to enable
     /// context-sensitive inline re-analysis across file boundaries the
     /// same way `callee_bodies` enables it intra-file.  `None` preserves
     /// non-cross-file behaviour for unit tests and non-cross-file

@@ -258,7 +258,7 @@ pub enum Commands {
         #[arg(long, help_heading = "Output")]
         no_rank: bool,
 
-        /// Show inline-suppressed findings (dimmed, tagged [SUPPRESSED])
+        /// Show inline-suppressed findings (dimmed, tagged \[SUPPRESSED\])
         #[arg(long, help_heading = "Output")]
         show_suppressed: bool,
 

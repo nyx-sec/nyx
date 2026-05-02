@@ -253,7 +253,7 @@ pub struct AnalysisUnit {
     /// Function parameter names whose static type maps to a
     /// payload-incompatible scalar ([`crate::ssa::type_facts::TypeKind::Int`]
     /// or [`crate::ssa::type_facts::TypeKind::Bool`]).  Populated
-    /// per-file by [`super::apply_typed_bounded_params`] using the
+    /// per-file by `apply_typed_bounded_params` using the
     /// SSA-derived `VarTypes` map.  Consulted by
     /// `is_typed_bounded_subject` so parameters like Spring `Long
     /// userId`, Axum `Path<i64>`, or FastAPI `user_id: int` are not
@@ -265,7 +265,7 @@ pub struct AnalysisUnit {
     /// declared type is a payload-incompatible scalar.  Map key is the
     /// parameter name (e.g. `dto`), value is the list of field names
     /// (e.g. `["age", "count"]`).  Populated by
-    /// [`super::apply_typed_bounded_params`] only when the parameter
+    /// `apply_typed_bounded_params` only when the parameter
     /// itself was recognised as a typed extractor, bare parameters
     /// with no framework gate never lift their fields.
     pub typed_bounded_dto_fields: HashMap<String, Vec<String>>,

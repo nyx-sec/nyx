@@ -33,7 +33,7 @@ const MAX_PROBE_PARAMS: usize = 8;
 
 /// Extract a precise per-parameter `SsaFuncSummary` from an already-lowered SSA body.
 ///
-/// For each parameter (up to [`MAX_PROBE_PARAMS`]), runs a taint probe by seeding
+/// For each parameter (up to `MAX_PROBE_PARAMS`), runs a taint probe by seeding
 /// that parameter with `Cap::all()` via `global_seed` and observing what caps
 /// survive to return positions and which sinks fire.  A final probe with no params
 /// tainted detects intrinsic source caps.

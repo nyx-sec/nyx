@@ -67,7 +67,7 @@ pub struct CallGraph {
 pub struct CallGraphAnalysis {
     /// Strongly connected components.
     pub sccs: Vec<Vec<NodeIndex>>,
-    /// Maps each `NodeIndex` to its SCC index in [`sccs`].
+    /// Maps each `NodeIndex` to its SCC index in `sccs`.
     #[allow(dead_code)] // used for future topo-ordered taint propagation
     pub node_to_scc: HashMap<NodeIndex, usize>,
     /// SCC indices in **callee-first** (leaves-first) order.
@@ -172,7 +172,7 @@ pub(crate) fn callee_container_hint(raw: &str) -> &str {
 /// Per-language `(container, method_name)` → candidate [`FuncKey`] index.
 ///
 /// Built once per call-graph construction over every merged
-/// [`FuncSummary`].  Used by edge insertion to restrict an indirect method
+/// [`crate::summary::FuncSummary`].  Used by edge insertion to restrict an indirect method
 /// call (`receiver.method(...)`) to only those targets whose defining
 /// container matches the receiver's static type.  Without a container
 /// hint the index falls back to the bare-name list, matching today's
@@ -284,7 +284,7 @@ impl ClassMethodIndex {
 ///
 /// Covers Java `extends`/`implements`, Rust `impl Trait for Type`, TS
 /// `extends`/`implements`, Python `class X(Base)`, plus PHP/Ruby/C++
-/// (see [`crate::cfg::hierarchy`]). Go's structural interfaces are
+/// (see `crate::cfg::hierarchy`). Go's structural interfaces are
 /// intentionally omitted, name-only resolution is used instead.
 ///
 /// Container names are bare (no namespace), so cross-namespace aliases
@@ -816,7 +816,7 @@ pub fn analyse(cg: &CallGraph) -> CallGraphAnalysis {
 /// such SCC has nodes in more than one file (`cross_file`).
 ///
 /// `has_mutual_recursion` triggers the SCC fixed-point loop in
-/// [`crate::commands::scan::run_topo_batches`].  `cross_file` is a tighter
+/// `run_topo_batches`.  `cross_file` is a tighter
 /// signal used by joint fixed-point convergence: it implies the
 /// recursion involves at least one cross-file call edge, so the inline
 /// cache and per-iteration findings need joint convergence, not just

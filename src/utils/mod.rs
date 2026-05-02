@@ -3,7 +3,7 @@
 //! Re-exports [`Config`], [`AnalysisOptions`], and [`DetectorOptions`] from
 //! their submodules. [`Config`] is loaded from `nyx.conf` and passed through
 //! the top-level call stack. [`AnalysisOptions`] is installed once per process
-//! via an `OnceLock` and read back via [`analysis_options::get`] from deep
+//! via an `OnceLock` and read back via [`analysis_options::current`] from deep
 //! inside the analysis pipeline without threading it through every call frame.
 //!
 //! Other submodules: `path` (root-relative path utilities and traversal guards),
