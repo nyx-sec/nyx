@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-02T04:13:36Z",
+  "timestamp": "2026-05-02T07:03:06Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -2534,21 +2534,13 @@
       "language": "go",
       "vuln_class": "safe",
       "is_vulnerable": false,
-      "outcome_file_level": "FP",
-      "outcome_rule_level": "FP",
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
       "outcome_location_level": null,
       "matched_rule_ids": [],
-      "unexpected_rule_ids": [
-        "go.cmdi.exec_command",
-        "state-unauthed-access",
-        "taint-unsanitised-flow (source 17:31)"
-      ],
-      "all_finding_ids": [
-        "go.cmdi.exec_command",
-        "state-unauthed-access",
-        "taint-unsanitised-flow (source 17:31)"
-      ],
-      "security_finding_count": 3,
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
       "non_security_finding_count": 0
     },
     {
@@ -8794,21 +8786,21 @@
   ],
   "aggregate_file_level": {
     "tp": 244,
-    "fp": 1,
+    "fp": 0,
     "fn_": 0,
-    "tn": 246,
-    "precision": 0.9959183673469387,
+    "tn": 247,
+    "precision": 1.0,
     "recall": 1.0,
-    "f1": 0.9979550102249488
+    "f1": 1.0
   },
   "aggregate_rule_level": {
     "tp": 244,
-    "fp": 1,
+    "fp": 0,
     "fn_": 0,
-    "tn": 246,
-    "precision": 0.9959183673469387,
+    "tn": 247,
+    "precision": 1.0,
     "recall": 1.0,
-    "f1": 0.9979550102249488
+    "f1": 1.0
   },
   "by_language": {
     "c": {
@@ -8831,12 +8823,12 @@
     },
     "go": {
       "tp": 26,
-      "fp": 1,
+      "fp": 0,
       "fn_": 0,
-      "tn": 29,
-      "precision": 0.9629629629629629,
+      "tn": 30,
+      "precision": 1.0,
       "recall": 1.0,
-      "f1": 0.9811320754716981
+      "f1": 1.0
     },
     "java": {
       "tp": 21,
@@ -9031,12 +9023,12 @@
     },
     "safe": {
       "tp": 0,
-      "fp": 1,
+      "fp": 0,
       "fn_": 0,
-      "tn": 246,
-      "precision": 0.0,
+      "tn": 247,
+      "precision": 1.0,
       "recall": 1.0,
-      "f1": 0.0
+      "f1": 1.0
     },
     "secrets": {
       "tp": 1,
@@ -9087,30 +9079,30 @@
   "by_confidence": {
     ">=High": {
       "tp": 74,
-      "fp": 109,
+      "fp": 108,
       "fn_": 170,
-      "tn": 138,
-      "precision": 0.40437158469945356,
+      "tn": 139,
+      "precision": 0.4065934065934066,
       "recall": 0.30327868852459017,
-      "f1": 0.34660421545667447
+      "f1": 0.3474178403755868
     },
     ">=Low": {
       "tp": 75,
-      "fp": 130,
+      "fp": 129,
       "fn_": 169,
-      "tn": 117,
-      "precision": 0.36585365853658536,
+      "tn": 118,
+      "precision": 0.36764705882352944,
       "recall": 0.3073770491803279,
-      "f1": 0.33407572383073497
+      "f1": 0.3348214285714286
     },
     ">=Medium": {
       "tp": 75,
-      "fp": 125,
+      "fp": 124,
       "fn_": 169,
-      "tn": 122,
-      "precision": 0.375,
+      "tn": 123,
+      "precision": 0.3768844221105528,
       "recall": 0.3073770491803279,
-      "f1": 0.3378378378378379
+      "f1": 0.33860045146726864
     }
   }
 }

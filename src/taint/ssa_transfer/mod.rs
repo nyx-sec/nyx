@@ -3086,6 +3086,48 @@ pub(super) fn transfer_inst(
                 return;
             }
 
+            // Chain-wrapper sanitiser detection.  Computed up-front so
+            // both the container-element-write hook and the outer-
+            // callee taint suppression block below can consult it.
+            // Walks `info.arg_callees` for the chain shape
+            // `outer(... wrapper(<source>) ...)`, collecting any
+            // sanitiser caps the wrapper's summary or label exposes.
+            // The set is empty when there is no chain wrapper or when
+            // none of the wrappers expose sanitisation.
+            let caller_func_for_chain = info.ast.enclosing_func.as_deref().unwrap_or("");
+            let mut chain_wrapper_sanitizer_caps = Cap::empty();
+            if !info.arg_callees.is_empty() {
+                for maybe_callee in &info.arg_callees {
+                    if let Some(wrap_callee) = maybe_callee {
+                        if Some(wrap_callee.as_str()) == info.call.outer_callee.as_deref() {
+                            continue;
+                        }
+                        if let Some(resolved) = resolve_callee_hinted(
+                            transfer,
+                            wrap_callee,
+                            caller_func_for_chain,
+                            info.call.call_ordinal,
+                            None,
+                        ) {
+                            if !resolved.sanitizer_caps.is_empty() {
+                                chain_wrapper_sanitizer_caps |= resolved.sanitizer_caps;
+                            }
+                        } else {
+                            let labels = crate::labels::classify_all(
+                                transfer.lang.as_str(),
+                                wrap_callee,
+                                transfer.extra_labels,
+                            );
+                            for lbl in &labels {
+                                if let DataLabel::Sanitizer(bits) = lbl {
+                                    chain_wrapper_sanitizer_caps |= *bits;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Container element-write hook. Runs before other Call-arm
             // processing so `try_container_propagation`'s early-return
             // can't bypass us. Writes only into `(loc, ELEM)` cells on
@@ -3095,8 +3137,48 @@ pub(super) fn transfer_inst(
             // through: cell `must = AND` over args (every writer must be
             // must-validated), `may = OR` over args. Anonymous SSA temps
             // contribute `false/false` and break the `must` invariant.
-            if let (Some(pf), Some(rcv)) = (transfer.pointer_facts, *receiver) {
-                if crate::pointer::is_container_write_callee(callee) {
+            //
+            // Two callee shapes:
+            //   * Method-style write (`receiver.push(val)`) — `receiver`
+            //     channel resolves the container, value args start at
+            //     position 0.
+            //   * Go `append` builtin (or chain shape with
+            //     `outer_callee == "append"`) — no receiver channel,
+            //     `args[0]` is the slice itself, value args start at
+            //     position 1.
+            if let Some(pf) = transfer.pointer_facts {
+                let go_append_chain = transfer.lang == Lang::Go
+                    && receiver.is_none()
+                    && (callee == "append" || info.call.outer_callee.as_deref() == Some("append"));
+                // For Go append, args[0] is the input slice whose
+                // points-to set may be empty when the slice was just
+                // initialised with a composite literal (`cmds :=
+                // []string{}`).  The call result (inst.value) carries
+                // the fresh allocation site that pointer analysis
+                // attaches to every Call op, and downstream uses of
+                // the slice flow through that result, so it is the
+                // authoritative container identity.  Fall back to
+                // args[0] when the result has no pt set yet.
+                let resolved_recv: Option<SsaValue> = if let Some(rcv) = *receiver {
+                    Some(rcv)
+                } else if go_append_chain {
+                    let result_v = inst.value;
+                    let result_pt = pf.pt(result_v);
+                    if !result_pt.is_empty() && !result_pt.is_top() {
+                        Some(result_v)
+                    } else {
+                        args.first().and_then(|a| a.first().copied())
+                    }
+                } else {
+                    None
+                };
+                let value_arg_start = if go_append_chain { 1 } else { 0 };
+                let write_callee_match = if go_append_chain {
+                    true
+                } else {
+                    crate::pointer::is_container_write_callee(callee)
+                };
+                if let (Some(rcv), true) = (resolved_recv, write_callee_match) {
                     let pt = pf.pt(rcv);
                     if !pt.is_empty() && !pt.is_top() {
                         let mut elem_caps = Cap::empty();
@@ -3105,7 +3187,7 @@ pub(super) fn transfer_inst(
                         let mut elem_must_all = true; // AND over args (vacuously true for empty args)
                         let mut elem_may_any = false; // OR over args
                         let mut saw_any_arg = false;
-                        for arg_group in args {
+                        for arg_group in args.iter().skip(value_arg_start) {
                             for &arg_v in arg_group {
                                 saw_any_arg = true;
                                 if let Some(t) = state.get(arg_v) {
@@ -3119,6 +3201,35 @@ pub(super) fn transfer_inst(
                                     ssa_value_validated_bits(arg_v, ssa, transfer.interner, state);
                                 elem_must_all &= am;
                                 elem_may_any |= av;
+                            }
+                        }
+                        // Chain-shape Go append: the inner Source label
+                        // fires on this same call instruction, so its
+                        // caps are not yet on any positional arg's SSA
+                        // value at this point.  Pull them in directly
+                        // from the source labels so the W4 cell sees
+                        // the real source caps; without this the cell
+                        // is empty for the chain shape and the index-
+                        // read taint flow appears clean for the wrong
+                        // reason.
+                        if go_append_chain {
+                            for lbl in &info.taint.labels {
+                                if let DataLabel::Source(bits) = lbl {
+                                    elem_caps |= *bits;
+                                    saw_any_arg = true;
+                                }
+                            }
+                            // A chain-shape sanitising wrapper around the
+                            // source counts as the validation that the
+                            // ELEM cell needs.  Each entry in
+                            // `info.arg_callees` whose summary or label
+                            // exposes non-empty `sanitizer_caps`
+                            // contributes to validation, the cell's
+                            // must/may bits flip on so the index-read
+                            // counterpart sees the value as validated.
+                            if !chain_wrapper_sanitizer_caps.is_empty() {
+                                elem_must_all = true;
+                                elem_may_any = true;
                             }
                         }
                         // Vacuous AND: a zero-arg container write supplies
@@ -3264,6 +3375,20 @@ pub(super) fn transfer_inst(
                 if let DataLabel::Sanitizer(bits) = lbl {
                     sanitizer_bits |= *bits;
                 }
+            }
+
+            // Call-site replace sanitizer detection.  Recognises
+            // `s.replace*(pat, rep)` / `strings.ReplaceAll(s, pat, rep)` /
+            // `str_replace($pat, $rep, $s)` shapes whose pattern is a
+            // concrete shell/HTML/SQL escape literal and treats the call
+            // as a sanitizer for the corresponding caps.  Mirrors the
+            // semantics that label-rule sanitizers already provide.
+            if let Some(extra) = crate::symex::strings::detect_call_site_replace_sanitizer(
+                callee,
+                transfer.lang,
+                &info.call.arg_string_literals,
+            ) {
+                sanitizer_bits |= extra;
             }
 
             // Resolve callee summary, always attempt, even when explicit
@@ -4068,7 +4193,10 @@ pub(super) fn transfer_inst(
             // produces return_bits. Check if the wrapper function blocks taint:
             // if its SSA summary shows no propagation, no source_caps, and no
             // container identity return, the return value is independent of its
-            // arguments, clear return_bits.
+            // arguments, clear return_bits.  Additionally apply the wrapper's
+            // sanitizer caps (StripBits transforms) so a sanitising wrapper
+            // like `validate(<source>)` clears the relevant cap bits even
+            // when the wrapper still propagates other taint.
             if !return_bits.is_empty() && has_source_label {
                 if let Some(ref oc) = info.call.outer_callee {
                     if let Some(ref oc_sum) = resolve_callee_hinted(
@@ -4083,7 +4211,32 @@ pub(super) fn transfer_inst(
                             // no internal sources reaching return.
                             return_bits = Cap::empty();
                             return_origins.clear();
+                        } else if !oc_sum.sanitizer_caps.is_empty() {
+                            return_bits &= !oc_sum.sanitizer_caps;
                         }
+                    }
+                }
+            }
+
+            // Chain-wrapper sanitizer suppression: when the chain shape
+            // `outer(... wrapper(<source>) ...)` puts a sanitising wrapper
+            // function between the inner Source and the outer call,
+            // mark the call result's symbol as validated so any
+            // downstream sink event over the same value fires with
+            // `all_validated = true`, suppressing the taint finding and
+            // (via [`record_path_safe_suppressed_span`]) the
+            // `state-unauthed-access` finding on the same span.
+            // `chain_wrapper_sanitizer_caps` is computed up-front above
+            // so the container-element-write hook can also consult it.
+            if has_source_label && !chain_wrapper_sanitizer_caps.is_empty() {
+                if let Some(name) = ssa
+                    .value_defs
+                    .get(inst.value.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                {
+                    if let Some(sym) = transfer.interner.get(name) {
+                        state.validated_must.insert(sym);
+                        state.validated_may.insert(sym);
                     }
                 }
             }

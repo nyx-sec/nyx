@@ -296,16 +296,16 @@ pub fn ssa_events_to_findings(
             crate::taint::ssa_transfer::state::record_all_validated_span(span);
 
             // Mirror the path-safety pathway: when the SSA engine has
-            // already proved every tainted input to a privileged
-            // FILE_IO sink passed through validation, publish the sink
-            // span so the state-analysis pass suppresses
-            // `state-unauthed-access` on the same span.  Trust here
-            // matches the trust the engine already extends when
-            // dropping the taint flow finding.  Scoped to FILE_IO sinks
-            // because that is the only sink class state-unauthed-access
-            // currently fires on; broadening would risk stretching
-            // validator-name heuristics into unrelated finding classes.
-            if event.sink_caps.intersects(Cap::FILE_IO) {
+            // already proved every tainted input to a privileged sink
+            // passed through validation, publish the sink span so the
+            // state-analysis pass suppresses `state-unauthed-access`
+            // on the same span.  Trust here matches the trust the
+            // engine already extends when dropping the taint flow
+            // finding.  Covers the privileged sink classes
+            // [`is_privileged_sink`] keys on (FILE_IO + SHELL_ESCAPE);
+            // broadening past those would stretch the validator-trust
+            // heuristic into unrelated finding classes.
+            if event.sink_caps.intersects(Cap::FILE_IO | Cap::SHELL_ESCAPE) {
                 crate::taint::ssa_transfer::state::record_path_safe_suppressed_span(span);
             }
             continue;
