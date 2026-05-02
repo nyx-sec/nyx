@@ -3094,37 +3094,69 @@ pub(super) fn transfer_inst(
             // sanitiser caps the wrapper's summary or label exposes.
             // The set is empty when there is no chain wrapper or when
             // none of the wrappers expose sanitisation.
+            //
+            // Argument attribution: when `find_classifiable_inner_call`
+            // overrode the callee to an inner Source, the source can be
+            // either (a) a direct argument call (`outer(escape(x),
+            // source())`) or (b) nested inside one wrapper
+            // (`outer(escape(source(x)))`).  Crediting any wrapper's
+            // sanitizer caps when the source sits in a different argument
+            // position would suppress real taint flow.
+            //
+            //   * `source_arg_pos = Some(N)` — the source call is the
+            //     immediate callee of arg N (`arg_callees[N] == callee`).
+            //     No other-arg wrapper can sanitize it.  Credit nothing.
+            //   * `source_arg_pos = None` — the source is nested inside
+            //     some arg's wrapper.  Credit only when exactly one arg
+            //     has a sanitizing wrapper, since that one must be the
+            //     parent of the nested source.  Multiple sanitizing
+            //     wrappers across different positions is ambiguous; stay
+            //     conservative and credit nothing.
             let caller_func_for_chain = info.ast.enclosing_func.as_deref().unwrap_or("");
             let mut chain_wrapper_sanitizer_caps = Cap::empty();
             if !info.arg_callees.is_empty() {
-                for maybe_callee in &info.arg_callees {
-                    if let Some(wrap_callee) = maybe_callee {
-                        if Some(wrap_callee.as_str()) == info.call.outer_callee.as_deref() {
-                            continue;
-                        }
-                        if let Some(resolved) = resolve_callee_hinted(
-                            transfer,
+                let source_arg_pos = info
+                    .arg_callees
+                    .iter()
+                    .position(|c| c.as_deref() == Some(callee.as_str()));
+                let mut per_arg_sanitizer_caps: SmallVec<[Cap; 4]> = SmallVec::new();
+                for (idx, maybe_callee) in info.arg_callees.iter().enumerate() {
+                    if Some(idx) == source_arg_pos {
+                        continue;
+                    }
+                    let Some(wrap_callee) = maybe_callee else {
+                        continue;
+                    };
+                    if Some(wrap_callee.as_str()) == info.call.outer_callee.as_deref() {
+                        continue;
+                    }
+                    let mut caps_here = Cap::empty();
+                    if let Some(resolved) = resolve_callee_hinted(
+                        transfer,
+                        wrap_callee,
+                        caller_func_for_chain,
+                        info.call.call_ordinal,
+                        None,
+                    ) {
+                        caps_here |= resolved.sanitizer_caps;
+                    } else {
+                        let labels = crate::labels::classify_all(
+                            transfer.lang.as_str(),
                             wrap_callee,
-                            caller_func_for_chain,
-                            info.call.call_ordinal,
-                            None,
-                        ) {
-                            if !resolved.sanitizer_caps.is_empty() {
-                                chain_wrapper_sanitizer_caps |= resolved.sanitizer_caps;
-                            }
-                        } else {
-                            let labels = crate::labels::classify_all(
-                                transfer.lang.as_str(),
-                                wrap_callee,
-                                transfer.extra_labels,
-                            );
-                            for lbl in &labels {
-                                if let DataLabel::Sanitizer(bits) = lbl {
-                                    chain_wrapper_sanitizer_caps |= *bits;
-                                }
+                            transfer.extra_labels,
+                        );
+                        for lbl in &labels {
+                            if let DataLabel::Sanitizer(bits) = lbl {
+                                caps_here |= *bits;
                             }
                         }
                     }
+                    if !caps_here.is_empty() {
+                        per_arg_sanitizer_caps.push(caps_here);
+                    }
+                }
+                if source_arg_pos.is_none() && per_arg_sanitizer_caps.len() == 1 {
+                    chain_wrapper_sanitizer_caps = per_arg_sanitizer_caps[0];
                 }
             }
 
