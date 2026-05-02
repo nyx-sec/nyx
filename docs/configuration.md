@@ -394,7 +394,7 @@ engine. No flag is needed; CI pipelines keep working across upgrades.
 The rebuild is logged at `info` level:
 
 ```
-engine version changed (0.4.0 → 0.5.0), rebuilding index
+engine version changed (0.5.0 → 0.6.0), rebuilding index
 ```
 
 If you see this once per upgrade it is working as intended. If you see it on

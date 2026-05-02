@@ -2683,11 +2683,7 @@ fn is_string_literal_with_text(node: tree_sitter::Node, text: &str, bytes: &[u8]
 /// Conservative refusals (kept firing): user-defined struct / class
 /// pointer targets, template type parameters (`T*`), and any target the
 /// normaliser cannot identify.
-fn is_cpp_cast_target_type_safe(
-    rule_id: &str,
-    cap_node: tree_sitter::Node,
-    bytes: &[u8],
-) -> bool {
+fn is_cpp_cast_target_type_safe(rule_id: &str, cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
     if rule_id != "cpp.memory.reinterpret_cast" {
         return false;
     }
@@ -2712,7 +2708,11 @@ fn is_cpp_cast_target_type_safe(
     let Ok(text) = std::str::from_utf8(&bytes[targs.byte_range()]) else {
         return false;
     };
-    let inner = text.trim().trim_start_matches('<').trim_end_matches('>').trim();
+    let inner = text
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim();
     cpp_cast_target_type_is_safe(inner)
 }
 
@@ -2980,17 +2980,15 @@ fn is_php_weak_hash_non_crypto_use(cap_node: tree_sitter::Node, bytes: &[u8]) ->
                 // crypto-comparison wrappers (`hash_equals`, `verify`,
                 // `password_verify`) keep firing because their method
                 // name does not match the verb set.
-                let name_node = parent
-                    .child_by_field_name("name")
-                    .or_else(|| {
-                        // Fallback: last named child is the method name.
-                        let count = parent.named_child_count();
-                        if count == 0 {
-                            None
-                        } else {
-                            parent.named_child(count as u32 - 1)
-                        }
-                    });
+                let name_node = parent.child_by_field_name("name").or_else(|| {
+                    // Fallback: last named child is the method name.
+                    let count = parent.named_child_count();
+                    if count == 0 {
+                        None
+                    } else {
+                        parent.named_child(count as u32 - 1)
+                    }
+                });
                 if let Some(nn) = name_node
                     && nn.kind() == "name"
                     && let Ok(method) = std::str::from_utf8(&bytes[nn.byte_range()])
@@ -3068,16 +3066,14 @@ fn resolve_php_lvalue_name(lhs: tree_sitter::Node, bytes: &[u8]) -> Option<Strin
                 .map(String::from)
         }
         "member_access_expression" => {
-            let n = lhs
-                .child_by_field_name("name")
-                .or_else(|| {
-                    let count = lhs.named_child_count();
-                    if count == 0 {
-                        None
-                    } else {
-                        lhs.named_child(count as u32 - 1)
-                    }
-                })?;
+            let n = lhs.child_by_field_name("name").or_else(|| {
+                let count = lhs.named_child_count();
+                if count == 0 {
+                    None
+                } else {
+                    lhs.named_child(count as u32 - 1)
+                }
+            })?;
             // Property access can name a `name` (bare ident) or a
             // `variable_name` (dynamic ${$x} — which we don't resolve).
             if n.kind() == "name" {
@@ -3365,7 +3361,14 @@ fn method_is_lookup_verb(method: &str) -> bool {
     // a few non-crypto-typed-result suffixes preceded by a get/set/has
     // verb.
     static SUFFIX_HINTS: &[&str] = &[
-        "cachekey", "key", "id", "hash", "etag", "uid", "tag", "fingerprint",
+        "cachekey",
+        "key",
+        "id",
+        "hash",
+        "etag",
+        "uid",
+        "tag",
+        "fingerprint",
     ];
     if let Some(rest) = lower
         .strip_prefix("get")
@@ -4422,7 +4425,8 @@ fn php_weak_hash_non_crypto_use_recognises_canonical_shapes() {
     );
 
     // Crypto consumer — keep firing.  $this->password = md5($pwd).
-    let code = b"<?php\nclass C { public $password; function f($p) { $this->password = md5($p); } }\n";
+    let code =
+        b"<?php\nclass C { public $password; function f($p) { $this->password = md5($p); } }\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_php_capture(&tree, code, q);
     assert!(
@@ -4701,7 +4705,8 @@ fn cpp_reinterpret_cast_layer_e_recognises_byte_pointer_targets() {
     );
 
     // reinterpret_cast<uintptr_t>(p) — integer round-trip.
-    let code = b"#include <cstdint>\nuintptr_t f(int* p) { return reinterpret_cast<uintptr_t>(p); }\n";
+    let code =
+        b"#include <cstdint>\nuintptr_t f(int* p) { return reinterpret_cast<uintptr_t>(p); }\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_cpp_capture(&tree, code, q);
     assert!(

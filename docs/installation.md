@@ -61,7 +61,7 @@ Optional features:
 Nyx stores its scanner version in the project's index database. When the binary's version differs from the stored version, the index is wiped on the next scan and rebuilt against the new engine. You'll see one info-level log line:
 
 ```
-engine version changed (0.4.0 → 0.5.0), rebuilding index
+engine version changed (0.5.0 → 0.6.0), rebuilding index
 ```
 
 No flag needed. If you see this on *every* scan, the metadata row isn't being persisted; file an issue.

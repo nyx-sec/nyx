@@ -116,7 +116,8 @@ fn ruby_inner_call_fallback_classifies_wrapper_around_file_read() {
 
     let info = &cfg[sink];
     assert!(
-        info.taint.labels
+        info.taint
+            .labels
             .iter()
             .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(crate::labels::Cap::FILE_IO))),
         "wrapper-around-File.read node must carry the FILE_IO sink label"
@@ -147,7 +148,8 @@ fn ruby_inner_call_fallback_classifies_bare_outer_around_file_read() {
 
     let info = &cfg[sink];
     assert!(
-        info.taint.labels
+        info.taint
+            .labels
             .iter()
             .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(crate::labels::Cap::FILE_IO))),
         "wrapper-around-File.read node must carry FILE_IO sink label"
