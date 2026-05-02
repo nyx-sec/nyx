@@ -1,3 +1,16 @@
+//! Per-language source, sanitizer, and sink rule registries.
+//!
+//! The central type is [`DataLabel`], which pairs a [`Cap`] bitflag set with
+//! a role (Source, Sanitizer, Sink). [`LabelRule`] maps AST text patterns to
+//! labels. [`classify`] and [`classify_all`] look up a callee name against
+//! the active language's rule table; [`classify_gated_sink`] handles
+//! argument-role-aware sinks where one argument controls whether the call is
+//! dangerous at all.
+//!
+//! Rules for each language live in per-language submodules (`rust`, `java`,
+//! `go`, `python`, `php`, `ruby`, `javascript`, `typescript`, `c`, `cpp`).
+//! The [`Cap`] bitflag type is defined here and shared with the taint engine.
+
 mod c;
 mod cpp;
 mod go;
@@ -125,19 +138,58 @@ pub struct SinkGate {
 }
 
 bitflags! {
+    /// Security capability bits for sources, sanitizers, and sinks.
+    ///
+    /// Each bit represents a security-relevant property. The meaning depends on
+    /// which role the [`Cap`] value is attached to:
+    ///
+    /// - **Source**: which attack classes this tainted value can potentially
+    ///   trigger. Sources usually carry [`Cap::all()`] so they match any sink.
+    ///   [`ENV_VAR`](Cap::ENV_VAR) is an exception — it marks origin rather
+    ///   than reach.
+    /// - **Sanitizer**: which attack classes this function strips. A sanitizer
+    ///   labelled with [`HTML_ESCAPE`](Cap::HTML_ESCAPE) clears the XSS-relevant
+    ///   bits from tainted values that flow through it.
+    /// - **Sink**: which capability bits must be present on the incoming tainted
+    ///   value for a finding to fire. A SQL sink requires [`SQL_QUERY`](Cap::SQL_QUERY).
+    ///
+    /// In practice: a finding fires when a tainted value reaches a sink and
+    /// `(value_caps & sink_caps) != 0`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Cap: u16 {
+        /// Taint that originated from an environment variable read.
+        /// Used as a source-origin marker for env-injection rules.
         const ENV_VAR         = 0b0000_0000_0000_0001;  // bit 0
+        /// Sanitizer: the value has passed through HTML entity escaping.
+        /// Strips XSS risk from values that reach HTML output sinks.
         const HTML_ESCAPE     = 0b0000_0000_0000_0010;  // bit 1
+        /// Sanitizer: the value has been shell-argument escaped.
+        /// Strips command-injection risk before shell sinks.
         const SHELL_ESCAPE    = 0b0000_0000_0000_0100;  // bit 2
+        /// Sanitizer: the value has been percent-encoded for use in a URL.
         const URL_ENCODE      = 0b0000_0000_0000_1000;  // bit 3
+        /// Sanitizer: the value was parsed through a structured JSON decoder
+        /// (as opposed to `eval`-based or regex parsing).
         const JSON_PARSE      = 0b0000_0000_0001_0000;  // bit 4
+        /// Sink: file system read or write operation (path traversal, arbitrary
+        /// file read/write).
         const FILE_IO         = 0b0000_0000_0010_0000;  // bit 5
+        /// Sink: format string injection (e.g. `printf`-family, `String.format`).
         const FMT_STRING      = 0b0000_0000_0100_0000;  // bit 6
+        /// Sink: SQL query construction. Fires for string-concatenated queries
+        /// and parameterized-query builders where the query text itself is tainted.
         const SQL_QUERY       = 0b0000_0000_1000_0000;  // bit 7
+        /// Sink: unsafe object deserialization (Java `ObjectInputStream`,
+        /// Python `pickle`, Ruby `Marshal`, PHP `unserialize`, etc.).
         const DESERIALIZE     = 0b0000_0001_0000_0000;  // bit 8
+        /// Sink: server-side request forgery. Fires when attacker-controlled
+        /// data reaches the destination URL of an outbound HTTP request.
         const SSRF            = 0b0000_0010_0000_0000;  // bit 9
+        /// Sink: code or command execution (shell injection, `eval`, `exec`,
+        /// dynamic `require`/`import`, template injection).
         const CODE_EXEC       = 0b0000_0100_0000_0000;  // bit 10
+        /// Sink: cryptographic operation with a tainted algorithm name or seed
+        /// (weak-crypto / predictable-randomness patterns).
         const CRYPTO          = 0b0000_1000_0000_0000;  // bit 11
         /// Request-bound, caller-supplied identifier that has not yet been
         /// validated against an ownership/membership check.  Used as the

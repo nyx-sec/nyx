@@ -1,4 +1,55 @@
-#![doc = include_str!(concat!(env!("OUT_DIR"), "/state.md"))]
+//! State-model analysis: resource lifecycle and authentication state tracking.
+//!
+//! Runs a per-function state machine over the CFG to detect use-after-close,
+//! double-close, resource leaks, and unauthenticated access to privileged
+//! operations.
+//!
+//! Enabled by default. Disable via `scanner.enable_state_analysis = false`.
+//! Runs in `--mode full` and `--mode taint`; skipped in AST-only mode.
+//!
+//! # Rule IDs
+//!
+//! | Rule ID | Severity | What it detects |
+//! |---------|----------|-----------------|
+//! | `state-use-after-close` | High | Operation on a resource after it was closed |
+//! | `state-double-close` | Medium | Resource closed twice |
+//! | `state-resource-leak` | Medium | Resource opened and never closed on any path |
+//! | `state-resource-leak-possible` | Low | Resource closed on some paths but not others |
+//! | `state-unauthed-access` | High | Web handler reaches privileged sink without an auth call |
+//!
+//! # Managed-resource suppression
+//!
+//! Language-specific cleanup patterns suppress leak findings automatically:
+//!
+//! | Pattern | Languages |
+//! |---------|-----------|
+//! | RAII / Drop | Rust (all leak findings suppressed except `alloc`/`dealloc`) |
+//! | Smart pointers (`make_unique`, `make_shared`) | C++ |
+//! | `defer f.Close()` | Go |
+//! | `with open(f) as f:` | Python |
+//! | try-with-resources | Java |
+//!
+//! # Tracked acquire/release pairs
+//!
+//! C/C++: `fopen`/`fclose`, `open`/`close`, `socket`/`close`,
+//! `malloc`/`free`, `pthread_mutex_lock`/`pthread_mutex_unlock`,
+//! `new`/`delete`.
+//!
+//! Rust: `File::open`/`close`, `TcpStream::connect`/`shutdown`,
+//! mutex `lock`/`read`/`write`/`drop`.
+//!
+//! Java: stream/connection/socket constructors / `close`, `getConnection`/`close`.
+//!
+//! Go, Python, JavaScript, Ruby, PHP follow language-idiomatic equivalents.
+//!
+//! # Submodules
+//!
+//! - [`domain`]: state lattice (`ResourceState`, `AuthState`, `StateCell`)
+//! - [`engine`]: generic forward transfer engine (`Transfer` trait, `run_forward`)
+//! - [`facts`]: per-node state fact extraction
+//! - [`lattice`]: lattice join/meet for state values
+//! - [`symbol`]: resource symbol normalisation
+//! - [`transfer`]: `DefaultTransfer` — the concrete resource-lifecycle transfer function
 
 pub mod domain;
 pub mod engine;

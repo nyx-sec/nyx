@@ -1,3 +1,15 @@
+//! Whole-program call graph built from pass-1 function summaries.
+//!
+//! Nodes are [`FuncKey`]s (one per function definition across all files).
+//! Edges represent call-site relationships resolved after pass 1 completes.
+//! Unresolved and ambiguous callees are tracked separately so they can be
+//! surfaced in diagnostics without blocking analysis.
+//!
+//! [`CallGraphAnalysis`] computes SCCs and topological order. The scanner
+//! uses topo order in pass 2 so callees are analysed before their callers,
+//! and iterates over SCC groups to a fixed point for mutually recursive
+//! functions.
+
 use crate::interop::InteropEdge;
 use crate::rust_resolve::RustUseMap;
 use crate::summary::{CalleeQuery, CalleeResolution, GlobalSummaries};

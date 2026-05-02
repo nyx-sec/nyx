@@ -1,3 +1,21 @@
+//! SSA IR, lowering, and optimization passes.
+//!
+//! The pipeline converts a CFG into a pruned SSA body consumed by the taint
+//! analysis engine. [`lower_to_ssa`] inserts phi nodes via Cytron's algorithm
+//! and renames variables along the dominator tree. [`optimize_ssa`] runs
+//! constant propagation, branch pruning, copy propagation, DCE, and type
+//! fact analysis in sequence.
+//!
+//! Key submodules:
+//! - [`ir`]: core types (`SsaValue`, `SsaOp`, `SsaInst`, `SsaBlock`, `SsaBody`)
+//! - [`lower`]: CFG-to-SSA lowering with Cytron phi insertion and dominator-tree rename
+//! - [`const_prop`]: sparse conditional constant propagation with branch pruning
+//! - [`copy_prop`]: copy and alias propagation
+//! - [`dce`]: dead definition elimination
+//! - [`type_facts`]: per-value type inference (`TypeKind`, `TypeFactResult`)
+//! - [`heap`]: abstract heap for container element abstractions
+//! - [`alias`]: base-variable alias groups from copy propagation
+
 #[allow(dead_code)] // IR types, fields used by Display impl, tests, and downstream analyses
 pub mod alias;
 pub mod const_prop;

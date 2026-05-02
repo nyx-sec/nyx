@@ -1,4 +1,52 @@
-#![doc = include_str!(concat!(env!("OUT_DIR"), "/patterns.md"))]
+//! AST pattern matching: tree-sitter queries over dangerous structural shapes.
+//!
+//! Patterns match constructs based on syntax alone, with no dataflow or CFG.
+//! A match means the construct is present; it is not proof that it is
+//! reachable or exploitable. Patterns run in every analysis mode and are the
+//! only active detector in `--mode ast`.
+//!
+//! # Rule ID format
+//!
+//! ```text
+//! <lang>.<category>.<name>
+//! ```
+//!
+//! Examples: `js.code_exec.eval`, `py.deser.pickle_loads`, `c.memory.gets`,
+//! `java.sqli.execute_concat`.
+//!
+//! # Tiers
+//!
+//! - **Tier A**: structural presence alone is high-signal. `gets`, `eval`,
+//!   `pickle.loads`, `mem::transmute`. No guard needed.
+//! - **Tier B**: pattern includes a tree-sitter heuristic guard.
+//!   `java.sqli.execute_concat` fires only when `executeQuery` receives a
+//!   `binary_expression` (concatenation), not a literal or parameterized call.
+//!
+//! # Categories
+//!
+//! | Category | Examples |
+//! |----------|---------|
+//! | `CommandExec` | `system`, `os.system`, `Runtime.exec`, backticks |
+//! | `CodeExec` | `eval`, `Function`, PHP `assert("string")`, `class_eval` |
+//! | `Deserialization` | `pickle.loads`, `yaml.load`, `Marshal.load`, `readObject` |
+//! | `SqlInjection` | `executeQuery` with concatenated argument (Tier B) |
+//! | `PathTraversal` | PHP `include $var` |
+//! | `Xss` | `innerHTML`, `document.write`, `insertAdjacentHTML` |
+//! | `Crypto` | `md5`, `sha1`, `Math.random` for security use |
+//! | `Secrets` | Hardcoded API keys (Go, JS, TS) |
+//! | `InsecureTransport` | `InsecureSkipVerify`, `fetch("http://...")` |
+//! | `Reflection` | `Class.forName`, `Method.invoke`, `constantize` |
+//! | `MemorySafety` | `transmute`, `unsafe`, `gets`, `strcpy`, `sprintf` |
+//! | `Prototype` | `__proto__` assignment, `Object.prototype.*` |
+//! | `Config` | CORS dynamic origin, `rejectUnauthorized: false` |
+//! | `CodeQuality` | `unwrap`, `panic!`, `as any` |
+//!
+//! # Pattern loading
+//!
+//! Each language submodule exports a `patterns()` function returning
+//! `&'static [Pattern]`. [`load`] dispatches to the correct submodule by
+//! language slug. [`Pattern`] carries the rule ID, severity, confidence,
+//! category, and the tree-sitter query string.
 
 pub mod c;
 pub mod cpp;

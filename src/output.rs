@@ -1,3 +1,12 @@
+//! Finding serialization and output routing.
+//!
+//! Serializes [`crate::commands::scan::Diag`] values to console, JSON, or
+//! SARIF based on the requested format. [`PATTERN_DESCRIPTIONS`] is a
+//! lazily-built map from pattern ID to human-readable description, populated
+//! from all language registries on first access. [`sarif_base_id`] normalizes
+//! source-location-suffixed finding IDs (like `"taint-unsanitised-flow (source 12:3)"`)
+//! to the canonical SARIF rule ID form.
+
 use crate::commands::scan::Diag;
 use crate::patterns::{self, Severity};
 use once_cell::sync::Lazy;

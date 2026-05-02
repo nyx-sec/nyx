@@ -713,6 +713,22 @@ fn builtin_profile(name: &str) -> Option<ScanProfile> {
     })
 }
 
+/// Top-level scanner configuration.
+///
+/// Loaded from `nyx.conf` (TOML) via [`Config::load`], or constructed in
+/// code for embedded use. [`Config::default`] gives conservative defaults:
+/// no symlink following, no hidden files, gitignore respected, 10 s parse
+/// timeout, all analysis passes on.
+///
+/// Config sections mirror `nyx.conf` sections:
+/// - [`scanner`](Config::scanner): what files to scan, which analysis passes
+///   to enable, severity floor
+/// - [`output`](Config::output): format, ranking, LOW-finding budgets
+/// - [`analysis`](Config::analysis): per-language rules, engine-pass toggles
+/// - [`performance`](Config::performance): thread count, depth limit, batch
+///   size
+/// - [`database`](Config::database): incremental index settings
+/// - [`detectors`](Config::detectors): per-detector sensitivity knobs
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 #[derive(Default)]

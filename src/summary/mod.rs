@@ -1,3 +1,20 @@
+//! Per-function summaries for cross-file taint analysis.
+//!
+//! [`FuncSummary`] describes a function's boundary behaviour: which parameters
+//! flow to sinks, which sources it reads, whether it propagates taint from
+//! arguments to its return value, and what capabilities it strips. Summaries
+//! are serialized to SQLite in pass 1 and merged into [`GlobalSummaries`]
+//! before pass 2 begins.
+//!
+//! [`crate::summary::ssa_summary::SsaFuncSummary`] is a richer summary
+//! derived from the SSA taint engine and takes precedence over [`FuncSummary`]
+//! during call resolution. [`GlobalSummaries::ssa_by_key`] stores SSA summaries
+//! keyed by [`FuncKey`]; [`GlobalSummaries::by_name`] holds the fallback
+//! name-keyed map for cases where an exact key is not found.
+//!
+//! Same-name collisions across files are merged conservatively: capabilities
+//! are unioned and booleans are OR-ed so no true positive is silently dropped.
+
 pub mod points_to;
 pub mod ssa_summary;
 

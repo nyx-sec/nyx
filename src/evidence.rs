@@ -60,10 +60,15 @@ impl FromStr for Confidence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowStepKind {
+    /// A source read: user input, environment variable, network data, etc.
     Source,
+    /// A local assignment propagating taint from one variable to another.
     Assignment,
+    /// A function call through which taint flows (via argument or return value).
     Call,
+    /// An SSA phi node merging tainted values from multiple predecessors.
     Phi,
+    /// The dangerous sink where tainted data is consumed.
     Sink,
 }
 
@@ -82,19 +87,29 @@ impl fmt::Display for FlowStepKind {
 /// A single step in a taint flow path (display-ready).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlowStep {
+    /// 1-based position of this step in the flow (source = 1, sink = N).
     pub step: u32,
     pub kind: FlowStepKind,
+    /// Project-relative file path where this step occurs.
     pub file: String,
+    /// 1-based line number of the operation.
     pub line: u32,
+    /// 0-based column offset of the operation.
     pub col: u32,
+    /// Source code snippet at this location, if available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    /// SSA variable name carrying taint at this step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variable: Option<String>,
+    /// For [`FlowStepKind::Call`] steps, the name of the function called.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub callee: Option<String>,
+    /// Name of the enclosing function at this step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<String>,
+    /// True when this step crosses a file boundary, resolved via a cross-file
+    /// summary rather than direct SSA flow.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_cross_file: bool,
 }

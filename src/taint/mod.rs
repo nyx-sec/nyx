@@ -1,5 +1,78 @@
+//! Forward SSA taint analysis: the primary vulnerability detection engine.
+//!
+//! Tracks untrusted data from **sources** (where it enters the program) through
+//! assignments and calls to **sinks** (where it is used dangerously). A finding
+//! fires when the flow reaches a sink without passing a matching **sanitizer**.
+//!
+//! The engine is a monotone forward dataflow over a finite lattice with
+//! guaranteed termination. It is flow-sensitive within a function and
+//! interprocedural across files via persisted [`crate::summary::FuncSummary`]
+//! and [`crate::summary::ssa_summary::SsaFuncSummary`] values.
+//!
+//! # Rule ID
+//!
+//! ```text
+//! taint-unsanitised-flow (source <line>:<col>)
+//! taint-data-exfiltration (source <line>:<col>)
+//! ```
+//!
+//! The source location is part of the ID so sibling paths to the same sink
+//! get distinct IDs. Suppressions can target either the base ID or the full
+//! string.
+//!
+//! # Capabilities
+//!
+//! Sources, sanitizers, and sinks are linked by [`crate::labels::Cap`] bits.
+//! A sanitizer only clears the cap it declares; a sink only fires when the
+//! remaining taint still carries its required cap.
+//!
+//! | Cap | Typical source | Typical sanitizer | Typical sink |
+//! |-----|----------------|-------------------|--------------|
+//! | `env_var` | `env::var`, `getenv`, `process.env` | | |
+//! | `html_escape` | | `html.escape`, `DOMPurify.sanitize` | `innerHTML`, `document.write` |
+//! | `shell_escape` | | `shlex.quote`, `shell_escape::escape` | `system`, `Command::new` |
+//! | `url_encode` | | `encodeURIComponent` | HTTP client URL arg |
+//! | `file_io` | | `realpath`, `filepath.Clean` | `open`, `fs::read_to_string` |
+//! | `sql_query` | | parameterized query binders | `cursor.execute`, `db.query` |
+//! | `deserialize` | | | `pickle.loads`, `Marshal.load` |
+//! | `ssrf` | | URL-prefix locks | `fetch` URL arg, outbound HTTP |
+//! | `code_exec` | | | `eval`, `exec`, `system` |
+//! | `crypto` | | | weak-algorithm constructors |
+//! | `data_exfil` | cookies, headers, env, db rows (Sensitive tier) | | `fetch` body/json/headers |
+//!
+//! Sources typically carry `Cap::all()` so they match any sink.
+//!
+//! # Source sensitivity
+//!
+//! Each source carries a [`crate::labels::SourceKind`] and a derived tier:
+//!
+//! - `Plain` — direct attacker input (`UserInput`): request bodies, query
+//!   strings, argv, stdin.
+//! - `Sensitive` — operator-bound state: cookies, headers, env, files, DB rows,
+//!   caught exceptions.
+//!
+//! `Cap::DATA_EXFIL` only fires on `Sensitive`-tier sources. Plain user input
+//! flowing into an outbound request body is suppressed — the canonical false
+//! positive for API gateways that proxy `req.body`.
+//!
+//! # Confidence signals
+//!
+//! Higher confidence: source and sink both present in evidence, `source_kind:
+//! user_input`, `path_validated: false`, symbolic witness produced.
+//!
+//! Lower confidence: path-validated taint, source is a database read or
+//! internal file, engine note `ForwardBailed` / `PathWidened`.
+//!
+//! # Submodules
+//!
+//! - [`domain`]: taint lattice types (`VarTaint`, `TaintOrigin`, `SmallBitSet`,
+//!   `PredicateSummary`)
+//! - [`ssa_transfer`]: SSA taint transfer functions and the forward worklist
+//!   (`SsaTaintState`, `SsaTaintTransfer`, `run_ssa_taint`)
+//! - [`path_state`]: predicate classification for branch-sensitive propagation
+//! - [`backwards`]: demand-driven backwards walk from sinks (off by default)
+
 #![allow(clippy::collapsible_if, clippy::too_many_arguments)]
-#![doc = include_str!(concat!(env!("OUT_DIR"), "/taint.md"))]
 
 pub mod backwards;
 pub mod domain;

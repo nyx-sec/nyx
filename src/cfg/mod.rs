@@ -1,3 +1,17 @@
+//! Intra-procedural control-flow graph construction.
+//!
+//! Walks tree-sitter ASTs for all ten supported languages and builds a
+//! [`Cfg`] (a petgraph `DiGraph<NodeInfo, EdgeKind>`) per function.
+//! [`NodeInfo`] carries the statement kind, label classification, callee
+//! name, taint and gate metadata. [`EdgeKind`] distinguishes normal flow,
+//! true/false branches, and exception edges.
+//!
+//! [`build_cfg`] is the main entry point: given a parsed tree and language,
+//! it produces a [`FileCfg`] (one [`Cfg`] per function in the file) along
+//! with a [`FuncSummaries`] map for pass-1 summary extraction.
+//! [`export_summaries`] converts in-graph [`LocalFuncSummary`] values to
+//! the serializable [`crate::summary::FuncSummary`] form.
+
 #![allow(
     clippy::collapsible_if,
     clippy::let_and_return,

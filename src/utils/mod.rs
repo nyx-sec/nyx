@@ -1,3 +1,16 @@
+//! Shared utilities and configuration.
+//!
+//! Re-exports [`Config`], [`AnalysisOptions`], and [`DetectorOptions`] from
+//! their submodules. [`Config`] is loaded from `nyx.conf` and passed through
+//! the top-level call stack. [`AnalysisOptions`] is installed once per process
+//! via an `OnceLock` and read back via [`analysis_options::get`] from deep
+//! inside the analysis pipeline without threading it through every call frame.
+//!
+//! Other submodules: `path` (root-relative path utilities and traversal guards),
+//! `project` (framework detection, project metadata), `query_cache` (cached
+//! tree-sitter query compilation), `snippet` (source snippet extraction for
+//! finding locations).
+
 pub mod analysis_options;
 pub mod config;
 pub mod detector_options;

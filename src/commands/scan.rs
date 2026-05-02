@@ -117,10 +117,20 @@ fn fail_if_persist_errors(stage: &str, errors: Arc<Mutex<Vec<String>>>) -> NyxRe
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Diag {
+    /// Project-relative path of the file containing the finding.
     pub path: String,
+    /// 1-based line number of the sink location.
     pub line: usize,
+    /// 0-based column offset of the sink location.
     pub col: usize,
+    /// Finding severity (Critical / High / Medium / Low / Info).
     pub severity: Severity,
+    /// Rule identifier, e.g. `taint-unsanitised-flow`, `cfg-auth-gap`,
+    /// `rs.auth.missing_ownership_check`. Taint findings append a
+    /// source-location suffix (`"taint-unsanitised-flow (source 12:3)"`)
+    /// so sibling paths with the same sink have distinct IDs for
+    /// deduplication; [`evidence::Evidence::sink_caps`] disambiguates
+    /// findings at the same `(path, line, col)` that reach different sinks.
     pub id: String,
     /// High-level finding category (Security, Reliability, Quality).
     pub category: FindingCategory,

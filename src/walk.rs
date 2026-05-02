@@ -1,3 +1,13 @@
+//! Filesystem walker with batched path delivery.
+//!
+//! Builds an [`ignore`]-crate [`WalkBuilder`] from the config (respecting
+//! `.gitignore`, excluded directories, and excluded extensions), then delivers
+//! discovered paths to the analysis pipeline in batches over a crossbeam channel.
+//! Batching amortizes channel overhead for large trees.
+//!
+//! All paths are checked via [`crate::utils::path::path_stays_within_root`]
+//! before entering a batch, preventing traversal outside the scan root.
+
 use crate::utils::Config;
 use crate::utils::path::path_stays_within_root;
 use crossbeam_channel::{Receiver, Sender, bounded};
