@@ -1,14 +1,14 @@
 # Benchmark Results
 
-Current baseline (2026-04-29):
+Current baseline (2026-05-02):
 
 | Metric    | File-level | Rule-level | CI floor |
 |-----------|------------|------------|----------|
-| Precision | 0.996      | 0.996      | 0.861    |
+| Precision | 1.000      | 1.000      | 0.861    |
 | Recall    | 1.000      | 1.000      | 0.944    |
-| F1        | 0.998      | 0.998      | 0.901    |
+| F1        | 1.000      | 1.000      | 0.901    |
 
-Corpus: 451 cases across 10 languages, 449 evaluated (no disabled). Per-run JSON lands in `tests/benchmark/results/` (`latest.json` plus dated snapshots). See `README.md` for what the scoring modes mean and how to run a subset.
+Corpus: 492 cases across 10 languages, 491 evaluated (1 disabled). Per-run JSON lands in `tests/benchmark/results/` (`latest.json` plus dated snapshots). See `README.md` for what the scoring modes mean and how to run a subset.
 
 The corpus is mostly synthetic 8-20 line fixtures, one vulnerability or one safe pattern per file. A smaller real-CVE replay set under `cve_corpus/` covers 20 published CVEs across all 10 languages. Both contribute to the headline numbers.
 
@@ -67,6 +67,7 @@ Most recent first. Metrics are rule-level on the corpus size at that point.
 
 | Date       | Change                                                                       | Corpus | P     | R     | F1    |
 |------------|------------------------------------------------------------------------------|--------|-------|-------|-------|
+| 2026-05-02 | `strings.ReplaceAll` recognised as CMDi sanitiser in chain-wrapper / call-site-replace shapes; clears `go-safe-009` (last open corpus FP); aggregate rule-level reaches P=R=F1=1.000 | 492 | 1.000 | 1.000 | 1.000 |
 | 2026-05-01 | PathFact opaque-prefix-lock (`canonicalise + start_with?(<expr>)` recognised across Ruby/Python/JS) + `is_path_traversal_safe` predicate + negated-form polarity flip on assertion narrowing; rswag CVE-2023-38337 detected | 490 | 0.972 | 0.992 | 0.982 |
 | 2026-05-01 | Ruby `OpenURI.open_uri` SSRF sink + inner-call fallback for statement-level Ruby calls (`YAML.safe_load(File.read(x))` shape now classifies); CVE-2021-21288 (CarrierWave) detected | 482 | 0.972 | 0.992 | 0.982 |
 | 2026-04-29 | Java SnakeYAML + Text4Shell patterns; CVE-2022-1471 and CVE-2022-42889 detected | 449 | 0.996 | 1.000 | 0.998 |

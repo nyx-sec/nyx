@@ -105,11 +105,11 @@ cargo test --release --all-features --test benchmark_test -- --ignored --nocaptu
 and fails if the corpus rule-level metrics fall below the thresholds encoded
 at the bottom of `tests/benchmark_test.rs`:
 
-| Metric | Floor | Current baseline (~432 cases) |
+| Metric | Floor | Current baseline (491 cases run) |
 |---|---|---|
-| Precision | ≥ 0.861 | 0.991 |
-| Recall | ≥ 0.944 | 0.995 |
-| F1 | ≥ 0.901 | 0.993 |
+| Precision | ≥ 0.861 | 1.000 |
+| Recall | ≥ 0.944 | 1.000 |
+| F1 | ≥ 0.901 | 1.000 |
 
 The floors sit roughly 8 pp below the current baseline. A single-case flip
 is about 0.2 pp on this corpus, so the headroom absorbs honest FP/TN

@@ -9,7 +9,7 @@ The classifications here are grounded in three concrete signals:
 1. **Rule depth**: how many distinct source / sanitizer / sink matchers exist
    for the language in `src/labels/<lang>.rs`, and how many vulnerability
    classes (Cap bits) those matchers cover.
-2. **Benchmark results**: rule-level precision / recall / F1 on the 433-case
+2. **Benchmark results**: rule-level precision / recall / F1 on the 492-case
    corpus in
    [`tests/benchmark/RESULTS.md`](https://github.com/elicpeter/nyx/blob/master/tests/benchmark/RESULTS.md).
 3. **Known weak spots**: FPs and FNs the maintainers have deliberately left
@@ -18,14 +18,13 @@ The classifications here are grounded in three concrete signals:
    [`RESULTS.md`](https://github.com/elicpeter/nyx/blob/master/tests/benchmark/RESULTS.md).
 
 The synthetic corpus has effectively saturated: every
-real-CVE fixture fires and rule-level recall is 100%. Nine of ten
-languages report rule-level F1 = 100.0%; Go reports 98.0% on the back of
-a single safe-fixture FP. Aggregate rule-level P=0.995, R=1.000, F1=0.998.
-That means F1 alone no longer differentiates tiers, so the differentiators
-are **rule depth**, **gated-sink coverage**, and **structural idioms the
-corpus does not fully stress** (deep pointer aliasing in C/C++,
-framework-specific context). All parser integrations use tree-sitter and
-are stable; parsing is not a differentiator.
+real-CVE fixture fires and rule-level precision and recall are both 100%.
+All ten languages report rule-level F1 = 100.0%. Aggregate rule-level
+P=1.000, R=1.000, F1=1.000. That means F1 alone no longer differentiates
+tiers, so the differentiators are **rule depth**, **gated-sink coverage**,
+and **structural idioms the corpus does not fully stress** (deep pointer
+aliasing in C/C++, framework-specific context). All parser integrations
+use tree-sitter and are stable; parsing is not a differentiator.
 
 ---
 
@@ -34,7 +33,7 @@ are stable; parsing is not a differentiator.
 | Tier | Languages | F1 | What to expect |
 |------|-----------|----|----------------|
 | **Stable** | Python, JavaScript, TypeScript | 100% | Deep rule sets, gated sinks (argument-role-aware), framework detection, extensive fixtures, and the bulk of advanced-analysis (SSA two-level solve, context-sensitivity, symbolic execution, abstract interpretation) coverage. Safe to depend on in CI gates. |
-| **Beta** | Go, Java, PHP, Ruby, Rust | 98.0% to 100% | Solid mid-depth rule sets with narrower cap coverage and **no gated sinks**. Cross-file flows work; some idioms (variable-typed method receivers, framework context, string interpolation, match-arm guards) are partially modeled. Usable in CI; review FP/FN lists before tightening gates. |
+| **Beta** | Go, Java, PHP, Ruby, Rust | 100% | Solid mid-depth rule sets with narrower cap coverage and **no gated sinks**. Cross-file flows work; some idioms (variable-typed method receivers, framework context, string interpolation, match-arm guards) are partially modeled. Usable in CI; review FP/FN lists before tightening gates. |
 | **Preview** | C, C++ | 100% on synthetic corpus | Recent work taught the engine to follow taint through `std::vector` / `std::string` / map containers (including `c_str()`), through fluent builder chains like `Socket::builder().host(h).connect()`, and through inline class member functions. Function pointers and deeper pointer aliasing through `*p` / `p->field` are still not tracked. Rule-level scores against a corpus of obvious unsafe-API uses look perfect, but that is not the same as a clean audit on a real codebase. Pair with clang-tidy, Clang Static Analyzer, or Infer. |
 
 ---
@@ -89,13 +88,15 @@ are stable; parsing is not a differentiator.
 
 ### Beta tier
 
-#### Go: 96.2% P / 100.0% R / 98.0% F1 *(53-case corpus, 1 FP, 0 FNs)*
+#### Go: 100% P / 100% R / 100% F1 *(56-case corpus)*
 
 - **Rule depth**: 4 source families, 4 sanitizer families, 9 sink matchers
   covering HTML, URL, Shell, SQL, SSRF, Crypto, and File I/O.
 - **Framework context**: Gin, Echo source matchers.
-- **Open weak spots**: one safe Go fixture (`go-safe-009`) draws a spurious
-  CMDi finding.
+- **Recent fix**: `strings.ReplaceAll` is now recognised as a CMDi sanitiser
+  in chain-wrapper / call-site-replace shapes, clearing the last open
+  Go safe-fixture FP (`go-safe-009`, `validate(s string)` wrapping a
+  `strings.ReplaceAll` over `;`).
 - **Known gaps**: no gated sinks, no deserialization class. `fmt.Sprintf`
   is deliberately not a sink. Cap coverage is narrower than the Stable
   tier and argument-role-aware sink modeling is not yet implemented for Go,
