@@ -446,6 +446,13 @@ fn build_taint_diag(
             "send_string",
             "send_json",
             "send_form",
+            // Spring RestTemplate one-shot verbs that take a body argument
+            // inline (no separate `BodyPublishers` / `setEntity` step in the
+            // chain).  Method-name suffixes are unique enough that bare
+            // substring matching is safe.
+            "postforobject",
+            "postforentity",
+            "patchforobject",
         ];
         let chain_lower = call_site_callee.to_ascii_lowercase();
         let in_sink = body_bind_substrings.iter().any(|m| chain_lower.contains(m));
