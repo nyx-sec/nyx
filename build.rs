@@ -2,7 +2,6 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
-
     // Only relevant when the serve feature is active
     if std::env::var("CARGO_FEATURE_SERVE").is_err() {
         return;
