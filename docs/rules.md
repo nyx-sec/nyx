@@ -1,6 +1,6 @@
 # Rule reference
 
-Every finding Nyx emits has a rule ID. This page enumerates the IDs that ship with scanner 0.5.0, grouped by family.
+Every finding Nyx emits has a rule ID. This page enumerates the IDs that ship with the scanner, grouped by family.
 
 > This page is written by hand and drifts against the code. Authoritative sources: [`src/patterns/<lang>.rs`](https://github.com/elicpeter/nyx/tree/master/src/patterns) for AST patterns, [`src/labels/<lang>.rs`](https://github.com/elicpeter/nyx/tree/master/src/labels) for taint matchers, and [`src/auth_analysis/config.rs`](https://github.com/elicpeter/nyx/blob/master/src/auth_analysis/config.rs) for auth rules. If a rule fires that isn't listed here, the source file is right and this page is wrong.
 

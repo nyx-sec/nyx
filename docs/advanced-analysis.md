@@ -31,6 +31,22 @@ SQL sink as an injection risk; an SSRF sink whose URL prefix is locked to a
 trusted host stays quiet. This turns a large class of FPs on numeric and
 locked-prefix paths into true negatives.
 
+**Path traversal.** The path domain accepts canonicalised-and-rooted
+shapes via `PathFact::is_path_traversal_safe`: a path that is
+dotdot-free and either non-absolute or carries a verified prefix-lock has
+its `Cap::FILE_IO` cleared. When the lock argument is a string literal
+the lock prefix is recorded directly; when it is a method call, field
+access, or configured root, an `OPAQUE_PREFIX_LOCK` marker captures the
+structural invariant ("rooted under SOME prefix") instead. This closes
+the Ruby `File.expand_path + start_with?(root)`, Python
+`os.path.realpath + .startswith(root)`, and JS
+`path.resolve + .startsWith(root)` shapes. `classify_path_assertion`
+recognises JS `.startsWith(...)`, Python `.startswith(...)`, Ruby
+`.start_with?(...)` (paren and paren-less), and Go `strings.HasPrefix(...)`.
+Branch narrowing flips lock attachment under condition negation
+(`if !target.startsWith(ROOT) { return; }` attaches the lock to the
+surviving block, not the rejection arm).
+
 **How to turn it off.**
 
 | Surface | Value |
@@ -111,9 +127,8 @@ identity independent of the parent value.
 |---|---|
 | Env var | `NYX_POINTER_ANALYSIS=0` |
 
-The pass is **on by default** as of 2026-04-26. The env-var override is
-kept for one release so you can compare against the pre-pointer baseline,
-then will be removed.
+The pass is **on by default**. The env-var override exists so you can
+compare against the pre-pointer baseline.
 
 **Limitations.** This is not a general escape analysis. Function pointers
 and arbitrary indirect calls still resolve to no callee, and deep alias

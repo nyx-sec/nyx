@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 477
+    "corpus_size": 492
   },
   "cases": [
     {
@@ -2902,7 +2902,7 @@
         "user-input"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to php-safe-018: included variable is built from concatenation of $_GET inside the function — not a parameter pass-through. Pattern must still fire."
+      "notes": "Vulnerable counterpart to php-safe-018: included variable is built from concatenation of $_GET inside the function \u2014 not a parameter pass-through. Pattern must still fire."
     },
     {
       "case_id": "php-deser-001",
@@ -3431,6 +3431,44 @@
       ],
       "disabled": false,
       "notes": "SSRF via HTTParty.get() with user-controlled URL"
+    },
+    {
+      "case_id": "ruby-ssrf-003",
+      "file": "ruby/ssrf/ssrf_open_uri.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "open-uri",
+        "ssrf"
+      ],
+      "disabled": false,
+      "notes": "SSRF via OpenURI.open_uri() with user-controlled URL — canonical low-level URI fetcher; CarrierWave / Paperclip / similar gems route SSRF-vulnerable downloads through it"
     },
     {
       "case_id": "js-ssrf-safe-001",
@@ -4051,6 +4089,42 @@
       ],
       "disabled": false,
       "notes": "Path traversal via send_file() with user-controlled path"
+    },
+    {
+      "case_id": "ruby-path_traversal-002",
+      "file": "ruby/path_traversal/path_traversal_yaml_load_file_read.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "wrapper-sink",
+        "path-traversal"
+      ],
+      "disabled": false,
+      "notes": "Path traversal via cross-fn helper that wraps File.read inside YAML.safe_load (the `outer(File.read(x))` shape used in real Ruby helpers — rswag CVE-2023-38337 chain). Regression guard for the inner-call fallback fix in src/cfg/mod.rs::push_node so a wrapper around an FILE_IO sink continues to surface in summary extraction."
     },
     {
       "case_id": "ruby-sqli-001",
@@ -6429,6 +6503,67 @@
       ],
       "disabled": false,
       "notes": "Builder chain with hardcoded host literal; terminal connect() must NOT fire (no taint on chain)."
+    },
+    {
+      "case_id": "cpp-safe-019",
+      "file": "cpp/safe/safe_reinterpret_cast_byte_pointer.cpp",
+      "language": "cpp",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-704",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cpp.memory.reinterpret_cast"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "safe",
+        "reinterpret-cast",
+        "byte-pointer",
+        "real-repo-precision-2026-05-01"
+      ],
+      "disabled": false,
+      "notes": "Layer E: reinterpret_cast<T> targets that are well-defined-by-aliasing-rules (byte pointer / void* / uintptr_t / sockaddr family) must NOT fire cpp.memory.reinterpret_cast. Distilled from bitcoin leveldb/serialization/socket shapes."
+    },
+    {
+      "case_id": "cpp-buf-003",
+      "file": "cpp/buffer_overflow/buffer_reinterpret_cast_struct_alias.cpp",
+      "language": "cpp",
+      "is_vulnerable": true,
+      "vuln_class": "buffer_overflow",
+      "cwe": "CWE-704",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cpp.memory.reinterpret_cast"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": null,
+      "tags": [
+        "vuln",
+        "reinterpret-cast",
+        "strict-aliasing",
+        "real-repo-precision-2026-05-01"
+      ],
+      "disabled": false,
+      "notes": "reinterpret_cast<UserStruct*>(buf) genuinely violates [basic.lval]/11 strict aliasing \u2014 the pattern must continue to fire because the user-defined struct target is not in the byte-pointer / void* / sockaddr safe set."
     },
     {
       "case_id": "rs-cmdi-001",
@@ -10125,7 +10260,137 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "CVE-2020-8130 patched counterpart: open(fn, ...) replaced with File.open(fn, ...); File.open never pipes a leading |. Fixture additionally hardcodes the filename + pattern (patched-fix simplification) so the regression guard is class-clean — see vulnerable.rb header for rationale."
+      "notes": "CVE-2020-8130 patched counterpart: open(fn, ...) replaced with File.open(fn, ...); File.open never pipes a leading |. Fixture additionally hardcodes the filename + pattern (patched-fix simplification) so the regression guard is class-clean \u2014 see vulnerable.rb header for rationale."
+    },
+    {
+      "case_id": "cve-rb-2021-21288-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2021-21288/vulnerable.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          64,
+          64
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          64,
+          64
+        ]
+      ],
+      "tags": [
+        "cve",
+        "carrierwave",
+        "ssrf",
+        "open-uri"
+      ],
+      "disabled": false,
+      "notes": "CVE-2021-21288: CarrierWave Downloader::Base#download passed an attacker-controlled URL straight into OpenURI.open_uri (only host-normalised via process_uri). open-uri follows redirects without an allowlist, so any uploader exposing a remote_url field reached internal services / cloud metadata / file:// URIs. Fixed in 2.1.1 / 1.3.2 by routing through SsrfFilter.get. MIT"
+    },
+    {
+      "case_id": "cve-rb-2021-21288-patched",
+      "file": "cve_corpus/ruby/CVE-2021-21288/patched.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "carrierwave",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2021-21288 patched counterpart: OpenURI.open_uri replaced with SsrfFilter.get(uri, ...) which validates the resolved host against private IP ranges before issuing the request. The upstream skip_ssrf_protection? escape hatch (default returns false) is omitted as a patched-fix simplification."
+    },
+    {
+      "case_id": "cve-rb-2023-38337-vulnerable",
+      "file": "cve_corpus/ruby/CVE-2023-38337/vulnerable.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          58,
+          58
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          54,
+          54
+        ]
+      ],
+      "tags": [
+        "cve",
+        "rswag",
+        "path_traversal",
+        "rack-middleware"
+      ],
+      "notes": "CVE-2023-38337: rswag-api Rack middleware concatenated env['PATH_INFO'] into the swagger root path with no validation; GET /../config/secrets.yml served arbitrary YAML/JSON files. Fixed in 2.10.1 by File.expand_path + start_with? rooted-path check. MIT"
+    },
+    {
+      "case_id": "cve-rb-2023-38337-patched",
+      "file": "cve_corpus/ruby/CVE-2023-38337/patched.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "rswag",
+        "patched",
+        "negative"
+      ],
+      "notes": "CVE-2023-38337 patched counterpart: filename = File.expand_path(File.join(root, path)); unless filename.start_with?(root); return reject; end. Stays clean once Nyx recognises the canonicalize+rooted-path pattern."
     },
     {
       "case_id": "cve-java-2015-7501-vulnerable",
@@ -10301,7 +10566,7 @@
         "fediverse"
       ],
       "disabled": false,
-      "notes": "CVE-2023-3188: Owncast 0.0.x webfinger SSRF — `account` parsed off the @-delimited handle reaches `http.DefaultClient.Get(requestURL.String())` with no host validation. Engine detects via cross-function taint flow (handler → GetWebfingerLinks param 0 → http.DefaultClient.Get SSRF sink). MIT."
+      "notes": "CVE-2023-3188: Owncast 0.0.x webfinger SSRF \u2014 `account` parsed off the @-delimited handle reaches `http.DefaultClient.Get(requestURL.String())` with no host validation. Engine detects via cross-function taint flow (handler \u2192 GetWebfingerLinks param 0 \u2192 http.DefaultClient.Get SSRF sink). MIT."
     },
     {
       "case_id": "cve-go-2023-3188-patched",
@@ -11795,6 +12060,35 @@
       "notes": "Python equivalent of rs-safe-014: direct-return sanitiser with `\"..\" in s` / `s.startswith(...)` rejection chain returning empty string."
     },
     {
+      "case_id": "py-safe-022",
+      "file": "python/safe/safe_canonicalise_rooted_startswith.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "pathfact-cross-language",
+        "path-sanitizer",
+        "canonicalise-and-rooted",
+        "opaque-prefix-lock",
+        "negated-form"
+      ],
+      "disabled": false,
+      "notes": "Pins `os.path.realpath` + `if not target.startswith(<non-literal>)` shape (rswag CVE-2023-38337 sibling). Combined dotdot=No (from realpath) + opaque PrefixLock (from non-literal startswith guard) suppresses FILE_IO under is_path_traversal_safe with the negated-form polarity flip."
+    },
+    {
       "case_id": "py-safe-016",
       "file": "python/safe/safe_cross_function_dotdot.py",
       "language": "python",
@@ -11847,6 +12141,62 @@
       ],
       "disabled": false,
       "notes": "JS direct-return sanitiser.  Standalone `nyx scan --index off` is clean, but the benchmark harness (single-thread + state/auth analysis enabled) reproduces a FP \u2014 diverges from production scan path.  Disabled until benchmark/binary parity is re-established."
+    },
+    {
+      "case_id": "js-safe-021",
+      "file": "javascript/safe/safe_canonicalise_rooted_startsWith.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "pathfact-cross-language",
+        "path-sanitizer",
+        "canonicalise-and-rooted",
+        "opaque-prefix-lock",
+        "negated-form"
+      ],
+      "disabled": false,
+      "notes": "Pins `path.resolve` + `if (!target.startsWith(<non-literal>))` shape (rswag CVE-2023-38337 sibling). Combined dotdot=No (from path.resolve) + opaque PrefixLock (from non-literal startsWith guard) suppresses FILE_IO under is_path_traversal_safe with the negated-form polarity flip."
+    },
+    {
+      "case_id": "js-safe-022",
+      "file": "javascript/safe/safe_env_empty_fallback.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.secrets.fallback_secret"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "secrets",
+        "empty-fallback",
+        "real-repo-precision-2026-05-01"
+      ],
+      "disabled": false,
+      "notes": "Empty-string fallback (`process.env.X || \"\"`) is not a hardcoded secret. JS counterpart of ts-safe-020. Engine fix: pattern-level regex (#match? @fallback \"[^\\\"']\") in src/patterns/javascript.rs."
     },
     {
       "case_id": "ts-safe-014",
@@ -12038,6 +12388,34 @@
       "notes": "Ruby equivalent of rs-safe-014: direct-return sanitiser with `include?` / `start_with?` rejection."
     },
     {
+      "case_id": "rb-safe-021",
+      "file": "ruby/safe/safe_canonicalise_rooted_unless.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "pathfact-cross-language",
+        "path-sanitizer",
+        "canonicalise-and-rooted",
+        "opaque-prefix-lock"
+      ],
+      "disabled": false,
+      "notes": "Pins `File.expand_path` + `unless filename.start_with? <non-literal>` shape (rswag CVE-2023-38337 patched). Combined dotdot=No (from expand_path) + opaque PrefixLock (from non-literal start_with? guard) suppresses FILE_IO under is_path_traversal_safe."
+    },
+    {
       "case_id": "rb-safe-015",
       "file": "ruby/safe/safe_nil_path_sanitizer.rb",
       "language": "ruby",
@@ -12198,7 +12576,7 @@
         "allowed_classes"
       ],
       "disabled": false,
-      "notes": "PHP 7+ structural mitigation against object injection — unserialize($x, ['allowed_classes' => ...]) with false / array literal / class constant must not fire php.deser.unserialize. Distilled from nextcloud lib/private/Profiler/FileProfilerStorage.php and apps/dav CustomPropertiesBackend."
+      "notes": "PHP 7+ structural mitigation against object injection \u2014 unserialize($x, ['allowed_classes' => ...]) with false / array literal / class constant must not fire php.deser.unserialize. Distilled from nextcloud lib/private/Profiler/FileProfilerStorage.php and apps/dav CustomPropertiesBackend."
     },
     {
       "case_id": "php-safe-018",
@@ -12228,6 +12606,64 @@
       ],
       "disabled": false,
       "notes": "Composer-style autoloader: closure / method takes a file path parameter and `include`s it. Pattern rule is heuristic without taint and over-fires; suppress when included variable is a formal parameter of the immediately enclosing function with no reassignment. Distilled from nextcloud composer/ClassLoader.php (32 copies), Router.php, Installer.php, Template/Base.php."
+    },
+    {
+      "case_id": "php-safe-019",
+      "file": "php/safe/safe_md5_sha1_non_crypto_use.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-327",
+      "provenance": "real-repo-precision-2026-05-01",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "php.crypto.md5",
+        "php.crypto.sha1"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "real-repo-precision-2026-05-01",
+        "weak-hash",
+        "non-crypto-use",
+        "etag",
+        "cache-key"
+      ],
+      "disabled": false,
+      "notes": "md5() / sha1() pervasively used for non-cryptographic purposes — ETag generation, cache-key / array-index hashing, dedup fingerprints, content-addressed identifier derivation. Layer F suppression recognises the consuming context (variable LHS, member-access LHS, subscript LHS, array element key, lookup-verb argument, return-from-method, hash-as-index) and refuses to fire. Distilled from nextcloud apps/dav CalDavBackend, contactsinteraction Card, Files/Cache, theming Util / CommonThemeTrait, encryption KeyManager; phpmyadmin src/Controllers/Database/StructureController, Controllers/Table/{RelationController, SearchController, ZoomSearchController}, src/Display/Results, Database/MultiTableQuery, Favorites/RecentFavoriteTables."
+    },
+    {
+      "case_id": "php-crypto-001",
+      "file": "php/crypto/crypto_md5_password_hash.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "crypto",
+      "cwe": "CWE-327",
+      "provenance": "real-repo-precision-2026-05-01",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "php.crypto.md5",
+        "php.crypto.sha1"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "real-repo-precision-2026-05-01",
+        "weak-hash",
+        "credential-storage"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart to php-safe-019: md5 / sha1 used to store / sign / digest credentials, tokens, signatures. Consumer names contain crypto-keyword substrings (`password`, `token`, `signature`, `pw_hash`, `digest`) so Layer F suppression refuses to fire."
     },
     {
       "case_id": "c-safe-014",
@@ -12336,7 +12772,7 @@
         "real-repo-precision-2026-04-28"
       ],
       "disabled": false,
-      "notes": "Postgres `pg_prewarm/autoprewarm.c` + `formatting.c::DCH_a_m` shape — strcpy/strcat with string-literal or ternary-of-literals source.  Layer D suppression (src/ast.rs::is_c_buffer_call_literal_safe)."
+      "notes": "Postgres `pg_prewarm/autoprewarm.c` + `formatting.c::DCH_a_m` shape \u2014 strcpy/strcat with string-literal or ternary-of-literals source.  Layer D suppression (src/ast.rs::is_c_buffer_call_literal_safe)."
     },
     {
       "case_id": "c-safe-018",
@@ -12362,7 +12798,7 @@
         "real-repo-precision-2026-04-28"
       ],
       "disabled": false,
-      "notes": "Postgres `datetime.c::EncodeDateTime` shape — sprintf with literal format string containing only width/precision-bounded specifiers.  Layer D suppression."
+      "notes": "Postgres `datetime.c::EncodeDateTime` shape \u2014 sprintf with literal format string containing only width/precision-bounded specifiers.  Layer D suppression."
     },
     {
       "case_id": "cpp-safe-014",
@@ -12661,7 +13097,7 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "Indirect-validator branch narrowing — `const err = validateUrlSsrf(target); if (err) throw …;` should suppress the downstream axios.get sink. Pinned by tests/lib::indirect_validator_narrowing_marks_arg_validated."
+      "notes": "Indirect-validator branch narrowing \u2014 `const err = validateUrlSsrf(target); if (err) throw \u2026;` should suppress the downstream axios.get sink. Pinned by tests/lib::indirect_validator_narrowing_marks_arg_validated."
     },
     {
       "case_id": "ts-safe-019",
@@ -12688,7 +13124,34 @@
         "negative"
       ],
       "disabled": false,
-      "notes": "Helper-summary all_validated propagation — when a helper's body validates the param via `validateXxx`, the per-param probe's all_validated event should be skipped during summary extraction so callers don't refire the cross-fn SSRF. Pinned by tests/lib::helper_with_validator_does_not_propagate_to_caller_via_summary."
+      "notes": "Helper-summary all_validated propagation \u2014 when a helper's body validates the param via `validateXxx`, the per-param probe's all_validated event should be skipped during summary extraction so callers don't refire the cross-fn SSRF. Pinned by tests/lib::helper_with_validator_does_not_propagate_to_caller_via_summary."
+    },
+    {
+      "case_id": "ts-safe-020",
+      "file": "typescript/safe/safe_env_empty_fallback.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "ts.secrets.fallback_secret"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "secrets",
+        "empty-fallback",
+        "real-repo-precision-2026-05-01"
+      ],
+      "disabled": false,
+      "notes": "Empty-string fallback (`process.env.X || \"\"`) is not a hardcoded secret. Distilled from /Users/elipeter/oss/cal.com/apps/api/v2/src/modules/stripe/utils/newStripeInstance.ts and ~30 sibling cal.com calendar/stripe/sendgrid integration files. Engine fix: pattern-level regex (#match? @fallback \"[^\\\"']\") in src/patterns/typescript.rs."
     },
     {
       "case_id": "py-auth-decorator-001",
@@ -13377,7 +13840,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Panic guard: CodeMirror Gherkin tokenizer ships a long localised regex inside a boolean sub-condition. Naive byte-slice truncation in CFG condition-text (`t[..MAX_CONDITION_TEXT_LEN]`) panicked when byte 256 landed inside a multi-byte UTF-8 character (Gurmukhi `ਖ`). Engine fix: src/utils/snippet.rs::truncate_at_char_boundary applied at three CFG sites + two symex display sites (gogs public/plugins/codemirror-5.17.0/mode/gherkin/gherkin.js:107)."
+      "notes": "Panic guard: CodeMirror Gherkin tokenizer ships a long localised regex inside a boolean sub-condition. Naive byte-slice truncation in CFG condition-text (`t[..MAX_CONDITION_TEXT_LEN]`) panicked when byte 256 landed inside a multi-byte UTF-8 character (Gurmukhi `\u0a16`). Engine fix: src/utils/snippet.rs::truncate_at_char_boundary applied at three CFG sites + two symex display sites (gogs public/plugins/codemirror-5.17.0/mode/gherkin/gherkin.js:107)."
     },
     {
       "case_id": "go-safe-realrepo-001",
@@ -13963,7 +14426,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Excalidraw `Map<K, V>` / `Set<T>` / `WeakMap` / `WeakSet` / `Array<T>` / `T[]` / `readonly T[]` receivers — direct annotation, same-file `type X = Map<...>` aliasing, and inline `new Map()` constructor. SSA `constructor_type` JS/TS arm + `cfg::params::ts_type_to_local_collection` + `cfg::dto::collect_type_alias_local_collections` route every shape through `TypeKind::LocalCollection` → `SinkClass::InMemoryLocal`, suppressing missing-ownership."
+      "notes": "Excalidraw `Map<K, V>` / `Set<T>` / `WeakMap` / `WeakSet` / `Array<T>` / `T[]` / `readonly T[]` receivers \u2014 direct annotation, same-file `type X = Map<...>` aliasing, and inline `new Map()` constructor. SSA `constructor_type` JS/TS arm + `cfg::params::ts_type_to_local_collection` + `cfg::dto::collect_type_alias_local_collections` route every shape through `TypeKind::LocalCollection` \u2192 `SinkClass::InMemoryLocal`, suppressing missing-ownership."
     },
     {
       "case_id": "ts-auth-realrepo-007",
@@ -13989,7 +14452,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to ts-auth-realrepo-006: `prisma.user.findUnique` / `prisma.user.update` with attacker-supplied id and no preceding auth check.  Receiver is NOT a tracked Map / Set / Array, so the LocalCollection fix must NOT suppress this — proves the type-aware suppression doesn't blanket-cover real DB clients that share method names (`get`, `find`, `update`) with JS containers."
+      "notes": "Vulnerable counterpart to ts-auth-realrepo-006: `prisma.user.findUnique` / `prisma.user.update` with attacker-supplied id and no preceding auth check.  Receiver is NOT a tracked Map / Set / Array, so the LocalCollection fix must NOT suppress this \u2014 proves the type-aware suppression doesn't blanket-cover real DB clients that share method names (`get`, `find`, `update`) with JS containers."
     },
     {
       "case_id": "rs-auth-realrepo-009",
@@ -14493,10 +14956,16 @@
       "expected_severity": "HIGH",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [6, 9]
+        [
+          6,
+          9
+        ]
       ],
       "expected_source_lines": [
-        [5, 5]
+        [
+          5,
+          5
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14524,10 +14993,16 @@
       "expected_severity": "HIGH",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [6, 9]
+        [
+          6,
+          9
+        ]
       ],
       "expected_source_lines": [
-        [5, 5]
+        [
+          5,
+          5
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14556,10 +15031,16 @@
       "expected_severity": "MEDIUM",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [8, 8]
+        [
+          8,
+          8
+        ]
       ],
       "expected_source_lines": [
-        [5, 5]
+        [
+          5,
+          5
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14587,10 +15068,16 @@
       "expected_severity": "HIGH",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [6, 9]
+        [
+          6,
+          9
+        ]
       ],
       "expected_source_lines": [
-        [5, 5]
+        [
+          5,
+          5
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14618,10 +15105,16 @@
       "expected_severity": "MEDIUM",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [6, 9]
+        [
+          6,
+          9
+        ]
       ],
       "expected_source_lines": [
-        [5, 5]
+        [
+          5,
+          5
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14649,10 +15142,16 @@
       "expected_severity": "MEDIUM",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [14, 14]
+        [
+          14,
+          14
+        ]
       ],
       "expected_source_lines": [
-        [12, 13]
+        [
+          12,
+          13
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14681,10 +15180,16 @@
       "expected_severity": "MEDIUM",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [12, 15]
+        [
+          12,
+          15
+        ]
       ],
       "expected_source_lines": [
-        [11, 11]
+        [
+          11,
+          11
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14713,10 +15218,16 @@
       "expected_severity": "HIGH",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [16, 20]
+        [
+          16,
+          20
+        ]
       ],
       "expected_source_lines": [
-        [13, 14]
+        [
+          13,
+          14
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14744,10 +15255,16 @@
       "expected_severity": "HIGH",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [15, 21]
+        [
+          15,
+          21
+        ]
       ],
       "expected_source_lines": [
-        [13, 13]
+        [
+          13,
+          13
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14775,10 +15292,16 @@
       "expected_severity": "HIGH",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [12, 12]
+        [
+          12,
+          12
+        ]
       ],
       "expected_source_lines": [
-        [10, 11]
+        [
+          10,
+          11
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14806,10 +15329,16 @@
       "expected_severity": "MEDIUM",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [5, 8]
+        [
+          5,
+          8
+        ]
       ],
       "expected_source_lines": [
-        [5, 5]
+        [
+          5,
+          5
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14838,10 +15367,16 @@
       "expected_severity": "HIGH",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [9, 9]
+        [
+          9,
+          9
+        ]
       ],
       "expected_source_lines": [
-        [7, 7]
+        [
+          7,
+          7
+        ]
       ],
       "tags": [
         "data_exfil",
@@ -14869,10 +15404,16 @@
       "expected_severity": "MEDIUM",
       "expected_category": "Security",
       "expected_sink_lines": [
-        [14, 14]
+        [
+          14,
+          14
+        ]
       ],
       "expected_source_lines": [
-        [9, 9]
+        [
+          9,
+          9
+        ]
       ],
       "tags": [
         "data_exfil",

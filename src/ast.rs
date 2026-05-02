@@ -420,17 +420,72 @@ fn build_taint_diag(
     // rule paths (Java HTTP clients where type-qualified resolution
     // attaches both `SSRF` and `DATA_EXFIL` Sink labels to the same call,
     // e.g. `client.send(req)` covering both URL and body channels of the
-    // request value) produce a single dual-cap event.  In that case the
-    // source's sensitivity tier disambiguates: a Sensitive source
-    // (cookie, header, env, db, session) leaking into an outbound
-    // request is canonically DATA_EXFIL even if the sink also carries
-    // an SSRF label, because operator-bound state is not URL-shaped
-    // attacker input.  Plain user input keeps SSRF routing (the typical
-    // user-controlled-URL pattern).
+    // request value) produce a single dual-cap event.  Disambiguate using
+    // the flow path: when a body-bind verb (`.body(`, `.json(`, `.form(`,
+    // `.multipart(`, `BodyPublishers`, `setEntity`, `bodyValue`, etc.)
+    // appears anywhere in the SSA flow steps or the sink chain text, the
+    // taint reached an outbound payload field, route to DATA_EXFIL.  When
+    // no body-bind verb is on the path (Sensitive-tier source flowing
+    // straight into the URL position via `.get`/`.post`/`.send`), this is
+    // a real SSRF and routes to taint-unsanitised-flow regardless of
+    // source sensitivity.  Source sensitivity is still required for the
+    // DATA_EXFIL route, plain user input echoed into a request body is
+    // not exfiltration.
+    let flow_has_body_bind = {
+        let body_bind_substrings = [
+            ".body(",
+            ".json(",
+            ".form(",
+            ".multipart(",
+            ".bodyvalue(",
+            ".setentity(",
+            "bodypublishers",
+            "body_string",
+            "body_json",
+            "body_bytes",
+            "send_string",
+            "send_json",
+            "send_form",
+            // Spring RestTemplate one-shot verbs that take a body argument
+            // inline (no separate `BodyPublishers` / `setEntity` step in the
+            // chain).  Method-name suffixes are unique enough that bare
+            // substring matching is safe.
+            "postforobject",
+            "postforentity",
+            "patchforobject",
+        ];
+        let chain_lower = call_site_callee.to_ascii_lowercase();
+        let in_sink = body_bind_substrings.iter().any(|m| chain_lower.contains(m));
+        let in_steps = finding.flow_steps.iter().any(|step| {
+            cfg_graph[step.cfg_node]
+                .call
+                .callee
+                .as_deref()
+                .map(|c| {
+                    let lc = c.to_ascii_lowercase();
+                    body_bind_substrings.iter().any(|m| lc.contains(m))
+                })
+                .unwrap_or(false)
+        });
+        in_sink || in_steps
+    };
+    // Java HTTP-client builder pattern hides the body-bind step inside a
+    // builder chain whose intermediate calls collapse to `HttpRequest.build`
+    // in the flow.  When the source is unambiguously credential-bearing
+    // (cookies, session attributes, caught exceptions carrying stack
+    // frames) and the sink fires DATA_EXFIL, treat that as exfil even
+    // when no body-bind verb is visible in the flow.  Env vars stay
+    // ambiguous (they often carry URL config) so they still require an
+    // explicit body-bind hit on the path.
+    let source_is_credential_bearing = matches!(
+        finding.source_kind,
+        crate::labels::SourceKind::Cookie | crate::labels::SourceKind::CaughtException
+    );
     let is_data_exfil_rule = effective_caps.contains(crate::labels::Cap::DATA_EXFIL)
         && !effective_caps.contains(crate::labels::Cap::UNAUTHORIZED_ID)
         && (!effective_caps.contains(crate::labels::Cap::SSRF)
-            || finding.source_kind.sensitivity() >= crate::labels::Sensitivity::Sensitive);
+            || (finding.source_kind.sensitivity() >= crate::labels::Sensitivity::Sensitive
+                && (flow_has_body_bind || source_is_credential_bearing)));
 
     let diag_id = if effective_caps.contains(crate::labels::Cap::UNAUTHORIZED_ID) {
         "rs.auth.missing_ownership_check.taint".to_string()
@@ -913,6 +968,45 @@ impl<'a> ParsedSource<'a> {
                     // precision-bounded `%.<N>s` / `%.*s`).
                     if (self.lang_slug == "c" || self.lang_slug == "cpp")
                         && is_c_buffer_call_literal_safe(cq.meta.id, cap.node, self.bytes)
+                    {
+                        continue;
+                    }
+                    // Layer E: C++ `reinterpret_cast<T>(x)` when T is a
+                    // type explicitly defined as safe by the C++ aliasing
+                    // rules — byte-pointer family (`char*`, `unsigned
+                    // char*`, `uint8_t*`, `std::byte*`, etc., per
+                    // [basic.lval]/11), `void*`, the integer round-trip
+                    // types `uintptr_t` / `intptr_t`, and the BSD-socket
+                    // `sockaddr` family (POSIX intentionally type-puns
+                    // `sockaddr*` <-> `sockaddr_in*` etc.).  A pattern
+                    // rule cannot tell these from genuinely dangerous
+                    // strict-aliasing UB casts, so it over-fires
+                    // dramatically on serialization, hashing, and
+                    // socket-API code where the cast is the canonical
+                    // (and standard-blessed) idiom.
+                    if self.lang_slug == "cpp"
+                        && is_cpp_cast_target_type_safe(cq.meta.id, cap.node, self.bytes)
+                    {
+                        continue;
+                    }
+                    // Layer F: PHP `md5()` / `sha1()` flagged as weak hash
+                    // functions, but used in a non-cryptographic context
+                    // (ETag generation, cache-key / array-index hashing,
+                    // identifier fingerprinting, deduplication).  The
+                    // pattern rule cannot distinguish weak-hash crypto
+                    // misuse from these idiomatic uses, so it over-fires
+                    // on every `md5(...)` callsite regardless of the
+                    // surrounding consuming context.  Suppress when the
+                    // call's *consuming context* yields a name that
+                    // matches a recognised non-cryptographic identifier
+                    // pattern (variable / field / array-key / method
+                    // suffix).  Genuine weak-hash crypto misuse —
+                    // `$password_hash = md5(...)`, `$signature = md5(...)`,
+                    // `$tokenHash = md5(...)` — keeps firing because the
+                    // name contains an excluded crypto-keyword substring.
+                    if (cq.meta.id == "php.crypto.md5" || cq.meta.id == "php.crypto.sha1")
+                        && self.lang_slug == "php"
+                        && is_php_weak_hash_non_crypto_use(cap.node, self.bytes)
                     {
                         continue;
                     }
@@ -2603,6 +2697,778 @@ fn is_string_literal_with_text(node: tree_sitter::Node, text: &str, bytes: &[u8]
     false
 }
 
+/// C++-only Layer E: structural suppression of `cpp.memory.reinterpret_cast`
+/// when the cast's target type is explicitly defined as safe by the C++
+/// aliasing rules.
+///
+/// `reinterpret_cast<T>(x)` is *not* always undefined behaviour — the C++
+/// standard ([basic.lval]/11) explicitly permits accessing any object
+/// representation through a pointer to `char`, `unsigned char`, or
+/// `std::byte` (and, by long-standing convention, `int8_t` / `uint8_t`).
+/// `void*` is similarly safe because reads / writes are illegal through it
+/// (the program must always cast back before dereferencing).  The integer
+/// round-trip `uintptr_t` / `intptr_t` is guaranteed lossless by the
+/// standard.  POSIX additionally type-puns the `sockaddr` family — the
+/// BSD-socket API takes `struct sockaddr *` and the program must cast from
+/// `sockaddr_in*` / `sockaddr_in6*` / `sockaddr_un*` / `sockaddr_storage*`,
+/// which is the API's intended use.
+///
+/// The pattern rule `cpp.memory.reinterpret_cast` cannot distinguish these
+/// well-defined casts from genuinely dangerous strict-aliasing UB casts
+/// (`reinterpret_cast<MyStruct*>(buf)`), so it over-fires by ~70% on
+/// real-repo serialization, hashing, IPC, and socket-API code where the
+/// cast is the canonical (and standard-blessed) idiom.  Suppressing the
+/// well-defined target-type set is a layer-2 structural fix (per the
+/// bughunt depth hierarchy): the engine recognises the property
+/// (well-defined target type) that makes the cast safe in C++ and
+/// suppresses based on it.  Genuine strict-aliasing risk casts (target is
+/// a user struct / class type) keep firing.
+///
+/// Shapes recognised (any pointer depth `>= 1` unless noted):
+///   - `char*`, `signed char*`, `unsigned char*`, `wchar_t*`
+///   - `uint8_t*`, `int8_t*`, `std::byte*`, `byte*`
+///   - `void*`
+///   - `uintptr_t`, `std::uintptr_t`, `intptr_t`, `std::intptr_t` (no
+///     pointer depth required — the standard guarantees the lossless
+///     round-trip even for the integer form)
+///   - `sockaddr*`, `struct sockaddr*`, `sockaddr_in*`, `sockaddr_in6*`,
+///     `sockaddr_un*`, `sockaddr_storage*` (any of the BSD-socket
+///     address-structure family)
+///
+/// Conservative refusals (kept firing): user-defined struct / class
+/// pointer targets, template type parameters (`T*`), and any target the
+/// normaliser cannot identify.
+fn is_cpp_cast_target_type_safe(rule_id: &str, cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    if rule_id != "cpp.memory.reinterpret_cast" {
+        return false;
+    }
+    // `cap_node` is the `(identifier) @n` "reinterpret_cast" capture (the
+    // pattern's index-0 capture, by query-string order — see Layer A's
+    // `c.index == 0` selection in `run_ast_queries`).  Walk up via
+    // `find_enclosing_call` to reach the outer `call_expression`.  Its
+    // `function` field is a `template_function` whose `arguments` field is
+    // the `template_argument_list` carrying the target type.
+    let call = find_enclosing_call(cap_node);
+    let Some(call) = call else { return false };
+    let func = call.child_by_field_name("function");
+    let Some(func) = func else { return false };
+    if func.kind() != "template_function" {
+        return false;
+    }
+    let targs = func.child_by_field_name("arguments");
+    let Some(targs) = targs else { return false };
+    if targs.kind() != "template_argument_list" {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(&bytes[targs.byte_range()]) else {
+        return false;
+    };
+    let inner = text
+        .trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim();
+    cpp_cast_target_type_is_safe(inner)
+}
+
+/// Normalise a C++ cast target type string and report whether it names a
+/// well-defined-by-aliasing-rules type per the policy in
+/// [`is_cpp_cast_target_type_safe`].  Public to the module so the unit
+/// tests can pin the canonical and adversarial shapes.
+pub(crate) fn cpp_cast_target_type_is_safe(s: &str) -> bool {
+    // Collapse all internal whitespace (tabs, newlines, multiple spaces)
+    // to single spaces so the normalised form is `const char *` with one
+    // space between every token.
+    let normalised: String = {
+        let mut out = String::with_capacity(s.len());
+        let mut prev_ws = true;
+        for ch in s.chars() {
+            if ch.is_whitespace() {
+                if !prev_ws {
+                    out.push(' ');
+                    prev_ws = true;
+                }
+            } else {
+                out.push(ch);
+                prev_ws = false;
+            }
+        }
+        out.trim().to_string()
+    };
+    let Some(base) = strip_pointer_and_cv(&normalised) else {
+        return false;
+    };
+    // Pointer-indirection depth = count of `*` tokens in the normalised
+    // form (whitespace already collapsed; compound forms with parens /
+    // brackets / templates are filtered by `strip_pointer_and_cv`).
+    let depth = normalised.chars().filter(|c| *c == '*').count();
+
+    // Depth 0 (value cast): only the pointer<->integer round-trip types
+    // are well-defined.  Aliasing *through* a `uintptr_t*` / `intptr_t*`
+    // is **not** covered by the standard exemption — only converting a
+    // pointer value to/from the integer type is defined behaviour
+    // ([basic.compound]/3).  Therefore we accept these names only at
+    // depth 0.
+    if depth == 0 {
+        return matches!(
+            base.as_str(),
+            "uintptr_t" | "intptr_t" | "std::uintptr_t" | "std::intptr_t"
+        );
+    }
+
+    // Depth >= 2 (pointer-to-pointer and beyond) is never safe: the
+    // [basic.lval]/11 aliasing exemption is for accessing an object's
+    // representation as bytes through a single pointer indirection.
+    // Reading a `char*` object through a `char**` is a strict-aliasing
+    // violation, and the same logic applies to `void**`, `uint8_t**`,
+    // etc.
+    if depth != 1 {
+        return false;
+    }
+
+    // Depth 1: standard aliasing exemption for byte-view access plus
+    // POSIX socket type-punning and the opaque `void*` target.
+    matches!(
+        base.as_str(),
+        "char"
+            | "signed char"
+            | "unsigned char"
+            | "wchar_t"
+            | "uint8_t"
+            | "int8_t"
+            | "std::byte"
+            | "byte"
+            | "void"
+            | "sockaddr"
+            | "struct sockaddr"
+            | "sockaddr_in"
+            | "sockaddr_in6"
+            | "sockaddr_un"
+            | "sockaddr_storage"
+            | "struct sockaddr_in"
+            | "struct sockaddr_in6"
+            | "struct sockaddr_un"
+            | "struct sockaddr_storage"
+    )
+}
+
+/// Strip a single C++ cast target's leading/trailing `const`/`volatile`
+/// qualifiers and trailing `*` characters (any depth).  Returns the bare
+/// base type identifier on success.  Returns `None` if anything left over
+/// after pointer/cv stripping is not a plain identifier or scoped name
+/// (e.g. function-pointer `void(*)(int)` or template `vector<int>`).
+fn strip_pointer_and_cv(s: &str) -> Option<String> {
+    let mut t: &str = s.trim();
+    // Strip leading `const` / `volatile`, possibly multiple.
+    loop {
+        let after = t
+            .strip_prefix("const ")
+            .or_else(|| t.strip_prefix("volatile "));
+        match after {
+            Some(rest) => t = rest.trim_start(),
+            None => break,
+        }
+    }
+    // Repeatedly strip trailing `*` and trailing cv-qualifiers in either
+    // order — `T*`, `T* const`, `T*const`, `T const*`, `T**`, `const T*`
+    // are all reachable.  The loop terminates when neither suffix
+    // matches.
+    loop {
+        let mut progressed = false;
+        // Strip trailing const/volatile that appears AFTER any `*` or
+        // before the first `*` (e.g. `T const`).  Forms: ` const`, ` volatile`.
+        loop {
+            let after = t
+                .trim_end()
+                .strip_suffix(" const")
+                .or_else(|| t.trim_end().strip_suffix(" volatile"));
+            match after {
+                Some(rest) => {
+                    t = rest;
+                    progressed = true;
+                }
+                None => break,
+            }
+        }
+        // Strip trailing `*`s.
+        let trimmed = t.trim_end();
+        if let Some(stripped) = trimmed.strip_suffix('*') {
+            t = stripped;
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+    let base = t.trim();
+    if base.is_empty() {
+        return None;
+    }
+    // Refuse anything that contains characters typical of compound
+    // type forms we don't want to reason about: parens (function
+    // pointer), angle brackets (template instantiation), brackets
+    // (array), commas (multiple arguments).  Accept identifier
+    // characters, `_`, `:` (for `std::byte`), spaces (for `unsigned
+    // char` / `struct sockaddr`).
+    for ch in base.chars() {
+        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == ':' || ch == ' ') {
+            return None;
+        }
+    }
+    Some(base.to_string())
+}
+
+/// PHP-only Layer F: structural suppression of `php.crypto.md5` /
+/// `php.crypto.sha1` when the call's *consuming context* yields a name
+/// that matches a recognised non-cryptographic identifier pattern.
+///
+/// The pattern rule fires syntactically on every `md5(...)` /
+/// `sha1(...)` callsite regardless of how the result is used.  In real
+/// PHP code these functions are pervasively used for non-cryptographic
+/// purposes — ETag generation (HTTP cache validators), array/cache-key
+/// hashing, dedup fingerprints, content addressing for templates — and
+/// those uses do not realise the "weak hash function" risk the rule
+/// names.  Suppress only when the consuming context yields a name from
+/// a recognised non-crypto suffix set, while keeping every callsite
+/// whose name contains a crypto-keyword substring (`password`,
+/// `secret`, `token`, `signature`, `hmac`, `digest`, `salt`, …).
+///
+/// Consuming contexts inspected (walk up through transparent wrappers
+/// — `binary_expression` for concat / equality, `parenthesized_expression`,
+/// `conditional_expression`, `argument`):
+///   - `assignment_expression` (covers `=`, `??=`, `+=`, …) — resolve
+///     the LHS to a final identifier (variable name, member-access
+///     property name, or string-literal subscript index).
+///   - `array_element_initializer` — the key is a string literal whose
+///     contents are the consuming name.
+///   - `subscript_expression` where the call sits in the index position
+///     — using a hash as an array index is intrinsically non-crypto.
+///   - `return_statement` — resolve the enclosing
+///     `function_definition` / `method_declaration` name (with the
+///     conventional `get` prefix stripped).
+///
+/// All other consuming forms (bare expression statements, comparison
+/// operands without an LHS, lambda returns, arguments to user-defined
+/// helpers) keep firing.
+fn is_php_weak_hash_non_crypto_use(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let call = if cap_node.kind() == "function_call_expression" {
+        cap_node
+    } else {
+        let mut cur = cap_node;
+        let mut found = None;
+        for _ in 0..4 {
+            if cur.kind() == "function_call_expression" {
+                found = Some(cur);
+                break;
+            }
+            match cur.parent() {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        match found {
+            Some(c) => c,
+            None => return false,
+        }
+    };
+
+    let mut cur = call;
+    let mut steps = 0u32;
+    while let Some(parent) = cur.parent() {
+        if steps > 16 {
+            return false;
+        }
+        steps += 1;
+        match parent.kind() {
+            // Transparent wrappers — keep walking to find the
+            // consumer.  These node kinds preserve the value flowing
+            // out of the md5/sha1 call without transforming its
+            // semantics, so we let the OUTER context (LHS name,
+            // array key, return method, etc.) classify the use.
+            //
+            // - `binary_expression`: concat (`'foo_' . md5($x)`),
+            //   equality (`md5($x) === $stored`), arithmetic.
+            // - `parenthesized_expression`: redundant parens.
+            // - `conditional_expression`: `$cond ? md5($x) : ''`.
+            // - `argument` / `arguments`: positional / wrapped arg
+            //   lists — the enclosing call (`substr(md5($x), 0, 8)`,
+            //   `$q->createNamedParameter(md5($x))`) is what matters.
+            // - `function_call_expression`: identity-shaped wrappers
+            //   such as `substr(...)`, `strtolower(...)`,
+            //   `urlencode(...)` which propagate the hash to its
+            //   real consumer.
+            // - `encapsed_string`: `"prefix-{md5($x)}"` interpolation.
+            //
+            // `member_call_expression` / `nullsafe_member_call_expression`
+            // are NOT in this transparent set — they have their own
+            // arm below that performs lookup-verb classification on
+            // the method name (`->get(md5($k))`, `->set(...)`, …)
+            // before optionally falling through to the outer
+            // consumer.
+            "binary_expression"
+            | "parenthesized_expression"
+            | "conditional_expression"
+            | "argument"
+            | "arguments"
+            | "function_call_expression"
+            | "encapsed_string" => {}
+            "assignment_expression" | "augmented_assignment_expression" => {
+                let lhs = parent
+                    .child_by_field_name("left")
+                    .or_else(|| parent.named_child(0));
+                let Some(lhs) = lhs else {
+                    return false;
+                };
+                return resolve_php_lvalue_name(lhs, bytes)
+                    .map(|n| name_is_non_crypto(&n))
+                    .unwrap_or(false);
+            }
+            "array_element_initializer" => {
+                if parent.named_child_count() < 2 {
+                    return false;
+                }
+                let key = parent.named_child(0);
+                let Some(key) = key else {
+                    return false;
+                };
+                let Some(key_text) = string_literal_text(key, bytes) else {
+                    return false;
+                };
+                return name_is_non_crypto(&key_text);
+            }
+            "subscript_expression" => {
+                // tree-sitter-php: subscript_expression has the receiver as
+                // the first named child and the index as the second.  If our
+                // call sits past the receiver's end byte, we are the index.
+                let r0 = parent.named_child(0);
+                let Some(r0) = r0 else {
+                    cur = parent;
+                    continue;
+                };
+                if call.start_byte() >= r0.end_byte() {
+                    return true;
+                }
+                // Otherwise we're inside the receiver chain; the surrounding
+                // `assignment_expression` (if any) will resolve the LHS name.
+            }
+            "member_call_expression" | "nullsafe_member_call_expression" => {
+                // The md5/sha1 result is being passed as an argument to a
+                // method call.  When the method name is a recognised
+                // key/cache/lookup verb (`get`, `set`, `has`, `delete`,
+                // `fetch`, `store`, `find`, `getItem`, `setItem`, …), the
+                // result is being used as a non-cryptographic lookup key —
+                // canonical for cache backends, hash maps, and storage
+                // adapters where the developer is hashing arbitrary input
+                // to a fixed-length, character-safe key.  Genuine
+                // crypto-comparison wrappers (`hash_equals`, `verify`,
+                // `password_verify`) keep firing because their method
+                // name does not match the verb set.
+                let name_node = parent.child_by_field_name("name").or_else(|| {
+                    // Fallback: last named child is the method name.
+                    let count = parent.named_child_count();
+                    if count == 0 {
+                        None
+                    } else {
+                        parent.named_child(count as u32 - 1)
+                    }
+                });
+                if let Some(nn) = name_node
+                    && nn.kind() == "name"
+                    && let Ok(method) = std::str::from_utf8(&bytes[nn.byte_range()])
+                    && method_is_lookup_verb(method)
+                {
+                    return true;
+                }
+                // Otherwise treat as transparent so the OUTER consumer can
+                // classify (`$x = $cache->get(sha1($k))` resolves LHS `x`).
+            }
+            "return_statement" => {
+                let mut p = parent;
+                for _ in 0..10 {
+                    let Some(pp) = p.parent() else {
+                        return false;
+                    };
+                    p = pp;
+                    let kind = p.kind();
+                    if kind == "method_declaration" || kind == "function_definition" {
+                        let Some(nn) = p
+                            .child_by_field_name("name")
+                            .or_else(|| find_named_child_of_kind(p, "name"))
+                        else {
+                            return false;
+                        };
+                        let Ok(name) = std::str::from_utf8(&bytes[nn.byte_range()]) else {
+                            return false;
+                        };
+                        return method_name_is_non_crypto(name);
+                    }
+                    if kind == "anonymous_function"
+                        || kind == "arrow_function"
+                        || kind == "anonymous_function_creation_expression"
+                    {
+                        return false;
+                    }
+                }
+                return false;
+            }
+            // Halt at scope / statement boundaries we cannot resolve through.
+            "expression_statement"
+            | "compound_statement"
+            | "method_declaration"
+            | "function_definition"
+            | "anonymous_function"
+            | "anonymous_function_creation_expression"
+            | "arrow_function"
+            | "program" => return false,
+            _ => return false,
+        }
+        cur = parent;
+    }
+    false
+}
+
+/// Resolve the final identifier of a PHP l-value expression to a string
+/// suitable for [`name_is_non_crypto`] classification.
+///
+/// Handles:
+///   - `$variable` (`variable_name` → inner name child)
+///   - `$obj->property` (`member_access_expression` → name field)
+///   - `$arr['literal_key']` (`subscript_expression` → string-literal index)
+///   - `Class::$static` / `self::$prop` (`scoped_property_access_expression`)
+///
+/// Returns `None` for unrecognised l-value shapes (dynamic property
+/// access, computed indices, function-call l-values, etc.); the caller
+/// then falls back to keeping the finding.
+fn resolve_php_lvalue_name(lhs: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
+    let lhs = unwrap_php_paren(lhs);
+    match lhs.kind() {
+        "variable_name" => {
+            let name_node = lhs.named_child(0)?;
+            std::str::from_utf8(&bytes[name_node.byte_range()])
+                .ok()
+                .map(String::from)
+        }
+        "member_access_expression" => {
+            let n = lhs.child_by_field_name("name").or_else(|| {
+                let count = lhs.named_child_count();
+                if count == 0 {
+                    None
+                } else {
+                    lhs.named_child(count as u32 - 1)
+                }
+            })?;
+            // Property access can name a `name` (bare ident) or a
+            // `variable_name` (dynamic ${$x} — which we don't resolve).
+            if n.kind() == "name" {
+                std::str::from_utf8(&bytes[n.byte_range()])
+                    .ok()
+                    .map(String::from)
+            } else {
+                None
+            }
+        }
+        "subscript_expression" => {
+            if lhs.named_child_count() >= 2 {
+                let idx = lhs.named_child(1)?;
+                if let Some(txt) = string_literal_text(idx, bytes) {
+                    return Some(txt);
+                }
+            }
+            // Dynamic / non-literal index: recurse into the receiver
+            // so `$columnNamesHashes[$col]` resolves to
+            // `columnNamesHashes`.  This handles canonical
+            // `$lookup_by_hash[$key] = md5($key)` shapes.
+            let r = lhs.named_child(0)?;
+            resolve_php_lvalue_name(r, bytes)
+        }
+        "scoped_property_access_expression" => {
+            let count = lhs.named_child_count();
+            if count == 0 {
+                return None;
+            }
+            let prop = lhs.named_child(count as u32 - 1)?;
+            // The static property is a `variable_name`.  Reuse this
+            // function recursively to extract the bare name.
+            resolve_php_lvalue_name(prop, bytes)
+        }
+        _ => None,
+    }
+}
+
+/// Return the textual contents of a PHP string literal node (`string`
+/// or `encapsed_string`), stripping surrounding quotes.  Returns `None`
+/// for any non-string node and for interpolated `encapsed_string`s
+/// containing template variables.
+fn string_literal_text(node: tree_sitter::Node, bytes: &[u8]) -> Option<String> {
+    if node.kind() != "string" && node.kind() != "encapsed_string" {
+        return None;
+    }
+    if has_interpolation(node) {
+        return None;
+    }
+    for i in 0..node.named_child_count() as u32 {
+        if let Some(c) = node.named_child(i)
+            && (c.kind() == "string_content" || c.kind() == "string_value")
+        {
+            return std::str::from_utf8(&bytes[c.byte_range()])
+                .ok()
+                .map(String::from);
+        }
+    }
+    if let Ok(s) = std::str::from_utf8(&bytes[node.byte_range()]) {
+        let trimmed = s.trim_matches(|c| c == '\'' || c == '"');
+        return Some(trimmed.to_string());
+    }
+    None
+}
+
+fn unwrap_php_paren(mut node: tree_sitter::Node) -> tree_sitter::Node {
+    for _ in 0..4 {
+        if node.kind() == "parenthesized_expression"
+            && let Some(inner) = node.named_child(0)
+        {
+            node = inner;
+            continue;
+        }
+        break;
+    }
+    node
+}
+
+/// Classify a PHP identifier as non-cryptographic by name.  Two-tier
+/// check: any name containing a crypto-keyword substring is hard-rejected
+/// (kept as a finding); the remaining names are accepted when their
+/// form ends in a recognised non-crypto suffix at a word boundary
+/// (underscore, digit, camelCase transition) or via a long-enough
+/// stand-alone suffix (≥4 chars).
+///
+/// The crypto-keyword exclude list uses substring match (not just
+/// suffix) so compound names like `hashedPassword` / `tokenHash` /
+/// `sigStore` are conservatively kept.  False rejections of safe
+/// shapes are acceptable; false acceptances of crypto shapes are not.
+pub(crate) fn name_is_non_crypto(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    static CRYPTO_EXCLUDES: &[&str] = &[
+        "password",
+        "passwd",
+        "pw_hash",
+        "pwhash",
+        "pwdhash",
+        "pwd_hash",
+        "passhash",
+        "pass_hash",
+        "secret",
+        "token",
+        "signature",
+        "signed",
+        "hmac",
+        "digest",
+        "verifier",
+        "challenge",
+        "csrf",
+        "salt",
+        "nonce_secret",
+        "auth_code",
+        "authcode",
+        "auth_key",
+        "authkey",
+        "private",
+        "credential",
+        "creds",
+        "encryption",
+        "decryption",
+        "encryptkey",
+        "decryptkey",
+        "encrypt_key",
+        "decrypt_key",
+        "apikey",
+        "api_key",
+    ];
+    for ex in CRYPTO_EXCLUDES {
+        if lower.contains(ex) {
+            return false;
+        }
+    }
+    // `sig` / `mac` are excluded only at word boundaries — the substrings
+    // appear in legitimate non-crypto names (`signal`, `unsigned`,
+    // `assignee`, `design`, `magic`).
+    if lower == "sig" || lower.ends_with("_sig") || lower.ends_with("sig_") {
+        return false;
+    }
+    if lower == "mac" || lower.ends_with("_mac") {
+        return false;
+    }
+    // Permissive safe-suffix recognition.
+    static SAFE_SUFFIXES: &[&str] = &[
+        "hash",
+        "hashes",
+        "etag",
+        "etags",
+        "md5",
+        "sha1",
+        "fingerprint",
+        "fingerprints",
+        "cachekey",
+        "cache_key",
+        "cacheid",
+        "cache_id",
+        "id",
+        "uid",
+        "uuid",
+        "guid",
+        "name_hash",
+        "checksum",
+        "slot",
+        "bucket",
+        "seed",
+        "marker",
+        "tag",
+        "gravatar",
+        "hashid",
+        "opaque",
+        "shortid",
+        "short_id",
+        "fnv",
+        "fingerprintkey",
+        "anchor",
+        "version",
+        "buster",
+        "cachebuster",
+        "cache_buster",
+        "revision",
+        "rev",
+    ];
+    let bytes_orig = name.as_bytes();
+    for s in SAFE_SUFFIXES {
+        if lower == *s {
+            return true;
+        }
+        if !lower.ends_with(s) {
+            continue;
+        }
+        let prev_pos = lower.len() - s.len();
+        if prev_pos == 0 {
+            return true;
+        }
+        let prev_char_orig = bytes_orig[prev_pos - 1] as char;
+        // Word boundary: underscore, digit, etc.
+        if !prev_char_orig.is_ascii_alphabetic() {
+            return true;
+        }
+        // CamelCase boundary: suffix starts with an uppercase letter
+        // in the original casing (`storageId`, `tableHash`, `sqlMd5`).
+        let suffix_first_orig = bytes_orig[prev_pos] as char;
+        if suffix_first_orig.is_ascii_uppercase() {
+            return true;
+        }
+        // Long stand-alone suffix (≥4 chars) — accept without boundary.
+        if s.len() >= 4 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Like [`name_is_non_crypto`] but with a leading `get` prefix stripped
+/// to recognise the canonical `getETag` / `getHash` / `getCacheKey`
+/// accessor naming convention.  Pass the original-case name through so
+/// downstream camelCase-boundary detection still works.
+fn method_name_is_non_crypto(name: &str) -> bool {
+    let stripped = name
+        .strip_prefix("get")
+        .or_else(|| name.strip_prefix("Get"))
+        .unwrap_or(name);
+    if name_is_non_crypto(stripped) {
+        return true;
+    }
+    // Some accessors keep the prefix (e.g., `recoveryKeyId`,
+    // `formatPath` returning a hashed-path identifier).  Also try the
+    // raw name for camelCase-boundary suffix detection.
+    name_is_non_crypto(name)
+}
+
+/// Recognise PHP method names that signal a lookup / cache / store /
+/// container key-or-value operation.  When `md5(...)` / `sha1(...)` is
+/// passed to such a method, the result is being used as a content-
+/// addressed key — not for cryptographic strength.  The verb set is
+/// purposely narrow so cryptographic comparison helpers
+/// (`hash_equals`, `verify`, `password_verify`, `decryptWith`) keep
+/// firing.
+fn method_is_lookup_verb(method: &str) -> bool {
+    let lower = method.to_ascii_lowercase();
+    static VERBS: &[&str] = &[
+        "get",
+        "set",
+        "has",
+        "delete",
+        "remove",
+        "fetch",
+        "store",
+        "put",
+        "save",
+        "exists",
+        "find",
+        "lookup",
+        "getitem",
+        "setitem",
+        "hasitem",
+        "deleteitem",
+        "addtag",
+        "addtotag",
+        "key",
+        "keyfor",
+        "containskey",
+        "haskey",
+        "loadbykey",
+        "fetchbykey",
+        "getbykey",
+        "setbykey",
+        "deletebykey",
+        "incr",
+        "incrby",
+        "decr",
+        "decrby",
+        "expire",
+        "ttl",
+        "namespacekey",
+        "cachekey",
+    ];
+    if VERBS.contains(&lower.as_str()) {
+        return true;
+    }
+    // Composite forms like `getCacheKey`, `setCacheKey`, `getRoute` —
+    // very common in cache adapters, accept any name ending in one of
+    // a few non-crypto-typed-result suffixes preceded by a get/set/has
+    // verb.
+    static SUFFIX_HINTS: &[&str] = &[
+        "cachekey",
+        "key",
+        "id",
+        "hash",
+        "etag",
+        "uid",
+        "tag",
+        "fingerprint",
+    ];
+    if let Some(rest) = lower
+        .strip_prefix("get")
+        .or_else(|| lower.strip_prefix("set"))
+        .or_else(|| lower.strip_prefix("has"))
+        .or_else(|| lower.strip_prefix("create"))
+        .or_else(|| lower.strip_prefix("build"))
+    {
+        for h in SUFFIX_HINTS {
+            if rest.ends_with(h) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Check if a string node contains interpolation (e.g., PHP `"Hello $name"`).
 fn has_interpolation(node: tree_sitter::Node) -> bool {
     for i in 0..node.child_count() as u32 {
@@ -3553,6 +4419,221 @@ fn php_unserialize_allowed_classes_recognises_safe_forms() {
 }
 
 #[test]
+fn php_weak_hash_non_crypto_use_recognises_canonical_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(function_call_expression function: (name) @n (#match? @n "^(md5|sha1)$")) @vuln"#;
+
+    // ETag concat returned from getETag() — return-statement enclosing
+    // method name path.
+    let code = b"<?php\nclass C { public function getETag(): string { return '\"' . md5($this->data) . '\"'; } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "getETag concat should be suppressed"
+    );
+
+    // Array element value with a string-literal key whose name is non-crypto.
+    let code = b"<?php\nfunction f($x) { return ['table_name_hash' => md5($x)]; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "array element with `*_hash` key should be suppressed"
+    );
+
+    // Subscript LHS with a string-literal index `'etag'`.
+    let code = b"<?php\nfunction f($x, &$row) { $row['etag'] = md5($x); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "subscript LHS with 'etag' key should be suppressed"
+    );
+
+    // Member-access LHS named `storageId` (camelCase boundary on `Id` suffix).
+    let code = b"<?php\nclass C { function f() { $this->storageId = md5($this->id); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "member-access LHS `storageId` should be suppressed"
+    );
+
+    // Null-coalescing assignment with subscript LHS.
+    let code = b"<?php\nfunction f($t, &$tables) { $tables[$t]['hash'] ??= md5($t); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "??= subscript LHS with 'hash' key should be suppressed"
+    );
+
+    // Call result used as an array index.
+    let code = b"<?php\nfunction f($a, $x) { return $a[md5($x)]; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "md5 used as subscript index should be suppressed"
+    );
+
+    // Cache-style lookup verb (`$cache->get(sha1(...))`).
+    let code = b"<?php\nclass C { public $cache; function f($u) { return $this->cache->get(sha1($u)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "method call to lookup-verb `get(sha1(..))` should be suppressed"
+    );
+
+    // Createnamedparameter wrapper around md5 inside an array element value.
+    let code = b"<?php\nclass C { public $q; function f($d) { $this->q->insert('t')->values(['etag' => $this->q->createNamedParameter(md5($d))]); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "wrapper-call inside array element with `etag` key should be suppressed"
+    );
+
+    // Dynamic-index subscript LHS with a non-crypto receiver name.
+    let code = b"<?php\nfunction f($cols) { $columnNamesHashes = []; foreach ($cols as $c) { $columnNamesHashes[$c] = md5($c); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_weak_hash_non_crypto_use(cap, code),
+        "subscript LHS with dynamic index — receiver name `*Hashes` should drive suppression"
+    );
+
+    // Crypto consumer — keep firing.  $this->password = md5($pwd).
+    let code =
+        b"<?php\nclass C { public $password; function f($p) { $this->password = md5($p); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_weak_hash_non_crypto_use(cap, code),
+        "$this->password = md5(...) is crypto storage and must NOT be suppressed"
+    );
+
+    // Compound name with crypto-keyword substring.  $tokenHash = md5(...).
+    let code = b"<?php\nfunction f($x) { $tokenHash = md5($x); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_weak_hash_non_crypto_use(cap, code),
+        "$tokenHash compound name must NOT be suppressed (contains 'token')"
+    );
+
+    // pw_hash compound — must NOT be suppressed.
+    let code = b"<?php\nfunction f($p) { $pw_hash = md5($p); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_weak_hash_non_crypto_use(cap, code),
+        "$pw_hash compound name must NOT be suppressed"
+    );
+
+    // Bare statement / unrecognised consumer — keep firing.
+    let code = b"<?php\nfunction f($x) { var_dump(md5($x)); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_weak_hash_non_crypto_use(cap, code),
+        "var_dump(md5(...)) has no recognisable consumer name and must NOT be suppressed"
+    );
+}
+
+#[test]
+fn name_is_non_crypto_recognises_word_boundary_suffixes() {
+    // Whole-word and underscore boundaries.
+    assert!(name_is_non_crypto("hash"));
+    assert!(name_is_non_crypto("etag"));
+    assert!(name_is_non_crypto("table_name_hash"));
+    assert!(name_is_non_crypto("table_id"));
+    assert!(name_is_non_crypto("cache_key"));
+
+    // CamelCase boundaries.
+    assert!(name_is_non_crypto("storageId"));
+    assert!(name_is_non_crypto("tableHash"));
+    assert!(name_is_non_crypto("sqlMd5"));
+    assert!(name_is_non_crypto("cacheBuster"));
+
+    // Long stand-alone suffix (≥4) without word boundary.
+    assert!(name_is_non_crypto("columnnameshashes"));
+    assert!(name_is_non_crypto("tablefingerprint"));
+
+    // Non-letter previous char — digit.
+    assert!(name_is_non_crypto("v1id"));
+
+    // Keep firing on crypto-keyword compound names.
+    assert!(!name_is_non_crypto("password_hash"));
+    assert!(!name_is_non_crypto("hashedPassword"));
+    assert!(!name_is_non_crypto("tokenHash"));
+    assert!(!name_is_non_crypto("signatureHash"));
+    assert!(!name_is_non_crypto("pw_hash"));
+    assert!(!name_is_non_crypto("digest"));
+    assert!(!name_is_non_crypto("hmac"));
+    assert!(!name_is_non_crypto("salt"));
+    assert!(!name_is_non_crypto("private_key"));
+
+    // Bare `key`/`keys` and `apiKey` shapes are crypto-credential
+    // candidates and must keep firing; specific safe forms like
+    // `cache_key`/`cachekey` are still suppressed via their own
+    // entries in `SAFE_SUFFIXES`.
+    assert!(!name_is_non_crypto("key"));
+    assert!(!name_is_non_crypto("keys"));
+    assert!(!name_is_non_crypto("apiKey"));
+    assert!(!name_is_non_crypto("api_key"));
+    assert!(!name_is_non_crypto("apiKeyHash"));
+    assert!(!name_is_non_crypto("api_key_hash"));
+    assert!(name_is_non_crypto("cache_key"));
+    assert!(name_is_non_crypto("cachekey"));
+
+    // Words that LOOK like an `id` suffix but lack a word boundary —
+    // do NOT classify (no boundary, length-2 suffix).
+    assert!(!name_is_non_crypto("said"));
+    assert!(!name_is_non_crypto("void"));
+    assert!(!name_is_non_crypto("rapid"));
+
+    // Unrecognised generic names.
+    assert!(!name_is_non_crypto("x"));
+    assert!(!name_is_non_crypto("result"));
+    assert!(!name_is_non_crypto("output"));
+    assert!(!name_is_non_crypto(""));
+}
+
+#[test]
+fn method_is_lookup_verb_recognises_cache_verbs() {
+    // Direct verb match.
+    assert!(method_is_lookup_verb("get"));
+    assert!(method_is_lookup_verb("set"));
+    assert!(method_is_lookup_verb("has"));
+    assert!(method_is_lookup_verb("delete"));
+    assert!(method_is_lookup_verb("fetch"));
+    assert!(method_is_lookup_verb("getItem"));
+    assert!(method_is_lookup_verb("setItem"));
+
+    // Composite forms — verb prefix + non-crypto suffix.
+    assert!(method_is_lookup_verb("getCacheKey"));
+    assert!(method_is_lookup_verb("setCacheKey"));
+    assert!(method_is_lookup_verb("buildKey"));
+    assert!(method_is_lookup_verb("createId"));
+    assert!(method_is_lookup_verb("hasFingerprint"));
+
+    // Crypto-comparison helpers — keep firing.
+    assert!(!method_is_lookup_verb("hash_equals"));
+    assert!(!method_is_lookup_verb("verify"));
+    assert!(!method_is_lookup_verb("password_verify"));
+    assert!(!method_is_lookup_verb("decrypt"));
+    assert!(!method_is_lookup_verb("encrypt"));
+    assert!(!method_is_lookup_verb("sign"));
+    assert!(!method_is_lookup_verb("invoke"));
+    assert!(!method_is_lookup_verb("doSomething"));
+}
+
+#[test]
 fn sprintf_format_safety_classifier() {
     // Numeric / char / pointer specifiers, bounded by definition.
     assert!(sprintf_format_is_safe(""));
@@ -3596,6 +4677,176 @@ fn first_c_capture<'tree>(
         .find(|c| c.index == 0)
         .expect("capture index 0")
         .node
+}
+
+#[cfg(test)]
+fn first_cpp_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    query_str: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_cpp::LANGUAGE);
+    let query = tree_sitter::Query::new(&lang, query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    m.captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0")
+        .node
+}
+
+#[test]
+fn cpp_cast_target_type_is_safe_recognises_canonical_shapes() {
+    use crate::ast::cpp_cast_target_type_is_safe as f;
+    // Byte-pointer family — C++ explicitly permits byte-level access.
+    assert!(f("char*"));
+    assert!(f("char *"));
+    assert!(f("const char*"));
+    assert!(f("const char *"));
+    assert!(f("unsigned char*"));
+    assert!(f("const unsigned char*"));
+    assert!(f("signed char*"));
+    assert!(f("uint8_t*"));
+    assert!(f("const uint8_t*"));
+    assert!(f("int8_t*"));
+    assert!(f("std::byte*"));
+    assert!(f("const std::byte*"));
+    assert!(f("byte*"));
+    assert!(f("wchar_t*"));
+    // void* — well-defined target.
+    assert!(f("void*"));
+    assert!(f("const void*"));
+    // Integer round-trip — value cast only (depth 0).  Aliasing
+    // *through* a `uintptr_t*` / `intptr_t*` is NOT covered by the
+    // standard exemption — only the pointer<->integer value
+    // conversion is well-defined.
+    assert!(f("uintptr_t"));
+    assert!(f("std::uintptr_t"));
+    assert!(f("intptr_t"));
+    assert!(f("std::intptr_t"));
+    // BSD socket family — POSIX intentionally type-puns these.
+    assert!(f("sockaddr*"));
+    assert!(f("struct sockaddr*"));
+    assert!(f("sockaddr_in*"));
+    assert!(f("sockaddr_in6*"));
+    assert!(f("sockaddr_un*"));
+    assert!(f("sockaddr_storage*"));
+
+    // Multi-token / extra whitespace — normaliser should collapse it.
+    assert!(f("const   uint8_t *"));
+    assert!(f("uint8_t  * const"));
+    assert!(f("const  unsigned   char *"));
+
+    // Pointer-to-pointer is NOT covered by the [basic.lval]/11
+    // aliasing exemption — accessing a `char*` object through a
+    // `char**` is a strict-aliasing violation.  Same for `void**`,
+    // `uint8_t**`, etc.
+    assert!(!f("char**"));
+    assert!(!f("uint8_t**"));
+    assert!(!f("void**"));
+    assert!(!f("void **"));
+    // Pointer-to-integer-roundtrip-type (`uintptr_t*`, `intptr_t*`)
+    // is also not safe: only the pointer<->integer **value** cast is
+    // well-defined, not aliasing through a pointer-to-uintptr_t.
+    assert!(!f("uintptr_t*"));
+    assert!(!f("intptr_t*"));
+    assert!(!f("std::uintptr_t*"));
+
+    // Non-safe shapes — must NOT be suppressed.
+    assert!(!f("MyStruct*"));
+    assert!(!f("InstanceType*"));
+    assert!(!f("DBImpl*"));
+    assert!(!f("C*"));
+    assert!(!f("CPP*"));
+    assert!(!f("T*"));
+    assert!(!f("secp256k1_keypair*"));
+    assert!(!f("PIP_ADAPTER_ADDRESSES"));
+    assert!(!f("std::vector<int>*"));
+    assert!(!f("void(*)(int)"));
+    assert!(!f("char[10]"));
+    // Bare integer (no pointer) is only safe for the round-trip
+    // types — `int`, `size_t`, `uint64_t` should NOT match.
+    assert!(!f("int"));
+    assert!(!f("size_t"));
+    assert!(!f("uint64_t"));
+    assert!(!f("char")); // bare char without pointer
+    assert!(!f("uint8_t")); // bare uint8_t without pointer
+}
+
+#[test]
+fn cpp_reinterpret_cast_layer_e_recognises_byte_pointer_targets() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_cpp::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(call_expression
+                 function: (template_function
+                   name: (identifier) @n (#eq? @n "reinterpret_cast")))
+               @vuln"#;
+
+    // reinterpret_cast<uint8_t*>(p) — the leveldb / serialization shape.
+    let code = b"void f(int* p) { auto q = reinterpret_cast<uint8_t*>(p); (void)q; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<uint8_t*> must be suppressed (byte-pointer target)"
+    );
+
+    // reinterpret_cast<const std::byte*>(p) — qualified scoped name.
+    let code = b"#include <cstddef>\nvoid f(int* p) { auto q = reinterpret_cast<const std::byte*>(p); (void)q; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<const std::byte*> must be suppressed"
+    );
+
+    // reinterpret_cast<void*>(0x08000000) — synthetic-address shape.
+    let code = b"void* f() { return reinterpret_cast<void*>(0x08000000); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<void*> must be suppressed (synthetic address)"
+    );
+
+    // reinterpret_cast<uintptr_t>(p) — integer round-trip.
+    let code =
+        b"#include <cstdint>\nuintptr_t f(int* p) { return reinterpret_cast<uintptr_t>(p); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<uintptr_t> must be suppressed (integer round-trip)"
+    );
+
+    // reinterpret_cast<sockaddr*>(&addr) — POSIX socket-API shape.
+    let code = b"struct sockaddr_in { int x; };\nstruct sockaddr;\nvoid f(struct sockaddr_in* a) { auto* s = reinterpret_cast<sockaddr*>(a); (void)s; }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<sockaddr*> must be suppressed (BSD socket pun)"
+    );
+
+    // reinterpret_cast<MyStruct*>(buf) — strict-aliasing UB risk, must NOT
+    // be suppressed.
+    let code = b"struct MyStruct { int a; };\nMyStruct* f(char* buf) { return reinterpret_cast<MyStruct*>(buf); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_cpp_capture(&tree, code, q);
+    assert!(
+        !is_cpp_cast_target_type_safe("cpp.memory.reinterpret_cast", cap, code),
+        "reinterpret_cast<MyStruct*> must NOT be suppressed (genuine strict-aliasing risk)"
+    );
+
+    // Other rule ids are unaffected.
+    assert!(
+        !is_cpp_cast_target_type_safe("cpp.memory.const_cast", cap, code),
+        "Layer E must only fire for cpp.memory.reinterpret_cast"
+    );
 }
 
 #[test]

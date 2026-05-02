@@ -11,4 +11,5 @@
 /book
 .DS_Store
 .z3-trace
+.pitboss
 .node_modules-target

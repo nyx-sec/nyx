@@ -1,14 +1,14 @@
 # Benchmark Results
 
-Current baseline (2026-04-29):
+Current baseline (2026-05-02):
 
 | Metric    | File-level | Rule-level | CI floor |
 |-----------|------------|------------|----------|
-| Precision | 0.996      | 0.996      | 0.861    |
+| Precision | 1.000      | 1.000      | 0.861    |
 | Recall    | 1.000      | 1.000      | 0.944    |
-| F1        | 0.998      | 0.998      | 0.901    |
+| F1        | 1.000      | 1.000      | 0.901    |
 
-Corpus: 451 cases across 10 languages, 449 evaluated (no disabled). Per-run JSON lands in `tests/benchmark/results/` (`latest.json` plus dated snapshots). See `README.md` for what the scoring modes mean and how to run a subset.
+Corpus: 492 cases across 10 languages, 491 evaluated (1 disabled). Per-run JSON lands in `tests/benchmark/results/` (`latest.json` plus dated snapshots). See `README.md` for what the scoring modes mean and how to run a subset.
 
 The corpus is mostly synthetic 8-20 line fixtures, one vulnerability or one safe pattern per file. A smaller real-CVE replay set under `cve_corpus/` covers 20 published CVEs across all 10 languages. Both contribute to the headline numbers.
 
@@ -35,6 +35,8 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2022-42889 | Java       | Apache Commons Text        | Apache-2.0           | code_exec       | detected |
 | CVE-2013-0156  | Ruby       | Ruby on Rails              | MIT                  | Deserialization | detected |
 | CVE-2020-8130  | Ruby       | Rake                       | MIT                  | CMDI            | detected |
+| CVE-2021-21288 | Ruby       | CarrierWave                | MIT                  | SSRF            | detected |
+| CVE-2023-38337 | Ruby       | rswag                      | MIT                  | path_traversal  | detected |
 | CVE-2017-9841  | PHP        | PHPUnit                    | BSD-3-Clause         | code_exec       | detected |
 | CVE-2018-15133 | PHP        | Laravel                    | MIT                  | Deserialization | detected |
 | CVE-2016-3714  | C          | ImageMagick (ImageTragick) | ImageMagick License  | CMDI            | detected |
@@ -65,6 +67,9 @@ Most recent first. Metrics are rule-level on the corpus size at that point.
 
 | Date       | Change                                                                       | Corpus | P     | R     | F1    |
 |------------|------------------------------------------------------------------------------|--------|-------|-------|-------|
+| 2026-05-02 | `strings.ReplaceAll` recognised as CMDi sanitiser in chain-wrapper / call-site-replace shapes; clears `go-safe-009` (last open corpus FP); aggregate rule-level reaches P=R=F1=1.000 | 492 | 1.000 | 1.000 | 1.000 |
+| 2026-05-01 | PathFact opaque-prefix-lock (`canonicalise + start_with?(<expr>)` recognised across Ruby/Python/JS) + `is_path_traversal_safe` predicate + negated-form polarity flip on assertion narrowing; rswag CVE-2023-38337 detected | 490 | 0.972 | 0.992 | 0.982 |
+| 2026-05-01 | Ruby `OpenURI.open_uri` SSRF sink + inner-call fallback for statement-level Ruby calls (`YAML.safe_load(File.read(x))` shape now classifies); CVE-2021-21288 (CarrierWave) detected | 482 | 0.972 | 0.992 | 0.982 |
 | 2026-04-29 | Java SnakeYAML + Text4Shell patterns; CVE-2022-1471 and CVE-2022-42889 detected | 449 | 0.996 | 1.000 | 0.998 |
 | 2026-04-29 | Indirect-validator branch narrowing (`const err = validate(x); if (err) throw …;`) + helper-summary all_validated propagation; Novu GHSA-4x48-cgf9-q33f detected | 445 | 0.991 | 1.000 | 0.995 |
 | 2026-04-29 | Python f-string SQLi pattern + bindparams sanitizer + HttpClient SSRF rules; CVE-2025-69662 (geopandas) and CVE-2026-33626 (LMDeploy) detected | 439 | 0.991 | 1.000 | 0.995 |

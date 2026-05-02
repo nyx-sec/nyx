@@ -987,6 +987,7 @@ fn compute_succ_states(
                     &effective_vars,
                     ssa,
                     Some(transfer.interner),
+                    effective_negated,
                 );
 
                 // Validation-call err-check narrowing.  When the condition
@@ -1522,7 +1523,13 @@ fn resolve_var_to_ssa_value(var_name: &str, ssa: &SsaBody, block: BlockId) -> Op
 /// variables) and updates its [`PathFact`] according to the classified
 /// rejection / assertion idiom.
 ///
-/// Gated on `transfer.lang == Lang::Rust` by the caller.
+/// `negated` reflects the effective negation of `cond_text`: when true,
+/// the condition's surface form is `!<cond_text>` (or `not <cond_text>`)
+/// and the True/False successor states correspond to the *rejection* /
+/// *surviving* arms inverted relative to the unwrapped condition.  The
+/// narrowing functions are written against the unwrapped condition; this
+/// flag lets the caller route prefix-lock / rejection-axis narrowing to
+/// the arm where the unwrapped condition holds.
 #[cfg(test)]
 fn apply_path_fact_branch_narrowing(
     true_state: &mut SsaTaintState,
@@ -1538,6 +1545,7 @@ fn apply_path_fact_branch_narrowing(
         effective_vars,
         ssa,
         None,
+        false,
     );
 }
 
@@ -1548,10 +1556,12 @@ fn apply_path_fact_branch_narrowing_with_interner(
     effective_vars: &[String],
     ssa: &SsaBody,
     interner: Option<&SymbolInterner>,
+    negated: bool,
 ) {
     use crate::abstract_interp::PathFact;
     use crate::abstract_interp::path_domain::{
         PathAssertion, PathRejection, classify_path_assertion, classify_path_rejection_axes,
+        cond_has_pre_negated_islocal_clause,
     };
 
     let rejection_axes = classify_path_rejection_axes(cond_text);
@@ -1561,24 +1571,44 @@ fn apply_path_fact_branch_narrowing_with_interner(
         return;
     }
 
-    // Mark validated_may on the false branch when a path-rejection
+    // Resolve the "safe arm" for the rejection axes.
+    //
+    // `classify_path_rejection_axes` reports axes that hold on the FALSE
+    // branch of `cond_text` AS WRITTEN, with one exception: the
+    // `!filepath.IsLocal(...)` Go idiom is matched at the clause level
+    // and the classifier consumes the leading `!` itself (the safe arm
+    // remains the FALSE branch of the whole condition).
+    //
+    // For polarity-blind atoms like `!path.contains("..")`, the
+    // classifier ignores the leading `!` and still extracts `..`.  In
+    // that shape, AST detects the unary `!` and sets
+    // `condition_negated = true`, but the rejection axis's *true* safe
+    // arm is the TRUE branch of the whole condition.  So when
+    // `negated == true` AND no clause is the pre-negated IsLocal idiom,
+    // flip the narrow target.
+    let rejection_pre_negated = cond_has_pre_negated_islocal_clause(cond_text);
+    let rejection_safe_is_true = negated && !rejection_pre_negated;
+
+    // Mark validated_may on the safe arm when a path-rejection
     // pattern fires.  Mirrors the AllowlistCheck quirk that already
     // marks validated on the rejection-arm via `apply_branch_predicates`
     // for languages whose `.contains(...)` / membership idiom hits the
     // AllowlistCheck classifier, but normalises behaviour for shapes
     // like C `strstr(path, "..") != NULL` that hit the NullCheck arm
     // first and never get a chance to mark validation through the
-    // allowlist path.  Once the path-rejection classifier has accepted
-    // the condition, the false branch (where the sink is reached after
-    // the rejection-arm terminates) is the validated arm by
-    // construction.
+    // allowlist path.
     if !rejection_axes.is_empty()
         && let Some(intern) = interner
     {
+        let safe_state: &mut SsaTaintState = if rejection_safe_is_true {
+            &mut *true_state
+        } else {
+            &mut *false_state
+        };
         for var in effective_vars {
             if let Some(sym) = intern.get(var) {
-                false_state.validated_may.insert(sym);
-                false_state.validated_must.insert(sym);
+                safe_state.validated_may.insert(sym);
+                safe_state.validated_must.insert(sym);
             }
         }
     }
@@ -1632,15 +1662,47 @@ fn apply_path_fact_branch_narrowing_with_interner(
         }
     };
 
+    // Apply rejection axes to the safe arm.  The rejection classifier
+    // (`has_negated_filepath_is_local` + `classify_path_rejection_atom`)
+    // reports axes that hold on the FALSE branch of `cond_text` AS
+    // WRITTEN, with one exception: the `!filepath.IsLocal(...)` Go idiom
+    // is matched at the clause level and the classifier consumes the
+    // leading `!` itself (safe arm remains the FALSE branch).
+    //
+    // For polarity-blind atoms like `!path.contains("..")` the classifier
+    // ignores the leading `!` but AST-level negation flips the safe arm
+    // to TRUE.  Use the same `rejection_safe_is_true` resolution as the
+    // validated-marker block above so soundness is consistent.
+    let rejection_state: &mut SsaTaintState = if rejection_safe_is_true {
+        &mut *true_state
+    } else {
+        &mut *false_state
+    };
     for v in &targets {
-        if let Some(ref mut abs) = false_state.abstract_state {
+        if let Some(ref mut abs) = rejection_state.abstract_state {
             let mut av = abs.get(*v);
             narrow_false(&mut av.path);
             if !av.is_top() {
                 abs.set(*v, av);
             }
         }
-        if let Some(ref mut abs) = true_state.abstract_state {
+    }
+
+    // Apply prefix-lock assertion to the cond-holds branch.  Unlike the
+    // rejection classifier, `classify_path_assertion` is naive about
+    // leading negation — it just searches cond_text for a
+    // `starts_with`-like substring.  When `condition_negated` is true
+    // (e.g. `if !target.startsWith(ROOT) { return; }`) the assertion
+    // actually holds on the *false* CFG edge, where the sink is reached.
+    // Flip the destination state in that case so the lock attaches to
+    // the surviving block.
+    let assertion_state = if negated {
+        &mut *false_state
+    } else {
+        &mut *true_state
+    };
+    for v in &targets {
+        if let Some(ref mut abs) = assertion_state.abstract_state {
             let mut av = abs.get(*v);
             narrow_true(&mut av.path);
             if !av.is_top() {
@@ -3024,6 +3086,80 @@ pub(super) fn transfer_inst(
                 return;
             }
 
+            // Chain-wrapper sanitiser detection.  Computed up-front so
+            // both the container-element-write hook and the outer-
+            // callee taint suppression block below can consult it.
+            // Walks `info.arg_callees` for the chain shape
+            // `outer(... wrapper(<source>) ...)`, collecting any
+            // sanitiser caps the wrapper's summary or label exposes.
+            // The set is empty when there is no chain wrapper or when
+            // none of the wrappers expose sanitisation.
+            //
+            // Argument attribution: when `find_classifiable_inner_call`
+            // overrode the callee to an inner Source, the source can be
+            // either (a) a direct argument call (`outer(escape(x),
+            // source())`) or (b) nested inside one wrapper
+            // (`outer(escape(source(x)))`).  Crediting any wrapper's
+            // sanitizer caps when the source sits in a different argument
+            // position would suppress real taint flow.
+            //
+            //   * `source_arg_pos = Some(N)` — the source call is the
+            //     immediate callee of arg N (`arg_callees[N] == callee`).
+            //     No other-arg wrapper can sanitize it.  Credit nothing.
+            //   * `source_arg_pos = None` — the source is nested inside
+            //     some arg's wrapper.  Credit only when exactly one arg
+            //     has a sanitizing wrapper, since that one must be the
+            //     parent of the nested source.  Multiple sanitizing
+            //     wrappers across different positions is ambiguous; stay
+            //     conservative and credit nothing.
+            let caller_func_for_chain = info.ast.enclosing_func.as_deref().unwrap_or("");
+            let mut chain_wrapper_sanitizer_caps = Cap::empty();
+            if !info.arg_callees.is_empty() {
+                let source_arg_pos = info
+                    .arg_callees
+                    .iter()
+                    .position(|c| c.as_deref() == Some(callee.as_str()));
+                let mut per_arg_sanitizer_caps: SmallVec<[Cap; 4]> = SmallVec::new();
+                for (idx, maybe_callee) in info.arg_callees.iter().enumerate() {
+                    if Some(idx) == source_arg_pos {
+                        continue;
+                    }
+                    let Some(wrap_callee) = maybe_callee else {
+                        continue;
+                    };
+                    if Some(wrap_callee.as_str()) == info.call.outer_callee.as_deref() {
+                        continue;
+                    }
+                    let mut caps_here = Cap::empty();
+                    if let Some(resolved) = resolve_callee_hinted(
+                        transfer,
+                        wrap_callee,
+                        caller_func_for_chain,
+                        info.call.call_ordinal,
+                        None,
+                    ) {
+                        caps_here |= resolved.sanitizer_caps;
+                    } else {
+                        let labels = crate::labels::classify_all(
+                            transfer.lang.as_str(),
+                            wrap_callee,
+                            transfer.extra_labels,
+                        );
+                        for lbl in &labels {
+                            if let DataLabel::Sanitizer(bits) = lbl {
+                                caps_here |= *bits;
+                            }
+                        }
+                    }
+                    if !caps_here.is_empty() {
+                        per_arg_sanitizer_caps.push(caps_here);
+                    }
+                }
+                if source_arg_pos.is_none() && per_arg_sanitizer_caps.len() == 1 {
+                    chain_wrapper_sanitizer_caps = per_arg_sanitizer_caps[0];
+                }
+            }
+
             // Container element-write hook. Runs before other Call-arm
             // processing so `try_container_propagation`'s early-return
             // can't bypass us. Writes only into `(loc, ELEM)` cells on
@@ -3033,8 +3169,48 @@ pub(super) fn transfer_inst(
             // through: cell `must = AND` over args (every writer must be
             // must-validated), `may = OR` over args. Anonymous SSA temps
             // contribute `false/false` and break the `must` invariant.
-            if let (Some(pf), Some(rcv)) = (transfer.pointer_facts, *receiver) {
-                if crate::pointer::is_container_write_callee(callee) {
+            //
+            // Two callee shapes:
+            //   * Method-style write (`receiver.push(val)`) — `receiver`
+            //     channel resolves the container, value args start at
+            //     position 0.
+            //   * Go `append` builtin (or chain shape with
+            //     `outer_callee == "append"`) — no receiver channel,
+            //     `args[0]` is the slice itself, value args start at
+            //     position 1.
+            if let Some(pf) = transfer.pointer_facts {
+                let go_append_chain = transfer.lang == Lang::Go
+                    && receiver.is_none()
+                    && (callee == "append" || info.call.outer_callee.as_deref() == Some("append"));
+                // For Go append, args[0] is the input slice whose
+                // points-to set may be empty when the slice was just
+                // initialised with a composite literal (`cmds :=
+                // []string{}`).  The call result (inst.value) carries
+                // the fresh allocation site that pointer analysis
+                // attaches to every Call op, and downstream uses of
+                // the slice flow through that result, so it is the
+                // authoritative container identity.  Fall back to
+                // args[0] when the result has no pt set yet.
+                let resolved_recv: Option<SsaValue> = if let Some(rcv) = *receiver {
+                    Some(rcv)
+                } else if go_append_chain {
+                    let result_v = inst.value;
+                    let result_pt = pf.pt(result_v);
+                    if !result_pt.is_empty() && !result_pt.is_top() {
+                        Some(result_v)
+                    } else {
+                        args.first().and_then(|a| a.first().copied())
+                    }
+                } else {
+                    None
+                };
+                let value_arg_start = if go_append_chain { 1 } else { 0 };
+                let write_callee_match = if go_append_chain {
+                    true
+                } else {
+                    crate::pointer::is_container_write_callee(callee)
+                };
+                if let (Some(rcv), true) = (resolved_recv, write_callee_match) {
                     let pt = pf.pt(rcv);
                     if !pt.is_empty() && !pt.is_top() {
                         let mut elem_caps = Cap::empty();
@@ -3043,7 +3219,7 @@ pub(super) fn transfer_inst(
                         let mut elem_must_all = true; // AND over args (vacuously true for empty args)
                         let mut elem_may_any = false; // OR over args
                         let mut saw_any_arg = false;
-                        for arg_group in args {
+                        for arg_group in args.iter().skip(value_arg_start) {
                             for &arg_v in arg_group {
                                 saw_any_arg = true;
                                 if let Some(t) = state.get(arg_v) {
@@ -3057,6 +3233,35 @@ pub(super) fn transfer_inst(
                                     ssa_value_validated_bits(arg_v, ssa, transfer.interner, state);
                                 elem_must_all &= am;
                                 elem_may_any |= av;
+                            }
+                        }
+                        // Chain-shape Go append: the inner Source label
+                        // fires on this same call instruction, so its
+                        // caps are not yet on any positional arg's SSA
+                        // value at this point.  Pull them in directly
+                        // from the source labels so the W4 cell sees
+                        // the real source caps; without this the cell
+                        // is empty for the chain shape and the index-
+                        // read taint flow appears clean for the wrong
+                        // reason.
+                        if go_append_chain {
+                            for lbl in &info.taint.labels {
+                                if let DataLabel::Source(bits) = lbl {
+                                    elem_caps |= *bits;
+                                    saw_any_arg = true;
+                                }
+                            }
+                            // A chain-shape sanitising wrapper around the
+                            // source counts as the validation that the
+                            // ELEM cell needs.  Each entry in
+                            // `info.arg_callees` whose summary or label
+                            // exposes non-empty `sanitizer_caps`
+                            // contributes to validation, the cell's
+                            // must/may bits flip on so the index-read
+                            // counterpart sees the value as validated.
+                            if !chain_wrapper_sanitizer_caps.is_empty() {
+                                elem_must_all = true;
+                                elem_may_any = true;
                             }
                         }
                         // Vacuous AND: a zero-arg container write supplies
@@ -3202,6 +3407,20 @@ pub(super) fn transfer_inst(
                 if let DataLabel::Sanitizer(bits) = lbl {
                     sanitizer_bits |= *bits;
                 }
+            }
+
+            // Call-site replace sanitizer detection.  Recognises
+            // `s.replace*(pat, rep)` / `strings.ReplaceAll(s, pat, rep)` /
+            // `str_replace($pat, $rep, $s)` shapes whose pattern is a
+            // concrete shell/HTML/SQL escape literal and treats the call
+            // as a sanitizer for the corresponding caps.  Mirrors the
+            // semantics that label-rule sanitizers already provide.
+            if let Some(extra) = crate::symex::strings::detect_call_site_replace_sanitizer(
+                callee,
+                transfer.lang,
+                &info.call.arg_string_literals,
+            ) {
+                sanitizer_bits |= extra;
             }
 
             // Resolve callee summary, always attempt, even when explicit
@@ -4006,7 +4225,10 @@ pub(super) fn transfer_inst(
             // produces return_bits. Check if the wrapper function blocks taint:
             // if its SSA summary shows no propagation, no source_caps, and no
             // container identity return, the return value is independent of its
-            // arguments, clear return_bits.
+            // arguments, clear return_bits.  Additionally apply the wrapper's
+            // sanitizer caps (StripBits transforms) so a sanitising wrapper
+            // like `validate(<source>)` clears the relevant cap bits even
+            // when the wrapper still propagates other taint.
             if !return_bits.is_empty() && has_source_label {
                 if let Some(ref oc) = info.call.outer_callee {
                     if let Some(ref oc_sum) = resolve_callee_hinted(
@@ -4021,7 +4243,32 @@ pub(super) fn transfer_inst(
                             // no internal sources reaching return.
                             return_bits = Cap::empty();
                             return_origins.clear();
+                        } else if !oc_sum.sanitizer_caps.is_empty() {
+                            return_bits &= !oc_sum.sanitizer_caps;
                         }
+                    }
+                }
+            }
+
+            // Chain-wrapper sanitizer suppression: when the chain shape
+            // `outer(... wrapper(<source>) ...)` puts a sanitising wrapper
+            // function between the inner Source and the outer call,
+            // mark the call result's symbol as validated so any
+            // downstream sink event over the same value fires with
+            // `all_validated = true`, suppressing the taint finding and
+            // (via [`record_path_safe_suppressed_span`]) the
+            // `state-unauthed-access` finding on the same span.
+            // `chain_wrapper_sanitizer_caps` is computed up-front above
+            // so the container-element-write hook can also consult it.
+            if has_source_label && !chain_wrapper_sanitizer_caps.is_empty() {
+                if let Some(name) = ssa
+                    .value_defs
+                    .get(inst.value.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                {
+                    if let Some(sym) = transfer.interner.get(name) {
+                        state.validated_must.insert(sym);
+                        state.validated_may.insert(sym);
                     }
                 }
             }
@@ -7654,11 +7901,12 @@ fn is_abstract_safe_for_sink(
 }
 
 /// Check every tainted leaf flowing into `inst`'s used values carries a
-/// PathFact proving it is dotdot-free and non-absolute.
+/// PathFact proving it cannot perform path traversal.
 ///
-/// Core gate for the rs-safe-0** FP closure (see [`PathFact::is_path_safe`]).
-/// Traces through Assign chains so `Path::new(sanitised)` still resolves
-/// to the sanitised string's fact.
+/// Core gate for the rs-safe-0** FP closure plus the canonicalised+rooted
+/// shape (see [`PathFact::is_path_traversal_safe`]).  Traces through
+/// Assign chains so `Path::new(sanitised)` still resolves to the
+/// sanitised string's fact.
 fn is_path_safe_for_sink(
     inst: &SsaInst,
     state: &SsaTaintState,
@@ -7670,7 +7918,9 @@ fn is_path_safe_for_sink(
     if leaves.is_empty() {
         return false;
     }
-    let safe = leaves.iter().all(|v| abs.get(*v).path.is_path_safe());
+    let safe = leaves
+        .iter()
+        .all(|v| abs.get(*v).path.is_path_traversal_safe());
     if safe {
         // Publish the suppression to the file-level set so the
         // state-analysis pass can suppress `state-unauthed-access` on
@@ -7925,7 +8175,7 @@ fn trace_single_leaf(
             // existing trace-through-args behaviour.
             let proves_path_safe = state.abstract_state.as_ref().is_some_and(|abs_state| {
                 let f = abs_state.get(v).path;
-                !f.is_top() && f.is_path_safe()
+                !f.is_top() && f.is_path_traversal_safe()
             });
             if is_source || proves_path_safe {
                 leaves.push(v);

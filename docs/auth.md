@@ -86,6 +86,6 @@ Auth findings render alongside taint findings in the [browser UI](serve.md). The
 
 <p align="center"><img src="../assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: numbered source → call → sink walk with a How to fix panel and an inline evidence object" width="900"/></p>
 
-## Where the work was done
+## Benchmark corpus
 
-The remediation work is documented release-by-release in `tests/benchmark/RESULTS.md` under the Rust auth row. Phases A1 through B5 (precision and structural improvements) and Phase C (taint-based variant) all landed on the 0.5.0 release branch. The benchmark corpus at [`tests/benchmark/corpus/rust/auth/`](https://github.com/elicpeter/nyx/tree/master/tests/benchmark/corpus/rust/auth/) is 10 fixtures covering the five FP patterns plus a true-positive control.
+The Rust auth corpus at [`tests/benchmark/corpus/rust/auth/`](https://github.com/elicpeter/nyx/tree/master/tests/benchmark/corpus/rust/auth/) is 10 fixtures covering the five FP patterns plus a true-positive control. Per-row metrics live under the Rust auth row in `tests/benchmark/RESULTS.md`.

@@ -74,7 +74,7 @@ Forward cross-file taint runs in every profile. Symex and the demand-driven back
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.5.0
+- uses: elicpeter/nyx@v0.6.0
   with:
     format: sarif
     fail-on: MEDIUM
@@ -115,15 +115,15 @@ Requires stable Rust 1.88+. The frontend is compiled and embedded in the binary 
 
 ## Languages
 
-All 10 languages parse via tree-sitter and run through the full pipeline, but rule depth and engine coverage are uneven. Benchmark F1 on the 433-case corpus at [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) is 100% for nine of ten languages and 94.1% for Go, so F1 alone no longer separates the tiers. Tiering reflects rule depth, gated-sink coverage, and structural idioms the synthetic corpus does not fully stress:
+All 10 languages parse via tree-sitter and run through the full pipeline, but rule depth and engine coverage are uneven. Benchmark F1 on the 492-case corpus at [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) is 100% across all ten languages, so F1 alone no longer separates the tiers. Tiering reflects rule depth, gated-sink coverage, and structural idioms the synthetic corpus does not fully stress:
 
 | Tier | Languages | F1 | Use as a CI gate? |
 |---|---|---|---|
 | **Stable** | Python, JavaScript, TypeScript | 100% | Yes |
-| **Beta** | Java, PHP, Ruby, Rust, Go | 94.1% to 100% | Yes, with light FP triage |
+| **Beta** | Java, PHP, Ruby, Rust, Go | 100% | Yes, with light FP triage |
 | **Preview** | C, C++ | 100% on synthetic corpus | No. STL container flow, builder chains, and inline class member functions are tracked, but deep pointer aliasing and function pointers are not. Pair with clang-tidy or Clang Static Analyzer |
 
-Aggregate rule-level F1: 99.8% (P=0.995, R=1.000). All real-CVE fixtures fire; the single open FP is `go-safe-009`. Per-dimension detail and known blind spots live on the [Language maturity page](https://elicpeter.github.io/nyx/language-maturity.html).
+Aggregate rule-level F1: 100.0% (P=1.000, R=1.000). All real-CVE fixtures fire and the corpus carries zero open FPs. Per-dimension detail and known blind spots live on the [Language maturity page](https://elicpeter.github.io/nyx/language-maturity.html).
 
 ### Validated against real CVEs
 
@@ -200,7 +200,7 @@ Or add rules interactively: `nyx config add-rule --lang javascript --matcher esc
 
 ## Status
 
-Under active development. APIs, detector behavior, and configuration options may change between releases. Rule-level F1 on the 433-case corpus is the CI regression floor; per-language detail lives in [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md).
+Under active development. APIs, detector behavior, and configuration options may change between releases. Rule-level F1 on the 492-case corpus is the CI regression floor; per-language detail lives in [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md).
 
 Taint analysis is interprocedural. Persisted per-function SSA summaries carry per-return-path transforms and parameter-granularity points-to, and call-graph SCCs (including SCCs that span files) iterate to a joint fixed-point. The default `balanced` profile also runs k=1 context-sensitive inlining for intra-file callees. Symex (with cross-file and interprocedural frames) and the demand-driven backwards walk are opt-in. Enable them individually with `--symex` and `--backwards-analysis`, or together with `--engine-profile deep`.
 

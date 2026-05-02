@@ -9,24 +9,22 @@ The classifications here are grounded in three concrete signals:
 1. **Rule depth**: how many distinct source / sanitizer / sink matchers exist
    for the language in `src/labels/<lang>.rs`, and how many vulnerability
    classes (Cap bits) those matchers cover.
-2. **Benchmark results**: rule-level precision / recall / F1 on the 433-case
+2. **Benchmark results**: rule-level precision / recall / F1 on the 492-case
    corpus in
-   [`tests/benchmark/RESULTS.md`](https://github.com/elicpeter/nyx/blob/master/tests/benchmark/RESULTS.md),
-   last measured 2026-04-29 with scanner version 0.5.0.
+   [`tests/benchmark/RESULTS.md`](https://github.com/elicpeter/nyx/blob/master/tests/benchmark/RESULTS.md).
 3. **Known weak spots**: FPs and FNs the maintainers have deliberately left
    in the benchmark rather than suppressed, plus structural engine
-   limitations the corpus does not stress, documented release-by-release in
+   limitations the corpus does not stress, documented in
    [`RESULTS.md`](https://github.com/elicpeter/nyx/blob/master/tests/benchmark/RESULTS.md).
 
-As of 2026-04-29 the synthetic corpus has effectively saturated: every
-real-CVE fixture fires and rule-level recall is 100%. Nine of ten
-languages report rule-level F1 = 100.0%; Go reports 98.0% on the back of
-a single safe-fixture FP. Aggregate rule-level P=0.995, R=1.000, F1=0.998.
-That means F1 alone no longer differentiates tiers, so the differentiators
-are **rule depth**, **gated-sink coverage**, and **structural idioms the
-corpus does not fully stress** (deep pointer aliasing in C/C++,
-framework-specific context). All parser integrations use tree-sitter and
-are stable; parsing is not a differentiator.
+The synthetic corpus has effectively saturated: every
+real-CVE fixture fires and rule-level precision and recall are both 100%.
+All ten languages report rule-level F1 = 100.0%. Aggregate rule-level
+P=1.000, R=1.000, F1=1.000. That means F1 alone no longer differentiates
+tiers, so the differentiators are **rule depth**, **gated-sink coverage**,
+and **structural idioms the corpus does not fully stress** (deep pointer
+aliasing in C/C++, framework-specific context). All parser integrations
+use tree-sitter and are stable; parsing is not a differentiator.
 
 ---
 
@@ -35,7 +33,7 @@ are stable; parsing is not a differentiator.
 | Tier | Languages | F1 | What to expect |
 |------|-----------|----|----------------|
 | **Stable** | Python, JavaScript, TypeScript | 100% | Deep rule sets, gated sinks (argument-role-aware), framework detection, extensive fixtures, and the bulk of advanced-analysis (SSA two-level solve, context-sensitivity, symbolic execution, abstract interpretation) coverage. Safe to depend on in CI gates. |
-| **Beta** | Go, Java, PHP, Ruby, Rust | 98.0% to 100% | Solid mid-depth rule sets with narrower cap coverage and **no gated sinks**. Cross-file flows work; some idioms (variable-typed method receivers, framework context, string interpolation, match-arm guards) are partially modeled. Usable in CI; review FP/FN lists before tightening gates. |
+| **Beta** | Go, Java, PHP, Ruby, Rust | 100% | Solid mid-depth rule sets with narrower cap coverage and **no gated sinks**. Cross-file flows work; some idioms (variable-typed method receivers, framework context, string interpolation, match-arm guards) are partially modeled. Usable in CI; review FP/FN lists before tightening gates. |
 | **Preview** | C, C++ | 100% on synthetic corpus | Recent work taught the engine to follow taint through `std::vector` / `std::string` / map containers (including `c_str()`), through fluent builder chains like `Socket::builder().host(h).connect()`, and through inline class member functions. Function pointers and deeper pointer aliasing through `*p` / `p->field` are still not tracked. Rule-level scores against a corpus of obvious unsafe-API uses look perfect, but that is not the same as a clean audit on a real codebase. Pair with clang-tidy, Clang Static Analyzer, or Infer. |
 
 ---
@@ -90,13 +88,15 @@ are stable; parsing is not a differentiator.
 
 ### Beta tier
 
-#### Go: 96.2% P / 100.0% R / 98.0% F1 *(53-case corpus, 1 FP, 0 FNs)*
+#### Go: 100% P / 100% R / 100% F1 *(56-case corpus)*
 
 - **Rule depth**: 4 source families, 4 sanitizer families, 9 sink matchers
   covering HTML, URL, Shell, SQL, SSRF, Crypto, and File I/O.
 - **Framework context**: Gin, Echo source matchers.
-- **Open weak spots**: one safe Go fixture (`go-safe-009`) draws a spurious
-  CMDi finding.
+- **Recent fix**: `strings.ReplaceAll` is now recognised as a CMDi sanitiser
+  in chain-wrapper / call-site-replace shapes, clearing the last open
+  Go safe-fixture FP (`go-safe-009`, `validate(s string)` wrapping a
+  `strings.ReplaceAll` over `;`).
 - **Known gaps**: no gated sinks, no deserialization class. `fmt.Sprintf`
   is deliberately not a sink. Cap coverage is narrower than the Stable
   tier and argument-role-aware sink modeling is not yet implemented for Go,
@@ -126,21 +126,25 @@ are stable; parsing is not a differentiator.
 
 #### Ruby: 100% P / 100% R / 100% F1 *(39-case corpus)*
 
-- **Rule depth**: 3 source families, 7 sanitizer families, 15 sink matchers
-  covering HTML, Shell, SQL, Code, SSRF, File I/O, and Deserialization.
+- **Rule depth**: 3 source families, 7 sanitizer families, 16 sink matchers
+  covering HTML, Shell, SQL, Code, SSRF, File I/O, and Deserialization. SSRF
+  coverage includes `URI.open` and the low-level `OpenURI.open_uri` it
+  delegates to (the canonical CarrierWave CVE-2021-21288 sink).
+  Statement-level chained-call wrappers
+  (`YAML.safe_load(File.read(filename))`, `Marshal.load(File.read(p))`,
+  `String.new(File.read(x))`) classify the inner sink for cross-function
+  summary extraction so the outer call does not strip the sink classification
+  on the helper.
 - **Framework context**: Rails helpers (`sanitize_sql`, `permit`, `require`).
 - **Known gaps**: string interpolation inside shell and SQL strings is
   recognized structurally but not modeled as a distinct operator.
   `begin/rescue/ensure` exception-edge wiring is documented as deferred
-  (structurally incompatible with `build_try()`). The previous open
-  `rb-interproc-001` FN closed in the 2026-04-28 baseline after the
-  Ruby `Kernel#open` CMDI sink and exact-match sigil work landed.
+  (structurally incompatible with `build_try()`).
 
 #### Rust: 100% P / 100% R / 100% F1 *(70-case adversarial corpus)*
 
-Rust holds the largest per-language adversarial corpus and was promoted
-from Experimental to Beta in the 2026-04-25 measurement after the PathFact
-landings closed every previously-open `rs-safe-*` regression.
+Rust holds the largest per-language adversarial corpus. PathFact-driven
+path-domain narrowing covers the `rs-safe-*` regression set.
 
 - **Rule depth**: 6 source families, **2** sanitizer families (prefix and
   type-coercion), 11 sink matchers covering HTML, Shell, SQL, SSRF,
@@ -149,20 +153,18 @@ landings closed every previously-open `rs-safe-*` regression.
   narrow sanitizer count is the primary reason Rust is not in the Stable
   tier. Engine-side path/typed sanitizer recognition (PathFact) compensates,
   but the ruleset itself is shallow.
-- **Recent additions**: SQL class (`rusqlite`, `sqlx`, `diesel`,
-  `postgres`), Deserialization class (`serde_yaml`, `bincode`,
-  `rmp_serde`, `ciborium`, `ron`, `toml`), expanded file I/O
-  (`fs::remove_file/dir/rename/copy`), `reqwest` SSRF builder chain.
-- **Closed by recent PathFact landings**
-  (`src/abstract_interp/path_domain.rs` + per-return-path PathFact entries
-  on `SsaFuncSummary`): `rs-safe-007` (`.replace("..","")` sanitiser),
-  `rs-safe-008` (negative-validation return), `rs-safe-009` (match-arm
-  guards via condition lifting), `rs-safe-010` (static-map lookup),
-  `rs-safe-012` (`.contains("..")` + `.starts_with('/')` rejection),
-  `rs-safe-014` (Option-returning user sanitiser), `rs-safe-015`
-  (`Path::new(p).is_absolute()` typed rejection), `rs-safe-016`
-  (cross-function `.contains("..")` rejection), and CVE patches
-  `CVE-2018-20997`, `CVE-2022-36113`, `CVE-2024-24576`.
+- **Coverage**: SQL class (`rusqlite`, `sqlx`, `diesel`, `postgres`),
+  Deserialization class (`serde_yaml`, `bincode`, `rmp_serde`, `ciborium`,
+  `ron`, `toml`), file I/O (`fs::remove_file/dir/rename/copy`), and the
+  `reqwest` SSRF builder chain.
+- **PathFact-narrowed shapes** (`src/abstract_interp/path_domain.rs` plus
+  per-return-path PathFact entries on `SsaFuncSummary`) cover
+  `.replace("..","")` sanitisers, negative-validation returns, match-arm
+  guards via condition lifting, static-map lookups,
+  `.contains("..")` + `.starts_with('/')` rejection, Option-returning
+  user sanitisers, `Path::new(p).is_absolute()` typed rejection,
+  cross-function `.contains("..")` rejection, and the
+  `CVE-2018-20997` / `CVE-2022-36113` / `CVE-2024-24576` patch shapes.
 - **Not yet covered**: unsafe FFI / `std::mem::transmute` (no rules), Tokio
   `process::Command` async variants (not distinguished from sync),
   `hyper` / `surf` / `ureq` SSRF clients (reqwest family only).
@@ -170,17 +172,16 @@ landings closed every previously-open `rs-safe-*` regression.
 ### Preview tier
 
 C and C++ remain **Preview** despite reporting 100% rule-level F1 on the
-synthetic corpus. A run of additions in late April taught the engine to
-follow taint through several constructs that used to be hard cutoffs (STL
-containers, builder chains, inline member functions, the wider `std::sto*`
-family), so the gap between "passes the synthetic corpus" and "would catch
-the same flow on a real codebase" is narrower than it used to be. It is not
-zero. The biggest remaining gaps are deep pointer aliasing and function
+synthetic corpus. The engine follows taint through STL containers, builder
+chains, inline member functions, and the wider `std::sto*` family, so the
+gap between "passes the synthetic corpus" and "would catch the same flow
+on a real codebase" is narrower than the synthetic numbers suggest. It is
+not zero. The biggest remaining gaps are deep pointer aliasing and function
 pointers, both of which are pervasive in real C/C++ code. Treat a clean
 report as a starting point, not an audit. Pair Nyx with clang-tidy, the
 Clang Static Analyzer, or Infer for production use.
 
-**What now works** (added in late April):
+**What works:**
 
 - STL container flow. `vec.push_back(tainted)` followed by
   `vec.front().c_str()` carries taint into a downstream `system()` sink.
@@ -216,8 +217,8 @@ Clang Static Analyzer, or Infer for production use.
   `void (*fn)(char *)` resolves to no callee, so cross-pointer flows are
   invisible.
 - Array-element taint by index. Writes to `buf[i]` do not always propagate
-  taint to `buf` as a whole; the recent subscript-handling work helps the
-  general case but doesn't make `buf` an alias for every element.
+  taint to `buf` as a whole; subscript-handling helps the general case but
+  doesn't make `buf` an alias for every element.
 - Nested classes beyond one level (C++ only).
 
 #### C: 100% P / 100% R / 100% F1 *(30-case corpus)*
@@ -269,9 +270,8 @@ have moved out of the blind-spot list. Synthetic-corpus F1 is not a
 reliable signal for Preview-tier languages: a clean report can coexist
 with structural gaps.
 
-(The previous **Experimental** tier was retired in the 2026-04-25
-measurement when Rust's adversarial corpus reached 100% F1; no language
-currently sits in that tier.)
+(No language currently sits in the **Experimental** tier; it is reserved
+for future additions whose corpus has not yet stabilised.)
 
 ---
 

@@ -56,8 +56,10 @@ Full list: [rules.md](../rules.md).
 | `eval("hardcoded literal")` | Pattern matches structure | Run `--mode cfg` to drop AST patterns and rely on taint |
 | `unsafe` block with sound justification | Every `unsafe` matches `rs.quality.unsafe_block` | Filter `>=MEDIUM` (it's Medium) or accept the noise |
 | `.unwrap()` in tests | Acceptable in test code | Default non-prod severity downgrade reduces it |
-| `md5` for non-cryptographic checksums | Pattern can't see intent | Suppress with `--severity ">=MEDIUM"` or per-line `nyx:ignore` |
+| `md5` for non-cryptographic checksums | Pattern can't see intent in most languages | PHP recognises non-crypto consuming context structurally (cache keys, ETag, dedup, `getCacheKey()` returns) and suppresses. Other languages: `--severity ">=MEDIUM"` or per-line `nyx:ignore` |
 | SQL concat with trusted data (Tier B) | Heuristic can't verify the source | Taint is more precise; or convert to a parameterized query |
+| C++ `reinterpret_cast<T>(...)` for byte-pointer / void* / `sockaddr` | Pattern fires on every cast regardless of target type | Suppressed when the target is well-defined by C++ aliasing rules: `char*`, `unsigned char*`, `signed char*`, `wchar_t*`, `uint8_t*`, `int8_t*`, `std::byte*`, `byte*`, `void*`, `uintptr_t` / `intptr_t` (and `std::` variants), and the BSD socket address family. User-defined struct or class pointer targets keep firing. |
+| JS / TS `secrets.fallback_secret` on `process.env.X \|\| ""` | Empty-string fallback satisfies non-undefined string types without committing a secret | Empty-string fallbacks are excluded from the rule. Non-empty literal fallbacks still fire. |
 
 ## Confidence levels
 

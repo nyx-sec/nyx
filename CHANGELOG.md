@@ -4,6 +4,10 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
+## [0.6.0] - TBD
+
+A focused release that splits data-exfiltration off from SSRF and ships sinks for outbound HTTP request bodies across all 10 languages, with calibration tuned so plain user input echoed back upstream does not fire.
+
 ### Added
 
 - New `taint-data-exfiltration` rule, separate from SSRF. Fires when a Sensitive-tier source (cookie, header, env, file, database, caught exception) reaches the body, headers, or json payload of an outbound HTTP call. Plain user input gets suppressed at emission time so a gateway echoing `req.body` back upstream is not flagged.
@@ -15,6 +19,21 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 - Calibration. Severity is High for cookie or env sources, Medium for header, file, database, or caught-exception sources. Confidence stays at Medium even with strong corroboration, drops to Low without abstract or symbolic backing, and drops one tier on path-validated flows. SARIF output carries a `properties.data_exfil_field` entry on data-exfil findings, set to the destination object-literal field the leak reached (`body`, `headers`, or `json`).
 - Benchmark coverage. 13 vulnerable fixtures across 8 languages under `tests/benchmark/corpus/{lang}/data_exfil/` and 6 paired safe fixtures for the sensitivity gate and sanitizer convention. New `data_exfil` row in the per-class breakdown. Per-class CI floor at P, R, F1 ≥ 0.85 (current baseline is 1.000).
 - Backwards taint walk recognises `Cap::DATA_EXFIL` and emits the same rule ID.
+- Ruby SSRF coverage. `OpenURI.open_uri` now classified as an SSRF sink (the low-level fetcher that `URI.open` delegates to). Closes the CarrierWave CVE-2021-21288 download path and equivalent gem shapes that route through `OpenURI` directly.
+- Ruby chained-call wrapper classification. Statement-level wrappers like `YAML.safe_load(File.read(filename))` and `Marshal.load(File.read(p))` now classify the inner sink for cross-function summary extraction. Without this, the outer call became a non-sink node and the inner sink was lost when the helper was summarised.
+- Ruby CVE corpus. Vulnerable + patched fixtures added for CVE-2021-21288 (CarrierWave SSRF) and CVE-2023-38337 (rswag path traversal).
+
+### Fixed (false positives)
+
+- C++ `cpp.memory.reinterpret_cast` no longer fires when the target type is well-defined by C++ aliasing rules. Suppressed targets: byte-pointer family (`char*`, `unsigned char*`, `signed char*`, `wchar_t*`, `uint8_t*`, `int8_t*`, `std::byte*`, `byte*`), `void*`, integer round-trip (`uintptr_t`, `intptr_t`, and `std::` variants, no pointer required), and the BSD socket address family (`sockaddr*`, `struct sockaddr*`, `sockaddr_in*`, `sockaddr_in6*`, `sockaddr_un*`, `sockaddr_storage*`). User-defined struct or class pointer targets keep firing. Closes ~70% over-fire on serialization, hashing, IPC, and socket-API code where the cast is the standard-blessed idiom.
+- PHP `php.crypto.md5` and `php.crypto.sha1` suppress when the call's consuming context yields a non-cryptographic identifier name. Recognised contexts: assignment LHS (variable, `$obj->property`, `$arr['key']`), array element keys, subscript indices, return statements (resolved to enclosing method or function name with `get` prefix stripped), and method-call arguments where the method is a key/cache/lookup verb (`get`, `set`, `has`, `delete`, `fetch`, `store`, `find`, `getItem`, `setItem`). Names containing a crypto keyword (`password`, `secret`, `token`, `signature`, `hmac`, `digest`, `salt`, `key`) keep firing. Closes ETag generation, cache-key hashing, dedup fingerprint, and `getCacheKey()`-style false positives in real PHP repos (phpmyadmin, nextcloud).
+- JS and TS `secrets.fallback_secret` no longer fire on empty-string fallbacks (`process.env.X || ""`). Developers write `|| ""` to satisfy non-undefined string types without committing a real secret. Non-empty literal fallbacks still fire.
+- Path-traversal sink suppression accepts canonicalised-and-rooted shapes. New `PathFact::is_path_traversal_safe` predicate clears `Cap::FILE_IO` when the path is dotdot-free and either non-absolute or carries a verified prefix-lock. New `OPAQUE_PREFIX_LOCK` marker records the structural invariant ("rooted under SOME prefix") when the `starts_with`-style guard's argument is a method call, field access, or configured root rather than a string literal. Closes the Ruby `File.expand_path + start_with?(root)` shape (rswag CVE-2023-38337 patched counterpart), the Python `os.path.realpath + .startswith(root)` shape, and the JS `path.resolve + .startsWith(root)` shape. `classify_path_assertion` extended to JS `.startsWith(...)`, Python `.startswith(...)`, Ruby `.start_with?(...)` (paren and paren-less), and Go `strings.HasPrefix(...)`.
+- Branch narrowing now flips prefix-lock attachment under condition negation. For `if !target.startsWith(ROOT) { return; }` the lock attaches to the surviving block, not the rejection arm. Rejection-axis narrowing is unchanged because the rejection classifier is text-level and already accounts for leading `!`.
+
+### Other
+
+- Action download script warning for the mutable `latest` tag now references `v0.6.0` instead of `v0.5.0`.
 
 ## [0.5.0] - 2026-04-29
 

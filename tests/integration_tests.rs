@@ -986,6 +986,25 @@ fn fp_guard_php_unserialize_allowed_classes() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, PHP `md5()` / `sha1()` weak-hash pattern rule firing
+/// syntactically on every callsite.  Real-world PHP uses these
+/// functions pervasively for non-cryptographic purposes (ETag
+/// generation, cache-key / array-index hashing, dedup fingerprints).
+/// Layer F suppression recognises the consuming context — variable
+/// LHS, member-access LHS, subscript LHS, array element key,
+/// lookup-verb argument, return-from-method, hash-as-index — and
+/// refuses to fire.  Distilled from nextcloud apps/dav (CalDavBackend,
+/// CardDavBackend, CardDav PhotoCache), apps/contactsinteraction,
+/// apps/theming (Util / CommonThemeTrait), apps/encryption KeyManager,
+/// apps/files Cache, and phpmyadmin Controllers/Database / Table /
+/// Display / Favorites.
+#[test]
+fn fp_guard_php_md5_sha1_non_crypto_use() {
+    let dir = fixture_path("fp_guards/php_md5_sha1_non_crypto_use");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, JS / TS local-collection receivers.  Pinned from the
 /// excalidraw element-manipulation cluster (66 → ~9 on
 /// `js.auth.missing_ownership_check` over the repo).  The fix lives at
@@ -1018,6 +1037,25 @@ fn fp_guard_auth_local_collection_receiver() {
 #[test]
 fn fp_guard_c_buffer_literal_src() {
     let dir = fixture_path("fp_guards/c_buffer_literal_src");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, `cpp.memory.reinterpret_cast` over-fires on every
+/// `reinterpret_cast<T>(x)` syntactically — including the canonical
+/// well-defined-by-aliasing-rules targets: byte-pointer family
+/// (`char*`, `uint8_t*`, `std::byte*`), `void*`, the integer
+/// round-trip types `uintptr_t` / `intptr_t`, and the BSD-socket
+/// address family.  These are exempt per [basic.lval]/11 and POSIX
+/// socket-API contracts; suppressing them is a layer-2 structural fix
+/// in `src/ast.rs::is_cpp_cast_target_type_safe`.  Genuine
+/// strict-aliasing UB casts (target is a user struct / class type)
+/// keep firing.  Distilled from bitcoin's leveldb / serialization /
+/// IPC / netif shapes (109 → 55 findings on bitcoin in the
+/// real-repo precision sweep).
+#[test]
+fn fp_guard_cpp_reinterpret_cast_byte_pointer() {
+    let dir = fixture_path("fp_guards/cpp_reinterpret_cast_byte_pointer");
     let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
     validate_expectations(&diags, &dir);
 }

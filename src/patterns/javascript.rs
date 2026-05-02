@@ -255,6 +255,7 @@ pub const PATTERNS: &[Pattern] = &[
         confidence: Confidence::High,
     },
     // ── Tier A: Hardcoded fallback secret ──────────────────────────────
+    // Empty-string fallback (`|| ""`) is excluded — see typescript.rs for rationale.
     Pattern {
         id: "js.secrets.fallback_secret",
         description: "Environment variable with secret-like name has hardcoded fallback value",
@@ -266,7 +267,7 @@ pub const PATTERNS: &[Pattern] = &[
                        property: (property_identifier) @key
                          (#match? @key "(?i)(secret|password|key|token)"))
                      operator: "||"
-                     right: (string) @fallback)
+                     right: (string) @fallback (#match? @fallback "[^\"']"))
                    @vuln"#,
         severity: Severity::Medium,
         tier: PatternTier::A,

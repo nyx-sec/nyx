@@ -576,6 +576,7 @@ pub fn infer_source_kind(caps: Cap, callee: &str) -> SourceKind {
         || cl.contains("form")
         || cl.contains("query")
         || cl.contains("params")
+        || cl.contains("param")
         || cl.contains("input")
         || cl.contains("body")
         || cl.contains("location")
@@ -1688,6 +1689,16 @@ mod tests {
         // `URI.open` is the existing SSRF sink.  Adding `=open` as a
         // CMDI rule must not break or shadow it.
         let result = classify("ruby", "URI.open", None);
+        assert_eq!(result, Some(DataLabel::Sink(Cap::SSRF)));
+    }
+
+    #[test]
+    fn classify_ruby_openuri_open_uri_is_ssrf_sink() {
+        // OpenURI.open_uri is the canonical low-level URI fetcher that
+        // URI.open delegates to. CarrierWave / Paperclip / similar gems
+        // route SSRF-vulnerable downloads through it directly.
+        // CVE-2021-21288 (CarrierWave) regression guard.
+        let result = classify("ruby", "OpenURI.open_uri", None);
         assert_eq!(result, Some(DataLabel::Sink(Cap::SSRF)));
     }
 

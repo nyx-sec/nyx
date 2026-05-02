@@ -1037,6 +1037,75 @@ pub fn detect_replace_sanitizer(
     }
 }
 
+/// Detect a call-site Replace sanitizer from syntactic argument literals.
+///
+/// Used by SSA transfer to recognize replace-based shell/HTML/SQL escapers
+/// without requiring a label rule per pattern. Returns the sanitized caps
+/// when:
+///   * the callee is a recognized Replace string method (per language),
+///   * the pattern argument is a concrete string literal, and
+///   * the pattern matches a security-relevant escape pattern in
+///     [`detect_replace_sanitizer`].
+///
+/// Non-global replaces (e.g. JS `s.replace(";", "")` only replaces the first
+/// occurrence) are excluded because partial replacement does not provide a
+/// sanitiser-strength guarantee at the call site.
+pub fn detect_call_site_replace_sanitizer(
+    callee: &str,
+    lang: Lang,
+    arg_string_literals: &[Option<String>],
+) -> Option<Cap> {
+    let pattern_pos = pattern_arg_position(callee, lang)?;
+    let pattern = arg_string_literals
+        .get(pattern_pos)
+        .and_then(|o| o.as_deref())?;
+    let replacement = arg_string_literals
+        .get(pattern_pos + 1)
+        .and_then(|o| o.as_deref())
+        .unwrap_or("");
+    let info = detect_replace_sanitizer(pattern, replacement, callee, lang)?;
+    if !info.is_global || info.sanitized_caps.is_empty() {
+        return None;
+    }
+    Some(info.sanitized_caps)
+}
+
+fn pattern_arg_position(callee: &str, lang: Lang) -> Option<usize> {
+    let method = bare_method_name(callee);
+    match lang {
+        Lang::JavaScript | Lang::TypeScript => match method {
+            "replace" | "replaceAll" => Some(0),
+            _ => None,
+        },
+        Lang::Python => match method {
+            "replace" => Some(0),
+            "sub" if callee == "re.sub" => Some(0),
+            _ => None,
+        },
+        Lang::Ruby => match method {
+            "gsub" | "sub" => Some(0),
+            _ => None,
+        },
+        Lang::Java => match method {
+            "replace" | "replaceAll" => Some(0),
+            _ => None,
+        },
+        Lang::Go => match callee {
+            "strings.Replace" | "strings.ReplaceAll" => Some(1),
+            _ => None,
+        },
+        Lang::Php => match callee {
+            "str_replace" => Some(0),
+            _ => None,
+        },
+        Lang::Rust => match method {
+            "replace" | "replacen" => Some(0),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Determine whether a replace call is global (replaces all occurrences).
 fn is_global_replace(callee: &str, lang: Lang) -> bool {
     let method = bare_method_name(callee);
