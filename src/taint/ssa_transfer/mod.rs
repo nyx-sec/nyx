@@ -951,6 +951,7 @@ fn compute_succ_states(
                     kind,
                     true_polarity,
                     transfer.interner,
+                    ssa,
                 );
                 // Apply validation/predicate to false branch
                 apply_branch_predicates(
@@ -959,6 +960,7 @@ fn compute_succ_states(
                     kind,
                     false_polarity,
                     transfer.interner,
+                    ssa,
                 );
 
                 // PathFact branch narrowing, language-agnostic.  The
@@ -1189,6 +1191,7 @@ fn apply_branch_predicates(
     kind: PredicateKind,
     polarity: bool,
     interner: &SymbolInterner,
+    ssa: &SsaBody,
 ) {
     // Validation-like predicates: mark condition vars as validated when polarity is true
     if matches!(
@@ -1206,11 +1209,43 @@ fn apply_branch_predicates(
 
     // ShellMetaValidated: inverted polarity, the FALSE branch (no metachar
     // found) is the validated path; the TRUE branch is the rejection path.
+    //
+    // Cap-aware: shell-metachar rejection only proves the value is safe for
+    // shell-family sinks (it strips `;|&` etc.), not for SQL, path, code-exec,
+    // SSRF, or other sink classes.  Clear `Cap::SHELL_ESCAPE` from the var's
+    // taint on the validated branch instead of marking it generically
+    // validated, so non-shell sinks downstream still fire on the residual
+    // taint caps.
     if kind == PredicateKind::ShellMetaValidated && !polarity {
         for var in condition_vars {
-            if let Some(sym) = interner.get(var) {
-                state.validated_may.insert(sym);
-                state.validated_must.insert(sym);
+            let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
+            for (val, _) in state.values.iter() {
+                if let Some(name) = ssa
+                    .value_defs
+                    .get(val.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                {
+                    if name == var {
+                        to_clear.push(*val);
+                    }
+                }
+            }
+            for val in to_clear {
+                if let Some(taint) = state.get(val).cloned() {
+                    let new_caps = taint.caps & !Cap::SHELL_ESCAPE;
+                    if new_caps.is_empty() {
+                        state.remove(val);
+                    } else {
+                        state.set(
+                            val,
+                            VarTaint {
+                                caps: new_caps,
+                                origins: taint.origins,
+                                uses_summary: taint.uses_summary,
+                            },
+                        );
+                    }
+                }
             }
         }
     }

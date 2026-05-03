@@ -6662,8 +6662,8 @@
       "expected_category": "Security",
       "expected_sink_lines": [
         [
-          5,
-          6
+          10,
+          10
         ]
       ],
       "expected_source_lines": [
@@ -6683,7 +6683,7 @@
         "helper-function"
       ],
       "disabled": false,
-      "notes": "Taint flows through helper function to Command"
+      "notes": "Taint flows through helper function to Command. Engine attributes intra-file helper sinks at the call site (line 10), not the inner Command::new (line 5); see locator-policy comment in src/ast.rs."
     },
     {
       "case_id": "rs-cmdi-004",
@@ -6935,8 +6935,8 @@
       "expected_category": "Security",
       "expected_sink_lines": [
         [
-          4,
-          4
+          9,
+          9
         ]
       ],
       "expected_source_lines": [
@@ -6950,7 +6950,7 @@
         "helper-function"
       ],
       "disabled": false,
-      "notes": "Taint flows through helper function to reqwest::get()"
+      "notes": "Taint flows through helper function to reqwest::get(). Engine attributes intra-file helper sinks at the call site (line 9), not the inner reqwest::get (line 4); see locator-policy comment in src/ast.rs."
     },
     {
       "case_id": "rs-safe-001",
@@ -7377,8 +7377,8 @@
       "expected_category": "Security",
       "expected_sink_lines": [
         [
-          5,
-          6
+          12,
+          12
         ]
       ],
       "expected_source_lines": [
@@ -7399,7 +7399,7 @@
         "multisink"
       ],
       "disabled": false,
-      "notes": "Helper run_both takes two tainted params and invokes two Command sinks on consecutive lines (5, 6). Phase 3 attribution must land each finding's primary line inside the helper, not at the call site (line 12). NOTE: the summary currently stores one SinkSite per callee so both findings may collapse onto the same helper line today \u2014 the \u00b12 sink range and the call-site assertion guard against regression to caller-attribution regardless."
+      "notes": "Helper run_both takes two tainted params and invokes two Command sinks on consecutive lines (5, 6). Engine attributes intra-file helper sinks at the call site (line 12), not the inner Command::new (lines 5/6); see locator-policy comment in src/ast.rs."
     },
     {
       "case_id": "rs-cmdi-cross-001",

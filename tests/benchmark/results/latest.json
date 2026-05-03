@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-03T00:57:12Z",
+  "timestamp": "2026-05-03T01:35:18Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,7 +9,7 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:4a510fd65a169290c8d44c11f764387f2c3f39d18a92d393839f975a492cd64b",
+  "ground_truth_hash": "sha256:8b8b31820b3a2cd0a28ded8109370093132a11074bf28b9c373192d271ee9f09",
   "corpus_size": 507,
   "cases_run": 506,
   "cases_skipped": 1,
@@ -2799,19 +2799,13 @@
       "language": "go",
       "vuln_class": "safe",
       "is_vulnerable": false,
-      "outcome_file_level": "FP",
-      "outcome_rule_level": "FP",
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
       "outcome_location_level": null,
       "matched_rule_ids": [],
-      "unexpected_rule_ids": [
-        "state-resource-leak-possible",
-        "state-resource-leak-possible"
-      ],
-      "all_finding_ids": [
-        "state-resource-leak-possible",
-        "state-resource-leak-possible"
-      ],
-      "security_finding_count": 2,
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
       "non_security_finding_count": 0
     },
     {
@@ -6736,7 +6730,7 @@
       "is_vulnerable": true,
       "outcome_file_level": "TP",
       "outcome_rule_level": "TP",
-      "outcome_location_level": "FN",
+      "outcome_location_level": "TP",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 9:17)"
       ],
@@ -6864,7 +6858,7 @@
       "is_vulnerable": true,
       "outcome_file_level": "TP",
       "outcome_rule_level": "TP",
-      "outcome_location_level": "FN",
+      "outcome_location_level": "TP",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 11:13)"
       ],
@@ -7400,17 +7394,20 @@
       "language": "rust",
       "vuln_class": "sqli",
       "is_vulnerable": true,
-      "outcome_file_level": "FN",
-      "outcome_rule_level": "FN",
-      "outcome_location_level": "FN",
-      "matched_rule_ids": [],
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 5:19)"
+      ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "rs.quality.unwrap",
         "rs.quality.unwrap",
-        "rs.quality.unwrap"
+        "rs.quality.unwrap",
+        "taint-unsanitised-flow (source 5:19)"
       ],
-      "security_finding_count": 0,
+      "security_finding_count": 1,
       "non_security_finding_count": 3
     },
     {
@@ -7441,7 +7438,7 @@
       "is_vulnerable": true,
       "outcome_file_level": "TP",
       "outcome_rule_level": "TP",
-      "outcome_location_level": "FN",
+      "outcome_location_level": "TP",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 8:18)"
       ],
@@ -9046,22 +9043,22 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 249,
-    "fp": 1,
-    "fn_": 1,
-    "tn": 255,
-    "precision": 0.996,
-    "recall": 0.996,
-    "f1": 0.996
+    "tp": 250,
+    "fp": 0,
+    "fn_": 0,
+    "tn": 256,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 249,
-    "fp": 1,
-    "fn_": 1,
-    "tn": 255,
-    "precision": 0.996,
-    "recall": 0.996,
-    "f1": 0.996
+    "tp": 250,
+    "fp": 0,
+    "fn_": 0,
+    "tn": 256,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
   },
   "by_language": {
     "c": {
@@ -9084,12 +9081,12 @@
     },
     "go": {
       "tp": 27,
-      "fp": 1,
+      "fp": 0,
       "fn_": 0,
-      "tn": 31,
-      "precision": 0.9642857142857143,
+      "tn": 32,
+      "precision": 1.0,
       "recall": 1.0,
-      "f1": 0.9818181818181818
+      "f1": 1.0
     },
     "java": {
       "tp": 21,
@@ -9137,13 +9134,13 @@
       "f1": 1.0
     },
     "rust": {
-      "tp": 36,
+      "tp": 37,
       "fp": 0,
-      "fn_": 1,
+      "fn_": 0,
       "tn": 41,
       "precision": 1.0,
-      "recall": 0.972972972972973,
-      "f1": 0.9863013698630138
+      "recall": 1.0,
+      "f1": 1.0
     },
     "typescript": {
       "tp": 35,
@@ -9293,12 +9290,12 @@
     },
     "safe": {
       "tp": 0,
-      "fp": 1,
+      "fp": 0,
       "fn_": 0,
-      "tn": 255,
-      "precision": 0.0,
+      "tn": 256,
+      "precision": 1.0,
       "recall": 1.0,
-      "f1": 0.0
+      "f1": 1.0
     },
     "secrets": {
       "tp": 1,
@@ -9319,13 +9316,13 @@
       "f1": 1.0
     },
     "sqli": {
-      "tp": 30,
+      "tp": 31,
       "fp": 0,
-      "fn_": 1,
+      "fn_": 0,
       "tn": 0,
       "precision": 1.0,
-      "recall": 0.967741935483871,
-      "f1": 0.9836065573770492
+      "recall": 1.0,
+      "f1": 1.0
     },
     "ssrf": {
       "tp": 30,

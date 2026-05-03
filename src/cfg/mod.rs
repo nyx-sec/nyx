@@ -2473,13 +2473,12 @@ pub(super) fn push_node<'a>(
             .is_some_and(|cn| is_parameterized_query_call(cn, code));
 
     // Extract per-argument inner call callees for interprocedural sanitizer resolution.
-    let mut arg_callees = if kind == StmtKind::Call {
-        call_ast
-            .map(|cn| extract_arg_callees(cn, lang, code))
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // Also extracted for non-Call kinds (e.g. Assign whose RHS is a call like
+    // `errs = append(errs, f.Close())`) so the inner-call-release-in-arg branch
+    // in src/state/transfer.rs sees the closing call.
+    let mut arg_callees = call_ast
+        .map(|cn| extract_arg_callees(cn, lang, code))
+        .unwrap_or_default();
 
     // For assignment sinks (including CallWrapper-wrapped assignments like
     // `element.innerHTML = clean(name)`), also extract the RHS callee.

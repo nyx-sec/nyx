@@ -152,6 +152,55 @@ pub fn extract_findings(
             .collect()
     };
 
+    // Collect variables released via inner-call-in-arg shape (Go testify
+    // `require.NoError(t, f.Close())`, `errs = append(errs, f.Close())`,
+    // JUnit `assertEquals(0, in.read())`).  The transfer flips the
+    // lifecycle to CLOSED on the success branch, but the err-return
+    // predecessor that ran after the bare acquire (`f, err := os.Open(...)`)
+    // still merges OPEN at the function-exit join.  Mirror the
+    // `deferred_close_vars` suppression so the OPEN|CLOSED join doesn't
+    // emit a leak-possible for a resource that has a real release site.
+    let inner_arg_close_vars: std::collections::HashSet<super::symbol::SymbolId> = {
+        let pairs = crate::cfg_analysis::rules::resource_pairs(lang);
+        let mut set = std::collections::HashSet::new();
+        for (_, ni) in cfg.node_references() {
+            if ni.in_defer || ni.arg_callees.is_empty() {
+                continue;
+            }
+            let scope = ni.ast.enclosing_func.as_deref();
+            for arg_callee in &ni.arg_callees {
+                let Some(arg_callee_text) = arg_callee.as_deref() else {
+                    continue;
+                };
+                let Some(dot_idx) = arg_callee_text.rfind('.') else {
+                    continue;
+                };
+                let recv_text = &arg_callee_text[..dot_idx];
+                if recv_text.contains('.') {
+                    continue;
+                }
+                let arg_callee_lower = arg_callee_text.to_ascii_lowercase();
+                let matches_release = pairs.iter().any(|p| {
+                    p.release.iter().any(|r| {
+                        let rl = r.to_ascii_lowercase();
+                        if rl.starts_with('.') {
+                            arg_callee_lower.ends_with(&rl)
+                        } else {
+                            arg_callee_lower.ends_with(&rl) || arg_callee_lower == rl
+                        }
+                    })
+                });
+                if !matches_release {
+                    continue;
+                }
+                if let Some(sym) = interner.get_scoped(scope, recv_text) {
+                    set.insert(sym);
+                }
+            }
+        }
+        set
+    };
+
     for (idx, info) in cfg.node_references() {
         // File-level Exit (program termination, no enclosing function).
         let is_file_exit = info.kind == StmtKind::Exit && info.ast.enclosing_func.is_none();
@@ -204,6 +253,14 @@ pub fn extract_findings(
             // (Go `defer f.Close()`). The deferred call guarantees cleanup
             // at function exit even though transfer didn't mark it CLOSED.
             if deferred_close_vars.contains(&sym) {
+                continue;
+            }
+
+            // Suppress leaks for variables released via inner-call-in-arg
+            // shape.  Mirrors the deferred-close suppression so the
+            // OPEN-on-err-return / CLOSED-on-success-branch merge at
+            // function exit does not surface as leak-possible.
+            if inner_arg_close_vars.contains(&sym) {
                 continue;
             }
 
