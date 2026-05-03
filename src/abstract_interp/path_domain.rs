@@ -585,13 +585,13 @@ fn has_first_char_absolute_check(clause: &str) -> bool {
         if bytes[i] == b'[' && bytes[i + 1] == b'0' && bytes[i + 2] == b']' {
             let lo = i.saturating_sub(32);
             let hi = (i + 3 + 32).min(bytes.len());
-            let window = &clause[lo..hi];
-            if (window.contains("==") || window.contains("!="))
-                && (window.contains("'/'")
-                    || window.contains("'\\\\'")
-                    || window.contains("\"/\"")
-                    || window.contains("\"\\\\\""))
-            {
+            let window = &bytes[lo..hi];
+            let has_op = window.windows(2).any(|w| w == b"==" || w == b"!=");
+            let has_lit = window.windows(3).any(|w| w == b"'/'")
+                || window.windows(4).any(|w| w == b"'\\\\'")
+                || window.windows(3).any(|w| w == b"\"/\"")
+                || window.windows(4).any(|w| w == b"\"\\\\\"");
+            if has_op && has_lit {
                 return true;
             }
         }
@@ -1569,6 +1569,18 @@ mod tests {
         );
         // Negative: subscript but no equality op
         assert_eq!(classify_path_rejection_atom("s[0]"), PathRejection::None);
+        // Regression: multibyte char inside the 32-byte search window must not
+        // panic on a non-char-boundary slice (fuzz crash repro).
+        let s = format!("{}s[0] == '/'", "—".repeat(20));
+        assert_eq!(
+            classify_path_rejection_atom(&s),
+            PathRejection::AbsoluteSlash
+        );
+        let s2 = format!("s[0] == '/'{}", "—".repeat(20));
+        assert_eq!(
+            classify_path_rejection_atom(&s2),
+            PathRejection::AbsoluteSlash
+        );
     }
 
     #[test]

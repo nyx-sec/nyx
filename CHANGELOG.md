@@ -4,6 +4,8 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-05-03
+
 A precision pass on auth and resource analysis plus three fresh CVE corpus pairs. Closes ~1900 Go auth FPs on gitea-shaped helpers, the mastodon/diaspora private-callback Ruby controller pattern, and a phantom-taint outbreak from JS/TS / Java lambda shorthand in jest-style nested test callbacks.
 
 ### Added

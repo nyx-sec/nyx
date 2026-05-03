@@ -74,7 +74,7 @@ Forward cross-file taint runs in every profile. Symex and the demand-driven back
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.6.0
+- uses: elicpeter/nyx@v0.6.1
   with:
     format: sarif
     fail-on: MEDIUM
