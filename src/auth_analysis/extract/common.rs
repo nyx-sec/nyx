@@ -3184,6 +3184,52 @@ fn collect_param_names(
                 out.push(name);
             }
         }
+        // Go `parameter_declaration` / `variadic_parameter_declaration`:
+        // tree-sitter-go shape exposes `name` (one or more identifiers)
+        // and `type` (the param's static type) as named fields.  C/C++
+        // also use `parameter_declaration` but with a `declarator`
+        // field instead of `name`, so the `name`-field gate
+        // distinguishes Go from C/C++ shapes without language plumbing.
+        //
+        // Two engine improvements at this site, both Go-specific:
+        //
+        // 1. Drop the entire param when its type is a known
+        //    non-user-input stdlib type.  The dominant case is
+        //    `ctx context.Context`, the canonical first param of
+        //    nearly every Go function (cancellation / deadline /
+        //    value-bag, NOT an HTTP request).  Without this gate the
+        //    bare param name `ctx` matches the framework-request-name
+        //    allow-list in `is_external_input_param_name`, opening
+        //    `unit_has_user_input_evidence` on every internal helper.
+        // 2. Descend only into the `name` field so type-segment
+        //    identifiers don't pollute the param-name set.  Without
+        //    this scope, `info *PackageInfo` contributes both `info`
+        //    and `PackageInfo` to `unit.params`; `path *Path` would
+        //    contribute `path` and `Path`, etc.  Mirrors the Rust
+        //    `parameter` arm below.
+        //
+        // Real-repo trigger: `/Users/elipeter/oss/gitea` ─ ~1900
+        // `go.auth.missing_ownership_check` findings on backend
+        // helpers whose only "user-input evidence" was the ubiquitous
+        // `ctx context.Context` first param.
+        "parameter_declaration" | "variadic_parameter_declaration"
+            if node.child_by_field_name("name").is_some() =>
+        {
+            if let Some(type_node) = node.child_by_field_name("type")
+                && is_go_non_user_input_type(type_node, bytes)
+            {
+                return;
+            }
+            let mut cursor = node.walk();
+            for child in node.children_by_field_name("name", &mut cursor) {
+                if child.kind() == "identifier" {
+                    let name = text(child, bytes);
+                    if !name.is_empty() && !out.contains(&name) {
+                        out.push(name);
+                    }
+                }
+            }
+        }
         // Rust `parameter` node: descend ONLY into the `pattern` field so
         // type-segment identifiers don't pollute the param-name set.
         // Without this scope, `dst: &std::path::Path` contributes `std`,
@@ -3292,6 +3338,48 @@ fn collect_param_names(
             }
         }
     }
+}
+
+/// Recognise Go parameter types that are categorically not user-input
+/// bearing.  Used by the Go arm of [`collect_param_names`] to drop the
+/// param entirely (rather than push its name into `unit.params` and
+/// trip the framework-request-name allow-list in
+/// `is_external_input_param_name`).
+///
+/// Conservative: only matches the stdlib `context.Context` /
+/// `context.CancelFunc` interface idioms.  These are the dominant
+/// cluster ─ ~1900 findings on `/Users/elipeter/oss/gitea` ─ and there
+/// is no shape under which they carry user input.
+///
+/// Implementation note: tree-sitter-go's `qualified_type` exposes
+/// `package` (identifier) and `name` (type_identifier) as named fields.
+/// Pointer-wrapping is rare for these (they're already interfaces) but
+/// is handled defensively by descending through `pointer_type`.
+fn is_go_non_user_input_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
+    let mut node = type_node;
+    // Strip a single layer of pointer indirection if present.
+    if node.kind() == "pointer_type" {
+        if let Some(inner) = node.child_by_field_name("type") {
+            node = inner;
+        } else if let Some(inner) = node.named_child(0) {
+            node = inner;
+        }
+    }
+    if node.kind() != "qualified_type" {
+        return false;
+    }
+    let pkg = node
+        .child_by_field_name("package")
+        .map(|n| text(n, bytes))
+        .unwrap_or_default();
+    let name = node
+        .child_by_field_name("name")
+        .map(|n| text(n, bytes))
+        .unwrap_or_default();
+    matches!(
+        (pkg.as_str(), name.as_str()),
+        ("context", "Context") | ("context", "CancelFunc")
+    )
 }
 
 /// Ascii-lowered id-shape predicate used by the Python typed-param
@@ -4450,5 +4538,99 @@ mod tests {
         assert!(params.contains(&"a".to_string()), "got {:?}", params);
         assert!(params.contains(&"b".to_string()), "got {:?}", params);
         assert!(!params.contains(&"u32".to_string()), "got {:?}", params);
+    }
+
+    /// Go's stdlib `context.Context` is the canonical first-param of
+    /// most functions but is NOT user input ─ it carries deadline /
+    /// cancellation / value-bag, never an HTTP request.  The Go arm of
+    /// `collect_param_names` drops the param entirely when its type is
+    /// `context.Context` so the bare name `ctx` doesn't trip the
+    /// framework-request-name allow-list.
+    ///
+    /// Real-repo motivation:
+    /// `/Users/elipeter/oss/gitea/services/packages/packages.go::AddFileToExistingPackage`
+    /// and ~1900 sibling helpers passed
+    /// `unit_has_user_input_evidence` solely on this param.
+    #[test]
+    fn collect_param_names_go_drops_context_context_param() {
+        use super::function_params;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        let src = b"package x\nfunc GetPackage(ctx context.Context, info *PackageInfo) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params(func, src);
+        assert!(
+            !params.contains(&"ctx".to_string()),
+            "ctx context.Context must be dropped: got {:?}",
+            params
+        );
+        assert!(
+            !params.contains(&"context".to_string()) && !params.contains(&"Context".to_string()),
+            "type-segment idents must not leak: got {:?}",
+            params
+        );
+        assert!(
+            params.contains(&"info".to_string()),
+            "non-context typed params keep their name: got {:?}",
+            params
+        );
+        assert!(
+            !params.contains(&"PackageInfo".to_string()),
+            "type-segment idents must not leak from non-context params either: got {:?}",
+            params
+        );
+    }
+
+    /// Per-framework `*context.APIContext` (gitea), `*gin.Context`,
+    /// `iris.Context`, `*fiber.Ctx` and similar ARE user input ─ the
+    /// type-aware filter must NOT drop these.  The non-stdlib package
+    /// name distinguishes them from the stdlib `context.Context`.
+    #[test]
+    fn collect_param_names_go_keeps_framework_context_param() {
+        use super::function_params;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        let src = b"package x\nfunc Handle(ctx *context.APIContext) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params(func, src);
+        assert!(
+            params.contains(&"ctx".to_string()),
+            "framework-bearing ctx must survive: got {:?}",
+            params
+        );
+    }
+
+    /// Multiple-name single-type Go declarations (`a, b int`) must
+    /// surface every name.
+    #[test]
+    fn collect_param_names_go_multi_name_param_decl() {
+        use super::function_params;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        let src = b"package x\nfunc Add(a, b int, ctx context.Context) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params(func, src);
+        assert!(params.contains(&"a".to_string()), "got {:?}", params);
+        assert!(params.contains(&"b".to_string()), "got {:?}", params);
+        assert!(!params.contains(&"ctx".to_string()), "got {:?}", params);
+        assert!(!params.contains(&"int".to_string()), "got {:?}", params);
     }
 }

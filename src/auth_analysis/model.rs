@@ -362,6 +362,11 @@ pub struct AuthorizationModel {
     ///
     /// Currently set only for Rust by `extract_authorization_model`.
     pub lang_web_framework_signal: Option<bool>,
+    /// Source language of the file the model was built from.  Used by
+    /// `unit_has_user_input_evidence` to apply per-language narrowing
+    /// of the framework-request-name allow-list.  Empty string when no
+    /// language was supplied (single-file unit-test paths).
+    pub lang: String,
 }
 
 impl AuthorizationModel {

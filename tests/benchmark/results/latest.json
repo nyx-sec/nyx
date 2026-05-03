@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-03T06:55:35Z",
+  "timestamp": "2026-05-03T11:47:09Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:cebc38d4e5cb8cfc1b81a06f58df61b43a173d8958031b4c57e4154d3d72b75d",
-  "corpus_size": 509,
-  "cases_run": 508,
+  "ground_truth_hash": "sha256:bcb15f25e604f82a050cb70208bba6a1e6bfeded4a9fbf562f757dccb8120ee3",
+  "corpus_size": 511,
+  "cases_run": 510,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -2176,6 +2176,27 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "go-auth-realrepo-002",
+      "file": "go/auth/vuln_apicontext_findbyid.go",
+      "language": "go",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "go.auth.missing_ownership_check",
+        "go.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "go.auth.missing_ownership_check",
+        "go.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "go-cmdi-001",
       "file": "go/cmdi/cmdi_direct.go",
       "language": "go",
@@ -2847,6 +2868,21 @@
     {
       "case_id": "go-safe-realrepo-017",
       "file": "go/safe/safe_struct_field_resource_owned_by_struct.go",
+      "language": "go",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "go-safe-realrepo-018",
+      "file": "go/safe/safe_ctx_context_helper.go",
       "language": "go",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -9079,19 +9115,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 251,
+    "tp": 252,
     "fp": 0,
     "fn_": 0,
-    "tn": 257,
+    "tn": 258,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 251,
+    "tp": 252,
     "fp": 0,
     "fn_": 0,
-    "tn": 257,
+    "tn": 258,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9116,10 +9152,10 @@
       "f1": 1.0
     },
     "go": {
-      "tp": 27,
+      "tp": 28,
       "fp": 0,
       "fn_": 0,
-      "tn": 32,
+      "tn": 33,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9190,7 +9226,7 @@
   },
   "by_vuln_class": {
     "auth": {
-      "tp": 19,
+      "tp": 20,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9328,7 +9364,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 257,
+      "tn": 258,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9381,31 +9417,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 84,
-      "fp": 102,
+      "tp": 85,
+      "fp": 100,
       "fn_": 167,
-      "tn": 155,
-      "precision": 0.45161290322580644,
-      "recall": 0.3346613545816733,
-      "f1": 0.38443935926773454
+      "tn": 158,
+      "precision": 0.4594594594594595,
+      "recall": 0.3373015873015873,
+      "f1": 0.3890160183066362
     },
     ">=Low": {
       "tp": 87,
-      "fp": 123,
-      "fn_": 164,
-      "tn": 134,
-      "precision": 0.4142857142857143,
-      "recall": 0.3466135458167331,
-      "f1": 0.3774403470715836
+      "fp": 121,
+      "fn_": 165,
+      "tn": 137,
+      "precision": 0.4182692307692308,
+      "recall": 0.34523809523809523,
+      "f1": 0.37826086956521743
     },
     ">=Medium": {
       "tp": 87,
-      "fp": 117,
-      "fn_": 164,
-      "tn": 140,
-      "precision": 0.4264705882352941,
-      "recall": 0.3466135458167331,
-      "f1": 0.38241758241758245
+      "fp": 115,
+      "fn_": 165,
+      "tn": 143,
+      "precision": 0.4306930693069307,
+      "recall": 0.34523809523809523,
+      "f1": 0.38325991189427305
     }
   }
 }

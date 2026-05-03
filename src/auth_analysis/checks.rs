@@ -16,12 +16,15 @@ pub struct AuthFinding {
 pub fn run_checks(model: &AuthorizationModel, rules: &AuthAnalysisRules) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
     let web_signal = model.lang_web_framework_signal;
+    let lang = model.lang.as_str();
     findings.extend(check_admin_routes(model, rules));
-    findings.extend(check_ownership_gaps(model, rules, web_signal));
-    findings.extend(check_partial_batch_authorization(model, rules, web_signal));
-    findings.extend(check_stale_authorization(model, rules, web_signal));
+    findings.extend(check_ownership_gaps(model, rules, web_signal, lang));
+    findings.extend(check_partial_batch_authorization(
+        model, rules, web_signal, lang,
+    ));
+    findings.extend(check_stale_authorization(model, rules, web_signal, lang));
     findings.extend(check_token_override_without_validation(
-        model, rules, web_signal,
+        model, rules, web_signal, lang,
     ));
     findings.sort_by(|a, b| a.span.cmp(&b.span).then_with(|| a.rule_id.cmp(&b.rule_id)));
     findings.dedup_by(|a, b| a.span == b.span && a.rule_id == b.rule_id);
@@ -70,11 +73,12 @@ fn check_ownership_gaps(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
     web_signal: Option<bool>,
+    lang: &str,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit, web_signal) {
+        if !unit_has_user_input_evidence(unit, web_signal, lang) {
             continue;
         }
         for op in &unit.operations {
@@ -123,11 +127,12 @@ fn check_partial_batch_authorization(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
     web_signal: Option<bool>,
+    lang: &str,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit, web_signal) {
+        if !unit_has_user_input_evidence(unit, web_signal, lang) {
             continue;
         }
         for op in &unit.operations {
@@ -178,11 +183,12 @@ fn check_stale_authorization(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
     web_signal: Option<bool>,
+    lang: &str,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
     for unit in &model.units {
-        if !unit_has_user_input_evidence(unit, web_signal) {
+        if !unit_has_user_input_evidence(unit, web_signal, lang) {
             continue;
         }
         for op in unit.operations.iter().filter(|operation| {
@@ -226,6 +232,7 @@ fn check_token_override_without_validation(
     model: &AuthorizationModel,
     rules: &AuthAnalysisRules,
     web_signal: Option<bool>,
+    lang: &str,
 ) -> Vec<AuthFinding> {
     let mut findings = Vec::new();
 
@@ -239,7 +246,7 @@ fn check_token_override_without_validation(
         // call shape happens to look token-y (`account.token = …;
         // account.save()`).  Gate on positive user-input evidence so
         // these pure backend units are never claimed as a token flow.
-        if !unit_has_user_input_evidence(unit, web_signal) {
+        if !unit_has_user_input_evidence(unit, web_signal, lang) {
             continue;
         }
         let Some(token_lookup) = unit
@@ -938,7 +945,11 @@ fn is_id_like_name(name: &str) -> bool {
 /// pure utility helpers fail all three conditions and are skipped ,
 /// they cannot, by construction, be the entry point of an
 /// authentication-bearing flow.
-fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>) -> bool {
+fn unit_has_user_input_evidence(
+    unit: &AnalysisUnit,
+    web_signal: Option<bool>,
+    lang: &str,
+) -> bool {
     if unit.kind == AnalysisUnitKind::RouteHandler {
         return true;
     }
@@ -960,7 +971,9 @@ fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>) -
     if !unit.context_inputs.is_empty() {
         return true;
     }
-    unit.params.iter().any(|p| is_external_input_param_name(p))
+    unit.params
+        .iter()
+        .any(|p| is_external_input_param_name_for_lang(p, lang))
 }
 
 /// Parameter-name heuristic: does this name carry external/user input
@@ -974,7 +987,33 @@ fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>) -
 /// Used by `unit_has_user_input_evidence` to recognise helper
 /// functions that, while not registered as route handlers, are
 /// clearly invoked with caller-supplied identifiers or request data.
+#[cfg(test)]
 fn is_external_input_param_name(name: &str) -> bool {
+    is_external_input_param_name_for_lang(name, "")
+}
+
+/// Lang-aware variant of [`is_external_input_param_name`].  When `lang`
+/// names a language whose framework conventions don't use the generic
+/// typed-extractor names from the JS/TS/Python ecosystems, the
+/// framework-name allow-list is narrowed accordingly.
+///
+/// Currently narrowed for Go.  In Go the names `ctx` / `context` /
+/// `info` / `body` / `path` / `payload` / `dto` / `form` / `query` are
+/// not framework-request indicators — they're, respectively,
+/// `context.Context` (cancellation/value-bag from the stdlib) and a
+/// menagerie of struct-pointer payload params (`info *PackageInfo`,
+/// `opts *FooOptions`).  Go's actual HTTP frameworks bind the request
+/// to a per-framework typed param (`r *http.Request`, `c *gin.Context`,
+/// `c echo.Context`, `c *fiber.Ctx`, `ctx *context.APIContext`); these
+/// arrive at the gate via `kind == RouteHandler` (set by the route
+/// extractor) or via the type-aware param filter in
+/// `extract::common::collect_param_names` (which keeps `ctx` only when
+/// its type is **not** the stdlib `context.Context`).
+///
+/// Real-repo trigger: `/Users/elipeter/oss/gitea` ─ ~1900
+/// `go.auth.missing_ownership_check` findings on backend helpers whose
+/// only "user-input evidence" was a `ctx context.Context` param name.
+fn is_external_input_param_name_for_lang(name: &str, lang: &str) -> bool {
     // Pytest / unittest.mock convention: parameters injected by
     // `@mock.patch(...)` decorators are universally named
     // `mock_<thing>` (`mock_project_id`, `mock_session`,
@@ -1011,6 +1050,13 @@ fn is_external_input_param_name(name: &str) -> bool {
     // matching on the name is a reliable proxy for the typed
     // extractor binding.  Bare `c` is too common (incidental local
     // variable) to include without an additional type signal.
+    if matches!(lang, "go") {
+        // Go's allow-list: only `req` / `request` (the stdlib
+        // `*http.Request` convention).  All other names from the
+        // generic allow-list have language-specific meanings in Go
+        // that aren't user-input ─ see fn doc-comment above.
+        return matches!(lower.as_str(), "req" | "request");
+    }
     matches!(
         lower.as_str(),
         "req"
@@ -1361,23 +1407,23 @@ mod tests {
         // Function with no params and no context_inputs (Celery task
         // shape), must NOT count as user-input-bearing.
         let mut unit = empty_unit();
-        assert!(!unit_has_user_input_evidence(&unit, None));
+        assert!(!unit_has_user_input_evidence(&unit, None, ""));
 
         // Adding internal-typed params (apps, schema_editor, Django
         // migration RunPython callback shape) keeps the gate closed.
         unit.params.push("apps".into());
         unit.params.push("schema_editor".into());
-        assert!(!unit_has_user_input_evidence(&unit, None));
+        assert!(!unit_has_user_input_evidence(&unit, None, ""));
 
         // pytest hook shape: (config, items), gate stays closed.
         let mut unit = empty_unit();
         unit.params.push("config".into());
         unit.params.push("items".into());
-        assert!(!unit_has_user_input_evidence(&unit, None));
+        assert!(!unit_has_user_input_evidence(&unit, None, ""));
 
         // Adding an id-like param flips the gate open.
         unit.params.push("doc_id".into());
-        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, None, ""));
 
         // Token-named param flips the gate open (Express helper
         // `acceptInvitation(token, currentUser, roleOverride)`).
@@ -1385,23 +1431,23 @@ mod tests {
         unit.params.push("token".into());
         unit.params.push("currentUser".into());
         unit.params.push("roleOverride".into());
-        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, None, ""));
 
         // Framework request-name param flips the gate open
         // (Django/Flask `def view(request, project_id):`).
         let mut unit = empty_unit();
         unit.params.push("request".into());
-        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, None, ""));
 
         // Axum/Actix typed-extractor convention name flips it open.
         let mut unit = empty_unit();
         unit.params.push("path".into());
-        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, None, ""));
 
         // RouteHandler kind always wins, regardless of params.
         let mut unit = empty_unit();
         unit.kind = AnalysisUnitKind::RouteHandler;
-        assert!(unit_has_user_input_evidence(&unit, None));
+        assert!(unit_has_user_input_evidence(&unit, None, ""));
     }
 
     /// Web-framework signal `Some(false)` (project's manifest was
@@ -1422,9 +1468,9 @@ mod tests {
         // every desktop helper.
         let mut unit = empty_unit();
         unit.params.push("session_id".into());
-        assert!(unit_has_user_input_evidence(&unit, None));
-        assert!(unit_has_user_input_evidence(&unit, Some(true)));
-        assert!(!unit_has_user_input_evidence(&unit, Some(false)));
+        assert!(unit_has_user_input_evidence(&unit, None, ""));
+        assert!(unit_has_user_input_evidence(&unit, Some(true), ""));
+        assert!(!unit_has_user_input_evidence(&unit, Some(false), ""));
 
         // Step 1 (RouteHandler) still wins regardless of the gate.
         // RouteHandler kind is set by framework extractors (axum /
@@ -1432,7 +1478,7 @@ mod tests {
         // robust enough to bypass the project-level gate even when
         // the manifest doesn't name the framework.
         unit.kind = AnalysisUnitKind::RouteHandler;
-        assert!(unit_has_user_input_evidence(&unit, Some(false)));
+        assert!(unit_has_user_input_evidence(&unit, Some(false), ""));
 
         // context_inputs arm: bare `session.foo` on a debug-session
         // handle (not an auth session) lands in `context_inputs` via
@@ -1448,9 +1494,9 @@ mod tests {
             index: None,
             span: (0, 0),
         });
-        assert!(unit_has_user_input_evidence(&unit, None));
-        assert!(unit_has_user_input_evidence(&unit, Some(true)));
-        assert!(!unit_has_user_input_evidence(&unit, Some(false)));
+        assert!(unit_has_user_input_evidence(&unit, None, ""));
+        assert!(unit_has_user_input_evidence(&unit, Some(true), ""));
+        assert!(!unit_has_user_input_evidence(&unit, Some(false), ""));
     }
 
     /// `is_external_input_param_name` covers id-, token-, and
@@ -1497,6 +1543,47 @@ mod tests {
         assert!(!is_external_input_param_name("mock_user_id"));
         assert!(!is_external_input_param_name("mocked_request"));
         assert!(!is_external_input_param_name("mocked_token"));
+    }
+
+    /// Go-specific narrowing of the framework-request-name allow-list.
+    ///
+    /// Go has no framework convention that uses the generic
+    /// typed-extractor names from JS/TS/Python (`info`, `path`,
+    /// `payload`, `body`, `dto`, `form`, `query`).  In Go these are
+    /// either struct-pointer payload params (`info *PackageInfo`),
+    /// stdlib types (`ctx context.Context`), or local variables.
+    /// The Go HTTP frameworks bind the request via per-framework typed
+    /// params (`r *http.Request`, `c *gin.Context`, `c echo.Context`,
+    /// `ctx *context.APIContext`), arriving at the gate via
+    /// RouteHandler kind.  Real-repo trigger:
+    /// `/Users/elipeter/oss/gitea` ─ ~1900 helpers passing the gate
+    /// solely on `ctx context.Context`.
+    #[test]
+    fn external_input_param_name_for_go_narrows_allowlist() {
+        use super::is_external_input_param_name_for_lang as f;
+        // ID-shaped + token-shaped names always fire (cross-language).
+        assert!(f("user_id", "go"));
+        assert!(f("repoID", "go"));
+        assert!(f("access_token", "go"));
+        // Stdlib `r *http.Request` convention preserved.
+        assert!(f("req", "go"));
+        assert!(f("request", "go"));
+        // Names that Go does NOT use as a request indicator.
+        assert!(!f("ctx", "go"));
+        assert!(!f("context", "go"));
+        assert!(!f("info", "go"));
+        assert!(!f("body", "go"));
+        assert!(!f("path", "go"));
+        assert!(!f("payload", "go"));
+        assert!(!f("dto", "go"));
+        assert!(!f("form", "go"));
+        assert!(!f("query", "go"));
+        // Same names DO fire for non-Go languages (Express / NestJS /
+        // FastAPI / Axum extractor conventions).
+        assert!(f("ctx", "javascript"));
+        assert!(f("body", "typescript"));
+        assert!(f("path", "rust"));
+        assert!(f("payload", "python"));
     }
 
     /// Row-fetch exemption.

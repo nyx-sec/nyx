@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 509
+    "corpus_size": 511
   },
   "cases": [
     {
@@ -3468,7 +3468,7 @@
         "ssrf"
       ],
       "disabled": false,
-      "notes": "SSRF via OpenURI.open_uri() with user-controlled URL — canonical low-level URI fetcher; CarrierWave / Paperclip / similar gems route SSRF-vulnerable downloads through it"
+      "notes": "SSRF via OpenURI.open_uri() with user-controlled URL \u2014 canonical low-level URI fetcher; CarrierWave / Paperclip / similar gems route SSRF-vulnerable downloads through it"
     },
     {
       "case_id": "js-ssrf-safe-001",
@@ -4124,7 +4124,7 @@
         "path-traversal"
       ],
       "disabled": false,
-      "notes": "Path traversal via cross-fn helper that wraps File.read inside YAML.safe_load (the `outer(File.read(x))` shape used in real Ruby helpers — rswag CVE-2023-38337 chain). Regression guard for the inner-call fallback fix in src/cfg/mod.rs::push_node so a wrapper around an FILE_IO sink continues to surface in summary extraction."
+      "notes": "Path traversal via cross-fn helper that wraps File.read inside YAML.safe_load (the `outer(File.read(x))` shape used in real Ruby helpers \u2014 rswag CVE-2023-38337 chain). Regression guard for the inner-call fallback fix in src/cfg/mod.rs::push_node so a wrapper around an FILE_IO sink continues to surface in summary extraction."
     },
     {
       "case_id": "ruby-sqli-001",
@@ -12691,7 +12691,7 @@
         "cache-key"
       ],
       "disabled": false,
-      "notes": "md5() / sha1() pervasively used for non-cryptographic purposes — ETag generation, cache-key / array-index hashing, dedup fingerprints, content-addressed identifier derivation. Layer F suppression recognises the consuming context (variable LHS, member-access LHS, subscript LHS, array element key, lookup-verb argument, return-from-method, hash-as-index) and refuses to fire. Distilled from nextcloud apps/dav CalDavBackend, contactsinteraction Card, Files/Cache, theming Util / CommonThemeTrait, encryption KeyManager; phpmyadmin src/Controllers/Database/StructureController, Controllers/Table/{RelationController, SearchController, ZoomSearchController}, src/Display/Results, Database/MultiTableQuery, Favorites/RecentFavoriteTables."
+      "notes": "md5() / sha1() pervasively used for non-cryptographic purposes \u2014 ETag generation, cache-key / array-index hashing, dedup fingerprints, content-addressed identifier derivation. Layer F suppression recognises the consuming context (variable LHS, member-access LHS, subscript LHS, array element key, lookup-verb argument, return-from-method, hash-as-index) and refuses to fire. Distilled from nextcloud apps/dav CalDavBackend, contactsinteraction Card, Files/Cache, theming Util / CommonThemeTrait, encryption KeyManager; phpmyadmin src/Controllers/Database/StructureController, Controllers/Table/{RelationController, SearchController, ZoomSearchController}, src/Display/Results, Database/MultiTableQuery, Favorites/RecentFavoriteTables."
     },
     {
       "case_id": "php-crypto-001",
@@ -14356,6 +14356,60 @@
       "notes": "Vulnerable counterpart pinning the chained-call suppression: bare-identifier receivers (`repo.Find(id)` / `repo.Save(id, val)`) are still classified as canonical data-layer sinks and must continue firing the ownership check."
     },
     {
+      "case_id": "go-safe-realrepo-018",
+      "file": "go/safe/safe_ctx_context_helper.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": "NONE",
+      "expected_category": "N/A",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "Distilled from gitea/services/packages/packages.go::AddFileToExistingPackage. Layer-1 type-aware Go param filter drops ctx context.Context, plus Layer-2 narrowing of the Go framework-request-name allow-list closes the ~1900 missing_ownership_check FP cluster on backend helpers."
+    },
+    {
+      "case_id": "go-auth-realrepo-002",
+      "file": "go/auth/vuln_apicontext_findbyid.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for the 2026-05-03 type-aware Go param filter. Even after ctx context.Context is dropped from unit.params, an id-shaped param keeps the unit on the hook (id-shape recognised before the framework-name allow-list)."
+    },
+    {
       "case_id": "py-auth-realrepo-001",
       "file": "python/safe/safe_django_migration_token.py",
       "language": "python",
@@ -15952,7 +16006,7 @@
         "real-repo-precision-2026-05-02"
       ],
       "disabled": false,
-      "notes": "Distilled from sentry api/helpers/environments.py::get_environments and api/endpoints/organization_releases.py::_filter_releases_by_query.  `<entity>.id` for a unit param named after a scope-bearing domain entity (organization, project, ...) is the ownership scope inherited from the caller, not a user-controlled target.  Pinned by is_caller_scope_entity_subject in src/auth_analysis/checks.rs.  Also exercises the keyword_argument-key fix in extract_value_refs (Environment.objects.filter(organization_id=...) — the kwarg key `organization_id` is the ORM column name, not a subject)."
+      "notes": "Distilled from sentry api/helpers/environments.py::get_environments and api/endpoints/organization_releases.py::_filter_releases_by_query.  `<entity>.id` for a unit param named after a scope-bearing domain entity (organization, project, ...) is the ownership scope inherited from the caller, not a user-controlled target.  Pinned by is_caller_scope_entity_subject in src/auth_analysis/checks.rs.  Also exercises the keyword_argument-key fix in extract_value_refs (Environment.objects.filter(organization_id=...) \u2014 the kwarg key `organization_id` is the ORM column name, not a subject)."
     },
     {
       "case_id": "py-auth-realrepo-009",
