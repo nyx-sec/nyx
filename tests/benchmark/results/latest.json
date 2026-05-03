@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-03T14:50:10Z",
+  "timestamp": "2026-05-03T16:24:06Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:a61d563cc881b612020b1fdbfa670d2620a287f7711c6e7c6303ee4675c67af7",
-  "corpus_size": 521,
-  "cases_run": 520,
+  "ground_truth_hash": "sha256:f7ddd3b2f611752078475e52445ebd6d76c91c59ee039835a6fb597423f048ab",
+  "corpus_size": 524,
+  "cases_run": 523,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -4373,6 +4373,21 @@
     {
       "case_id": "js-safe-data_exfil-002",
       "file": "javascript/safe/safe_data_exfil_user_input_echo.js",
+      "language": "javascript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "js-safe-jest-callback-001",
+      "file": "javascript/safe/safe_jest_test_callback_no_handler.js",
       "language": "javascript",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -8984,6 +8999,26 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "ts-safe-022",
+      "file": "typescript/safe/safe_jest_test_callback_no_handler.ts",
+      "language": "typescript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "ts.quality.any_annotation",
+        "ts.quality.any_annotation",
+        "ts.quality.any_annotation",
+        "ts.quality.any_annotation"
+      ],
+      "security_finding_count": 0,
+      "non_security_finding_count": 4
+    },
+    {
       "case_id": "ts-secrets-001",
       "file": "typescript/secrets/fallback_secret.ts",
       "language": "typescript",
@@ -9065,6 +9100,25 @@
       ],
       "security_finding_count": 2,
       "non_security_finding_count": 3
+    },
+    {
+      "case_id": "ts-sqli-realrepo-arrow-002",
+      "file": "typescript/sqli/sqli_arrow_handler_param.ts",
+      "language": "typescript",
+      "vuln_class": "sqli",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 7:27)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 7:27)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
     },
     {
       "case_id": "ts-ssrf-001",
@@ -9287,19 +9341,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 256,
+    "tp": 257,
     "fp": 0,
     "fn_": 0,
-    "tn": 264,
+    "tn": 266,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 256,
+    "tp": 257,
     "fp": 0,
     "fn_": 0,
-    "tn": 264,
+    "tn": 266,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9345,7 +9399,7 @@
       "tp": 23,
       "fp": 0,
       "fn_": 0,
-      "tn": 29,
+      "tn": 30,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9387,10 +9441,10 @@
       "f1": 1.0
     },
     "typescript": {
-      "tp": 35,
+      "tp": 36,
       "fp": 0,
       "fn_": 0,
-      "tn": 26,
+      "tn": 27,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9536,7 +9590,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 264,
+      "tn": 266,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9560,7 +9614,7 @@
       "f1": 1.0
     },
     "sqli": {
-      "tp": 35,
+      "tp": 36,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9589,31 +9643,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 89,
-      "fp": 101,
-      "fn_": 167,
-      "tn": 163,
-      "precision": 0.46842105263157896,
-      "recall": 0.34765625,
-      "f1": 0.3991031390134529
+      "tp": 86,
+      "fp": 100,
+      "fn_": 171,
+      "tn": 166,
+      "precision": 0.46236559139784944,
+      "recall": 0.3346303501945525,
+      "f1": 0.3882618510158013
     },
     ">=Low": {
-      "tp": 92,
-      "fp": 119,
-      "fn_": 164,
-      "tn": 145,
-      "precision": 0.43601895734597157,
-      "recall": 0.359375,
-      "f1": 0.3940042826552463
+      "tp": 89,
+      "fp": 122,
+      "fn_": 168,
+      "tn": 144,
+      "precision": 0.4218009478672986,
+      "recall": 0.3463035019455253,
+      "f1": 0.3803418803418804
     },
     ">=Medium": {
-      "tp": 92,
-      "fp": 116,
-      "fn_": 164,
-      "tn": 148,
-      "precision": 0.4423076923076923,
-      "recall": 0.359375,
-      "f1": 0.39655172413793105
+      "tp": 89,
+      "fp": 119,
+      "fn_": 168,
+      "tn": 147,
+      "precision": 0.42788461538461536,
+      "recall": 0.3463035019455253,
+      "f1": 0.38279569892473125
     }
   }
 }

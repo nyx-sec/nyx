@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 521
+    "corpus_size": 524
   },
   "cases": [
     {
@@ -13565,6 +13565,94 @@
       ],
       "disabled": false,
       "notes": "Validated-flow propagation through helper chains. `sanitize` validates its first parameter via a regex allowlist; `buildQuery` interpolates the sanitised result into a SQL fragment; the handler hands the fragment to `db.execute`. Pinned by `SsaFuncSummary::validated_params_to_return` + `propagate_validated_params_to_return` (CVE-2026-25544 deep fix)."
+    },
+    {
+      "case_id": "ts-safe-022",
+      "file": "typescript/safe/safe_jest_test_callback_no_handler.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "jest",
+        "arrow-no-formals",
+        "closure-capture",
+        "auto-seed-precision",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "Jest-style nested arrow callbacks (`describe('…', () => { it('…', async () => { const body = await res.json(); … }) })`) bubble inner-scope free vars (`body`, `userId`, `server.post`) up to the outer arrow as synthetic Params.  Before the fix, JS/TS auto-seed treated every Param whose var_name matched a handler-name (`userId`) as a real formal of the outer arrow and seeded it as `Source(UserInput)`, producing 934 phantom `taint-unsanitised-flow` findings on outline alone.  Engine fix: `lower_to_ssa_with_params` now signals `with_params=true` to `lower_to_ssa_inner`, which makes the synthetic-externals classifier always exclude formals (even when the formal list is empty, e.g. arrow `() => {…}`) — bubbled-up free vars become synthetic and the auto-seed pass skips them.  Distilled from /Users/elipeter/oss/outline/server/routes/api/comments/comments.test.ts."
+    },
+    {
+      "case_id": "ts-sqli-realrepo-arrow-002",
+      "file": "typescript/sqli/sqli_arrow_handler_param.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "analogue",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [[8, 8]],
+      "expected_source_lines": [[7, 7]],
+      "tags": [
+        "sqli",
+        "arrow-handler",
+        "auto-seed-positive",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "Arrow with REAL handler-named formal (`userId`) MUST still auto-seed and trigger taint flow into `db.exec(\"… ${userId}\")`.  Pins the auto-seed positive path so the FP fix in ts-safe-022 does not over-suppress real handlers."
+    },
+    {
+      "case_id": "js-safe-jest-callback-001",
+      "file": "javascript/safe/safe_jest_test_callback_no_handler.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "jest",
+        "arrow-no-formals",
+        "closure-capture",
+        "auto-seed-precision",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "JavaScript counterpart of ts-safe-022.  Same Jest-style nested arrow callback shape, ensures the auto-seed precision fix applies to .js files too (auto_seed_handler_params is on for both Lang::JavaScript and Lang::TypeScript)."
     },
     {
       "case_id": "py-auth-decorator-001",

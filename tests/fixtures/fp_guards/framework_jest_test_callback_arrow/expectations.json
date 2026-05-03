@@ -1,0 +1,16 @@
+{
+  "required_findings": [],
+  "forbidden_findings": [
+    { "id_prefix": "taint-unsanitised-flow" }
+  ],
+  "noise_budget": {
+    "max_total_findings": 3,
+    "max_high_findings": 0
+  },
+  "performance_expectations": {
+    "max_ms_no_index": 1500,
+    "max_ms_index_cold": 2000,
+    "max_ms_index_warm": 800,
+    "ci_mode": "lenient"
+  }
+}

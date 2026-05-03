@@ -959,6 +959,28 @@ fn fp_guard_framework_strapi_db_query_chain() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard: jest-style nested arrow callbacks
+/// (`describe('...', () => { it('...', async () => { ... }) })`) bubble
+/// inner-scope free vars (`body`, `userId`, `server.post`) up to the
+/// outer arrow as synthetic Params.  Before the fix, JS/TS auto-seed
+/// treated every Param whose var_name matched a handler-name (e.g.
+/// `userId` via the `user*` camelCase rule) as a real formal of the
+/// outer arrow and seeded it as `Source(UserInput)`, producing 934
+/// phantom `taint-unsanitised-flow` findings on outline alone (the
+/// dominant cluster in the JS/TS slice baseline).  Engine fix:
+/// `lower_to_ssa_with_params` signals `with_params=true` to
+/// `lower_to_ssa_inner`, which makes the synthetic-externals
+/// classifier always exclude formals (even when the formal list is
+/// empty, e.g. arrow `() => {…}`); bubbled-up free vars become
+/// synthetic and the auto-seed pass skips them.  Distilled from
+/// `outline/server/routes/api/comments/comments.test.ts`.
+#[test]
+fn fp_guard_framework_jest_test_callback_arrow() {
+    let dir = fixture_path("fp_guards/framework_jest_test_callback_arrow");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, composer / PSR-4 autoloader closure includes a parameter.
 /// Pinned from a 32-finding cluster in nextcloud's vendored
 /// `composer/composer/ClassLoader.php` plus three further methods
