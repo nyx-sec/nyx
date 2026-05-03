@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-03T13:18:19Z",
+  "timestamp": "2026-05-03T13:54:03Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:5a6741e164879c4f9b5422ce991d59a529f5997781ba8158028125872ed31b1b",
-  "corpus_size": 515,
-  "cases_run": 514,
+  "ground_truth_hash": "sha256:8b74642e8aeb3066eed51b575139e70cec5a823010e7559eaacaf09fbc353f53",
+  "corpus_size": 517,
+  "cases_run": 516,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -7993,6 +7993,36 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "ruby-safe-rails-callback-helper-no-private-001",
+      "file": "ruby/safe/safe_rails_callback_helper_no_private.rb",
+      "language": "ruby",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "ruby-safe-rails-private-callback-helper-001",
+      "file": "ruby/safe/safe_rails_private_callback_helper.rb",
+      "language": "ruby",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "ruby-safe-strong-params-001",
       "file": "ruby/safe/safe_strong_params.rb",
       "language": "ruby",
@@ -9186,7 +9216,7 @@
     "tp": 254,
     "fp": 0,
     "fn_": 0,
-    "tn": 260,
+    "tn": 262,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9195,7 +9225,7 @@
     "tp": 254,
     "fp": 0,
     "fn_": 0,
-    "tn": 260,
+    "tn": 262,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9268,7 +9298,7 @@
       "tp": 24,
       "fp": 0,
       "fn_": 0,
-      "tn": 24,
+      "tn": 26,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9432,7 +9462,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 260,
+      "tn": 262,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9485,31 +9515,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 90,
+      "tp": 92,
       "fp": 97,
-      "fn_": 164,
-      "tn": 163,
-      "precision": 0.48128342245989303,
-      "recall": 0.3543307086614173,
-      "f1": 0.4081632653061224
+      "fn_": 162,
+      "tn": 165,
+      "precision": 0.48677248677248675,
+      "recall": 0.36220472440944884,
+      "f1": 0.4153498871331829
     },
     ">=Low": {
-      "tp": 93,
+      "tp": 95,
       "fp": 117,
-      "fn_": 161,
-      "tn": 143,
-      "precision": 0.44285714285714284,
-      "recall": 0.3661417322834646,
-      "f1": 0.40086206896551724
+      "fn_": 159,
+      "tn": 145,
+      "precision": 0.4481132075471698,
+      "recall": 0.37401574803149606,
+      "f1": 0.407725321888412
     },
     ">=Medium": {
-      "tp": 93,
+      "tp": 95,
       "fp": 112,
-      "fn_": 161,
-      "tn": 148,
-      "precision": 0.45365853658536587,
-      "recall": 0.3661417322834646,
-      "f1": 0.40522875816993464
+      "fn_": 159,
+      "tn": 150,
+      "precision": 0.45893719806763283,
+      "recall": 0.37401574803149606,
+      "f1": 0.41214750542299344
     }
   }
 }

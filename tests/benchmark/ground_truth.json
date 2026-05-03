@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 515
+    "corpus_size": 517
   },
   "cases": [
     {
@@ -15291,6 +15291,62 @@
       ],
       "disabled": false,
       "notes": "Counterpart to safe_post_fetch_ownership_check \u2014 same controller shape but the per-record permission check is omitted, so the row-fetch exemption does not fire. Engine must keep flagging this even though the safe-shape fixtures train the exemption on the same Issue.find(params[:id]) pattern."
+    },
+    {
+      "case_id": "ruby-safe-rails-private-callback-helper-001",
+      "file": "ruby/safe/safe_rails_private_callback_helper.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "real-repo-precision-2026-05-03",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rb.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "rails",
+        "auth",
+        "private-callback-helper",
+        "real-repo-precision"
+      ],
+      "disabled": false,
+      "notes": "Mastodon-shape: `set_account` private helper invoked via `before_action :set_account`. Rails extractor + collect_top_level_units now skip private + callback-target methods so the row fetch in the helper is not flagged as a missing-ownership unit; the public action that triggers the callback owns the auth context."
+    },
+    {
+      "case_id": "ruby-safe-rails-callback-helper-no-private-001",
+      "file": "ruby/safe/safe_rails_callback_helper_no_private.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "real-repo-precision-2026-05-03",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rb.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "rails",
+        "auth",
+        "callback-target-no-private",
+        "real-repo-precision"
+      ],
+      "disabled": false,
+      "notes": "Sister fixture to safe_rails_private_callback_helper \u2014 the `set_widget` helper carries no `private` directive but is registered via `before_action :set_widget`. Callback-target name suppression alone (independent of visibility) must skip the helper unit."
     },
     {
       "case_id": "java-safe-realrepo-keycloak-001",

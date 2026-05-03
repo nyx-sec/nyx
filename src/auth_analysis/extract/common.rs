@@ -104,7 +104,7 @@ fn collect_top_level_from_node(
                 }
             }
         }
-        "program" | "source_file" | "module" | "class" | "class_declaration" | "class_body"
+        "program" | "source_file" | "module" | "class_declaration" | "class_body"
         | "body_statement" => {
             for idx in 0..node.named_child_count() {
                 let Some(child) = node.named_child(idx as u32) else {
@@ -113,8 +113,245 @@ fn collect_top_level_from_node(
                 collect_top_level_from_node(child, bytes, rules, model, file_meta);
             }
         }
+        // Ruby `class Foo; ... end`.  Gate method descent through the
+        // visibility / callback-target filter so private helpers and
+        // `before_action :foo`-style callback targets are not emitted
+        // as `Function` units (the upstream cause of
+        // `rb.auth.missing_ownership_check` FPs on `set_X` row-fetch
+        // helpers in mastodon / diaspora controllers).  Non-method
+        // class-body children (nested `class` / `module` /
+        // `singleton_method`) still recurse normally.
+        "class" => {
+            let body = node.child_by_field_name("body");
+            let visibility = body
+                .map(|b| ruby_method_visibility(b, bytes))
+                .unwrap_or_default();
+            let callbacks = body
+                .map(|b| ruby_callback_target_names(b, bytes))
+                .unwrap_or_default();
+            for idx in 0..node.named_child_count() {
+                let Some(child) = node.named_child(idx as u32) else {
+                    continue;
+                };
+                if Some(child) == body {
+                    for body_idx in 0..child.named_child_count() {
+                        let Some(grand) = child.named_child(body_idx as u32) else {
+                            continue;
+                        };
+                        if grand.kind() == "method" {
+                            let name = function_name(grand, bytes).unwrap_or_default();
+                            if !name.is_empty()
+                                && ruby_method_is_callback_or_private(
+                                    &name,
+                                    &visibility,
+                                    &callbacks,
+                                )
+                            {
+                                continue;
+                            }
+                        }
+                        collect_top_level_from_node(grand, bytes, rules, model, file_meta);
+                    }
+                } else {
+                    collect_top_level_from_node(child, bytes, rules, model, file_meta);
+                }
+            }
+        }
         _ => {}
     }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum RubyVisibility {
+    Public,
+    Protected,
+    Private,
+}
+
+/// Walk a Ruby class body in source order and attribute each method
+/// definition's visibility, mirroring Ruby's `private` / `protected` /
+/// `public` directive semantics.
+///
+/// Two directive forms are recognised:
+/// 1. **Bare** (`private`).  Tree-sitter parses these as a top-level
+///    `(identifier "private")` sibling.  Toggles default visibility
+///    for every subsequent method.
+/// 2. **Targeted** (`private :foo, :bar`).  Parsed as
+///    `(call method:identifier arguments:argument_list ...)`.
+///    Explicitly marks the named methods; does not change default.
+pub fn ruby_method_visibility(
+    body: Node<'_>,
+    bytes: &[u8],
+) -> std::collections::HashMap<String, RubyVisibility> {
+    use crate::auth_analysis::config::matches_name;
+    use std::collections::HashMap;
+
+    let mut map: HashMap<String, RubyVisibility> = HashMap::new();
+    let mut current = RubyVisibility::Public;
+    for child in named_children(body) {
+        match child.kind() {
+            "identifier" => {
+                if let Some(vis) = ruby_visibility_for_directive(text(child, bytes).trim()) {
+                    current = vis;
+                }
+            }
+            "call" => {
+                let callee_full = call_name(child, bytes);
+                let callee = bare_method_name(&callee_full);
+                let Some(target_vis) = ruby_visibility_for_directive(callee) else {
+                    continue;
+                };
+                let arguments = child.child_by_field_name("arguments");
+                let args: Vec<Node<'_>> = arguments
+                    .map(|node| named_children(node))
+                    .unwrap_or_default();
+                if args.is_empty() {
+                    current = target_vis;
+                    continue;
+                }
+                let mut targeted_any = false;
+                for arg in args {
+                    for name in ruby_symbol_names(arg, bytes) {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        map.insert(name, target_vis);
+                        targeted_any = true;
+                    }
+                    if arg.kind() == "method"
+                        && let Some(name_node) = arg.child_by_field_name("name")
+                    {
+                        let name = text(name_node, bytes);
+                        if !name.is_empty() {
+                            map.insert(name, target_vis);
+                            targeted_any = true;
+                        }
+                    }
+                }
+                if !targeted_any {
+                    current = target_vis;
+                }
+                let _ = matches_name;
+            }
+            "method" => {
+                if let Some(name_node) = child.child_by_field_name("name") {
+                    let name = text(name_node, bytes);
+                    if !name.is_empty() {
+                        map.insert(name, current);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    map
+}
+
+fn ruby_visibility_for_directive(name: &str) -> Option<RubyVisibility> {
+    match name {
+        "private" => Some(RubyVisibility::Private),
+        "protected" => Some(RubyVisibility::Protected),
+        "public" => Some(RubyVisibility::Public),
+        _ => None,
+    }
+}
+
+/// Collect names of methods registered as Rails filter callbacks
+/// (`before_action`, `after_action`, `around_action`, with their
+/// `prepend_*` / `append_*` / `skip_*` siblings, plus the legacy
+/// `*_filter` aliases).  Such methods may be public but are invoked
+/// only as part of an action's request cycle, never as standalone
+/// routes — so emitting them as units produces spurious
+/// `missing_ownership_check` flags on the helper body's row fetches.
+pub fn ruby_callback_target_names(
+    body: Node<'_>,
+    bytes: &[u8],
+) -> std::collections::HashSet<String> {
+    use std::collections::HashSet;
+
+    let mut targets: HashSet<String> = HashSet::new();
+    for child in named_children(body) {
+        if child.kind() != "call" {
+            continue;
+        }
+        let callee_full = call_name(child, bytes);
+        let callee = bare_method_name(&callee_full);
+        if !ruby_is_filter_callback_directive(callee) {
+            continue;
+        }
+        let Some(arguments) = child.child_by_field_name("arguments") else {
+            continue;
+        };
+        for arg in named_children(arguments) {
+            if arg.kind() == "pair" {
+                continue;
+            }
+            for name in ruby_symbol_names(arg, bytes) {
+                if name.is_empty() {
+                    continue;
+                }
+                targets.insert(name);
+            }
+        }
+    }
+    targets
+}
+
+fn ruby_is_filter_callback_directive(name: &str) -> bool {
+    matches!(
+        name,
+        "before_action"
+            | "after_action"
+            | "around_action"
+            | "prepend_before_action"
+            | "prepend_after_action"
+            | "prepend_around_action"
+            | "append_before_action"
+            | "append_after_action"
+            | "append_around_action"
+            | "skip_before_action"
+            | "skip_after_action"
+            | "skip_around_action"
+            | "before_filter"
+            | "after_filter"
+            | "around_filter"
+            | "prepend_before_filter"
+            | "prepend_after_filter"
+            | "prepend_around_filter"
+            | "append_before_filter"
+            | "append_after_filter"
+            | "append_around_filter"
+            | "skip_before_filter"
+            | "skip_after_filter"
+            | "skip_around_filter"
+    )
+}
+
+fn ruby_symbol_names(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
+    match node.kind() {
+        "simple_symbol" | "hash_key_symbol" | "identifier" | "string" => {
+            vec![strip_quotes(&text(node, bytes))
+                .trim_start_matches(':')
+                .to_string()]
+        }
+        "array" => named_children(node)
+            .into_iter()
+            .flat_map(|child| ruby_symbol_names(child, bytes))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub fn ruby_method_is_callback_or_private(
+    name: &str,
+    visibility: &std::collections::HashMap<String, RubyVisibility>,
+    callbacks: &std::collections::HashSet<String>,
+) -> bool {
+    let vis = visibility.get(name).copied().unwrap_or(RubyVisibility::Public);
+    if vis != RubyVisibility::Public {
+        return true;
+    }
+    callbacks.contains(name)
 }
 
 fn function_unit_from_var_declarator(
@@ -4632,5 +4869,148 @@ mod tests {
         assert!(params.contains(&"b".to_string()), "got {:?}", params);
         assert!(!params.contains(&"ctx".to_string()), "got {:?}", params);
         assert!(!params.contains(&"int".to_string()), "got {:?}", params);
+    }
+
+    mod ruby_visibility_and_callbacks {
+        use super::super::{
+            RubyVisibility, ruby_callback_target_names, ruby_method_is_callback_or_private,
+            ruby_method_visibility,
+        };
+        use tree_sitter::{Node, Parser, Tree};
+
+        fn parse(src: &str) -> (Tree, Vec<u8>) {
+            let mut parser = Parser::new();
+            parser
+                .set_language(&tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE))
+                .unwrap();
+            let bytes = src.as_bytes().to_vec();
+            let tree = parser.parse(bytes.as_slice(), None).expect("parse");
+            (tree, bytes)
+        }
+
+        fn find_class_body<'a>(node: Node<'a>) -> Option<Node<'a>> {
+            if node.kind() == "class" {
+                return node.child_by_field_name("body");
+            }
+            for idx in 0..node.named_child_count() {
+                let Some(child) = node.named_child(idx as u32) else {
+                    continue;
+                };
+                if let Some(body) = find_class_body(child) {
+                    return Some(body);
+                }
+            }
+            None
+        }
+
+        #[test]
+        fn bare_private_directive_marks_subsequent_methods_private() {
+            let src = "class C\n  def public_a; end\n  private\n  def helper_b; end\n  def helper_c; end\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let vis = ruby_method_visibility(body, &bytes);
+            assert_eq!(vis.get("public_a").copied(), Some(RubyVisibility::Public));
+            assert_eq!(vis.get("helper_b").copied(), Some(RubyVisibility::Private));
+            assert_eq!(vis.get("helper_c").copied(), Some(RubyVisibility::Private));
+        }
+
+        #[test]
+        fn targeted_private_marks_only_named_methods() {
+            let src = "class C\n  def a; end\n  def b; end\n  def c; end\n  private :a, :c\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let vis = ruby_method_visibility(body, &bytes);
+            assert_eq!(vis.get("a").copied(), Some(RubyVisibility::Private));
+            assert_eq!(vis.get("b").copied(), Some(RubyVisibility::Public));
+            assert_eq!(vis.get("c").copied(), Some(RubyVisibility::Private));
+        }
+
+        #[test]
+        fn public_directive_re_opens_visibility() {
+            let src = "class C\n  private\n  def a; end\n  public\n  def b; end\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let vis = ruby_method_visibility(body, &bytes);
+            assert_eq!(vis.get("a").copied(), Some(RubyVisibility::Private));
+            assert_eq!(vis.get("b").copied(), Some(RubyVisibility::Public));
+        }
+
+        #[test]
+        fn protected_directive_recognised() {
+            let src = "class C\n  protected\n  def helper; end\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let vis = ruby_method_visibility(body, &bytes);
+            assert_eq!(vis.get("helper").copied(), Some(RubyVisibility::Protected));
+        }
+
+        #[test]
+        fn before_action_collects_callback_target_names() {
+            let src = "class C\n  before_action :set_account\n  before_action :set_user, only: [:show, :update]\n  def show; end\n  def set_account; end\n  def set_user; end\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let callbacks = ruby_callback_target_names(body, &bytes);
+            assert!(callbacks.contains("set_account"));
+            assert!(callbacks.contains("set_user"));
+            // `only:` / `except:` keys must not pollute the target set.
+            assert!(!callbacks.contains("show"));
+            assert!(!callbacks.contains("update"));
+            assert!(!callbacks.contains("only"));
+        }
+
+        #[test]
+        fn before_action_block_form_yields_no_targets() {
+            // Block form `before_action do ... end` carries no symbol arg.
+            let src = "class C\n  before_action do\n    require_login\n  end\n  def show; end\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let callbacks = ruby_callback_target_names(body, &bytes);
+            assert!(callbacks.is_empty(), "got {:?}", callbacks);
+        }
+
+        #[test]
+        fn skip_before_action_target_collected() {
+            let src = "class C\n  skip_before_action :authenticate_user!, only: [:index]\n  def index; end\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let callbacks = ruby_callback_target_names(body, &bytes);
+            assert!(callbacks.contains("authenticate_user!"));
+        }
+
+        #[test]
+        fn legacy_before_filter_alias_collected() {
+            let src = "class C\n  before_filter :legacy_helper\n  def legacy_helper; end\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let callbacks = ruby_callback_target_names(body, &bytes);
+            assert!(callbacks.contains("legacy_helper"));
+        }
+
+        #[test]
+        fn callback_target_or_private_predicate_combines_layers() {
+            // Private method → suppressed.
+            // Public callback target → suppressed.
+            // Public non-callback method → kept.
+            let src = "class C\n  before_action :set_account\n  def show; end\n  def set_account; end\n  private\n  def helper; end\nend\n";
+            let (tree, bytes) = parse(src);
+            let body = find_class_body(tree.root_node()).expect("body");
+            let visibility = ruby_method_visibility(body, &bytes);
+            let callbacks = ruby_callback_target_names(body, &bytes);
+            assert!(!ruby_method_is_callback_or_private(
+                "show",
+                &visibility,
+                &callbacks
+            ));
+            assert!(ruby_method_is_callback_or_private(
+                "set_account",
+                &visibility,
+                &callbacks
+            ));
+            assert!(ruby_method_is_callback_or_private(
+                "helper",
+                &visibility,
+                &callbacks
+            ));
+        }
     }
 }
