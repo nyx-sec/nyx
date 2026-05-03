@@ -718,6 +718,52 @@ impl DefaultTransfer<'_> {
         if let Some(ref def) = info.taint.defines
             && let Some(def_sym) = self.get_sym(info, def)
         {
+            // SAFE-FOR-FIELD-LHS: when the LHS is a member expression
+            // (struct field / object property), do NOT track the field as
+            // a separate resource — the parent struct/object owns the
+            // field's lifecycle and the local function body cannot
+            // observe whether/when the parent's destructor (or paired
+            // Stop()/dispose() method on the parent) releases the
+            // underlying storage.  Still mark the RHS as MOVED so the
+            // local-leak analysis treats the assignment as ownership
+            // transfer to the parent, not as a continuing local handle.
+            //
+            // Two real-repo shapes this closes (curl, openssl, postgres):
+            //
+            //   (i) Sub-buffer alias inside a returned struct:
+            //       e = curlx_calloc(...);
+            //       e->name = (char *)e + sizeof(*e);  // sub-buffer alias
+            //       return e;
+            //   Without this gate, e's OPEN transferred to e->name, e went
+            //   MOVED, and e->name surfaced as "never closed".
+            //
+            //   (ii) Local-into-field ownership transfer:
+            //       ptr = malloc(...);
+            //       mem->buf = ptr;        // ownership now lives in *mem
+            //   Without this gate, ptr was MOVED to mem->buf, but mem->buf
+            //   then leaked at exit because *mem's lifecycle is owned by
+            //   the caller.  With this gate, ptr is MOVED (transfer
+            //   acknowledged) and mem->buf is not separately tracked.
+            //
+            // Multi-language: applies to all languages.  This is distinct
+            // from the `apply_call` field-LHS gate (Go-only because the
+            // documented TS/JS class-field acquire
+            // `this.fd = fs.openSync(...)` IS the expected leak pattern
+            // in tests/fixtures/.../typescript/state/resource_class.ts —
+            // that path remains untouched here because RHS-is-a-call
+            // routes through `apply_call`, not `apply_assignment`).
+            if def.contains('.') || def.contains("->") {
+                for used in &info.taint.uses {
+                    if let Some(use_sym) = self.get_sym(info, used) {
+                        let lc = state.resource.get(use_sym);
+                        if lc.contains(ResourceLifecycle::OPEN) {
+                            state.resource.set(use_sym, ResourceLifecycle::MOVED);
+                            return;
+                        }
+                    }
+                }
+                return;
+            }
             // If the RHS is a tracked resource, transfer its state
             for used in &info.taint.uses {
                 if let Some(use_sym) = self.get_sym(info, used) {
@@ -1061,6 +1107,99 @@ mod tests {
         assert!(is_guard_like("sanitize_html"));
         assert!(is_guard_like("check_permission"));
         assert!(!is_guard_like("open_file"));
+    }
+
+    /// SAFE-FOR-FIELD-LHS gate: when an assignment writes a tracked
+    /// resource into a struct field (`def` contains `.` or `->`), the
+    /// RHS local must be marked MOVED (ownership transferred to the
+    /// parent struct) and the field must NOT be tracked as a separate
+    /// OPEN resource.  Pins the curl/dynhds.c::entry_new shape.
+    #[test]
+    fn field_lhs_assignment_moves_rhs_and_does_not_track_field() {
+        let mut interner = SymbolInterner::new();
+        let sym_e = interner.intern("e");
+        let sym_field = interner.intern("e->name");
+
+        let transfer = DefaultTransfer {
+            lang: Lang::C,
+            resource_pairs: rules::resource_pairs(Lang::C),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+        };
+
+        let mut state = ProductState::initial();
+        state.resource.set(sym_e, ResourceLifecycle::OPEN);
+
+        // `e->name = e` (sub-buffer alias): defines = "e->name", uses = ["e"].
+        let info = NodeInfo {
+            kind: StmtKind::Seq,
+            ast: AstMeta {
+                span: (0, 10),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                defines: Some("e->name".into()),
+                uses: vec!["e".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (state, events) = transfer.apply(NodeIndex::new(0), &info, None, state);
+        assert!(events.is_empty());
+        assert_eq!(
+            state.resource.get(sym_e),
+            ResourceLifecycle::MOVED,
+            "RHS local should transfer to MOVED (ownership handed to parent struct)"
+        );
+        assert_eq!(
+            state.resource.get(sym_field),
+            ResourceLifecycle::empty(),
+            "field-LHS must NOT be seeded as a separately-tracked OPEN resource"
+        );
+    }
+
+    /// Recall guard for the field-LHS gate: a plain local-to-local
+    /// assignment (no field on the LHS) must still transfer the OPEN
+    /// state to the new alias and mark the source MOVED, preserving
+    /// existing local-leak detection.
+    #[test]
+    fn local_to_local_assignment_still_transfers_open() {
+        let mut interner = SymbolInterner::new();
+        let sym_buf = interner.intern("buf");
+        let sym_cursor = interner.intern("cursor");
+
+        let transfer = DefaultTransfer {
+            lang: Lang::C,
+            resource_pairs: rules::resource_pairs(Lang::C),
+            interner: &interner,
+            resource_method_summaries: &[],
+            ptr_proxy_hints: None,
+        };
+
+        let mut state = ProductState::initial();
+        state.resource.set(sym_buf, ResourceLifecycle::OPEN);
+
+        // `cursor = buf`: plain alias, no field.
+        let info = NodeInfo {
+            kind: StmtKind::Seq,
+            ast: AstMeta {
+                span: (0, 10),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                defines: Some("cursor".into()),
+                uses: vec!["buf".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let (state, events) = transfer.apply(NodeIndex::new(0), &info, None, state);
+        assert!(events.is_empty());
+        assert_eq!(state.resource.get(sym_buf), ResourceLifecycle::MOVED);
+        assert_eq!(state.resource.get(sym_cursor), ResourceLifecycle::OPEN);
     }
 
     #[test]

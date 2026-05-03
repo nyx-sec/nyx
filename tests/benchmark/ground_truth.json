@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 507
+    "corpus_size": 509
   },
   "cases": [
     {
@@ -12855,6 +12855,64 @@
       ],
       "disabled": false,
       "notes": "Postgres `datetime.c::EncodeDateTime` shape \u2014 sprintf with literal format string containing only width/precision-bounded specifiers.  Layer D suppression."
+    },
+    {
+      "case_id": "c-safe-realrepo-019",
+      "file": "c/safe/safe_struct_field_subbuffer_alloc.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo-precision-2026-05-03",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "state-resource-leak",
+        "state-resource-leak-possible",
+        "cfg-resource-leak"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "negative",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "curl/lib/dynhds.c::entry_new shape \u2014 sub-buffer alias `e->name = (char*)e + sizeof(*e)` and local-into-field ownership transfer `m->buf = ptr`.  Field-LHS in apply_assignment moves the RHS to MOVED but does not seed the field as a separately-tracked resource.  Engine fix: src/state/transfer.rs::apply_assignment SAFE-FOR-FIELD-LHS gate.  Closes the dominant `state-resource-leak` FP cluster on curl/openssl/postgres/git (~165 findings across 6 repos)."
+    },
+    {
+      "case_id": "c-vuln-realrepo-019",
+      "file": "c/safe/vuln_local_leak_no_field_assign.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "resource",
+      "cwe": "CWE-401",
+      "provenance": "real-repo-precision-2026-05-03",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "resource-lifecycle",
+        "leak",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for the apply_assignment field-LHS gate.  Plain local-to-local alias copy (`char *cursor = buf;`) without field-LHS must still flag a leak when the resource never reaches a release call or out-parameter."
     },
     {
       "case_id": "cpp-safe-014",

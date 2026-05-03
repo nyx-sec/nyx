@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-03T01:35:18Z",
+  "timestamp": "2026-05-03T06:55:35Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:8b8b31820b3a2cd0a28ded8109370093132a11074bf28b9c373192d271ee9f09",
-  "corpus_size": 507,
-  "cases_run": 506,
+  "ground_truth_hash": "sha256:cebc38d4e5cb8cfc1b81a06f58df61b43a173d8958031b4c57e4154d3d72b75d",
+  "corpus_size": 509,
+  "cases_run": 508,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -490,6 +490,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "c-safe-realrepo-019",
+      "file": "c/safe/safe_struct_field_subbuffer_alloc.c",
+      "language": "c",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "c-ssrf-001",
       "file": "c/ssrf/ssrf_curl.c",
       "language": "c",
@@ -506,6 +521,27 @@
         "taint-unsanitised-flow (source 6:18)"
       ],
       "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "c-vuln-realrepo-019",
+      "file": "c/safe/vuln_local_leak_no_field_assign.c",
+      "language": "c",
+      "vuln_class": "resource",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "state-resource-leak",
+        "cfg-resource-leak"
+      ],
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -9043,29 +9079,29 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 250,
+    "tp": 251,
     "fp": 0,
     "fn_": 0,
-    "tn": 256,
+    "tn": 257,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 250,
+    "tp": 251,
     "fp": 0,
     "fn_": 0,
-    "tn": 256,
+    "tn": 257,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "by_language": {
     "c": {
-      "tp": 16,
+      "tp": 17,
       "fp": 0,
       "fn_": 0,
-      "tn": 16,
+      "tn": 17,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9280,7 +9316,7 @@
       "f1": 1.0
     },
     "resource": {
-      "tp": 1,
+      "tp": 2,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9292,7 +9328,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 256,
+      "tn": 257,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9345,31 +9381,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 81,
-      "fp": 105,
-      "fn_": 169,
-      "tn": 151,
-      "precision": 0.43548387096774194,
-      "recall": 0.324,
-      "f1": 0.37155963302752293
+      "tp": 84,
+      "fp": 102,
+      "fn_": 167,
+      "tn": 155,
+      "precision": 0.45161290322580644,
+      "recall": 0.3346613545816733,
+      "f1": 0.38443935926773454
     },
     ">=Low": {
       "tp": 87,
-      "fp": 124,
-      "fn_": 163,
-      "tn": 132,
-      "precision": 0.41232227488151657,
-      "recall": 0.348,
-      "f1": 0.3774403470715834
+      "fp": 123,
+      "fn_": 164,
+      "tn": 134,
+      "precision": 0.4142857142857143,
+      "recall": 0.3466135458167331,
+      "f1": 0.3774403470715836
     },
     ">=Medium": {
       "tp": 87,
-      "fp": 118,
-      "fn_": 163,
-      "tn": 138,
-      "precision": 0.424390243902439,
-      "recall": 0.348,
-      "f1": 0.3824175824175824
+      "fp": 117,
+      "fn_": 164,
+      "tn": 140,
+      "precision": 0.4264705882352941,
+      "recall": 0.3466135458167331,
+      "f1": 0.38241758241758245
     }
   }
 }
