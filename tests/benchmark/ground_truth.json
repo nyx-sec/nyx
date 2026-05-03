@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 524
+    "corpus_size": 533
   },
   "cases": [
     {
@@ -7338,6 +7338,32 @@
       "notes": "Shell-metachar rejection is not a SQL sanitizer; SQL injection must still fire"
     },
     {
+      "case_id": "rs-sqli-format-named-arg",
+      "file": "rust/sqli/sqli_format_named_arg.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "sqli",
+        "format-named-arg"
+      ],
+      "disabled": false,
+      "notes": "Named-arg `{user}` capture in format!() interpolates env::var into a SQL query without sanitisation. Regression guard for the format-string named-arg lifting fix (CVE-2025-53549 motivated)."
+    },
+    {
       "case_id": "rs-cmdi-005",
       "file": "rust/cmdi/cmdi_format_macro.rs",
       "language": "rust",
@@ -7844,6 +7870,55 @@
       ],
       "disabled": false,
       "notes": "Input parsed to u16 before use as Command arg \u2014 type-narrowed"
+    },
+    {
+      "case_id": "rs-safe-fileio-int-uid",
+      "file": "rust/safe/safe_parsed_uid_path.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "type-parse",
+        "u32",
+        "fileio-suppress"
+      ],
+      "disabled": false,
+      "notes": "Tainted username parsed to u32 (uid) before use as PathBuf component \u2014 digits cannot contain `..` or `/`, so the FILE_IO sink suppresses on type alone. Regression guard for the type-only FILE_IO suppression and int-producing-callee leaf-stop."
+    },
+    {
+      "case_id": "rs-safe-format-named-arg-sanitized",
+      "file": "rust/safe/safe_format_string_sanitized.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "format-named-arg",
+        "sanitized"
+      ],
+      "disabled": false,
+      "notes": "Named-arg `{safe}` reads sanitized value; sanitize_shell strips shell metachars before format!() interpolation reaches Command::new. Regression guard that named-arg lifting still respects sanitiser-dominated flows."
     },
     {
       "case_id": "rs-safe-012",
@@ -12358,6 +12433,171 @@
       ],
       "disabled": false,
       "notes": "CVE-2024-24576 patched counterpart: cmd.exe-aware allowlist filters argv before reaching update.bat. Regression guard that Nyx does not refire on the fix."
+    },
+    {
+      "case_id": "cve-rs-2023-42456-vulnerable",
+      "file": "cve_corpus/rust/CVE-2023-42456/vulnerable.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "cve",
+        "sudo-rs",
+        "path-traversal"
+      ],
+      "disabled": false,
+      "notes": "CVE-2023-42456 / RUSTSEC-2023-0069: sudo-rs SessionRecordFile::open_for_user pushed an untrusted username into a PathBuf, letting a local attacker with a `../../bin/cp`-style username corrupt files. Apache-2.0"
+    },
+    {
+      "case_id": "cve-rs-2023-42456-patched",
+      "file": "cve_corpus/rust/CVE-2023-42456/patched.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "sudo-rs",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2023-42456 patched counterpart: open_for_user takes UserId (u32) instead of &str, so the path component is provably digits-only and cannot contain `..` or `/`. Regression guard for the type-only FILE_IO suppression."
+    },
+    {
+      "case_id": "cve-rs-2024-32884-vulnerable",
+      "file": "cve_corpus/rust/CVE-2024-32884/vulnerable.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "cve",
+        "gitoxide",
+        "ssh-option-smuggling"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-32884 / RUSTSEC-2024-0335: gix-transport SSH program invocation built `format!(\"{user}@{host}\")` and fed the result to ssh's argv, so a `ssh://-Fattackerconfig@host/path` URL smuggled `-F` onto ssh's CLI. Apache-2.0 OR MIT"
+    },
+    {
+      "case_id": "cve-rs-2024-32884-patched",
+      "file": "cve_corpus/rust/CVE-2024-32884/patched.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "gitoxide",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-32884 patched counterpart: sanitize_shell rejects host/user components beginning with `-` before they reach ssh's argv (mirrors gix-url::host_argument_safe). Regression guard."
+    },
+    {
+      "case_id": "cve-rs-2025-53549-vulnerable",
+      "file": "cve_corpus/rust/CVE-2025-53549/vulnerable.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "sql_injection",
+      "cwe": "CWE-89",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "cve",
+        "matrix-rust-sdk",
+        "sql-injection"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-53549 / RUSTSEC-2025-0043: matrix-sdk-sqlite SqliteEventCacheStore::find_event_with_relations interpolated relation-type filter strings into a format!()'d SQL query via hand-rolled `\"f\"` quoting, letting any room member inject SQL through the relation type. Apache-2.0"
+    },
+    {
+      "case_id": "cve-rs-2025-53549-patched",
+      "file": "cve_corpus/rust/CVE-2025-53549/patched.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "matrix-rust-sdk",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2025-53549 patched counterpart: filters bind through params_from_iter to `?` placeholders rather than format!()-spliced bytes. Regression guard."
     },
     {
       "case_id": "py-safe-014",
