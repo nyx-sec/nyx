@@ -6,7 +6,7 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [0.6.1] - 2026-05-03
 
-A precision pass on auth and resource analysis plus three fresh CVE corpus pairs. Closes ~1900 Go auth FPs on gitea-shaped helpers, the mastodon/diaspora private-callback Ruby controller pattern, and a phantom-taint outbreak from JS/TS / Java lambda shorthand in jest-style nested test callbacks.
+A precision pass on auth and resource analysis plus three fresh CVE corpus pairs, plus a UTF-8 slice panic in the path abstract domain. Closes ~1900 Go auth FPs on gitea-shaped helpers, the mastodon/diaspora private-callback Ruby controller pattern, and a phantom-taint outbreak from JS/TS / Java lambda shorthand in jest-style nested test callbacks.
 
 ### Added
 
@@ -19,6 +19,10 @@ A precision pass on auth and resource analysis plus three fresh CVE corpus pairs
 - Rust format-string named-argument lifting (`format!("...{x}...")`, stable since 1.58). Identifiers captured by `{name}` / `{name:fmt-spec}` are pulled into the call's `uses` for known format-style macros: `format`, `print`/`println`, `eprint`/`eprintln`, `write`/`writeln`, `panic`, `format_args`, `assert`/`debug_assert`, `todo`, `unimplemented`, `unreachable`, plus log-crate severity macros (`info`, `warn`, `error`, `debug`, `trace`). Recursive descent through one or two layers of expression wrapping (`format!("{x}").to_owned()`, RHS chained method calls). Without this, taint stopped at the macro boundary. `let q = format!("...{x}...")` carried no `x` because the identifier lives in format-string bytes rather than as a separate AST argument node. Mirrors the Python f-string lifter.
 - Rust CVE corpus extended. CVE-2023-42456, CVE-2024-32884, CVE-2025-53549 vulnerable + patched fixtures under `tests/benchmark/cve_corpus/rust/`.
 - Java lambda shorthand recognised by `extract_param_meta`. `lambda_expression`'s `parameters` field as a bare `identifier` (`cmd -> …`) or as an `inferred_parameters` wrapper around identifiers (`(a, b) -> …`) was not matching the formal_parameter / spread_parameter kinds in `PARAM_CONFIG`, so the lambda appeared parameterless and the SSA pipeline treated its formals as closure captures. Mirrors the JS/TS arrow shorthand path.
+
+### Fixed
+
+- Panic on non-ASCII input to `has_first_char_absolute_check` in the path abstract domain. The 32-byte search window around `[0]` was sliced as `&clause[lo..hi]` (str), which panicked when `hi` landed inside a multi-byte UTF-8 char (e.g. the em dash `—`, bytes 34..37). Switched to `&bytes[lo..hi]` with `windows()` byte-pattern checks; all needles are ASCII so the searches are equivalent. Surfaced by `cargo fuzz` (`scan_bytes` target, `.c` extension path, embedded `—` in a comment near `s[0] == '/'`). Regression test added.
 
 ### Fixed (false positives)
 
