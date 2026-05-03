@@ -2798,6 +2798,43 @@ fn go_for_loop_back_edge() {
     assert_loop_with_back_edge(&cfg, "go for");
 }
 
+/// Pins the structural fix in `def_use` Kind::For arm for Go's
+/// `for ident, ident := range iter` shape.  Tree-sitter wraps the binding
+/// pattern + iterable in a `range_clause` child of the `for_statement`
+/// (rather than direct `left`/`right` fields like Python / JS).  Without
+/// this, the loop binding never becomes a CFG def and taint from the
+/// iterable cannot reach uses of the binding inside the loop body.
+/// Original gap: CVE-2026-41422 (daptin) goqu.L SQL injection.
+#[test]
+fn go_for_range_loop_binding_is_defined() {
+    let src = b"package p\nfunc f(xs []string) { for _, p := range xs { use(p) } }";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "go", ts_lang);
+
+    let loop_node = cfg
+        .node_indices()
+        .find(|&n| matches!(cfg[n].kind, StmtKind::Loop))
+        .expect("for-range loop should produce a Loop header");
+    let info = &cfg[loop_node];
+    let all_defs: Vec<&str> = info
+        .taint
+        .defines
+        .iter()
+        .map(String::as_str)
+        .chain(info.taint.extra_defines.iter().map(String::as_str))
+        .collect();
+    assert!(
+        all_defs.contains(&"p"),
+        "loop binding `p` should appear in defines/extra_defines, got {:?}",
+        all_defs
+    );
+    assert!(
+        info.taint.uses.iter().any(|u| u == "xs"),
+        "iterable `xs` should appear in uses, got {:?}",
+        info.taint.uses
+    );
+}
+
 #[test]
 fn ruby_while_back_edge() {
     let src = b"def f\n  while cond\n    body\n  end\nend\n";

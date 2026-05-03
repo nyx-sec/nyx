@@ -1626,6 +1626,30 @@ mod tests {
         assert_eq!(result, Some(DataLabel::Sink(Cap::FILE_IO)));
     }
 
+    // CVE Hunt Session 6 (Go CVE-2026-41422 daptin SQL injection): goqu's
+    // raw SQL literal builders `goqu.L(s)` / `goqu.Lit(s)` insert `s`
+    // verbatim into the generated query.  Modeled by name as SQL_QUERY
+    // sinks; the safe siblings `goqu.I` (identifier), `goqu.C`, `goqu.T`,
+    // `goqu.V`, `goqu.SUM`, `goqu.COUNT`, etc. are typed and stay
+    // unlabeled.
+    #[test]
+    fn classify_go_goqu_l_is_sql_query_sink() {
+        let result = classify("go", "goqu.L", None);
+        assert_eq!(result, Some(DataLabel::Sink(Cap::SQL_QUERY)));
+    }
+
+    #[test]
+    fn classify_go_goqu_lit_is_sql_query_sink() {
+        let result = classify("go", "goqu.Lit", None);
+        assert_eq!(result, Some(DataLabel::Sink(Cap::SQL_QUERY)));
+    }
+
+    #[test]
+    fn classify_go_goqu_i_is_not_sink() {
+        let result = classify("go", "goqu.I", None);
+        assert_eq!(result, None);
+    }
+
     // CVE Hunt Session 2 (Go CVE-2023-3188 Owncast SSRF):
     // `http.DefaultClient.Get/Post/Head/Do/PostForm` is the idiomatic Go
     // SSRF sink shape (`http.DefaultClient` is the package-level shared

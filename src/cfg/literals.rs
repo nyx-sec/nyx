@@ -1801,9 +1801,26 @@ pub(super) fn def_use(
         // `initializer`/`condition`/`increment`), so this path falls through
         // to the default-collecting behaviour for those, preserving today's
         // semantics.
+        //
+        // Go's `for ident := range iter` shape places the binding pattern
+        // and iterable on a `range_clause` child of the `for_statement`
+        // rather than as direct fields.  Without the range_clause lookup
+        // below, taint from the iterable never reaches the loop binding
+        // (CVE-2026-41422 daptin: `c.QueryArray("col")` loop var `project`
+        // flows into `goqu.L(project)` SQL_QUERY sink).
         Kind::For => {
-            let left = ast.child_by_field_name("left");
-            let right = ast.child_by_field_name("right");
+            let mut left = ast.child_by_field_name("left");
+            let mut right = ast.child_by_field_name("right");
+            if left.is_none() && right.is_none() {
+                let mut cursor = ast.walk();
+                for child in ast.children(&mut cursor) {
+                    if child.kind() == "range_clause" {
+                        left = child.child_by_field_name("left");
+                        right = child.child_by_field_name("right");
+                        break;
+                    }
+                }
+            }
             if left.is_none() && right.is_none() {
                 // C-style for, defer to default ident collection.
                 let mut idents = Vec::new();

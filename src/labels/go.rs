@@ -68,7 +68,23 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &["db.Query", "db.Exec", "db.QueryRow", "db.Prepare"],
+        matchers: &[
+            "db.Query",
+            "db.Exec",
+            "db.QueryRow",
+            "db.Prepare",
+            // goqu raw SQL literal builders: `goqu.L(s)` and the alias
+            // `goqu.Lit(s)` insert `s` verbatim into the generated SQL with no
+            // parameterisation.  CVE-2026-41422 (daptin) loops a user-controlled
+            // `c.QueryArray("column")` value into `goqu.L(project)` to allow
+            // arbitrary SELECT subqueries.  Modelled by name — `goqu.L` is the
+            // documented escape hatch for raw SQL.  The safe siblings
+            // `goqu.I` (identifier), `goqu.C` (column), `goqu.T` (table),
+            // `goqu.V` (parameterised value), and the typed function
+            // constructors (`goqu.COUNT`, `goqu.SUM`, …) are not sinks.
+            "goqu.L",
+            "goqu.Lit",
+        ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
     },
@@ -538,6 +554,16 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
                 "c.Cookie".into(),
                 "c.BindJSON".into(),
                 "c.ShouldBindJSON".into(),
+                // Array-returning sibling helpers.  `c.QueryArray("k")` returns
+                // every value of repeated query param `k`; `c.PostFormArray`
+                // and `c.GetQueryArray` / `c.GetPostFormArray` are the
+                // documented `[]string` counterparts of the scalar methods
+                // above.  CVE-2026-41422 (daptin) reads `c.QueryArray("column")`
+                // and loops directly into a SQL_QUERY sink.
+                "c.QueryArray".into(),
+                "c.GetQueryArray".into(),
+                "c.PostFormArray".into(),
+                "c.GetPostFormArray".into(),
             ],
             label: DataLabel::Source(Cap::all()),
             case_sensitive: false,
