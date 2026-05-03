@@ -65,10 +65,11 @@ fn find_release_nodes(ctx: &AnalysisContext, release_patterns: &[&str]) -> Vec<N
         .node_indices()
         .filter(|&idx| {
             let info = &ctx.cfg[idx];
-            if let Some(callee) = &info.call.callee {
-                if info.kind == StmtKind::Call && matches_release(callee) {
-                    return true;
-                }
+            if let Some(callee) = &info.call.callee
+                && info.kind == StmtKind::Call
+                && matches_release(callee)
+            {
+                return true;
             }
             // Inner-call-release-in-arg: any kind, the close lives in an
             // argument to the outer wrapper.
