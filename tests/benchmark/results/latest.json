@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-03T21:04:39Z",
+  "timestamp": "2026-05-03T21:43:21Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:2efdeaff39799f09112021e69027d18da7587ecb5b1f963ca8222833bb726a00",
-  "corpus_size": 534,
-  "cases_run": 533,
+  "ground_truth_hash": "sha256:6c580bb7fdc8aad444bee7bdfb19226771ac69425ee95106b6f06b0880932b7e",
+  "corpus_size": 538,
+  "cases_run": 537,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -1798,6 +1798,40 @@
         "taint-unsanitised-flow (source 26:12)"
       ],
       "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-py-2024-23334-patched",
+      "file": "cve_corpus/python/CVE-2024-23334/patched.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-py-2024-23334-vulnerable",
+      "file": "cve_corpus/python/CVE-2024-23334/vulnerable.py",
+      "language": "python",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 45:9)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 45:9)"
+      ],
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -5978,6 +6012,25 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-path_traversal-no-relative-to",
+      "file": "python/path_traversal/path_traversal_no_relative_to.py",
+      "language": "python",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 11:15)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 11:15)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-pathprune-safe-001",
       "file": "python/path_pruning/safe_early_return.py",
       "language": "python",
@@ -6190,6 +6243,21 @@
     {
       "case_id": "py-safe-int-001",
       "file": "python/safe/safe_int_cast.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-safe-relative-to-validator",
+      "file": "python/safe/safe_relative_to_validator.py",
       "language": "python",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -9527,19 +9595,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 261,
+    "tp": 263,
     "fp": 0,
     "fn_": 0,
-    "tn": 272,
+    "tn": 274,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 261,
+    "tp": 263,
     "fp": 0,
     "fn_": 0,
-    "tn": 272,
+    "tn": 274,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9600,10 +9668,10 @@
       "f1": 1.0
     },
     "python": {
-      "tp": 29,
+      "tp": 31,
       "fp": 0,
       "fn_": 0,
-      "tn": 32,
+      "tn": 34,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9746,7 +9814,7 @@
       "f1": 1.0
     },
     "path_traversal": {
-      "tp": 28,
+      "tp": 30,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9776,7 +9844,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 272,
+      "tn": 274,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9829,31 +9897,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 89,
+      "tp": 92,
       "fp": 100,
-      "fn_": 172,
-      "tn": 172,
-      "precision": 0.4708994708994709,
-      "recall": 0.34099616858237547,
-      "f1": 0.39555555555555555
+      "fn_": 171,
+      "tn": 174,
+      "precision": 0.4791666666666667,
+      "recall": 0.34980988593155893,
+      "f1": 0.4043956043956044
     },
     ">=Low": {
-      "tp": 90,
-      "fp": 126,
-      "fn_": 171,
-      "tn": 146,
-      "precision": 0.4166666666666667,
-      "recall": 0.3448275862068966,
-      "f1": 0.37735849056603776
+      "tp": 94,
+      "fp": 121,
+      "fn_": 169,
+      "tn": 153,
+      "precision": 0.4372093023255814,
+      "recall": 0.3574144486692015,
+      "f1": 0.39330543933054396
     },
     ">=Medium": {
-      "tp": 90,
-      "fp": 121,
-      "fn_": 171,
-      "tn": 151,
-      "precision": 0.4265402843601896,
-      "recall": 0.3448275862068966,
-      "f1": 0.3813559322033899
+      "tp": 94,
+      "fp": 114,
+      "fn_": 169,
+      "tn": 160,
+      "precision": 0.4519230769230769,
+      "recall": 0.3574144486692015,
+      "f1": 0.3991507430997877
     }
   }
 }

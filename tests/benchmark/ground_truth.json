@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 534
+    "corpus_size": 540
   },
   "cases": [
     {
@@ -911,6 +911,42 @@
       ],
       "disabled": false,
       "notes": "Path traversal via send_file() with user-controlled path"
+    },
+    {
+      "case_id": "py-path_traversal-no-relative-to",
+      "file": "python/path_traversal/path_traversal_no_relative_to.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "tags": [
+        "path-traversal",
+        "regression-guard"
+      ],
+      "disabled": false,
+      "notes": "Negative companion to safe_relative_to_validator: no relative_to() validator on filepath, taint must propagate to send_file"
     },
     {
       "case_id": "py-deser-001",
@@ -10263,6 +10299,72 @@
       "notes": "CVE-2026-33626 patched counterpart: _is_safe_url private-IP allowlist gate replaces scheme-only check; regression guard that Nyx does not refire on the fix"
     },
     {
+      "case_id": "cve-py-2024-23334-vulnerable",
+      "file": "cve_corpus/python/CVE-2024-23334/vulnerable.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          61,
+          61
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          45,
+          45
+        ]
+      ],
+      "tags": [
+        "cve",
+        "aiohttp",
+        "path-traversal",
+        "positive"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-23334: aiohttp StaticResource symlink-bypass — relative_to(self._directory) check gated to the non-follow_symlinks arm; FileResponse(filepath) reachable from request.match_info on follow_symlinks=True. Apache-2.0"
+    },
+    {
+      "case_id": "cve-py-2024-23334-patched",
+      "file": "cve_corpus/python/CVE-2024-23334/patched.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "aiohttp",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-23334 patched counterpart: relative_to(self._directory) recognised as a receiver-side FILE_IO validator on both follow_symlinks arms; regression guard that Nyx does not refire on the fix"
+    },
+    {
       "case_id": "cve-php-2017-9841-vulnerable",
       "file": "cve_corpus/php/CVE-2017-9841/vulnerable.php",
       "language": "php",
@@ -12625,6 +12727,33 @@
       ],
       "disabled": false,
       "notes": "Python equivalent of rs-safe-014: direct-return sanitiser with `\"..\" in s` / `s.startswith(...)` rejection chain returning empty string."
+    },
+    {
+      "case_id": "py-safe-relative-to-validator",
+      "file": "python/safe/safe_relative_to_validator.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "path-validator",
+        "relative-to",
+        "receiver-side"
+      ],
+      "disabled": false,
+      "notes": "Pathlib relative_to(base) raise-on-escape pattern recognised as a receiver-side FILE_IO validator; canonical Python path-containment idiom (CVE-2024-23334 patched fixture)"
     },
     {
       "case_id": "py-safe-022",

@@ -4081,6 +4081,24 @@ pub(super) fn transfer_inst(
                 }
             }
 
+            // Receiver-side validator strip.  Some method-call validators
+            // raise on failure rather than transforming a return value,
+            // so the canonical `Sanitizer` mechanism (which clears the
+            // return) is the wrong shape.  After the call returns, the
+            // *receiver* (and any args carrying the same equivalence
+            // class) is proven to satisfy the validated property.  Strip
+            // the registered cap from receiver+args here so that
+            // `path.relative_to(base)` clears `Cap::FILE_IO` from
+            // `path` for downstream uses.  Motivated by CVE-2024-23334
+            // (aiohttp StaticResource symlink-bypass): the patched code
+            // calls `filepath.relative_to(self._directory)` inside a
+            // try/except and serves `filepath` afterwards.
+            if let Some(cap) =
+                crate::labels::lookup_receiver_validator(transfer.lang.as_str(), callee)
+            {
+                strip_cap_from_call_args(args, receiver, state, cap);
+            }
+
             // Alias-aware sanitization: propagate through must-aliased field paths
             if !sanitizer_bits.is_empty() {
                 if let Some(aliases) = transfer.base_aliases {

@@ -22,6 +22,7 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2017-18342 | Python     | PyYAML                     | MIT                  | Deserialization | detected |
 | CVE-2025-69662 | Python     | geopandas                  | BSD-3-Clause         | SQL Injection   | detected |
 | CVE-2026-33626 | Python     | LMDeploy                   | Apache-2.0           | SSRF            | detected |
+| CVE-2024-23334 | Python     | aiohttp                    | Apache-2.0           | path_traversal  | detected |
 | CVE-2019-14939 | JavaScript | mongo-express              | MIT                  | code_exec       | detected |
 | CVE-2025-64430 | JavaScript | Parse Server               | Apache-2.0           | SSRF            | detected |
 | CVE-2023-22621 | JavaScript | Strapi                     | MIT                  | code_exec (SSTI)| detected |

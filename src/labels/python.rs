@@ -25,6 +25,10 @@ pub static RULES: &[LabelRule] = &[
             "request.url",
             "request.base_url",
             "request.host",
+            "request.match_info",
+            "request.rel_url",
+            "request.query",
+            "request.path",
             // Common alias: from flask import request as flask_request
             "flask_request.args",
             "flask_request.form",
@@ -227,7 +231,15 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &["send_file", "send_from_directory"],
+        matchers: &[
+            "send_file",
+            "send_from_directory",
+            // aiohttp file response — sends file at the supplied path,
+            // semantically identical to Flask's send_file (CVE-2024-23334).
+            "FileResponse",
+            "web.FileResponse",
+            "aiohttp.web.FileResponse",
+        ],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
@@ -272,6 +284,25 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::DESERIALIZE),
         case_sensitive: false,
     },
+];
+
+/// Method-call validators that strip caps from their *receiver* (and
+/// any equivalence-class-shaped args) on success, instead of clearing
+/// the return value.  Distinct from `RULES`'s `Sanitizer` label, which
+/// only clears the return — a poor fit for idioms whose effect is
+/// raise-on-failure rather than value-replacement.
+///
+/// Modeled idioms:
+///
+/// * `path.relative_to(base)` (pathlib) — raises `ValueError` if `path`
+///   is not under `base`.  After a successful return, the receiver is
+///   path-contained in `base`.  Strips `Cap::FILE_IO`.  Motivated by
+///   CVE-2024-23334 (aiohttp StaticResource symlink-bypass) where the
+///   patched code calls `filepath.relative_to(self._directory)` inside
+///   a try/except and serves `filepath` afterwards.
+pub static RECEIVER_VALIDATORS: &[(&str, Cap)] = &[
+    ("relative_to", Cap::FILE_IO),
+    (".relative_to", Cap::FILE_IO),
 ];
 
 pub static GATED_SINKS: &[SinkGate] = &[
