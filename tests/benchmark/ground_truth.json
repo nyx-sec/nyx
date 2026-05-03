@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 533
+    "corpus_size": 534
   },
   "cases": [
     {
@@ -15873,6 +15873,34 @@
       ],
       "disabled": false,
       "notes": "Concatenated SQL passed to em.createQuery(...) \u2014 receiver-chain walk sees binary_expression at arg 0, refuses to synthesise sanitizer, structural sink fires. Regression guard for the JPA parameterised-execute fix."
+    },
+    {
+      "case_id": "java-safe-realrepo-openmrs-001",
+      "file": "java/safe/SafeJpaCriteriaQuery.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo-precision-2026-05-03",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "jpa",
+        "criteria-api",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "JPA Criteria API: cb.createQuery(Foo.class) returns CriteriaQuery; session.createQuery(cq)/em.createQuery(cq) is safe by construction (parameterized SQL emitted). Engine maps CriteriaBuilder.createQuery via receiver-text recogniser to TypeKind::JpaCriteriaQuery, then sink_args_jpa_criteria_query_safe suppresses cfg-unguarded-sink at the executor site. Distilled from openmrs HibernateCohortDAO."
     },
     {
       "case_id": "py-auth-realrepo-005",

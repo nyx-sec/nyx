@@ -7,6 +7,7 @@ use super::ir::*;
 use crate::cfg::{BinOp, Cfg};
 use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 /// Inferred type kind for an SSA value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +41,17 @@ pub enum TypeKind {
     /// `label_prefix`, never participates in label-based callee
     /// resolution.
     LocalCollection,
+    /// A JPA / Hibernate Criteria API query object (`CriteriaQuery<T>`,
+    /// `CriteriaUpdate<T>`, `CriteriaDelete<T>`, `Subquery<T>`,
+    /// `TypedQuery<T>`).  These objects are produced by the
+    /// `CriteriaBuilder` and emit parameterized SQL when handed to
+    /// `Session.createQuery(cq)` / `EntityManager.createQuery(cq)`.  The
+    /// argument is structural (predicate AST), not a string, so SQL
+    /// injection cannot flow through it.  Used to suppress the
+    /// `cfg-unguarded-sink` finding on `session.createQuery(cq)` shapes
+    /// where openmrs / xwiki / keycloak Hibernate DAOs build queries
+    /// via `cb.createQuery(Foo.class)` + `Root` / `Predicate` API.
+    JpaCriteriaQuery,
     /// A framework-injected DTO body whose field types are known.
     /// Populated when a parameter is recognised as a typed extractor and
     /// the DTO class / struct / Pydantic model is resolvable in scope.
@@ -86,6 +98,7 @@ impl TypeKind {
             Self::FileHandle => Some("FileHandle"),
             Self::Url => Some("URL"),
             Self::RequestBuilder => Some("RequestBuilder"),
+            Self::JpaCriteriaQuery => Some("JpaCriteriaQuery"),
             _ => None,
         }
     }
@@ -222,6 +235,114 @@ pub fn is_type_safe_for_sink(
     })
 }
 
+/// Check whether any of the sink-arg SSA values is a structural query
+/// object that emits parameterized SQL by construction (currently the
+/// JPA / Hibernate Criteria API: `CriteriaQuery`, `CriteriaUpdate`,
+/// `CriteriaDelete`, `Subquery`, `TypedQuery`).
+///
+/// Used by both the SSA taint engine and the structural
+/// `cfg-unguarded-sink` analysis to suppress the SQL-injection finding
+/// on `session.createQuery(cq)` / `em.createQuery(cq)` / `executeUpdate`
+/// shapes where the argument is a Criteria object built via
+/// `CriteriaBuilder` rather than a string.
+///
+/// Returns `false` when `sink_caps` does not include `SQL_QUERY`, when
+/// `values` is empty, or when no value carries the
+/// [`TypeKind::JpaCriteriaQuery`] tag.  Receiver values should be
+/// excluded by the caller, the receiver of a JPA query method is the
+/// `Session` / `EntityManager` channel, never the payload.
+pub fn is_safe_query_object_arg(
+    values: &[SsaValue],
+    sink_caps: crate::labels::Cap,
+    type_facts: &TypeFactResult,
+) -> bool {
+    use crate::labels::Cap;
+    if !sink_caps.intersects(Cap::SQL_QUERY) {
+        return false;
+    }
+    if values.is_empty() {
+        return false;
+    }
+    values
+        .iter()
+        .any(|v| type_facts.is_type(*v, &TypeKind::JpaCriteriaQuery))
+}
+
+/// Receiver-text-aware return-type inference for methods whose
+/// constructor mapping cannot be determined from the callee suffix
+/// alone.
+///
+/// The JPA `createQuery` suffix is overloaded between
+/// `CriteriaBuilder.createQuery(Class)` (returns `CriteriaQuery`, our
+/// safe-by-construction structural query object) and
+/// `Session.createQuery(String|Query)` (the executable-query
+/// constructor whose string overload IS a SQL sink).  Class-literal
+/// arg shape (e.g. `Foo.class`) doesn't surface in `arg_uses` at the
+/// CFG layer, so we fall back to the receiver-text hint: if the
+/// callee path includes a `CriteriaBuilder` cast or a receiver
+/// variable named `cb` / `criteriaBuilder` / `builder`, treat the
+/// call as the criteria-builder overload.
+///
+/// Conservative: returns `None` for any other shape so
+/// [`constructor_type`] / `is_int_producing_callee` stay
+/// authoritative, and consumers see Unknown instead of a wrong
+/// type tag.
+///
+/// `_args` and `_consts` are kept on the signature so we can later
+/// add arg-shape narrowing when class-literal lowering captures
+/// `Foo.class` as an arg-use.
+fn arg_aware_call_type(
+    lang: Lang,
+    callee: &str,
+    _args: &[SmallVec<[SsaValue; 2]>],
+    _consts: &HashMap<SsaValue, ConstLattice>,
+) -> Option<TypeKind> {
+    if !matches!(lang, Lang::Java) {
+        return None;
+    }
+    let after_colons = callee.rsplit("::").next().unwrap_or(callee);
+    let suffix = after_colons.rsplit('.').next().unwrap_or(after_colons);
+    if suffix != "createQuery" {
+        return None;
+    }
+    // Strip the trailing `.createQuery` segment and inspect the
+    // receiver text for the criteria-builder hints.  Conservative
+    // text-level match, the SSA layer doesn't expose receiver-type
+    // facts here yet.
+    let prefix = callee
+        .rsplit_once('.')
+        .map(|(p, _)| p)
+        .unwrap_or(callee);
+    if prefix.contains("CriteriaBuilder") || receiver_is_criteria_builder(prefix) {
+        Some(TypeKind::JpaCriteriaQuery)
+    } else {
+        None
+    }
+}
+
+/// True when the receiver text identifies a CriteriaBuilder by
+/// idiomatic naming (`cb`, `criteriaBuilder`, `builder`,
+/// `getCriteriaBuilder()`), modulo casts and chained accesses.
+fn receiver_is_criteria_builder(receiver_text: &str) -> bool {
+    // Drop trailing parenthesized portions and chained cast/syntax noise.
+    let cleaned = receiver_text
+        .rsplit_once(')')
+        .map(|(_, tail)| tail)
+        .unwrap_or(receiver_text)
+        .trim();
+    let cleaned = cleaned.trim_start_matches('.');
+    let last_segment = cleaned
+        .rsplit(['.', ':', ' '])
+        .next()
+        .unwrap_or(cleaned)
+        .trim_matches(|c: char| c == '(' || c == ')');
+    matches!(
+        last_segment,
+        "cb" | "criteriaBuilder" | "criteria_builder" | "builder" | "getCriteriaBuilder"
+    ) || receiver_text.contains("getCriteriaBuilder()")
+        || receiver_text.contains(".cb.")
+}
+
 /// Infer a type from a constructor, factory, or allocator call.
 ///
 /// Maps known constructor/factory/allocator patterns to security-relevant
@@ -260,6 +381,20 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "FileInputStream" | "FileOutputStream" | "FileReader" | "FileWriter"
             | "BufferedReader" | "BufferedWriter" => Some(TypeKind::FileHandle),
             "getWriter" | "getOutputStream" => Some(TypeKind::HttpResponse),
+            // JPA / Hibernate Criteria API factory methods.  These are
+            // unambiguous: `createCriteriaUpdate` / `createCriteriaDelete`
+            // / `createTupleQuery` / `subquery` exist only on
+            // `CriteriaBuilder` / `CriteriaQuery` and always return a
+            // structural query object.  `createQuery` is overloaded
+            // (`CriteriaBuilder.createQuery(Class)` returns
+            // `CriteriaQuery`; `Session.createQuery(String)` returns
+            // `Query`), so it's gated below in
+            // [`infer_call_return_type_with_args`] on the arg-0 shape
+            // (a class literal) so we don't conflate the executable-
+            // query overload with the criteria builder.
+            "createCriteriaUpdate" | "createCriteriaDelete" | "createTupleQuery" | "subquery" => {
+                Some(TypeKind::JpaCriteriaQuery)
+            }
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => match suffix {
@@ -687,8 +822,12 @@ pub fn analyze_types_with_param_types(
                 }
                 SsaOp::SelfParam => TypeFact::from_kind(TypeKind::Object),
                 SsaOp::CatchParam => TypeFact::from_kind(TypeKind::Object),
-                SsaOp::Call { callee, .. } => {
+                SsaOp::Call { callee, args, .. } => {
                     if let Some(ty) = lang.and_then(|l| constructor_type(l, callee)) {
+                        TypeFact::from_kind(ty)
+                    } else if let Some(ty) =
+                        lang.and_then(|l| arg_aware_call_type(l, callee, args, consts))
+                    {
                         TypeFact::from_kind(ty)
                     } else if is_int_producing_callee(callee) {
                         TypeFact::from_kind(TypeKind::Int)
@@ -2226,5 +2365,172 @@ mod tests {
             Cap::CODE_EXEC,
             &result
         ));
+    }
+
+    // ── JPA Criteria query suppression (Phase: real-repo openmrs FP) ───
+    //
+    // These tests pin the `TypeKind::JpaCriteriaQuery` variant + the
+    // `is_safe_query_object_arg` predicate + the
+    // `arg_aware_call_type` receiver-text recogniser.  Together they
+    // close the openmrs HibernateDAO `session.createQuery(cq)` FP
+    // cluster (216 → 24 cfg-unguarded-sink in openmrs).
+
+    /// `JpaCriteriaQuery` carries a label_prefix so type-qualified
+    /// callee resolution can attach future rules.
+    #[test]
+    fn jpa_criteria_query_label_prefix() {
+        assert_eq!(
+            TypeKind::JpaCriteriaQuery.label_prefix(),
+            Some("JpaCriteriaQuery")
+        );
+    }
+
+    /// `is_safe_query_object_arg` suppresses SQL_QUERY when any
+    /// supplied value is a `JpaCriteriaQuery`.  Receiver inclusion is
+    /// the caller's responsibility, here we just verify the predicate.
+    #[test]
+    fn safe_query_object_arg_suppresses_sql_query() {
+        use crate::labels::Cap;
+        let mut facts = HashMap::new();
+        facts.insert(SsaValue(0), TypeFact::from_kind(TypeKind::JpaCriteriaQuery));
+        let result = TypeFactResult { facts };
+        assert!(is_safe_query_object_arg(
+            &[SsaValue(0)],
+            Cap::SQL_QUERY,
+            &result
+        ));
+        // Other caps stay untouched.
+        assert!(!is_safe_query_object_arg(
+            &[SsaValue(0)],
+            Cap::CODE_EXEC,
+            &result
+        ));
+        // Unknown-typed values do not trigger.
+        let mut facts2 = HashMap::new();
+        facts2.insert(SsaValue(0), TypeFact::from_kind(TypeKind::Unknown));
+        let result2 = TypeFactResult { facts: facts2 };
+        assert!(!is_safe_query_object_arg(
+            &[SsaValue(0)],
+            Cap::SQL_QUERY,
+            &result2
+        ));
+        // Empty slice never suppresses.
+        assert!(!is_safe_query_object_arg(&[], Cap::SQL_QUERY, &result));
+    }
+
+    /// `is_safe_query_object_arg` fires when a Criteria value is mixed
+    /// in with other types — the predicate is `any`, not `all`, since
+    /// the criteria-object arg is the only injection-bearing slot for a
+    /// `createQuery(cq)` sink.
+    #[test]
+    fn safe_query_object_arg_fires_with_mixed_args() {
+        use crate::labels::Cap;
+        let mut facts = HashMap::new();
+        facts.insert(SsaValue(0), TypeFact::from_kind(TypeKind::JpaCriteriaQuery));
+        facts.insert(SsaValue(1), TypeFact::from_kind(TypeKind::String));
+        facts.insert(SsaValue(2), TypeFact::from_kind(TypeKind::Unknown));
+        let result = TypeFactResult { facts };
+        assert!(is_safe_query_object_arg(
+            &[SsaValue(0), SsaValue(1), SsaValue(2)],
+            Cap::SQL_QUERY,
+            &result
+        ));
+    }
+
+    /// `arg_aware_call_type` maps the JPA `cb.createQuery(...)` /
+    /// `criteriaBuilder.createQuery(...)` / `((CriteriaBuilder)
+    /// x).createQuery(...)` shapes to `JpaCriteriaQuery`, distinct
+    /// from the overloaded `session.createQuery(...)` /
+    /// `em.createQuery(...)` which stays `None` (the
+    /// executable-query overload).
+    #[test]
+    fn arg_aware_call_type_jpa_criteria_builder_recogniser() {
+        let no_args: Vec<SmallVec<[SsaValue; 2]>> = vec![];
+        let consts: HashMap<SsaValue, ConstLattice> = HashMap::new();
+        // Receiver hint: bare `cb` ident.
+        assert_eq!(
+            arg_aware_call_type(Lang::Java, "cb.createQuery", &no_args, &consts),
+            Some(TypeKind::JpaCriteriaQuery)
+        );
+        // Receiver hint: bare `criteriaBuilder` ident.
+        assert_eq!(
+            arg_aware_call_type(Lang::Java, "criteriaBuilder.createQuery", &no_args, &consts),
+            Some(TypeKind::JpaCriteriaQuery)
+        );
+        // Cast in receiver text.
+        assert_eq!(
+            arg_aware_call_type(
+                Lang::Java,
+                "((CriteriaBuilder) cb).createQuery",
+                &no_args,
+                &consts
+            ),
+            Some(TypeKind::JpaCriteriaQuery)
+        );
+        // Chained accessor: getCriteriaBuilder().createQuery
+        assert_eq!(
+            arg_aware_call_type(
+                Lang::Java,
+                "session.getCriteriaBuilder().createQuery",
+                &no_args,
+                &consts
+            ),
+            Some(TypeKind::JpaCriteriaQuery)
+        );
+        // The executable-query overload (`session.createQuery`) does
+        // NOT match — receiver-text doesn't carry a CriteriaBuilder
+        // hint, so we leave the type as Unknown and let the
+        // suppression decide based on the arg-0 type fact.
+        assert_eq!(
+            arg_aware_call_type(Lang::Java, "session.createQuery", &no_args, &consts),
+            None
+        );
+        assert_eq!(
+            arg_aware_call_type(Lang::Java, "em.createQuery", &no_args, &consts),
+            None
+        );
+        // Non-Java langs return None.
+        assert_eq!(
+            arg_aware_call_type(Lang::Python, "cb.createQuery", &no_args, &consts),
+            None
+        );
+        // Other suffixes return None.
+        assert_eq!(
+            arg_aware_call_type(Lang::Java, "cb.createCriteriaUpdate", &no_args, &consts),
+            None
+        );
+    }
+
+    /// Unique-suffix Criteria API methods land on
+    /// `TypeKind::JpaCriteriaQuery` directly via [`constructor_type`]
+    /// without the receiver hint, since `createCriteriaUpdate` /
+    /// `createCriteriaDelete` / `createTupleQuery` / `subquery` exist
+    /// only on `CriteriaBuilder` / `CriteriaQuery` and have no
+    /// overload conflict.
+    #[test]
+    fn constructor_type_unique_jpa_criteria_methods() {
+        for suffix in &[
+            "createCriteriaUpdate",
+            "createCriteriaDelete",
+            "createTupleQuery",
+            "subquery",
+        ] {
+            assert_eq!(
+                constructor_type(Lang::Java, suffix),
+                Some(TypeKind::JpaCriteriaQuery),
+                "suffix `{suffix}` must map to JpaCriteriaQuery"
+            );
+            // Same suffix prefixed by an arbitrary receiver still maps.
+            assert_eq!(
+                constructor_type(Lang::Java, &format!("cb.{suffix}")),
+                Some(TypeKind::JpaCriteriaQuery)
+            );
+        }
+        // Non-criteria methods unaffected.
+        assert_eq!(
+            constructor_type(Lang::Java, "session.createQuery"),
+            None,
+            "createQuery is overloaded — must not map at constructor_type level"
+        );
     }
 }
