@@ -8077,13 +8077,17 @@ fn is_abstract_safe_for_sink(
         return true;
     }
 
-    // HTML_ESCAPE type-only gate: an integer's decimal representation is
-    // always digits (with optional leading `-`), which never contain HTML
-    // metacharacters (`<`, `>`, `"`, `'`, `&`, `/`, `:`) in either text or
-    // attribute context.  The interval bound is irrelevant here, a large
-    // magnitude doesn't introduce metachars, so HTML_ESCAPE uses a
-    // type-only leaf check rather than the SQL/FILE/SHELL dual gate below.
-    if sink_caps.intersects(Cap::HTML_ESCAPE) {
+    // HTML_ESCAPE / FILE_IO type-only gate: an integer's decimal
+    // representation is always digits (with optional leading `-`), which
+    // never contain HTML metacharacters (`<`, `>`, `"`, `'`, `&`, `/`,
+    // `:`) nor path metacharacters (`/`, `\`, `.`).  Magnitude is
+    // irrelevant — a large value doesn't introduce metachars, so both
+    // sink classes use a type-only leaf check rather than the SQL/SHELL
+    // dual gate below.  Closes the sudo-rs RUSTSEC-2023-0069 patched FP
+    // where `let uid: u32 = user.parse()?; path.push(uid.to_string())`
+    // was flagged as a path-traversal FILE_IO sink despite the SSA
+    // value being unambiguously typed as a numeric uid.
+    if sink_caps.intersects(Cap::HTML_ESCAPE | Cap::FILE_IO) {
         if let Some(tf) = type_facts {
             let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
             if !leaves.is_empty() && leaves.iter().all(|v| tf.is_int(*v)) {
@@ -8092,14 +8096,15 @@ fn is_abstract_safe_for_sink(
         }
     }
 
-    // Dual gate: SQL_QUERY / FILE_IO / SHELL_ESCAPE with proven Int type AND
-    // bounded interval.  Both conditions required: type proves the value IS
-    // an integer (not a string that happened to parse), interval proves it's
+    // Dual gate: SQL_QUERY / SHELL_ESCAPE with proven Int type AND bounded
+    // interval.  Both conditions required: type proves the value IS an
+    // integer (not a string that happened to parse), interval proves it's
     // bounded (not arbitrary).  Traces through Assign chains so
-    // "const_string + tainted_int" is caught.  SHELL_ESCAPE is included
-    // because a bounded integer's decimal representation can't contain shell
-    // metacharacters.
-    if sink_caps.intersects(Cap::SQL_QUERY | Cap::FILE_IO | Cap::SHELL_ESCAPE) {
+    // "const_string + tainted_int" is caught.  SQL_QUERY keeps the bound
+    // requirement because RUSTSEC-2024-0363-style binary-protocol overflow
+    // requires a 4 GiB+ payload; SHELL_ESCAPE keeps it because a
+    // multi-line decimal can still trip newline-sensitive shell parsing.
+    if sink_caps.intersects(Cap::SQL_QUERY | Cap::SHELL_ESCAPE) {
         if let Some(tf) = type_facts {
             let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
             if !leaves.is_empty()
@@ -8212,10 +8217,13 @@ fn is_call_abstract_safe(
         }
     }
 
-    // HTML_ESCAPE type-only gate (same as non-Call path): digits never
-    // contain HTML metacharacters regardless of magnitude, so an integer
-    // payload is safe for an HTML sink without requiring a bounded interval.
-    if sink_caps.intersects(Cap::HTML_ESCAPE) {
+    // HTML_ESCAPE / FILE_IO type-only gate (same as non-Call path): digits
+    // never contain HTML metacharacters or path-traversal metacharacters
+    // regardless of magnitude, so an integer payload is safe for these
+    // sink classes without requiring a bounded interval.  Closes the
+    // RUSTSEC-2023-0069 patched FP for cross-function summary-resolved
+    // path sinks like `open_for_user(uid)`.
+    if sink_caps.intersects(Cap::HTML_ESCAPE | Cap::FILE_IO) {
         if let Some(tf) = type_facts {
             let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
             if !leaves.is_empty() && leaves.iter().all(|v| tf.is_int(*v)) {
@@ -8224,8 +8232,10 @@ fn is_call_abstract_safe(
         }
     }
 
-    // Dual gate for Call sinks (same as non-Call path)
-    if sink_caps.intersects(Cap::SQL_QUERY | Cap::FILE_IO | Cap::SHELL_ESCAPE) {
+    // Dual gate for Call sinks: SQL_QUERY / SHELL_ESCAPE keep the bounded-
+    // interval requirement (see is_abstract_safe_for_sink for the
+    // rationale).
+    if sink_caps.intersects(Cap::SQL_QUERY | Cap::SHELL_ESCAPE) {
         if let Some(tf) = type_facts {
             let leaves = trace_tainted_leaf_values(inst, state, ssa, cfg);
             if !leaves.is_empty()
@@ -8367,6 +8377,15 @@ fn trace_single_leaf(
             if !found {
                 leaves.push(v);
             }
+        }
+        SsaOp::Call { callee, .. } if crate::ssa::type_facts::is_int_producing_callee(callee) => {
+            // Int-producing conversion (`str.parse::<u32>()`, `Atoi`,
+            // `parseInt`, ...).  Tracing past the Call would land on the
+            // String-typed source and defeat the type-only HTML/FILE_IO
+            // suppression below — but the Call's *result* is unambiguously
+            // numeric, so the value itself is the right leaf.  Mirrors the
+            // is_numeric_length_access stop-leaf at the top of this fn.
+            leaves.push(v);
         }
         SsaOp::Call { args, .. } => {
             // For a Call whose node is not itself a Source (so the Call

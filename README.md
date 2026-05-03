@@ -74,7 +74,7 @@ Forward cross-file taint runs in every profile. Symex and the demand-driven back
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.6.0
+- uses: elicpeter/nyx@v0.6.1
   with:
     format: sarif
     fail-on: MEDIUM
@@ -142,10 +142,12 @@ The corpus also holds a small set of vulnerable/patched pairs extracted from pub
 | [CVE-2022-30323](https://nvd.nist.gov/vuln/detail/CVE-2022-30323) | hashicorp/go-getter | Go | Command injection |
 | [CVE-2024-31450](https://nvd.nist.gov/vuln/detail/CVE-2024-31450) | owncast | Go | Path traversal |
 | [CVE-2023-3188](https://nvd.nist.gov/vuln/detail/CVE-2023-3188) | owncast | Go | SSRF |
+| [CVE-2026-41422](https://github.com/daptin/daptin/security/advisories/GHSA-rw2c-8rfq-gwfv) | daptin | Go | SQL injection |
 | [CVE-2015-7501](https://nvd.nist.gov/vuln/detail/CVE-2015-7501) | Apache Commons Collections | Java | Deserialization |
 | [CVE-2017-12629](https://nvd.nist.gov/vuln/detail/CVE-2017-12629) | Apache Solr | Java | Command injection |
 | [CVE-2022-1471](https://nvd.nist.gov/vuln/detail/CVE-2022-1471) | SnakeYAML | Java | Deserialization |
 | [CVE-2022-42889](https://nvd.nist.gov/vuln/detail/CVE-2022-42889) | Apache Commons Text | Java | Code execution |
+| [GHSA-h8cj-hpmg-636v](https://github.com/advisories/GHSA-h8cj-hpmg-636v) | Appsmith | Java | SQL injection |
 | [CVE-2013-0156](https://nvd.nist.gov/vuln/detail/CVE-2013-0156) | Ruby on Rails | Ruby | Deserialization |
 | [CVE-2020-8130](https://nvd.nist.gov/vuln/detail/CVE-2020-8130) | Rake | Ruby | Command injection |
 | [CVE-2021-21288](https://nvd.nist.gov/vuln/detail/CVE-2021-21288) | CarrierWave | Ruby | SSRF |
@@ -155,6 +157,9 @@ The corpus also holds a small set of vulnerable/patched pairs extracted from pub
 | [CVE-2018-20997](https://nvd.nist.gov/vuln/detail/CVE-2018-20997) | tar-rs | Rust | Path traversal |
 | [CVE-2022-36113](https://nvd.nist.gov/vuln/detail/CVE-2022-36113) | cargo | Rust | Path traversal |
 | [CVE-2024-24576](https://nvd.nist.gov/vuln/detail/CVE-2024-24576) | Rust stdlib | Rust | Command injection |
+| [CVE-2023-42456](https://rustsec.org/advisories/RUSTSEC-2023-0069.html) | sudo-rs | Rust | Path traversal |
+| [CVE-2024-32884](https://rustsec.org/advisories/RUSTSEC-2024-0335.html) | gitoxide | Rust | Command injection |
+| [CVE-2025-53549](https://rustsec.org/advisories/RUSTSEC-2025-0043.html) | matrix-rust-sdk | Rust | SQL injection |
 | [CVE-2016-3714](https://nvd.nist.gov/vuln/detail/CVE-2016-3714) | ImageMagick (ImageTragick) | C | Command injection |
 | [CVE-2019-18634](https://nvd.nist.gov/vuln/detail/CVE-2019-18634) | sudo (pwfeedback) | C | Memory safety |
 | [CVE-2019-13132](https://nvd.nist.gov/vuln/detail/CVE-2019-13132) | ZeroMQ libzmq | C++ | Memory safety |

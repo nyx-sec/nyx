@@ -1,7 +1,8 @@
 use super::AuthExtractor;
 use super::common::{
     auth_check_from_call_site, build_function_unit, call_name, call_site_from_node, function_name,
-    named_children, span, text,
+    named_children, ruby_callback_target_names, ruby_method_is_callback_or_private,
+    ruby_method_visibility, span, text,
 };
 use crate::auth_analysis::config::{AuthAnalysisRules, matches_name, strip_quotes};
 use crate::auth_analysis::model::{
@@ -102,6 +103,19 @@ fn maybe_collect_controller(
     );
     let controller_segment = underscore_segment(class_name.trim_end_matches("Controller"));
     let filter_directives = class_filter_directives(body, bytes);
+    // Rails routes only dispatch to public instance methods that are
+    // not registered as filter callbacks.  Private / protected helpers
+    // and methods named in `before_action :foo` / `after_action :bar`
+    // run as part of an action's request cycle but are never
+    // independently routable, so emitting them as RouteHandler units
+    // produces FPs (e.g. `set_account` in
+    // `mastodon/app/controllers/admin/accounts_controller.rb` does
+    // `Account.find(params[:id])` inside a `private` block, with the
+    // actual `authorize @account` check living in the public action
+    // that triggers the callback).  Skip them here; the action units
+    // remain under analysis with their own auth context.
+    let visibility = ruby_method_visibility(body, bytes);
+    let callback_targets = ruby_callback_target_names(body, bytes);
     let controller_name = format!(
         "{}{}",
         if controller_namespace.is_empty() {
@@ -120,6 +134,9 @@ fn maybe_collect_controller(
             continue;
         };
         if action_name.is_empty() || action_name.ends_with('=') {
+            continue;
+        }
+        if ruby_method_is_callback_or_private(&action_name, &visibility, &callback_targets) {
             continue;
         }
 

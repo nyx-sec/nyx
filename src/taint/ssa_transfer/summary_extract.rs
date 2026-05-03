@@ -20,6 +20,7 @@ use super::{
 use crate::cfg::{BodyId, Cfg, FuncSummaries};
 use crate::labels::{Cap, SourceKind};
 use crate::ssa::ir::{SsaBody, SsaOp, SsaValue, Terminator};
+use crate::ssa::type_facts::{TypeFactResult, TypeKind, analyze_types_with_param_types};
 use crate::summary::GlobalSummaries;
 use crate::symbol::Lang;
 use crate::taint::domain::{TaintOrigin, VarTaint};
@@ -51,6 +52,7 @@ pub fn extract_ssa_func_summary(
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
     formal_param_names: Option<&[String]>,
     formal_destructured_fields: Option<&[Vec<String>]>,
+    param_types: Option<&[Option<TypeKind>]>,
 ) -> crate::summary::ssa_summary::SsaFuncSummary {
     extract_ssa_func_summary_full(
         ssa,
@@ -66,6 +68,7 @@ pub fn extract_ssa_func_summary(
         formal_param_names,
         None,
         formal_destructured_fields,
+        param_types,
     )
 }
 
@@ -104,7 +107,34 @@ pub fn extract_ssa_func_summary_full(
     // taint flow through sibling bindings is visible to summary
     // extraction (CVE-2026-25544 / @payloadcms/drizzle SQLi).
     formal_destructured_fields: Option<&[Vec<String>]>,
+    // BodyMeta.param_types parallel-vec.  When supplied, drives a local
+    // `analyze_types_with_param_types` pass so the per-parameter probe's
+    // `SsaTaintTransfer.type_facts` is populated.  Without this, helper
+    // bodies whose sinks are recognised only via type-qualified callee
+    // resolution (`receiver_type.label_prefix() + "." + method`, e.g.
+    // `DatabaseConnection.execute` for JDBC `Statement.execute`) silently
+    // drop the sink during summary extraction even though the same
+    // callee is correctly classified by the post-optimise transfer in
+    // `transfer_inst`.  Surfaced by GHSA-h8cj-hpmg-636v (Appsmith
+    // FilterDataServiceCE.dropTable: helper `executeDbQuery(query)`
+    // routes the SQL string through `statement.execute(query)` whose
+    // SQL_QUERY caps were invisible to the param-1 probe).  `None` for
+    // legacy / test paths preserves prior behaviour.
+    param_types: Option<&[Option<TypeKind>]>,
 ) -> crate::summary::ssa_summary::SsaFuncSummary {
+    // Pre-compute type facts on the un-optimised SSA body so the per-param
+    // probe can resolve sinks that depend on receiver-type inference.
+    // Empty const_values: this runs *before* the optimiser, so const-prop
+    // refinements aren't available yet, but the pass-1 instruction-shape
+    // typing (Source/Param/Call→constructor_type) and the second-pass
+    // Assign/Phi propagation are sufficient for the JDBC chain
+    // `Statement s = conn.createStatement(); s.execute(q);` to type `s`
+    // as `DatabaseConnection`.
+    let local_type_facts: Option<TypeFactResult> = param_types.map(|pt| {
+        let empty_consts: HashMap<SsaValue, crate::ssa::const_prop::ConstLattice> = HashMap::new();
+        analyze_types_with_param_types(ssa, cfg, &empty_consts, Some(lang), pt)
+    });
+    let local_type_facts_ref: Option<&TypeFactResult> = local_type_facts.as_ref();
     use crate::summary::SinkSite;
     use crate::summary::ssa_summary::{SsaFuncSummary, TaintTransform};
 
@@ -215,7 +245,7 @@ pub fn extract_ssa_func_summary_full(
             param_seed: None,
             receiver_seed: None,
             const_values: None,
-            type_facts: None,
+            type_facts: local_type_facts_ref,
             ssa_summaries,
             extra_labels: None,
             base_aliases: None,
@@ -761,7 +791,7 @@ pub fn extract_ssa_func_summary_full(
             param_seed: None,
             receiver_seed: None,
             const_values: None,
-            type_facts: None,
+            type_facts: local_type_facts_ref,
             ssa_summaries,
             extra_labels: None,
             base_aliases: None,

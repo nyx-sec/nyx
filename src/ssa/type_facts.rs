@@ -249,6 +249,14 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "OkHttpClient" | "WebClient" | "RestTemplate" => Some(TypeKind::HttpClient),
             "getConnection" => Some(TypeKind::DatabaseConnection),
             "MongoClient" => Some(TypeKind::DatabaseConnection),
+            // JDBC `conn.createStatement()` / `conn.prepareCall()` produce a
+            // `Statement` / `CallableStatement` whose `.execute(sql)` is a
+            // first-class SQL sink.  Mapped to `DatabaseConnection` so the
+            // type-qualified label `DatabaseConnection.execute` (in
+            // `labels/java.rs`) fires for `s.execute(query)` calls without
+            // widening the bare `execute` matcher.  Surfaced by
+            // GHSA-h8cj-hpmg-636v (Appsmith FilterDataServiceCE.dropTable).
+            "createStatement" | "prepareCall" => Some(TypeKind::DatabaseConnection),
             "FileInputStream" | "FileOutputStream" | "FileReader" | "FileWriter"
             | "BufferedReader" | "BufferedWriter" => Some(TypeKind::FileHandle),
             "getWriter" | "getOutputStream" => Some(TypeKind::HttpResponse),

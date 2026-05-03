@@ -1390,6 +1390,116 @@ fn rust_nested_use_as_alias() {
     assert_eq!(b.original, "Read");
 }
 
+/// `format!("{x}")` uses x even though x is captured via the format
+/// string's named-argument syntax rather than as a separate AST
+/// argument.  Without this lift, taint stops at the macro boundary
+/// for any caller whose format string reads a tainted variable by
+/// name (matrix-rust-sdk CVE-2025-53549, log!() / println!() across
+/// most Rust 1.58+ codebases).
+#[test]
+fn rust_format_macro_named_arg_lifted_into_uses() {
+    let src = b"fn f() { let x = 1; let y = format!(\"v={x}\"); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    let mut found = false;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("y") {
+            assert!(
+                info.taint.uses.iter().any(|u| u == "x"),
+                "expected `x` in uses for `let y = format!(\"v={{x}}\")`; got {:?}",
+                info.taint.uses
+            );
+            found = true;
+        }
+    }
+    assert!(found, "no node found defining `y`");
+}
+
+#[test]
+fn rust_format_macro_named_arg_with_format_spec() {
+    let src = b"fn f() { let x = 1; let y = format!(\"{x:?}\"); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    let mut found = false;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("y") {
+            assert!(
+                info.taint.uses.iter().any(|u| u == "x"),
+                "expected `x` lifted past `{{x:?}}` format spec; got {:?}",
+                info.taint.uses
+            );
+            found = true;
+        }
+    }
+    assert!(found, "no node found defining `y`");
+}
+
+#[test]
+fn rust_format_macro_escaped_braces_not_lifted() {
+    // `{{` and `}}` are escapes for literal `{` / `}`, NOT named
+    // argument captures.  No identifier should be lifted from the
+    // sequence between them.
+    let src = b"fn f() { let q = format!(\"{{x}}\"); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("q") {
+            assert!(
+                !info.taint.uses.iter().any(|u| u == "x"),
+                "must not lift `x` from escaped `{{{{x}}}}`; got {:?}",
+                info.taint.uses
+            );
+        }
+    }
+}
+
+#[test]
+fn rust_format_macro_positional_index_not_lifted() {
+    // Positional placeholders like `{0}` reference args by position,
+    // not by name.  Don't accidentally treat a digit as an identifier.
+    let src = b"fn f() { let a = 1; let q = format!(\"{0}\", a); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("q") {
+            assert!(
+                !info.taint.uses.iter().any(|u| u == "0"),
+                "must not lift digit-only positional placeholder; got {:?}",
+                info.taint.uses
+            );
+            assert!(
+                info.taint.uses.iter().any(|u| u == "a"),
+                "expected `a` in uses (positional arg) for `format!(\"{{0}}\", a)`; got {:?}",
+                info.taint.uses
+            );
+        }
+    }
+}
+
+#[test]
+fn rust_println_macro_named_arg_lifted() {
+    let src = b"fn f() { let user = String::from(\"x\"); println!(\"hi {user}\"); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    let mut found = false;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.call.callee.as_deref() == Some("println") {
+            assert!(
+                info.taint.uses.iter().any(|u| u == "user"),
+                "expected `user` lifted into println! uses; got {:?}",
+                info.taint.uses
+            );
+            found = true;
+        }
+    }
+    assert!(found, "no println! macro_invocation node found");
+}
+
 #[test]
 fn go_no_import_bindings() {
     let src = b"package main\nimport alias \"fmt\"\n";
@@ -2796,6 +2906,43 @@ fn go_for_loop_back_edge() {
     let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
     let (cfg, _) = parse_and_build(src, "go", ts_lang);
     assert_loop_with_back_edge(&cfg, "go for");
+}
+
+/// Pins the structural fix in `def_use` Kind::For arm for Go's
+/// `for ident, ident := range iter` shape.  Tree-sitter wraps the binding
+/// pattern + iterable in a `range_clause` child of the `for_statement`
+/// (rather than direct `left`/`right` fields like Python / JS).  Without
+/// this, the loop binding never becomes a CFG def and taint from the
+/// iterable cannot reach uses of the binding inside the loop body.
+/// Original gap: CVE-2026-41422 (daptin) goqu.L SQL injection.
+#[test]
+fn go_for_range_loop_binding_is_defined() {
+    let src = b"package p\nfunc f(xs []string) { for _, p := range xs { use(p) } }";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _) = parse_and_build(src, "go", ts_lang);
+
+    let loop_node = cfg
+        .node_indices()
+        .find(|&n| matches!(cfg[n].kind, StmtKind::Loop))
+        .expect("for-range loop should produce a Loop header");
+    let info = &cfg[loop_node];
+    let all_defs: Vec<&str> = info
+        .taint
+        .defines
+        .iter()
+        .map(String::as_str)
+        .chain(info.taint.extra_defines.iter().map(String::as_str))
+        .collect();
+    assert!(
+        all_defs.contains(&"p"),
+        "loop binding `p` should appear in defines/extra_defines, got {:?}",
+        all_defs
+    );
+    assert!(
+        info.taint.uses.iter().any(|u| u == "xs"),
+        "iterable `xs` should appear in uses, got {:?}",
+        info.taint.uses
+    );
 }
 
 #[test]

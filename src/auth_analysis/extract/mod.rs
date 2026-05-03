@@ -53,11 +53,18 @@ pub fn extract_authorization_model(
         &actix_web::ActixWebExtractor,
         &rocket::RocketExtractor,
     ];
-    let mut model = AuthorizationModel::default();
+    let mut model = AuthorizationModel {
+        lang: lang.to_string(),
+        ..Default::default()
+    };
 
     for extractor in extractors {
         if extractor.supports(lang, framework_ctx) {
-            model.extend(extractor.extract(tree, bytes, path, rules));
+            let mut other = extractor.extract(tree, bytes, path, rules);
+            // Preserve the canonical `lang` set above; sub-extractors
+            // build their own default-initialised models with empty lang.
+            other.lang = model.lang.clone();
+            model.extend(other);
         }
     }
 

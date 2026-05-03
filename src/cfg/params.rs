@@ -69,6 +69,36 @@ pub(super) fn extract_param_meta<'a>(
         }
         return out;
     };
+    // Java lambda shorthand: tree-sitter-java exposes the `parameters` field
+    // on `lambda_expression` as either a single bare identifier (`cmd -> …`)
+    // or an `inferred_parameters` wrapper around identifiers (`(a, b) -> …`).
+    // Neither shape matches the formal_parameter / spread_parameter kinds in
+    // PARAM_CONFIG, so the per-child loop below would otherwise see no
+    // params and the lambda would appear parameterless.  Without this, the
+    // SSA pipeline treats the lambda binding as a free / closure-captured
+    // variable, defeating the JS/TS / Java auto-seed distinction between
+    // real handler-param formals and bubbled-up captures.  Mirrors the JS/TS
+    // arrow shorthand handled above.
+    if func_node.kind() == "lambda_expression" {
+        if params.kind() == "identifier" {
+            if let Some(name) = text_of(params, code) {
+                out.push((name, None, Vec::new()));
+                return out;
+            }
+        } else if params.kind() == "inferred_parameters" {
+            let mut cursor = params.walk();
+            for child in params.named_children(&mut cursor) {
+                if child.kind() == "identifier" {
+                    if let Some(name) = text_of(child, code) {
+                        out.push((name, None, Vec::new()));
+                    }
+                }
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+    }
     let mut cursor = params.walk();
     for child in params.children(&mut cursor) {
         // Self/this parameter (e.g. Rust's `self_parameter`)

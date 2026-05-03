@@ -130,7 +130,7 @@ pub fn lower_to_ssa(
     scope: Option<&str>,
     scope_all: bool,
 ) -> Result<SsaBody, SsaError> {
-    lower_to_ssa_inner(cfg, entry, scope, scope_all, false, &[])
+    lower_to_ssa_inner(cfg, entry, scope, scope_all, false, &[], false)
 }
 
 /// Like `lower_to_ssa` but with formal parameter names supplied in declaration
@@ -144,7 +144,17 @@ pub fn lower_to_ssa_with_params(
     scope_all: bool,
     formal_params: &[String],
 ) -> Result<SsaBody, SsaError> {
-    lower_to_ssa_inner(cfg, entry, scope, scope_all, false, formal_params)
+    // `with_params=true` signals "callers supplied an explicit formal list,
+    // even if empty" (e.g. arrow `() => {…}` has zero formals).  This lets
+    // the synthetic-externals classifier distinguish "no formals info" from
+    // "explicit empty formals" — closure captures of an arrow with empty
+    // formals are still synthetic, not formals.  Bug surfaced on outline's
+    // jest test files: free vars bubbled up from nested arrow callbacks
+    // (`body`, `userId`, `server.post`) became Params at the outer arrow's
+    // entry, and the JS/TS auto-seed treated `userId` as a real handler
+    // formal, producing 934 phantom taint findings.  See
+    // `taint/ssa_transfer/mod.rs::auto_seed_handler_params`.
+    lower_to_ssa_inner(cfg, entry, scope, scope_all, false, formal_params, true)
 }
 
 /// Like `lower_to_ssa` but with `scope_nop`: when true, all nodes are included
@@ -156,7 +166,7 @@ pub fn lower_to_ssa_scoped_nop(
     entry: NodeIndex,
     scope: Option<&str>,
 ) -> Result<SsaBody, SsaError> {
-    lower_to_ssa_inner(cfg, entry, scope, false, true, &[])
+    lower_to_ssa_inner(cfg, entry, scope, false, true, &[], false)
 }
 
 fn lower_to_ssa_inner(
@@ -166,6 +176,7 @@ fn lower_to_ssa_inner(
     scope_all: bool,
     scope_nop: bool,
     formal_params: &[String],
+    with_params: bool,
 ) -> Result<SsaBody, SsaError> {
     if cfg.node_count() == 0 {
         return Err(SsaError::EmptyCfg);
@@ -256,6 +267,7 @@ fn lower_to_ssa_inner(
         &filtered_edges,
         &external_vars,
         formal_params,
+        with_params,
         &nop_nodes,
     );
 
@@ -936,6 +948,7 @@ fn rename_variables(
     filtered_edges: &[(NodeIndex, NodeIndex, EdgeKind)],
     external_vars: &[String],
     formal_params: &[String],
+    with_params: bool,
     nop_nodes: &HashSet<NodeIndex>,
 ) -> (
     Vec<SsaBlock>,
@@ -1698,18 +1711,21 @@ fn rename_variables(
     // handler-name auto-seed in particular) can avoid treating closure
     // captures as if they were parameters of the function under analysis.
     //
-    // **Conservative behaviour when `formal_params` is empty.** Several
-    // call sites (`lower_to_ssa`, `lower_to_ssa_scoped_nop`) don't supply
-    // formal parameter names; in that case we cannot distinguish formals
-    // from free vars structurally, so we leave `synthetic_externals` empty
-    // and the auto-seed pass keeps its pre-fix behaviour of treating every
-    // `Param` op as a candidate.  Only callers that pass a non-empty
-    // `formal_params` slice (`lower_to_ssa_with_params`, used by the
-    // findings pipeline's per-function lowering) opt into the
-    // closure-capture distinction.
+    // **Conservative behaviour when the caller didn't supply formal-param
+    // info.** Several call sites (`lower_to_ssa`, `lower_to_ssa_scoped_nop`)
+    // don't supply formal parameter names; in that case we cannot distinguish
+    // formals from free vars structurally, so we leave `synthetic_externals`
+    // empty and the auto-seed pass keeps its pre-fix behaviour of treating
+    // every `Param` op as a candidate.  Callers that opt in via
+    // `lower_to_ssa_with_params` set `with_params=true`, signalling that
+    // `formal_params` is the authoritative formal list — even when empty
+    // (arrow `() => {…}`).  In that case every external becomes synthetic
+    // unless it appears in `formal_params`, so the auto-seed pass cannot
+    // mistake a bubbled-up free var (like `userId` lifted from a nested
+    // jest test callback) for a formal of the outer body.
     let mut synthetic_externals: HashSet<SsaValue> = HashSet::new();
     let formal_set: HashSet<&str> = formal_params.iter().map(|s| s.as_str()).collect();
-    let track_synthetic = !formal_params.is_empty();
+    let track_synthetic = with_params;
     if !external_vars.is_empty() {
         let entry_cfg_node = blocks_nodes[0][0];
         let mut synthetic_body = Vec::with_capacity(external_vars.len());
@@ -3901,6 +3917,68 @@ mod tests {
             "Rust single `obj.cache = 42` must populate field_writes; \
              got body.field_writes={:?}\nbody:\n{body}",
             body.field_writes,
+        );
+    }
+
+    /// REGRESSION: when the body takes a real handler-named formal
+    /// (`userId`), that formal must NOT end up in
+    /// `synthetic_externals` — the JS/TS / Java auto-seed pass relies
+    /// on this distinction to seed only real formals as
+    /// `Source(UserInput)` and skip closure captures.  Companion
+    /// integration coverage for the empty-formals shape (arrow
+    /// `() => {…}` lifting bubbled-up free vars as synthetic) lives
+    /// in `tests/fixtures/fp_guards/framework_jest_test_callback_arrow/`
+    /// — that fixture exercises the full CFG construction path which
+    /// this unit test cannot reproduce in isolation.
+    #[test]
+    fn arrow_with_handler_formal_keeps_param_non_synthetic() {
+        let mut cfg: Cfg = Graph::new();
+        let entry = cfg.add_node(NodeInfo {
+            ast: crate::cfg::AstMeta {
+                enclosing_func: Some("lookup".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Entry)
+        });
+        let use_node = cfg.add_node(NodeInfo {
+            taint: TaintMeta {
+                uses: vec!["userId".into()],
+                ..Default::default()
+            },
+            ast: crate::cfg::AstMeta {
+                enclosing_func: Some("lookup".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Seq)
+        });
+        let exit = cfg.add_node(NodeInfo {
+            ast: crate::cfg::AstMeta {
+                enclosing_func: Some("lookup".into()),
+                ..Default::default()
+            },
+            ..make_node(StmtKind::Exit)
+        });
+        cfg.add_edge(entry, use_node, EdgeKind::Seq);
+        cfg.add_edge(use_node, exit, EdgeKind::Seq);
+
+        let formals = vec!["userId".to_string()];
+        let body = lower_to_ssa_with_params(&cfg, entry, Some("lookup"), false, &formals)
+            .expect("SSA lowering should succeed");
+        let user_id_param = body
+            .blocks
+            .first()
+            .and_then(|b| {
+                b.body.iter().find(|inst| {
+                    matches!(inst.op, SsaOp::Param { .. })
+                        && inst.var_name.as_deref() == Some("userId")
+                })
+            })
+            .expect("userId Param should be present");
+        assert!(
+            !body.synthetic_externals.contains(&user_id_param.value),
+            "real formal `userId` must not be marked synthetic; \
+             synthetic_externals={:?}",
+            body.synthetic_externals,
         );
     }
 

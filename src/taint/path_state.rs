@@ -308,6 +308,24 @@ pub fn classify_condition(text: &str) -> PredicateKind {
         return PredicateKind::AllowlistCheck;
     }
 
+    // ── Java/Kotlin Pattern.matcher().matches() chain (before TypeCheck) ─
+    //
+    // Recognise `<re>.matcher(value).matches()` as a regex allowlist
+    // validator, not a TypeCheck.  The receiver of `.matcher(` must
+    // contain `regex` or `pattern` so we don't widen to arbitrary
+    // `obj.matcher(x).matches()` calls.  Surfaced by GHSA-h8cj-hpmg-636v
+    // (Appsmith FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()).
+    // Matched here (before the generic `.matches(` TypeCheck branch
+    // below) so the chain doesn't silently fall into TypeCheck.
+    if let Some(matcher_pos) = lower.find(".matcher(")
+        && lower[matcher_pos..].contains(".matches(")
+    {
+        let receiver = &lower[..matcher_pos];
+        if receiver.contains("regex") || receiver.contains("pattern") {
+            return PredicateKind::ValidationCall;
+        }
+    }
+
     // ── Type-check guards ──────────────────────────────────────────────
     if lower.contains("typeof ")
         || lower.contains("isinstance(")
@@ -391,6 +409,24 @@ pub fn classify_condition(text: &str) -> PredicateKind {
             let receiver = &callee_part[..dot_pos];
             let receiver_lower = receiver.to_ascii_lowercase();
             if receiver_lower.contains("regex") || receiver_lower.contains("pattern") {
+                return PredicateKind::ValidationCall;
+            }
+        }
+
+        // Java idiom `<PATTERN>.matcher(value).matches()` — the regex
+        // allowlist on Java/Kotlin is a two-step chain (`Pattern.matcher`
+        // returns a `Matcher`, `.matches()` is the boolean predicate).
+        // The bare callee here is `matches` (no args), so the
+        // single-call recogniser above doesn't fire.  Lock on the
+        // chain shape and require the receiver of `.matcher(` to carry
+        // a regex / pattern marker so we don't widen to `.matcher(` on
+        // arbitrary types.  Surfaced by GHSA-h8cj-hpmg-636v
+        // (Appsmith FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()).
+        if bare == "matches"
+            && let Some(matcher_pos) = lower.find(".matcher(")
+        {
+            let receiver = &lower[..matcher_pos];
+            if receiver.contains("regex") || receiver.contains("pattern") {
                 return PredicateKind::ValidationCall;
             }
         }
@@ -647,6 +683,25 @@ fn extract_validation_target(text: &str) -> Option<String> {
     // `(!validate(x))` (TS/JS) and `not validate(x)` (Python) are reachable.
     let trimmed = trimmed.trim_start_matches(['(', '!', ' ', '\t']);
     let trimmed = trimmed.strip_prefix("not ").unwrap_or(trimmed).trim();
+
+    // Java/Kotlin chain `<re>.matcher(value).matches()`: the validated
+    // target is the inner `.matcher()` argument, not the bare `.matches()`
+    // receiver.  Locked on the same regex/pattern receiver gate as the
+    // classifier (GHSA-h8cj-hpmg-636v).
+    if trimmed.to_ascii_lowercase().contains(".matches(")
+        && let Some(matcher_pos) = trimmed.find(".matcher(")
+    {
+        let receiver_lower = trimmed[..matcher_pos].to_ascii_lowercase();
+        if receiver_lower.contains("regex") || receiver_lower.contains("pattern") {
+            let args_start = matcher_pos + ".matcher(".len();
+            if let Some(first_arg) = first_call_arg(&trimmed[args_start..]) {
+                let first_arg = first_arg.strip_prefix('&').unwrap_or(first_arg).trim();
+                if !first_arg.is_empty() && is_identifier(first_arg) {
+                    return Some(first_arg.to_string());
+                }
+            }
+        }
+    }
 
     // Find the first `(` which separates callee from args
     let paren_pos = trimmed.find('(')?;
@@ -1557,5 +1612,45 @@ mod tests {
     fn bounded_length_accepts_small_bounds() {
         assert!(is_bounded_length_check("x.len() > 2"));
         assert!(is_bounded_length_check("x.len() <= 256"));
+    }
+}
+
+#[cfg(test)]
+mod ghsa_h8cj_hpmg_636v_tests {
+    use super::*;
+    #[test]
+    fn java_pattern_matcher_chain_classifies_as_validation() {
+        let kind =
+            classify_condition("FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()");
+        assert_eq!(
+            kind,
+            PredicateKind::ValidationCall,
+            "matcher().matches() chain on PATTERN-named receiver should be ValidationCall"
+        );
+    }
+    #[test]
+    fn java_pattern_matcher_chain_target_is_matcher_arg() {
+        let (kind, target) = classify_condition_with_target(
+            "FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()",
+        );
+        assert_eq!(kind, PredicateKind::ValidationCall);
+        assert_eq!(target.as_deref(), Some("tableName"));
+    }
+    #[test]
+    fn java_negated_pattern_matcher_chain_target_is_matcher_arg() {
+        let (kind, target) = classify_condition_with_target(
+            "!FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()",
+        );
+        assert_eq!(kind, PredicateKind::ValidationCall);
+        assert_eq!(target.as_deref(), Some("tableName"));
+    }
+    #[test]
+    fn java_pattern_matcher_chain_non_pattern_receiver_is_not_validation() {
+        // Precision guard: only fires when receiver name has regex/pattern marker.
+        let kind = classify_condition("obj.matcher(x).matches()");
+        assert!(
+            kind != PredicateKind::ValidationCall,
+            "no regex marker should not trigger validation"
+        );
     }
 }

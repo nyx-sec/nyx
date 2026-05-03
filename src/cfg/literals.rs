@@ -1151,6 +1151,170 @@ pub(super) fn check_inner_call_args(node: Node, code: &[u8]) -> bool {
     true
 }
 
+/// Extract identifiers captured by Rust format-string named-argument syntax
+/// (`format!("…{name}…")`, stable since 1.58) from a `macro_invocation`
+/// node.  Returns the identifier names referenced by `{name}` /
+/// `{name:fmt-spec}` patterns inside the first `string_literal` child of
+/// the macro's `token_tree`.
+///
+/// Without this lifting, `let q = format!("...{x}...")` carries no `x` in
+/// its `uses` because `x` lives in the format string's bytes rather than
+/// as a separate AST argument node, so taint stops at the macro
+/// boundary.  Mirrors the Python f-string interpolation lifting in
+/// `patterns/python.rs`.
+///
+/// Conservative recognition: only fires for known format-style macros
+/// (`format`, `print`/`println`, `eprint`/`eprintln`, `write`/`writeln`,
+/// `panic`, `format_args`, `assert`/`debug_assert`, the common `log`
+/// crate severity macros).  Empty for any non-Rust call node, any other
+/// macro, or a token_tree whose first string is not present.
+pub(super) fn extract_rust_format_macro_named_idents(call_node: Node, code: &[u8]) -> Vec<String> {
+    if call_node.kind() != "macro_invocation" {
+        return Vec::new();
+    }
+    let Some(macro_node) = call_node.child_by_field_name("macro") else {
+        return Vec::new();
+    };
+    let Some(macro_text) = text_of(macro_node, code) else {
+        return Vec::new();
+    };
+    let leaf = macro_text
+        .rsplit("::")
+        .next()
+        .unwrap_or(macro_text.as_str());
+    if !is_rust_format_style_macro(leaf) {
+        return Vec::new();
+    }
+    let tt = match call_node.child_by_field_name("token_tree") {
+        Some(t) => t,
+        None => {
+            let mut cursor = call_node.walk();
+            match call_node
+                .children(&mut cursor)
+                .find(|c| c.kind() == "token_tree")
+            {
+                Some(t) => t,
+                None => return Vec::new(),
+            }
+        }
+    };
+    let mut cursor = tt.walk();
+    let fmt_lit = match tt
+        .children(&mut cursor)
+        .find(|c| matches!(c.kind(), "string_literal" | "raw_string_literal"))
+    {
+        Some(n) => n,
+        None => return Vec::new(),
+    };
+    let raw = match text_of(fmt_lit, code) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let content = strip_literal_quotes(&raw, fmt_lit, code).unwrap_or_else(|| raw.clone());
+    parse_rust_format_named_idents(&content)
+}
+
+/// Walk `n` and any descendants, accumulating named-format-arg idents from
+/// every Rust `macro_invocation` reachable through structural expression
+/// children (calls, fields, await, references, blocks, ...).  Lets the
+/// def-use collectors lift `format!("...{x}...")` named args through one
+/// or two levels of expression wrapping (e.g.
+/// `let q = format!("{x}").to_owned();` or RHS chained method calls).
+pub(super) fn extract_rust_format_macro_named_idents_in(n: Node, code: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_format_macro_idents_recursive(n, code, &mut out, 0);
+    out
+}
+
+fn collect_format_macro_idents_recursive(n: Node, code: &[u8], out: &mut Vec<String>, depth: u32) {
+    if depth > 6 {
+        return;
+    }
+    if n.kind() == "macro_invocation" {
+        for ident in extract_rust_format_macro_named_idents(n, code) {
+            out.push(ident);
+        }
+    }
+    let mut cursor = n.walk();
+    for child in n.children(&mut cursor) {
+        collect_format_macro_idents_recursive(child, code, out, depth + 1);
+    }
+}
+
+fn is_rust_format_style_macro(name: &str) -> bool {
+    matches!(
+        name,
+        "format"
+            | "print"
+            | "println"
+            | "eprint"
+            | "eprintln"
+            | "write"
+            | "writeln"
+            | "panic"
+            | "format_args"
+            | "assert"
+            | "debug_assert"
+            | "todo"
+            | "unimplemented"
+            | "unreachable"
+            | "info"
+            | "warn"
+            | "error"
+            | "debug"
+            | "trace"
+    )
+}
+
+fn parse_rust_format_named_idents(s: &str) -> Vec<String> {
+    let bytes = s.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'{' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                i += 2;
+                continue;
+            }
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b'}' && bytes[j] != b':' {
+                j += 1;
+            }
+            let ident_bytes = &bytes[start..j];
+            if is_valid_rust_format_ident(ident_bytes) {
+                if let Ok(name) = std::str::from_utf8(ident_bytes) {
+                    out.push(name.to_string());
+                }
+            }
+            while j < bytes.len() && bytes[j] != b'}' {
+                j += 1;
+            }
+            i = j + 1;
+        } else if b == b'}' && i + 1 < bytes.len() && bytes[i + 1] == b'}' {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn is_valid_rust_format_ident(b: &[u8]) -> bool {
+    if b.is_empty() {
+        return false;
+    }
+    let first = b[0];
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return false;
+    }
+    if b.iter().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+}
+
 /// Extract per-argument identifiers from a call node's argument list.
 /// Returns one `Vec<String>` per argument (in parameter-position order).
 /// Returns empty if argument list can't be found or contains spread/keyword args.
@@ -1663,6 +1827,11 @@ pub(super) fn def_use(
                     collect_idents_with_paths(val, code, &mut idents, &mut paths);
                     uses.extend(paths);
                     uses.extend(idents);
+                    // Rust format-string named-arg capture: `let q =
+                    // format!("...{x}...")` reads `x`, but `x` lives in
+                    // the format-string bytes, not as a separate AST
+                    // argument node, so collect_idents misses it.
+                    uses.extend(extract_rust_format_macro_named_idents_in(val, code));
                 }
             } else {
                 // Try nested declarator pattern (JS/TS `lexical_declaration` → `variable_declarator`,
@@ -1716,6 +1885,7 @@ pub(super) fn def_use(
                             collect_idents_with_paths(val_node, code, &mut idents, &mut paths);
                             uses.extend(paths);
                             uses.extend(idents);
+                            uses.extend(extract_rust_format_macro_named_idents_in(val_node, code));
                         }
                     }
                 }
@@ -1728,6 +1898,7 @@ pub(super) fn def_use(
                     collect_idents_with_paths(ast, code, &mut idents, &mut paths);
                     uses.extend(paths);
                     uses.extend(idents);
+                    uses.extend(extract_rust_format_macro_named_idents_in(ast, code));
                 }
             }
             (defs, uses, extra_defs)
@@ -1750,6 +1921,7 @@ pub(super) fn def_use(
                 collect_idents_with_paths(rhs, code, &mut idents, &mut paths);
                 uses.extend(paths);
                 uses.extend(idents);
+                uses.extend(extract_rust_format_macro_named_idents_in(rhs, code));
             }
             (defs, uses, vec![])
         }
@@ -1801,9 +1973,26 @@ pub(super) fn def_use(
         // `initializer`/`condition`/`increment`), so this path falls through
         // to the default-collecting behaviour for those, preserving today's
         // semantics.
+        //
+        // Go's `for ident := range iter` shape places the binding pattern
+        // and iterable on a `range_clause` child of the `for_statement`
+        // rather than as direct fields.  Without the range_clause lookup
+        // below, taint from the iterable never reaches the loop binding
+        // (CVE-2026-41422 daptin: `c.QueryArray("col")` loop var `project`
+        // flows into `goqu.L(project)` SQL_QUERY sink).
         Kind::For => {
-            let left = ast.child_by_field_name("left");
-            let right = ast.child_by_field_name("right");
+            let mut left = ast.child_by_field_name("left");
+            let mut right = ast.child_by_field_name("right");
+            if left.is_none() && right.is_none() {
+                let mut cursor = ast.walk();
+                for child in ast.children(&mut cursor) {
+                    if child.kind() == "range_clause" {
+                        left = child.child_by_field_name("left");
+                        right = child.child_by_field_name("right");
+                        break;
+                    }
+                }
+            }
             if left.is_none() && right.is_none() {
                 // C-style for, defer to default ident collection.
                 let mut idents = Vec::new();
