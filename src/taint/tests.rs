@@ -4332,6 +4332,7 @@ fn ssa_summary_identity_propagation() {
                 None,
                 None,
                 None,
+                None,
             );
             assert!(
                 !summary.param_to_return.is_empty(),
@@ -4396,6 +4397,7 @@ fn ssa_summary_sanitizer_strips_bits() {
                 None,
                 None,
                 None,
+                None,
             );
             // Sanitizer should strip some bits
             for (_, transform) in &summary.param_to_return {
@@ -4453,6 +4455,7 @@ fn ssa_summary_source_adds_bits() {
                 None,
                 None,
                 None,
+                None,
             );
             assert!(
                 !summary.source_caps.is_empty(),
@@ -4506,6 +4509,7 @@ fn ssa_summary_param_to_sink() {
                 "test.rs",
                 &interner,
                 param_count,
+                None,
                 None,
                 None,
                 None,

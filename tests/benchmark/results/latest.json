@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-03T11:47:09Z",
+  "timestamp": "2026-05-03T13:18:19Z",
   "scanner_version": "0.6.0",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:bcb15f25e604f82a050cb70208bba6a1e6bfeded4a9fbf562f757dccb8120ee3",
-  "corpus_size": 511,
-  "cases_run": 510,
+  "ground_truth_hash": "sha256:5a6741e164879c4f9b5422ce991d59a529f5997781ba8158028125872ed31b1b",
+  "corpus_size": 515,
+  "cases_run": 514,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -1474,6 +1474,40 @@
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "java.code_exec.text4shell_interpolator"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-java-ghsa-h8cj-hpmg-636v-patched",
+      "file": "cve_corpus/java/GHSA-h8cj-hpmg-636v/patched.java",
+      "language": "java",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-java-ghsa-h8cj-hpmg-636v-vulnerable",
+      "file": "cve_corpus/java/GHSA-h8cj-hpmg-636v/vulnerable.java",
+      "language": "java",
+      "vuln_class": "sqli",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "FN",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 43:28)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 43:28)"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -3589,6 +3623,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "java-safe-stmt-execute-validated",
+      "file": "java/safe/safe_statement_execute_pattern_validated.java",
+      "language": "java",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "java-sqli-001",
       "file": "java/sqli/SqliConcat.java",
       "language": "java",
@@ -3685,6 +3734,25 @@
         "taint-unsanitised-flow (source 7:21)"
       ],
       "security_finding_count": 6,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "java-sqli-stmt-execute-002",
+      "file": "java/sqli/sqli_statement_execute_chained.java",
+      "language": "java",
+      "vuln_class": "sqli",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "FN",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 25:28)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 25:28)"
+      ],
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -9115,19 +9183,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 252,
+    "tp": 254,
     "fp": 0,
     "fn_": 0,
-    "tn": 258,
+    "tn": 260,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 252,
+    "tp": 254,
     "fp": 0,
     "fn_": 0,
-    "tn": 258,
+    "tn": 260,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9161,10 +9229,10 @@
       "f1": 1.0
     },
     "java": {
-      "tp": 21,
+      "tp": 23,
       "fp": 0,
       "fn_": 0,
-      "tn": 20,
+      "tn": 22,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9364,7 +9432,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 258,
+      "tn": 260,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9388,7 +9456,7 @@
       "f1": 1.0
     },
     "sqli": {
-      "tp": 31,
+      "tp": 33,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9417,31 +9485,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 85,
-      "fp": 100,
-      "fn_": 167,
-      "tn": 158,
-      "precision": 0.4594594594594595,
-      "recall": 0.3373015873015873,
-      "f1": 0.3890160183066362
+      "tp": 90,
+      "fp": 97,
+      "fn_": 164,
+      "tn": 163,
+      "precision": 0.48128342245989303,
+      "recall": 0.3543307086614173,
+      "f1": 0.4081632653061224
     },
     ">=Low": {
-      "tp": 87,
-      "fp": 121,
-      "fn_": 165,
-      "tn": 137,
-      "precision": 0.4182692307692308,
-      "recall": 0.34523809523809523,
-      "f1": 0.37826086956521743
+      "tp": 93,
+      "fp": 117,
+      "fn_": 161,
+      "tn": 143,
+      "precision": 0.44285714285714284,
+      "recall": 0.3661417322834646,
+      "f1": 0.40086206896551724
     },
     ">=Medium": {
-      "tp": 87,
-      "fp": 115,
-      "fn_": 165,
-      "tn": 143,
-      "precision": 0.4306930693069307,
-      "recall": 0.34523809523809523,
-      "f1": 0.38325991189427305
+      "tp": 93,
+      "fp": 112,
+      "fn_": 161,
+      "tn": 148,
+      "precision": 0.45365853658536587,
+      "recall": 0.3661417322834646,
+      "f1": 0.40522875816993464
     }
   }
 }

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 511
+    "corpus_size": 515
   },
   "cases": [
     {
@@ -4504,6 +4504,74 @@
       ],
       "disabled": false,
       "notes": "prepareStatement sanitizes SQL input \u2014 should produce no SQL taint finding"
+    },
+    {
+      "case_id": "java-sqli-stmt-execute-002",
+      "file": "java/sqli/sqli_statement_execute_chained.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          36,
+          36
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          25,
+          25
+        ]
+      ],
+      "tags": [
+        "statement",
+        "execute",
+        "createStatement",
+        "string-concat",
+        "ghsa-h8cj"
+      ],
+      "disabled": false,
+      "notes": "Regression guard for GHSA-h8cj-hpmg-636v engine fixes: createStatement is typed as DatabaseConnection; Statement.execute(query) resolves as SQL_QUERY sink via DatabaseConnection.execute label; helper-summary type-facts threading carries the sink across the executeDbQuery boundary."
+    },
+    {
+      "case_id": "java-safe-stmt-execute-validated",
+      "file": "java/safe/safe_statement_execute_pattern_validated.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "Pattern",
+        "matcher",
+        "matches",
+        "validator",
+        "ghsa-h8cj"
+      ],
+      "disabled": false,
+      "notes": "Regression guard for GHSA-h8cj-hpmg-636v patched form: Pattern.matcher(value).matches() chain on a PATTERN-named receiver classifies as ValidationCall, short-circuit `||` cond chain preserves validated_must to the implicit return, and helper-summary validated_params_to_return suppresses the SQL_QUERY sink at the caller."
     },
     {
       "case_id": "go-safe-atoi-001",
@@ -11388,6 +11456,73 @@
       ],
       "disabled": false,
       "notes": "CVE-2022-42889 patched counterpart: substitutor built directly with `new StringSubstitutor()` so the lookup map is empty; ${...} pass-through. No script/dns/url evaluation."
+    },
+    {
+      "case_id": "cve-java-ghsa-h8cj-hpmg-636v-vulnerable",
+      "file": "cve_corpus/java/GHSA-h8cj-hpmg-636v/vulnerable.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          62,
+          62
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          43,
+          43
+        ]
+      ],
+      "tags": [
+        "cve",
+        "appsmith",
+        "sqli",
+        "vulnerable"
+      ],
+      "disabled": false,
+      "notes": "GHSA-h8cj-hpmg-636v / Appsmith FilterDataServiceCE.dropTable: tableName from a request flows through `\"DROP TABLE \" + tableName + \";\"` and `executeDbQuery(query)` to `Statement.execute(query)` on the in-memory H2 filter db. Apache-2.0"
+    },
+    {
+      "case_id": "cve-java-ghsa-h8cj-hpmg-636v-patched",
+      "file": "cve_corpus/java/GHSA-h8cj-hpmg-636v/patched.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "appsmith",
+        "sqli",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "GHSA-h8cj-hpmg-636v patched counterpart: dropTable now calls validateFilterTempTableName(tableName) which rejects any value that does not match `^tbl_[A-Z]{16}$` via FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches(). Regression guard that Nyx recognises the Java Pattern.matcher(value).matches() chain as a regex-allowlist validator and that the helper-summary `validated_params_to_return` lift suppresses the SQL_QUERY flow at the call site."
     },
     {
       "case_id": "rs-auth-001",

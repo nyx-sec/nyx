@@ -83,6 +83,18 @@ pub(super) fn push_condition_node<'a>(
     let text = text_of(cond_ast, code)
         .map(|t| truncate_at_char_boundary(&t, MAX_CONDITION_TEXT_LEN).to_string());
     let span = (cond_ast.start_byte(), cond_ast.end_byte());
+    // Mirror condition variables into `taint.uses` so the per-body
+    // `SymbolInterner::from_cfg` pass interns them.  Without this,
+    // `apply_branch_predicates` (which calls `interner.get(var)` to
+    // look up a Symbol id) silently no-ops on short-circuit branch
+    // condition nodes — they have no `taint.uses` even though
+    // `condition_vars` carries the variable names.  Surfaced by
+    // GHSA-h8cj-hpmg-636v: a `||`-decomposed validator like
+    // `if (x == null || !regex.matcher(x).matches()) throw;` failed
+    // to mark `x` as `validated_must` on the surviving branch
+    // because the per-disjunct cond nodes (built via
+    // `build_condition_chain`) didn't populate `taint.uses`.
+    let uses_for_taint: Vec<String> = vars.clone();
     g.add_node(NodeInfo {
         kind: StmtKind::If,
         ast: AstMeta {
@@ -92,6 +104,10 @@ pub(super) fn push_condition_node<'a>(
         condition_text: text,
         condition_vars: vars,
         condition_negated: negated,
+        taint: crate::cfg::TaintMeta {
+            uses: uses_for_taint,
+            ..Default::default()
+        },
         ..Default::default()
     })
 }

@@ -103,6 +103,21 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
     },
+    // JDBC `Statement.execute(String)` / `executeBatch` / `executeLargeUpdate`.
+    // Bare `execute` over-fires (Runnable.run callbacks, Executor.execute,
+    // HttpClient.execute), so these only fire via type-qualified resolution
+    // when the receiver's TypeKind is DatabaseConnection (the kind both
+    // `Connection` and `Statement` map to in `class_name_to_type_kind`).
+    // Surfaced by GHSA-h8cj-hpmg-636v (Appsmith FilterDataServiceCE.dropTable).
+    LabelRule {
+        matchers: &[
+            "DatabaseConnection.execute",
+            "DatabaseConnection.executeBatch",
+            "DatabaseConnection.executeLargeUpdate",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+    },
     LabelRule {
         matchers: &["Class.forName"],
         label: DataLabel::Sink(Cap::CODE_EXEC),

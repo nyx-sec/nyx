@@ -34,6 +34,7 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2017-12629 | Java       | Apache Solr                | Apache-2.0           | CMDI            | detected |
 | CVE-2022-1471  | Java       | SnakeYAML                  | Apache-2.0           | Deserialization | detected |
 | CVE-2022-42889 | Java       | Apache Commons Text        | Apache-2.0           | code_exec       | detected |
+| GHSA-h8cj-hpmg-636v | Java  | Appsmith                   | Apache-2.0           | sql_injection   | detected |
 | CVE-2013-0156  | Ruby       | Ruby on Rails              | MIT                  | Deserialization | detected |
 | CVE-2020-8130  | Ruby       | Rake                       | MIT                  | CMDI            | detected |
 | CVE-2021-21288 | Ruby       | CarrierWave                | MIT                  | SSRF            | detected |
