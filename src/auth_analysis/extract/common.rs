@@ -330,9 +330,11 @@ fn ruby_is_filter_callback_directive(name: &str) -> bool {
 fn ruby_symbol_names(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
     match node.kind() {
         "simple_symbol" | "hash_key_symbol" | "identifier" | "string" => {
-            vec![strip_quotes(&text(node, bytes))
-                .trim_start_matches(':')
-                .to_string()]
+            vec![
+                strip_quotes(&text(node, bytes))
+                    .trim_start_matches(':')
+                    .to_string(),
+            ]
         }
         "array" => named_children(node)
             .into_iter()
@@ -347,7 +349,10 @@ pub fn ruby_method_is_callback_or_private(
     visibility: &std::collections::HashMap<String, RubyVisibility>,
     callbacks: &std::collections::HashSet<String>,
 ) -> bool {
-    let vis = visibility.get(name).copied().unwrap_or(RubyVisibility::Public);
+    let vis = visibility
+        .get(name)
+        .copied()
+        .unwrap_or(RubyVisibility::Public);
     if vis != RubyVisibility::Public {
         return true;
     }
@@ -4961,7 +4966,8 @@ mod tests {
         #[test]
         fn before_action_block_form_yields_no_targets() {
             // Block form `before_action do ... end` carries no symbol arg.
-            let src = "class C\n  before_action do\n    require_login\n  end\n  def show; end\nend\n";
+            let src =
+                "class C\n  before_action do\n    require_login\n  end\n  def show; end\nend\n";
             let (tree, bytes) = parse(src);
             let body = find_class_body(tree.root_node()).expect("body");
             let callbacks = ruby_callback_target_names(body, &bytes);

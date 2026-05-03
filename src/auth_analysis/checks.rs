@@ -945,11 +945,7 @@ fn is_id_like_name(name: &str) -> bool {
 /// pure utility helpers fail all three conditions and are skipped ,
 /// they cannot, by construction, be the entry point of an
 /// authentication-bearing flow.
-fn unit_has_user_input_evidence(
-    unit: &AnalysisUnit,
-    web_signal: Option<bool>,
-    lang: &str,
-) -> bool {
+fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>, lang: &str) -> bool {
     if unit.kind == AnalysisUnitKind::RouteHandler {
         return true;
     }

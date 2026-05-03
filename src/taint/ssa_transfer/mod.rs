@@ -8378,9 +8378,7 @@ fn trace_single_leaf(
                 leaves.push(v);
             }
         }
-        SsaOp::Call { callee, .. }
-            if crate::ssa::type_facts::is_int_producing_callee(callee) =>
-        {
+        SsaOp::Call { callee, .. } if crate::ssa::type_facts::is_int_producing_callee(callee) => {
             // Int-producing conversion (`str.parse::<u32>()`, `Atoi`,
             // `parseInt`, ...).  Tracing past the Call would land on the
             // String-typed source and defeat the type-only HTML/FILE_IO

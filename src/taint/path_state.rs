@@ -1620,18 +1620,27 @@ mod ghsa_h8cj_hpmg_636v_tests {
     use super::*;
     #[test]
     fn java_pattern_matcher_chain_classifies_as_validation() {
-        let kind = classify_condition("FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()");
-        assert_eq!(kind, PredicateKind::ValidationCall, "matcher().matches() chain on PATTERN-named receiver should be ValidationCall");
+        let kind =
+            classify_condition("FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()");
+        assert_eq!(
+            kind,
+            PredicateKind::ValidationCall,
+            "matcher().matches() chain on PATTERN-named receiver should be ValidationCall"
+        );
     }
     #[test]
     fn java_pattern_matcher_chain_target_is_matcher_arg() {
-        let (kind, target) = classify_condition_with_target("FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()");
+        let (kind, target) = classify_condition_with_target(
+            "FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()",
+        );
         assert_eq!(kind, PredicateKind::ValidationCall);
         assert_eq!(target.as_deref(), Some("tableName"));
     }
     #[test]
     fn java_negated_pattern_matcher_chain_target_is_matcher_arg() {
-        let (kind, target) = classify_condition_with_target("!FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()");
+        let (kind, target) = classify_condition_with_target(
+            "!FILTER_TEMP_TABLE_NAME_PATTERN.matcher(tableName).matches()",
+        );
         assert_eq!(kind, PredicateKind::ValidationCall);
         assert_eq!(target.as_deref(), Some("tableName"));
     }
@@ -1639,6 +1648,9 @@ mod ghsa_h8cj_hpmg_636v_tests {
     fn java_pattern_matcher_chain_non_pattern_receiver_is_not_validation() {
         // Precision guard: only fires when receiver name has regex/pattern marker.
         let kind = classify_condition("obj.matcher(x).matches()");
-        assert!(kind != PredicateKind::ValidationCall, "no regex marker should not trigger validation");
+        assert!(
+            kind != PredicateKind::ValidationCall,
+            "no regex marker should not trigger validation"
+        );
     }
 }

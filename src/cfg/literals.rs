@@ -1168,10 +1168,7 @@ pub(super) fn check_inner_call_args(node: Node, code: &[u8]) -> bool {
 /// `panic`, `format_args`, `assert`/`debug_assert`, the common `log`
 /// crate severity macros).  Empty for any non-Rust call node, any other
 /// macro, or a token_tree whose first string is not present.
-pub(super) fn extract_rust_format_macro_named_idents(
-    call_node: Node,
-    code: &[u8],
-) -> Vec<String> {
+pub(super) fn extract_rust_format_macro_named_idents(call_node: Node, code: &[u8]) -> Vec<String> {
     if call_node.kind() != "macro_invocation" {
         return Vec::new();
     }
@@ -1181,7 +1178,10 @@ pub(super) fn extract_rust_format_macro_named_idents(
     let Some(macro_text) = text_of(macro_node, code) else {
         return Vec::new();
     };
-    let leaf = macro_text.rsplit("::").next().unwrap_or(macro_text.as_str());
+    let leaf = macro_text
+        .rsplit("::")
+        .next()
+        .unwrap_or(macro_text.as_str());
     if !is_rust_format_style_macro(leaf) {
         return Vec::new();
     }
@@ -1220,21 +1220,13 @@ pub(super) fn extract_rust_format_macro_named_idents(
 /// def-use collectors lift `format!("...{x}...")` named args through one
 /// or two levels of expression wrapping (e.g.
 /// `let q = format!("{x}").to_owned();` or RHS chained method calls).
-pub(super) fn extract_rust_format_macro_named_idents_in(
-    n: Node,
-    code: &[u8],
-) -> Vec<String> {
+pub(super) fn extract_rust_format_macro_named_idents_in(n: Node, code: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     collect_format_macro_idents_recursive(n, code, &mut out, 0);
     out
 }
 
-fn collect_format_macro_idents_recursive(
-    n: Node,
-    code: &[u8],
-    out: &mut Vec<String>,
-    depth: u32,
-) {
+fn collect_format_macro_idents_recursive(n: Node, code: &[u8], out: &mut Vec<String>, depth: u32) {
     if depth > 6 {
         return;
     }
@@ -1893,9 +1885,7 @@ pub(super) fn def_use(
                             collect_idents_with_paths(val_node, code, &mut idents, &mut paths);
                             uses.extend(paths);
                             uses.extend(idents);
-                            uses.extend(extract_rust_format_macro_named_idents_in(
-                                val_node, code,
-                            ));
+                            uses.extend(extract_rust_format_macro_named_idents_in(val_node, code));
                         }
                     }
                 }
