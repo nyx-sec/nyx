@@ -3481,15 +3481,27 @@ pub(super) fn build_sub<'a>(
             let mut loop_breaks = Vec::new();
             let mut loop_continues = Vec::new();
 
-            // Body = first (and usually only) block child.
-            let body = ast
-                .child_by_field_name("body")
-                .or_else(|| {
-                    let mut c = ast.walk();
-                    ast.children(&mut c)
-                        .find(|n| lookup(lang, n.kind()) == Kind::Block)
-                })
-                .expect("loop without body");
+            // Body = first (and usually only) block child.  Tree-sitter error
+            // recovery (or a fuzz mutation that truncates a `for`/`while`
+            // header before the block) can leave a loop node with no body
+            // child at all.  Match the InfiniteLoop arm above and degrade
+            // gracefully instead of panicking — header alone is a valid CFG
+            // skeleton for the malformed input.
+            let body = match ast.child_by_field_name("body").or_else(|| {
+                let mut c = ast.walk();
+                ast.children(&mut c)
+                    .find(|n| lookup(lang, n.kind()) == Kind::Block)
+            }) {
+                Some(b) => b,
+                None => {
+                    warn!(
+                        "loop without body (error recovery?): kind={} byte={}",
+                        ast.kind(),
+                        ast.start_byte()
+                    );
+                    return vec![header];
+                }
+            };
 
             if has_short_circuit {
                 let cond_ast = cond_subtree.unwrap();
@@ -3625,9 +3637,14 @@ pub(super) fn build_sub<'a>(
                 // swallowed and the gated sinks they contain become invisible
                 // to classification. Mirrors the same recursion done by the
                 // CallWrapper / CallFn arms. Motivated by CVE-2025-64430.
+                //
+                // Disconnect the placeholder Seq edge from the call after
+                // build_sub returns; the inner body is independently
+                // registered, so the outer call should flow straight to its
+                // real successor (the Return below) without a phantom branch.
                 let nested = collect_nested_function_nodes(ast, lang);
                 for func_node in nested {
-                    build_sub(
+                    let placeholders = build_sub(
                         func_node,
                         &[call_idx],
                         g,
@@ -3645,6 +3662,13 @@ pub(super) fn build_sub<'a>(
                         next_body_id,
                         current_body_id,
                     );
+                    for ph in placeholders {
+                        let to_remove: Vec<_> =
+                            g.edges_connecting(call_idx, ph).map(|e| e.id()).collect();
+                        for eid in to_remove {
+                            g.remove_edge(eid);
+                        }
+                    }
                 }
 
                 Vec::new()
@@ -3703,10 +3727,11 @@ pub(super) fn build_sub<'a>(
 
                 // Same nested-function recursion as the Return arm: a
                 // `throw new Promise(() => { ... })` would otherwise lose
-                // any inner gated sinks.
+                // any inner gated sinks.  Disconnect the placeholder edge
+                // (see Return arm comment).
                 let nested = collect_nested_function_nodes(ast, lang);
                 for func_node in nested {
-                    build_sub(
+                    let placeholders = build_sub(
                         func_node,
                         &[call_idx],
                         g,
@@ -3724,6 +3749,13 @@ pub(super) fn build_sub<'a>(
                         next_body_id,
                         current_body_id,
                     );
+                    for ph in placeholders {
+                        let to_remove: Vec<_> =
+                            g.edges_connecting(call_idx, ph).map(|e| e.id()).collect();
+                        for eid in to_remove {
+                            g.remove_edge(eid);
+                        }
+                    }
                 }
 
                 Vec::new()
@@ -4370,10 +4402,18 @@ pub(super) fn build_sub<'a>(
 
             // Recurse into any function expressions nested in arguments
             // (e.g. `app.get('/path', function(req, res) { ... })`)
-            // so that they get proper function summaries.
+            // so that they get proper function summaries.  The build_sub
+            // invocation registers the inner body but also adds a
+            // Seq-edge `node → placeholder` from the inner Kind::Function
+            // arm.  That phantom successor turns the outer call into a
+            // 2-successor branch with an empty Return(None) leg, which
+            // breaks `validated_params_to_return` summary extraction
+            // (CVE-2026-25544).  Disconnect the spurious edge after
+            // build_sub returns; the inner body is still reachable to
+            // closure-capture passes via `parent_body_id` metadata.
             let nested = collect_nested_function_nodes(ast, lang);
             for func_node in nested {
-                build_sub(
+                let placeholders = build_sub(
                     func_node,
                     &[node],
                     g,
@@ -4391,6 +4431,12 @@ pub(super) fn build_sub<'a>(
                     next_body_id,
                     current_body_id,
                 );
+                for ph in placeholders {
+                    let to_remove: Vec<_> = g.edges_connecting(node, ph).map(|e| e.id()).collect();
+                    for eid in to_remove {
+                        g.remove_edge(eid);
+                    }
+                }
             }
 
             // Rust match-guard synthesis: `let <name> = match <scrutinee> { <arm> if <guard> => .., ... }`
@@ -4462,9 +4508,12 @@ pub(super) fn build_sub<'a>(
 
             // Recurse into any function expressions nested in arguments.
             // Each nested function hits Kind::Function and becomes a separate body.
+            // See sibling comment in CallWrapper arm: disconnect the
+            // declaration-marker placeholder Seq edge after build_sub
+            // returns, so the outer body's CFG isn't artificially branched.
             let nested = collect_nested_function_nodes(ast, lang);
             for func_node in nested {
-                build_sub(
+                let placeholders = build_sub(
                     func_node,
                     &[n],
                     g,
@@ -4482,6 +4531,12 @@ pub(super) fn build_sub<'a>(
                     next_body_id,
                     current_body_id,
                 );
+                for ph in placeholders {
+                    let to_remove: Vec<_> = g.edges_connecting(n, ph).map(|e| e.id()).collect();
+                    for eid in to_remove {
+                        g.remove_edge(eid);
+                    }
+                }
             }
 
             vec![n]

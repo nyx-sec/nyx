@@ -147,6 +147,22 @@ pub struct AnalysisContext<'a> {
     pub func_summaries: &'a FuncSummaries,
     #[allow(dead_code)]
     pub global_summaries: Option<&'a GlobalSummaries>,
+    /// Per-file SSA summaries map produced by
+    /// `lower_all_functions_from_bodies` (after both the augment pass
+    /// and the rerun-with-augmented-summaries pass).  Carries the
+    /// final validated_params_to_return / param_to_sink merges that
+    /// the snapshot in `global_summaries` may not yet reflect on
+    /// single-file scans.  Used by the unguarded-sink analysis to
+    /// suppress structural findings whose taint flow has been proven
+    /// validated through helper summaries (CVE-2026-25544 patched
+    /// counterpart).
+    #[allow(dead_code)]
+    pub ssa_summaries: Option<
+        &'a std::collections::HashMap<
+            crate::symbol::FuncKey,
+            crate::summary::ssa_summary::SsaFuncSummary,
+        >,
+    >,
     pub taint_findings: &'a [taint::Finding],
     pub analysis_rules: Option<&'a LangAnalysisRules>,
     /// Whether full taint analysis was active for this file (global summaries

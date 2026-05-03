@@ -1477,6 +1477,7 @@ impl<'a> ParsedFile<'a> {
                 source_bytes: self.source.bytes,
                 func_summaries: self.local_summaries(),
                 global_summaries,
+                ssa_summaries: Some(ssa_summaries),
                 taint_findings: &body_taint,
                 analysis_rules: self.rules_ref(),
                 taint_active,

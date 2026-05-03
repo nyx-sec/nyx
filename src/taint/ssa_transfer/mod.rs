@@ -3976,6 +3976,73 @@ pub(super) fn transfer_inst(
                         return_bits = use_caps;
                         return_origins = use_origins;
                     }
+
+                    // Validated-flow propagation through unresolved external
+                    // calls.  When every tainted argument's symbol is already
+                    // in `validated_must` at the call site, the call result
+                    // is derived solely from validated values, so its symbol
+                    // inherits the same `validated_must` / `validated_may`
+                    // status.  Without this, helper-validated taint that
+                    // crosses an external boundary (`db.execute(sanitisedSql)`,
+                    // `fetch(safeUrl)`, …) re-emerges as unvalidated taint at
+                    // the next sink (`res.json(result)`), reproducing the
+                    // residual finding in the patched fixture for
+                    // CVE-2026-25544 even though the SQL injection itself is
+                    // suppressed.
+                    if !return_bits.is_empty() {
+                        let mut all_args_validated = true;
+                        let mut any_tainted_arg = false;
+                        let check_value = |v: SsaValue, state: &SsaTaintState| -> Option<bool> {
+                            // Returns Some(true) if validated_must, Some(false)
+                            // if tainted-but-not-validated, None if not tainted.
+                            let taint = state.get(v)?;
+                            if taint.caps.is_empty() {
+                                return None;
+                            }
+                            let name = ssa
+                                .value_defs
+                                .get(v.0 as usize)
+                                .and_then(|vd| vd.var_name.as_deref())?;
+                            let sym = transfer.interner.get(name)?;
+                            Some(state.validated_must.contains(sym))
+                        };
+                        for arg_group in args {
+                            for &v in arg_group {
+                                if let Some(is_validated) = check_value(v, state) {
+                                    any_tainted_arg = true;
+                                    if !is_validated {
+                                        all_args_validated = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !all_args_validated {
+                                break;
+                            }
+                        }
+                        if all_args_validated {
+                            if let Some(rv) = receiver {
+                                if let Some(is_validated) = check_value(*rv, state) {
+                                    any_tainted_arg = true;
+                                    if !is_validated {
+                                        all_args_validated = false;
+                                    }
+                                }
+                            }
+                        }
+                        if any_tainted_arg && all_args_validated {
+                            if let Some(name) = ssa
+                                .value_defs
+                                .get(inst.value.0 as usize)
+                                .and_then(|vd| vd.var_name.as_deref())
+                            {
+                                if let Some(sym) = transfer.interner.get(name) {
+                                    state.validated_must.insert(sym);
+                                    state.validated_may.insert(sym);
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

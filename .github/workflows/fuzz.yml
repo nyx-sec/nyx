@@ -136,6 +136,7 @@ jobs:
             -max_total_time=${{ steps.budget.outputs.seconds }} \
             -max_len=65536 \
             -timeout=60 \
+            -rss_limit_mb=8192 \
             -dict=fuzz/dict/all.dict
 
       - name: Upload crash artifacts

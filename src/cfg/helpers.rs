@@ -663,7 +663,6 @@ pub(crate) fn collect_idents_with_paths(
             if let Some(path) = member_expr_text(n, code) {
                 paths.push(path);
             }
-            // Also collect individual idents as fallback
             collect_idents(n, code, idents);
         }
         "identifier"

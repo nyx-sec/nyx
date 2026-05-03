@@ -463,6 +463,171 @@ fn sink_args_typed_safe(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) 
     type_facts_suppress(&values, sink_caps, type_facts)
 }
 
+/// Walk the sink's Call SSA arguments and check whether every real argument
+/// resolves through a defining `SsaOp::Call` whose callee carries an SSA
+/// summary with `validated_params_to_return` covering every propagating
+/// parameter slot the caller's argument flows into.  When that holds, the
+/// helper validates each argument on every taint-carrying return path, and
+/// the call result is structurally validated even though no syntactic guard
+/// dominates the sink in the caller's body.
+///
+/// Conservative: returns `false` whenever any required fact is missing,
+/// any operand is non-Call-defined and not a constant/parameter, or any
+/// callee summary lacks the validated transform.  Real arguments only —
+/// the same `is_real_arg` filter as `sink_args_typed_safe` skips
+/// callee-fragment pseudo-uses and SSA constants.
+fn sink_args_summary_validated_safe(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    // Per-file SSA summary map carries the augment + rerun-pass merges
+    // that GlobalSummaries may not yet reflect on single-file scans;
+    // fall back to GlobalSummaries when the per-file map isn't threaded
+    // through (legacy callers).
+    let local_map = ctx.ssa_summaries;
+    let global_map = ctx.global_summaries.map(|g| g.snapshot_ssa());
+    if local_map.is_none() && global_map.is_none() {
+        return false;
+    }
+
+    let sink_info = &ctx.cfg[sink];
+    use crate::cfg::StmtKind;
+
+    // Collect per-arg use names.  Prefer `call.arg_uses` (positional, tighter
+    // scope), fall back to `taint.uses` minus callee-fragment names when
+    // `arg_uses` wasn't extracted (e.g. `await db.execute(sql)` where the
+    // CFG saw the await wrapper rather than the underlying call_expression).
+    let callee_desc = sink_info.call.callee.as_deref().unwrap_or("");
+    let callee_parts: Vec<&str> = callee_desc
+        .split(['.', ':'])
+        .map(|p| p.split('(').next().unwrap_or(p))
+        .collect();
+    let outer_parts: Vec<&str> = sink_info
+        .call
+        .outer_callee
+        .as_deref()
+        .map(|oc| {
+            oc.split(['.', ':'])
+                .map(|p| p.split('(').next().unwrap_or(p))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut arg_use_names: Vec<String> = Vec::new();
+    if !sink_info.call.arg_uses.is_empty() {
+        for group in &sink_info.call.arg_uses {
+            for u in group {
+                if !arg_use_names.iter().any(|n| n == u) {
+                    arg_use_names.push(u.clone());
+                }
+            }
+        }
+    }
+    if arg_use_names.is_empty() {
+        for u in &sink_info.taint.uses {
+            if is_callee_fragment(u, callee_desc, &callee_parts, &outer_parts) {
+                continue;
+            }
+            if !arg_use_names.iter().any(|n| n == u) {
+                arg_use_names.push(u.clone());
+            }
+        }
+    }
+    if arg_use_names.is_empty() {
+        return false;
+    }
+
+    // Match callee text against any SSA summary key registered in
+    // GlobalSummaries by leaf name.  Conservative: require an exact
+    // single-match so ambiguous overloads fall through to the default
+    // structural-finding path.
+    let lookup_validated = |callee_text: &str| -> Option<bool> {
+        let leaf = callee_leaf_name(callee_text);
+        let mut matches: Vec<&crate::summary::ssa_summary::SsaFuncSummary> = Vec::new();
+        if let Some(map) = local_map {
+            for (key, sum) in map {
+                if key.name == leaf || key.name == callee_text {
+                    matches.push(sum);
+                }
+            }
+        }
+        if matches.is_empty() {
+            if let Some(map) = global_map {
+                for (key, sum) in map {
+                    if key.name == leaf || key.name == callee_text {
+                        matches.push(sum);
+                    }
+                }
+            }
+        }
+        if matches.len() != 1 {
+            return None;
+        }
+        let sum = matches[0];
+        if sum.validated_params_to_return.is_empty() {
+            return Some(false);
+        }
+        // Every propagating parameter must be in validated_params_to_return.
+        // When the callee doesn't propagate taint at all, the call result
+        // cannot carry caller-side taint, so a non-empty validation set is
+        // sufficient.
+        let propagates = sum
+            .param_to_return
+            .iter()
+            .map(|(idx, _)| *idx)
+            .collect::<Vec<usize>>();
+        if propagates.is_empty() {
+            return Some(true);
+        }
+        let all_validated = propagates
+            .iter()
+            .all(|p| sum.validated_params_to_return.contains(p));
+        Some(all_validated)
+    };
+
+    // Walk CFG predecessors of `sink` looking for nodes that define an
+    // arg-use name via a Call to an in-file helper.  Conservative
+    // traversal: stops at the body entry, follows Seq/Branch edges,
+    // bails out on join/branch back-edges (loops) to keep the analysis
+    // bounded.
+    let mut to_validate: Vec<String> = arg_use_names.clone();
+    let mut visited: HashSet<NodeIndex> = HashSet::new();
+    let mut frontier: Vec<NodeIndex> = ctx
+        .cfg
+        .neighbors_directed(sink, petgraph::Direction::Incoming)
+        .collect();
+    let mut iter_budget = 256usize;
+    while let Some(n) = frontier.pop() {
+        if iter_budget == 0 {
+            return false;
+        }
+        iter_budget -= 1;
+        if !visited.insert(n) {
+            continue;
+        }
+        let info = &ctx.cfg[n];
+        if info.kind == StmtKind::Call {
+            if let Some(def_name) = info.taint.defines.as_deref() {
+                if let Some(pos) = to_validate.iter().position(|u| u == def_name) {
+                    let callee = info.call.callee.as_deref().unwrap_or("");
+                    if !matches!(lookup_validated(callee), Some(true)) {
+                        return false;
+                    }
+                    to_validate.remove(pos);
+                    if to_validate.is_empty() {
+                        return true;
+                    }
+                }
+            }
+        }
+        for pred in ctx.cfg.neighbors_directed(n, petgraph::Direction::Incoming) {
+            frontier.push(pred);
+        }
+    }
+    // Some arg-use names didn't map to an in-body Call definition (e.g.
+    // they bind to a function parameter, an import, or a literal).
+    // Only suppress when EVERY tainted-shaped arg has been validated by
+    // an in-file helper summary; otherwise fall through.
+    to_validate.is_empty()
+}
+
 /// Thin wrapper around [`crate::ssa::type_facts::is_type_safe_for_sink`] kept
 /// local so the unit tests here can exercise the exact predicate used at the
 /// `cfg-unguarded-sink` emission site.
@@ -1050,6 +1215,20 @@ impl CfgAnalysis for UnguardedSink {
             // finite set of literals free of shell metacharacters.  Mirrors
             // the SSA-taint finite-domain suppression so both paths agree.
             if !has_taint && sink_args_static_map_safe(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // Summary-validated suppression: when the SSA value flowing into
+            // the sink is the return of a callee whose summary records a
+            // `validated_params_to_return` covering every propagating
+            // parameter, the helper validates its inputs on every taint-
+            // carrying return path (regex allowlist, type check, validation
+            // call, …).  The SSA taint engine already cleared this flow via
+            // `propagate_validated_params_to_return`, so the structural
+            // finding is noise.  Closes the patched-counterpart noise for
+            // CVE-2026-25544 (Payload `sanitizeValue` → `createJSONQuery`
+            // → `db.execute`).
+            if !has_taint && sink_args_summary_validated_safe(ctx, *sink) {
                 continue;
             }
 

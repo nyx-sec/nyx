@@ -593,6 +593,18 @@ pub fn extract_ssa_func_summary_full(
             if any_carrying_path && all_carrying_validated {
                 validated_params_to_return.push(idx);
             }
+            if std::env::var("NYX_DBG_VPR2").is_ok() {
+                eprintln!(
+                    "VPR2 fp={:?} idx={} name={} any_carry={} all_validated={}",
+                    formal_param_names, idx, var_name, any_carrying_path, all_carrying_validated
+                );
+                for (i, obs) in per_return_obs.iter().enumerate() {
+                    eprintln!(
+                        "  ret[{}] derived={:?} param={:?} validated_must={}",
+                        i, obs.derived_caps, obs.param_caps, obs.param_validated_must
+                    );
+                }
+            }
         }
 
         // Derive per-return-path decomposition.  For each
