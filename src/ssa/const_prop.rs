@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 use super::ir::*;
 
@@ -96,40 +97,57 @@ pub struct ConstPropResult {
 }
 
 /// Run Sparse Conditional Constant Propagation on an SSA body.
+///
+/// Internal storage is dense `Vec`-indexed by [`SsaValue`] / [`BlockId`] to
+/// avoid the per-lookup `SipHash` cost of `HashMap<SsaValue, _>` /
+/// `HashSet<(BlockId, BlockId)>` that previously dominated the inner
+/// fixed-point loop. The public [`ConstPropResult`] still exposes the
+/// `HashMap`-shaped contract; the conversion at the end of the function is
+/// O(num_values) and runs once.
 pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
     let num_blocks = body.blocks.len();
+    let num_values = body.value_defs.len();
 
-    // Per-value lattice: starts at Top
-    let mut values: HashMap<SsaValue, ConstLattice> = HashMap::new();
+    // Dense per-value lattice (`Vec` indexed by `SsaValue.0`).  All values
+    // are defined by exactly one inst (phi or body), so initialising the
+    // entire range to Top is equivalent to the previous per-inst insert
+    // pass at strictly lower cost (no hashing).
+    let mut values: Vec<ConstLattice> = vec![ConstLattice::Top; num_values];
 
-    // Executable flags per CFG edge (from_block, to_block)
-    let mut executable_edges: HashSet<(BlockId, BlockId)> = HashSet::new();
-    // Executable blocks
-    let mut executable_blocks: HashSet<BlockId> = HashSet::new();
+    // Per-block executability and per-(dest, pred) executable-edge bitmap.
+    // Edges are stored as a per-destination list of executable predecessors
+    // — phi evaluation only ever asks "is `(pred, this_block)` executable?",
+    // so a tiny SmallVec scan over the dest's predecessors beats a
+    // `HashSet<(BlockId, BlockId)>::contains` (which hashes a 64-bit pair
+    // for every operand of every phi).
+    let mut executable_blocks: Vec<bool> = vec![false; num_blocks];
+    let mut executable_preds: Vec<SmallVec<[BlockId; 2]>> =
+        vec![SmallVec::new(); num_blocks];
 
-    // Two worklists
+    // Worklists
     let mut cfg_worklist: VecDeque<BlockId> = VecDeque::new();
     let mut ssa_worklist: VecDeque<SsaValue> = VecDeque::new();
 
     // Mark entry executable
-    executable_blocks.insert(body.entry);
+    executable_blocks[body.entry.0 as usize] = true;
     cfg_worklist.push_back(body.entry);
 
-    // Build use-map: SsaValue → list of (BlockId, instruction index in block)
-    // so we can propagate SSA value changes efficiently.
-    let mut use_sites: HashMap<SsaValue, Vec<BlockId>> = HashMap::new();
+    // Use-map: dense `Vec` indexed by `SsaValue.0`.  Populated in a single
+    // pass via the closure-based [`inst_uses_each`] helper, which avoids
+    // the heap allocation of the prior `inst_uses() -> Vec<SsaValue>`
+    // factory.
+    let mut use_sites: Vec<SmallVec<[BlockId; 2]>> = vec![SmallVec::new(); num_values];
     for block in &body.blocks {
         for inst in block.phis.iter().chain(block.body.iter()) {
-            for used_val in inst_uses(inst) {
-                use_sites.entry(used_val).or_default().push(block.id);
-            }
-        }
-    }
-
-    // Initialize all values to Top
-    for block in &body.blocks {
-        for inst in block.phis.iter().chain(block.body.iter()) {
-            values.insert(inst.value, ConstLattice::Top);
+            inst_uses_each(inst, |used_val| {
+                let idx = used_val.0 as usize;
+                if idx < use_sites.len() {
+                    let bucket = &mut use_sites[idx];
+                    if bucket.last() != Some(&block.id) {
+                        bucket.push(block.id);
+                    }
+                }
+            });
         }
     }
 
@@ -144,10 +162,10 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
             // Evaluate phis
             for phi in &block.phis {
                 if let SsaOp::Phi(operands) = &phi.op {
-                    let old = values.get(&phi.value).cloned().unwrap_or(ConstLattice::Top);
-                    let new_val = eval_phi(operands, &values, &executable_edges, block_id);
+                    let old = lookup(&values, phi.value);
+                    let new_val = eval_phi(operands, &values, &executable_preds, block_id);
                     if new_val != old {
-                        values.insert(phi.value, new_val);
+                        store(&mut values, phi.value, new_val);
                         ssa_worklist.push_back(phi.value);
                         changed = true;
                     }
@@ -156,13 +174,10 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
 
             // Evaluate body instructions
             for inst in &block.body {
-                let old = values
-                    .get(&inst.value)
-                    .cloned()
-                    .unwrap_or(ConstLattice::Top);
+                let old = lookup(&values, inst.value);
                 let new_val = eval_inst(inst, &values);
                 if new_val != old {
-                    values.insert(inst.value, new_val);
+                    store(&mut values, inst.value, new_val);
                     ssa_worklist.push_back(inst.value);
                     changed = true;
                 }
@@ -173,7 +188,7 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
                 block,
                 body,
                 &values,
-                &mut executable_edges,
+                &mut executable_preds,
                 &mut executable_blocks,
                 &mut cfg_worklist,
             );
@@ -181,54 +196,57 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
 
         // Process SSA worklist
         while let Some(val) = ssa_worklist.pop_front() {
-            if let Some(blocks) = use_sites.get(&val) {
-                for &block_id in blocks {
-                    if !executable_blocks.contains(&block_id) {
-                        continue;
-                    }
-                    let block = body.block(block_id);
-
-                    // Re-evaluate phis using this value
-                    for phi in &block.phis {
-                        if let SsaOp::Phi(operands) = &phi.op
-                            && operands.iter().any(|(_, v)| *v == val)
-                        {
-                            let old = values.get(&phi.value).cloned().unwrap_or(ConstLattice::Top);
-                            let new_val = eval_phi(operands, &values, &executable_edges, block_id);
-                            if new_val != old {
-                                values.insert(phi.value, new_val);
-                                ssa_worklist.push_back(phi.value);
-                                changed = true;
-                            }
-                        }
-                    }
-
-                    // Re-evaluate body instructions using this value
-                    for inst in &block.body {
-                        if inst_uses(inst).contains(&val) {
-                            let old = values
-                                .get(&inst.value)
-                                .cloned()
-                                .unwrap_or(ConstLattice::Top);
-                            let new_val = eval_inst(inst, &values);
-                            if new_val != old {
-                                values.insert(inst.value, new_val);
-                                ssa_worklist.push_back(inst.value);
-                                changed = true;
-                            }
-                        }
-                    }
-
-                    // Re-evaluate terminator if condition changed
-                    process_terminator(
-                        block,
-                        body,
-                        &values,
-                        &mut executable_edges,
-                        &mut executable_blocks,
-                        &mut cfg_worklist,
-                    );
+            let val_idx = val.0 as usize;
+            if val_idx >= use_sites.len() {
+                continue;
+            }
+            // Snapshot the use-list so we can borrow `values` mutably
+            // while iterating block ids.  The list is short (typically
+            // 1–3 blocks) so the clone is cheap.
+            let use_blocks = use_sites[val_idx].clone();
+            for block_id in use_blocks {
+                if !executable_blocks[block_id.0 as usize] {
+                    continue;
                 }
+                let block = body.block(block_id);
+
+                // Re-evaluate phis using this value
+                for phi in &block.phis {
+                    if let SsaOp::Phi(operands) = &phi.op
+                        && operands.iter().any(|(_, v)| *v == val)
+                    {
+                        let old = lookup(&values, phi.value);
+                        let new_val = eval_phi(operands, &values, &executable_preds, block_id);
+                        if new_val != old {
+                            store(&mut values, phi.value, new_val);
+                            ssa_worklist.push_back(phi.value);
+                            changed = true;
+                        }
+                    }
+                }
+
+                // Re-evaluate body instructions using this value
+                for inst in &block.body {
+                    if inst_has_use(inst, val) {
+                        let old = lookup(&values, inst.value);
+                        let new_val = eval_inst(inst, &values);
+                        if new_val != old {
+                            store(&mut values, inst.value, new_val);
+                            ssa_worklist.push_back(inst.value);
+                            changed = true;
+                        }
+                    }
+                }
+
+                // Re-evaluate terminator if condition changed
+                process_terminator(
+                    block,
+                    body,
+                    &values,
+                    &mut executable_preds,
+                    &mut executable_blocks,
+                    &mut cfg_worklist,
+                );
             }
         }
 
@@ -237,44 +255,80 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
         }
     }
 
-    // Compute unreachable blocks
-    let unreachable_blocks: HashSet<BlockId> = (0..num_blocks)
-        .map(|i| BlockId(i as u32))
-        .filter(|bid| !executable_blocks.contains(bid))
-        .collect();
+    // Convert dense storage to the public `HashMap`-shaped result. Walks
+    // the value vector exactly once. The unreachable-blocks set is small
+    // (often empty), so building it from a linear scan is fine.
+    let mut out_values: HashMap<SsaValue, ConstLattice> =
+        HashMap::with_capacity(num_values);
+    for (i, v) in values.into_iter().enumerate() {
+        out_values.insert(SsaValue(i as u32), v);
+    }
+    let mut unreachable_blocks: HashSet<BlockId> = HashSet::new();
+    for (i, exec) in executable_blocks.iter().enumerate() {
+        if !exec {
+            unreachable_blocks.insert(BlockId(i as u32));
+        }
+    }
 
     ConstPropResult {
-        values,
+        values: out_values,
         unreachable_blocks,
+    }
+}
+
+/// Dense lattice lookup. Returns Top for out-of-range values to match the
+/// pre-refactor `HashMap::get(&v).cloned().unwrap_or(Top)` semantics.
+#[inline]
+fn lookup(values: &[ConstLattice], v: SsaValue) -> ConstLattice {
+    values
+        .get(v.0 as usize)
+        .cloned()
+        .unwrap_or(ConstLattice::Top)
+}
+
+/// Dense lattice store. Out-of-range writes are silently dropped to
+/// preserve robustness against malformed SSA input — the prior HashMap
+/// path would have inserted a stray entry; the dense path leaves it
+/// implicit (Top). Either way the value is unobservable downstream
+/// because no use-map entry would point at it.
+#[inline]
+fn store(values: &mut [ConstLattice], v: SsaValue, val: ConstLattice) {
+    let idx = v.0 as usize;
+    if idx < values.len() {
+        values[idx] = val;
     }
 }
 
 /// Evaluate a phi: meet of operands from executable predecessors.
 fn eval_phi(
     operands: &[(BlockId, SsaValue)],
-    values: &HashMap<SsaValue, ConstLattice>,
-    executable_edges: &HashSet<(BlockId, BlockId)>,
+    values: &[ConstLattice],
+    executable_preds: &[SmallVec<[BlockId; 2]>],
     this_block: BlockId,
 ) -> ConstLattice {
+    let preds = executable_preds
+        .get(this_block.0 as usize)
+        .map(|p| p.as_slice())
+        .unwrap_or(&[]);
     let mut result = ConstLattice::Top;
     for (pred_block, val) in operands {
-        if !executable_edges.contains(&(*pred_block, this_block)) {
+        if !preds.contains(pred_block) {
             continue; // skip non-executable predecessors
         }
-        let operand_val = values.get(val).cloned().unwrap_or(ConstLattice::Top);
+        let operand_val = lookup(values, *val);
         result = result.meet(&operand_val);
     }
     result
 }
 
 /// Evaluate a single instruction.
-fn eval_inst(inst: &SsaInst, values: &HashMap<SsaValue, ConstLattice>) -> ConstLattice {
+fn eval_inst(inst: &SsaInst, values: &[ConstLattice]) -> ConstLattice {
     match &inst.op {
         SsaOp::Const(Some(text)) => ConstLattice::parse(text),
         SsaOp::Const(None) => ConstLattice::Varying, // unknown constant
         SsaOp::Assign(uses) if uses.len() == 1 => {
             // Copy: propagate the source's value
-            values.get(&uses[0]).cloned().unwrap_or(ConstLattice::Top)
+            lookup(values, uses[0])
         }
         SsaOp::Assign(_) => ConstLattice::Varying, // expression with multiple uses
         SsaOp::Call { .. }
@@ -297,29 +351,69 @@ fn eval_inst(inst: &SsaInst, values: &HashMap<SsaValue, ConstLattice>) -> ConstL
     }
 }
 
-/// Collect SSA values used by an instruction (for use-map building).
-fn inst_uses(inst: &SsaInst) -> Vec<SsaValue> {
+/// Apply a closure to every SSA value used by an instruction. Avoids the
+/// `Vec<SsaValue>` heap allocation that the previous `inst_uses(inst)`
+/// helper paid on every call (use-map build is O(num_insts), the prior
+/// path bottle-necked there).
+#[inline]
+fn inst_uses_each<F: FnMut(SsaValue)>(inst: &SsaInst, mut f: F) {
     match &inst.op {
-        SsaOp::Phi(operands) => operands.iter().map(|(_, v)| *v).collect(),
-        SsaOp::Assign(uses) => uses.to_vec(),
+        SsaOp::Phi(operands) => {
+            for (_, v) in operands {
+                f(*v);
+            }
+        }
+        SsaOp::Assign(uses) => {
+            for v in uses {
+                f(*v);
+            }
+        }
         SsaOp::Call { args, receiver, .. } => {
-            let mut vals = Vec::new();
             if let Some(rv) = receiver {
-                vals.push(*rv);
+                f(*rv);
             }
             for arg in args {
-                vals.extend(arg.iter());
+                for v in arg {
+                    f(*v);
+                }
             }
-            vals
         }
-        SsaOp::FieldProj { receiver, .. } => vec![*receiver],
+        SsaOp::FieldProj { receiver, .. } => f(*receiver),
         SsaOp::Source
         | SsaOp::Const(_)
         | SsaOp::Param { .. }
         | SsaOp::SelfParam
         | SsaOp::CatchParam
         | SsaOp::Nop
-        | SsaOp::Undef => Vec::new(),
+        | SsaOp::Undef => {}
+    }
+}
+
+/// Zero-allocation predicate: does `inst` use `target` as an operand?
+/// Replaces the prior `inst_uses(inst).contains(&target)` shape, which
+/// allocated a fresh `Vec<SsaValue>` on every check inside the SCCP
+/// re-evaluation worklist.
+#[inline]
+fn inst_has_use(inst: &SsaInst, target: SsaValue) -> bool {
+    match &inst.op {
+        SsaOp::Phi(operands) => operands.iter().any(|(_, v)| *v == target),
+        SsaOp::Assign(uses) => uses.iter().any(|v| *v == target),
+        SsaOp::Call { args, receiver, .. } => {
+            if let Some(rv) = receiver {
+                if *rv == target {
+                    return true;
+                }
+            }
+            args.iter().any(|arg| arg.iter().any(|v| *v == target))
+        }
+        SsaOp::FieldProj { receiver, .. } => *receiver == target,
+        SsaOp::Source
+        | SsaOp::Const(_)
+        | SsaOp::Param { .. }
+        | SsaOp::SelfParam
+        | SsaOp::CatchParam
+        | SsaOp::Nop
+        | SsaOp::Undef => false,
     }
 }
 
@@ -327,9 +421,9 @@ fn inst_uses(inst: &SsaInst) -> Vec<SsaValue> {
 fn process_terminator(
     block: &SsaBlock,
     body: &SsaBody,
-    values: &HashMap<SsaValue, ConstLattice>,
-    executable_edges: &mut HashSet<(BlockId, BlockId)>,
-    executable_blocks: &mut HashSet<BlockId>,
+    values: &[ConstLattice],
+    executable_preds: &mut [SmallVec<[BlockId; 2]>],
+    executable_blocks: &mut [bool],
     cfg_worklist: &mut VecDeque<BlockId>,
 ) {
     match &block.terminator {
@@ -343,7 +437,7 @@ fn process_terminator(
                 mark_edge_executable(
                     block.id,
                     target,
-                    executable_edges,
+                    executable_preds,
                     executable_blocks,
                     cfg_worklist,
                 );
@@ -359,7 +453,7 @@ fn process_terminator(
             let cond_val = body
                 .cfg_node_map
                 .get(cond)
-                .and_then(|v| values.get(v))
+                .map(|v| lookup(values, *v))
                 .and_then(|c| c.as_bool());
 
             match cond_val {
@@ -367,7 +461,7 @@ fn process_terminator(
                     mark_edge_executable(
                         block.id,
                         *true_blk,
-                        executable_edges,
+                        executable_preds,
                         executable_blocks,
                         cfg_worklist,
                     );
@@ -376,7 +470,7 @@ fn process_terminator(
                     mark_edge_executable(
                         block.id,
                         *false_blk,
-                        executable_edges,
+                        executable_preds,
                         executable_blocks,
                         cfg_worklist,
                     );
@@ -386,14 +480,14 @@ fn process_terminator(
                     mark_edge_executable(
                         block.id,
                         *true_blk,
-                        executable_edges,
+                        executable_preds,
                         executable_blocks,
                         cfg_worklist,
                     );
                     mark_edge_executable(
                         block.id,
                         *false_blk,
-                        executable_edges,
+                        executable_preds,
                         executable_blocks,
                         cfg_worklist,
                     );
@@ -417,7 +511,7 @@ fn process_terminator(
                 mark_edge_executable(
                     block.id,
                     target,
-                    executable_edges,
+                    executable_preds,
                     executable_blocks,
                     cfg_worklist,
                 );
@@ -432,7 +526,7 @@ fn process_terminator(
                 mark_edge_executable(
                     block.id,
                     target,
-                    executable_edges,
+                    executable_preds,
                     executable_blocks,
                     cfg_worklist,
                 );
@@ -444,18 +538,27 @@ fn process_terminator(
 fn mark_edge_executable(
     from: BlockId,
     to: BlockId,
-    executable_edges: &mut HashSet<(BlockId, BlockId)>,
-    executable_blocks: &mut HashSet<BlockId>,
+    executable_preds: &mut [SmallVec<[BlockId; 2]>],
+    executable_blocks: &mut [bool],
     cfg_worklist: &mut VecDeque<BlockId>,
 ) {
-    if executable_edges.insert((from, to)) {
-        if executable_blocks.insert(to) {
-            cfg_worklist.push_back(to);
-        } else {
-            // Block already executable but new edge, re-evaluate phis
-            cfg_worklist.push_back(to);
-        }
+    let to_idx = to.0 as usize;
+    if to_idx >= executable_preds.len() {
+        return;
     }
+    let preds = &mut executable_preds[to_idx];
+    if preds.contains(&from) {
+        return;
+    }
+    preds.push(from);
+    let was_already_exec = executable_blocks[to_idx];
+    if !was_already_exec {
+        executable_blocks[to_idx] = true;
+    }
+    // Always re-enqueue: either the block became newly reachable, or it
+    // already was but a new predecessor edge means phi operands need
+    // re-meeting against the now-executable predecessor.
+    cfg_worklist.push_back(to);
 }
 
 /// Apply constant propagation results: prune branches where condition is known constant.

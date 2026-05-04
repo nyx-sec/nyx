@@ -339,6 +339,61 @@ fn bench_collect_top_level_units_go(c: &mut Criterion) {
     });
 }
 
+/// SCCP throughput on every SSA body lowered from the gin context.go
+/// fixture.  Targets `nyx_scanner::ssa::const_prop::const_propagate`
+/// directly, isolating it from the surrounding `optimize_ssa` pass and
+/// the full-fused per-file analysis.
+///
+/// Pre-fix (2026-05-04 perfhunt) `const_propagate` stored its lattice in
+/// `HashMap<SsaValue, ConstLattice>` and walked
+/// `inst_uses(inst).contains(&val)` for every block re-evaluation in the
+/// SSA worklist — both shapes paid `SipHash` cost on every operand, and
+/// the `inst_uses` factory allocated a fresh `Vec<SsaValue>` on every
+/// call.  Switching the lattice + executable-edge maps to dense
+/// `Vec`-indexed storage and the use-check to a zero-allocation
+/// predicate cut `const_propagate` self-time roughly in half on the
+/// large-Go fixture.  A regression that re-introduces the hash-keyed
+/// inner loop will surface here as a ≥1.4× slowdown.
+fn bench_const_propagate_large_go(c: &mut Criterion) {
+    use nyx_scanner::ssa;
+
+    let fixture = Path::new("benches/perf_fixtures/large_go_module.go")
+        .canonicalize()
+        .expect("perf fixture");
+    let cfg_obj = Config::default();
+    let (file_cfg, _lang) = nyx_scanner::ast::build_cfg_for_file(&fixture, &cfg_obj)
+        .expect("build cfg")
+        .expect("supported language");
+
+    // Lower every body once outside the bench loop so we measure only
+    // SCCP cost.  The collected `(SsaBody, Cfg)` pairs are the input to
+    // the inner loop.
+    let mut bodies: Vec<ssa::ir::SsaBody> = Vec::new();
+    for body in &file_cfg.bodies {
+        // Use `body.meta.name` as the scope filter so the SSA lowering
+        // pulls only this function's nodes; `scope_all=true` is reserved
+        // for the synthetic top-level body where `name` is None.
+        let scope = body.meta.name.as_deref();
+        let scope_all = scope.is_none();
+        match ssa::lower_to_ssa(&body.graph, body.entry, scope, scope_all) {
+            Ok(ssa_body) => bodies.push(ssa_body),
+            Err(_) => continue,
+        }
+    }
+    eprintln!("[diag] const_propagate bench: {} bodies lowered", bodies.len());
+
+    c.bench_function("const_propagate_large_go", |b| {
+        b.iter(|| {
+            let mut total_values = 0usize;
+            for body in &bodies {
+                let result = ssa::const_prop::const_propagate(body);
+                total_values += result.values.len();
+            }
+            total_values
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_ast_only_scan,
@@ -351,5 +406,6 @@ criterion_group!(
     bench_extract_authorization_model_go,
     bench_extract_authorization_model_shared_go,
     bench_collect_top_level_units_go,
+    bench_const_propagate_large_go,
 );
 criterion_main!(benches);
