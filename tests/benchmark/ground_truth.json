@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 563
+    "corpus_size": 565
   },
   "cases": [
     {
@@ -11800,6 +11800,79 @@
       ],
       "disabled": false,
       "notes": "CVE-2019-18634 patched counterpart: bounded copy routine replaces the strcpy sink; regression guard that Nyx does not refire on the fix"
+    },
+    {
+      "case_id": "cve-c-2017-1000117-vulnerable",
+      "file": "cve_corpus/c/CVE-2017-1000117/vulnerable.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-88",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.execvp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          87,
+          87
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          92,
+          92
+        ]
+      ],
+      "tags": [
+        "cve",
+        "git",
+        "argv-injection",
+        "cmdi"
+      ],
+      "disabled": true,
+      "disabled_reason": "C taint engine does not propagate taint through C array-element writes (`args[i] = ssh_host;`) and has no `c.cmdi.exec*` AST pattern; even if such a pattern were added it would also fire on the patched fixture (precision miss) because the CVE is sanitised by a pre-call dash-prefix guard the engine does not classify as a validator. Three-layer deep fix tracked in CVE_DEFERRED.md.",
+      "notes": "CVE-2017-1000117 (git ssh:// argv injection): pre-2.7.6 git accepted `ssh://-oProxyCommand=...@host/repo` URLs and pushed the URL host as an argv element to ssh, where a leading dash was treated as an option flag. GPL-2.0"
+    },
+    {
+      "case_id": "cve-c-2017-1000117-patched",
+      "file": "cve_corpus/c/CVE-2017-1000117/patched.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "c.cmdi.system",
+        "c.cmdi.popen",
+        "c.cmdi.execvp",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "git",
+        "patched",
+        "negative"
+      ],
+      "disabled": true,
+      "disabled_reason": "Paired with cve-c-2017-1000117-vulnerable; precision side requires sanitizer recognition of the upstream `if (ssh_host[0] == '-') die(...)` guard so that adding any `c.cmdi.execvp` AST pattern would not also fire on the patched fixture.",
+      "notes": "CVE-2017-1000117 patched counterpart: dash-prefix gate added before argv assembly; regression guard that Nyx does not refire on the fix once the deferral lands"
     },
     {
       "case_id": "cve-cpp-2019-13132-vulnerable",

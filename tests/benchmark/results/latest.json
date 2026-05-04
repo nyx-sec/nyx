@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T14:45:34Z",
+  "timestamp": "2026-05-04T15:11:45Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,10 +9,10 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:31304f3d8bee6b130baf3ea888aabf4488901f3e63ce7351ea1b0453363b3d3f",
-  "corpus_size": 561,
+  "ground_truth_hash": "sha256:0d3b7dbec93c44ab57f446aade9fcd32f676a891835e7644d445b61935c5a6b5",
+  "corpus_size": 563,
   "cases_run": 560,
-  "cases_skipped": 1,
+  "cases_skipped": 3,
   "outcomes": [
     {
       "case_id": "c-buf-001",
