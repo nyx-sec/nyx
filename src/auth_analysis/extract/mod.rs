@@ -21,13 +21,26 @@ pub mod spring;
 
 pub trait AuthExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool;
+
+    /// Returns true when this extractor expects the orchestrator to
+    /// have already populated `model.units` with one
+    /// [`AnalysisUnitKind::Function`] entry per top-level function /
+    /// method via [`common::collect_top_level_units`].  Defaults to
+    /// `true`; framework extractors that build their own unit set
+    /// (Spring, Rails) override to `false` so the orchestrator skips
+    /// the shared collection pass when only those extractors match.
+    fn requires_top_level_units(&self) -> bool {
+        true
+    }
+
     fn extract(
         &self,
         tree: &Tree,
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel;
+        model: &mut AuthorizationModel,
+    );
 }
 
 pub fn extract_authorization_model(
@@ -58,13 +71,35 @@ pub fn extract_authorization_model(
         ..Default::default()
     };
 
+    // **Hoist `collect_top_level_units` out of the per-extractor loop.**
+    // For multi-extractor languages (Go: gin+echo, JS/TS: express+koa+
+    // fastify, Python: flask+django, Rust: axum+actix_web+rocket, Ruby:
+    // sinatra) the legacy code re-walked the entire AST and rebuilt the
+    // `Function`-kind unit set per extractor (then deduped by span).
+    // `collect_top_level_units` was the dominant cost in
+    // `extract_authorization_model` (46% of total wall-clock on the
+    // mattermost/server/channels/app subtree, 2026-05-04 profile).
+    //
+    // After the hoist each extractor receives a `&mut model` that
+    // already carries the shared unit set; framework-specific work
+    // (route detection, middleware injection, typed-extractor guards)
+    // augments and promotes those units in place via the existing
+    // `attach_route_handler` "promote-or-create" path.
+    //
+    // Spring + Rails build their own unit set (`maybe_collect_controller`
+    // / Rails' `collect_nodes`), so they opt out via
+    // `requires_top_level_units = false`; the shared pass runs only
+    // when at least one matching extractor needs it.
+    let any_requires_units = extractors
+        .iter()
+        .any(|e| e.supports(lang, framework_ctx) && e.requires_top_level_units());
+    if any_requires_units {
+        common::collect_top_level_units(tree.root_node(), bytes, rules, &mut model);
+    }
+
     for extractor in extractors {
         if extractor.supports(lang, framework_ctx) {
-            let mut other = extractor.extract(tree, bytes, path, rules);
-            // Preserve the canonical `lang` set above; sub-extractors
-            // build their own default-initialised models with empty lang.
-            other.lang = model.lang.clone();
-            model.extend(other);
+            extractor.extract(tree, bytes, path, rules, &mut model);
         }
     }
 

@@ -4,8 +4,7 @@ use super::axum::{
     expanded_guard_call_sites, guard_calls_for_handler, inject_guard_checks, rust_param_aliases,
 };
 use super::common::{
-    attach_route_handler, call_name, collect_top_level_units, named_children, resolve_handler_node,
-    string_literal_value,
+    attach_route_handler, call_name, named_children, resolve_handler_node, string_literal_value,
 };
 use crate::auth_analysis::config::AuthAnalysisRules;
 use crate::auth_analysis::model::{
@@ -30,21 +29,11 @@ impl AuthExtractor for ActixWebExtractor {
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-
-        collect_top_level_units(root, bytes, rules, &mut model);
-        collect_routes(root, root, bytes, path, rules, &mut model);
-        apply_typed_extractor_guards_to_units(
-            root,
-            bytes,
-            rules,
-            &mut model,
-            GuardFramework::ActixWeb,
-        );
-
-        model
+        collect_routes(root, root, bytes, path, rules, model);
+        apply_typed_extractor_guards_to_units(root, bytes, rules, model, GuardFramework::ActixWeb);
     }
 }
 

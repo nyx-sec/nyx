@@ -208,6 +208,45 @@ fn bench_analyse_file_fused_large_go(c: &mut Criterion) {
     });
 }
 
+/// Per-file `extract_authorization_model` throughput on the realistic
+/// ~1.5k-line Go fixture (gin context.go).  Guards the
+/// `extract_authorization_model` orchestrator hoist that pulled the
+/// shared `collect_top_level_units` AST walk out of every supporting
+/// extractor's `extract()` (one walk per file instead of one per
+/// matching extractor).  On Go files both `EchoExtractor` and
+/// `GinExtractor` match by default — pre-hoist this bench measured the
+/// AST being walked twice; regressions here mean the hoist has been
+/// broken or a new Go extractor was added that re-walks the tree.
+fn bench_extract_authorization_model_go(c: &mut Criterion) {
+    use tree_sitter::Parser;
+
+    let fixture = Path::new("benches/perf_fixtures/large_go_module.go")
+        .canonicalize()
+        .expect("perf fixture");
+    let bytes = std::fs::read(&fixture).expect("read fixture");
+
+    let mut parser = Parser::new();
+    let go_lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
+    parser.set_language(&go_lang).expect("set go grammar");
+    let tree = parser.parse(&bytes, None).expect("parse fixture");
+
+    let cfg = Config::default();
+    let rules = nyx_scanner::auth_analysis::config::build_auth_rules(&cfg, "go");
+
+    c.bench_function("extract_authorization_model_go", |b| {
+        b.iter(|| {
+            nyx_scanner::auth_analysis::extract::extract_authorization_model(
+                "go",
+                cfg.framework_ctx.as_ref(),
+                &tree,
+                &bytes,
+                &fixture,
+                &rules,
+            )
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_ast_only_scan,
@@ -217,5 +256,6 @@ criterion_group!(
     bench_state_analysis_only,
     bench_classify,
     bench_analyse_file_fused_large_go,
+    bench_extract_authorization_model_go,
 );
 criterion_main!(benches);

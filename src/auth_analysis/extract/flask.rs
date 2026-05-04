@@ -4,7 +4,7 @@ use super::common::{
     push_route_registration, string_literal_value, text, visit_named_nodes,
 };
 use crate::auth_analysis::config::{AuthAnalysisRules, matches_name};
-use crate::auth_analysis::extract::common::{collect_top_level_units, decorated_definition_child};
+use crate::auth_analysis::extract::common::decorated_definition_child;
 use crate::auth_analysis::model::{AuthorizationModel, CallSite, Framework, HttpMethod};
 use crate::labels::bare_method_name;
 use crate::utils::project::{DetectedFramework, FrameworkContext};
@@ -26,18 +26,14 @@ impl AuthExtractor for FlaskExtractor {
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-
-        collect_top_level_units(root, bytes, rules, &mut model);
         visit_named_nodes(root, &mut |node| {
             if node.kind() == "decorated_definition" {
-                maybe_collect_flask_route(root, node, bytes, path, rules, &mut model);
+                maybe_collect_flask_route(root, node, bytes, path, rules, model);
             }
         });
-
-        model
     }
 }
 

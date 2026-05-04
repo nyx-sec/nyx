@@ -1,8 +1,8 @@
 use super::AuthExtractor;
 use super::common::{
-    attach_route_handler, call_site_from_node, collect_top_level_units, http_method_from_name,
-    is_handler_reference, join_route_paths, member_target, named_children, push_route_registration,
-    string_literal_value, text, visit_named_nodes,
+    attach_route_handler, call_site_from_node, http_method_from_name, is_handler_reference,
+    join_route_paths, member_target, named_children, push_route_registration, string_literal_value,
+    text, visit_named_nodes,
 };
 use crate::auth_analysis::config::AuthAnalysisRules;
 use crate::auth_analysis::model::{AuthorizationModel, CallSite, Framework};
@@ -26,24 +26,21 @@ impl AuthExtractor for EchoExtractor {
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
         let mut groups = HashMap::new();
 
-        collect_top_level_units(root, bytes, rules, &mut model);
         visit_named_nodes(root, &mut |node| match node.kind() {
             "short_var_declaration" | "assignment_statement" => {
                 maybe_collect_group_binding(node, bytes, &mut groups)
             }
             "call_expression" => {
                 maybe_collect_group_use(node, bytes, &mut groups);
-                maybe_collect_route(root, node, bytes, path, rules, &groups, &mut model);
+                maybe_collect_route(root, node, bytes, path, rules, &groups, model);
             }
             _ => {}
         });
-
-        model
     }
 }
 

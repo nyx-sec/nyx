@@ -1,7 +1,7 @@
 use super::AuthExtractor;
 use super::common::{
-    auth_check_from_call_site, build_function_unit, call_name, call_site_from_node,
-    collect_top_level_units, named_children, span, string_literal_value,
+    auth_check_from_call_site, build_function_unit, call_name, call_site_from_node, named_children,
+    span, string_literal_value,
 };
 use crate::auth_analysis::config::{AuthAnalysisRules, matches_name};
 use crate::auth_analysis::model::{
@@ -27,13 +27,11 @@ impl AuthExtractor for SinatraExtractor {
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-        collect_top_level_units(root, bytes, rules, &mut model);
         let before_filters = collect_before_filters(root, bytes);
-        collect_routes(root, bytes, path, rules, &before_filters, &mut model);
-        model
+        collect_routes(root, bytes, path, rules, &before_filters, model);
     }
 }
 

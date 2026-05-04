@@ -1,8 +1,7 @@
 use super::AuthExtractor;
 use super::common::{
     attach_route_handler, call_name, call_site_from_node, call_sites_from_value,
-    collect_top_level_units, function_definition_node, named_children, resolve_handler_node,
-    string_literal_value, text,
+    function_definition_node, named_children, resolve_handler_node, string_literal_value, text,
 };
 use crate::auth_analysis::config::AuthAnalysisRules;
 use crate::auth_analysis::model::{
@@ -29,15 +28,11 @@ impl AuthExtractor for AxumExtractor {
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-
-        collect_top_level_units(root, bytes, rules, &mut model);
-        collect_routes(root, root, bytes, path, rules, &mut model);
-        apply_typed_extractor_guards_to_units(root, bytes, rules, &mut model, GuardFramework::Axum);
-
-        model
+        collect_routes(root, root, bytes, path, rules, model);
+        apply_typed_extractor_guards_to_units(root, bytes, rules, model, GuardFramework::Axum);
     }
 }
 

@@ -1,8 +1,7 @@
 use super::AuthExtractor;
 use super::common::{
-    attach_route_handler, call_site_from_node, collect_top_level_units, http_method_from_name,
-    is_handler_reference, member_target, named_children, push_route_registration,
-    string_literal_value, visit_named_nodes,
+    attach_route_handler, call_site_from_node, http_method_from_name, is_handler_reference,
+    member_target, named_children, push_route_registration, string_literal_value, visit_named_nodes,
 };
 use crate::auth_analysis::config::AuthAnalysisRules;
 use crate::auth_analysis::model::{AuthorizationModel, Framework};
@@ -25,18 +24,14 @@ impl AuthExtractor for ExpressExtractor {
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-
-        collect_top_level_units(root, bytes, rules, &mut model);
         visit_named_nodes(root, &mut |node| {
             if node.kind() == "call_expression" {
-                maybe_collect_route(root, node, bytes, path, rules, &mut model);
+                maybe_collect_route(root, node, bytes, path, rules, model);
             }
         });
-
-        model
     }
 }
 

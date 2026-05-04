@@ -20,19 +20,27 @@ impl AuthExtractor for SpringExtractor {
                 .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Spring))
     }
 
+    fn requires_top_level_units(&self) -> bool {
+        // Spring synthesises its own units inside `maybe_collect_controller`
+        // (only `@Controller` / `@RestController`-annotated classes
+        // produce units; non-controller Java files contribute nothing).
+        // The orchestrator's shared `collect_top_level_units` pass would
+        // emit a `Function` unit per top-level method on every Java file
+        // including non-controller helpers, doubling work and broadening
+        // the analysis surface beyond what Spring needs.
+        false
+    }
+
     fn extract(
         &self,
         tree: &Tree,
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-
-        collect_classes(root, bytes, path, rules, &mut model);
-
-        model
+        collect_classes(root, bytes, path, rules, model);
     }
 }
 
