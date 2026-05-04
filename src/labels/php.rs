@@ -133,10 +133,15 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
     },
-    // NOTE: `file_get_contents` can fetch URLs (SSRF vector) and local files (LFI vector).
-    // As a Sink(SSRF) it only fires when the argument is tainted.
+    // NOTE: `file_get_contents` and `fopen` can fetch URLs (SSRF vector) and
+    // local files (LFI vector — `file://` scheme).  As a Sink(SSRF) they only
+    // fire when the argument is tainted.  `fopen` is the canonical low-level
+    // stream-opening API used by media-import / OEmbed / podcast pipelines
+    // (CVE-2026-33486 in roadiz/documents wraps `fopen($url, 'r')` in a
+    // public `DownloadedFile::fromUrl` static method that any authenticated
+    // backend caller can drive with attacker-controlled URLs).
     LabelRule {
-        matchers: &["file_get_contents", "curl_exec"],
+        matchers: &["file_get_contents", "curl_exec", "fopen"],
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
     },
@@ -232,6 +237,11 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "anonymous_function_creation_expression" => Kind::Function,
     "arrow_function"                => Kind::Function,
     "class_declaration"             => Kind::Block,
+    "declaration_list"              => Kind::Block,
+    "interface_declaration"         => Kind::Block,
+    "trait_declaration"             => Kind::Block,
+    "enum_declaration"              => Kind::Block,
+    "enum_declaration_list"         => Kind::Block,
 
     // data-flow
     "function_call_expression"      => Kind::CallFn,

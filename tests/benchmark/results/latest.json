@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T07:40:17Z",
+  "timestamp": "2026-05-04T08:39:03Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:ae396bc77b62d919de5e46607fa4648ad926571eb809ef211b549e3589f6e4f3",
-  "corpus_size": 549,
-  "cases_run": 548,
+  "ground_truth_hash": "sha256:ced145a243534a6d8f88a95342391a730d9396011f913fc7322c2f545c9b1f6d",
+  "corpus_size": 553,
+  "cases_run": 552,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -1724,6 +1724,43 @@
       "all_finding_ids": [
         "php.deser.unserialize",
         "taint-unsanitised-flow (source 24:1)"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-php-2026-33486-patched",
+      "file": "cve_corpus/php/CVE-2026-33486/patched.php",
+      "language": "php",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-php-2026-33486-vulnerable",
+      "file": "cve_corpus/php/CVE-2026-33486/vulnerable.php",
+      "language": "php",
+      "vuln_class": "ssrf",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 40:9)"
+      ],
+      "unexpected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "all_finding_ids": [
+        "state-resource-leak",
+        "taint-unsanitised-flow (source 40:9)"
       ],
       "security_finding_count": 2,
       "non_security_finding_count": 0
@@ -5108,14 +5145,16 @@
       "outcome_location_level": null,
       "matched_rule_ids": [
         "php.deser.unserialize",
+        "taint-unsanitised-flow (source 13:38)",
         "php.deser.unserialize"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "php.deser.unserialize",
+        "taint-unsanitised-flow (source 13:38)",
         "php.deser.unserialize"
       ],
-      "security_finding_count": 2,
+      "security_finding_count": 3,
       "non_security_finding_count": 0
     },
     {
@@ -5469,6 +5508,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "php-safe-camelcase-validator-001",
+      "file": "php/safe/safe_camelcase_validator_negated.php",
+      "language": "php",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "php-safe-filter-001",
       "file": "php/safe/safe_filter_input.php",
       "language": "php",
@@ -5561,6 +5615,28 @@
       "all_finding_ids": [
         "taint-unsanitised-flow (source 2:1)",
         "taint-unsanitised-flow (source 2:1)"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "php-ssrf-002",
+      "file": "php/ssrf/ssrf_class_method_fopen.php",
+      "language": "php",
+      "vuln_class": "ssrf",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 14:9)"
+      ],
+      "unexpected_rule_ids": [
+        "cfg-resource-leak"
+      ],
+      "all_finding_ids": [
+        "cfg-resource-leak",
+        "taint-unsanitised-flow (source 14:9)"
       ],
       "security_finding_count": 2,
       "non_security_finding_count": 0
@@ -9792,19 +9868,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 268,
+    "tp": 270,
     "fp": 0,
     "fn_": 0,
-    "tn": 280,
+    "tn": 282,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 268,
+    "tp": 270,
     "fp": 0,
     "fn_": 0,
-    "tn": 280,
+    "tn": 282,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9856,10 +9932,10 @@
       "f1": 1.0
     },
     "php": {
-      "tp": 20,
+      "tp": 22,
       "fp": 0,
       "fn_": 0,
-      "tn": 21,
+      "tn": 23,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10041,7 +10117,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 280,
+      "tn": 282,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10074,7 +10150,7 @@
       "f1": 1.0
     },
     "ssrf": {
-      "tp": 30,
+      "tp": 32,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -10094,31 +10170,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 86,
-      "fp": 107,
-      "fn_": 182,
-      "tn": 173,
-      "precision": 0.44559585492227977,
-      "recall": 0.3208955223880597,
-      "f1": 0.37310195227765725
+      "tp": 87,
+      "fp": 108,
+      "fn_": 183,
+      "tn": 174,
+      "precision": 0.4461538461538462,
+      "recall": 0.32222222222222224,
+      "f1": 0.3741935483870968
     },
     ">=Low": {
-      "tp": 86,
-      "fp": 139,
+      "tp": 88,
+      "fp": 140,
       "fn_": 182,
-      "tn": 141,
-      "precision": 0.38222222222222224,
-      "recall": 0.3208955223880597,
-      "f1": 0.34888438133874244
+      "tn": 142,
+      "precision": 0.38596491228070173,
+      "recall": 0.32592592592592595,
+      "f1": 0.3534136546184739
     },
     ">=Medium": {
-      "tp": 86,
+      "tp": 88,
       "fp": 130,
       "fn_": 182,
-      "tn": 150,
-      "precision": 0.39814814814814814,
-      "recall": 0.3208955223880597,
-      "f1": 0.35537190082644626
+      "tn": 152,
+      "precision": 0.4036697247706422,
+      "recall": 0.32592592592592595,
+      "f1": 0.36065573770491804
     }
   }
 }

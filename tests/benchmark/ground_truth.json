@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 551
+    "corpus_size": 555
   },
   "cases": [
     {
@@ -2853,6 +2853,43 @@
       "notes": "SSRF via file_get_contents() with user-controlled URL"
     },
     {
+      "case_id": "php-ssrf-002",
+      "file": "php/ssrf/ssrf_class_method_fopen.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "tags": [
+        "fopen",
+        "ssrf",
+        "class-method"
+      ],
+      "disabled": false,
+      "notes": "Regression: PHP class-method body taint analysis (declaration_list mapped to Kind::Block) + fopen as PHP SSRF sink"
+    },
+    {
       "case_id": "php-path_traversal-001",
       "file": "php/path_traversal/path_traversal.php",
       "language": "php",
@@ -4765,6 +4802,34 @@
       ],
       "disabled": false,
       "notes": "filter_input sanitizes user input \u2014 should produce no taint finding"
+    },
+    {
+      "case_id": "php-safe-camelcase-validator-001",
+      "file": "php/safe/safe_camelcase_validator_negated.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "validator",
+        "camelcase",
+        "negated",
+        "class-method"
+      ],
+      "disabled": false,
+      "notes": "Regression: camelCase `isSafeRemoteUrl` validator + `if (!validator($x))` early-return narrowing in PHP class method"
     },
     {
       "case_id": "php-sqli-pdo-001",
@@ -10632,6 +10697,72 @@
       ],
       "disabled": false,
       "notes": "CVE-2018-15133 patched counterpart: HMAC-verified JSON cookie replaces PHP-serialized payload; regression guard that Nyx does not refire on the fix"
+    },
+    {
+      "case_id": "cve-php-2026-33486-vulnerable",
+      "file": "cve_corpus/php/CVE-2026-33486/vulnerable.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          44,
+          44
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          40,
+          40
+        ]
+      ],
+      "tags": [
+        "cve",
+        "roadiz",
+        "ssrf",
+        "lfi"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-33486: roadiz/documents DownloadedFile::fromUrl passes the URL parameter to fopen() without scheme allowlist or host validation; file:// payloads read host filesystem. MIT"
+    },
+    {
+      "case_id": "cve-php-2026-33486-patched",
+      "file": "cve_corpus/php/CVE-2026-33486/patched.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "roadiz",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-33486 patched counterpart: isSafeRemoteUrl early-return validates scheme/host before fopen; regression guard that Nyx does not refire on the fix"
     },
     {
       "case_id": "cve-rb-2013-0156-vulnerable",
