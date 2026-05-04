@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 540
+    "corpus_size": 541
   },
   "cases": [
     {
@@ -15071,7 +15071,7 @@
       ],
       "allowed_alternative_rule_ids": [],
       "forbidden_rule_ids": [],
-      "expected_severity": "HIGH",
+      "expected_severity": "MEDIUM",
       "expected_category": "Security",
       "expected_sink_lines": [],
       "expected_source_lines": [],
@@ -15135,7 +15135,34 @@
         "real-repo-precision-2026-05-03"
       ],
       "disabled": false,
-      "notes": "Recall guard for the 2026-05-03 type-aware Go param filter. Even after ctx context.Context is dropped from unit.params, an id-shaped param keeps the unit on the hook (id-shape recognised before the framework-name allow-list)."
+      "notes": "Recall guard for the 2026-05-03 Go DAO-helper precision pass. After id-like scalar params are dropped from unit.params for non-route units, this fixture pins recall via gin route registration: r.GET(/items/:id, GetByID) promotes the unit to RouteHandler; function_params_route_handler keeps id-like scalar params and the rule fires on the bare-receiver DAO call."
+    },
+    {
+      "case_id": "go-safe-realrepo-019",
+      "file": "go/safe/safe_dao_helper_id_scalar.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": "NONE",
+      "expected_category": "N/A",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "Distilled from gitea models/actions/{run,run_job,runner,...}.go DAO helpers (~957 FPs). Pattern: (ctx context.Context, repoID, runID int64) signatures with bounded scalar id-like params calling internal DB helpers. Engine fix in src/auth_analysis/extract/common.rs::collect_param_names Go arm drops id-like scalar names from unit.params for non-route units (mirrors Python typed_parameter filter)."
     },
     {
       "case_id": "py-auth-realrepo-001",

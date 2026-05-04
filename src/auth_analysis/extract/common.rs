@@ -3457,18 +3457,53 @@ fn collect_param_names(
         "parameter_declaration" | "variadic_parameter_declaration"
             if node.child_by_field_name("name").is_some() =>
         {
-            if let Some(type_node) = node.child_by_field_name("type")
-                && is_go_non_user_input_type(type_node, bytes)
+            let type_node = node.child_by_field_name("type");
+            if let Some(t) = type_node
+                && is_go_non_user_input_type(t, bytes)
             {
                 return;
             }
+            // Mirror of the Python `typed_parameter` filter (see
+            // `is_python_id_like_typed_param` arm above): for non-route
+            // units, an id-like Go param whose declared type is a
+            // bounded primitive scalar (`int64`, `uint32`, `string`,
+            // `bool`, `byte`, `rune`, `float64`, …) is a caller-passed
+            // scope identifier, not user-controlled HTTP input.  Real
+            // Go HTTP handlers always carry a framework-request-typed
+            // param (`*http.Request`, `*gin.Context`, `echo.Context`,
+            // `*fiber.Ctx`, `*context.APIContext`, …) and are
+            // recognised by the per-framework route extractors which
+            // call `function_params_route_handler`
+            // (`include_id_like_typed = true`) — those bypass this
+            // filter so id-shaped path params survive on real routes.
+            //
+            // Real-repo trigger: `/Users/elipeter/oss/gitea` ─ ~957
+            // `go.auth.missing_ownership_check` findings on backend
+            // helpers like
+            // `func GetRunByRepoAndID(ctx context.Context,
+            //                          repoID, runID int64)`,
+            // `func DeleteRunner(ctx context.Context, id int64)`,
+            // and the entire `models/...` DAO layer where the
+            // ownership check sits in the calling route handler.
+            // Same shape over-fires on minio's `cmd/iam-*-store`
+            // helpers and would on every Go ORM/DAO codebase.
+            let type_is_bounded_scalar = type_node
+                .map(|t| is_go_bounded_scalar_type(t, bytes))
+                .unwrap_or(false);
             let mut cursor = node.walk();
             for child in node.children_by_field_name("name", &mut cursor) {
                 if child.kind() == "identifier" {
                     let name = text(child, bytes);
-                    if !name.is_empty() && !out.contains(&name) {
-                        out.push(name);
+                    if name.is_empty() || out.contains(&name) {
+                        continue;
                     }
+                    if !include_id_like_typed
+                        && type_is_bounded_scalar
+                        && is_go_id_like_typed_param(&name)
+                    {
+                        continue;
+                    }
+                    out.push(name);
                 }
             }
         }
@@ -3633,6 +3668,56 @@ fn is_go_non_user_input_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
 fn is_python_id_like_typed_param(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "id" || lower.ends_with("id") || lower.ends_with("_id") || lower.ends_with("ids")
+}
+
+/// Same shape predicate used by the Go typed-param fallback in
+/// `collect_param_names`.  Kept separate from the Python helper so the
+/// two recognisers can diverge if/when language-specific spellings
+/// emerge; the current vocabulary is the same canonical id-suffix
+/// set as `auth_analysis::checks::is_id_like_name`.
+fn is_go_id_like_typed_param(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "id" || lower.ends_with("id") || lower.ends_with("_id") || lower.ends_with("ids")
+}
+
+/// True iff `type_node` names a Go bounded primitive scalar:
+/// integer (`int*` / `uint*` / `byte` / `rune` / `uintptr`), floating
+/// point (`float32` / `float64`), `bool`, or `string`.  Used by the
+/// Go arm of `collect_param_names` to recognise the
+/// "id-like name + scalar type" DAO-helper shape and refuse to lift
+/// such params into `unit.params` for non-route units.
+///
+/// Conservative scope: only bare `type_identifier` matches.  Pointer
+/// types (`*Foo`), generic types (`Map[K, V]`), qualified types
+/// (`pkg.Type`), and slice/array types (`[]T`) are framework or
+/// payload shapes, NOT bounded primitives, so they're left alone and
+/// the param keeps its name.  This keeps real handler shapes that
+/// happen to spell an id-like name on a complex type (`req
+/// *RequestWithID`) from being silently dropped.
+fn is_go_bounded_scalar_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
+    if type_node.kind() != "type_identifier" {
+        return false;
+    }
+    matches!(
+        text(type_node, bytes).as_str(),
+        "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "byte"
+            | "rune"
+            | "float32"
+            | "float64"
+            | "bool"
+            | "string"
+    )
 }
 
 pub fn is_function_like(node: Node<'_>) -> bool {
@@ -4874,6 +4959,109 @@ mod tests {
         assert!(params.contains(&"b".to_string()), "got {:?}", params);
         assert!(!params.contains(&"ctx".to_string()), "got {:?}", params);
         assert!(!params.contains(&"int".to_string()), "got {:?}", params);
+    }
+
+    /// DAO-helper shape (`func GetRunByRepoAndID(ctx context.Context,
+    /// repoID, runID int64)`): id-like names with bounded primitive
+    /// scalar types are caller-passed scope identifiers, NOT user
+    /// input.  For non-route units (`function_params`,
+    /// `include_id_like_typed = false`), they must NOT lift into
+    /// `unit.params` — that would gate `unit_has_user_input_evidence`
+    /// open on every internal Go ORM helper and over-fire
+    /// `go.auth.missing_ownership_check`.
+    ///
+    /// Real-repo trigger:
+    /// `/Users/elipeter/oss/gitea/models/actions/run_job.go::
+    /// GetRunByRepoAndID` and ~957 sibling helpers across gitea's
+    /// `models/...` DAO layer.  Same shape over-fires on minio's
+    /// `cmd/iam-*-store` and is the canonical Go ORM helper signature.
+    #[test]
+    fn collect_param_names_go_drops_id_like_scalar_params_for_dao_helper() {
+        use super::function_params;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        let src = b"package x\nfunc GetRunByRepoAndID(ctx context.Context, repoID, runID int64) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params(func, src);
+        assert!(
+            !params.contains(&"ctx".to_string()),
+            "context.Context dropped: got {:?}",
+            params
+        );
+        assert!(
+            !params.contains(&"repoID".to_string()),
+            "id-like scalar param dropped for DAO helper: got {:?}",
+            params
+        );
+        assert!(
+            !params.contains(&"runID".to_string()),
+            "id-like scalar param dropped for DAO helper: got {:?}",
+            params
+        );
+        assert!(
+            params.is_empty(),
+            "no params survive on DAO-shape helper: got {:?}",
+            params
+        );
+    }
+
+    /// Conservative scope: only **bounded primitive scalar** types
+    /// trigger the id-like drop.  Pointer / struct / slice types are
+    /// payload shapes that may or may not be user-controlled — leave
+    /// them alone so non-DAO helpers retain their evidence.
+    #[test]
+    fn collect_param_names_go_keeps_id_like_pointer_struct_param() {
+        use super::function_params;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        // `runnerID *Runner` — id-like name, but the type is a pointer
+        // (payload shape), so the param name must survive.
+        let src = b"package x\nfunc UpdateRunner(ctx context.Context, runnerID *Runner) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params(func, src);
+        assert!(
+            params.contains(&"runnerID".to_string()),
+            "id-like pointer param survives: got {:?}",
+            params
+        );
+    }
+
+    /// Route handlers go through `function_params_route_handler`
+    /// (`include_id_like_typed = true`) — the id-like-scalar filter
+    /// must NOT trip there.  Path-param-on-REST-route is *the*
+    /// primary user input and middleware-injected auth checks rely on
+    /// these names being present in `unit.params`.
+    #[test]
+    fn collect_param_names_go_route_handler_keeps_id_like_scalar_params() {
+        use super::function_params_route_handler;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        let src = b"package x\nfunc GetRepo(ctx context.Context, repoID int64) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params_route_handler(func, src);
+        assert!(
+            params.contains(&"repoID".to_string()),
+            "id-like scalar param kept for route handler: got {:?}",
+            params
+        );
     }
 
     mod ruby_visibility_and_callbacks {
