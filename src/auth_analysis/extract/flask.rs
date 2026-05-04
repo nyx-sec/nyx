@@ -1004,7 +1004,7 @@ mod router_level_dependencies_tests {
         let tree = parse_python(src);
         let bytes = src.as_bytes();
         let map = collect_router_level_dependencies(tree.root_node(), bytes);
-        assert!(map.get("router").is_none());
+        assert!(!map.contains_key("router"));
     }
 
     /// Non-router constructor (`MyService(...)`) with a coincidental
@@ -1017,7 +1017,7 @@ mod router_level_dependencies_tests {
         let tree = parse_python(src);
         let bytes = src.as_bytes();
         let map = collect_router_level_dependencies(tree.root_node(), bytes);
-        assert!(map.get("svc").is_none());
+        assert!(!map.contains_key("svc"));
     }
 
     /// Helper: parse a single decorated function and pull out the

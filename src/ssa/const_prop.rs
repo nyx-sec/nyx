@@ -395,14 +395,14 @@ fn inst_uses_each<F: FnMut(SsaValue)>(inst: &SsaInst, mut f: F) {
 fn inst_has_use(inst: &SsaInst, target: SsaValue) -> bool {
     match &inst.op {
         SsaOp::Phi(operands) => operands.iter().any(|(_, v)| *v == target),
-        SsaOp::Assign(uses) => uses.iter().any(|v| *v == target),
+        SsaOp::Assign(uses) => uses.contains(&target),
         SsaOp::Call { args, receiver, .. } => {
-            if let Some(rv) = receiver {
-                if *rv == target {
-                    return true;
-                }
+            if let Some(rv) = receiver
+                && *rv == target
+            {
+                return true;
             }
-            args.iter().any(|arg| arg.iter().any(|v| *v == target))
+            args.iter().any(|arg| arg.contains(&target))
         }
         SsaOp::FieldProj { receiver, .. } => *receiver == target,
         SsaOp::Source

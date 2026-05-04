@@ -413,8 +413,9 @@ mod tests {
     /// Pass 1 must capture both the parent's local deps and the edges
     /// targeting `task_instances.router`.  Cross-file Security wrappers
     /// (regardless of explicit `scopes=[...]`) are flagged scoped — the
-    /// architectural intent of `parent_router = X(dependencies=[Security(callable)])
-    /// + parent_router.include_router(child_router)` is auth scoping over
+    /// architectural intent of
+    /// `parent_router = X(dependencies=[Security(callable)])` followed by
+    /// `parent_router.include_router(child_router)` is auth scoping over
     /// every child route.  See the `unwrap_depends_call` doc comment for
     /// the policy rationale.
     #[test]
@@ -448,10 +449,9 @@ mod tests {
 
         // execution_api_router has no deps → no entry.
         assert!(
-            facts
+            !facts
                 .local_router_deps
-                .get("execution_api_router")
-                .is_none()
+                .contains_key("execution_api_router")
         );
 
         // Two child include_router edges + one nested

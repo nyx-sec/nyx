@@ -4364,10 +4364,11 @@ pub fn member_chain(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
         // `["select()", "filter_by"]` rather than `["select", "filter_by"]`.
         // `receiver_is_chained_call` consults the `(` to detect the
         // opaque-builder receiver.
-        if object_is_call && sub.last().map(|s| !s.ends_with(')')).unwrap_or(false) {
-            if let Some(last) = sub.last_mut() {
-                last.push_str("()");
-            }
+        if object_is_call
+            && sub.last().map(|s| !s.ends_with(')')).unwrap_or(false)
+            && let Some(last) = sub.last_mut()
+        {
+            last.push_str("()");
         }
         chain.extend(sub);
     }
@@ -5207,12 +5208,11 @@ mod tests {
         let tree = parser.parse(src.as_slice(), None).unwrap();
 
         fn find_outer_call<'a>(node: Node<'a>) -> Option<Node<'a>> {
-            if node.kind() == "call" {
-                if let Some(function) = node.child_by_field_name("function")
-                    && function.kind() == "attribute"
-                {
-                    return Some(node);
-                }
+            if node.kind() == "call"
+                && let Some(function) = node.child_by_field_name("function")
+                && function.kind() == "attribute"
+            {
+                return Some(node);
             }
             for i in 0..node.named_child_count() {
                 if let Some(child) = node.named_child(i as u32)

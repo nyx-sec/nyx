@@ -679,11 +679,10 @@ fn apply_caller_scope_propagation(model: &mut model::AuthorizationModel) {
     const MAX_ROUNDS: usize = 4;
     for _ in 0..MAX_ROUNDS {
         let mut grew = false;
-        for callee_idx in 0..model.units.len() {
+        for (callee_idx, callers) in unit_callers.iter().enumerate().take(model.units.len()) {
             if authorized.contains(&callee_idx) {
                 continue;
             }
-            let callers = &unit_callers[callee_idx];
             if callers.is_empty() {
                 continue;
             }
