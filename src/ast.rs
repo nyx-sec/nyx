@@ -40,7 +40,7 @@ use crate::utils::ext::lowercase_ext;
 use crate::utils::{Config, query_cache};
 use petgraph::graph::NodeIndex;
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -1102,6 +1102,13 @@ struct ParsedFile<'a> {
     file_cfg: FileCfg,
     lang_rules: LangAnalysisRules,
     has_lang_rules: bool,
+    /// Per-body SSA + const-prop + type-fact cache, lazily populated on first
+    /// request and indexed by `BodyId.0`.  Was being recomputed 2-3× per body
+    /// across `run_cfg_analyses_with_lowered` (cfg analyses + state analyses)
+    /// and `run_auth_analyses` (`collect_file_var_types`); on the gin profile
+    /// `build_body_const_facts` accounted for 13.6% of wall-clock and a
+    /// single-pass cache collapses that to ~4.5%.
+    body_const_facts_cache: OnceCell<Vec<Option<cfg_analysis::BodyConstFacts>>>,
 }
 
 impl<'a> ParsedFile<'a> {
@@ -1153,7 +1160,31 @@ impl<'a> ParsedFile<'a> {
             file_cfg,
             lang_rules,
             has_lang_rules,
+            body_const_facts_cache: OnceCell::new(),
         }
+    }
+
+    /// Per-body const-fact cache, computed once on first request and shared
+    /// across every per-body iteration in this file's analysis.  Indexed by
+    /// `BodyId.0` so callers can look up by body identity.
+    fn body_const_facts_all(&self) -> &[Option<cfg_analysis::BodyConstFacts>] {
+        self.body_const_facts_cache.get_or_init(|| {
+            let lang = Lang::from_slug(self.source.lang_slug).unwrap_or(Lang::Rust);
+            self.file_cfg
+                .bodies
+                .iter()
+                .map(|b| cfg_analysis::build_body_const_facts(b, lang))
+                .collect()
+        })
+    }
+
+    /// Look up the cached const facts for a specific body.
+    fn body_const_facts(
+        &self,
+        body: &crate::cfg::BodyCfg,
+    ) -> Option<&cfg_analysis::BodyConstFacts> {
+        let all = self.body_const_facts_all();
+        all.get(body.meta.id.0 as usize).and_then(|f| f.as_ref())
     }
 
     /// The top-level body's CFG graph (for backward-compatible access).
@@ -1468,7 +1499,7 @@ impl<'a> ParsedFile<'a> {
                 .filter(|f| f.body_id == body.meta.id)
                 .cloned()
                 .collect();
-            let body_const_facts = cfg_analysis::build_body_const_facts(body, caller_lang);
+            let body_const_facts = self.body_const_facts(body);
             let cfg_ctx = cfg_analysis::AnalysisContext {
                 cfg: &body.graph,
                 entry: body.entry,
@@ -1481,8 +1512,8 @@ impl<'a> ParsedFile<'a> {
                 taint_findings: &body_taint,
                 analysis_rules: self.rules_ref(),
                 taint_active,
-                body_const_facts: body_const_facts.as_ref(),
-                type_facts: body_const_facts.as_ref().map(|f| &f.type_facts),
+                body_const_facts,
+                type_facts: body_const_facts.map(|f| &f.type_facts),
                 auth_decorators: &body.meta.auth_decorators,
                 closure_released_var_names: Some(
                     closure_released_per_body
@@ -1546,13 +1577,11 @@ impl<'a> ParsedFile<'a> {
                 // points-to facts so the proxy-acquire transfer can
                 // suppress SymbolId attribution on field-aliased
                 // receivers (e.g. `m := c.mu; m.Lock()`).
-                let body_pointer_hints = cfg_analysis::build_body_const_facts(body, caller_lang)
-                    .as_ref()
-                    .and_then(|f| {
-                        f.pointer_facts
-                            .as_ref()
-                            .map(|pf| pf.name_proxy_hints(&f.ssa))
-                    });
+                let body_pointer_hints = self.body_const_facts(body).and_then(|f| {
+                    f.pointer_facts
+                        .as_ref()
+                        .map(|pf| pf.name_proxy_hints(&f.ssa))
+                });
                 let state_findings = state::run_state_analysis(
                     &body.graph,
                     body.entry,
@@ -1666,12 +1695,11 @@ impl<'a> ParsedFile<'a> {
     /// syntactic heuristics. Returns `None` when no body produces a
     /// typed variable.
     fn collect_file_var_types(&self) -> Option<auth_analysis::VarTypes> {
-        let caller_lang = Lang::from_slug(self.source.lang_slug).unwrap_or(Lang::Rust);
         let mut merged: std::collections::HashMap<String, crate::ssa::type_facts::TypeKind> =
             std::collections::HashMap::new();
         let mut dropped: std::collections::HashSet<String> = std::collections::HashSet::new();
         for body in &self.file_cfg.bodies {
-            let Some(facts) = cfg_analysis::build_body_const_facts(body, caller_lang) else {
+            let Some(facts) = self.body_const_facts(body) else {
                 continue;
             };
             for (idx, def) in facts.ssa.value_defs.iter().enumerate() {

@@ -173,6 +173,41 @@ fn bench_classify(c: &mut Criterion) {
     });
 }
 
+/// Per-file fused analysis throughput on a realistic ~1.5k-line Go module
+/// (gin context.go, ~147 fns).  Guards the
+/// `ParsedFile::body_const_facts_cache` optimization that collapses the
+/// 2-3× per-body re-lowering that previously dominated `analyse_file_fused`
+/// (~14% of wall-clock on the gin-scan profile).  Regressions here mean
+/// per-body work is being recomputed across passes again.
+fn bench_analyse_file_fused_large_go(c: &mut Criterion) {
+    let fixture = Path::new("benches/perf_fixtures/large_go_module.go")
+        .canonicalize()
+        .expect("perf fixture");
+    let bytes = std::fs::read(&fixture).expect("read fixture");
+    let mut cfg = Config::default();
+    cfg.scanner.mode = AnalysisMode::Full;
+    cfg.scanner.enable_state_analysis = true;
+    cfg.performance.worker_threads = Some(1);
+
+    // One-shot diagnostic: count `build_body_const_facts` calls per fused
+    // analysis so a regression that removes the per-file cache surfaces here
+    // (expected ~148 calls on this fixture; pre-cache was ~444).
+    nyx_scanner::cfg_analysis::BUILD_BODY_CONST_FACTS_CALLS
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    let _ = nyx_scanner::ast::analyse_file_fused(&bytes, &fixture, &cfg, None, None)
+        .expect("warmup analyse");
+    let calls = nyx_scanner::cfg_analysis::BUILD_BODY_CONST_FACTS_CALLS
+        .load(std::sync::atomic::Ordering::Relaxed);
+    eprintln!("[diag] build_body_const_facts calls per analyse_file_fused: {calls}");
+
+    c.bench_function("analyse_file_fused_large_go", |b| {
+        b.iter(|| {
+            nyx_scanner::ast::analyse_file_fused(&bytes, &fixture, &cfg, None, None)
+                .expect("analyse_file_fused")
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_ast_only_scan,
@@ -181,5 +216,6 @@ criterion_group!(
     bench_single_file_parse_and_cfg,
     bench_state_analysis_only,
     bench_classify,
+    bench_analyse_file_fused_large_go,
 );
 criterion_main!(benches);
