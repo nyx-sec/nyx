@@ -295,6 +295,50 @@ fn bench_extract_authorization_model_shared_go(c: &mut Criterion) {
     });
 }
 
+/// Per-file `collect_top_level_units` cost on a realistic Go fixture
+/// (gin context.go, ~147 functions).  Targets the inner per-function
+/// AST-walk path: `collect_top_level_units` →
+/// `build_function_unit_with_meta` → `collect_unit_state` (recursive
+/// per-AST-node walk that emits per-node value-refs).
+///
+/// Pre-fix (2026-05-04 perfhunt session-0009) `collect_unit_state`
+/// called `extract_value_refs(node, bytes)` at every AST node, and that
+/// helper recursively walked the node's full subtree.  Combined with
+/// the recursion below, every descendant got walked once for each of
+/// its ancestors — total work O(N²) per function body.  The fix
+/// replaced that call with an O(1)-per-node `append_shallow_value_ref`
+/// helper.  A regression that re-introduces the deep walk surfaces
+/// here as a ≥2× slowdown.
+fn bench_collect_top_level_units_go(c: &mut Criterion) {
+    use tree_sitter::Parser;
+
+    let fixture = Path::new("benches/perf_fixtures/large_go_module.go")
+        .canonicalize()
+        .expect("perf fixture");
+    let bytes = std::fs::read(&fixture).expect("read fixture");
+
+    let mut parser = Parser::new();
+    let go_lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
+    parser.set_language(&go_lang).expect("set go grammar");
+    let tree = parser.parse(&bytes, None).expect("parse fixture");
+
+    let cfg = Config::default();
+    let rules = nyx_scanner::auth_analysis::config::build_auth_rules(&cfg, "go");
+
+    c.bench_function("collect_top_level_units_go", |b| {
+        b.iter(|| {
+            let mut model = nyx_scanner::auth_analysis::model::AuthorizationModel::default();
+            nyx_scanner::auth_analysis::extract::common::collect_top_level_units(
+                tree.root_node(),
+                &bytes,
+                &rules,
+                &mut model,
+            );
+            model
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_ast_only_scan,
@@ -306,5 +350,6 @@ criterion_group!(
     bench_analyse_file_fused_large_go,
     bench_extract_authorization_model_go,
     bench_extract_authorization_model_shared_go,
+    bench_collect_top_level_units_go,
 );
 criterion_main!(benches);

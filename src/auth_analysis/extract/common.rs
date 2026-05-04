@@ -922,15 +922,84 @@ fn collect_unit_state(
         _ => {}
     }
 
-    for value in extract_value_refs(node, bytes) {
-        state.value_refs.push(value);
-    }
+    // O(1) per-node shallow value-ref emission, then descend.
+    //
+    // Pre-fix this site called `extract_value_refs(node, bytes)` which walks
+    // node's entire subtree.  Combined with the recursion below — which
+    // visits every descendant and re-runs the same call at each level — the
+    // total work was O(N * subtree_size) ≈ O(N²) per function body.  On
+    // mm/channels/app the inner-walk dominated `build_function_unit_with_meta`
+    // and its descendants (~17%+15%+11% of total wall-clock split across
+    // `build_function_unit_with_meta`, `collect_unit_state`, and
+    // `extract_value_refs` in the post-shared-model profile, 2026-05-04).
+    //
+    // The recursion below already visits every descendant once.  Emitting a
+    // shallow value-ref per node — only the ref the node itself represents —
+    // produces the same SET of value-refs after `dedup_value_refs` runs in
+    // `build_function_unit_with_meta`, because every ref-emitting kind
+    // (member chain, subscript, accessor call, identifier) is reachable as a
+    // single node visit.  Public callers of `extract_value_refs` (e.g.
+    // `collect_call`, `collect_condition`, assignment-side extraction) keep
+    // the deep walk: they intentionally want refs from the full subtree
+    // rooted at the argument they pass.
+    append_shallow_value_ref(node, bytes, &mut state.value_refs);
 
     for idx in 0..node.named_child_count() {
         let Some(child) = node.named_child(idx as u32) else {
             continue;
         };
         collect_unit_state(child, bytes, rules, state);
+    }
+}
+
+/// Per-node value-ref emission used inside `collect_unit_state`'s tree walk.
+///
+/// Returns the value-ref the node itself represents (a member chain, a
+/// subscript, an accessor call's chain, or an identifier-like leaf), without
+/// descending into descendants.  The caller's existing AST recursion handles
+/// children; relying on that recursion turns the previously O(N²) per-body
+/// walk into O(N).
+fn append_shallow_value_ref(node: Node<'_>, bytes: &[u8], refs: &mut Vec<ValueRef>) {
+    match node.kind() {
+        "member_expression"
+        | "attribute"
+        | "selector_expression"
+        | "field_expression"
+        | "field_access" => {
+            if let Some(value) = member_value_ref(node, bytes) {
+                refs.push(value);
+            }
+        }
+        "subscript_expression" | "subscript" | "element_reference" | "index_expression" => {
+            if let Some(value) = subscript_value_ref(node, bytes) {
+                refs.push(value);
+            }
+        }
+        "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
+            // Accessor-call chains (`cache.get(key)`, `req.params.id`) absorb
+            // into a single chain ValueRef; non-accessor calls return None
+            // here and rely on recursion to visit `function` + arg children
+            // so each leaf identifier emits its own ref.
+            if let Some(value) = call_value_ref(node, bytes) {
+                refs.push(value);
+            }
+        }
+        // Bare identifier and Ruby `@foo` / `@@foo` / `$foo` leaves: emit a
+        // single Identifier-kind ValueRef.  Mirrors `extract_value_refs`'s
+        // identifier arm so `dedup_value_refs` collapses any cross-path
+        // duplicates against existing emissions from sibling deep walks
+        // (e.g. `collect_condition`'s `extract_value_refs(condition)`).
+        "identifier" | "instance_variable" | "class_variable" | "global_variable" => {
+            refs.push(ValueRef {
+                source_kind: ValueSourceKind::Identifier,
+                name: text(node, bytes),
+                base: None,
+                field: None,
+                index: None,
+                span: span(node),
+            });
+        }
+        _ => {}
     }
 }
 
