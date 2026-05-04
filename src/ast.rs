@@ -4292,6 +4292,9 @@ pub fn analyse_file_fused(
         (vec![], vec![])
     };
 
+    let mut auth_summaries: Vec<(crate::symbol::FuncKey, auth_analysis::model::AuthCheckSummary)> =
+        Vec::new();
+
     if cfg.scanner.mode == AnalysisMode::Full || cfg.scanner.mode == AnalysisMode::Ast {
         let ast_findings = parsed.source.run_ast_queries(cfg);
         // Layer B only applies when taint had the opportunity to evaluate
@@ -4306,22 +4309,50 @@ pub fn analyse_file_fused(
         } else {
             out.extend(ast_findings);
         }
-        out.extend(parsed.run_auth_analyses(cfg, global_summaries, scan_root));
+        // Build the AuthorizationModel exactly once per file when Full
+        // mode needs both diagnostics AND per-file summaries; pre-fix
+        // the diag path and the summary path each ran their own
+        // `extract::extract_authorization_model`, duplicating
+        // `collect_top_level_units` + every framework extractor's AST
+        // walk.  See `auth_analysis::run_auth_analysis_with_model` for
+        // measured savings.
+        let auth_rules = auth_analysis::config::build_auth_rules(cfg, parsed.source.lang_slug);
+        if auth_rules.enabled {
+            let auth_model = auth_analysis::extract::extract_authorization_model(
+                parsed.source.lang_slug,
+                cfg.framework_ctx.as_ref(),
+                &parsed.source.tree,
+                parsed.source.bytes,
+                parsed.source.path,
+                &auth_rules,
+            );
+            // Extract summaries from the **base** model (pre var-types,
+            // pre-helper-lifting) so the persisted per-file summary
+            // carries only the helper's own intrinsic auth checks,
+            // matching the legacy `extract_auth_summaries_by_key` path
+            // bit-for-bit.
+            if cfg.scanner.mode == AnalysisMode::Full {
+                auth_summaries = auth_analysis::extract_auth_summaries_from_model(
+                    &auth_model,
+                    parsed.source.lang_slug,
+                    parsed.source.path,
+                    scan_root,
+                );
+            }
+            let var_types = parsed.collect_file_var_types();
+            out.extend(auth_analysis::run_auth_analysis_with_model(
+                auth_model,
+                &parsed.source.tree,
+                parsed.source.lang_slug,
+                parsed.source.path,
+                &auth_rules,
+                var_types.as_ref(),
+                global_summaries,
+                scan_root,
+            ));
+        }
     }
     parsed.source.finalize_diags(&mut out, cfg);
-
-    let auth_summaries = if cfg.scanner.mode == AnalysisMode::Full {
-        auth_analysis::extract_auth_summaries_by_key(
-            &parsed.source.tree,
-            parsed.source.bytes,
-            parsed.source.lang_slug,
-            parsed.source.path,
-            cfg,
-            scan_root,
-        )
-    } else {
-        Vec::new()
-    };
 
     Ok(FusedResult {
         summaries,

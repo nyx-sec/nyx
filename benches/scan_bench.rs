@@ -247,6 +247,54 @@ fn bench_extract_authorization_model_go(c: &mut Criterion) {
     });
 }
 
+/// Per-file shared-vs-double `extract_authorization_model` cost on a
+/// realistic Go fixture (gin context.go).  Pre-fix
+/// `analyse_file_fused` called `extract_authorization_model` twice per
+/// file (once for diagnostics via `run_auth_analysis`, once for
+/// per-file summary keying via `extract_auth_summaries_by_key`).  This
+/// bench records the **shared-model path** only (extract once, derive
+/// both summaries + diagnostics) so a regression that re-introduces
+/// the double-call surfaces as a ≥1.7× slowdown here.
+fn bench_extract_authorization_model_shared_go(c: &mut Criterion) {
+    use tree_sitter::Parser;
+
+    let fixture = Path::new("benches/perf_fixtures/large_go_module.go")
+        .canonicalize()
+        .expect("perf fixture");
+    let bytes = std::fs::read(&fixture).expect("read fixture");
+
+    let mut parser = Parser::new();
+    let go_lang: tree_sitter::Language = tree_sitter_go::LANGUAGE.into();
+    parser.set_language(&go_lang).expect("set go grammar");
+    let tree = parser.parse(&bytes, None).expect("parse fixture");
+
+    let cfg = Config::default();
+    let rules = nyx_scanner::auth_analysis::config::build_auth_rules(&cfg, "go");
+
+    c.bench_function("extract_authorization_model_shared_go", |b| {
+        b.iter(|| {
+            // Mirror `analyse_file_fused`: extract once, derive both
+            // per-file summaries (cheap iter over units) AND run the
+            // full diagnostic pipeline against the same model.
+            let model = nyx_scanner::auth_analysis::extract::extract_authorization_model(
+                "go",
+                cfg.framework_ctx.as_ref(),
+                &tree,
+                &bytes,
+                &fixture,
+                &rules,
+            );
+            let summaries = nyx_scanner::auth_analysis::extract_auth_summaries_from_model(
+                &model, "go", &fixture, None,
+            );
+            let diags = nyx_scanner::auth_analysis::run_auth_analysis_with_model(
+                model, &tree, "go", &fixture, &rules, None, None, None,
+            );
+            (summaries, diags)
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_ast_only_scan,
@@ -257,5 +305,6 @@ criterion_group!(
     bench_classify,
     bench_analyse_file_fused_large_go,
     bench_extract_authorization_model_go,
+    bench_extract_authorization_model_shared_go,
 );
 criterion_main!(benches);

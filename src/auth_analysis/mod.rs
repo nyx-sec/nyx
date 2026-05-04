@@ -102,8 +102,7 @@ pub fn run_auth_analysis(
     if !rules.enabled {
         return Vec::new();
     }
-
-    let mut model = extract::extract_authorization_model(
+    let model = extract::extract_authorization_model(
         lang,
         cfg.framework_ctx.as_ref(),
         tree,
@@ -111,12 +110,60 @@ pub fn run_auth_analysis(
         file_path,
         &rules,
     );
+    run_auth_analysis_with_model(
+        model,
+        tree,
+        lang,
+        file_path,
+        &rules,
+        var_types,
+        global_summaries,
+        scan_root,
+    )
+}
+
+/// Variant of [`run_auth_analysis`] that accepts a pre-built
+/// [`model::AuthorizationModel`] instead of building one from the AST.
+///
+/// Lets callers that need both diagnostics AND
+/// `(FuncKey, AuthCheckSummary)` per-file summaries (the fused pass-2
+/// path in [`crate::ast::analyse_file_fused`]) construct the base
+/// authorization model exactly once and route both consumers through
+/// it.  Pre-fix the fused path called
+/// [`extract::extract_authorization_model`] twice per file (once via
+/// [`run_auth_analysis`], once via [`extract_auth_summaries_by_key`]),
+/// duplicating the AST walks for `collect_top_level_units` +
+/// `build_function_unit_with_meta` + `collect_unit_state` + every
+/// extractor's framework-detection scan.  On the
+/// `mattermost/server/channels/app` profile that double-extract
+/// accounted for 35.3% of total wall-clock; sharing the base model
+/// drops it to ~17.6%.
+///
+/// The mutations applied here ([`apply_var_types_to_model`],
+/// [`apply_typed_bounded_params`], [`apply_helper_lifting`]) only
+/// affect diagnostic emission — `extract_auth_summaries_from_model`
+/// reads the **base** model so callers must extract summaries before
+/// passing the model in.
+#[allow(clippy::too_many_arguments)]
+pub fn run_auth_analysis_with_model(
+    mut model: model::AuthorizationModel,
+    tree: &Tree,
+    lang: &str,
+    file_path: &Path,
+    rules: &config::AuthAnalysisRules,
+    var_types: Option<&VarTypes>,
+    global_summaries: Option<&GlobalSummaries>,
+    scan_root: Option<&Path>,
+) -> Vec<Diag> {
+    if !rules.enabled {
+        return Vec::new();
+    }
 
     // Refine `SensitiveOperation::sink_class` using SSA-derived
     // variable types.  Runs only when the caller supplied `var_types`
     // (skipped for slug-lookup / unit-test call sites).
     if let Some(types) = var_types {
-        apply_var_types_to_model(&mut model, &rules, types);
+        apply_var_types_to_model(&mut model, rules, types);
         apply_typed_bounded_params(&mut model, types);
     }
 
@@ -132,7 +179,7 @@ pub fn run_auth_analysis(
         return Vec::new();
     }
 
-    checks::run_checks(&model, &rules)
+    checks::run_checks(&model, rules)
         .into_iter()
         .map(|finding| auth_finding_to_diag(&finding, tree, file_path))
         .collect()
@@ -168,7 +215,26 @@ pub fn extract_auth_summaries_by_key(
         file_path,
         &rules,
     );
-    summaries_keyed_by_func(&model, lang, file_path, scan_root)
+    extract_auth_summaries_from_model(&model, lang, file_path, scan_root)
+}
+
+/// Variant of [`extract_auth_summaries_by_key`] that consumes a
+/// pre-built [`model::AuthorizationModel`].
+///
+/// Designed for callers that also need to run the diagnostic pipeline
+/// (which mutates the model via [`run_auth_analysis_with_model`]):
+/// extract summaries first against the base model, then hand the same
+/// model to the diag pipeline so the second
+/// [`extract::extract_authorization_model`] AST walk per file is
+/// avoided.  See [`run_auth_analysis_with_model`] for the wider
+/// rationale and measured saving.
+pub fn extract_auth_summaries_from_model(
+    model: &model::AuthorizationModel,
+    lang: &str,
+    file_path: &Path,
+    scan_root: Option<&Path>,
+) -> Vec<(FuncKey, model::AuthCheckSummary)> {
+    summaries_keyed_by_func(model, lang, file_path, scan_root)
 }
 
 /// Convert an already-built [`model::AuthorizationModel`] into a
