@@ -448,11 +448,7 @@ mod tests {
         );
 
         // execution_api_router has no deps → no entry.
-        assert!(
-            !facts
-                .local_router_deps
-                .contains_key("execution_api_router")
-        );
+        assert!(!facts.local_router_deps.contains_key("execution_api_router"));
 
         // Two child include_router edges + one nested
         // execution_api_router.include_router(authenticated_router) edge.
