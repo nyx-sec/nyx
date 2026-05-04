@@ -55,6 +55,13 @@ pub struct AuthAnalysisRules {
     /// `WHERE <ACL>.user_id = ?N`, make every returned row
     /// membership-gated.  See `sql_semantics::classify_sql_query`.
     pub acl_tables: Vec<String>,
+    /// Callee names that, when they appear as the chain root of a
+    /// chained-call shape (`select(X).filter_by(...)`,
+    /// `query(X).filter(...)`), anchor the trailing method as a DB
+    /// query-builder operation.  Overrides the chained-call suppression
+    /// in `classify_sink_class` for SQLAlchemy / similar query-builder
+    /// idioms whose first call returns an opaque builder object.
+    pub db_query_builder_roots: Vec<String>,
 }
 
 impl AuthAnalysisRules {
@@ -80,6 +87,7 @@ impl AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     }
 
@@ -301,7 +309,60 @@ impl AuthAnalysisRules {
                 return Some(SinkClass::DbCrossTenantRead);
             }
         }
+        // SQLAlchemy / query-builder chained shapes:
+        // `select(X).filter_by(...)`, `query(X).filter(...)`,
+        // `select().join().where()`.  The chain receiver is the return
+        // value of an opaque builder primitive that the type tracker
+        // cannot follow, but the chain *root* segment is itself a known
+        // DB query-builder verb — strong enough evidence to anchor a
+        // DB-sink classification when paired with a mutation/read verb
+        // on the trailing method.  Closes airflow-style
+        // `session.scalar(select(C).filter_by(conn_id=user_input))`.
+        if receiver_is_chained_call(callee) && self.chain_root_is_db_query_builder(callee) {
+            if self.is_mutation(callee) {
+                return Some(SinkClass::DbMutation);
+            }
+            if self.is_read(callee) {
+                return Some(SinkClass::DbCrossTenantRead);
+            }
+        }
         None
+    }
+
+    /// True when any non-final segment of the chain is an
+    /// intermediate-call (ends with `()`) whose verb matches a
+    /// configured `db_query_builder_roots` entry.  Used to anchor
+    /// chained-call shapes like `select(X).filter_by(id=...)` (Python)
+    /// or `query(X).filter(...)` to a DB-sink classification despite
+    /// the opaque builder return value.
+    pub fn chain_root_is_db_query_builder(&self, callee: &str) -> bool {
+        if self.db_query_builder_roots.is_empty() {
+            return false;
+        }
+        let segments: Vec<&str> = callee.split('.').collect();
+        if segments.len() < 2 {
+            return false;
+        }
+        for seg in &segments[..segments.len() - 1] {
+            if !seg.ends_with(')') {
+                continue;
+            }
+            let stripped = seg
+                .trim_end_matches(')')
+                .trim_end_matches('(')
+                .trim_end_matches(')');
+            if stripped.is_empty() {
+                continue;
+            }
+            if self
+                .db_query_builder_roots
+                .iter()
+                .any(|root| matches_name(stripped, root))
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn requires_admin_path(&self, path: &str) -> bool {
@@ -633,6 +694,12 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            // SQLAlchemy queryset builders.  `select(X).filter_by(id=...)`
+            // / `query(X).filter(id=...)` chains return opaque builder
+            // objects whose type the auth analyser cannot follow; the
+            // chain *root* primitive itself is the DB-anchor evidence.
+            // Closes airflow-style `session.scalar(select(C).filter_by(...))`.
+            db_query_builder_roots: vec!["select".into(), "query".into()],
         }
     } else if matches!(lang_slug, "ruby") {
         AuthAnalysisRules {
@@ -808,6 +875,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     } else if matches!(lang_slug, "go") {
         AuthAnalysisRules {
@@ -904,6 +972,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     } else if matches!(lang_slug, "java") {
         AuthAnalysisRules {
@@ -996,6 +1065,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     } else if matches!(lang_slug, "rust") {
         AuthAnalysisRules {
@@ -1179,6 +1249,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "members".into(),
                 "share_grants".into(),
             ],
+            db_query_builder_roots: Vec::new(),
         }
     } else {
         AuthAnalysisRules {
@@ -1332,6 +1403,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     };
 
@@ -1409,6 +1481,10 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             &lang_cfg.auth.cache_receiver_prefixes,
         );
         extend_unique(&mut rules.acl_tables, &lang_cfg.auth.acl_tables);
+        extend_unique(
+            &mut rules.db_query_builder_roots,
+            &lang_cfg.auth.db_query_builder_roots,
+        );
     }
 
     rules
@@ -1884,6 +1960,78 @@ mod tests {
             go_rules.classify_sink_class("repo.Find", &empty),
             Some(SinkClass::DbCrossTenantRead)
         );
+    }
+
+    /// Pin the SQLAlchemy queryset-builder chained-call recogniser.
+    /// `select(X).filter_by(id=user_input)` reduces (post `member_chain`
+    /// fix) to the chain-string `"select().filter_by"`.  The chained-call
+    /// shape would otherwise be suppressed by `receiver_is_chained_call`,
+    /// blocking recall on the airflow `session.scalar(select(C).filter_by(...))`
+    /// shape.  `chain_root_is_db_query_builder` overrides the suppression
+    /// when the chain root is a configured DB-builder verb.
+    #[test]
+    fn chain_root_is_db_query_builder_recognises_sqlalchemy_chains() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let cfg = Config::default();
+        let py_rules = build_auth_rules(&cfg, "python");
+        let empty: HashSet<String> = HashSet::new();
+
+        // Detection: chain root `select()` / `query()` matches the
+        // configured Python `db_query_builder_roots`.
+        assert!(py_rules.chain_root_is_db_query_builder("select().filter_by"));
+        assert!(py_rules.chain_root_is_db_query_builder("query().filter"));
+        assert!(py_rules.chain_root_is_db_query_builder("Session.query().filter"));
+        assert!(py_rules.chain_root_is_db_query_builder("select().join().where"));
+        // Non-builder chain roots: must not match.
+        assert!(!py_rules.chain_root_is_db_query_builder("w.Header().Get"));
+        assert!(!py_rules.chain_root_is_db_query_builder("obj.foo().bar"));
+        // Plain receiver chains (no intermediate call): not handled
+        // here — the simple-chain branch covers them.
+        assert!(!py_rules.chain_root_is_db_query_builder("repo.Find"));
+        assert!(!py_rules.chain_root_is_db_query_builder("Project.objects.filter"));
+        // Classification: chained-call DB-builder shapes anchor to
+        // DbCrossTenantRead / DbMutation when the trailing verb matches.
+        assert_eq!(
+            py_rules.classify_sink_class("select().filter_by", &empty),
+            Some(SinkClass::DbCrossTenantRead)
+        );
+        assert_eq!(
+            py_rules.classify_sink_class("query().delete", &empty),
+            Some(SinkClass::DbMutation)
+        );
+        assert_eq!(
+            py_rules.classify_sink_class("select().update", &empty),
+            Some(SinkClass::DbMutation)
+        );
+        // Regression guard: chained-call shapes that are NOT DB
+        // builders (Go HTTP `w.Header().get`, generic `obj.foo().bar`)
+        // remain suppressed even when the trailing verb prefix-matches.
+        // Run on a Python-rules instance with the verb in its read
+        // indicator vocabulary to exercise the guard.
+        assert_eq!(
+            py_rules.classify_sink_class("w.Header().get", &empty),
+            None
+        );
+        assert_eq!(
+            py_rules.classify_sink_class("obj.foo().get", &empty),
+            None
+        );
+
+        // Languages without `db_query_builder_roots` defaults must not
+        // false-positive on chained-call shapes.
+        for lang in ["javascript", "typescript", "go", "java", "ruby", "rust"] {
+            let rules = build_auth_rules(&Config::default(), lang);
+            assert!(
+                !rules.chain_root_is_db_query_builder("select().filter_by"),
+                "lang={lang} unexpectedly classified select().filter_by as DB-builder chain",
+            );
+            assert_eq!(
+                rules.classify_sink_class("select().filter_by", &empty),
+                None,
+                "lang={lang} unexpectedly classified select().filter_by as DB sink",
+            );
+        }
     }
 
     #[test]

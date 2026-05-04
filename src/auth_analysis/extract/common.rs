@@ -4180,20 +4180,41 @@ fn subscript_value_ref(node: Node<'_>, bytes: &[u8]) -> Option<ValueRef> {
 
 pub fn member_chain(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
     if node.kind() == "call" {
-        let mut chain = if let Some(receiver) = node.child_by_field_name("receiver") {
-            member_chain(receiver, bytes)
-        } else {
-            Vec::new()
-        };
+        // Ruby-style call: explicit receiver field + method/name field.
+        if let Some(receiver) = node.child_by_field_name("receiver") {
+            let mut chain = member_chain(receiver, bytes);
+            let method = node
+                .child_by_field_name("method")
+                .or_else(|| node.child_by_field_name("name"))
+                .map(|method| text(method, bytes))
+                .unwrap_or_default();
+            if !method.is_empty() {
+                chain.push(method);
+            }
+            return chain;
+        }
+        // Python-style call: callable expression in the `function` field.
+        // Recursing into it lets chained shapes like
+        // `select(X).filter_by(...)` produce `["select()", "filter_by"]`
+        // — the parent attribute branch appends `()` when its `object`
+        // is a call, marking the intermediate-call shape so that
+        // `receiver_is_chained_call` detects it.  Closes airflow-style
+        // SQLAlchemy queryset-builder chains that previously reduced to
+        // bare `["filter_by"]`.
+        if let Some(function) = node.child_by_field_name("function") {
+            return member_chain(function, bytes);
+        }
+        // Bare-method fallback for parser shapes that expose method/name
+        // without a receiver (Ruby implicit-self calls, etc.).
         let method = node
             .child_by_field_name("method")
             .or_else(|| node.child_by_field_name("name"))
             .map(|method| text(method, bytes))
             .unwrap_or_default();
         if !method.is_empty() {
-            chain.push(method);
+            return vec![method];
         }
-        return chain;
+        return Vec::new();
     }
 
     if node.kind() == "method_invocation" || node.kind() == "method_call_expression" {
@@ -4264,7 +4285,27 @@ pub fn member_chain(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
         .or_else(|| node.child_by_field_name("operand"))
         .or_else(|| node.child_by_field_name("argument"))
     {
-        chain.extend(member_chain(object, bytes));
+        let object_is_call = matches!(
+            object.kind(),
+            "call" | "call_expression" | "method_invocation" | "method_call_expression"
+        );
+        let mut sub = member_chain(object, bytes);
+        // Mark intermediate-call segments with `()` so a downstream
+        // chain like `select(X).filter_by(...)` becomes
+        // `["select()", "filter_by"]` rather than `["select", "filter_by"]`.
+        // `receiver_is_chained_call` consults the `(` to detect the
+        // opaque-builder receiver.
+        if object_is_call
+            && sub
+                .last()
+                .map(|s| !s.ends_with(')'))
+                .unwrap_or(false)
+        {
+            if let Some(last) = sub.last_mut() {
+                last.push_str("()");
+            }
+        }
+        chain.extend(sub);
     }
     if let Some(property) = node
         .child_by_field_name("property")
@@ -5076,6 +5117,97 @@ mod tests {
             params.contains(&"repoID".to_string()),
             "id-like scalar param kept for route handler: got {:?}",
             params
+        );
+    }
+
+    /// Pin `member_chain` output for the SQLAlchemy queryset chain
+    /// `select(C).filter_by(id=x)`.  Pre-fix, Python `call` nodes use a
+    /// `function` field (not `receiver`/`method`) so the recursive call
+    /// arm returned an empty Vec, reducing the chain to bare
+    /// `["filter_by"]`.  The fix: (1) traverse `function` field in the
+    /// `call` arm; (2) the parent attribute branch appends `()` to last
+    /// segment when its `object` is a call.  Together they produce
+    /// `["select()", "filter_by"]` so `receiver_is_chained_call` detects
+    /// the intermediate-call shape.
+    #[test]
+    fn member_chain_python_select_filter_by_chain_marks_intermediate_call() {
+        use super::{callee_name, member_chain};
+        use tree_sitter::{Node, Parser};
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let src = b"x = select(C).filter_by(id=u)\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+
+        fn find_outer_call<'a>(node: Node<'a>) -> Option<Node<'a>> {
+            if node.kind() == "call" {
+                if let Some(function) = node.child_by_field_name("function")
+                    && function.kind() == "attribute"
+                {
+                    return Some(node);
+                }
+            }
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i as u32)
+                    && let Some(found) = find_outer_call(child)
+                {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let outer_call = find_outer_call(tree.root_node())
+            .expect("expected outer call node `select(C).filter_by(id=u)`");
+
+        assert_eq!(
+            member_chain(outer_call, src),
+            vec!["select()".to_string(), "filter_by".to_string()],
+            "Python chained call must produce `[select(), filter_by]` so receiver_is_chained_call detects the intermediate-call shape",
+        );
+        assert_eq!(
+            callee_name(outer_call, src),
+            "select().filter_by".to_string(),
+            "callee_name joins the chain with `.`",
+        );
+    }
+
+    /// Regression guard: simple Python `obj.method(arg)` callees keep
+    /// their previous `member_chain` output (`["obj", "method"]`).  The
+    /// `function`-field traversal must not pollute non-chained shapes.
+    #[test]
+    fn member_chain_python_simple_attribute_call_unchanged() {
+        use super::callee_name;
+        use tree_sitter::{Node, Parser};
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let src = b"x = obj.method(a)\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+
+        fn find_call<'a>(node: Node<'a>) -> Option<Node<'a>> {
+            if node.kind() == "call" {
+                return Some(node);
+            }
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i as u32)
+                    && let Some(found) = find_call(child)
+                {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let call_node = find_call(tree.root_node()).expect("expected `obj.method(a)` call");
+        assert_eq!(
+            callee_name(call_node, src),
+            "obj.method".to_string(),
+            "simple attribute call must not pick up `()` markers",
         );
     }
 

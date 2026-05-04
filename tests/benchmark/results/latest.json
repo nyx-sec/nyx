@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T07:03:25Z",
+  "timestamp": "2026-05-04T07:40:17Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:93be0ad4850e965a36c31d9d014eab39941629599e379a45644b6832f3250152",
-  "corpus_size": 548,
-  "cases_run": 547,
+  "ground_truth_hash": "sha256:ae396bc77b62d919de5e46607fa4648ad926571eb809ef211b549e3589f6e4f3",
+  "corpus_size": 549,
+  "cases_run": 548,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -5864,6 +5864,25 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-auth-realrepo-014",
+      "file": "python/auth/vuln_fastapi_route_no_dependencies_sqla.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-cmdi-001",
       "file": "python/cmdi/cmdi_direct.py",
       "language": "python",
@@ -9773,7 +9792,7 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 267,
+    "tp": 268,
     "fp": 0,
     "fn_": 0,
     "tn": 280,
@@ -9782,7 +9801,7 @@
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 267,
+    "tp": 268,
     "fp": 0,
     "fn_": 0,
     "tn": 280,
@@ -9846,7 +9865,7 @@
       "f1": 1.0
     },
     "python": {
-      "tp": 34,
+      "tp": 35,
       "fp": 0,
       "fn_": 0,
       "tn": 38,
@@ -9884,7 +9903,7 @@
   },
   "by_vuln_class": {
     "auth": {
-      "tp": 21,
+      "tp": 22,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -10075,31 +10094,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 88,
-      "fp": 105,
-      "fn_": 179,
-      "tn": 175,
-      "precision": 0.45595854922279794,
-      "recall": 0.3295880149812734,
-      "f1": 0.3826086956521739
+      "tp": 86,
+      "fp": 107,
+      "fn_": 182,
+      "tn": 173,
+      "precision": 0.44559585492227977,
+      "recall": 0.3208955223880597,
+      "f1": 0.37310195227765725
     },
     ">=Low": {
-      "tp": 90,
-      "fp": 133,
-      "fn_": 177,
-      "tn": 147,
-      "precision": 0.40358744394618834,
-      "recall": 0.33707865168539325,
-      "f1": 0.36734693877551017
+      "tp": 86,
+      "fp": 139,
+      "fn_": 182,
+      "tn": 141,
+      "precision": 0.38222222222222224,
+      "recall": 0.3208955223880597,
+      "f1": 0.34888438133874244
     },
     ">=Medium": {
-      "tp": 90,
-      "fp": 124,
-      "fn_": 177,
-      "tn": 156,
-      "precision": 0.4205607476635514,
-      "recall": 0.33707865168539325,
-      "f1": 0.3742203742203742
+      "tp": 86,
+      "fp": 130,
+      "fn_": 182,
+      "tn": 150,
+      "precision": 0.39814814814814814,
+      "recall": 0.3208955223880597,
+      "f1": 0.35537190082644626
     }
   }
 }
