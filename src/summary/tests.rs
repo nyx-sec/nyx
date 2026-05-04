@@ -3851,6 +3851,130 @@ fn cross_file_devirt_does_not_union_unrelated_findbyids() {
     assert_eq!(cache_sum.tainted_sink_params, vec![0]);
 }
 
+/// Cross-file router-dep resolution: parent `__init__.py` declares
+/// `Security(...)` deps on a router and lifts them onto a child via
+/// `<parent>.include_router(<child_module>.<child_var>, ...)`.  The
+/// resolution must produce a `<child_var> → Vec<(CallSite, scoped)>`
+/// map for the child file's `module_id`, and absent edges must yield
+/// empty.
+#[test]
+fn resolve_cross_file_router_deps_lifts_parent_security_dep_onto_child_router() {
+    use crate::auth_analysis::model::CallSite;
+    use crate::auth_analysis::router_facts::{
+        PerFileRouterFacts, RouterIncludeEdge,
+    };
+
+    let mut gs = GlobalSummaries::new();
+    // Parent (__init__.py) declares scoped Security on `authenticated_router`
+    // and emits two include_router edges (task_instances + dag_runs).
+    let parent_callsite = CallSite {
+        name: "require_auth".into(),
+        args: Vec::new(),
+        span: (0, 0),
+        args_value_refs: Vec::new(),
+    };
+    let mut parent_facts = PerFileRouterFacts::default();
+    parent_facts
+        .local_router_deps
+        .insert("authenticated_router".into(), vec![(parent_callsite.clone(), true)]);
+    parent_facts.include_router_edges.push(RouterIncludeEdge {
+        parent_var: "authenticated_router".into(),
+        child_module_id: "task_instances".into(),
+        child_var: "router".into(),
+    });
+    parent_facts.include_router_edges.push(RouterIncludeEdge {
+        parent_var: "authenticated_router".into(),
+        child_module_id: "dag_runs".into(),
+        child_var: "router".into(),
+    });
+    gs.insert_router_facts("routes::__init__".into(), parent_facts);
+
+    // Child (task_instances.py) declares a bare router → expects to
+    // inherit the parent's deps via the cross-file resolution.
+    gs.insert_router_facts(
+        "task_instances".into(),
+        PerFileRouterFacts::default(),
+    );
+
+    // Resolve for task_instances → should get one entry under `router`
+    // carrying the require_auth (scoped=true) dep.
+    let resolved = gs.resolve_cross_file_router_deps("task_instances");
+    let deps = resolved.get("router").expect("router child resolved");
+    assert_eq!(deps.len(), 1);
+    assert_eq!(deps[0].0.name, "require_auth");
+    assert!(deps[0].1, "scoped flag preserved");
+
+    // dag_runs has the same parent → same lift.
+    let resolved_dag = gs.resolve_cross_file_router_deps("dag_runs");
+    assert_eq!(resolved_dag.get("router").map(|v| v.len()), Some(1));
+
+    // Unrelated module → no lift.
+    let resolved_other = gs.resolve_cross_file_router_deps("nonexistent");
+    assert!(resolved_other.is_empty());
+}
+
+/// Edge: parent without local deps for the named var emits nothing —
+/// the resolver requires both an edge AND a non-empty parent dep list.
+#[test]
+fn resolve_cross_file_router_deps_skips_edges_with_no_parent_deps() {
+    use crate::auth_analysis::router_facts::{PerFileRouterFacts, RouterIncludeEdge};
+
+    let mut gs = GlobalSummaries::new();
+    let mut parent = PerFileRouterFacts::default();
+    parent.include_router_edges.push(RouterIncludeEdge {
+        parent_var: "ghost_router".into(),
+        child_module_id: "child".into(),
+        child_var: "router".into(),
+    });
+    gs.insert_router_facts("parent".into(), parent);
+
+    let resolved = gs.resolve_cross_file_router_deps("child");
+    assert!(resolved.is_empty());
+}
+
+/// Multiple parents declaring different deps for the same child
+/// accumulate without duplication.  Same dep declared twice (one
+/// from each parent) must dedup by (callee.name, scoped).
+#[test]
+fn resolve_cross_file_router_deps_dedups_duplicate_parent_deps() {
+    use crate::auth_analysis::model::CallSite;
+    use crate::auth_analysis::router_facts::{PerFileRouterFacts, RouterIncludeEdge};
+
+    let cs = CallSite {
+        name: "require_auth".into(),
+        args: Vec::new(),
+        span: (0, 0),
+        args_value_refs: Vec::new(),
+    };
+    let mut gs = GlobalSummaries::new();
+
+    // Parent A: include_router(child.router) with `require_auth` dep.
+    let mut p_a = PerFileRouterFacts::default();
+    p_a.local_router_deps
+        .insert("router_a".into(), vec![(cs.clone(), true)]);
+    p_a.include_router_edges.push(RouterIncludeEdge {
+        parent_var: "router_a".into(),
+        child_module_id: "child".into(),
+        child_var: "router".into(),
+    });
+    gs.insert_router_facts("parent_a".into(), p_a);
+
+    // Parent B: SAME dep, different parent file.
+    let mut p_b = PerFileRouterFacts::default();
+    p_b.local_router_deps
+        .insert("router_b".into(), vec![(cs, true)]);
+    p_b.include_router_edges.push(RouterIncludeEdge {
+        parent_var: "router_b".into(),
+        child_module_id: "child".into(),
+        child_var: "router".into(),
+    });
+    gs.insert_router_facts("parent_b".into(), p_b);
+
+    let resolved = gs.resolve_cross_file_router_deps("child");
+    let deps = resolved.get("router").expect("router resolved");
+    assert_eq!(deps.len(), 1, "duplicate (callee, scoped) deduplicated");
+}
+
 // ── the analysis ────────────────────
 //
 // `GlobalSummaries::resolve_callee_widened` is the runtime counterpart of

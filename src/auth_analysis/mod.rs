@@ -60,6 +60,7 @@ pub mod checks;
 pub mod config;
 pub mod extract;
 pub mod model;
+pub mod router_facts;
 pub mod sql_semantics;
 
 use crate::commands::scan::Diag;
@@ -102,6 +103,15 @@ pub fn run_auth_analysis(
     if !rules.enabled {
         return Vec::new();
     }
+    // Resolve cross-file router-deps for the active file (Python only)
+    // before constructing the model, so the FlaskExtractor sees the
+    // full per-file dep map at extraction time.  See `router_facts`
+    // module + `analyse_file_fused` for the wider pipeline.
+    let cross_file_router_deps = resolve_cross_file_router_deps_for_file(
+        lang,
+        file_path,
+        global_summaries,
+    );
     let model = extract::extract_authorization_model(
         lang,
         cfg.framework_ctx.as_ref(),
@@ -109,6 +119,7 @@ pub fn run_auth_analysis(
         source,
         file_path,
         &rules,
+        cross_file_router_deps.as_ref(),
     );
     run_auth_analysis_with_model(
         model,
@@ -120,6 +131,25 @@ pub fn run_auth_analysis(
         global_summaries,
         scan_root,
     )
+}
+
+/// Look up `GlobalSummaries.router_facts_by_module` and resolve the
+/// cross-file router-deps map for the file at `file_path`.  Returns
+/// `None` for non-Python files, files whose module_id has no matching
+/// `<parent>.include_router(<this_file>.<var>, ...)` edges anywhere in
+/// the project, or callers that don't pass `global_summaries`.
+pub(crate) fn resolve_cross_file_router_deps_for_file(
+    lang: &str,
+    file_path: &Path,
+    global_summaries: Option<&GlobalSummaries>,
+) -> Option<HashMap<String, Vec<(model::CallSite, bool)>>> {
+    if lang != "python" {
+        return None;
+    }
+    let gs = global_summaries?;
+    let module_id = router_facts::module_id_for_path(file_path)?;
+    let resolved = gs.resolve_cross_file_router_deps(&module_id);
+    if resolved.is_empty() { None } else { Some(resolved) }
 }
 
 /// Variant of [`run_auth_analysis`] that accepts a pre-built
@@ -214,6 +244,7 @@ pub fn extract_auth_summaries_by_key(
         source,
         file_path,
         &rules,
+        None,
     );
     extract_auth_summaries_from_model(&model, lang, file_path, scan_root)
 }

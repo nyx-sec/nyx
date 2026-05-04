@@ -546,6 +546,19 @@ pub struct GlobalSummaries {
     /// pass 1 and consumed by
     /// [`crate::auth_analysis::run_auth_analysis`] during pass 2.
     auth_by_key: HashMap<FuncKey, crate::auth_analysis::model::AuthCheckSummary>,
+    /// Per-Python-file router declarations + `include_router` edges,
+    /// keyed by `module_id_for_storage(file_path)` (basename without
+    /// `.py`, or `parent_dir::__init__` for `__init__.py`).  Populated
+    /// during pass 1 and consumed by
+    /// [`Self::resolve_cross_file_router_deps`] at pass 2 entry to lift
+    /// FastAPI router-level `dependencies=[Security(...)]` declared in a
+    /// parent file (`__init__.py` calling
+    /// `<parent>.include_router(<child>.router, ...)`) onto the bare
+    /// child router declared in another file — closing the airflow
+    /// execution-API auth-recognition gap on routes attached to bare
+    /// child routers.
+    router_facts_by_module:
+        HashMap<String, crate::auth_analysis::router_facts::PerFileRouterFacts>,
     /// Type hierarchy index for runtime virtual-dispatch fan-out.
     ///
     /// Installed by [`Self::install_hierarchy`] after pass 1 from the
@@ -856,6 +869,11 @@ impl GlobalSummaries {
         for (key, auth_sum) in other.auth_by_key {
             self.auth_by_key.insert(key, auth_sum);
         }
+        // Router facts: last-writer-wins per (module_id) key.  Re-analysing
+        // a file produces a fresh snapshot of its router declarations + edges.
+        for (module_id, facts) in other.router_facts_by_module {
+            self.router_facts_by_module.insert(module_id, facts);
+        }
         // Hierarchy index: invalidate after a merge so the next consumer
         // sees a freshly-built view that includes `other`'s edges.  The
         // alternative, point-merging two indexes, is racy when the
@@ -991,6 +1009,80 @@ impl GlobalSummaries {
         self.auth_by_key.len()
     }
 
+    /// Insert a per-file `PerFileRouterFacts` snapshot.  Last-writer-wins
+    /// per `module_id` key — re-analysing a file produces a fresh
+    /// snapshot of its router declarations and `include_router` edges.
+    pub fn insert_router_facts(
+        &mut self,
+        module_id: String,
+        facts: crate::auth_analysis::router_facts::PerFileRouterFacts,
+    ) {
+        self.router_facts_by_module.insert(module_id, facts);
+    }
+
+    /// Resolve cross-file router-level deps for the file identified by
+    /// `child_module_id`.  Walks every other file's persisted
+    /// `RouterIncludeEdge` list, finds edges whose `child_module_id`
+    /// matches, and accumulates the parent file's
+    /// `local_router_deps[parent_var]` against `child_var` — producing
+    /// a `<child_var> → Vec<(CallSite, scoped_security)>` map ready to
+    /// merge into the active file's
+    /// `AuthorizationModel.cross_file_router_deps`.
+    ///
+    /// Single-hop only.  Transitive lifts (`grandparent.include_router(parent);
+    /// parent.include_router(child)`) are not currently resolved — the
+    /// airflow shape that motivated this fix is single-hop, and adding
+    /// transitive resolution is a follow-up that would also need to
+    /// model the bare-identifier `outer.include_router(inner_router)`
+    /// case which the extractor presently skips.
+    ///
+    /// Returns an empty map when `child_module_id` matches no edges or
+    /// when the index is empty.
+    pub fn resolve_cross_file_router_deps(
+        &self,
+        child_module_id: &str,
+    ) -> HashMap<String, Vec<(crate::auth_analysis::model::CallSite, bool)>> {
+        let mut out: HashMap<String, Vec<(crate::auth_analysis::model::CallSite, bool)>> =
+            HashMap::new();
+        if self.router_facts_by_module.is_empty() {
+            return out;
+        }
+        for facts in self.router_facts_by_module.values() {
+            for edge in &facts.include_router_edges {
+                if edge.child_module_id != child_module_id {
+                    continue;
+                }
+                // Look up the parent's deps in the SAME file's
+                // local_router_deps map (parent declarations and the
+                // include_router edge live in the same file).
+                let Some(parent_deps) = facts.local_router_deps.get(&edge.parent_var) else {
+                    continue;
+                };
+                if parent_deps.is_empty() {
+                    continue;
+                }
+                let entry = out.entry(edge.child_var.clone()).or_default();
+                for dep in parent_deps {
+                    // Dedup by (callee name, scoped flag) so multiple
+                    // parents declaring the same dep don't double-fire.
+                    let already = entry
+                        .iter()
+                        .any(|(call, scoped)| call.name == dep.0.name && *scoped == dep.1);
+                    if !already {
+                        entry.push(dep.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Count of files that contributed router facts to the index.
+    /// Exposed for `tracing::debug!` observability.
+    pub fn router_facts_len(&self) -> usize {
+        self.router_facts_by_module.len()
+    }
+
     /// Insert a cross-file callee body.
     ///
     /// See [`insert_ssa`](Self::insert_ssa) for the identity-safety rule.
@@ -1050,7 +1142,10 @@ impl GlobalSummaries {
 
     #[allow(dead_code)] // used by tests and future call-graph consumers
     pub fn is_empty(&self) -> bool {
-        self.by_key.is_empty() && self.ssa_by_key.is_empty() && self.auth_by_key.is_empty()
+        self.by_key.is_empty()
+            && self.ssa_by_key.is_empty()
+            && self.auth_by_key.is_empty()
+            && self.router_facts_by_module.is_empty()
     }
 
     /// Iterate over all (key, summary) pairs.
@@ -1582,6 +1677,7 @@ impl std::fmt::Debug for GlobalSummaries {
             .field("ssa_len", &self.ssa_by_key.len())
             .field("bodies_len", &self.bodies_by_key.len())
             .field("auth_len", &self.auth_by_key.len())
+            .field("router_facts_len", &self.router_facts_by_module.len())
             .finish()
     }
 }

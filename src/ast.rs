@@ -1841,6 +1841,7 @@ pub fn extract_auth_model_for_debug(
         source.bytes,
         source.path,
         &rules,
+        None,
     );
     Ok(Some(model))
 }
@@ -4210,6 +4211,18 @@ pub struct FusedResult {
         crate::symbol::FuncKey,
         auth_analysis::model::AuthCheckSummary,
     )>,
+    /// Per-Python-file router-level dep declarations + `include_router`
+    /// edges for cross-file FastAPI router-dep propagation.  `None` for
+    /// non-Python files; `Some((module_id, facts))` for Python files
+    /// where `module_id` is the file's
+    /// [`auth_analysis::router_facts::module_id_for_storage`] key.
+    /// Pass 1 collects these into
+    /// `GlobalSummaries.router_facts_by_module`; pass 2 resolves them
+    /// per-file via `GlobalSummaries::resolve_cross_file_router_deps`.
+    pub router_facts: Option<(
+        String,
+        auth_analysis::router_facts::PerFileRouterFacts,
+    )>,
 }
 
 /// Parse the file once, build the CFG once, and produce both function
@@ -4245,6 +4258,7 @@ pub fn analyse_file_fused(
             cfg_nodes: 0,
             ssa_bodies: vec![],
             auth_summaries: vec![],
+            router_facts: None,
         });
     };
 
@@ -4295,6 +4309,23 @@ pub fn analyse_file_fused(
     let mut auth_summaries: Vec<(crate::symbol::FuncKey, auth_analysis::model::AuthCheckSummary)> =
         Vec::new();
 
+    // Per-file router-dep facts for cross-file FastAPI propagation.
+    // Extracted unconditionally for Python files so pass 1 can persist
+    // them into `GlobalSummaries.router_facts_by_module` even on Cfg /
+    // Taint modes (the auth analysis itself runs only under Full, but
+    // the index has to be populated by the time pass 2 launches).
+    let router_facts_for_this_file = if parsed.source.lang_slug == "python" {
+        auth_analysis::router_facts::module_id_for_storage(parsed.source.path).map(|module_id| {
+            let facts = auth_analysis::router_facts::extract_router_facts_for_python(
+                &parsed.source.tree,
+                parsed.source.bytes,
+            );
+            (module_id, facts)
+        })
+    } else {
+        None
+    };
+
     if cfg.scanner.mode == AnalysisMode::Full || cfg.scanner.mode == AnalysisMode::Ast {
         let ast_findings = parsed.source.run_ast_queries(cfg);
         // Layer B only applies when taint had the opportunity to evaluate
@@ -4318,6 +4349,20 @@ pub fn analyse_file_fused(
         // measured savings.
         let auth_rules = auth_analysis::config::build_auth_rules(cfg, parsed.source.lang_slug);
         if auth_rules.enabled {
+            // Resolve cross-file router-deps for the current file (Python only).
+            // The resolved map lives on `AuthorizationModel.cross_file_router_deps`
+            // BEFORE `FlaskExtractor::extract` runs, so the in-extractor merge
+            // sees both inline router-deps and the cross-file lift in one pass.
+            let cross_file_router_deps = if parsed.source.lang_slug == "python"
+                && let Some(gs) = global_summaries
+                && let Some(child_module_id) =
+                    auth_analysis::router_facts::module_id_for_path(parsed.source.path)
+            {
+                let resolved = gs.resolve_cross_file_router_deps(&child_module_id);
+                if resolved.is_empty() { None } else { Some(resolved) }
+            } else {
+                None
+            };
             let auth_model = auth_analysis::extract::extract_authorization_model(
                 parsed.source.lang_slug,
                 cfg.framework_ctx.as_ref(),
@@ -4325,6 +4370,7 @@ pub fn analyse_file_fused(
                 parsed.source.bytes,
                 parsed.source.path,
                 &auth_rules,
+                cross_file_router_deps.as_ref(),
             );
             // Extract summaries from the **base** model (pre var-types,
             // pre-helper-lifting) so the persisted per-file summary
@@ -4361,6 +4407,7 @@ pub fn analyse_file_fused(
         cfg_nodes,
         ssa_bodies,
         auth_summaries,
+        router_facts: router_facts_for_this_file,
     })
 }
 

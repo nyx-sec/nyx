@@ -49,7 +49,36 @@ impl AuthExtractor for FlaskExtractor {
         // this, airflow's execution-API routes that re-use a single
         // `ti_id_router` declared once at module scope inherit no auth
         // and flag `missing_ownership_check` despite being authorized.
-        let router_deps = collect_router_level_dependencies(root, bytes);
+        let mut router_deps = collect_router_level_dependencies(root, bytes);
+        // Merge in cross-file router-deps lifted via
+        // `<parent>.include_router(<this_file>.<router>, ...)` calls in
+        // other project files — pre-resolved by the orchestrator at
+        // pass 2 entry from `GlobalSummaries.router_facts_by_module`.
+        // Cross-file deps are PREPENDED to mirror FastAPI's runtime
+        // ordering (parent router deps run before any in-file router
+        // deps and before per-route deps).  Empty when global summaries
+        // are unavailable (single-file scan / unit-test paths).
+        if !model.cross_file_router_deps.is_empty() {
+            for (router_var, cross_deps) in &model.cross_file_router_deps {
+                if cross_deps.is_empty() {
+                    continue;
+                }
+                let entry = router_deps.entry(router_var.clone()).or_default();
+                let mut merged: Vec<(CallSite, bool)> = cross_deps.clone();
+                // Dedup so an inline `dependencies=[Security(...)]` and a
+                // cross-file lift of the same `Security(callee)` don't
+                // double-fire downstream auth checks.
+                for dep in entry.iter() {
+                    let already = merged
+                        .iter()
+                        .any(|(call, scoped)| call.name == dep.0.name && *scoped == dep.1);
+                    if !already {
+                        merged.push(dep.clone());
+                    }
+                }
+                *entry = merged;
+            }
+        }
         visit_named_nodes(root, &mut |node| {
             if node.kind() == "decorated_definition" {
                 maybe_collect_flask_route(root, node, bytes, path, rules, model, &router_deps);

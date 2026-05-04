@@ -1,6 +1,7 @@
 use super::config::AuthAnalysisRules;
-use super::model::AuthorizationModel;
+use super::model::{AuthorizationModel, CallSite};
 use crate::utils::project::{FrameworkContext, rust_file_imports_web_framework};
+use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::Tree;
 
@@ -50,6 +51,7 @@ pub fn extract_authorization_model(
     bytes: &[u8],
     path: &Path,
     rules: &AuthAnalysisRules,
+    cross_file_router_deps: Option<&HashMap<String, Vec<(CallSite, bool)>>>,
 ) -> AuthorizationModel {
     let extractors: [&dyn AuthExtractor; 13] = [
         &express::ExpressExtractor,
@@ -70,6 +72,17 @@ pub fn extract_authorization_model(
         lang: lang.to_string(),
         ..Default::default()
     };
+    // Pre-populate the cross-file router-dep map BEFORE extractors run.
+    // FlaskExtractor reads `model.cross_file_router_deps` and merges the
+    // resolved deps into its local router-deps map at extraction time,
+    // so per-route auth attribution sees both the local-file
+    // `dependencies=[Security(...)]` declarations and the cross-file
+    // lift from `<parent>.include_router(<this_file>.<router>, ...)`
+    // edges visible elsewhere in the project.  Empty / `None` for every
+    // non-Python language and for files with no matching child edges.
+    if let Some(deps) = cross_file_router_deps {
+        model.cross_file_router_deps = deps.clone();
+    }
 
     // **Hoist `collect_top_level_units` out of the per-extractor loop.**
     // For multi-extractor languages (Go: gin+echo, JS/TS: express+koa+
