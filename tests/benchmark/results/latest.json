@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T09:32:01Z",
+  "timestamp": "2026-05-04T09:55:54Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:ced145a243534a6d8f88a95342391a730d9396011f913fc7322c2f545c9b1f6d",
-  "corpus_size": 553,
-  "cases_run": 552,
+  "ground_truth_hash": "sha256:35acfa88396def65913a5b4b2383a5a80367de1cfb7102cbdc4503630133afa2",
+  "corpus_size": 555,
+  "cases_run": 554,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -5959,6 +5959,40 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-auth-realrepo-015",
+      "file": "python/safe/safe_fastapi_route_security_scopes.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-016",
+      "file": "python/auth/vuln_fastapi_route_security_no_scopes.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-cmdi-001",
       "file": "python/cmdi/cmdi_direct.py",
       "language": "python",
@@ -9868,19 +9902,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 270,
+    "tp": 271,
     "fp": 0,
     "fn_": 0,
-    "tn": 282,
+    "tn": 283,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 270,
+    "tp": 271,
     "fp": 0,
     "fn_": 0,
-    "tn": 282,
+    "tn": 283,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9941,10 +9975,10 @@
       "f1": 1.0
     },
     "python": {
-      "tp": 35,
+      "tp": 36,
       "fp": 0,
       "fn_": 0,
-      "tn": 38,
+      "tn": 39,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9979,10 +10013,10 @@
   },
   "by_vuln_class": {
     "auth": {
-      "tp": 22,
+      "tp": 23,
       "fp": 0,
       "fn_": 0,
-      "tn": 0,
+      "tn": 1,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10170,31 +10204,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 87,
-      "fp": 108,
-      "fn_": 183,
-      "tn": 174,
-      "precision": 0.4461538461538462,
-      "recall": 0.32222222222222224,
-      "f1": 0.3741935483870968
+      "tp": 86,
+      "fp": 111,
+      "fn_": 185,
+      "tn": 172,
+      "precision": 0.4365482233502538,
+      "recall": 0.3173431734317343,
+      "f1": 0.3675213675213675
     },
     ">=Low": {
       "tp": 88,
-      "fp": 140,
-      "fn_": 182,
-      "tn": 142,
-      "precision": 0.38596491228070173,
-      "recall": 0.32592592592592595,
-      "f1": 0.3534136546184739
+      "fp": 142,
+      "fn_": 183,
+      "tn": 141,
+      "precision": 0.3826086956521739,
+      "recall": 0.3247232472324723,
+      "f1": 0.35129740518962077
     },
     ">=Medium": {
       "tp": 88,
-      "fp": 130,
-      "fn_": 182,
-      "tn": 152,
-      "precision": 0.4036697247706422,
-      "recall": 0.32592592592592595,
-      "f1": 0.36065573770491804
+      "fp": 132,
+      "fn_": 183,
+      "tn": 151,
+      "precision": 0.4,
+      "recall": 0.3247232472324723,
+      "f1": 0.35845213849287166
     }
   }
 }

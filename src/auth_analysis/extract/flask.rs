@@ -5,7 +5,9 @@ use super::common::{
 };
 use crate::auth_analysis::config::{AuthAnalysisRules, matches_name};
 use crate::auth_analysis::extract::common::decorated_definition_child;
-use crate::auth_analysis::model::{AuthorizationModel, CallSite, Framework, HttpMethod};
+use crate::auth_analysis::model::{
+    AuthCheck, AuthCheckKind, AuthorizationModel, CallSite, Framework, HttpMethod,
+};
 use crate::labels::bare_method_name;
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use std::path::Path;
@@ -59,7 +61,7 @@ fn maybe_collect_flask_route(
     }
 
     let mut route_specs = Vec::new();
-    let mut middleware_calls = Vec::new();
+    let mut middleware_calls: Vec<(CallSite, bool)> = Vec::new();
     for decorator in decorator_expressions(node) {
         if let Some(mut specs) = parse_flask_route_decorator(decorator, bytes) {
             route_specs.append(&mut specs);
@@ -68,12 +70,18 @@ fn maybe_collect_flask_route(
             // `dependencies=[Depends(...)]` keyword argument, instead
             // of as separate `@decorator` lines like Flask.  Walk the
             // route decorator's keyword args for that shape and lift
-            // each `Depends(call(...))` element into the
-            // middleware_calls list, so the same `inject_middleware_auth`
-            // path that Flask uses also picks up FastAPI auth deps.
+            // each `Depends(call(...))` / `Security(call, scopes=[...])`
+            // element into the middleware_calls list, so the same
+            // `inject_middleware_auth` path that Flask uses also
+            // picks up FastAPI auth deps.  The boolean tracks whether
+            // the wrapper was a scoped `Security(...)` — those are
+            // OAuth2-scope-checked authorization (not just login),
+            // so the AuthCheckKind is promoted in
+            // `inject_middleware_auth`.
             middleware_calls.extend(extract_fastapi_dependencies(decorator, bytes));
         } else {
-            middleware_calls.extend(expand_decorator_calls(decorator, bytes));
+            middleware_calls
+                .extend(expand_decorator_calls(decorator, bytes).into_iter().map(|c| (c, false)));
         }
     }
 
@@ -100,6 +108,8 @@ fn maybe_collect_flask_route(
             rules,
         );
 
+        let registration_calls: Vec<CallSite> =
+            middleware_calls.iter().map(|(call, _)| call.clone()).collect();
         push_route_registration(
             model,
             Framework::Flask,
@@ -107,7 +117,7 @@ fn maybe_collect_flask_route(
             spec.path,
             path,
             handler,
-            middleware_calls.clone(),
+            registration_calls,
         );
     }
 }
@@ -268,19 +278,28 @@ fn expand_decorator_calls(node: Node<'_>, bytes: &[u8]) -> Vec<CallSite> {
 }
 
 /// Walk the route-decorator call's keyword args looking for the FastAPI
-/// `dependencies=[Depends(call(...)), Depends(call), ...]` shape.  For
-/// each `Depends(...)` list element, extract the inner callable as a
-/// `CallSite` so it can flow through `inject_middleware_auth` and be
-/// matched against the per-language authorization-check / login-guard
-/// name lists.  Refuses non-call elements and `Depends(...)` without a
-/// recognised inner call shape.
+/// `dependencies=[Depends(call(...)), Security(call, scopes=[...]), ...]`
+/// shape.  For each `Depends(...)` / `Security(...)` list element,
+/// extract the inner callable as a `CallSite` so it can flow through
+/// `inject_middleware_auth` and be matched against the per-language
+/// authorization-check / login-guard name lists.  Refuses non-call
+/// elements and markers without a recognised inner call shape.
+///
+/// Returns `(CallSite, is_scoped_security)` pairs.  The boolean is
+/// `true` when the wrapper was `Security(...)` carrying a non-empty
+/// `scopes=[...]` kwarg — those are OAuth2-scope-checked authorization
+/// (FastAPI semantics), not bare login dependency, so
+/// `inject_middleware_auth` promotes the `AuthCheckKind`.
 ///
 /// The function is decoupled from Flask semantics (Flask routes never
 /// use `dependencies=`); the lookup is purely structural and matches
 /// FastAPI's documented dependency-injection convention.  Lives in the
 /// flask module because Flask's route-decorator parser already targets
 /// the `@<router>.<method>(<path>, ...)` shape that FastAPI shares.
-fn extract_fastapi_dependencies(decorator_expr: Node<'_>, bytes: &[u8]) -> Vec<CallSite> {
+fn extract_fastapi_dependencies(
+    decorator_expr: Node<'_>,
+    bytes: &[u8],
+) -> Vec<(CallSite, bool)> {
     if decorator_expr.kind() != "call" {
         return Vec::new();
     }
@@ -292,47 +311,91 @@ fn extract_fastapi_dependencies(decorator_expr: Node<'_>, bytes: &[u8]) -> Vec<C
     };
     let mut out = Vec::new();
     for element in named_children(value) {
-        if let Some(call) = unwrap_depends_call(element, bytes) {
-            out.push(call);
+        if let Some(unwrapped) = unwrap_depends_call(element, bytes) {
+            out.push(unwrapped);
         }
     }
     out
 }
 
-/// Unwrap one `Depends(...)` list element from a FastAPI `dependencies`
-/// list and return the inner callable as a `CallSite`.  Three shapes
-/// are accepted:
+/// Unwrap one `Depends(...)` / `Security(...)` list element from a
+/// FastAPI `dependencies` list and return the inner callable as a
+/// `CallSite`.  Four shapes are accepted:
 ///   * `Depends(callee(arg1, arg2))`, most common, the inner call is
 ///     the callable factory invocation; record `callee` as the auth
 ///     check.
 ///   * `Depends(callee)`, bare reference; record `callee` itself.
-///   * `Depends()` / non-`Depends` items, skipped.
-fn unwrap_depends_call(node: Node<'_>, bytes: &[u8]) -> Option<CallSite> {
+///   * `Security(callee, scopes=[...])`, FastAPI's OAuth2-scope
+///     variant of `Depends`; the first positional arg is the auth
+///     callable, the `scopes=` kwarg is ignored.  Real-world airflow
+///     execution-API routes use this form
+///     (`task_instances.py:104`).
+///   * `Depends()` / non-marker items, skipped.
+///
+/// Skips `keyword_argument` children when locating the first
+/// positional, so kwargs ordering (`Security(scopes=..., callee)`)
+/// does not hide the dependency.
+fn unwrap_depends_call(node: Node<'_>, bytes: &[u8]) -> Option<(CallSite, bool)> {
     if node.kind() != "call" {
         return None;
     }
     let function = node.child_by_field_name("function")?;
     let function_text = text(function, bytes);
-    if !is_depends_callee(&function_text) {
+    if !is_dep_marker_callee(&function_text) {
         return None;
     }
+    let is_security = is_security_marker(&function_text);
     let arguments = node.child_by_field_name("arguments")?;
-    let first = named_children(arguments).into_iter().next()?;
+    let children = named_children(arguments);
+    let first = children
+        .iter()
+        .copied()
+        .find(|child| child.kind() != "keyword_argument")?;
+    let scoped_security = is_security
+        && keyword_argument_value(arguments, bytes, "scopes")
+            .map(|value| named_children(value).iter().any(|item| item.kind() != "comment"))
+            .unwrap_or(false);
     match first.kind() {
-        "call" => Some(call_site_from_node(first, bytes)),
-        "identifier" | "attribute" | "scoped_identifier" => Some(call_site_from_node(first, bytes)),
+        "call" => Some((call_site_from_node(first, bytes), scoped_security)),
+        "identifier" | "attribute" | "scoped_identifier" => {
+            Some((call_site_from_node(first, bytes), scoped_security))
+        }
         _ => None,
     }
 }
 
-/// True for the FastAPI `Depends` marker, including the
-/// fully-qualified `fastapi.Depends` form.  Conservative: only literal
-/// matches, no canonicalisation.
-fn is_depends_callee(callee: &str) -> bool {
+/// Subset of `is_dep_marker_callee` that matches only the `Security`
+/// variant (and its fully-qualified forms).  `Security(callable,
+/// scopes=[...])` is FastAPI's OAuth2-scope-checked dependency: the
+/// inner callable is invoked with the merged `SecurityScopes` from
+/// every parent `Security(...)` declaration, and the route is
+/// rejected unless the bearer token carries one of the requested
+/// scopes.  Treating a scoped Security wrapper as authorization
+/// (not just login) is the deeper semantic encoded by
+/// `inject_middleware_auth`.
+fn is_security_marker(callee: &str) -> bool {
     let trimmed = callee.trim();
     matches!(
         trimmed,
-        "Depends" | "fastapi.Depends" | "fastapi.params.Depends"
+        "Security" | "fastapi.Security" | "fastapi.params.Security"
+    )
+}
+
+/// True for the FastAPI dependency markers `Depends` and `Security`,
+/// including their fully-qualified forms.  `Security(callable,
+/// scopes=[...])` is the OAuth2-scope variant of `Depends(callable)`;
+/// FastAPI treats the inner callable identically for dep-injection
+/// purposes.  Conservative: only literal matches, no canonicalisation.
+fn is_dep_marker_callee(callee: &str) -> bool {
+    let trimmed = callee.trim();
+    matches!(
+        trimmed,
+        "Depends"
+            | "fastapi.Depends"
+            | "fastapi.params.Depends"
+            | "Security"
+            | "fastapi.Security"
+            | "fastapi.params.Security"
     )
 }
 
@@ -340,32 +403,70 @@ fn inject_middleware_auth(
     model: &mut AuthorizationModel,
     unit_idx: usize,
     line: usize,
-    middleware_calls: &[CallSite],
+    middleware_calls: &[(CallSite, bool)],
     rules: &AuthAnalysisRules,
 ) {
     let Some(unit) = model.units.get_mut(unit_idx) else {
         return;
     };
-    for call in middleware_calls {
-        if let Some(mut check) = auth_check_from_call_site(call, line, rules) {
-            // Mark as route-level: the check is declared at the route
-            // boundary (Flask `@requires_role(...)` decorator, FastAPI
-            // `dependencies=[Depends(...)]`, or any custom-router
-            // equivalent) and semantically authorizes every value the
-            // handler receives, path param, body, query, downstream
-            // row fetches, the lot.  `auth_check_covers_subject` reads
-            // `is_route_level` and short-circuits `true` for any
-            // non-login-guard match, which is the correct shape for a
-            // decorator-level guard whose inner call carries no
-            // per-arg subject ref pointing back into the handler body.
-            // LoginGuard / TokenExpiry / TokenRecipient kinds are
-            // already excluded by `has_prior_subject_auth`'s filter
-            // before they reach `auth_check_covers_subject`, so the
-            // flag is safe to set unconditionally here, it has no
-            // effect on those kinds.
-            check.is_route_level = true;
-            unit.auth_checks.push(check);
+    for (call, scoped_security) in middleware_calls {
+        let mut check = match auth_check_from_call_site(call, line, rules) {
+            Some(check) => check,
+            None if *scoped_security => {
+                // FastAPI `Security(callable, scopes=[...])` always
+                // enforces authorization at the route boundary even
+                // when `callable` doesn't appear in any per-language
+                // login-guard / authorization-check name list.  Synthesise
+                // an `Other`-kind check so the route is recognised as
+                // guarded; without this, every `Security(custom_dep,
+                // scopes=[...])` route fires `missing_ownership_check`
+                // FPs.
+                AuthCheck {
+                    kind: AuthCheckKind::Other,
+                    callee: call.name.clone(),
+                    subjects: Vec::new(),
+                    span: call.span,
+                    line,
+                    args: call.args.clone(),
+                    condition_text: None,
+                    is_route_level: false,
+                }
+            }
+            None => continue,
+        };
+        // Mark as route-level: the check is declared at the route
+        // boundary (Flask `@requires_role(...)` decorator, FastAPI
+        // `dependencies=[Depends(...)]`, or any custom-router
+        // equivalent) and semantically authorizes every value the
+        // handler receives, path param, body, query, downstream
+        // row fetches, the lot.  `auth_check_covers_subject` reads
+        // `is_route_level` and short-circuits `true` for any
+        // non-login-guard match, which is the correct shape for a
+        // decorator-level guard whose inner call carries no
+        // per-arg subject ref pointing back into the handler body.
+        // LoginGuard / TokenExpiry / TokenRecipient kinds are
+        // already excluded by `has_prior_subject_auth`'s filter
+        // before they reach `auth_check_covers_subject`, so the
+        // flag is safe to set unconditionally here, it has no
+        // effect on those kinds.
+        check.is_route_level = true;
+        // FastAPI `Security(callable, scopes=[...])` is OAuth2-scope-
+        // checked authorization (the JWT must carry one of the listed
+        // scopes); a `LoginGuard` classification would be wrong because
+        // `has_prior_subject_auth` filters LoginGuard out.  Promote to
+        // `Other` so the route counts as authorized for ownership /
+        // membership / token-override checks.
+        if *scoped_security
+            && matches!(
+                check.kind,
+                AuthCheckKind::LoginGuard
+                    | AuthCheckKind::TokenExpiry
+                    | AuthCheckKind::TokenRecipient
+            )
+        {
+            check.kind = AuthCheckKind::Other;
         }
+        unit.auth_checks.push(check);
     }
 }
 
@@ -406,24 +507,152 @@ mod test_decorator_tests {
 
 #[cfg(test)]
 mod fastapi_dependencies_tests {
-    use super::is_depends_callee;
+    use super::{is_dep_marker_callee, is_security_marker, unwrap_depends_call};
+    use tree_sitter::Parser;
 
-    /// `is_depends_callee` only matches the FastAPI `Depends` marker.
-    /// Any other wrapper call inside `dependencies=[...]` is ignored ,
-    /// extracting an inner callee from the wrong wrapper would
-    /// misclassify logging hooks or filter callables as auth checks.
+    fn parse_python(source: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .expect("python language");
+        parser.parse(source, None).expect("parse")
+    }
+
+    /// Walk the parsed tree to find the first `call` node whose
+    /// callee name matches `marker`.  Helper for the `unwrap_depends_call`
+    /// regression tests below — the production extractor traverses the
+    /// route-decorator's `dependencies=[...]` list and feeds each
+    /// element into `unwrap_depends_call`, so the test mirrors that
+    /// element shape directly without the surrounding boilerplate.
+    fn find_first_marker_call<'a>(
+        node: tree_sitter::Node<'a>,
+        bytes: &[u8],
+        marker: &str,
+    ) -> Option<tree_sitter::Node<'a>> {
+        if node.kind() == "call"
+            && let Some(function) = node.child_by_field_name("function")
+            && function.utf8_text(bytes).unwrap_or("") == marker
+        {
+            return Some(node);
+        }
+        for idx in 0..node.named_child_count() {
+            if let Some(child) = node.named_child(idx as u32)
+                && let Some(found) = find_first_marker_call(child, bytes, marker)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// `is_dep_marker_callee` matches only FastAPI's `Depends` /
+    /// `Security` markers.  Any other wrapper call inside
+    /// `dependencies=[...]` is ignored, extracting an inner callee
+    /// from the wrong wrapper would misclassify logging hooks or
+    /// filter callables as auth checks.
     #[test]
-    fn is_depends_callee_recognises_canonical_forms() {
-        assert!(is_depends_callee("Depends"));
-        assert!(is_depends_callee("fastapi.Depends"));
-        assert!(is_depends_callee("fastapi.params.Depends"));
+    fn is_dep_marker_callee_recognises_canonical_forms() {
+        assert!(is_dep_marker_callee("Depends"));
+        assert!(is_dep_marker_callee("fastapi.Depends"));
+        assert!(is_dep_marker_callee("fastapi.params.Depends"));
+        // Security variant — OAuth2-scope-bearing equivalent.
+        assert!(is_dep_marker_callee("Security"));
+        assert!(is_dep_marker_callee("fastapi.Security"));
+        assert!(is_dep_marker_callee("fastapi.params.Security"));
         // Whitespace tolerance.
-        assert!(is_depends_callee(" Depends "));
+        assert!(is_dep_marker_callee(" Depends "));
+        assert!(is_dep_marker_callee(" Security "));
         // Negatives.
-        assert!(!is_depends_callee("Annotated"));
-        assert!(!is_depends_callee("Body"));
-        assert!(!is_depends_callee("Depends.something"));
-        assert!(!is_depends_callee("RequiresAuth"));
-        assert!(!is_depends_callee(""));
+        assert!(!is_dep_marker_callee("Annotated"));
+        assert!(!is_dep_marker_callee("Body"));
+        assert!(!is_dep_marker_callee("Depends.something"));
+        assert!(!is_dep_marker_callee("Security.something"));
+        assert!(!is_dep_marker_callee("RequiresAuth"));
+        assert!(!is_dep_marker_callee(""));
+    }
+
+    /// `is_security_marker` is the strictly-Security subset.  Used to
+    /// promote the wrapper's `is_scoped_security` flag without a
+    /// second string-match pass.
+    #[test]
+    fn is_security_marker_recognises_security_only() {
+        assert!(is_security_marker("Security"));
+        assert!(is_security_marker("fastapi.Security"));
+        assert!(is_security_marker("fastapi.params.Security"));
+        assert!(is_security_marker(" Security "));
+        // Depends is NOT a Security marker.
+        assert!(!is_security_marker("Depends"));
+        assert!(!is_security_marker("fastapi.Depends"));
+        assert!(!is_security_marker("Annotated"));
+        assert!(!is_security_marker(""));
+    }
+
+    /// `Security(callable, scopes=[...])` — the canonical airflow
+    /// execution-API auth-dep shape (`task_instances.py:104`).  Must
+    /// extract `callable` as the inner CallSite AND flag the wrapper as
+    /// scoped-security so `inject_middleware_auth` promotes the
+    /// AuthCheckKind from LoginGuard to Other (OAuth2 scopes are
+    /// authorization, not just login).  Without the promotion, the
+    /// route still fires `missing_ownership_check` despite carrying a
+    /// declared route-level dependency.
+    #[test]
+    fn unwrap_depends_call_security_with_scopes_flags_scoped() {
+        let src = "x = Security(require_auth, scopes=[\"token:execution\"])\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let call = find_first_marker_call(tree.root_node(), bytes, "Security")
+            .expect("Security call node");
+        let (site, scoped) = unwrap_depends_call(call, bytes).expect("Security recognised");
+        assert_eq!(site.name, "require_auth");
+        assert!(scoped, "non-empty scopes=[...] must mark the wrapper scoped");
+    }
+
+    /// `Depends(callable())` — pre-existing FastAPI shape.  Inner call
+    /// extracts to the factory's outer name; wrapper is NOT
+    /// scoped-security.  Regression guard: the Security extension must
+    /// not flip Depends's scoped flag on.
+    #[test]
+    fn unwrap_depends_call_depends_factory_not_scoped() {
+        let src = "x = Depends(requires_access_dag(method=\"GET\"))\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let call = find_first_marker_call(tree.root_node(), bytes, "Depends")
+            .expect("Depends call node");
+        let (site, scoped) = unwrap_depends_call(call, bytes).expect("Depends recognised");
+        assert_eq!(site.name, "requires_access_dag");
+        assert!(!scoped, "Depends wrapper never scoped-security");
+    }
+
+    /// `Security(callable)` without scopes (rare but legal) is NOT
+    /// scoped — the OAuth2-scope semantic only fires when scopes is
+    /// non-empty, so the wrapper falls back to the regular login-guard
+    /// classification.  Conservative: don't over-promote.
+    #[test]
+    fn unwrap_depends_call_security_without_scopes_not_scoped() {
+        let src = "x = Security(require_auth)\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let call = find_first_marker_call(tree.root_node(), bytes, "Security")
+            .expect("Security call node");
+        let (site, scoped) = unwrap_depends_call(call, bytes).expect("Security recognised");
+        assert_eq!(site.name, "require_auth");
+        assert!(!scoped, "missing scopes=[...] kwarg means not scoped-security");
+    }
+
+    /// `Security(callable, scopes=[])` with an empty scope list is NOT
+    /// scoped-security: an empty `scopes=[]` declaration accumulates
+    /// no required scopes onto the JWT check, so the route is
+    /// effectively a bare login dependency.  Conservative — keeps the
+    /// promotion gate tight.
+    #[test]
+    fn unwrap_depends_call_security_empty_scopes_not_scoped() {
+        let src = "x = Security(require_auth, scopes=[])\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let call = find_first_marker_call(tree.root_node(), bytes, "Security")
+            .expect("Security call node");
+        let (site, scoped) = unwrap_depends_call(call, bytes).expect("Security recognised");
+        assert_eq!(site.name, "require_auth");
+        assert!(!scoped, "scopes=[] is not scoped-security");
     }
 }

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 555
+    "corpus_size": 557
   },
   "cases": [
     {
@@ -17353,6 +17353,68 @@
       ],
       "disabled": false,
       "notes": "Distilled from airflow `airflow-core/src/airflow/api_fastapi/core_api/routes/public/connections.py`: `session.scalar(select(Connection).filter_by(conn_id=connection_id))` queryset chain.  Pre-fix the chain reduced via `member_chain` to bare `[\"filter_by\"]` (Python tree-sitter `call` nodes use a `function` field not traversed by the Ruby/JS-style logic) and was suppressed by `receiver_is_simple_chain`'s bare-callee guard, blocking recall.  Fix: (1) `member_chain` now traverses Python `call`'s `function` field; (2) the parent attribute branch appends `()` to last segment when its `object` is a call so `select(X).filter_by(...)` produces `[\"select()\", \"filter_by\"]`; (3) `AuthAnalysisRules::chain_root_is_db_query_builder` + per-language `db_query_builder_roots` (Python: `select`, `query`) anchors the chained-call shape to `DbCrossTenantRead`.  Recall guard: missing_ownership_check must still fire on this airflow-style queryset chain when no `Depends(...)` auth dependency is declared."
+    },
+    {
+      "case_id": "py-auth-realrepo-015",
+      "file": "python/safe/safe_fastapi_route_security_scopes.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "fastapi",
+        "security",
+        "real-repo-precision-2026-05-04"
+      ],
+      "disabled": false,
+      "notes": "Distilled from airflow `airflow-core/src/airflow/api_fastapi/execution_api/routes/task_instances.py:101-117`: `dependencies=[Security(require_auth, scopes=[\"token:execution\", \"token:workload\"])]`.  Pre-fix `is_depends_callee` only matched `Depends`, so `Security(...)` was ignored and the route fired `missing_ownership_check` even with the auth dep declared.  Even after recognising the marker, `require_auth` is registered as a `LoginGuard`, which `has_prior_subject_auth` filters out.  Fix: (1) `is_dep_marker_callee` recognises `Security` / `fastapi.Security` / `fastapi.params.Security`; (2) `unwrap_depends_call` returns `(CallSite, is_scoped_security)` and skips `keyword_argument` children when finding the first positional; (3) `inject_middleware_auth` promotes a scoped Security wrapper from `LoginGuard` to `AuthCheckKind::Other` so the route counts as authorized.  Precision guard: route must NOT fire ownership / token-override findings when carrying a scoped `Security(...)` route-level dep."
+    },
+    {
+      "case_id": "py-auth-realrepo-016",
+      "file": "python/auth/vuln_fastapi_route_security_no_scopes.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          34,
+          34
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "fastapi",
+        "security",
+        "real-repo-precision-2026-05-04"
+      ],
+      "disabled": false,
+      "notes": "Recall counterpart to py-auth-realrepo-015.  `Security(require_auth, scopes=[])` with an empty scope list is NOT promoted to `Other` — the OAuth2 scope semantic only fires when scopes is non-empty, so the wrapper falls back to bare login classification.  Recall guard: `missing_ownership_check` must still fire on this id-targeted ORM filter; without conservative scope-emptiness gating, every empty-scopes route would over-suppress."
     },
     {
       "case_id": "cve-ts-2026-25544-vulnerable",
