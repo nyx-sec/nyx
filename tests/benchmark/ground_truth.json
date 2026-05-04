@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 543
+    "corpus_size": 544
   },
   "cases": [
     {
@@ -15390,7 +15390,7 @@
         "real-repo-precision-2026-04-27"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to ts-auth-realrepo-001: `userId = req.params.targetUserId` is a foreign id (URL param), not a session copy \u2014 the rule must still fire."
+      "notes": "Vulnerable counterpart to ts-auth-realrepo-001: `targetUserId` is a foreign id parameter (route-handed, not a session copy) \u2014 the rule must still fire on the qualified prisma.apiKey.deleteMany call.  Updated 2026-05-03: pre-fix used bare `deleteApiKeysFromUserId(userId)` whose `delete` verb-prefix match fired despite no receiver evidence; post `receiver_is_simple_chain` gating, the fixture uses a qualified ORM call to test the canonical detection path."
     },
     {
       "case_id": "js-auth-realrepo-001",
@@ -16218,8 +16218,8 @@
       "expected_category": "Security",
       "expected_sink_lines": [
         [
-          15,
-          15
+          25,
+          25
         ]
       ],
       "expected_source_lines": [],
@@ -16229,7 +16229,7 @@
         "real-repo-precision-2026-04-29"
       ],
       "disabled": false,
-      "notes": "Vulnerable counterpart to py-auth-realrepo-005: same FastAPI route shape but no `dependencies=[Depends(...)]` keyword arg.  Regression guard: the dependency-injection recogniser must not blanket-suppress every FastAPI route."
+      "notes": "Vulnerable counterpart to py-auth-realrepo-005: same FastAPI route shape but no `dependencies=[Depends(...)]` keyword arg.  Regression guard: the dependency-injection recogniser must not blanket-suppress every FastAPI route.  Updated 2026-05-03: pre-fix recall came from a member_chain quirk where `select(Connection).filter_by(...)` reduced to bare callee `filter_by` and prefix-matched the `filter` read indicator.  Post `receiver_is_simple_chain` gating, the fixture uses a qualified `Connection.objects.filter(id=connection_id).delete()` shape — SQLAlchemy `select().filter_by(...)` chained-call detection is a deferred deep fix."
     },
     {
       "case_id": "js-data_exfil-001",
@@ -16969,6 +16969,33 @@
       ],
       "disabled": false,
       "notes": "Distilled from airflow providers/google/tests/unit/google/cloud/hooks/test_dlp.py: pytest test method decorated with `@mock.patch(\"...\")` was being attached as a Flask `PATCH` route handler because bare_method_name(\"mock.patch\") == \"patch\".  Fix: parse_flask_route_decorator short-circuits on known test-framework decorator vocabulary (mock.patch, unittest.mock.patch, monkeypatch.setattr, pytest.mark.parametrize)."
+    },
+    {
+      "case_id": "py-auth-realrepo-011",
+      "file": "python/safe/safe_bare_callee_no_receiver.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "django",
+        "real-repo-precision-2026-05-03"
+      ],
+      "disabled": false,
+      "notes": "Distilled from sentry tasks/statistical_detectors.py:743 (`org_ids = list({p.organization_id for p in projects})`), utils/query.py:90 (`events = list(method(...))`), api/helpers/group_index/delete.py (bare `delete_group_list`, `create_audit_entry`), seer/autofix/coding_agent.py (bare `update_coding_agent_state`).  Bare-identifier callees `list`, `filter`, `update`, `create`, `add` are Python builtins or locally-defined helpers, not DB / ORM operations.  Fix: classify_sink_class verb-name fallback now requires `receiver_is_simple_chain` (callee contains a non-chained `.`).  Regression guard for: bare callees must not classify as DbCrossTenantRead / DbMutation."
     },
     {
       "case_id": "cve-ts-2026-25544-vulnerable",

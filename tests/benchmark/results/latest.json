@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T01:38:46Z",
+  "timestamp": "2026-05-04T03:41:46Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:93fec4f0c93f2a180d002539a7de3295f22bb4889afbb5e739d51ecb1f7b77e0",
-  "corpus_size": 541,
-  "cases_run": 540,
+  "ground_truth_hash": "sha256:c0f6d238e85da89fea5f032b71b496e21433e91719c289453ea89aa7be3311df",
+  "corpus_size": 542,
+  "cases_run": 541,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -5740,6 +5740,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-auth-realrepo-011",
+      "file": "python/safe/safe_bare_callee_no_receiver.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-cmdi-001",
       "file": "python/cmdi/cmdi_direct.py",
       "language": "python",
@@ -8628,9 +8643,11 @@
       "outcome_location_level": null,
       "matched_rule_ids": [],
       "unexpected_rule_ids": [],
-      "all_finding_ids": [],
+      "all_finding_ids": [
+        "ts.quality.any_annotation"
+      ],
       "security_finding_count": 0,
-      "non_security_finding_count": 0
+      "non_security_finding_count": 1
     },
     {
       "case_id": "ts-auth-realrepo-002",
@@ -8646,12 +8663,10 @@
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "ts.quality.any_annotation",
-        "ts.quality.any_annotation",
         "js.auth.missing_ownership_check"
       ],
       "security_finding_count": 1,
-      "non_security_finding_count": 2
+      "non_security_finding_count": 0
     },
     {
       "case_id": "ts-auth-realrepo-003",
@@ -9649,7 +9664,7 @@
     "tp": 264,
     "fp": 0,
     "fn_": 0,
-    "tn": 276,
+    "tn": 277,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9658,7 +9673,7 @@
     "tp": 264,
     "fp": 0,
     "fn_": 0,
-    "tn": 276,
+    "tn": 277,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9722,7 +9737,7 @@
       "tp": 31,
       "fp": 0,
       "fn_": 0,
-      "tn": 34,
+      "tn": 35,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9895,7 +9910,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 276,
+      "tn": 277,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9948,31 +9963,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 88,
-      "fp": 104,
-      "fn_": 176,
+      "tp": 89,
+      "fp": 105,
+      "fn_": 175,
       "tn": 172,
-      "precision": 0.4583333333333333,
-      "recall": 0.3333333333333333,
-      "f1": 0.38596491228070173
+      "precision": 0.4587628865979381,
+      "recall": 0.3371212121212121,
+      "f1": 0.38864628820960695
     },
     ">=Low": {
-      "tp": 90,
-      "fp": 132,
-      "fn_": 174,
-      "tn": 144,
-      "precision": 0.40540540540540543,
-      "recall": 0.3409090909090909,
-      "f1": 0.37037037037037035
+      "tp": 92,
+      "fp": 130,
+      "fn_": 172,
+      "tn": 147,
+      "precision": 0.4144144144144144,
+      "recall": 0.3484848484848485,
+      "f1": 0.3786008230452675
     },
     ">=Medium": {
-      "tp": 90,
+      "tp": 92,
       "fp": 124,
-      "fn_": 174,
-      "tn": 152,
-      "precision": 0.4205607476635514,
-      "recall": 0.3409090909090909,
-      "f1": 0.37656903765690375
+      "fn_": 172,
+      "tn": 153,
+      "precision": 0.42592592592592593,
+      "recall": 0.3484848484848485,
+      "f1": 0.38333333333333336
     }
   }
 }

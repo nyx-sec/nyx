@@ -9,9 +9,8 @@
 // `src/auth_analysis/extract/common.rs::value_is_self_scoped_session_id_chain`
 // which extends `collect_self_actor_id_binding` to recognise
 // session-scoped chains beyond the existing `actor_var.id` shape.
-async function getCachedApiKeys(_userId: number) {
-  return [];
-}
+declare const prisma: any;
+declare function getServerSession(): Promise<any>;
 
 export const Page = async () => {
   const session = await getServerSession();
@@ -21,6 +20,6 @@ export const Page = async () => {
   }
 
   const userId = session.user.id;
-  const apiKeys = await getCachedApiKeys(userId);
+  const apiKeys = await prisma.apiKey.findMany({ where: { userId } });
   return apiKeys;
 };

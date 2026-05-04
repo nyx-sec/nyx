@@ -260,20 +260,28 @@ impl AuthAnalysisRules {
         // Verb-name fallback (`is_mutation` / `is_read`) is the loosest
         // dispatch: it prefix-matches the bare method name against
         // generic verbs (`Get`, `Save`, `Find`, …) regardless of the
-        // receiver.  When the receiver chain itself contains a call
-        // expression (`w.Header().Get(..)`, `r.URL.Query().Get(..)`,
-        // `db.Tx(..).Query(..)`), the receiver is the *return value of
-        // another call*, its type is opaque to the auth analyser and
-        // the bare verb match is too speculative to assume a data-layer
-        // sink.  The realtime/outbound/cache prefix dispatches above
-        // already match by the chain root; if none of them claimed the
-        // receiver, dropping the verb-name fallback for chained-call
-        // shapes prevents the entire `w.Header().Get` /
-        // `r.URL.Query().Get` cluster from masquerading as a
-        // `DbCrossTenantRead`.  A canonical data-layer call still has a
-        // bare-identifier receiver (`repo.Find(id)`, `db.Query(..)`)
-        // and is unaffected.
-        if !receiver_is_chained_call(callee) {
+        // receiver.  Two structural shapes lack the receiver evidence
+        // needed to anchor a DB-sink classification and are excluded:
+        //
+        //   1. Chained-call receiver (`w.Header().Get(..)`,
+        //      `r.URL.Query().Get(..)`, `db.Tx(..).Query(..)`) — the
+        //      receiver is the *return value of another call*, its type
+        //      is opaque to the auth analyser.
+        //   2. Bare-identifier callee with no receiver dot at all
+        //      (`list(..)`, `filter(..)`, `create_audit_entry(..)`,
+        //      `update_coding_agent_state(..)`) — Python / JS / Ruby
+        //      builtins and locally-defined helpers routinely collide
+        //      with the verb vocabulary.  Real ORM / DB calls always
+        //      carry a receiver (`User.find(id)`, `Model.objects.filter`,
+        //      `repo.save(x)`); a bare `list(events)` is the Python
+        //      builtin and `filter(fn, xs)` is `Iterable.filter`.
+        //
+        // The realtime / outbound / cache prefix dispatches above
+        // already match by the chain root; gating the verb fallback on
+        // a simple non-chained receiver dot prevents both shapes from
+        // masquerading as data-layer sinks while leaving canonical
+        // `repo.Find(id)` / `db.Query(..)` calls unaffected.
+        if receiver_is_simple_chain(callee) {
             if self.is_mutation(callee) {
                 return Some(SinkClass::DbMutation);
             }
@@ -1410,6 +1418,17 @@ pub fn receiver_is_chained_call(callee: &str) -> bool {
     receiver.contains('(')
 }
 
+/// True when the callee has a non-chained receiver dot, i.e. an actual
+/// receiver identifier or path (`User.find`, `repo.save`,
+/// `Model.objects.filter`).  Returns false for bare-identifier callees
+/// (`list(..)`, `filter(..)`, `create_audit_entry(..)`) and for
+/// chained-call receivers (`db.Tx(..).Query(..)`) — both lack the
+/// receiver evidence needed to anchor a DB-sink classification, see
+/// the comment in `classify_sink_class`.
+pub fn receiver_is_simple_chain(callee: &str) -> bool {
+    callee.contains('.') && !receiver_is_chained_call(callee)
+}
+
 /// Recognise `require_<resource>_<role>` / `ensure_<resource>_<role>`
 /// shapes where `<role>` is a closed-vocabulary authorization noun
 /// (`member`, `owner`, `admin`, `access`, `permission`, `manager`,
@@ -1766,6 +1785,87 @@ mod tests {
             rules.classify_sink_class("repo.Save", &empty),
             Some(SinkClass::DbMutation)
         );
+    }
+
+    /// Pin the bare-identifier verb-fallback gate.  Bare callees with
+    /// no receiver dot lack the receiver evidence needed to anchor a
+    /// DB-sink classification: `list(...)`, `filter(...)`, `update(...)`,
+    /// `create_audit_entry(...)`, `update_coding_agent_state(...)` are
+    /// Python builtins / JS Array methods / locally-defined helpers,
+    /// not ORM operations.  Closes the sentry / saleor / netbox cluster
+    /// where bare-name callees inside route helpers (with `request:
+    /// Request` triggering the user-input precondition) fired
+    /// `py.auth.missing_ownership_check`.
+    #[test]
+    fn classify_sink_class_suppresses_bare_callee_verb_fallback() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let empty: HashSet<String> = HashSet::new();
+
+        for lang in ["python", "javascript", "typescript", "go", "java", "ruby", "rust"] {
+            let cfg = Config::default();
+            let rules = build_auth_rules(&cfg, lang);
+            // Bare callees that prefix-match a read / mutation indicator
+            // must NOT classify as DbCrossTenantRead / DbMutation.
+            assert_eq!(
+                rules.classify_sink_class("list", &empty),
+                None,
+                "lang={lang} bare list",
+            );
+            assert_eq!(
+                rules.classify_sink_class("filter", &empty),
+                None,
+                "lang={lang} bare filter",
+            );
+            assert_eq!(
+                rules.classify_sink_class("update", &empty),
+                None,
+                "lang={lang} bare update",
+            );
+            assert_eq!(
+                rules.classify_sink_class("create_audit_entry", &empty),
+                None,
+                "lang={lang} bare create_audit_entry",
+            );
+            assert_eq!(
+                rules.classify_sink_class("update_coding_agent_state", &empty),
+                None,
+                "lang={lang} bare update_coding_agent_state",
+            );
+        }
+
+        // Recall guard: qualified ORM / DB calls keep firing on every
+        // language that has the verb in its indicator vocabulary.
+        let py_rules = build_auth_rules(&Config::default(), "python");
+        assert_eq!(
+            py_rules.classify_sink_class("Project.objects.filter", &empty),
+            Some(SinkClass::DbCrossTenantRead)
+        );
+        assert_eq!(
+            py_rules.classify_sink_class("Project.objects.update", &empty),
+            Some(SinkClass::DbMutation)
+        );
+        let go_rules = build_auth_rules(&Config::default(), "go");
+        assert_eq!(
+            go_rules.classify_sink_class("repo.Find", &empty),
+            Some(SinkClass::DbCrossTenantRead)
+        );
+    }
+
+    #[test]
+    fn receiver_is_simple_chain_classifies_correctly() {
+        use super::receiver_is_simple_chain;
+        // Simple receiver chain (allowed for verb fallback).
+        assert!(receiver_is_simple_chain("repo.Find"));
+        assert!(receiver_is_simple_chain("Project.objects.filter"));
+        assert!(receiver_is_simple_chain("self.cache.insert"));
+        // Bare-identifier callee (rejected — no receiver evidence).
+        assert!(!receiver_is_simple_chain("list"));
+        assert!(!receiver_is_simple_chain("filter"));
+        assert!(!receiver_is_simple_chain("create_audit_entry"));
+        // Chained-call receiver (rejected — receiver type opaque).
+        assert!(!receiver_is_simple_chain("w.Header().Get"));
+        assert!(!receiver_is_simple_chain("db.Tx(opts).Query"));
     }
 
     #[test]
