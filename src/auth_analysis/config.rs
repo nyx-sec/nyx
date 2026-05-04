@@ -1912,7 +1912,15 @@ mod tests {
         use std::collections::HashSet;
         let empty: HashSet<String> = HashSet::new();
 
-        for lang in ["python", "javascript", "typescript", "go", "java", "ruby", "rust"] {
+        for lang in [
+            "python",
+            "javascript",
+            "typescript",
+            "go",
+            "java",
+            "ruby",
+            "rust",
+        ] {
             let cfg = Config::default();
             let rules = build_auth_rules(&cfg, lang);
             // Bare callees that prefix-match a read / mutation indicator
@@ -2009,14 +2017,8 @@ mod tests {
         // remain suppressed even when the trailing verb prefix-matches.
         // Run on a Python-rules instance with the verb in its read
         // indicator vocabulary to exercise the guard.
-        assert_eq!(
-            py_rules.classify_sink_class("w.Header().get", &empty),
-            None
-        );
-        assert_eq!(
-            py_rules.classify_sink_class("obj.foo().get", &empty),
-            None
-        );
+        assert_eq!(py_rules.classify_sink_class("w.Header().get", &empty), None);
+        assert_eq!(py_rules.classify_sink_class("obj.foo().get", &empty), None);
 
         // Languages without `db_query_builder_roots` defaults must not
         // false-positive on chained-call shapes.

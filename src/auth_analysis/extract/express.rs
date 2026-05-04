@@ -1,7 +1,8 @@
 use super::AuthExtractor;
 use super::common::{
     attach_route_handler, call_site_from_node, http_method_from_name, is_handler_reference,
-    member_target, named_children, push_route_registration, string_literal_value, visit_named_nodes,
+    member_target, named_children, push_route_registration, string_literal_value,
+    visit_named_nodes,
 };
 use crate::auth_analysis::config::AuthAnalysisRules;
 use crate::auth_analysis::model::{AuthorizationModel, Framework};

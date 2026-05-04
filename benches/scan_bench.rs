@@ -382,7 +382,10 @@ fn bench_const_propagate_large_go(c: &mut Criterion) {
             Err(_) => continue,
         }
     }
-    eprintln!("[diag] const_propagate bench: {} bodies lowered", bodies.len());
+    eprintln!(
+        "[diag] const_propagate bench: {} bodies lowered",
+        bodies.len()
+    );
 
     c.bench_function("const_propagate_large_go", |b| {
         b.iter(|| {
@@ -411,16 +414,13 @@ fn bench_global_summaries_lookup_same_lang_go(c: &mut Criterion) {
         .expect("perf fixture");
     let cfg = Config::default();
 
-    let summaries = nyx_scanner::ast::extract_summaries_from_file(&fixture, &cfg)
-        .expect("extract summaries");
+    let summaries =
+        nyx_scanner::ast::extract_summaries_from_file(&fixture, &cfg).expect("extract summaries");
     let names: Vec<String> = summaries.iter().map(|s| s.name.clone()).collect();
     let global = nyx_scanner::summary::merge_summaries(summaries, None);
     let lang = nyx_scanner::symbol::Lang::Go;
 
-    eprintln!(
-        "[diag] lookup_same_lang bench: {} names",
-        names.len()
-    );
+    eprintln!("[diag] lookup_same_lang bench: {} names", names.len());
 
     c.bench_function("global_summaries_lookup_same_lang_go", |b| {
         b.iter(|| {

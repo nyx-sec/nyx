@@ -107,11 +107,8 @@ pub fn run_auth_analysis(
     // before constructing the model, so the FlaskExtractor sees the
     // full per-file dep map at extraction time.  See `router_facts`
     // module + `analyse_file_fused` for the wider pipeline.
-    let cross_file_router_deps = resolve_cross_file_router_deps_for_file(
-        lang,
-        file_path,
-        global_summaries,
-    );
+    let cross_file_router_deps =
+        resolve_cross_file_router_deps_for_file(lang, file_path, global_summaries);
     let model = extract::extract_authorization_model(
         lang,
         cfg.framework_ctx.as_ref(),
@@ -149,7 +146,11 @@ pub(crate) fn resolve_cross_file_router_deps_for_file(
     let gs = global_summaries?;
     let module_id = router_facts::module_id_for_path(file_path)?;
     let resolved = gs.resolve_cross_file_router_deps(&module_id);
-    if resolved.is_empty() { None } else { Some(resolved) }
+    if resolved.is_empty() {
+        None
+    } else {
+        Some(resolved)
+    }
 }
 
 /// Variant of [`run_auth_analysis`] that accepts a pre-built
@@ -639,9 +640,7 @@ fn apply_caller_scope_propagation(model: &mut model::AuthorizationModel) {
     let is_seed_kind = |k: AuthCheckKind| {
         !matches!(
             k,
-            AuthCheckKind::LoginGuard
-                | AuthCheckKind::TokenExpiry
-                | AuthCheckKind::TokenRecipient
+            AuthCheckKind::LoginGuard | AuthCheckKind::TokenExpiry | AuthCheckKind::TokenRecipient
         )
     };
     let mut authorized: HashSet<usize> = (0..model.units.len())
@@ -1176,11 +1175,7 @@ mod tests {
     /// Build a synthetic [`AnalysisUnit`] with the given kind, name,
     /// and call_site leaf names.  No operations or auth_checks; tests
     /// add those explicitly.
-    fn unit_with_calls(
-        kind: AnalysisUnitKind,
-        name: &str,
-        callees: &[&str],
-    ) -> AnalysisUnit {
+    fn unit_with_calls(kind: AnalysisUnitKind, name: &str, callees: &[&str]) -> AnalysisUnit {
         AnalysisUnit {
             kind,
             name: Some(name.into()),
@@ -1239,7 +1234,9 @@ mod tests {
             "ti_update_state",
             &["_create_state_update"],
         );
-        handler.auth_checks.push(route_level_check(AuthCheckKind::Other));
+        handler
+            .auth_checks
+            .push(route_level_check(AuthCheckKind::Other));
         handler
             .auth_checks
             .push(route_level_check(AuthCheckKind::TokenExpiry));
@@ -1256,8 +1253,7 @@ mod tests {
         // TokenRecipient), each with `is_route_level=true` and line
         // re-anchored to helper's start line.
         let helper = &model.units[1];
-        let kinds: HashSet<AuthCheckKind> =
-            helper.auth_checks.iter().map(|c| c.kind).collect();
+        let kinds: HashSet<AuthCheckKind> = helper.auth_checks.iter().map(|c| c.kind).collect();
         assert!(
             kinds.contains(&AuthCheckKind::Other),
             "helper should inherit Other check from caller"
@@ -1292,7 +1288,9 @@ mod tests {
             "ti_update_state",
             &["_create_state_update"],
         );
-        authed.auth_checks.push(route_level_check(AuthCheckKind::Other));
+        authed
+            .auth_checks
+            .push(route_level_check(AuthCheckKind::Other));
         let bare = unit_with_calls(
             AnalysisUnitKind::RouteHandler,
             "ti_overwrite_state",
@@ -1340,12 +1338,10 @@ mod tests {
             "ti_update_state",
             &["_mid_helper"],
         );
-        handler.auth_checks.push(route_level_check(AuthCheckKind::Other));
-        let mid = unit_with_calls(
-            AnalysisUnitKind::Function,
-            "_mid_helper",
-            &["_leaf_helper"],
-        );
+        handler
+            .auth_checks
+            .push(route_level_check(AuthCheckKind::Other));
+        let mid = unit_with_calls(AnalysisUnitKind::Function, "_mid_helper", &["_leaf_helper"]);
         let leaf = unit_with_calls(AnalysisUnitKind::Function, "_leaf_helper", &[]);
         model.units.push(handler);
         model.units.push(mid);
@@ -1373,11 +1369,8 @@ mod tests {
         // LoginGuard alone proves identity, not authority — must not
         // seed the helper.
         let mut model = AuthorizationModel::default();
-        let mut handler = unit_with_calls(
-            AnalysisUnitKind::RouteHandler,
-            "list_things",
-            &["_helper"],
-        );
+        let mut handler =
+            unit_with_calls(AnalysisUnitKind::RouteHandler, "list_things", &["_helper"]);
         handler
             .auth_checks
             .push(route_level_check(AuthCheckKind::LoginGuard));

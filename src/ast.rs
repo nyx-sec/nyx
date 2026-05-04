@@ -2480,10 +2480,7 @@ fn is_php_unserialize_allowed_classes_restricted(
 /// Genuine deserialization sinks (free `unserialize($_GET[...])`, helpers
 /// reading from session/cache and passing through, etc.) keep firing
 /// because they are not inside a method declaration named `unserialize`.
-fn is_php_unserialize_magic_method_passthrough(
-    cap_node: tree_sitter::Node,
-    bytes: &[u8],
-) -> bool {
+fn is_php_unserialize_magic_method_passthrough(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
     // The pattern captures `@n` (the function name); locate the enclosing
     // function_call_expression.
     let call_node = if cap_node.kind() == "function_call_expression" {
@@ -4219,10 +4216,7 @@ pub struct FusedResult {
     /// Pass 1 collects these into
     /// `GlobalSummaries.router_facts_by_module`; pass 2 resolves them
     /// per-file via `GlobalSummaries::resolve_cross_file_router_deps`.
-    pub router_facts: Option<(
-        String,
-        auth_analysis::router_facts::PerFileRouterFacts,
-    )>,
+    pub router_facts: Option<(String, auth_analysis::router_facts::PerFileRouterFacts)>,
 }
 
 /// Parse the file once, build the CFG once, and produce both function
@@ -4306,8 +4300,10 @@ pub fn analyse_file_fused(
         (vec![], vec![])
     };
 
-    let mut auth_summaries: Vec<(crate::symbol::FuncKey, auth_analysis::model::AuthCheckSummary)> =
-        Vec::new();
+    let mut auth_summaries: Vec<(
+        crate::symbol::FuncKey,
+        auth_analysis::model::AuthCheckSummary,
+    )> = Vec::new();
 
     // Per-file router-dep facts for cross-file FastAPI propagation.
     // Extracted unconditionally for Python files so pass 1 can persist
@@ -4359,7 +4355,11 @@ pub fn analyse_file_fused(
                     auth_analysis::router_facts::module_id_for_path(parsed.source.path)
             {
                 let resolved = gs.resolve_cross_file_router_deps(&child_module_id);
-                if resolved.is_empty() { None } else { Some(resolved) }
+                if resolved.is_empty() {
+                    None
+                } else {
+                    Some(resolved)
+                }
             } else {
                 None
             };

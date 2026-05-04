@@ -4364,12 +4364,7 @@ pub fn member_chain(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
         // `["select()", "filter_by"]` rather than `["select", "filter_by"]`.
         // `receiver_is_chained_call` consults the `(` to detect the
         // opaque-builder receiver.
-        if object_is_call
-            && sub
-                .last()
-                .map(|s| !s.ends_with(')'))
-                .unwrap_or(false)
-        {
+        if object_is_call && sub.last().map(|s| !s.ends_with(')')).unwrap_or(false) {
             if let Some(last) = sub.last_mut() {
                 last.push_str("()");
             }
@@ -5107,7 +5102,8 @@ mod tests {
         parser
             .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
             .unwrap();
-        let src = b"package x\nfunc GetRunByRepoAndID(ctx context.Context, repoID, runID int64) {}\n";
+        let src =
+            b"package x\nfunc GetRunByRepoAndID(ctx context.Context, repoID, runID int64) {}\n";
         let tree = parser.parse(src.as_slice(), None).unwrap();
         let func = (0..tree.root_node().named_child_count())
             .filter_map(|i| tree.root_node().named_child(i as u32))

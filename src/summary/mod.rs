@@ -21,9 +21,9 @@ pub mod ssa_summary;
 use crate::labels::Cap;
 use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::{FuncKey, FuncKind, Lang, normalize_namespace};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
-use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 
@@ -563,8 +563,7 @@ pub struct GlobalSummaries {
     /// child router declared in another file — closing the airflow
     /// execution-API auth-recognition gap on routes attached to bare
     /// child routers.
-    router_facts_by_module:
-        HashMap<String, crate::auth_analysis::router_facts::PerFileRouterFacts>,
+    router_facts_by_module: HashMap<String, crate::auth_analysis::router_facts::PerFileRouterFacts>,
     /// Type hierarchy index for runtime virtual-dispatch fan-out.
     ///
     /// Installed by [`Self::install_hierarchy`] after pass 1 from the

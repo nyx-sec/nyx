@@ -143,8 +143,11 @@ fn maybe_collect_flask_route(
             // `inject_middleware_auth`.
             middleware_calls.extend(extract_fastapi_dependencies(decorator, bytes));
         } else {
-            middleware_calls
-                .extend(expand_decorator_calls(decorator, bytes).into_iter().map(|c| (c, false)));
+            middleware_calls.extend(
+                expand_decorator_calls(decorator, bytes)
+                    .into_iter()
+                    .map(|c| (c, false)),
+            );
         }
     }
 
@@ -171,8 +174,10 @@ fn maybe_collect_flask_route(
             rules,
         );
 
-        let registration_calls: Vec<CallSite> =
-            middleware_calls.iter().map(|(call, _)| call.clone()).collect();
+        let registration_calls: Vec<CallSite> = middleware_calls
+            .iter()
+            .map(|(call, _)| call.clone())
+            .collect();
         push_route_registration(
             model,
             Framework::Flask,
@@ -359,10 +364,7 @@ fn expand_decorator_calls(node: Node<'_>, bytes: &[u8]) -> Vec<CallSite> {
 /// FastAPI's documented dependency-injection convention.  Lives in the
 /// flask module because Flask's route-decorator parser already targets
 /// the `@<router>.<method>(<path>, ...)` shape that FastAPI shares.
-fn extract_fastapi_dependencies(
-    decorator_expr: Node<'_>,
-    bytes: &[u8],
-) -> Vec<(CallSite, bool)> {
+fn extract_fastapi_dependencies(decorator_expr: Node<'_>, bytes: &[u8]) -> Vec<(CallSite, bool)> {
     if decorator_expr.kind() != "call" {
         return Vec::new();
     }
@@ -553,7 +555,11 @@ fn unwrap_depends_call(node: Node<'_>, bytes: &[u8]) -> Option<(CallSite, bool)>
         .find(|child| child.kind() != "keyword_argument")?;
     let scoped_security = is_security
         && keyword_argument_value(arguments, bytes, "scopes")
-            .map(|value| named_children(value).iter().any(|item| item.kind() != "comment"))
+            .map(|value| {
+                named_children(value)
+                    .iter()
+                    .any(|item| item.kind() != "comment")
+            })
             .unwrap_or(false);
     match first.kind() {
         "call" => Some((call_site_from_node(first, bytes), scoped_security)),
@@ -843,7 +849,10 @@ mod fastapi_dependencies_tests {
             .expect("Security call node");
         let (site, scoped) = unwrap_depends_call(call, bytes).expect("Security recognised");
         assert_eq!(site.name, "require_auth");
-        assert!(scoped, "non-empty scopes=[...] must mark the wrapper scoped");
+        assert!(
+            scoped,
+            "non-empty scopes=[...] must mark the wrapper scoped"
+        );
     }
 
     /// `Depends(callable())` — pre-existing FastAPI shape.  Inner call
@@ -855,8 +864,8 @@ mod fastapi_dependencies_tests {
         let src = "x = Depends(requires_access_dag(method=\"GET\"))\n";
         let tree = parse_python(src);
         let bytes = src.as_bytes();
-        let call = find_first_marker_call(tree.root_node(), bytes, "Depends")
-            .expect("Depends call node");
+        let call =
+            find_first_marker_call(tree.root_node(), bytes, "Depends").expect("Depends call node");
         let (site, scoped) = unwrap_depends_call(call, bytes).expect("Depends recognised");
         assert_eq!(site.name, "requires_access_dag");
         assert!(!scoped, "Depends wrapper never scoped-security");
@@ -875,7 +884,10 @@ mod fastapi_dependencies_tests {
             .expect("Security call node");
         let (site, scoped) = unwrap_depends_call(call, bytes).expect("Security recognised");
         assert_eq!(site.name, "require_auth");
-        assert!(!scoped, "missing scopes=[...] kwarg means not scoped-security");
+        assert!(
+            !scoped,
+            "missing scopes=[...] kwarg means not scoped-security"
+        );
     }
 
     /// `Security(callable, scopes=[])` with an empty scope list is NOT
@@ -1012,9 +1024,7 @@ mod router_level_dependencies_tests {
     /// decorator call so `router_prefix_from_decorator` can be tested
     /// in isolation.  Mirrors the `find_first_marker_call` helper in
     /// the sibling test module.
-    fn find_first_decorator<'a>(
-        node: tree_sitter::Node<'a>,
-    ) -> Option<tree_sitter::Node<'a>> {
+    fn find_first_decorator<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
         if node.kind() == "decorator"
             && let Some(child) = node.named_child(0)
         {
@@ -1038,10 +1048,8 @@ mod router_level_dependencies_tests {
         let src = "@ti_id_router.patch(\"/x\")\ndef f():\n    pass\n";
         let tree = parse_python(src);
         let bytes = src.as_bytes();
-        let decorator =
-            find_first_decorator(tree.root_node()).expect("decorator call node");
-        let prefix = router_prefix_from_decorator(decorator, bytes)
-            .expect("prefix extracted");
+        let decorator = find_first_decorator(tree.root_node()).expect("decorator call node");
+        let prefix = router_prefix_from_decorator(decorator, bytes).expect("prefix extracted");
         assert_eq!(prefix, "ti_id_router");
     }
 
@@ -1053,8 +1061,7 @@ mod router_level_dependencies_tests {
         let src = "@requires_auth\ndef f():\n    pass\n";
         let tree = parse_python(src);
         let bytes = src.as_bytes();
-        let decorator =
-            find_first_decorator(tree.root_node()).expect("decorator node");
+        let decorator = find_first_decorator(tree.root_node()).expect("decorator node");
         // `@requires_auth` produces an `identifier` child, not a
         // `call`, so router_prefix should None out at the call gate.
         assert!(router_prefix_from_decorator(decorator, bytes).is_none());

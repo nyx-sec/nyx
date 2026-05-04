@@ -3860,9 +3860,7 @@ fn cross_file_devirt_does_not_union_unrelated_findbyids() {
 #[test]
 fn resolve_cross_file_router_deps_lifts_parent_security_dep_onto_child_router() {
     use crate::auth_analysis::model::CallSite;
-    use crate::auth_analysis::router_facts::{
-        PerFileRouterFacts, RouterIncludeEdge,
-    };
+    use crate::auth_analysis::router_facts::{PerFileRouterFacts, RouterIncludeEdge};
 
     let mut gs = GlobalSummaries::new();
     // Parent (__init__.py) declares scoped Security on `authenticated_router`
@@ -3874,9 +3872,10 @@ fn resolve_cross_file_router_deps_lifts_parent_security_dep_onto_child_router() 
         args_value_refs: Vec::new(),
     };
     let mut parent_facts = PerFileRouterFacts::default();
-    parent_facts
-        .local_router_deps
-        .insert("authenticated_router".into(), vec![(parent_callsite.clone(), true)]);
+    parent_facts.local_router_deps.insert(
+        "authenticated_router".into(),
+        vec![(parent_callsite.clone(), true)],
+    );
     parent_facts.include_router_edges.push(RouterIncludeEdge {
         parent_var: "authenticated_router".into(),
         child_module_id: "task_instances".into(),
@@ -3891,10 +3890,7 @@ fn resolve_cross_file_router_deps_lifts_parent_security_dep_onto_child_router() 
 
     // Child (task_instances.py) declares a bare router → expects to
     // inherit the parent's deps via the cross-file resolution.
-    gs.insert_router_facts(
-        "task_instances".into(),
-        PerFileRouterFacts::default(),
-    );
+    gs.insert_router_facts("task_instances".into(), PerFileRouterFacts::default());
 
     // Resolve for task_instances → should get one entry under `router`
     // carrying the require_auth (scoped=true) dep.

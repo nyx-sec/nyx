@@ -121,8 +121,7 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
     // `HashSet<(BlockId, BlockId)>::contains` (which hashes a 64-bit pair
     // for every operand of every phi).
     let mut executable_blocks: Vec<bool> = vec![false; num_blocks];
-    let mut executable_preds: Vec<SmallVec<[BlockId; 2]>> =
-        vec![SmallVec::new(); num_blocks];
+    let mut executable_preds: Vec<SmallVec<[BlockId; 2]>> = vec![SmallVec::new(); num_blocks];
 
     // Worklists
     let mut cfg_worklist: VecDeque<BlockId> = VecDeque::new();
@@ -258,8 +257,7 @@ pub fn const_propagate(body: &SsaBody) -> ConstPropResult {
     // Convert dense storage to the public `HashMap`-shaped result. Walks
     // the value vector exactly once. The unreachable-blocks set is small
     // (often empty), so building it from a linear scan is fine.
-    let mut out_values: HashMap<SsaValue, ConstLattice> =
-        HashMap::with_capacity(num_values);
+    let mut out_values: HashMap<SsaValue, ConstLattice> = HashMap::with_capacity(num_values);
     for (i, v) in values.into_iter().enumerate() {
         out_values.insert(SsaValue(i as u32), v);
     }

@@ -188,11 +188,7 @@ fn collect_local_router_deps(
 /// edges where the child reference is a bare identifier (no module
 /// segment) — those would require Python import resolution to attach
 /// to a specific file, beyond this single-hop basename matching.
-fn collect_include_router_edges(
-    root: Node<'_>,
-    bytes: &[u8],
-    out: &mut Vec<RouterIncludeEdge>,
-) {
+fn collect_include_router_edges(root: Node<'_>, bytes: &[u8], out: &mut Vec<RouterIncludeEdge>) {
     walk_for_include_router(root, bytes, out);
 }
 
@@ -391,10 +387,7 @@ mod tests {
         );
         // `__init__` returns None — parent files are storage-only, not
         // lookup keys.
-        assert_eq!(
-            module_id_for_path(Path::new("/x/y/__init__.py")),
-            None
-        );
+        assert_eq!(module_id_for_path(Path::new("/x/y/__init__.py")), None);
     }
 
     #[test]
@@ -448,10 +441,18 @@ mod tests {
         assert_eq!(parent_deps.len(), 1);
         let (site, scoped) = &parent_deps[0];
         assert_eq!(site.name, "require_auth");
-        assert!(*scoped, "cross-file: any Security marker is scoped-equivalent");
+        assert!(
+            *scoped,
+            "cross-file: any Security marker is scoped-equivalent"
+        );
 
         // execution_api_router has no deps → no entry.
-        assert!(facts.local_router_deps.get("execution_api_router").is_none());
+        assert!(
+            facts
+                .local_router_deps
+                .get("execution_api_router")
+                .is_none()
+        );
 
         // Two child include_router edges + one nested
         // execution_api_router.include_router(authenticated_router) edge.
@@ -512,10 +513,7 @@ mod tests {
         let tree = parse_python(src);
         let bytes = src.as_bytes();
         let facts = extract_router_facts_for_python(&tree, bytes);
-        let deps = facts
-            .local_router_deps
-            .get("v1")
-            .expect("v1 deps captured");
+        let deps = facts.local_router_deps.get("v1").expect("v1 deps captured");
         let (_site, scoped) = &deps[0];
         assert!(!*scoped, "Depends never scoped-security at cross-file lift");
     }

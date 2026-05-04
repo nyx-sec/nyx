@@ -309,10 +309,7 @@ fn arg_aware_call_type(
     // receiver text for the criteria-builder hints.  Conservative
     // text-level match, the SSA layer doesn't expose receiver-type
     // facts here yet.
-    let prefix = callee
-        .rsplit_once('.')
-        .map(|(p, _)| p)
-        .unwrap_or(callee);
+    let prefix = callee.rsplit_once('.').map(|(p, _)| p).unwrap_or(callee);
     if prefix.contains("CriteriaBuilder") || receiver_is_criteria_builder(prefix) {
         Some(TypeKind::JpaCriteriaQuery)
     } else {
