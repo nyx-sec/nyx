@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 557
+    "corpus_size": 561
   },
   "cases": [
     {
@@ -3456,6 +3456,62 @@
       ],
       "disabled": false,
       "notes": "Precision guard: chained-call inner-gate fix must NOT fire on http.get('http://internal-health.localhost/...').on(...) with a hardcoded literal URL."
+    },
+    {
+      "case_id": "js-path_traversal-ternary-source-001",
+      "file": "javascript/path_traversal/path_traversal_ternary_source.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path_traversal",
+        "ternary-as-value",
+        "source-classification"
+      ],
+      "disabled": false,
+      "notes": "Regression guard for the ternary-RHS source-classification fix in src/cfg/conditions.rs::lower_ternary_branch (2026-05-04). Pre-fix, push_node only did suffix/prefix matching on the branch text, so req.query.lng did not classify as a Source (rule matcher is req.query, neither matches req.query.lng). Both ternary branches lowered to labelless Assign-with-empty-uses, the join phi saw no taint, and downstream sinks missed the flow. Motivated by GHSA-jfgf-83c5-2c4m / CVE-2026-42353."
+    },
+    {
+      "case_id": "js-safe-ternary-const-branches",
+      "file": "javascript/safe/safe_ternary_const_branches.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ternary-as-value",
+        "source-classification",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Precision guard: ternary-RHS source-classification fix must NOT synthesise a Source label when both branches are constant strings. Pins the conservative gate inside lower_ternary_branch."
     },
     {
       "case_id": "py-ssrf-002",
@@ -10022,6 +10078,63 @@
         "negative"
       ],
       "notes": "CVE-2023-22621 patched counterpart: _.template called with { interpolate: <strict regex>, evaluate: false, escape: false } so the lodash evaluate block compiler is disabled."
+    },
+    {
+      "case_id": "cve-js-2026-42353-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2026-42353/vulnerable.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "i18next-http-middleware",
+        "path_traversal",
+        "ssrf",
+        "ternary-as-value"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-42353 / GHSA-jfgf-83c5-2c4m: i18next-http-middleware <3.9.3 getResourcesHandler forwards user-controlled lng/ns into i18next.services.backendConnector.load(...) without sanitisation. Paired with i18next-fs-backend the unsanitised values reach readFileSync(filename) (path traversal); paired with i18next-http-backend they reach an outgoing HTTP request URL (SSRF). MIT. DISABLED: vulnerable detects via the 2026-05-04 ternary-RHS source-classification fix in src/cfg/conditions.rs::lower_ternary_branch, but the patched counterpart fires a false positive because the engine does not yet recognise Array.prototype.filter(known_validator_callback) as propagating validation to the call result. Same gap as the deferred CVE-2026-25544 (Payload sqli) array-method callback dilution. Tracked in CVE_DEFERRED.md."
+    },
+    {
+      "case_id": "cve-js-2026-42353-patched",
+      "file": "cve_corpus/javascript/CVE-2026-42353/patched.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "i18next-http-middleware",
+        "patched",
+        "negative"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-42353 patched counterpart: utils.isSafeIdentifier denylist applied via languages.filter(isSafeIdentifier) before forwarding to backend. DISABLED: pairs with the disabled vulnerable entry; the engine does not yet recognise Array.prototype.filter with a known input-validator callback as a sanitiser, so the patched fixture fires a false positive."
     },
     {
       "case_id": "cve-ts-2023-26159-vulnerable",
