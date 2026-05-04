@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 565
+    "corpus_size": 567
   },
   "cases": [
     {
@@ -17663,6 +17663,68 @@
       ],
       "disabled": false,
       "notes": "Recall counterpart to py-auth-realrepo-017.  Bare `router = VersionedAPIRouter()` with no `dependencies=` kwarg — attached routes that do not supply inline deps are genuinely unauthorized.  The router-level extractor must NOT enter a fake key for routers without router-level deps; the gate (`if deps.is_empty() { continue; }` in `collect_router_level_dependencies`) ensures absence is preserved.  Recall guard: `missing_ownership_check` must still fire on the id-targeted write."
+    },
+    {
+      "case_id": "py-auth-realrepo-019",
+      "file": "python/safe/safe_caller_scope_helper_under_authorized_route.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "fastapi",
+        "caller-scope-ipa",
+        "real-repo-precision-2026-05-04"
+      ],
+      "disabled": false,
+      "notes": "Distilled from airflow `airflow-core/src/airflow/api_fastapi/execution_api/routes/task_instances.py:516-628`: the route handler `ti_update_state` is route-level authorized via the `ti_id_router = APIRouter(dependencies=[Security(require_auth, scopes=[\"ti:self\"])])` declaration (closed by session-0010), then delegates the `session.add(...)` sink to a private helper `_create_state_update`.  Pre-fix the helper fired both `missing_ownership_check` and `token_override_without_validation` because `check_ownership_gaps` is scoped per AnalysisUnit — the caller's route-level auth check did not propagate to the callee.  Phase 1 caller-scope IPA fix (`apply_caller_scope_propagation` in `src/auth_analysis/mod.rs`) walks the call graph DOWN: when every in-file caller of a helper carries route-level non-Login auth, the helper inherits those checks via synthetic `is_route_level=true` AuthChecks anchored at the callee's start line.  Soundness: requires every caller authorized; refuses on dead helpers, mixed-caller helpers, login-only routes."
+    },
+    {
+      "case_id": "py-auth-realrepo-020",
+      "file": "python/auth/vuln_caller_scope_helper_under_bare_route.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          31,
+          31
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "fastapi",
+        "caller-scope-ipa",
+        "real-repo-precision-2026-05-04"
+      ],
+      "disabled": false,
+      "notes": "Recall counterpart to py-auth-realrepo-019.  Same shape but bare `router = APIRouter()` (no Security dep at the boundary).  The helper `_create_state_update` is reached from a route handler with no authorization; `apply_caller_scope_propagation`'s soundness rule refuses to authorize the helper because no caller carries route-level non-Login auth.  Recall guard: `missing_ownership_check` must still fire on the helper's `session.add` sink."
     },
     {
       "case_id": "cve-ts-2026-25544-vulnerable",

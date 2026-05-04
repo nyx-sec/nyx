@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T15:11:45Z",
+  "timestamp": "2026-05-04T17:11:50Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:0d3b7dbec93c44ab57f446aade9fcd32f676a891835e7644d445b61935c5a6b5",
-  "corpus_size": 563,
-  "cases_run": 560,
+  "ground_truth_hash": "sha256:414494ab1b6881a9b78eca38e26561231f78767480399fda73a477e23a9fcbaa",
+  "corpus_size": 565,
+  "cases_run": 562,
   "cases_skipped": 3,
   "outcomes": [
     {
@@ -6098,6 +6098,43 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-auth-realrepo-019",
+      "file": "python/safe/safe_caller_scope_helper_under_authorized_route.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-020",
+      "file": "python/auth/vuln_caller_scope_helper_under_bare_route.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [
+        "py.auth.token_override_without_validation"
+      ],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-cmdi-001",
       "file": "python/cmdi/cmdi_direct.py",
       "language": "python",
@@ -10007,19 +10044,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 274,
+    "tp": 275,
     "fp": 0,
     "fn_": 0,
-    "tn": 286,
+    "tn": 287,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 274,
+    "tp": 275,
     "fp": 0,
     "fn_": 0,
-    "tn": 286,
+    "tn": 287,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -10080,10 +10117,10 @@
       "f1": 1.0
     },
     "python": {
-      "tp": 37,
+      "tp": 38,
       "fp": 0,
       "fn_": 0,
-      "tn": 40,
+      "tn": 41,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10118,10 +10155,10 @@
   },
   "by_vuln_class": {
     "auth": {
-      "tp": 24,
+      "tp": 25,
       "fp": 0,
       "fn_": 0,
-      "tn": 2,
+      "tn": 3,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10309,31 +10346,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 86,
-      "fp": 113,
-      "fn_": 188,
+      "tp": 85,
+      "fp": 114,
+      "fn_": 190,
       "tn": 173,
-      "precision": 0.4321608040201005,
-      "recall": 0.31386861313868614,
-      "f1": 0.3636363636363636
+      "precision": 0.4271356783919598,
+      "recall": 0.3090909090909091,
+      "f1": 0.3586497890295359
     },
     ">=Low": {
-      "tp": 88,
+      "tp": 86,
       "fp": 142,
-      "fn_": 186,
-      "tn": 144,
-      "precision": 0.3826086956521739,
-      "recall": 0.32116788321167883,
-      "f1": 0.3492063492063492
+      "fn_": 189,
+      "tn": 145,
+      "precision": 0.37719298245614036,
+      "recall": 0.31272727272727274,
+      "f1": 0.341948310139165
     },
     ">=Medium": {
-      "tp": 88,
-      "fp": 134,
-      "fn_": 186,
-      "tn": 152,
-      "precision": 0.3963963963963964,
-      "recall": 0.32116788321167883,
-      "f1": 0.3548387096774194
+      "tp": 86,
+      "fp": 133,
+      "fn_": 189,
+      "tn": 154,
+      "precision": 0.3926940639269406,
+      "recall": 0.31272727272727274,
+      "f1": 0.3481781376518218
     }
   }
 }
