@@ -113,6 +113,7 @@ bitflags = "2.11.0"
 phf = { version = "0.13.1", features = ["macros"] }
 indicatif = "0.18.4"
 smallvec = { version = "1.15", features = ["serde"] }
+rustc-hash = "2.1"
 uuid = { version = "1", features = ["v4"] }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync"], optional = true }

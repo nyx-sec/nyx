@@ -242,6 +242,7 @@ fn bench_extract_authorization_model_go(c: &mut Criterion) {
                 &bytes,
                 &fixture,
                 &rules,
+                None,
             )
         });
     });
@@ -283,6 +284,7 @@ fn bench_extract_authorization_model_shared_go(c: &mut Criterion) {
                 &bytes,
                 &fixture,
                 &rules,
+                None,
             );
             let summaries = nyx_scanner::auth_analysis::extract_auth_summaries_from_model(
                 &model, "go", &fixture, None,
@@ -394,6 +396,43 @@ fn bench_const_propagate_large_go(c: &mut Criterion) {
     });
 }
 
+/// `GlobalSummaries::lookup_same_lang` cost on a populated index.  The
+/// inner loop hashes `(Lang, String)` once per call, then `FuncKey` once
+/// per candidate via `by_key.get(k)`.  Pre-fix the four secondary
+/// indices used `std::collections::HashMap` (SipHash).  Post-fix
+/// (2026-05-04 perfhunt session-0015) they use `rustc_hash::FxHashMap`,
+/// trading DoS hardening (irrelevant for in-process program-keyed
+/// indices) for ~5x faster hashing on the 30+ byte 3-string `FuncKey`
+/// hash workload.  A regression that re-introduces SipHash would
+/// surface here as a ≥3x slowdown.
+fn bench_global_summaries_lookup_same_lang_go(c: &mut Criterion) {
+    let fixture = Path::new("benches/perf_fixtures/large_go_module.go")
+        .canonicalize()
+        .expect("perf fixture");
+    let cfg = Config::default();
+
+    let summaries = nyx_scanner::ast::extract_summaries_from_file(&fixture, &cfg)
+        .expect("extract summaries");
+    let names: Vec<String> = summaries.iter().map(|s| s.name.clone()).collect();
+    let global = nyx_scanner::summary::merge_summaries(summaries, None);
+    let lang = nyx_scanner::symbol::Lang::Go;
+
+    eprintln!(
+        "[diag] lookup_same_lang bench: {} names",
+        names.len()
+    );
+
+    c.bench_function("global_summaries_lookup_same_lang_go", |b| {
+        b.iter(|| {
+            let mut total = 0usize;
+            for name in &names {
+                total += global.lookup_same_lang(lang, name).len();
+            }
+            total
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_ast_only_scan,
@@ -407,5 +446,6 @@ criterion_group!(
     bench_extract_authorization_model_shared_go,
     bench_collect_top_level_units_go,
     bench_const_propagate_large_go,
+    bench_global_summaries_lookup_same_lang_go,
 );
 criterion_main!(benches);

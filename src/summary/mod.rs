@@ -23,6 +23,7 @@ use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::{FuncKey, FuncKind, Lang, normalize_namespace};
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 
@@ -517,15 +518,20 @@ impl<'a> CalleeQuery<'a> {
 /// for same-language resolution in the taint engine.
 #[derive(Default)]
 pub struct GlobalSummaries {
-    by_key: HashMap<FuncKey, FuncSummary>,
+    /// FxHashMap (rustc_hash) replaces stdlib SipHash.  FuncKey carries 3
+    /// String fields, so any HashMap operation walks ≥30 bytes through the
+    /// hasher; FxHash is ~5x faster than SipHash on this workload.  Seed
+    /// is fixed (no DoS hardening), which is fine for an in-process index
+    /// keyed by static program-derived names.
+    by_key: FxHashMap<FuncKey, FuncSummary>,
     /// Bare leaf-name index, kept for compatibility with callers that only
     /// see an unqualified call string.  A single name may map to many keys
     /// across containers / files / arities.
-    by_lang_name: HashMap<(Lang, String), Vec<FuncKey>>,
+    by_lang_name: FxHashMap<(Lang, String), Vec<FuncKey>>,
     /// Container-qualified index: keyed on `"{container}::{name}"` (or just
     /// `name` for free functions).  Used to resolve calls when the call-site
     /// can supply a receiver / container hint (e.g. `OrderService::process`).
-    by_lang_qualified: HashMap<(Lang, String), Vec<FuncKey>>,
+    by_lang_qualified: FxHashMap<(Lang, String), Vec<FuncKey>>,
     /// Rust-only secondary index keyed on `(module_path, name)`.
     ///
     /// Populated whenever a Rust [`FuncSummary`] is inserted with a
@@ -533,7 +539,7 @@ pub struct GlobalSummaries {
     /// candidates by their crate-relative module rather than their
     /// filesystem path. Same name / module / arity overloads land on the
     /// same vector, arity narrowing happens at resolution time.
-    by_rust_module: HashMap<(String, String), Vec<FuncKey>>,
+    by_rust_module: FxHashMap<(String, String), Vec<FuncKey>>,
     /// Precise SSA-derived per-parameter summaries, keyed by `FuncKey`.
     /// These take precedence over `FuncSummary` during callee resolution.
     ssa_by_key: HashMap<FuncKey, SsaFuncSummary>,
