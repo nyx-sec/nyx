@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 561
+    "corpus_size": 563
   },
   "cases": [
     {
@@ -17528,6 +17528,68 @@
       ],
       "disabled": false,
       "notes": "Recall counterpart to py-auth-realrepo-015.  `Security(require_auth, scopes=[])` with an empty scope list is NOT promoted to `Other` — the OAuth2 scope semantic only fires when scopes is non-empty, so the wrapper falls back to bare login classification.  Recall guard: `missing_ownership_check` must still fire on this id-targeted ORM filter; without conservative scope-emptiness gating, every empty-scopes route would over-suppress."
+    },
+    {
+      "case_id": "py-auth-realrepo-017",
+      "file": "python/safe/safe_fastapi_router_level_security_scopes.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "fastapi",
+        "router-level-security",
+        "real-repo-precision-2026-05-04"
+      ],
+      "disabled": false,
+      "notes": "Distilled from airflow `airflow-core/src/airflow/api_fastapi/execution_api/routes/task_instances.py:89-318`: `ti_id_router = VersionedAPIRouter(dependencies=[Security(require_auth, scopes=[\"ti:self\"])])` declares the auth dep once at the router constructor; every `@ti_id_router.<verb>(...)` route inherits it at runtime.  Pre-fix the FastAPI dep extractor only walked the per-route decorator's `dependencies=[...]` kwarg; router-constructor `dependencies=` was dropped, so every attached route without inline deps fired `missing_ownership_check` + `token_override_without_validation` despite being authorized.  Fix: `collect_router_level_dependencies` walks module-level `<router> = APIRouter(...)` / `VersionedAPIRouter(...)` / `FastAPI(...)` assignments and captures `dependencies=[...]` keyed by the router var name; `router_prefix_from_decorator` extracts the receiver from `@<router>.<verb>(...)` and merges router-level deps into the per-route middleware list.  A scoped Security wrapper additionally synthesises matching `TokenExpiry` + `TokenRecipient` checks (the JWT-validation semantics — JWT signature includes expiry, scopes encode recipient binding) so the token-override rule recognises the route too.  Precision guard: route must NOT fire ownership / token-override findings."
+    },
+    {
+      "case_id": "py-auth-realrepo-018",
+      "file": "python/auth/vuln_fastapi_router_no_dependencies.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          35,
+          35
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "fastapi",
+        "router-level-security",
+        "real-repo-precision-2026-05-04"
+      ],
+      "disabled": false,
+      "notes": "Recall counterpart to py-auth-realrepo-017.  Bare `router = VersionedAPIRouter()` with no `dependencies=` kwarg — attached routes that do not supply inline deps are genuinely unauthorized.  The router-level extractor must NOT enter a fake key for routers without router-level deps; the gate (`if deps.is_empty() { continue; }` in `collect_router_level_dependencies`) ensures absence is preserved.  Recall guard: `missing_ownership_check` must still fire on the id-targeted write."
     },
     {
       "case_id": "cve-ts-2026-25544-vulnerable",

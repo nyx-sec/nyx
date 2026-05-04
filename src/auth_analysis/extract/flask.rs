@@ -10,10 +10,20 @@ use crate::auth_analysis::model::{
 };
 use crate::labels::bare_method_name;
 use crate::utils::project::{DetectedFramework, FrameworkContext};
+use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 pub struct FlaskExtractor;
+
+/// Map from a module-level router/app variable name to the
+/// `dependencies=[...]` deps declared on its constructor call.  FastAPI
+/// propagates these to every route attached via
+/// `@<router>.<verb>(...)`, so the route extractor must merge them in
+/// before running ownership / membership checks.  Each entry follows
+/// the same shape as `extract_fastapi_dependencies` produces:
+/// `(CallSite, is_scoped_security)`.  See `collect_router_level_dependencies`.
+type RouterLevelDepMap = HashMap<String, Vec<(CallSite, bool)>>;
 
 impl AuthExtractor for FlaskExtractor {
     fn supports(&self, lang: &str, framework_ctx: Option<&FrameworkContext>) -> bool {
@@ -31,9 +41,18 @@ impl AuthExtractor for FlaskExtractor {
         model: &mut AuthorizationModel,
     ) {
         let root = tree.root_node();
+        // Pass 1: pre-walk for module-level router/app assignments
+        // (`ti_id_router = VersionedAPIRouter(dependencies=[Security(...)])`).
+        // FastAPI applies router-level deps to every attached route, so
+        // every per-route `@<router>.<verb>(...)` decorator must merge
+        // the router's deps before the ownership check fires.  Without
+        // this, airflow's execution-API routes that re-use a single
+        // `ti_id_router` declared once at module scope inherit no auth
+        // and flag `missing_ownership_check` despite being authorized.
+        let router_deps = collect_router_level_dependencies(root, bytes);
         visit_named_nodes(root, &mut |node| {
             if node.kind() == "decorated_definition" {
-                maybe_collect_flask_route(root, node, bytes, path, rules, model);
+                maybe_collect_flask_route(root, node, bytes, path, rules, model, &router_deps);
             }
         });
     }
@@ -52,6 +71,7 @@ fn maybe_collect_flask_route(
     path: &Path,
     rules: &AuthAnalysisRules,
     model: &mut AuthorizationModel,
+    router_deps: &RouterLevelDepMap,
 ) {
     let Some(definition) = decorated_definition_child(node) else {
         return;
@@ -65,6 +85,20 @@ fn maybe_collect_flask_route(
     for decorator in decorator_expressions(node) {
         if let Some(mut specs) = parse_flask_route_decorator(decorator, bytes) {
             route_specs.append(&mut specs);
+            // FastAPI propagates router-level `dependencies=[...]` from
+            // `<router> = APIRouter(...)` to every attached
+            // `@<router>.<verb>(...)` route.  Look up the decorator's
+            // router prefix in the pre-built map and merge its deps
+            // BEFORE the route-level deps so the ordering matches
+            // FastAPI runtime semantics (router deps run before route
+            // deps).  Without this, airflow execution-API routes that
+            // declare auth once at the router level fire spurious
+            // `missing_ownership_check` / `token_override` findings.
+            if let Some(prefix) = router_prefix_from_decorator(decorator, bytes)
+                && let Some(deps) = router_deps.get(&prefix)
+            {
+                middleware_calls.extend(deps.iter().cloned());
+            }
             // FastAPI puts route-level dependencies (auth checks +
             // logging hooks) inside the route decorator's
             // `dependencies=[Depends(...)]` keyword argument, instead
@@ -318,6 +352,143 @@ fn extract_fastapi_dependencies(
     out
 }
 
+/// Walk the module root for top-level assignments of the form
+/// `<router> = <RouterCtor>(..., dependencies=[Depends(...), Security(...)])`
+/// and build a map from the router variable name to its router-level
+/// dependency CallSites.  FastAPI applies these to every attached
+/// `@<router>.<verb>(...)` route at runtime — the per-route extractor
+/// merges them in before running ownership / membership checks.
+///
+/// Recognised router/app constructors (callee-tail-name match, so
+/// `fastapi.APIRouter(...)` and `routing.APIRouter(...)` both work):
+///   * `APIRouter` (FastAPI canonical)
+///   * `FastAPI` (FastAPI app object — `dependencies=[...]` on the app
+///     applies to every route under it)
+///   * `VersionedAPIRouter` (airflow-specific subclass)
+///   * Any callee whose tail name ends with `Router` — covers
+///     project-specific `APIRouter` subclasses without the airflow-
+///     specific allowlist needing to grow per-codebase.  Conservative:
+///     the lookup only ever fires when the route decorator's prefix
+///     matches a captured variable, so over-matching the constructor
+///     doesn't produce false auth attribution unless the same name is
+///     also used as a route decorator's receiver — extremely rare.
+///
+/// The walk is restricted to module-root expression statements / typed
+/// assignments — nested function-local routers aren't supported (and
+/// don't appear in real-world FastAPI codebases — the router pattern is
+/// always module-scoped so it can be imported into the app at startup).
+fn collect_router_level_dependencies(root: Node<'_>, bytes: &[u8]) -> RouterLevelDepMap {
+    let mut out: RouterLevelDepMap = HashMap::new();
+    for child in named_children(root) {
+        // Top-level shape: `expression_statement` wrapping an
+        // `assignment` (Python tree-sitter convention).  Also accept
+        // bare `assignment` in case the grammar changes.
+        let assign = match child.kind() {
+            "expression_statement" => named_children(child).into_iter().next(),
+            "assignment" => Some(child),
+            _ => None,
+        };
+        let Some(assign) = assign else { continue };
+        if assign.kind() != "assignment" {
+            continue;
+        }
+        let Some(left) = assign.child_by_field_name("left") else {
+            continue;
+        };
+        if left.kind() != "identifier" {
+            continue;
+        }
+        let Some(right) = assign.child_by_field_name("right") else {
+            continue;
+        };
+        if right.kind() != "call" {
+            continue;
+        }
+        let Some(function) = right.child_by_field_name("function") else {
+            continue;
+        };
+        let function_text = text(function, bytes);
+        if !is_router_like_constructor(&function_text) {
+            continue;
+        }
+        let Some(arguments) = right.child_by_field_name("arguments") else {
+            continue;
+        };
+        let Some(deps_value) = keyword_argument_value(arguments, bytes, "dependencies") else {
+            continue;
+        };
+        let mut deps = Vec::new();
+        for element in named_children(deps_value) {
+            if let Some(unwrapped) = unwrap_depends_call(element, bytes) {
+                deps.push(unwrapped);
+            }
+        }
+        if deps.is_empty() {
+            continue;
+        }
+        let var_name = text(left, bytes).trim().to_string();
+        if var_name.is_empty() {
+            continue;
+        }
+        // First declaration wins.  A `<router> = …` re-assignment
+        // would be unusual at module scope; if it happens, the first
+        // dependency declaration is conservatively the one that
+        // applies to most routes attached after it.
+        out.entry(var_name).or_insert(deps);
+    }
+    out
+}
+
+/// True for callee text that looks like a FastAPI router or app
+/// constructor.  Tail-name match (after the last `.`) so
+/// `fastapi.APIRouter` / `routing.APIRouter` / bare `APIRouter` all
+/// hit, plus airflow's `VersionedAPIRouter` subclass and any project-
+/// specific `*Router` callable.  See `collect_router_level_dependencies`
+/// for the wider rationale.
+fn is_router_like_constructor(callee: &str) -> bool {
+    let trimmed = callee.trim();
+    let tail = trimmed.rsplit('.').next().unwrap_or(trimmed);
+    if tail == "APIRouter" || tail == "FastAPI" || tail == "VersionedAPIRouter" {
+        return true;
+    }
+    // `*Router` suffix — covers project-specific subclasses without an
+    // exhaustive allowlist.  Reject empty / single-char / lowercase
+    // tails to avoid catching arbitrary identifiers.
+    if tail.len() > "Router".len()
+        && tail.ends_with("Router")
+        && tail.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+    {
+        return true;
+    }
+    false
+}
+
+/// Extract the router-receiver identifier from a route-decorator call
+/// node.  Decorator shape: `@<router>.<verb>(<path>, ...)` — the
+/// callee is `<router>.<verb>`, so the prefix is everything before the
+/// last `.`.  Returns `None` for decorators that don't match the
+/// expected `attribute`-style shape (e.g. bare `@requires_auth` or
+/// `@blueprint.route("/x")` where the attribute is the verb itself).
+fn router_prefix_from_decorator(decorator_expr: Node<'_>, bytes: &[u8]) -> Option<String> {
+    if decorator_expr.kind() != "call" {
+        return None;
+    }
+    let function = decorator_expr.child_by_field_name("function")?;
+    if function.kind() != "attribute" {
+        return None;
+    }
+    let object = function.child_by_field_name("object")?;
+    if !matches!(object.kind(), "identifier" | "attribute") {
+        return None;
+    }
+    let prefix = text(object, bytes).trim().to_string();
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
+}
+
 /// Unwrap one `Depends(...)` / `Security(...)` list element from a
 /// FastAPI `dependencies` list and return the inner callable as a
 /// `CallSite`.  Four shapes are accepted:
@@ -466,7 +637,46 @@ fn inject_middleware_auth(
         {
             check.kind = AuthCheckKind::Other;
         }
+        let push_token_synth = *scoped_security;
         unit.auth_checks.push(check);
+        if push_token_synth {
+            // FastAPI `Security(callable, scopes=[...])` validates the
+            // bearer JWT in two ways: signature verification (which
+            // includes expiry — a JWT past its `exp` claim fails the
+            // signature path) and scope checking (the requested scopes
+            // identify what the bearer is authorized to act on, which
+            // semantically encodes recipient binding for the route).
+            // Synthesise the matching `TokenExpiry` + `TokenRecipient`
+            // checks so the `token_override_without_validation` rule
+            // recognises the JWT-validated route.  Without this,
+            // every FastAPI route declaring scoped Security at the
+            // route or router boundary fires token-override FPs on
+            // its `session.add` / `Model.save()` calls — the
+            // missing_ownership_check sibling of the same finding is
+            // already cleared by the kind-promotion above.  Empty- or
+            // missing-scopes Security wrappers fall through this gate
+            // (scoped_security is false) and remain bare login deps.
+            unit.auth_checks.push(AuthCheck {
+                kind: AuthCheckKind::TokenExpiry,
+                callee: call.name.clone(),
+                subjects: Vec::new(),
+                span: call.span,
+                line,
+                args: call.args.clone(),
+                condition_text: None,
+                is_route_level: true,
+            });
+            unit.auth_checks.push(AuthCheck {
+                kind: AuthCheckKind::TokenRecipient,
+                callee: call.name.clone(),
+                subjects: Vec::new(),
+                span: call.span,
+                line,
+                args: call.args.clone(),
+                condition_text: None,
+                is_route_level: true,
+            });
+        }
     }
 }
 
@@ -654,5 +864,170 @@ mod fastapi_dependencies_tests {
         let (site, scoped) = unwrap_depends_call(call, bytes).expect("Security recognised");
         assert_eq!(site.name, "require_auth");
         assert!(!scoped, "scopes=[] is not scoped-security");
+    }
+}
+
+#[cfg(test)]
+mod router_level_dependencies_tests {
+    use super::{
+        collect_router_level_dependencies, is_router_like_constructor, router_prefix_from_decorator,
+    };
+    use tree_sitter::Parser;
+
+    fn parse_python(source: &str) -> tree_sitter::Tree {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .expect("python language");
+        parser.parse(source, None).expect("parse")
+    }
+
+    /// Tail-name match: `fastapi.APIRouter`, `routing.APIRouter`, bare
+    /// `APIRouter`, plus airflow's `VersionedAPIRouter` subclass.  Suffix
+    /// rule covers project-specific `*Router` subclasses without an
+    /// exhaustive allowlist.  Negatives must reject arbitrary lowercase
+    /// or non-router identifiers.
+    #[test]
+    fn is_router_like_constructor_matches_canonical_names() {
+        // Canonical FastAPI.
+        assert!(is_router_like_constructor("APIRouter"));
+        assert!(is_router_like_constructor("FastAPI"));
+        assert!(is_router_like_constructor("fastapi.APIRouter"));
+        assert!(is_router_like_constructor("fastapi.routing.APIRouter"));
+        assert!(is_router_like_constructor("fastapi.FastAPI"));
+        // Airflow.
+        assert!(is_router_like_constructor("VersionedAPIRouter"));
+        // Project-specific *Router subclasses.
+        assert!(is_router_like_constructor("CustomRouter"));
+        assert!(is_router_like_constructor("api.v1.MyRouter"));
+        // Negatives.
+        assert!(!is_router_like_constructor("router"));
+        assert!(!is_router_like_constructor("Annotated"));
+        assert!(!is_router_like_constructor("Depends"));
+        assert!(!is_router_like_constructor("Security"));
+        assert!(!is_router_like_constructor(""));
+        // `Router` alone is too short / generic to match the suffix
+        // rule (would over-fire on any callable named exactly
+        // `Router`); we accept it explicitly nowhere.
+        assert!(!is_router_like_constructor("Router"));
+        // `flat_router` ends with `Router` but starts lowercase —
+        // suffix rule requires uppercase first char to avoid catching
+        // generic verbs.
+        assert!(!is_router_like_constructor("flat_router"));
+    }
+
+    /// Airflow's `ti_id_router = VersionedAPIRouter(route_class=...,
+    /// dependencies=[Security(require_auth, scopes=["ti:self"])])` is
+    /// the canonical real-repo shape.  The collector must capture the
+    /// `Security(require_auth, scopes=...)` dep keyed by
+    /// `ti_id_router`, and the wrapper must be flagged scoped-security
+    /// so `inject_middleware_auth` promotes the AuthCheckKind to Other.
+    #[test]
+    fn collect_router_level_dependencies_picks_up_versioned_apirouter_security() {
+        let src = "ti_id_router = VersionedAPIRouter(\n    route_class=ExecutionAPIRoute,\n    dependencies=[\n        Security(require_auth, scopes=[\"ti:self\"]),\n    ],\n)\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let map = collect_router_level_dependencies(tree.root_node(), bytes);
+        let deps = map
+            .get("ti_id_router")
+            .expect("ti_id_router router-level deps captured");
+        assert_eq!(deps.len(), 1);
+        let (site, scoped) = &deps[0];
+        assert_eq!(site.name, "require_auth");
+        assert!(*scoped, "scopes=[\"ti:self\"] must mark scoped-security");
+    }
+
+    /// Bare `Depends(...)` router-level dep (no scopes) — captured but
+    /// NOT scoped-security.  Mirrors the per-route Depends test in the
+    /// sibling fastapi_dependencies_tests module.
+    #[test]
+    fn collect_router_level_dependencies_picks_up_apirouter_depends_not_scoped() {
+        let src = "v1 = APIRouter(\n    prefix=\"/v1\",\n    dependencies=[Depends(get_current_user)],\n)\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let map = collect_router_level_dependencies(tree.root_node(), bytes);
+        let deps = map.get("v1").expect("v1 router-level deps captured");
+        assert_eq!(deps.len(), 1);
+        let (site, scoped) = &deps[0];
+        assert_eq!(site.name, "get_current_user");
+        assert!(!*scoped, "Depends never scoped-security");
+    }
+
+    /// Constructor without `dependencies=` kwarg → no entry in the
+    /// map.  Routers without router-level deps must not produce a
+    /// fake key — the per-route extractor would then merge an empty
+    /// list and silently no-op, but absence is the cleaner signal.
+    #[test]
+    fn collect_router_level_dependencies_skips_routers_without_deps() {
+        let src = "router = APIRouter(prefix=\"/x\")\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let map = collect_router_level_dependencies(tree.root_node(), bytes);
+        assert!(map.get("router").is_none());
+    }
+
+    /// Non-router constructor (`MyService(...)`) with a coincidental
+    /// `dependencies=` kwarg must NOT enter the router-dep map.
+    /// `MyService` doesn't end with `Router` and isn't on the explicit
+    /// allowlist, so the gate rejects it.
+    #[test]
+    fn collect_router_level_dependencies_skips_non_router_constructors() {
+        let src = "svc = MyService(dependencies=[Depends(get_db)])\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let map = collect_router_level_dependencies(tree.root_node(), bytes);
+        assert!(map.get("svc").is_none());
+    }
+
+    /// Helper: parse a single decorated function and pull out the
+    /// decorator call so `router_prefix_from_decorator` can be tested
+    /// in isolation.  Mirrors the `find_first_marker_call` helper in
+    /// the sibling test module.
+    fn find_first_decorator<'a>(
+        node: tree_sitter::Node<'a>,
+    ) -> Option<tree_sitter::Node<'a>> {
+        if node.kind() == "decorator"
+            && let Some(child) = node.named_child(0)
+        {
+            return Some(child);
+        }
+        for idx in 0..node.named_child_count() {
+            if let Some(child) = node.named_child(idx as u32)
+                && let Some(found) = find_first_decorator(child)
+            {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// `@ti_id_router.patch("/x")` → prefix `"ti_id_router"`.  This is
+    /// the lookup key the per-route extractor uses to pull
+    /// router-level deps out of the map.
+    #[test]
+    fn router_prefix_from_decorator_extracts_simple_identifier() {
+        let src = "@ti_id_router.patch(\"/x\")\ndef f():\n    pass\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let decorator =
+            find_first_decorator(tree.root_node()).expect("decorator call node");
+        let prefix = router_prefix_from_decorator(decorator, bytes)
+            .expect("prefix extracted");
+        assert_eq!(prefix, "ti_id_router");
+    }
+
+    /// Bare-identifier decorators (`@requires_auth\ndef f(): ...`) and
+    /// non-attribute callees return None — there's no router prefix
+    /// to look up.
+    #[test]
+    fn router_prefix_from_decorator_returns_none_for_bare_decorator() {
+        let src = "@requires_auth\ndef f():\n    pass\n";
+        let tree = parse_python(src);
+        let bytes = src.as_bytes();
+        let decorator =
+            find_first_decorator(tree.root_node()).expect("decorator node");
+        // `@requires_auth` produces an `identifier` child, not a
+        // `call`, so router_prefix should None out at the call gate.
+        assert!(router_prefix_from_decorator(decorator, bytes).is_none());
     }
 }
