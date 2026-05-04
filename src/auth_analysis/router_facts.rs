@@ -4,7 +4,7 @@
 //! at the router level onto every route attached to that router, including
 //! routes attached via cross-file `<parent>.include_router(<child>.router)`
 //! lifts.  The per-file router-dep collector in
-//! [`crate::auth_analysis::extract::flask::collect_router_level_dependencies`]
+//! `crate::auth_analysis::extract::flask::collect_router_level_dependencies`
 //! sees only the file under analysis, so a bare child router whose auth is
 //! declared on a parent router in `__init__.py` (canonical airflow shape) has
 //! no visible deps.  This module captures the cross-file edges + parent
@@ -12,10 +12,10 @@
 //! dep map for pass 2's auth analysis.
 //!
 //! Storage shape: per-Python-file [`PerFileRouterFacts`] with
-//! [`local_router_deps`] (the `<router> = X(deps=[…])` declarations
-//! visible in the file) and [`include_router_edges`] (the
+//! `local_router_deps` (the `<router> = X(deps=[…])` declarations
+//! visible in the file) and `include_router_edges` (the
 //! `<parent>.include_router(<child_module>.<child_var>, …)` calls).
-//! Persisted into [`crate::summary::GlobalSummaries::router_facts_by_module`]
+//! Persisted into `crate::summary::GlobalSummaries::router_facts_by_module`
 //! during pass 1 and resolved into the active file's
 //! [`crate::auth_analysis::model::AuthorizationModel::cross_file_router_deps`]
 //! at pass 2 entry.

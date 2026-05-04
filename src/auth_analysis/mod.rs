@@ -170,8 +170,8 @@ pub(crate) fn resolve_cross_file_router_deps_for_file(
 /// accounted for 35.3% of total wall-clock; sharing the base model
 /// drops it to ~17.6%.
 ///
-/// The mutations applied here ([`apply_var_types_to_model`],
-/// [`apply_typed_bounded_params`], [`apply_helper_lifting`]) only
+/// The mutations applied here (`apply_var_types_to_model`,
+/// `apply_typed_bounded_params`, `apply_helper_lifting`) only
 /// affect diagnostic emission — `extract_auth_summaries_from_model`
 /// reads the **base** model so callers must extract summaries before
 /// passing the model in.

@@ -25,7 +25,7 @@ pub trait AuthExtractor {
 
     /// Returns true when this extractor expects the orchestrator to
     /// have already populated `model.units` with one
-    /// [`AnalysisUnitKind::Function`] entry per top-level function /
+    /// `AnalysisUnitKind::Function` entry per top-level function /
     /// method via [`common::collect_top_level_units`].  Defaults to
     /// `true`; framework extractors that build their own unit set
     /// (Spring, Rails) override to `false` so the orchestrator skips
