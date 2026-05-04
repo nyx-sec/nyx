@@ -23,6 +23,8 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2025-69662 | Python     | geopandas                  | BSD-3-Clause         | SQL Injection   | detected |
 | CVE-2026-33626 | Python     | LMDeploy                   | Apache-2.0           | SSRF            | detected |
 | CVE-2024-23334 | Python     | aiohttp                    | Apache-2.0           | path_traversal  | detected |
+| CVE-2023-6568  | Python     | MLflow                     | Apache-2.0           | XSS             | detected |
+| CVE-2024-21513 | Python     | LangChain Experimental     | MIT                  | code_exec       | detected |
 | CVE-2019-14939 | JavaScript | mongo-express              | MIT                  | code_exec       | detected |
 | CVE-2025-64430 | JavaScript | Parse Server               | Apache-2.0           | SSRF            | detected |
 | CVE-2023-22621 | JavaScript | Strapi                     | MIT                  | code_exec (SSTI)| detected |
@@ -78,6 +80,7 @@ Most recent first. Metrics are rule-level on the corpus size at that point.
 
 | Date       | Change                                                                       | Corpus | P     | R     | F1    |
 |------------|------------------------------------------------------------------------------|--------|-------|-------|-------|
+| 2026-05-04 | Python Tier B `py.xss.make_response_format` AST pattern (Flask `make_response(<f-string>)` / `make_response(<concat>)`); CVE-2023-6568 (mlflow reflected XSS) and CVE-2024-21513 (langchain VectorSQLDatabaseChain `_try_eval` over DB rows) added | 550 | 1.000 | 1.000 | 1.000 |
 | 2026-05-03 | Go for-range loop binding now defined from `range_clause` child of `for_statement` (was: tree-sitter wraps the binding/iterable on a child node; only direct `left`/`right` fields were consulted, so taint never reached the loop binding). gin sources extended to `c.QueryArray` / `c.GetQueryArray` / `c.PostFormArray` / `c.GetPostFormArray`. goqu raw SQL literal builders `goqu.L` / `goqu.Lit` recognised as SQL_QUERY sinks. CVE-2026-41422 (daptin aggregate API) detected | 521 | 1.000 | 1.000 | 1.000 |
 | 2026-05-02 | TS regex-allowlist `<*regex*>.test(value)` / `<*pattern*>.test(value)` recognised as ValidationCall whose target is the first arg (overrides default receiver-as-target); conservative on receiver names so non-regex `*.test()` callees stay Unknown.  CVE-2026-25544 (Payload drizzle SQL injection) lands in corpus disabled — needs validated-flow propagation through SSA derivation / helper-summary returns | 499 | 1.000 | 1.000 | 1.000 |
 | 2026-05-02 | JS arrow `assignment_pattern` default-param extraction + JS object-literal kwarg fallback for gated sinks + double-call (`f()(x)`) chained-inner rebinding; lodash `_.template` modeled as gated CODE_EXEC sink suppressed by `{ evaluate: false }`; CVE-2023-22621 (Strapi SSTI) detected | 494 | — | — | — |

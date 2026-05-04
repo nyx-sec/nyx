@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 546
+    "corpus_size": 550
   },
   "cases": [
     {
@@ -10363,6 +10363,136 @@
       ],
       "disabled": false,
       "notes": "CVE-2024-23334 patched counterpart: relative_to(self._directory) recognised as a receiver-side FILE_IO validator on both follow_symlinks arms; regression guard that Nyx does not refire on the fix"
+    },
+    {
+      "case_id": "cve-py-2023-6568-vulnerable",
+      "file": "cve_corpus/python/CVE-2023-6568/vulnerable.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.xss.make_response_format"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "LOW",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          45,
+          45
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          41,
+          41
+        ]
+      ],
+      "tags": [
+        "cve",
+        "mlflow",
+        "xss",
+        "positive"
+      ],
+      "disabled": false,
+      "notes": "CVE-2023-6568: mlflow auth create_user reflected attacker-controlled Content-Type request header into make_response f-string — reflected XSS. Apache-2.0"
+    },
+    {
+      "case_id": "cve-py-2023-6568-patched",
+      "file": "cve_corpus/python/CVE-2023-6568/patched.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.xss.make_response_format",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "mlflow",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2023-6568 patched counterpart: f-string interpolation replaced with static string; no tainted source reaches make_response and the AST f-string trigger is gone, so neither rule fires"
+    },
+    {
+      "case_id": "cve-py-2024-21513-vulnerable",
+      "file": "cve_corpus/python/CVE-2024-21513/vulnerable.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "code_exec",
+      "cwe": "CWE-94",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.code_exec.eval"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          42,
+          42
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "langchain",
+        "code-exec",
+        "positive"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-21513: langchain_experimental VectorSQLDatabaseChain ran every SQL query result through eval() via _try_eval; attacker-controlled DB rows -> RCE. MIT"
+    },
+    {
+      "case_id": "cve-py-2024-21513-patched",
+      "file": "cve_corpus/python/CVE-2024-21513/patched.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.code_exec.eval"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "langchain",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-21513 patched counterpart: _try_eval helper deleted and get_result_from_sqldb returns raw result with no eval; py.code_exec.eval silent"
     },
     {
       "case_id": "cve-php-2017-9841-vulnerable",
