@@ -972,6 +972,27 @@ impl<'a> ParsedSource<'a> {
                     {
                         continue;
                     }
+                    // Layer C2: PHP `Serializable::unserialize($input)` magic
+                    // method body — `public function unserialize($x) { ...
+                    // unserialize($x) ... }`.  This is the legacy
+                    // `Serializable` interface contract (deprecated since PHP
+                    // 8.1).  PHP itself invokes the method when restoring an
+                    // instance, so the body's `\unserialize($x)` call cannot
+                    // be removed without breaking the interface.  The
+                    // actionable signal is at the class level (the class
+                    // implements Serializable — fix is to migrate to
+                    // `__serialize` / `__unserialize`), not at this call
+                    // site.  Genuine deserialization sinks (free-function
+                    // `unserialize($_GET[..])`, helpers reading from session
+                    // / cache, etc.) keep firing because they are not inside
+                    // a method declaration named `unserialize` with a single
+                    // formal parameter passed straight to the call.
+                    if cq.meta.id == "php.deser.unserialize"
+                        && self.lang_slug == "php"
+                        && is_php_unserialize_magic_method_passthrough(cap.node, self.bytes)
+                    {
+                        continue;
+                    }
                     // Layer D: C/C++ buffer-overflow pattern rules
                     // (`{c,cpp}.memory.strcpy`, `strcat`, `sprintf`) fire
                     // syntactically on every call regardless of argument
@@ -2427,6 +2448,168 @@ fn is_php_unserialize_allowed_classes_restricted(
         }
     }
     false
+}
+
+/// PHP-only: returns `true` when the captured `function_call_expression`
+/// is the canonical `Serializable::unserialize($input)` magic-method
+/// pass-through — i.e. the call is inside a `method_declaration` named
+/// exactly `unserialize` (PHP method names are case-insensitive) with
+/// one formal parameter, and the call's single argument is the bare
+/// parameter variable.
+///
+/// **Why this is a non-actionable site for `php.deser.unserialize`:**
+/// `Serializable::unserialize($input)` is an interface contract method
+/// that PHP itself invokes when restoring an instance via the runtime
+/// `\unserialize($bytes)` machinery.  The implementation MUST decode
+/// `$input` (the body's `\unserialize(...)` call) — there is no
+/// "safer" rewrite that preserves the contract.  The actionable signal
+/// is at the class level (the class implements the deprecated
+/// `Serializable` interface — fix is to migrate to `__serialize` /
+/// `__unserialize`), not at this call site.
+///
+/// Conservative recognition:
+/// - method must be a `method_declaration` (NOT a free `function_definition` —
+///   the magic semantics only apply to instance methods)
+/// - method name == `unserialize` (case-insensitive)
+/// - exactly 1 formal parameter
+/// - call has exactly 1 argument
+/// - argument's inner expression is a `variable_name` whose name equals the
+///   formal parameter's name
+///
+/// Genuine deserialization sinks (free `unserialize($_GET[...])`, helpers
+/// reading from session/cache and passing through, etc.) keep firing
+/// because they are not inside a method declaration named `unserialize`.
+fn is_php_unserialize_magic_method_passthrough(
+    cap_node: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    // The pattern captures `@n` (the function name); locate the enclosing
+    // function_call_expression.
+    let call_node = if cap_node.kind() == "function_call_expression" {
+        cap_node
+    } else {
+        let mut cur = cap_node;
+        let mut found = None;
+        for _ in 0..4 {
+            if cur.kind() == "function_call_expression" {
+                found = Some(cur);
+                break;
+            }
+            match cur.parent() {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        match found {
+            Some(c) => c,
+            None => return false,
+        }
+    };
+
+    // Walk up to the nearest method_declaration.  Stop at any other
+    // function-introducing scope (free function, closure, arrow) — those
+    // are not the Serializable contract.
+    let mut cur = call_node;
+    let method = loop {
+        let Some(parent) = cur.parent() else {
+            return false;
+        };
+        match parent.kind() {
+            "method_declaration" => break parent,
+            "function_definition"
+            | "anonymous_function"
+            | "anonymous_function_creation_expression"
+            | "arrow_function"
+            | "program" => return false,
+            _ => {}
+        }
+        cur = parent;
+    };
+
+    // Method name must be exactly `unserialize` (case-insensitive).
+    let Some(name_node) = method
+        .child_by_field_name("name")
+        .or_else(|| find_named_child_of_kind(method, "name"))
+    else {
+        return false;
+    };
+    let Ok(method_name) = std::str::from_utf8(&bytes[name_node.byte_range()]) else {
+        return false;
+    };
+    if !method_name.eq_ignore_ascii_case("unserialize") {
+        return false;
+    }
+
+    // Method must have exactly 1 formal parameter; capture its bare name.
+    let Some(params) = method
+        .child_by_field_name("parameters")
+        .or_else(|| find_named_child_of_kind(method, "formal_parameters"))
+    else {
+        return false;
+    };
+    let mut formal_params: Vec<tree_sitter::Node> = Vec::new();
+    for i in 0..params.named_child_count() as u32 {
+        if let Some(p) = params.named_child(i)
+            && matches!(
+                p.kind(),
+                "simple_parameter"
+                    | "variadic_parameter"
+                    | "property_promotion_parameter"
+                    | "promoted_constructor_parameter"
+            )
+        {
+            formal_params.push(p);
+        }
+    }
+    if formal_params.len() != 1 {
+        return false;
+    }
+    let param = formal_params[0];
+    let var_node = param
+        .child_by_field_name("name")
+        .or_else(|| find_named_child_of_kind(param, "variable_name"));
+    let Some(var_node) = var_node else {
+        return false;
+    };
+    let inner_name_node = if var_node.kind() == "variable_name" {
+        var_node.named_child(0)
+    } else {
+        Some(var_node)
+    };
+    let Some(inner_name_node) = inner_name_node else {
+        return false;
+    };
+    let Ok(param_name) = std::str::from_utf8(&bytes[inner_name_node.byte_range()]) else {
+        return false;
+    };
+
+    // Call must have exactly 1 argument that is the bare parameter variable.
+    let Some(arg_list) = find_named_child_of_kind(call_node, "arguments") else {
+        return false;
+    };
+    let mut args: Vec<tree_sitter::Node> = Vec::new();
+    for i in 0..arg_list.named_child_count() as u32 {
+        if let Some(c) = arg_list.named_child(i)
+            && c.kind() == "argument"
+        {
+            args.push(c);
+        }
+    }
+    if args.len() != 1 {
+        return false;
+    }
+    let inner = args[0].named_child(0);
+    let Some(inner) = inner else { return false };
+    if inner.kind() != "variable_name" {
+        return false;
+    }
+    let Some(arg_name_node) = inner.named_child(0) else {
+        return false;
+    };
+    let Ok(arg_name) = std::str::from_utf8(&bytes[arg_name_node.byte_range()]) else {
+        return false;
+    };
+    arg_name == param_name
 }
 
 /// C/C++-only Layer D: structural suppression of buffer-overflow pattern
@@ -4466,6 +4649,100 @@ fn php_unserialize_allowed_classes_recognises_safe_forms() {
     assert!(
         !is_php_unserialize_allowed_classes_restricted(cap, code),
         "dynamic options variable should NOT be suppressed"
+    );
+}
+
+#[test]
+fn php_unserialize_magic_method_passthrough_recognises_serializable_contract() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(function_call_expression function: (name) @n (#eq? @n "unserialize")) @vuln"#;
+
+    // Canonical Serializable::unserialize delegating to __unserialize.
+    let code = b"<?php\nclass R {\n  public function unserialize($serialized): void {\n    $this->__unserialize(unserialize($serialized));\n  }\n}\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_magic_method_passthrough(cap, code),
+        "Serializable::unserialize($x) → unserialize($x) should be suppressed"
+    );
+
+    // Multi-target list-destructuring assignment shape (Joomla Cli/Input).
+    let code = b"<?php\nclass C {\n  public function unserialize($input) {\n    [$this->a, $this->b] = unserialize($input);\n  }\n}\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_magic_method_passthrough(cap, code),
+        "list-destructuring inside Serializable::unserialize should be suppressed"
+    );
+
+    // Case-insensitive method name (PHP semantics).
+    let code = b"<?php\nclass C { public function UnSerialize($d) { return unserialize($d); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_magic_method_passthrough(cap, code),
+        "method name should match case-insensitively (PHP)"
+    );
+
+    // Free function `unserialize` is NOT a magic method, must NOT be suppressed.
+    let code = b"<?php\nfunction load($d) { return unserialize($d); }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_magic_method_passthrough(cap, code),
+        "free function should NOT be suppressed"
+    );
+
+    // Different method name, NOT a Serializable contract, must NOT be suppressed.
+    let code = b"<?php\nclass C { public function decode($d) { return unserialize($d); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_magic_method_passthrough(cap, code),
+        "method named `decode` should NOT be suppressed"
+    );
+
+    // Method named `unserialize` but with TWO params, NOT the magic signature,
+    // must NOT be suppressed.
+    let code = b"<?php\nclass C { public function unserialize($d, $opts) { return unserialize($d, $opts); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_magic_method_passthrough(cap, code),
+        "two-param method named unserialize should NOT be suppressed"
+    );
+
+    // Magic-method signature but the call argument is NOT the formal param —
+    // user is unserializing some other source.  Must NOT be suppressed.
+    let code = b"<?php\nclass C { public function unserialize($input) { return unserialize($_GET['x']); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_magic_method_passthrough(cap, code),
+        "non-pass-through arg inside magic method should NOT be suppressed"
+    );
+
+    // Wrapped argument (`unserialize(trim($input))`) is NOT a bare-param
+    // pass-through — keep firing.  This shape covers cache/session
+    // pass-throughs that the rule should still surface.
+    let code = b"<?php\nclass C { public function unserialize($input) { return unserialize(trim($input)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_magic_method_passthrough(cap, code),
+        "wrapped argument inside magic method should NOT be suppressed (conservative)"
+    );
+
+    // Anonymous function named-like context (defensive — anonymous_function
+    // is not a method_declaration).
+    let code = b"<?php\n$f = function($input) { return unserialize($input); };\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_magic_method_passthrough(cap, code),
+        "closure should NOT be suppressed"
     );
 }
 

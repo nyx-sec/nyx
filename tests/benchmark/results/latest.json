@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T00:25:33Z",
+  "timestamp": "2026-05-04T01:38:46Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,9 +9,9 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:ae0281a00071e1b7c61b9c481b23361228a5a0038ad72cf42dfc365f85f15c4b",
-  "corpus_size": 539,
-  "cases_run": 538,
+  "ground_truth_hash": "sha256:93fec4f0c93f2a180d002539a7de3295f22bb4889afbb5e739d51ecb1f7b77e0",
+  "corpus_size": 541,
+  "cases_run": 540,
   "cases_skipped": 1,
   "outcomes": [
     {
@@ -5025,6 +5025,27 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "php-deser-003",
+      "file": "php/deser/deser_unserialize_method_named_unserialize_with_user_input.php",
+      "language": "php",
+      "vuln_class": "deser",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "php.deser.unserialize",
+        "php.deser.unserialize"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "php.deser.unserialize",
+        "php.deser.unserialize"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "php-interproc-001",
       "file": "php/interprocedural/interproc_taint_propagation.php",
       "language": "php",
@@ -5347,6 +5368,21 @@
     {
       "case_id": "php-safe-019",
       "file": "php/safe/safe_md5_sha1_non_crypto_use.php",
+      "language": "php",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "php-safe-020",
+      "file": "php/safe/safe_serializable_magic_method_unserialize.php",
       "language": "php",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -9610,19 +9646,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 263,
+    "tp": 264,
     "fp": 0,
     "fn_": 0,
-    "tn": 275,
+    "tn": 276,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 263,
+    "tp": 264,
     "fp": 0,
     "fn_": 0,
-    "tn": 275,
+    "tn": 276,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9674,10 +9710,10 @@
       "f1": 1.0
     },
     "php": {
-      "tp": 19,
+      "tp": 20,
       "fp": 0,
       "fn_": 0,
-      "tn": 20,
+      "tn": 21,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9784,7 +9820,7 @@
       "f1": 1.0
     },
     "deser": {
-      "tp": 8,
+      "tp": 9,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9859,7 +9895,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 275,
+      "tn": 276,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9913,30 +9949,30 @@
   "by_confidence": {
     ">=High": {
       "tp": 88,
-      "fp": 102,
-      "fn_": 175,
-      "tn": 173,
-      "precision": 0.4631578947368421,
-      "recall": 0.33460076045627374,
-      "f1": 0.38852097130242824
+      "fp": 104,
+      "fn_": 176,
+      "tn": 172,
+      "precision": 0.4583333333333333,
+      "recall": 0.3333333333333333,
+      "f1": 0.38596491228070173
     },
     ">=Low": {
       "tp": 90,
-      "fp": 130,
-      "fn_": 173,
-      "tn": 145,
-      "precision": 0.4090909090909091,
-      "recall": 0.34220532319391633,
-      "f1": 0.3726708074534162
+      "fp": 132,
+      "fn_": 174,
+      "tn": 144,
+      "precision": 0.40540540540540543,
+      "recall": 0.3409090909090909,
+      "f1": 0.37037037037037035
     },
     ">=Medium": {
       "tp": 90,
-      "fp": 122,
-      "fn_": 173,
-      "tn": 153,
-      "precision": 0.42452830188679247,
-      "recall": 0.34220532319391633,
-      "f1": 0.3789473684210526
+      "fp": 124,
+      "fn_": 174,
+      "tn": 152,
+      "precision": 0.4205607476635514,
+      "recall": 0.3409090909090909,
+      "f1": 0.37656903765690375
     }
   }
 }

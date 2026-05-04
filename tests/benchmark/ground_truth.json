@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 541
+    "corpus_size": 543
   },
   "cases": [
     {
@@ -13360,6 +13360,65 @@
       ],
       "disabled": false,
       "notes": "Vulnerable counterpart to php-safe-019: md5 / sha1 used to store / sign / digest credentials, tokens, signatures. Consumer names contain crypto-keyword substrings (`password`, `token`, `signature`, `pw_hash`, `digest`) so Layer F suppression refuses to fire."
+    },
+    {
+      "case_id": "php-safe-020",
+      "file": "php/safe/safe_serializable_magic_method_unserialize.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "real-repo-precision-2026-05-03",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "php.deser.unserialize",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "real-repo-precision-2026-05-03",
+        "unserialize",
+        "serializable",
+        "magic-method"
+      ],
+      "disabled": false,
+      "notes": "Serializable::unserialize($input) magic-method body — the legacy PHP Serializable interface contract (deprecated since PHP 8.1). PHP itself drives invocation; the body's \\unserialize($x) call is part of the deserialization machinery and cannot be removed without breaking the interface. Distilled from joomla/administrator/components/com_finder/src/Indexer/Result.php:488 + libraries/src/Input/{Cli,Input}.php."
+    },
+    {
+      "case_id": "php-deser-003",
+      "file": "php/deser/deser_unserialize_method_named_unserialize_with_user_input.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "real-repo-precision-2026-05-03",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "php.deser.unserialize"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "real-repo-precision-2026-05-03",
+        "unserialize",
+        "magic-method-name-only",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "Recall guard for the Serializable magic-method recogniser. Method is named `unserialize` but (a) calls \\unserialize on user input from $_GET, not the formal parameter, OR (b) wraps the parameter in trim() before passing it through. The recogniser deliberately requires bare-parameter pass-through, so both shapes must keep firing."
     },
     {
       "case_id": "c-safe-014",
