@@ -896,6 +896,13 @@ fn collect_unit_state(
             // `instance_variable`.
             if matches!(node.kind(), "assignment" | "assignment_expression") {
                 collect_row_population(node, bytes, state);
+                // Python `verified_ids = set()` /
+                // `cache: dict[str,int] = {}` and JS analogues bind a
+                // local non-sink container.  `collect_non_sink_binding`
+                // accepts both `pattern`/`value` and `left`/`right`
+                // field names so the same recognition path covers
+                // these assignment-node shapes.
+                collect_non_sink_binding(node, bytes, rules, state);
             }
         }
         "for_expression" => {
@@ -1059,22 +1066,28 @@ fn collect_condition(
     }
 }
 
-/// Detect `let` bindings that produce a known non-sink collection
-/// (e.g. `HashMap::new()`, `Vec::with_capacity(_)`, `vec![]`, or an
-/// explicit type annotation like `: HashMap<_, _>`).  Registered
-/// variable names are consulted by `collect_call` so later method
-/// calls on those bindings (`map.insert(..)`, `set.remove(..)`)
-/// aren't treated as auth-relevant Read/Mutation operations.
+/// Detect bindings that produce a known non-sink collection
+/// (e.g. `HashMap::new()`, `Vec::with_capacity(_)`, `vec![]`, an
+/// explicit type annotation like `: HashMap<_, _>`, or Python's
+/// bare `set()` / `dict()` / `collections.defaultdict(list)`).
+/// Registered variable names are consulted by `collect_call` so
+/// later method calls on those bindings (`map.insert(..)`,
+/// `set.remove(..)`, `verified_ids.update(..)`) aren't treated as
+/// auth-relevant Read/Mutation operations.
 ///
-/// Rust-oriented in practice; JS/TS/Python/etc. use different
-/// declaration node kinds and are unaffected.
+/// Field names accepted: Rust `let_declaration` uses `pattern` /
+/// `value`; Python `assignment` and JS `assignment_expression` use
+/// `left` / `right`.  Both shapes share the same recognition path.
 fn collect_non_sink_binding(
     node: Node<'_>,
     bytes: &[u8],
     rules: &AuthAnalysisRules,
     state: &mut UnitState,
 ) {
-    let Some(pattern) = node.child_by_field_name("pattern") else {
+    let Some(pattern) = node
+        .child_by_field_name("pattern")
+        .or_else(|| node.child_by_field_name("left"))
+    else {
         return;
     };
     let Some(var_name) = first_identifier_name(pattern, bytes) else {
@@ -1092,7 +1105,9 @@ fn collect_non_sink_binding(
         }
     }
 
-    if let Some(value) = node.child_by_field_name("value")
+    if let Some(value) = node
+        .child_by_field_name("value")
+        .or_else(|| node.child_by_field_name("right"))
         && value_is_non_sink_constructor(value, bytes, rules)
     {
         state.non_sink_vars.insert(var_name);

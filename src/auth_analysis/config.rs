@@ -96,11 +96,13 @@ impl AuthAnalysisRules {
     }
 
     /// Does `ty` (last path segment, case-sensitive) match a
-    /// non-sink receiver type?  The angle-bracket generic suffix is
-    /// stripped first: `HashMap<i64, String>` → `HashMap`.
+    /// non-sink receiver type?  Generic suffixes are stripped first:
+    /// `HashMap<i64, String>` → `HashMap` (Rust/Java/TS angle brackets),
+    /// `set[int]` / `dict[str, int]` → `set` / `dict` (Python PEP 585
+    /// builtin generics + `typing` aliases).
     pub fn is_non_sink_receiver_type(&self, ty: &str) -> bool {
         let base = Self::type_last_segment(ty);
-        let base = base.split('<').next().unwrap_or(base).trim();
+        let base = base.split(['<', '[']).next().unwrap_or(base).trim();
         self.non_sink_receiver_types
             .iter()
             .any(|allowed| allowed == base)
@@ -115,25 +117,35 @@ impl AuthAnalysisRules {
     /// The callee string may use either `::` or `.` as the path
     /// separator (nyx's `callee_name` normalizes both via
     /// `member_chain`).
+    ///
+    /// Bare-callee form: Python uses `set()` / `dict()` / `list()` /
+    /// `defaultdict()` / etc. as direct constructors with no method
+    /// segment.  When `callee` has no `.` / `::` separator and matches
+    /// a registered non-sink receiver type, treat the call as a
+    /// non-sink constructor.  Closes the
+    /// `verified_ids = set(); verified_ids.update(myteams)` shape in
+    /// sentry where the bare-call form was unrecognised so the bound
+    /// var was missing from `non_sink_vars` and the later
+    /// `.update(..)` classified as DbMutation.
     pub fn is_non_sink_constructor_callee(&self, callee: &str) -> bool {
         let normalized = callee.replace("::", ".");
-        let Some((ty, method)) = normalized.rsplit_once('.') else {
-            return false;
-        };
-        if !self.is_non_sink_receiver_type(ty) {
-            return false;
+        if let Some((ty, method)) = normalized.rsplit_once('.') {
+            if !self.is_non_sink_receiver_type(ty) {
+                return false;
+            }
+            return matches!(
+                method,
+                "new"
+                    | "with_capacity"
+                    | "with_capacity_and_hasher"
+                    | "with_hasher"
+                    | "from"
+                    | "from_iter"
+                    | "new_in"
+                    | "default"
+            );
         }
-        matches!(
-            method,
-            "new"
-                | "with_capacity"
-                | "with_capacity_and_hasher"
-                | "with_hasher"
-                | "from"
-                | "from_iter"
-                | "new_in"
-                | "default"
-        )
+        self.is_non_sink_receiver_type(&normalized)
     }
 
     /// Does the first segment of a callee receiver chain look like a
@@ -591,7 +603,29 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "invitedemail".into(),
                 "recipient".into(),
             ],
-            non_sink_receiver_types: Vec::new(),
+            // Python builtin / `collections` non-sink container types.
+            // Recognised both as type-annotation hints (`x: set[int]`)
+            // and as bare-callee constructor forms (`x = set()`,
+            // `cache = collections.defaultdict(list)`, …).  Method
+            // calls on bound vars (`x.update`, `x.add`, `cache.pop`)
+            // are then classified as `InMemoryLocal`, suppressing the
+            // false `DbMutation` / `DbCrossTenantRead` sink shape.
+            // Closes sentry `api/helpers/teams.py:46` shape where
+            // `verified_ids = set(); verified_ids.update(myteams)` was
+            // flagged as cross-tenant mutation.
+            non_sink_receiver_types: vec![
+                "set".into(),
+                "dict".into(),
+                "list".into(),
+                "tuple".into(),
+                "frozenset".into(),
+                "defaultdict".into(),
+                "OrderedDict".into(),
+                "Counter".into(),
+                "deque".into(),
+                "ChainMap".into(),
+                "namedtuple".into(),
+            ],
             non_sink_receiver_name_prefixes: Vec::new(),
             non_sink_global_receivers: Vec::new(),
             non_sink_method_names: Vec::new(),
@@ -1934,6 +1968,97 @@ mod tests {
             rules.classify_sink_class("repo.update", &empty),
             Some(SinkClass::DbMutation)
         );
+    }
+
+    /// Pin the Python non-sink container recogniser.  Both type
+    /// annotations (`x: set[int]`, `m: dict[str, int]`) and
+    /// bare-callee constructor calls (`set()`, `dict()`,
+    /// `defaultdict()`) must register the bound variable as a
+    /// non-sink receiver, suppressing later `.update(..)` /
+    /// `.add(..)` calls from classifying as `DbMutation` /
+    /// `DbCrossTenantRead`.
+    #[test]
+    fn python_non_sink_container_recognition() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let cfg = Config::default();
+        let rules = build_auth_rules(&cfg, "python");
+
+        // Type annotations: PEP 585 builtin generics + typing aliases.
+        assert!(rules.is_non_sink_receiver_type("set"));
+        assert!(rules.is_non_sink_receiver_type("set[int]"));
+        assert!(rules.is_non_sink_receiver_type("dict[str, int]"));
+        assert!(rules.is_non_sink_receiver_type("list[str]"));
+        assert!(rules.is_non_sink_receiver_type("defaultdict"));
+        assert!(rules.is_non_sink_receiver_type("Counter"));
+        assert!(rules.is_non_sink_receiver_type("OrderedDict"));
+        // Negative: arbitrary type names must not match.
+        assert!(!rules.is_non_sink_receiver_type("Project"));
+        assert!(!rules.is_non_sink_receiver_type("QuerySet"));
+
+        // Bare-callee constructor form: `set()`, `dict()`,
+        // `defaultdict()`, `Counter()`.
+        assert!(rules.is_non_sink_constructor_callee("set"));
+        assert!(rules.is_non_sink_constructor_callee("dict"));
+        assert!(rules.is_non_sink_constructor_callee("list"));
+        assert!(rules.is_non_sink_constructor_callee("frozenset"));
+        assert!(rules.is_non_sink_constructor_callee("defaultdict"));
+        assert!(rules.is_non_sink_constructor_callee("Counter"));
+        // Negative: bare callees that are NOT non-sink types must not
+        // be treated as constructors.  `update`, `filter`, `find` are
+        // verb names, not container types.
+        assert!(!rules.is_non_sink_constructor_callee("update"));
+        assert!(!rules.is_non_sink_constructor_callee("filter"));
+        assert!(!rules.is_non_sink_constructor_callee("find"));
+        assert!(!rules.is_non_sink_constructor_callee("Project"));
+
+        // End-to-end classification: `verified_ids.update(..)` with
+        // `verified_ids` registered as a non-sink var classifies as
+        // `InMemoryLocal`, the precondition for suppressing the
+        // false `DbMutation` finding.
+        let mut non_sink_vars: HashSet<String> = HashSet::new();
+        non_sink_vars.insert("verified_ids".to_string());
+        non_sink_vars.insert("requested_teams".to_string());
+        assert_eq!(
+            rules.classify_sink_class("verified_ids.update", &non_sink_vars),
+            Some(SinkClass::InMemoryLocal)
+        );
+        assert_eq!(
+            rules.classify_sink_class("requested_teams.add", &non_sink_vars),
+            Some(SinkClass::InMemoryLocal)
+        );
+        // Recall guard: a real ORM mutation on the same verb still
+        // classifies as `DbMutation` when the receiver is qualified.
+        let empty: HashSet<String> = HashSet::new();
+        assert_eq!(
+            rules.classify_sink_class("Project.objects.update", &empty),
+            Some(SinkClass::DbMutation)
+        );
+    }
+
+    /// Cross-language recall guard: only Python populates the new
+    /// container types by default.  Other-language defaults must
+    /// not inadvertently inherit `set` / `dict` / `list` as non-sink
+    /// types via the merge path (those names overlap with verb
+    /// indicators in those languages).
+    #[test]
+    fn python_container_types_do_not_leak_to_other_languages() {
+        let cfg = Config::default();
+        for lang in ["javascript", "typescript", "go", "java", "ruby", "rust"] {
+            let rules = build_auth_rules(&cfg, lang);
+            assert!(
+                !rules.is_non_sink_receiver_type("set"),
+                "lang={lang} unexpectedly recognises bare `set` as non-sink type",
+            );
+            assert!(
+                !rules.is_non_sink_receiver_type("dict"),
+                "lang={lang} unexpectedly recognises bare `dict` as non-sink type",
+            );
+            assert!(
+                !rules.is_non_sink_receiver_type("list"),
+                "lang={lang} unexpectedly recognises bare `list` as non-sink type",
+            );
+        }
     }
 
     /// `require_<resource>_<role>` structural recogniser for project

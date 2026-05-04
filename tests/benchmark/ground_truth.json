@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 544
+    "corpus_size": 546
   },
   "cases": [
     {
@@ -16996,6 +16996,69 @@
       ],
       "disabled": false,
       "notes": "Distilled from sentry tasks/statistical_detectors.py:743 (`org_ids = list({p.organization_id for p in projects})`), utils/query.py:90 (`events = list(method(...))`), api/helpers/group_index/delete.py (bare `delete_group_list`, `create_audit_entry`), seer/autofix/coding_agent.py (bare `update_coding_agent_state`).  Bare-identifier callees `list`, `filter`, `update`, `create`, `add` are Python builtins or locally-defined helpers, not DB / ORM operations.  Fix: classify_sink_class verb-name fallback now requires `receiver_is_simple_chain` (callee contains a non-chained `.`).  Regression guard for: bare callees must not classify as DbCrossTenantRead / DbMutation."
+    },
+    {
+      "case_id": "py-auth-realrepo-012",
+      "file": "python/safe/safe_local_set_update_no_orm.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "django",
+        "real-repo-precision-2026-05-04"
+      ],
+      "disabled": false,
+      "notes": "Distilled from sentry api/helpers/teams.py::get_teams: bare-callee Python container constructors (`set()`, `dict()`, `defaultdict()`, `Counter()`, `list()`) bind a non-sink local collection.  Subsequent `.update(..)` / `.add(..)` / item assignment must classify as InMemoryLocal, suppressing the false `py.auth.missing_ownership_check` finding.  Fix: AuthAnalysisRules::is_non_sink_constructor_callee accepts bare callees matching non_sink_receiver_types; Python defaults populated with `set`/`dict`/`list`/`tuple`/`frozenset`/`defaultdict`/`OrderedDict`/`Counter`/`deque`/`ChainMap`/`namedtuple`; collect_non_sink_binding falls through to `left`/`right` field names; assignment / assignment_expression arm in collect_unit_state now wires the recogniser."
+    },
+    {
+      "case_id": "py-auth-realrepo-013",
+      "file": "python/auth/vuln_local_set_with_user_id_query.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real-repo",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          22,
+          22
+        ],
+        [
+          28,
+          28
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "django",
+        "real-repo-precision-2026-05-04"
+      ],
+      "disabled": false,
+      "notes": "Vulnerable counterpart to py-auth-realrepo-012: same bare-`set()` / `dict()` local container shape, but the helper *also* runs an id-targeted ORM `Project.objects.filter(id=team_id)` query whose filter param is a user-supplied id (no caller-scope-entity exemption applies).  Recall guard: bare-callee constructor recogniser must only suppress the InMemoryLocal `.add` / `.update` calls — the id-targeted ORM filter must still fire `py.auth.missing_ownership_check`."
     },
     {
       "case_id": "cve-ts-2026-25544-vulnerable",
