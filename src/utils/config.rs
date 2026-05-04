@@ -544,6 +544,16 @@ pub struct AuthAnalysisConfig {
     /// not need an ownership check.  Defaults are set per-language in
     /// `auth_analysis::config::build_auth_rules`.
     pub acl_tables: Vec<String>,
+    /// Callee names that, when they appear as the chain root of a
+    /// chained-call shape (`select(X).filter_by(...)`,
+    /// `query(X).filter(...)`), anchor the trailing method as a DB
+    /// query-builder operation.  Used to override the chained-call
+    /// suppression in `classify_sink_class` for SQLAlchemy / similar
+    /// query-builder idioms whose first call returns an opaque builder
+    /// object the type tracker cannot resolve.  Defaults set per
+    /// language in `auth_analysis::config::build_auth_rules`.
+    #[serde(default)]
+    pub db_query_builder_roots: Vec<String>,
 }
 
 impl Default for AuthAnalysisConfig {
@@ -568,6 +578,7 @@ impl Default for AuthAnalysisConfig {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     }
 }
@@ -1158,6 +1169,10 @@ pub(crate) fn merge_configs(mut default: Config, user: Config) -> Config {
             user_lang_cfg.auth.cache_receiver_prefixes,
         );
         extend_dedup(&mut entry.auth.acl_tables, user_lang_cfg.auth.acl_tables);
+        extend_dedup(
+            &mut entry.auth.db_query_builder_roots,
+            user_lang_cfg.auth.db_query_builder_roots,
+        );
     }
 
     default

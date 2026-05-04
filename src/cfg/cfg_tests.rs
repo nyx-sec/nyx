@@ -3116,3 +3116,97 @@ fn chained_method_call_rebinds_to_inner_gated_sink() {
          call inner-gate rebinding fired"
     );
 }
+
+/// Ternary-RHS branches are lowered into a diamond CFG by
+/// `build_ternary_diamond` so the condition is control-flow and the
+/// branches are data-flow that joins at a phi.  But push_node only does
+/// suffix/prefix matching on the branch text, so a source-shaped member
+/// expression like `req.query.lng` does not classify (the rule matcher
+/// is `req.query`, which neither suffix-matches nor prefix-matches
+/// `req.query.lng`).  `lower_ternary_branch` runs the segment-strip-
+/// and-retry classifier on the branch AST to recover the source label,
+/// mirroring what `pre_emit_arg_source_nodes` does for call arguments.
+///
+/// Without this, `let arr = cond ? req.query.lng : "";` lowers each
+/// branch to a labelless Assign-with-empty-uses, the join phi sees no
+/// taint, and downstream sinks miss the flow.  Motivated by the
+/// i18next-http-middleware advisory GHSA-jfgf-83c5-2c4m / CVE-2026-42353.
+#[test]
+fn js_ternary_branch_member_expression_classified_as_source() {
+    let src = b"function h(req) { const arr = req.query.lng ? req.query.lng : ''; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let mut found_source_branch = false;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("arr")
+            && info
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, crate::labels::DataLabel::Source(_)))
+        {
+            found_source_branch = true;
+            break;
+        }
+    }
+    assert!(
+        found_source_branch,
+        "expected at least one ternary branch defining `arr` to carry a \
+         Source label after segment-strip classification of `req.query.lng`"
+    );
+}
+
+#[test]
+fn js_ternary_branch_const_strings_have_no_source() {
+    // Both branches are constant strings -> no Source label should be
+    // synthesised by the segment-strip pass.  Pins precision: the fix
+    // only fires when first_member_label finds a real source-shaped
+    // expression in the branch AST.
+    let src = b"function h(cond) { const x = cond ? 'a' : 'b'; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("x") {
+            assert!(
+                !info
+                    .taint
+                    .labels
+                    .iter()
+                    .any(|l| matches!(l, crate::labels::DataLabel::Source(_))),
+                "constant-string ternary branch must not carry a Source label; \
+                 got labels = {:?}",
+                info.taint.labels
+            );
+        }
+    }
+}
+
+#[test]
+fn js_ternary_branch_subscript_source_classified() {
+    // Subscript-form sources (`req.body['key']`) reach via the
+    // first_member_label subscript-expression arm.  Pins the same fix
+    // for subscript-shaped source branches.
+    let src = b"function h(req) { const x = req.body ? req.body['k'] : ''; }";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "javascript", ts_lang);
+    let mut found_source_branch = false;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("x")
+            && info
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, crate::labels::DataLabel::Source(_)))
+        {
+            found_source_branch = true;
+            break;
+        }
+    }
+    assert!(
+        found_source_branch,
+        "expected ternary subscript branch defining `x` to carry a Source label"
+    );
+}

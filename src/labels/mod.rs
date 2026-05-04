@@ -799,6 +799,33 @@ fn phase_c_auth_rules_for_lang(lang_slug: &str) -> Vec<RuntimeLabelRule> {
     }
 }
 
+/// Look up a *receiver-side* validator for the given callee name.
+///
+/// Returns `Some(cap)` when the callee is registered as a method-call
+/// validator that strips `cap` from its receiver (and other call
+/// equivalents) on success.  Distinct from the `Sanitizer` label,
+/// which clears caps from the *return value*.  Used by the Call
+/// transfer to model idioms like `path.relative_to(base)` whose
+/// observable effect on data flow is "the receiver is validated"
+/// rather than "the return value is sanitised".
+pub fn lookup_receiver_validator(lang: &str, callee: &str) -> Option<Cap> {
+    let table: &[(&str, Cap)] = match lang {
+        "python" | "py" => python::RECEIVER_VALIDATORS,
+        _ => return None,
+    };
+    let head = callee.split(['(', '<']).next().unwrap_or(callee);
+    let trimmed = head.trim().as_bytes();
+    let normalized = normalize_chained_call(callee);
+    let norm = normalized.as_bytes();
+    for (name, cap) in table {
+        let m = name.as_bytes();
+        if match_suffix_cs(trimmed, m, false) || match_suffix_cs(norm, m, false) {
+            return Some(*cap);
+        }
+    }
+    None
+}
+
 /// Public re-export used by `ParsedFile::from_source` to
 /// augment per-file rule sets when imports reveal frameworks that the
 /// manifest-level detector missed.
@@ -1470,6 +1497,26 @@ pub fn custom_rule_id(lang: &str, kind: &str, matchers: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receiver_validator_python_relative_to() {
+        // Bare method name fires.
+        assert_eq!(
+            lookup_receiver_validator("python", "relative_to"),
+            Some(Cap::FILE_IO)
+        );
+        // Dotted-method-call form (chained receiver).
+        assert_eq!(
+            lookup_receiver_validator("python", "filepath.relative_to"),
+            Some(Cap::FILE_IO)
+        );
+        // Other languages without a registry entry return None.
+        assert_eq!(lookup_receiver_validator("rust", "relative_to"), None);
+        assert_eq!(lookup_receiver_validator("javascript", "relative_to"), None);
+        // Unrelated callees return None.
+        assert_eq!(lookup_receiver_validator("python", "resolve"), None);
+        assert_eq!(lookup_receiver_validator("python", "joinpath"), None);
+    }
 
     #[test]
     fn bare_method_name_strips_chain() {

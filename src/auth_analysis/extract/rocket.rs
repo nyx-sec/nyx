@@ -4,8 +4,7 @@ use super::axum::{
     rust_param_aliases,
 };
 use super::common::{
-    attach_route_handler, collect_top_level_units, function_definition_node, function_name,
-    named_children, text,
+    attach_route_handler, function_definition_node, function_name, named_children, text,
 };
 use crate::auth_analysis::config::AuthAnalysisRules;
 use crate::auth_analysis::model::{AuthorizationModel, Framework, HttpMethod, RouteRegistration};
@@ -28,14 +27,10 @@ impl AuthExtractor for RocketExtractor {
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-
-        collect_top_level_units(root, bytes, rules, &mut model);
-        collect_handlers(root, root, bytes, path, rules, &mut model);
-
-        model
+        collect_handlers(root, root, bytes, path, rules, model);
     }
 }
 

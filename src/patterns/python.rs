@@ -206,4 +206,26 @@ pub const PATTERNS: &[Pattern] = &[
         category: PatternCategory::Xss,
         confidence: Confidence::High,
     },
+    // Flask `make_response(<f-string-or-concat>)` reflection — Tier B
+    // heuristic mirroring `py.sqli.execute_format` / `py.sqli.text_format`.
+    // Catches CVE-2023-6568 (mlflow auth `create_user` reflected the
+    // attacker-controlled `Content-Type` header into the response body
+    // via `make_response(f"Invalid content type: '{content_type}'", 400)`)
+    // and the equivalent `+`-concat shape.  Recognises both bare
+    // `make_response(...)` and `flask.make_response(...)`.
+    Pattern {
+        id: "py.xss.make_response_format",
+        description: "flask make_response with f-string or concat risks reflected XSS",
+        query: r#"(call
+                     function: [(identifier) @fn (attribute attribute: (identifier) @fn)]
+                     (#eq? @fn "make_response")
+                     arguments: (argument_list
+                       [(binary_operator)
+                        (string (interpolation))] @arg))
+                   @vuln"#,
+        severity: Severity::Medium,
+        tier: PatternTier::B,
+        category: PatternCategory::Xss,
+        confidence: Confidence::Medium,
+    },
 ];

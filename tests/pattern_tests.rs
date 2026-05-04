@@ -301,6 +301,9 @@ fn positive_python() {
             // py.sqli.text_format must fire on the SQLAlchemy text() shape.
             "py.sqli.execute_format",
             "py.sqli.text_format",
+            // CVE-2023-6568 (mlflow) reflected XSS via make_response f-string;
+            // also catches the `+`-concat shape in xss_reflected.py.
+            "py.xss.make_response_format",
         ],
     );
 }

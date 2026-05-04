@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-03T17:00:35Z",
+  "timestamp": "2026-05-04T17:11:50Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,10 +9,10 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:1d6ed97196d3ff0844320a79ac607983245dd73af5455bcf77f6ac6a212c5e45",
-  "corpus_size": 533,
-  "cases_run": 532,
-  "cases_skipped": 1,
+  "ground_truth_hash": "sha256:414494ab1b6881a9b78eca38e26561231f78767480399fda73a477e23a9fcbaa",
+  "corpus_size": 565,
+  "cases_run": 562,
+  "cases_skipped": 3,
   "outcomes": [
     {
       "case_id": "c-buf-001",
@@ -1657,6 +1657,40 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "cve-js-2026-42353-patched",
+      "file": "cve_corpus/javascript/CVE-2026-42353/patched.js",
+      "language": "javascript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-js-2026-42353-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2026-42353/vulnerable.js",
+      "language": "javascript",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 44:9)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 44:9)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "cve-php-2017-9841-patched",
       "file": "cve_corpus/php/CVE-2017-9841/patched.php",
       "language": "php",
@@ -1724,6 +1758,43 @@
       "all_finding_ids": [
         "php.deser.unserialize",
         "taint-unsanitised-flow (source 24:1)"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-php-2026-33486-patched",
+      "file": "cve_corpus/php/CVE-2026-33486/patched.php",
+      "language": "php",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-php-2026-33486-vulnerable",
+      "file": "cve_corpus/php/CVE-2026-33486/vulnerable.php",
+      "language": "php",
+      "vuln_class": "ssrf",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 40:9)"
+      ],
+      "unexpected_rule_ids": [
+        "state-resource-leak"
+      ],
+      "all_finding_ids": [
+        "state-resource-leak",
+        "taint-unsanitised-flow (source 40:9)"
       ],
       "security_finding_count": 2,
       "non_security_finding_count": 0
@@ -1798,6 +1869,113 @@
         "taint-unsanitised-flow (source 26:12)"
       ],
       "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-py-2023-6568-patched",
+      "file": "cve_corpus/python/CVE-2023-6568/patched.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-py-2023-6568-vulnerable",
+      "file": "cve_corpus/python/CVE-2023-6568/vulnerable.py",
+      "language": "python",
+      "vuln_class": "xss",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.xss.make_response_format",
+        "taint-unsanitised-flow (source 41:20)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "py.xss.make_response_format",
+        "taint-unsanitised-flow (source 41:20)"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-py-2024-21513-patched",
+      "file": "cve_corpus/python/CVE-2024-21513/patched.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-py-2024-21513-vulnerable",
+      "file": "cve_corpus/python/CVE-2024-21513/vulnerable.py",
+      "language": "python",
+      "vuln_class": "code_exec",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.code_exec.eval"
+      ],
+      "unexpected_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "all_finding_ids": [
+        "cfg-unguarded-sink",
+        "py.code_exec.eval"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-py-2024-23334-patched",
+      "file": "cve_corpus/python/CVE-2024-23334/patched.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-py-2024-23334-vulnerable",
+      "file": "cve_corpus/python/CVE-2024-23334/vulnerable.py",
+      "language": "python",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 45:9)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 45:9)"
+      ],
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -3085,6 +3263,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "go-safe-realrepo-019",
+      "file": "go/safe/safe_dao_helper_id_scalar.go",
+      "language": "go",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "go-sqli-001",
       "file": "go/sqli/sqli_concat.go",
       "language": "go",
@@ -3812,6 +4005,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "java-safe-realrepo-openmrs-001",
+      "file": "java/safe/SafeJpaCriteriaQuery.java",
+      "language": "java",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "java-safe-stmt-execute-validated",
       "file": "java/safe/safe_statement_execute_pattern_validated.java",
       "language": "java",
@@ -4261,6 +4469,25 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "js-path_traversal-ternary-source-001",
+      "file": "javascript/path_traversal/path_traversal_ternary_source.js",
+      "language": "javascript",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 15:29)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 15:29)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "js-pathprune-safe-001",
       "file": "javascript/path_pruning/safe_early_return.js",
       "language": "javascript",
@@ -4563,6 +4790,21 @@
     {
       "case_id": "js-safe-realrepo-006",
       "file": "javascript/safe/safe_localised_gherkin_regex.js",
+      "language": "javascript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "js-safe-ternary-const-branches",
+      "file": "javascript/safe/safe_ternary_const_branches.js",
       "language": "javascript",
       "vuln_class": "safe",
       "is_vulnerable": false,
@@ -4961,6 +5203,29 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "php-deser-003",
+      "file": "php/deser/deser_unserialize_method_named_unserialize_with_user_input.php",
+      "language": "php",
+      "vuln_class": "deser",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "php.deser.unserialize",
+        "taint-unsanitised-flow (source 13:38)",
+        "php.deser.unserialize"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "php.deser.unserialize",
+        "taint-unsanitised-flow (source 13:38)",
+        "php.deser.unserialize"
+      ],
+      "security_finding_count": 3,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "php-interproc-001",
       "file": "php/interprocedural/interproc_taint_propagation.php",
       "language": "php",
@@ -5296,6 +5561,36 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "php-safe-020",
+      "file": "php/safe/safe_serializable_magic_method_unserialize.php",
+      "language": "php",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "php-safe-camelcase-validator-001",
+      "file": "php/safe/safe_camelcase_validator_negated.php",
+      "language": "php",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "php-safe-filter-001",
       "file": "php/safe/safe_filter_input.php",
       "language": "php",
@@ -5388,6 +5683,28 @@
       "all_finding_ids": [
         "taint-unsanitised-flow (source 2:1)",
         "taint-unsanitised-flow (source 2:1)"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "php-ssrf-002",
+      "file": "php/ssrf/ssrf_class_method_fopen.php",
+      "language": "php",
+      "vuln_class": "ssrf",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 14:9)"
+      ],
+      "unexpected_rule_ids": [
+        "cfg-resource-leak"
+      ],
+      "all_finding_ids": [
+        "cfg-resource-leak",
+        "taint-unsanitised-flow (source 14:9)"
       ],
       "security_finding_count": 2,
       "non_security_finding_count": 0
@@ -5637,6 +5954,184 @@
       "unexpected_rule_ids": [],
       "all_finding_ids": [],
       "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-011",
+      "file": "python/safe/safe_bare_callee_no_receiver.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-012",
+      "file": "python/safe/safe_local_set_update_no_orm.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-013",
+      "file": "python/auth/vuln_local_set_with_user_id_query.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-014",
+      "file": "python/auth/vuln_fastapi_route_no_dependencies_sqla.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-015",
+      "file": "python/safe/safe_fastapi_route_security_scopes.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-016",
+      "file": "python/auth/vuln_fastapi_route_security_no_scopes.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-017",
+      "file": "python/safe/safe_fastapi_router_level_security_scopes.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-018",
+      "file": "python/auth/vuln_fastapi_router_no_dependencies.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [
+        "py.auth.token_override_without_validation"
+      ],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "security_finding_count": 2,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-019",
+      "file": "python/safe/safe_caller_scope_helper_under_authorized_route.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "py-auth-realrepo-020",
+      "file": "python/auth/vuln_caller_scope_helper_under_bare_route.py",
+      "language": "python",
+      "vuln_class": "auth",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "unexpected_rule_ids": [
+        "py.auth.token_override_without_validation"
+      ],
+      "all_finding_ids": [
+        "py.auth.missing_ownership_check",
+        "py.auth.token_override_without_validation"
+      ],
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -5963,6 +6458,25 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-path_traversal-no-relative-to",
+      "file": "python/path_traversal/path_traversal_no_relative_to.py",
+      "language": "python",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": "TP",
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 11:15)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 11:15)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-pathprune-safe-001",
       "file": "python/path_pruning/safe_early_return.py",
       "language": "python",
@@ -6188,6 +6702,21 @@
       "non_security_finding_count": 0
     },
     {
+      "case_id": "py-safe-relative-to-validator",
+      "file": "python/safe/safe_relative_to_validator.py",
+      "language": "python",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
       "case_id": "py-sqli-001",
       "file": "python/sqli/sqli_concat.py",
       "language": "python",
@@ -6343,11 +6872,14 @@
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 4:12)"
       ],
-      "unexpected_rule_ids": [],
+      "unexpected_rule_ids": [
+        "py.xss.make_response_format"
+      ],
       "all_finding_ids": [
+        "py.xss.make_response_format",
         "taint-unsanitised-flow (source 4:12)"
       ],
-      "security_finding_count": 1,
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -8494,9 +9026,11 @@
       "outcome_location_level": null,
       "matched_rule_ids": [],
       "unexpected_rule_ids": [],
-      "all_finding_ids": [],
+      "all_finding_ids": [
+        "ts.quality.any_annotation"
+      ],
       "security_finding_count": 0,
-      "non_security_finding_count": 0
+      "non_security_finding_count": 1
     },
     {
       "case_id": "ts-auth-realrepo-002",
@@ -8512,12 +9046,10 @@
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "ts.quality.any_annotation",
-        "ts.quality.any_annotation",
         "js.auth.missing_ownership_check"
       ],
       "security_finding_count": 1,
-      "non_security_finding_count": 2
+      "non_security_finding_count": 0
     },
     {
       "case_id": "ts-auth-realrepo-003",
@@ -9512,19 +10044,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 261,
+    "tp": 275,
     "fp": 0,
     "fn_": 0,
-    "tn": 271,
+    "tn": 287,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 261,
+    "tp": 275,
     "fp": 0,
     "fn_": 0,
-    "tn": 271,
+    "tn": 287,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -9552,7 +10084,7 @@
       "tp": 30,
       "fp": 0,
       "fn_": 0,
-      "tn": 35,
+      "tn": 36,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9561,34 +10093,34 @@
       "tp": 23,
       "fp": 0,
       "fn_": 0,
-      "tn": 22,
+      "tn": 23,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
     },
     "javascript": {
-      "tp": 23,
+      "tp": 25,
       "fp": 0,
       "fn_": 0,
-      "tn": 30,
+      "tn": 32,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
     },
     "php": {
-      "tp": 19,
+      "tp": 22,
       "fp": 0,
       "fn_": 0,
-      "tn": 20,
+      "tn": 23,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
     },
     "python": {
-      "tp": 29,
+      "tp": 38,
       "fp": 0,
       "fn_": 0,
-      "tn": 32,
+      "tn": 41,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9623,10 +10155,10 @@
   },
   "by_vuln_class": {
     "auth": {
-      "tp": 20,
+      "tp": 25,
       "fp": 0,
       "fn_": 0,
-      "tn": 0,
+      "tn": 3,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9650,7 +10182,7 @@
       "f1": 1.0
     },
     "code_exec": {
-      "tp": 4,
+      "tp": 5,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9686,7 +10218,7 @@
       "f1": 1.0
     },
     "deser": {
-      "tp": 8,
+      "tp": 9,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9731,7 +10263,7 @@
       "f1": 1.0
     },
     "path_traversal": {
-      "tp": 28,
+      "tp": 32,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9761,7 +10293,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 271,
+      "tn": 284,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -9794,7 +10326,7 @@
       "f1": 1.0
     },
     "ssrf": {
-      "tp": 30,
+      "tp": 32,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9803,7 +10335,7 @@
       "f1": 1.0
     },
     "xss": {
-      "tp": 23,
+      "tp": 24,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -9814,31 +10346,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 88,
-      "fp": 100,
-      "fn_": 173,
-      "tn": 171,
-      "precision": 0.46808510638297873,
-      "recall": 0.3371647509578544,
-      "f1": 0.3919821826280624
+      "tp": 85,
+      "fp": 114,
+      "fn_": 190,
+      "tn": 173,
+      "precision": 0.4271356783919598,
+      "recall": 0.3090909090909091,
+      "f1": 0.3586497890295359
     },
     ">=Low": {
-      "tp": 90,
-      "fp": 120,
-      "fn_": 171,
-      "tn": 151,
-      "precision": 0.42857142857142855,
-      "recall": 0.3448275862068966,
-      "f1": 0.3821656050955414
+      "tp": 86,
+      "fp": 142,
+      "fn_": 189,
+      "tn": 145,
+      "precision": 0.37719298245614036,
+      "recall": 0.31272727272727274,
+      "f1": 0.341948310139165
     },
     ">=Medium": {
-      "tp": 90,
-      "fp": 116,
-      "fn_": 171,
-      "tn": 155,
-      "precision": 0.4368932038834951,
-      "recall": 0.3448275862068966,
-      "f1": 0.38543897216274087
+      "tp": 86,
+      "fp": 133,
+      "fn_": 189,
+      "tn": 154,
+      "precision": 0.3926940639269406,
+      "recall": 0.31272727272727274,
+      "f1": 0.3481781376518218
     }
   }
 }

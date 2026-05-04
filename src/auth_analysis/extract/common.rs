@@ -896,6 +896,13 @@ fn collect_unit_state(
             // `instance_variable`.
             if matches!(node.kind(), "assignment" | "assignment_expression") {
                 collect_row_population(node, bytes, state);
+                // Python `verified_ids = set()` /
+                // `cache: dict[str,int] = {}` and JS analogues bind a
+                // local non-sink container.  `collect_non_sink_binding`
+                // accepts both `pattern`/`value` and `left`/`right`
+                // field names so the same recognition path covers
+                // these assignment-node shapes.
+                collect_non_sink_binding(node, bytes, rules, state);
             }
         }
         "for_expression" => {
@@ -915,15 +922,84 @@ fn collect_unit_state(
         _ => {}
     }
 
-    for value in extract_value_refs(node, bytes) {
-        state.value_refs.push(value);
-    }
+    // O(1) per-node shallow value-ref emission, then descend.
+    //
+    // Pre-fix this site called `extract_value_refs(node, bytes)` which walks
+    // node's entire subtree.  Combined with the recursion below — which
+    // visits every descendant and re-runs the same call at each level — the
+    // total work was O(N * subtree_size) ≈ O(N²) per function body.  On
+    // mm/channels/app the inner-walk dominated `build_function_unit_with_meta`
+    // and its descendants (~17%+15%+11% of total wall-clock split across
+    // `build_function_unit_with_meta`, `collect_unit_state`, and
+    // `extract_value_refs` in the post-shared-model profile, 2026-05-04).
+    //
+    // The recursion below already visits every descendant once.  Emitting a
+    // shallow value-ref per node — only the ref the node itself represents —
+    // produces the same SET of value-refs after `dedup_value_refs` runs in
+    // `build_function_unit_with_meta`, because every ref-emitting kind
+    // (member chain, subscript, accessor call, identifier) is reachable as a
+    // single node visit.  Public callers of `extract_value_refs` (e.g.
+    // `collect_call`, `collect_condition`, assignment-side extraction) keep
+    // the deep walk: they intentionally want refs from the full subtree
+    // rooted at the argument they pass.
+    append_shallow_value_ref(node, bytes, &mut state.value_refs);
 
     for idx in 0..node.named_child_count() {
         let Some(child) = node.named_child(idx as u32) else {
             continue;
         };
         collect_unit_state(child, bytes, rules, state);
+    }
+}
+
+/// Per-node value-ref emission used inside `collect_unit_state`'s tree walk.
+///
+/// Returns the value-ref the node itself represents (a member chain, a
+/// subscript, an accessor call's chain, or an identifier-like leaf), without
+/// descending into descendants.  The caller's existing AST recursion handles
+/// children; relying on that recursion turns the previously O(N²) per-body
+/// walk into O(N).
+fn append_shallow_value_ref(node: Node<'_>, bytes: &[u8], refs: &mut Vec<ValueRef>) {
+    match node.kind() {
+        "member_expression"
+        | "attribute"
+        | "selector_expression"
+        | "field_expression"
+        | "field_access" => {
+            if let Some(value) = member_value_ref(node, bytes) {
+                refs.push(value);
+            }
+        }
+        "subscript_expression" | "subscript" | "element_reference" | "index_expression" => {
+            if let Some(value) = subscript_value_ref(node, bytes) {
+                refs.push(value);
+            }
+        }
+        "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
+            // Accessor-call chains (`cache.get(key)`, `req.params.id`) absorb
+            // into a single chain ValueRef; non-accessor calls return None
+            // here and rely on recursion to visit `function` + arg children
+            // so each leaf identifier emits its own ref.
+            if let Some(value) = call_value_ref(node, bytes) {
+                refs.push(value);
+            }
+        }
+        // Bare identifier and Ruby `@foo` / `@@foo` / `$foo` leaves: emit a
+        // single Identifier-kind ValueRef.  Mirrors `extract_value_refs`'s
+        // identifier arm so `dedup_value_refs` collapses any cross-path
+        // duplicates against existing emissions from sibling deep walks
+        // (e.g. `collect_condition`'s `extract_value_refs(condition)`).
+        "identifier" | "instance_variable" | "class_variable" | "global_variable" => {
+            refs.push(ValueRef {
+                source_kind: ValueSourceKind::Identifier,
+                name: text(node, bytes),
+                base: None,
+                field: None,
+                index: None,
+                span: span(node),
+            });
+        }
+        _ => {}
     }
 }
 
@@ -1059,22 +1135,28 @@ fn collect_condition(
     }
 }
 
-/// Detect `let` bindings that produce a known non-sink collection
-/// (e.g. `HashMap::new()`, `Vec::with_capacity(_)`, `vec![]`, or an
-/// explicit type annotation like `: HashMap<_, _>`).  Registered
-/// variable names are consulted by `collect_call` so later method
-/// calls on those bindings (`map.insert(..)`, `set.remove(..)`)
-/// aren't treated as auth-relevant Read/Mutation operations.
+/// Detect bindings that produce a known non-sink collection
+/// (e.g. `HashMap::new()`, `Vec::with_capacity(_)`, `vec![]`, an
+/// explicit type annotation like `: HashMap<_, _>`, or Python's
+/// bare `set()` / `dict()` / `collections.defaultdict(list)`).
+/// Registered variable names are consulted by `collect_call` so
+/// later method calls on those bindings (`map.insert(..)`,
+/// `set.remove(..)`, `verified_ids.update(..)`) aren't treated as
+/// auth-relevant Read/Mutation operations.
 ///
-/// Rust-oriented in practice; JS/TS/Python/etc. use different
-/// declaration node kinds and are unaffected.
+/// Field names accepted: Rust `let_declaration` uses `pattern` /
+/// `value`; Python `assignment` and JS `assignment_expression` use
+/// `left` / `right`.  Both shapes share the same recognition path.
 fn collect_non_sink_binding(
     node: Node<'_>,
     bytes: &[u8],
     rules: &AuthAnalysisRules,
     state: &mut UnitState,
 ) {
-    let Some(pattern) = node.child_by_field_name("pattern") else {
+    let Some(pattern) = node
+        .child_by_field_name("pattern")
+        .or_else(|| node.child_by_field_name("left"))
+    else {
         return;
     };
     let Some(var_name) = first_identifier_name(pattern, bytes) else {
@@ -1092,7 +1174,9 @@ fn collect_non_sink_binding(
         }
     }
 
-    if let Some(value) = node.child_by_field_name("value")
+    if let Some(value) = node
+        .child_by_field_name("value")
+        .or_else(|| node.child_by_field_name("right"))
         && value_is_non_sink_constructor(value, bytes, rules)
     {
         state.non_sink_vars.insert(var_name);
@@ -3457,18 +3541,53 @@ fn collect_param_names(
         "parameter_declaration" | "variadic_parameter_declaration"
             if node.child_by_field_name("name").is_some() =>
         {
-            if let Some(type_node) = node.child_by_field_name("type")
-                && is_go_non_user_input_type(type_node, bytes)
+            let type_node = node.child_by_field_name("type");
+            if let Some(t) = type_node
+                && is_go_non_user_input_type(t, bytes)
             {
                 return;
             }
+            // Mirror of the Python `typed_parameter` filter (see
+            // `is_python_id_like_typed_param` arm above): for non-route
+            // units, an id-like Go param whose declared type is a
+            // bounded primitive scalar (`int64`, `uint32`, `string`,
+            // `bool`, `byte`, `rune`, `float64`, …) is a caller-passed
+            // scope identifier, not user-controlled HTTP input.  Real
+            // Go HTTP handlers always carry a framework-request-typed
+            // param (`*http.Request`, `*gin.Context`, `echo.Context`,
+            // `*fiber.Ctx`, `*context.APIContext`, …) and are
+            // recognised by the per-framework route extractors which
+            // call `function_params_route_handler`
+            // (`include_id_like_typed = true`) — those bypass this
+            // filter so id-shaped path params survive on real routes.
+            //
+            // Real-repo trigger: `/Users/elipeter/oss/gitea` ─ ~957
+            // `go.auth.missing_ownership_check` findings on backend
+            // helpers like
+            // `func GetRunByRepoAndID(ctx context.Context,
+            //                          repoID, runID int64)`,
+            // `func DeleteRunner(ctx context.Context, id int64)`,
+            // and the entire `models/...` DAO layer where the
+            // ownership check sits in the calling route handler.
+            // Same shape over-fires on minio's `cmd/iam-*-store`
+            // helpers and would on every Go ORM/DAO codebase.
+            let type_is_bounded_scalar = type_node
+                .map(|t| is_go_bounded_scalar_type(t, bytes))
+                .unwrap_or(false);
             let mut cursor = node.walk();
             for child in node.children_by_field_name("name", &mut cursor) {
                 if child.kind() == "identifier" {
                     let name = text(child, bytes);
-                    if !name.is_empty() && !out.contains(&name) {
-                        out.push(name);
+                    if name.is_empty() || out.contains(&name) {
+                        continue;
                     }
+                    if !include_id_like_typed
+                        && type_is_bounded_scalar
+                        && is_go_id_like_typed_param(&name)
+                    {
+                        continue;
+                    }
+                    out.push(name);
                 }
             }
         }
@@ -3633,6 +3752,56 @@ fn is_go_non_user_input_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
 fn is_python_id_like_typed_param(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "id" || lower.ends_with("id") || lower.ends_with("_id") || lower.ends_with("ids")
+}
+
+/// Same shape predicate used by the Go typed-param fallback in
+/// `collect_param_names`.  Kept separate from the Python helper so the
+/// two recognisers can diverge if/when language-specific spellings
+/// emerge; the current vocabulary is the same canonical id-suffix
+/// set as `auth_analysis::checks::is_id_like_name`.
+fn is_go_id_like_typed_param(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "id" || lower.ends_with("id") || lower.ends_with("_id") || lower.ends_with("ids")
+}
+
+/// True iff `type_node` names a Go bounded primitive scalar:
+/// integer (`int*` / `uint*` / `byte` / `rune` / `uintptr`), floating
+/// point (`float32` / `float64`), `bool`, or `string`.  Used by the
+/// Go arm of `collect_param_names` to recognise the
+/// "id-like name + scalar type" DAO-helper shape and refuse to lift
+/// such params into `unit.params` for non-route units.
+///
+/// Conservative scope: only bare `type_identifier` matches.  Pointer
+/// types (`*Foo`), generic types (`Map[K, V]`), qualified types
+/// (`pkg.Type`), and slice/array types (`[]T`) are framework or
+/// payload shapes, NOT bounded primitives, so they're left alone and
+/// the param keeps its name.  This keeps real handler shapes that
+/// happen to spell an id-like name on a complex type (`req
+/// *RequestWithID`) from being silently dropped.
+fn is_go_bounded_scalar_type(type_node: Node<'_>, bytes: &[u8]) -> bool {
+    if type_node.kind() != "type_identifier" {
+        return false;
+    }
+    matches!(
+        text(type_node, bytes).as_str(),
+        "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "byte"
+            | "rune"
+            | "float32"
+            | "float64"
+            | "bool"
+            | "string"
+    )
 }
 
 pub fn is_function_like(node: Node<'_>) -> bool {
@@ -4080,20 +4249,41 @@ fn subscript_value_ref(node: Node<'_>, bytes: &[u8]) -> Option<ValueRef> {
 
 pub fn member_chain(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
     if node.kind() == "call" {
-        let mut chain = if let Some(receiver) = node.child_by_field_name("receiver") {
-            member_chain(receiver, bytes)
-        } else {
-            Vec::new()
-        };
+        // Ruby-style call: explicit receiver field + method/name field.
+        if let Some(receiver) = node.child_by_field_name("receiver") {
+            let mut chain = member_chain(receiver, bytes);
+            let method = node
+                .child_by_field_name("method")
+                .or_else(|| node.child_by_field_name("name"))
+                .map(|method| text(method, bytes))
+                .unwrap_or_default();
+            if !method.is_empty() {
+                chain.push(method);
+            }
+            return chain;
+        }
+        // Python-style call: callable expression in the `function` field.
+        // Recursing into it lets chained shapes like
+        // `select(X).filter_by(...)` produce `["select()", "filter_by"]`
+        // — the parent attribute branch appends `()` when its `object`
+        // is a call, marking the intermediate-call shape so that
+        // `receiver_is_chained_call` detects it.  Closes airflow-style
+        // SQLAlchemy queryset-builder chains that previously reduced to
+        // bare `["filter_by"]`.
+        if let Some(function) = node.child_by_field_name("function") {
+            return member_chain(function, bytes);
+        }
+        // Bare-method fallback for parser shapes that expose method/name
+        // without a receiver (Ruby implicit-self calls, etc.).
         let method = node
             .child_by_field_name("method")
             .or_else(|| node.child_by_field_name("name"))
             .map(|method| text(method, bytes))
             .unwrap_or_default();
         if !method.is_empty() {
-            chain.push(method);
+            return vec![method];
         }
-        return chain;
+        return Vec::new();
     }
 
     if node.kind() == "method_invocation" || node.kind() == "method_call_expression" {
@@ -4164,7 +4354,23 @@ pub fn member_chain(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
         .or_else(|| node.child_by_field_name("operand"))
         .or_else(|| node.child_by_field_name("argument"))
     {
-        chain.extend(member_chain(object, bytes));
+        let object_is_call = matches!(
+            object.kind(),
+            "call" | "call_expression" | "method_invocation" | "method_call_expression"
+        );
+        let mut sub = member_chain(object, bytes);
+        // Mark intermediate-call segments with `()` so a downstream
+        // chain like `select(X).filter_by(...)` becomes
+        // `["select()", "filter_by"]` rather than `["select", "filter_by"]`.
+        // `receiver_is_chained_call` consults the `(` to detect the
+        // opaque-builder receiver.
+        if object_is_call
+            && sub.last().map(|s| !s.ends_with(')')).unwrap_or(false)
+            && let Some(last) = sub.last_mut()
+        {
+            last.push_str("()");
+        }
+        chain.extend(sub);
     }
     if let Some(property) = node
         .child_by_field_name("property")
@@ -4874,6 +5080,200 @@ mod tests {
         assert!(params.contains(&"b".to_string()), "got {:?}", params);
         assert!(!params.contains(&"ctx".to_string()), "got {:?}", params);
         assert!(!params.contains(&"int".to_string()), "got {:?}", params);
+    }
+
+    /// DAO-helper shape (`func GetRunByRepoAndID(ctx context.Context,
+    /// repoID, runID int64)`): id-like names with bounded primitive
+    /// scalar types are caller-passed scope identifiers, NOT user
+    /// input.  For non-route units (`function_params`,
+    /// `include_id_like_typed = false`), they must NOT lift into
+    /// `unit.params` — that would gate `unit_has_user_input_evidence`
+    /// open on every internal Go ORM helper and over-fire
+    /// `go.auth.missing_ownership_check`.
+    ///
+    /// Real-repo trigger:
+    /// `/Users/elipeter/oss/gitea/models/actions/run_job.go::
+    /// GetRunByRepoAndID` and ~957 sibling helpers across gitea's
+    /// `models/...` DAO layer.  Same shape over-fires on minio's
+    /// `cmd/iam-*-store` and is the canonical Go ORM helper signature.
+    #[test]
+    fn collect_param_names_go_drops_id_like_scalar_params_for_dao_helper() {
+        use super::function_params;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        let src =
+            b"package x\nfunc GetRunByRepoAndID(ctx context.Context, repoID, runID int64) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params(func, src);
+        assert!(
+            !params.contains(&"ctx".to_string()),
+            "context.Context dropped: got {:?}",
+            params
+        );
+        assert!(
+            !params.contains(&"repoID".to_string()),
+            "id-like scalar param dropped for DAO helper: got {:?}",
+            params
+        );
+        assert!(
+            !params.contains(&"runID".to_string()),
+            "id-like scalar param dropped for DAO helper: got {:?}",
+            params
+        );
+        assert!(
+            params.is_empty(),
+            "no params survive on DAO-shape helper: got {:?}",
+            params
+        );
+    }
+
+    /// Conservative scope: only **bounded primitive scalar** types
+    /// trigger the id-like drop.  Pointer / struct / slice types are
+    /// payload shapes that may or may not be user-controlled — leave
+    /// them alone so non-DAO helpers retain their evidence.
+    #[test]
+    fn collect_param_names_go_keeps_id_like_pointer_struct_param() {
+        use super::function_params;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        // `runnerID *Runner` — id-like name, but the type is a pointer
+        // (payload shape), so the param name must survive.
+        let src = b"package x\nfunc UpdateRunner(ctx context.Context, runnerID *Runner) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params(func, src);
+        assert!(
+            params.contains(&"runnerID".to_string()),
+            "id-like pointer param survives: got {:?}",
+            params
+        );
+    }
+
+    /// Route handlers go through `function_params_route_handler`
+    /// (`include_id_like_typed = true`) — the id-like-scalar filter
+    /// must NOT trip there.  Path-param-on-REST-route is *the*
+    /// primary user input and middleware-injected auth checks rely on
+    /// these names being present in `unit.params`.
+    #[test]
+    fn collect_param_names_go_route_handler_keeps_id_like_scalar_params() {
+        use super::function_params_route_handler;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_go::LANGUAGE))
+            .unwrap();
+        let src = b"package x\nfunc GetRepo(ctx context.Context, repoID int64) {}\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let func = (0..tree.root_node().named_child_count())
+            .filter_map(|i| tree.root_node().named_child(i as u32))
+            .find(|n| n.kind() == "function_declaration")
+            .expect("file should have a function_declaration");
+        let params = function_params_route_handler(func, src);
+        assert!(
+            params.contains(&"repoID".to_string()),
+            "id-like scalar param kept for route handler: got {:?}",
+            params
+        );
+    }
+
+    /// Pin `member_chain` output for the SQLAlchemy queryset chain
+    /// `select(C).filter_by(id=x)`.  Pre-fix, Python `call` nodes use a
+    /// `function` field (not `receiver`/`method`) so the recursive call
+    /// arm returned an empty Vec, reducing the chain to bare
+    /// `["filter_by"]`.  The fix: (1) traverse `function` field in the
+    /// `call` arm; (2) the parent attribute branch appends `()` to last
+    /// segment when its `object` is a call.  Together they produce
+    /// `["select()", "filter_by"]` so `receiver_is_chained_call` detects
+    /// the intermediate-call shape.
+    #[test]
+    fn member_chain_python_select_filter_by_chain_marks_intermediate_call() {
+        use super::{callee_name, member_chain};
+        use tree_sitter::{Node, Parser};
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let src = b"x = select(C).filter_by(id=u)\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+
+        fn find_outer_call<'a>(node: Node<'a>) -> Option<Node<'a>> {
+            if node.kind() == "call"
+                && let Some(function) = node.child_by_field_name("function")
+                && function.kind() == "attribute"
+            {
+                return Some(node);
+            }
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i as u32)
+                    && let Some(found) = find_outer_call(child)
+                {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let outer_call = find_outer_call(tree.root_node())
+            .expect("expected outer call node `select(C).filter_by(id=u)`");
+
+        assert_eq!(
+            member_chain(outer_call, src),
+            vec!["select()".to_string(), "filter_by".to_string()],
+            "Python chained call must produce `[select(), filter_by]` so receiver_is_chained_call detects the intermediate-call shape",
+        );
+        assert_eq!(
+            callee_name(outer_call, src),
+            "select().filter_by".to_string(),
+            "callee_name joins the chain with `.`",
+        );
+    }
+
+    /// Regression guard: simple Python `obj.method(arg)` callees keep
+    /// their previous `member_chain` output (`["obj", "method"]`).  The
+    /// `function`-field traversal must not pollute non-chained shapes.
+    #[test]
+    fn member_chain_python_simple_attribute_call_unchanged() {
+        use super::callee_name;
+        use tree_sitter::{Node, Parser};
+
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let src = b"x = obj.method(a)\n";
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+
+        fn find_call<'a>(node: Node<'a>) -> Option<Node<'a>> {
+            if node.kind() == "call" {
+                return Some(node);
+            }
+            for i in 0..node.named_child_count() {
+                if let Some(child) = node.named_child(i as u32)
+                    && let Some(found) = find_call(child)
+                {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let call_node = find_call(tree.root_node()).expect("expected `obj.method(a)` call");
+        assert_eq!(
+            callee_name(call_node, src),
+            "obj.method".to_string(),
+            "simple attribute call must not pick up `()` markers",
+        );
     }
 
     mod ruby_visibility_and_callbacks {

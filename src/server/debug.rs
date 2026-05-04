@@ -1180,6 +1180,7 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::HttpClient => "HttpClient".into(),
         TypeKind::LocalCollection => "LocalCollection".into(),
         TypeKind::RequestBuilder => "RequestBuilder".into(),
+        TypeKind::JpaCriteriaQuery => "JpaCriteriaQuery".into(),
         TypeKind::Dto(_) => "Dto".into(),
     }
 }

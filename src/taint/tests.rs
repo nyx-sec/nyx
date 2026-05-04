@@ -6779,3 +6779,83 @@ const handler = (req, res) => {
         "expected taint flow via double-call chain rebinding; got 0 findings",
     );
 }
+
+/// CVE-2026-42353 i18next-http-middleware: the patched fix wraps a
+/// tainted array in `arr.filter(isSafeIdentifier)` before forwarding.
+/// `try_array_method_validator_callback_narrowing` recognises the
+/// `<arr>.filter(<recognised-validator>)` shape on JS/TS and strips
+/// the receiver-derived caps from the call result, so a downstream
+/// `arr[0]` → template-literal → `fs.readFileSync` chain no longer
+/// flags.  The bare-identifier callback case is the dominant patched
+/// shape — `extract_arg_callees` returns `None` for plain
+/// identifiers (no inner call to recurse into), so the helper falls
+/// back to the SSA value's `var_name` channel.
+#[test]
+fn cve_2026_42353_filter_isvalid_callback_strips_taint() {
+    let src = br#"
+const fs = require('fs');
+function isSafeIdentifier(v) {
+  return typeof v === 'string' && v.indexOf('..') === -1 && v.indexOf('/') === -1;
+}
+function handler(req, res) {
+  let languages = req.query.lng ? req.query.lng.split(' ') : [];
+  languages = languages.filter(isSafeIdentifier);
+  const lng = languages[0];
+  const filename = `/locales/${lng}.json`;
+  fs.readFileSync(filename);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        findings.is_empty(),
+        "expected no taint flow when filtered through isSafeIdentifier; got {} findings",
+        findings.len(),
+    );
+}
+
+/// Negative regression for the array-method validator-callback gate:
+/// the same shape WITHOUT the `filter(isSafe…)` step keeps the path
+/// traversal flow alive end-to-end.  Pins the precision claim — the
+/// strip is element-of-array-after-filter scoped, not a wholesale
+/// kill on any `<arr>.filter` call regardless of callback identity.
+#[test]
+fn cve_2026_42353_filter_without_validator_callback_preserves_taint() {
+    let src = br#"
+const fs = require('fs');
+function pickFirst(v) { return true; }
+function handler(req, res) {
+  let languages = req.query.lng ? req.query.lng.split(' ') : [];
+  languages = languages.filter(pickFirst);
+  const lng = languages[0];
+  const filename = `/locales/${lng}.json`;
+  fs.readFileSync(filename);
+}
+"#;
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_lang(src, "javascript", lang);
+    let summaries = &file_cfg.summaries;
+    let findings = analyse_file(
+        &file_cfg,
+        summaries,
+        None,
+        Lang::JavaScript,
+        "test.js",
+        &[],
+        None,
+    );
+    assert!(
+        !findings.is_empty(),
+        "expected taint flow via filter(pickFirst) — pickFirst is not a recognised validator and must not strip taint; got 0 findings",
+    );
+}

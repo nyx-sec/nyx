@@ -463,6 +463,56 @@ fn sink_args_typed_safe(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) 
     type_facts_suppress(&values, sink_caps, type_facts)
 }
 
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when any positional
+/// argument to the sink Call is provably a JPA / Hibernate Criteria query
+/// object ([`crate::ssa::type_facts::TypeKind::JpaCriteriaQuery`]).
+///
+/// Receiver values are deliberately excluded, the receiver of a JPA
+/// query method (`session.createQuery(cq)`, `em.createQuery(cq)`,
+/// `session.executeUpdate(cq)`) is the connection / EntityManager
+/// channel, never the SQL payload.  Including the receiver in the type
+/// check would make this suppression unreachable since `Session` /
+/// `EntityManager` values are typed `Object` / `Unknown` and never
+/// `JpaCriteriaQuery` themselves.
+///
+/// Closes the dominant FP cluster across openmrs (169 of 216
+/// cfg-unguarded-sink), xwiki, and keycloak: Hibernate DAO methods
+/// build a `CriteriaQuery<Foo>` via `cb.createQuery(Foo.class)` +
+/// `Root` / `Predicate` API, then hand the query object to
+/// `session.createQuery(cq)` for execution.  No string concatenation
+/// happens, JPA emits parameterized SQL by construction.
+fn sink_args_jpa_criteria_query_safe(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    if !sink_caps.intersects(Cap::SQL_QUERY) {
+        return false;
+    }
+    let Some(facts) = ctx.body_const_facts else {
+        return false;
+    };
+    let Some(type_facts) = ctx.type_facts else {
+        return false;
+    };
+    let Some(&sink_val) = facts.ssa.cfg_node_map.get(&sink) else {
+        return false;
+    };
+    let Some(inst) = find_inst(&facts.ssa, sink_val) else {
+        return false;
+    };
+    let SsaOp::Call { args, .. } = &inst.op else {
+        return false;
+    };
+    let mut values: Vec<SsaValue> = Vec::new();
+    for group in args {
+        for v in group.iter() {
+            values.push(*v);
+        }
+    }
+    crate::ssa::type_facts::is_safe_query_object_arg(&values, sink_caps, type_facts)
+}
+
 /// Walk the sink's Call SSA arguments and check whether every real argument
 /// resolves through a defining `SsaOp::Call` whose callee carries an SSA
 /// summary with `validated_params_to_return` covering every propagating
@@ -1207,6 +1257,17 @@ impl CfgAnalysis for UnguardedSink {
             // engine already covers the source→sink flow via type-aware
             // suppression.  Unknown-typed or mixed operands fall through.
             if !has_taint && sink_args_typed_safe(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // JPA / Hibernate Criteria-query suppression: receiver-call SQL
+            // sinks like `session.createQuery(cq)` / `em.executeUpdate(cq)`
+            // are safe by construction when arg 0 is a structural Criteria
+            // object built via `CriteriaBuilder` (returns parameterized
+            // SQL).  Receiver excluded from the check, the receiver is
+            // never the payload.  Closes openmrs / xwiki / keycloak
+            // Hibernate-DAO FP cluster.
+            if !has_taint && sink_args_jpa_criteria_query_safe(ctx, *sink, sink_caps) {
                 continue;
             }
 

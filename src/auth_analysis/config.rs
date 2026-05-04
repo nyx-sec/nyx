@@ -55,6 +55,13 @@ pub struct AuthAnalysisRules {
     /// `WHERE <ACL>.user_id = ?N`, make every returned row
     /// membership-gated.  See `sql_semantics::classify_sql_query`.
     pub acl_tables: Vec<String>,
+    /// Callee names that, when they appear as the chain root of a
+    /// chained-call shape (`select(X).filter_by(...)`,
+    /// `query(X).filter(...)`), anchor the trailing method as a DB
+    /// query-builder operation.  Overrides the chained-call suppression
+    /// in `classify_sink_class` for SQLAlchemy / similar query-builder
+    /// idioms whose first call returns an opaque builder object.
+    pub db_query_builder_roots: Vec<String>,
 }
 
 impl AuthAnalysisRules {
@@ -80,6 +87,7 @@ impl AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     }
 
@@ -96,11 +104,13 @@ impl AuthAnalysisRules {
     }
 
     /// Does `ty` (last path segment, case-sensitive) match a
-    /// non-sink receiver type?  The angle-bracket generic suffix is
-    /// stripped first: `HashMap<i64, String>` → `HashMap`.
+    /// non-sink receiver type?  Generic suffixes are stripped first:
+    /// `HashMap<i64, String>` → `HashMap` (Rust/Java/TS angle brackets),
+    /// `set[int]` / `dict[str, int]` → `set` / `dict` (Python PEP 585
+    /// builtin generics + `typing` aliases).
     pub fn is_non_sink_receiver_type(&self, ty: &str) -> bool {
         let base = Self::type_last_segment(ty);
-        let base = base.split('<').next().unwrap_or(base).trim();
+        let base = base.split(['<', '[']).next().unwrap_or(base).trim();
         self.non_sink_receiver_types
             .iter()
             .any(|allowed| allowed == base)
@@ -115,25 +125,35 @@ impl AuthAnalysisRules {
     /// The callee string may use either `::` or `.` as the path
     /// separator (nyx's `callee_name` normalizes both via
     /// `member_chain`).
+    ///
+    /// Bare-callee form: Python uses `set()` / `dict()` / `list()` /
+    /// `defaultdict()` / etc. as direct constructors with no method
+    /// segment.  When `callee` has no `.` / `::` separator and matches
+    /// a registered non-sink receiver type, treat the call as a
+    /// non-sink constructor.  Closes the
+    /// `verified_ids = set(); verified_ids.update(myteams)` shape in
+    /// sentry where the bare-call form was unrecognised so the bound
+    /// var was missing from `non_sink_vars` and the later
+    /// `.update(..)` classified as DbMutation.
     pub fn is_non_sink_constructor_callee(&self, callee: &str) -> bool {
         let normalized = callee.replace("::", ".");
-        let Some((ty, method)) = normalized.rsplit_once('.') else {
-            return false;
-        };
-        if !self.is_non_sink_receiver_type(ty) {
-            return false;
+        if let Some((ty, method)) = normalized.rsplit_once('.') {
+            if !self.is_non_sink_receiver_type(ty) {
+                return false;
+            }
+            return matches!(
+                method,
+                "new"
+                    | "with_capacity"
+                    | "with_capacity_and_hasher"
+                    | "with_hasher"
+                    | "from"
+                    | "from_iter"
+                    | "new_in"
+                    | "default"
+            );
         }
-        matches!(
-            method,
-            "new"
-                | "with_capacity"
-                | "with_capacity_and_hasher"
-                | "with_hasher"
-                | "from"
-                | "from_iter"
-                | "new_in"
-                | "default"
-        )
+        self.is_non_sink_receiver_type(&normalized)
     }
 
     /// Does the first segment of a callee receiver chain look like a
@@ -260,20 +280,45 @@ impl AuthAnalysisRules {
         // Verb-name fallback (`is_mutation` / `is_read`) is the loosest
         // dispatch: it prefix-matches the bare method name against
         // generic verbs (`Get`, `Save`, `Find`, …) regardless of the
-        // receiver.  When the receiver chain itself contains a call
-        // expression (`w.Header().Get(..)`, `r.URL.Query().Get(..)`,
-        // `db.Tx(..).Query(..)`), the receiver is the *return value of
-        // another call*, its type is opaque to the auth analyser and
-        // the bare verb match is too speculative to assume a data-layer
-        // sink.  The realtime/outbound/cache prefix dispatches above
-        // already match by the chain root; if none of them claimed the
-        // receiver, dropping the verb-name fallback for chained-call
-        // shapes prevents the entire `w.Header().Get` /
-        // `r.URL.Query().Get` cluster from masquerading as a
-        // `DbCrossTenantRead`.  A canonical data-layer call still has a
-        // bare-identifier receiver (`repo.Find(id)`, `db.Query(..)`)
-        // and is unaffected.
-        if !receiver_is_chained_call(callee) {
+        // receiver.  Two structural shapes lack the receiver evidence
+        // needed to anchor a DB-sink classification and are excluded:
+        //
+        //   1. Chained-call receiver (`w.Header().Get(..)`,
+        //      `r.URL.Query().Get(..)`, `db.Tx(..).Query(..)`) — the
+        //      receiver is the *return value of another call*, its type
+        //      is opaque to the auth analyser.
+        //   2. Bare-identifier callee with no receiver dot at all
+        //      (`list(..)`, `filter(..)`, `create_audit_entry(..)`,
+        //      `update_coding_agent_state(..)`) — Python / JS / Ruby
+        //      builtins and locally-defined helpers routinely collide
+        //      with the verb vocabulary.  Real ORM / DB calls always
+        //      carry a receiver (`User.find(id)`, `Model.objects.filter`,
+        //      `repo.save(x)`); a bare `list(events)` is the Python
+        //      builtin and `filter(fn, xs)` is `Iterable.filter`.
+        //
+        // The realtime / outbound / cache prefix dispatches above
+        // already match by the chain root; gating the verb fallback on
+        // a simple non-chained receiver dot prevents both shapes from
+        // masquerading as data-layer sinks while leaving canonical
+        // `repo.Find(id)` / `db.Query(..)` calls unaffected.
+        if receiver_is_simple_chain(callee) {
+            if self.is_mutation(callee) {
+                return Some(SinkClass::DbMutation);
+            }
+            if self.is_read(callee) {
+                return Some(SinkClass::DbCrossTenantRead);
+            }
+        }
+        // SQLAlchemy / query-builder chained shapes:
+        // `select(X).filter_by(...)`, `query(X).filter(...)`,
+        // `select().join().where()`.  The chain receiver is the return
+        // value of an opaque builder primitive that the type tracker
+        // cannot follow, but the chain *root* segment is itself a known
+        // DB query-builder verb — strong enough evidence to anchor a
+        // DB-sink classification when paired with a mutation/read verb
+        // on the trailing method.  Closes airflow-style
+        // `session.scalar(select(C).filter_by(conn_id=user_input))`.
+        if receiver_is_chained_call(callee) && self.chain_root_is_db_query_builder(callee) {
             if self.is_mutation(callee) {
                 return Some(SinkClass::DbMutation);
             }
@@ -282,6 +327,42 @@ impl AuthAnalysisRules {
             }
         }
         None
+    }
+
+    /// True when any non-final segment of the chain is an
+    /// intermediate-call (ends with `()`) whose verb matches a
+    /// configured `db_query_builder_roots` entry.  Used to anchor
+    /// chained-call shapes like `select(X).filter_by(id=...)` (Python)
+    /// or `query(X).filter(...)` to a DB-sink classification despite
+    /// the opaque builder return value.
+    pub fn chain_root_is_db_query_builder(&self, callee: &str) -> bool {
+        if self.db_query_builder_roots.is_empty() {
+            return false;
+        }
+        let segments: Vec<&str> = callee.split('.').collect();
+        if segments.len() < 2 {
+            return false;
+        }
+        for seg in &segments[..segments.len() - 1] {
+            if !seg.ends_with(')') {
+                continue;
+            }
+            let stripped = seg
+                .trim_end_matches(')')
+                .trim_end_matches('(')
+                .trim_end_matches(')');
+            if stripped.is_empty() {
+                continue;
+            }
+            if self
+                .db_query_builder_roots
+                .iter()
+                .any(|root| matches_name(stripped, root))
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn requires_admin_path(&self, path: &str) -> bool {
@@ -583,7 +664,29 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "invitedemail".into(),
                 "recipient".into(),
             ],
-            non_sink_receiver_types: Vec::new(),
+            // Python builtin / `collections` non-sink container types.
+            // Recognised both as type-annotation hints (`x: set[int]`)
+            // and as bare-callee constructor forms (`x = set()`,
+            // `cache = collections.defaultdict(list)`, …).  Method
+            // calls on bound vars (`x.update`, `x.add`, `cache.pop`)
+            // are then classified as `InMemoryLocal`, suppressing the
+            // false `DbMutation` / `DbCrossTenantRead` sink shape.
+            // Closes sentry `api/helpers/teams.py:46` shape where
+            // `verified_ids = set(); verified_ids.update(myteams)` was
+            // flagged as cross-tenant mutation.
+            non_sink_receiver_types: vec![
+                "set".into(),
+                "dict".into(),
+                "list".into(),
+                "tuple".into(),
+                "frozenset".into(),
+                "defaultdict".into(),
+                "OrderedDict".into(),
+                "Counter".into(),
+                "deque".into(),
+                "ChainMap".into(),
+                "namedtuple".into(),
+            ],
             non_sink_receiver_name_prefixes: Vec::new(),
             non_sink_global_receivers: Vec::new(),
             non_sink_method_names: Vec::new(),
@@ -591,6 +694,12 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            // SQLAlchemy queryset builders.  `select(X).filter_by(id=...)`
+            // / `query(X).filter(id=...)` chains return opaque builder
+            // objects whose type the auth analyser cannot follow; the
+            // chain *root* primitive itself is the DB-anchor evidence.
+            // Closes airflow-style `session.scalar(select(C).filter_by(...))`.
+            db_query_builder_roots: vec!["select".into(), "query".into()],
         }
     } else if matches!(lang_slug, "ruby") {
         AuthAnalysisRules {
@@ -766,6 +875,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     } else if matches!(lang_slug, "go") {
         AuthAnalysisRules {
@@ -862,6 +972,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     } else if matches!(lang_slug, "java") {
         AuthAnalysisRules {
@@ -954,6 +1065,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     } else if matches!(lang_slug, "rust") {
         AuthAnalysisRules {
@@ -1137,6 +1249,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "members".into(),
                 "share_grants".into(),
             ],
+            db_query_builder_roots: Vec::new(),
         }
     } else {
         AuthAnalysisRules {
@@ -1290,6 +1403,7 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             outbound_network_receiver_prefixes: Vec::new(),
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
+            db_query_builder_roots: Vec::new(),
         }
     };
 
@@ -1367,6 +1481,10 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             &lang_cfg.auth.cache_receiver_prefixes,
         );
         extend_unique(&mut rules.acl_tables, &lang_cfg.auth.acl_tables);
+        extend_unique(
+            &mut rules.db_query_builder_roots,
+            &lang_cfg.auth.db_query_builder_roots,
+        );
     }
 
     rules
@@ -1408,6 +1526,17 @@ pub fn receiver_is_chained_call(callee: &str) -> bool {
         return false;
     };
     receiver.contains('(')
+}
+
+/// True when the callee has a non-chained receiver dot, i.e. an actual
+/// receiver identifier or path (`User.find`, `repo.save`,
+/// `Model.objects.filter`).  Returns false for bare-identifier callees
+/// (`list(..)`, `filter(..)`, `create_audit_entry(..)`) and for
+/// chained-call receivers (`db.Tx(..).Query(..)`) — both lack the
+/// receiver evidence needed to anchor a DB-sink classification, see
+/// the comment in `classify_sink_class`.
+pub fn receiver_is_simple_chain(callee: &str) -> bool {
+    callee.contains('.') && !receiver_is_chained_call(callee)
 }
 
 /// Recognise `require_<resource>_<role>` / `ensure_<resource>_<role>`
@@ -1768,6 +1897,161 @@ mod tests {
         );
     }
 
+    /// Pin the bare-identifier verb-fallback gate.  Bare callees with
+    /// no receiver dot lack the receiver evidence needed to anchor a
+    /// DB-sink classification: `list(...)`, `filter(...)`, `update(...)`,
+    /// `create_audit_entry(...)`, `update_coding_agent_state(...)` are
+    /// Python builtins / JS Array methods / locally-defined helpers,
+    /// not ORM operations.  Closes the sentry / saleor / netbox cluster
+    /// where bare-name callees inside route helpers (with `request:
+    /// Request` triggering the user-input precondition) fired
+    /// `py.auth.missing_ownership_check`.
+    #[test]
+    fn classify_sink_class_suppresses_bare_callee_verb_fallback() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let empty: HashSet<String> = HashSet::new();
+
+        for lang in [
+            "python",
+            "javascript",
+            "typescript",
+            "go",
+            "java",
+            "ruby",
+            "rust",
+        ] {
+            let cfg = Config::default();
+            let rules = build_auth_rules(&cfg, lang);
+            // Bare callees that prefix-match a read / mutation indicator
+            // must NOT classify as DbCrossTenantRead / DbMutation.
+            assert_eq!(
+                rules.classify_sink_class("list", &empty),
+                None,
+                "lang={lang} bare list",
+            );
+            assert_eq!(
+                rules.classify_sink_class("filter", &empty),
+                None,
+                "lang={lang} bare filter",
+            );
+            assert_eq!(
+                rules.classify_sink_class("update", &empty),
+                None,
+                "lang={lang} bare update",
+            );
+            assert_eq!(
+                rules.classify_sink_class("create_audit_entry", &empty),
+                None,
+                "lang={lang} bare create_audit_entry",
+            );
+            assert_eq!(
+                rules.classify_sink_class("update_coding_agent_state", &empty),
+                None,
+                "lang={lang} bare update_coding_agent_state",
+            );
+        }
+
+        // Recall guard: qualified ORM / DB calls keep firing on every
+        // language that has the verb in its indicator vocabulary.
+        let py_rules = build_auth_rules(&Config::default(), "python");
+        assert_eq!(
+            py_rules.classify_sink_class("Project.objects.filter", &empty),
+            Some(SinkClass::DbCrossTenantRead)
+        );
+        assert_eq!(
+            py_rules.classify_sink_class("Project.objects.update", &empty),
+            Some(SinkClass::DbMutation)
+        );
+        let go_rules = build_auth_rules(&Config::default(), "go");
+        assert_eq!(
+            go_rules.classify_sink_class("repo.Find", &empty),
+            Some(SinkClass::DbCrossTenantRead)
+        );
+    }
+
+    /// Pin the SQLAlchemy queryset-builder chained-call recogniser.
+    /// `select(X).filter_by(id=user_input)` reduces (post `member_chain`
+    /// fix) to the chain-string `"select().filter_by"`.  The chained-call
+    /// shape would otherwise be suppressed by `receiver_is_chained_call`,
+    /// blocking recall on the airflow `session.scalar(select(C).filter_by(...))`
+    /// shape.  `chain_root_is_db_query_builder` overrides the suppression
+    /// when the chain root is a configured DB-builder verb.
+    #[test]
+    fn chain_root_is_db_query_builder_recognises_sqlalchemy_chains() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let cfg = Config::default();
+        let py_rules = build_auth_rules(&cfg, "python");
+        let empty: HashSet<String> = HashSet::new();
+
+        // Detection: chain root `select()` / `query()` matches the
+        // configured Python `db_query_builder_roots`.
+        assert!(py_rules.chain_root_is_db_query_builder("select().filter_by"));
+        assert!(py_rules.chain_root_is_db_query_builder("query().filter"));
+        assert!(py_rules.chain_root_is_db_query_builder("Session.query().filter"));
+        assert!(py_rules.chain_root_is_db_query_builder("select().join().where"));
+        // Non-builder chain roots: must not match.
+        assert!(!py_rules.chain_root_is_db_query_builder("w.Header().Get"));
+        assert!(!py_rules.chain_root_is_db_query_builder("obj.foo().bar"));
+        // Plain receiver chains (no intermediate call): not handled
+        // here — the simple-chain branch covers them.
+        assert!(!py_rules.chain_root_is_db_query_builder("repo.Find"));
+        assert!(!py_rules.chain_root_is_db_query_builder("Project.objects.filter"));
+        // Classification: chained-call DB-builder shapes anchor to
+        // DbCrossTenantRead / DbMutation when the trailing verb matches.
+        assert_eq!(
+            py_rules.classify_sink_class("select().filter_by", &empty),
+            Some(SinkClass::DbCrossTenantRead)
+        );
+        assert_eq!(
+            py_rules.classify_sink_class("query().delete", &empty),
+            Some(SinkClass::DbMutation)
+        );
+        assert_eq!(
+            py_rules.classify_sink_class("select().update", &empty),
+            Some(SinkClass::DbMutation)
+        );
+        // Regression guard: chained-call shapes that are NOT DB
+        // builders (Go HTTP `w.Header().get`, generic `obj.foo().bar`)
+        // remain suppressed even when the trailing verb prefix-matches.
+        // Run on a Python-rules instance with the verb in its read
+        // indicator vocabulary to exercise the guard.
+        assert_eq!(py_rules.classify_sink_class("w.Header().get", &empty), None);
+        assert_eq!(py_rules.classify_sink_class("obj.foo().get", &empty), None);
+
+        // Languages without `db_query_builder_roots` defaults must not
+        // false-positive on chained-call shapes.
+        for lang in ["javascript", "typescript", "go", "java", "ruby", "rust"] {
+            let rules = build_auth_rules(&Config::default(), lang);
+            assert!(
+                !rules.chain_root_is_db_query_builder("select().filter_by"),
+                "lang={lang} unexpectedly classified select().filter_by as DB-builder chain",
+            );
+            assert_eq!(
+                rules.classify_sink_class("select().filter_by", &empty),
+                None,
+                "lang={lang} unexpectedly classified select().filter_by as DB sink",
+            );
+        }
+    }
+
+    #[test]
+    fn receiver_is_simple_chain_classifies_correctly() {
+        use super::receiver_is_simple_chain;
+        // Simple receiver chain (allowed for verb fallback).
+        assert!(receiver_is_simple_chain("repo.Find"));
+        assert!(receiver_is_simple_chain("Project.objects.filter"));
+        assert!(receiver_is_simple_chain("self.cache.insert"));
+        // Bare-identifier callee (rejected — no receiver evidence).
+        assert!(!receiver_is_simple_chain("list"));
+        assert!(!receiver_is_simple_chain("filter"));
+        assert!(!receiver_is_simple_chain("create_audit_entry"));
+        // Chained-call receiver (rejected — receiver type opaque).
+        assert!(!receiver_is_simple_chain("w.Header().Get"));
+        assert!(!receiver_is_simple_chain("db.Tx(opts).Query"));
+    }
+
     #[test]
     fn sink_class_is_auth_relevant_only_for_non_local_classes() {
         use crate::auth_analysis::model::SinkClass;
@@ -1834,6 +2118,97 @@ mod tests {
             rules.classify_sink_class("repo.update", &empty),
             Some(SinkClass::DbMutation)
         );
+    }
+
+    /// Pin the Python non-sink container recogniser.  Both type
+    /// annotations (`x: set[int]`, `m: dict[str, int]`) and
+    /// bare-callee constructor calls (`set()`, `dict()`,
+    /// `defaultdict()`) must register the bound variable as a
+    /// non-sink receiver, suppressing later `.update(..)` /
+    /// `.add(..)` calls from classifying as `DbMutation` /
+    /// `DbCrossTenantRead`.
+    #[test]
+    fn python_non_sink_container_recognition() {
+        use crate::auth_analysis::model::SinkClass;
+        use std::collections::HashSet;
+        let cfg = Config::default();
+        let rules = build_auth_rules(&cfg, "python");
+
+        // Type annotations: PEP 585 builtin generics + typing aliases.
+        assert!(rules.is_non_sink_receiver_type("set"));
+        assert!(rules.is_non_sink_receiver_type("set[int]"));
+        assert!(rules.is_non_sink_receiver_type("dict[str, int]"));
+        assert!(rules.is_non_sink_receiver_type("list[str]"));
+        assert!(rules.is_non_sink_receiver_type("defaultdict"));
+        assert!(rules.is_non_sink_receiver_type("Counter"));
+        assert!(rules.is_non_sink_receiver_type("OrderedDict"));
+        // Negative: arbitrary type names must not match.
+        assert!(!rules.is_non_sink_receiver_type("Project"));
+        assert!(!rules.is_non_sink_receiver_type("QuerySet"));
+
+        // Bare-callee constructor form: `set()`, `dict()`,
+        // `defaultdict()`, `Counter()`.
+        assert!(rules.is_non_sink_constructor_callee("set"));
+        assert!(rules.is_non_sink_constructor_callee("dict"));
+        assert!(rules.is_non_sink_constructor_callee("list"));
+        assert!(rules.is_non_sink_constructor_callee("frozenset"));
+        assert!(rules.is_non_sink_constructor_callee("defaultdict"));
+        assert!(rules.is_non_sink_constructor_callee("Counter"));
+        // Negative: bare callees that are NOT non-sink types must not
+        // be treated as constructors.  `update`, `filter`, `find` are
+        // verb names, not container types.
+        assert!(!rules.is_non_sink_constructor_callee("update"));
+        assert!(!rules.is_non_sink_constructor_callee("filter"));
+        assert!(!rules.is_non_sink_constructor_callee("find"));
+        assert!(!rules.is_non_sink_constructor_callee("Project"));
+
+        // End-to-end classification: `verified_ids.update(..)` with
+        // `verified_ids` registered as a non-sink var classifies as
+        // `InMemoryLocal`, the precondition for suppressing the
+        // false `DbMutation` finding.
+        let mut non_sink_vars: HashSet<String> = HashSet::new();
+        non_sink_vars.insert("verified_ids".to_string());
+        non_sink_vars.insert("requested_teams".to_string());
+        assert_eq!(
+            rules.classify_sink_class("verified_ids.update", &non_sink_vars),
+            Some(SinkClass::InMemoryLocal)
+        );
+        assert_eq!(
+            rules.classify_sink_class("requested_teams.add", &non_sink_vars),
+            Some(SinkClass::InMemoryLocal)
+        );
+        // Recall guard: a real ORM mutation on the same verb still
+        // classifies as `DbMutation` when the receiver is qualified.
+        let empty: HashSet<String> = HashSet::new();
+        assert_eq!(
+            rules.classify_sink_class("Project.objects.update", &empty),
+            Some(SinkClass::DbMutation)
+        );
+    }
+
+    /// Cross-language recall guard: only Python populates the new
+    /// container types by default.  Other-language defaults must
+    /// not inadvertently inherit `set` / `dict` / `list` as non-sink
+    /// types via the merge path (those names overlap with verb
+    /// indicators in those languages).
+    #[test]
+    fn python_container_types_do_not_leak_to_other_languages() {
+        let cfg = Config::default();
+        for lang in ["javascript", "typescript", "go", "java", "ruby", "rust"] {
+            let rules = build_auth_rules(&cfg, lang);
+            assert!(
+                !rules.is_non_sink_receiver_type("set"),
+                "lang={lang} unexpectedly recognises bare `set` as non-sink type",
+            );
+            assert!(
+                !rules.is_non_sink_receiver_type("dict"),
+                "lang={lang} unexpectedly recognises bare `dict` as non-sink type",
+            );
+            assert!(
+                !rules.is_non_sink_receiver_type("list"),
+                "lang={lang} unexpectedly recognises bare `list` as non-sink type",
+            );
+        }
     }
 
     /// `require_<resource>_<role>` structural recogniser for project

@@ -847,10 +847,18 @@ pub(super) fn detect_negation<'a>(
     };
 
     // `!expr` appears as unary_expression, not_operator, or prefix_unary_expression
-    // with a `!` or `not` operator child.
+    // with a `!` or `not` operator child.  PHP's tree-sitter grammar emits
+    // `unary_op_expression` for unary `!` (and `-`/`+`/`~`) — without it,
+    // `if (!validate($x))` carries `condition_negated=false` and the
+    // True branch is treated as the validated path even though it is the
+    // rejection path, leaving downstream sinks unsuppressed.
     let is_negation_wrapper = matches!(
         cond.kind(),
-        "unary_expression" | "not_operator" | "prefix_unary_expression" | "unary_not"
+        "unary_expression"
+            | "not_operator"
+            | "prefix_unary_expression"
+            | "unary_not"
+            | "unary_op_expression"
     );
 
     if is_negation_wrapper {
@@ -3233,6 +3241,7 @@ pub(super) fn build_sub<'a>(
                             | "not_operator"
                             | "prefix_unary_expression"
                             | "unary_not"
+                            | "unary_op_expression"
                     )
                 });
 
@@ -3472,6 +3481,7 @@ pub(super) fn build_sub<'a>(
                                 | "not_operator"
                                 | "prefix_unary_expression"
                                 | "unary_not"
+                                | "unary_op_expression"
                         )
                 })
                 .unwrap_or(false);

@@ -1,3 +1,4 @@
+use super::helpers::first_member_label;
 use super::{
     AstMeta, Cfg, EdgeKind, MAX_COND_VARS, MAX_CONDITION_TEXT_LEN, NodeInfo, StmtKind,
     collect_idents, connect_all, detect_eq_with_const, detect_negation, has_call_descendant,
@@ -346,6 +347,33 @@ pub(super) fn lower_ternary_branch<'a>(
     for label in lhs_labels {
         if !g[node].taint.labels.contains(label) {
             g[node].taint.labels.push(*label);
+        }
+    }
+
+    // Bridge source recognition to ternary branches.  push_node only does
+    // suffix/prefix matching on the branch text, so a source-shaped member
+    // expression like `req.query.lng` doesn't classify (the rule matcher
+    // is `req.query`, which neither suffix-matches nor prefix-matches
+    // `req.query.lng`).  Run the segment-strip-and-retry classifier on
+    // the branch AST to recover the source label, mirroring what
+    // `pre_emit_arg_source_nodes` does for call arguments and what the
+    // `Kind::CallWrapper | Kind::Assignment` gate at push_node:1827 does
+    // for whole declarations.  Without this, `let arr = cond ? req.query.lng
+    // : "";` lowers each branch to a labelless Assign-with-empty-uses, the
+    // join phi sees no taint, and downstream sinks miss the flow.
+    if !g[node]
+        .taint
+        .labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Source(_)))
+    {
+        let extra = analysis_rules
+            .map(|r| r.extra_labels.as_slice())
+            .filter(|s| !s.is_empty());
+        if let Some(found @ DataLabel::Source(_)) =
+            first_member_label(branch_ast, lang, code, extra)
+        {
+            g[node].taint.labels.push(found);
         }
     }
 

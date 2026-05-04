@@ -257,7 +257,18 @@ fn check_token_override_without_validation(
             continue;
         };
         let Some(final_write) = unit.operations.iter().rev().find(|operation| {
-            operation.kind == OperationKind::Mutation && operation.line >= token_lookup.line
+            operation.kind == OperationKind::Mutation
+                && operation.line >= token_lookup.line
+                // Ignore `InMemoryLocal` mutations (HashSet/HashMap/Vec
+                // local bookkeeping like `verified_ids.update(myteams)`,
+                // `requested_teams.update(verified_ids)`).  The verb is
+                // `update` so `OperationKind::Mutation` is set, but the
+                // sink_class encodes that the receiver is a non-sink
+                // local container — never a token-bound write.  Mirrors
+                // the gate in `check_ownership_gaps`.
+                && operation
+                    .sink_class
+                    .is_none_or(|class| class.is_auth_relevant())
         }) else {
             continue;
         };

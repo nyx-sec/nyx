@@ -22,6 +22,9 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2017-18342 | Python     | PyYAML                     | MIT                  | Deserialization | detected |
 | CVE-2025-69662 | Python     | geopandas                  | BSD-3-Clause         | SQL Injection   | detected |
 | CVE-2026-33626 | Python     | LMDeploy                   | Apache-2.0           | SSRF            | detected |
+| CVE-2024-23334 | Python     | aiohttp                    | Apache-2.0           | path_traversal  | detected |
+| CVE-2023-6568  | Python     | MLflow                     | Apache-2.0           | XSS             | detected |
+| CVE-2024-21513 | Python     | LangChain Experimental     | MIT                  | code_exec       | detected |
 | CVE-2019-14939 | JavaScript | mongo-express              | MIT                  | code_exec       | detected |
 | CVE-2025-64430 | JavaScript | Parse Server               | Apache-2.0           | SSRF            | detected |
 | CVE-2023-22621 | JavaScript | Strapi                     | MIT                  | code_exec (SSTI)| detected |
@@ -42,6 +45,7 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2023-38337 | Ruby       | rswag                      | MIT                  | path_traversal  | detected |
 | CVE-2017-9841  | PHP        | PHPUnit                    | BSD-3-Clause         | code_exec       | detected |
 | CVE-2018-15133 | PHP        | Laravel                    | MIT                  | Deserialization | detected |
+| CVE-2026-33486 | PHP        | Roadiz CMS                 | MIT                  | SSRF            | detected |
 | CVE-2018-20997 | Rust       | tar-rs                     | MIT OR Apache-2.0    | path_traversal  | detected |
 | CVE-2022-36113 | Rust       | cargo                      | MIT OR Apache-2.0    | path_traversal  | detected |
 | CVE-2023-42456 | Rust       | sudo-rs                    | Apache-2.0           | path_traversal  | detected |
@@ -49,10 +53,12 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2024-32884 | Rust       | gitoxide                   | Apache-2.0 OR MIT    | CMDI            | detected |
 | CVE-2025-53549 | Rust       | matrix-rust-sdk            | Apache-2.0           | SQL Injection   | detected |
 | CVE-2016-3714  | C          | ImageMagick (ImageTragick) | ImageMagick License  | CMDI            | detected |
+| CVE-2017-1000117 | C        | git (ssh:// argv injection)| GPL-2.0              | cmdi (argv-inj) | deferred |
 | CVE-2019-18634 | C          | sudo (pwfeedback)          | ISC                  | memory_safety   | detected |
 | CVE-2019-13132 | C++        | ZeroMQ libzmq              | MPL-2.0              | memory_safety   | detected |
 | CVE-2022-1941  | C++        | Protocol Buffers           | BSD-3-Clause         | memory_safety   | detected |
 | CVE-2026-25544 | TypeScript | Payload (Drizzle adapter)  | MIT                  | sql_injection   | deferred |
+| CVE-2026-42353 | JavaScript | i18next-http-middleware    | MIT                  | path_traversal  | detected |
 
 Deferred entries are real bugs Nyx can't yet detect. The fixture stays committed with `disabled: true` in ground truth so the gap remains visible.
 
@@ -77,6 +83,11 @@ Most recent first. Metrics are rule-level on the corpus size at that point.
 
 | Date       | Change                                                                       | Corpus | P     | R     | F1    |
 |------------|------------------------------------------------------------------------------|--------|-------|-------|-------|
+| 2026-05-04 | C cvehunt session-0014: CVE-2017-1000117 (git ssh:// hostname-as-argv injection) added in corpus disabled — three-layer C engine gap: (a) array-element taint propagation through `args[i] = ssh_host;` writes, (b) missing `c.cmdi.exec*` AST patterns in `src/patterns/c.rs`, (c) sanitizer recognition of the upstream `if (ssh_host[0] == '-') die(...)` dash-prefix guard | 565 | 1.000 | 1.000 | 1.000 |
+| 2026-05-04 | JS/TS array-method validator-callback narrowing (`try_array_method_validator_callback_narrowing` in `src/taint/ssa_transfer/mod.rs`) — `<arr>.filter(<isSafeXxx>)` / `.find` / `.findLast` strips `Cap::all()` from the call result when the callback resolves to a `BooleanTrueIsValid` validator; CVE-2026-42353 (i18next-http-middleware path traversal) re-enabled in ground truth, deferred queue cleared | 563 | 1.000 | 1.000 | 1.000 |
+| 2026-05-04 | JS/TS ternary-RHS source-classification fix in `src/cfg/conditions.rs::lower_ternary_branch` (segment-strip first_member_label on the branch AST) — `let arr = cond ? req.query.lng : "";` now propagates taint through the diamond's join phi instead of lowering both branches to labelless Assign-with-empty-uses; CVE-2026-42353 (i18next-http-middleware path traversal / SSRF) added in corpus disabled — needs Array.prototype.filter(known_validator_callback) precision bridge | 561 | 1.000 | 1.000 | 1.000 |
+| 2026-05-04 | PHP class-method body taint analysis (`declaration_list` / `interface_declaration` / `trait_declaration` / `enum_declaration` mapped to `Kind::Block` in `src/labels/php.rs`); PHP `unary_op_expression` recognised as negation in `detect_negation`; camelCase normalisation in `classify_condition` so `isSafeRemoteUrl(x)` classifies as ValidationCall the same as `is_safe_remote_url(x)`; PHP `$`-sigil stripping in `extract_validation_target`; `fopen` added as PHP SSRF sink; CVE-2026-33486 (roadiz/documents `DownloadedFile::fromUrl(file://)` SSRF/LFI) added | 555 | 1.000 | 1.000 | 1.000 |
+| 2026-05-04 | Python Tier B `py.xss.make_response_format` AST pattern (Flask `make_response(<f-string>)` / `make_response(<concat>)`); CVE-2023-6568 (mlflow reflected XSS) and CVE-2024-21513 (langchain VectorSQLDatabaseChain `_try_eval` over DB rows) added | 550 | 1.000 | 1.000 | 1.000 |
 | 2026-05-03 | Go for-range loop binding now defined from `range_clause` child of `for_statement` (was: tree-sitter wraps the binding/iterable on a child node; only direct `left`/`right` fields were consulted, so taint never reached the loop binding). gin sources extended to `c.QueryArray` / `c.GetQueryArray` / `c.PostFormArray` / `c.GetPostFormArray`. goqu raw SQL literal builders `goqu.L` / `goqu.Lit` recognised as SQL_QUERY sinks. CVE-2026-41422 (daptin aggregate API) detected | 521 | 1.000 | 1.000 | 1.000 |
 | 2026-05-02 | TS regex-allowlist `<*regex*>.test(value)` / `<*pattern*>.test(value)` recognised as ValidationCall whose target is the first arg (overrides default receiver-as-target); conservative on receiver names so non-regex `*.test()` callees stay Unknown.  CVE-2026-25544 (Payload drizzle SQL injection) lands in corpus disabled — needs validated-flow propagation through SSA derivation / helper-summary returns | 499 | 1.000 | 1.000 | 1.000 |
 | 2026-05-02 | JS arrow `assignment_pattern` default-param extraction + JS object-literal kwarg fallback for gated sinks + double-call (`f()(x)`) chained-inner rebinding; lodash `_.template` modeled as gated CODE_EXEC sink suppressed by `{ evaluate: false }`; CVE-2023-22621 (Strapi SSTI) detected | 494 | — | — | — |

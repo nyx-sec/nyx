@@ -367,6 +367,17 @@ pub struct AuthorizationModel {
     /// of the framework-request-name allow-list.  Empty string when no
     /// language was supplied (single-file unit-test paths).
     pub lang: String,
+    /// Cross-file router-dependency lift, keyed by **local** router
+    /// variable name.  Pre-populated by the orchestrator before
+    /// extractors run, sourced from `GlobalSummaries.router_facts_by_module`
+    /// for every project file whose `<parent>.include_router(<this_file>.<var>)`
+    /// edge targets a router in the current file.  FlaskExtractor merges
+    /// these in alongside locally-declared `dependencies=[...]` so routes
+    /// attached to a bare child router still inherit the parent's
+    /// `Security(...)` / `Depends(...)` deps.  Empty when no cross-file
+    /// resolution applies (most files) or when global summaries are not
+    /// available (unit-test / single-file scan paths).
+    pub cross_file_router_deps: HashMap<String, Vec<(CallSite, bool)>>,
 }
 
 impl AuthorizationModel {

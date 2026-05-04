@@ -5,7 +5,7 @@ use super::common::{
     string_literal_value, text, visit_named_nodes,
 };
 use crate::auth_analysis::config::{AuthAnalysisRules, matches_name};
-use crate::auth_analysis::extract::common::{attach_route_handler, collect_top_level_units};
+use crate::auth_analysis::extract::common::attach_route_handler;
 use crate::auth_analysis::model::{
     AnalysisUnitKind, AuthorizationModel, CallSite, Framework, HttpMethod,
 };
@@ -29,18 +29,14 @@ impl AuthExtractor for DjangoExtractor {
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-
-        collect_top_level_units(root, bytes, rules, &mut model);
         visit_named_nodes(root, &mut |node| {
             if node.kind() == "call" {
-                maybe_collect_django_path(root, node, bytes, path, rules, &mut model);
+                maybe_collect_django_path(root, node, bytes, path, rules, model);
             }
         });
-
-        model
     }
 }
 

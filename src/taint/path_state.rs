@@ -211,6 +211,41 @@ fn is_bounded_length_check(lower: &str) -> bool {
     false
 }
 
+/// Normalise an identifier to its snake-case lowercase form so that
+/// camelCase / PascalCase / SCREAMING variants line up against snake-cased
+/// prefix lists (`is_safe`, `is_authorized`, `is_authenticated`).
+///
+/// Underscore is inserted at every case boundary:
+/// - lowercase/digit → uppercase     (`isSafe` → `is_safe`)
+/// - uppercase → uppercase-then-lowercase  (`HTTPClient` → `http_client`)
+///
+/// Inputs already in snake_case round-trip unchanged: `is_safe` → `is_safe`.
+/// Used by `classify_condition` so a sanitiser predicate authored in any
+/// of the dominant identifier conventions classifies the same.
+pub(crate) fn to_snake_lower(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(chars.len() + 4);
+    for i in 0..chars.len() {
+        let c = chars[i];
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                let prev = chars[i - 1];
+                let next = chars.get(i + 1).copied();
+                let between_camel = prev.is_ascii_lowercase() || prev.is_ascii_digit();
+                let acronym_end =
+                    prev.is_ascii_uppercase() && next.is_some_and(|n| n.is_ascii_lowercase());
+                if (between_camel || acronym_end) && !out.ends_with('_') {
+                    out.push('_');
+                }
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
 /// Parse a leading non-negative integer literal (decimal only).
 fn parse_leading_uint(s: &str) -> Option<u64> {
     let mut n: u64 = 0;
@@ -384,13 +419,35 @@ pub fn classify_condition(text: &str) -> PredicateKind {
             .unwrap_or(callee_part)
             .trim();
 
+        // Derive a snake-cased form from the **original** text so that
+        // camelCase identifiers (`isSafeRemoteUrl`, `isAuthorized`,
+        // `isValidUUID`) classify against the snake-cased prefix list
+        // (`is_safe`, `is_authorized`, `is_authenticated`) the same as
+        // `is_safe_remote_url` would.  Required to recognise CVE-2026-33486
+        // (roadiz/documents `isSafeRemoteUrl` SSRF sanitiser) as a
+        // ValidationCall on the patched fixture.  Mirrors the trim/strip
+        // pipeline above on case-preserved text so the snake form lines up
+        // with `bare`.
+        let orig_trimmed = text.trim_start_matches(['(', '!', ' ', '\t']);
+        let orig_trimmed = orig_trimmed
+            .strip_prefix("not ")
+            .unwrap_or(orig_trimmed)
+            .trim();
+        let orig_callee_part = orig_trimmed.split('(').next().unwrap_or("");
+        let orig_bare = orig_callee_part
+            .rsplit(['.', ':'])
+            .next()
+            .unwrap_or(orig_callee_part)
+            .trim();
+        let bare_snake = to_snake_lower(orig_bare);
+
         // Validation
         if bare.contains("valid")
             || bare.contains("check")
             || bare.contains("verify")
-            || bare.starts_with("is_safe")
-            || bare.starts_with("is_authorized")
-            || bare.starts_with("is_authenticated")
+            || bare_snake.starts_with("is_safe")
+            || bare_snake.starts_with("is_authorized")
+            || bare_snake.starts_with("is_authenticated")
         {
             return PredicateKind::ValidationCall;
         }
@@ -734,8 +791,12 @@ fn extract_validation_target(text: &str) -> Option<String> {
     // not corrupt the argument substring.
     let first_arg = first_call_arg(args_part)?;
 
-    // Strip reference operators (e.g. `&x` → `x`)
+    // Strip reference operators (e.g. `&x` → `x`) and PHP variable sigil
+    // (`$url` → `url`) so the extracted target lines up with the var-name
+    // form used in branch-narrowing.  Mirrors the `$` strip already done by
+    // `extract_allowlist_target` for `in_array($cmd, $allowed)`.
     let first_arg = first_arg.strip_prefix('&').unwrap_or(first_arg).trim();
+    let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
 
     if !first_arg.is_empty() && is_identifier(first_arg) {
         Some(first_arg.to_string())
@@ -989,6 +1050,63 @@ mod tests {
             classify_condition("input.verify(sig)"),
             PredicateKind::ValidationCall
         );
+    }
+
+    #[test]
+    fn classify_camelcase_safety_validators_are_validation_call() {
+        // Real-CVE shape: roadiz/documents `isSafeRemoteUrl($url)` (CVE-2026-33486).
+        // Without snake-case normalisation, the bare `issaferemoteurl` would
+        // not match the `is_safe` prefix and the predicate would silently
+        // fall into `Comparison`/`Unknown`, leaving `$url` un-validated past
+        // the early-return.
+        assert_eq!(
+            classify_condition("self::isSafeRemoteUrl($url)"),
+            PredicateKind::ValidationCall
+        );
+        assert_eq!(
+            classify_condition("isAuthorized(user)"),
+            PredicateKind::ValidationCall
+        );
+        assert_eq!(
+            classify_condition("isAuthenticated(req)"),
+            PredicateKind::ValidationCall
+        );
+        // Acronym handling: `isValidUUID` → `is_valid_uuid` → contains "valid".
+        assert_eq!(
+            classify_condition("isValidUUID(id)"),
+            PredicateKind::ValidationCall
+        );
+        // Snake-case round-trips unchanged.
+        assert_eq!(
+            classify_condition("is_safe_remote_url(x)"),
+            PredicateKind::ValidationCall
+        );
+    }
+
+    #[test]
+    fn extract_validation_target_strips_php_dollar_sigil() {
+        // PHP `$url` strips the sigil so the extracted target lines up with
+        // the var-name form used in branch narrowing.  Required for
+        // CVE-2026-33486 patched fixture to silence on `fopen($url, 'r')`.
+        assert_eq!(
+            extract_validation_target("self::isSafeRemoteUrl($url)"),
+            Some("url".to_string())
+        );
+        assert_eq!(
+            extract_validation_target("validate($input)"),
+            Some("input".to_string())
+        );
+    }
+
+    #[test]
+    fn to_snake_lower_handles_common_variants() {
+        assert_eq!(to_snake_lower("isSafeRemoteUrl"), "is_safe_remote_url");
+        assert_eq!(to_snake_lower("isValidUUID"), "is_valid_uuid");
+        assert_eq!(to_snake_lower("HTTPClient"), "http_client");
+        assert_eq!(to_snake_lower("IsSafe"), "is_safe");
+        assert_eq!(to_snake_lower("is_safe"), "is_safe");
+        assert_eq!(to_snake_lower("validate"), "validate");
+        assert_eq!(to_snake_lower(""), "");
     }
 
     #[test]

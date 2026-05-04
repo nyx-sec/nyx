@@ -88,7 +88,21 @@ pub struct BodyConstFacts {
 /// Lower a body to SSA and run constant propagation.  Returns `None` when
 /// lowering fails (empty CFG, invalid entry), callers treat absence as
 /// "no SSA facts available" and fall back to the syntactic path.
+/// Perf-regression sentinel: total cumulative calls to
+/// [`build_body_const_facts`] across the process lifetime.
+///
+/// Used by the `analyse_file_fused_large_go` criterion bench in
+/// `benches/scan_bench.rs` to assert the per-file
+/// [`crate::ast`]`::ParsedFile::body_const_facts_cache` is collapsing the
+/// per-body re-lowering (~149 calls per file expected; pre-cache was ~447).
+/// The atomic increment is ~1 ns per call and disappears in the noise of
+/// the multi-millisecond SSA lowering it gates.
+#[doc(hidden)]
+pub static BUILD_BODY_CONST_FACTS_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub fn build_body_const_facts(body: &crate::cfg::BodyCfg, lang: Lang) -> Option<BodyConstFacts> {
+    BUILD_BODY_CONST_FACTS_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut ssa = crate::ssa::lower_to_ssa_with_params(
         &body.graph,
         body.entry,

@@ -22,17 +22,24 @@ impl AuthExtractor for RailsExtractor {
                 .is_none_or(|ctx| ctx.frameworks.is_empty() || ctx.has(DetectedFramework::Rails))
     }
 
+    fn requires_top_level_units(&self) -> bool {
+        // Rails builds its own RouteHandler unit set inside `collect_nodes`
+        // (controller actions inferred from `routes.rb` resource entries
+        // and conventional `resources :foo` mappings).  It never relies on
+        // the orchestrator's shared `collect_top_level_units` pass.
+        false
+    }
+
     fn extract(
         &self,
         tree: &Tree,
         bytes: &[u8],
         path: &Path,
         rules: &AuthAnalysisRules,
-    ) -> AuthorizationModel {
+        model: &mut AuthorizationModel,
+    ) {
         let root = tree.root_node();
-        let mut model = AuthorizationModel::default();
-        collect_nodes(root, &[], bytes, path, rules, &mut model);
-        model
+        collect_nodes(root, &[], bytes, path, rules, model);
     }
 }
 

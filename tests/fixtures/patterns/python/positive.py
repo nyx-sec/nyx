@@ -50,6 +50,16 @@ def trigger_sql_fstring(cursor, user):
 def trigger_sqlalchemy_text_fstring(connection, user):
     connection.execute(text(f"SELECT * FROM users WHERE name = '{user}'"))
 
+# py.xss.make_response_format
+def trigger_make_response_fstring(request, make_response):
+    content_type = request.headers.get("Content-Type")
+    return make_response(f"Invalid content type: '{content_type}'", 400)
+
+# py.xss.make_response_format (concat variant)
+def trigger_make_response_concat(request, make_response):
+    name = request.args.get("name")
+    return make_response("<h1>Hello " + name + "</h1>")
+
 # py.crypto.md5
 def trigger_md5(data):
     hashlib.md5(data)

@@ -1523,6 +1523,121 @@ fn apply_input_validator_branch_narrowing(
     }
 }
 
+/// JS/TS Array-method validator-callback narrowing.
+///
+/// `arr.filter(isSafeIdentifier)`, `arr.find(isValidId)`, and the
+/// `findLast` variant are gating array methods whose return value is
+/// composed of elements that passed the callback.  When the callback
+/// argument resolves to a name `classify_input_validator_callee` tags
+/// as `BooleanTrueIsValid` (`isValid…`, `isSafe…`, `hasValid…` and
+/// snake-case variants), every element of the result satisfies the
+/// validator, so the call's downstream sinks see the same flow as
+/// validated taint.
+///
+/// The companion `if (isValidX(x)) use(x)` narrowing already exists in
+/// [`apply_input_validator_branch_narrowing`]; this is the same idea
+/// lifted to the call site for filter/find chains so taint stops at
+/// the gate rather than leaking through subsequent
+/// `Array[index]`/template/sink reads.
+///
+/// Strict-additive: if the callback's name does not match the
+/// validator pattern (anonymous arrow, opaque identifier, etc.), the
+/// helper is a no-op and the existing default propagation runs
+/// unchanged.
+///
+/// Motivated by CVE-2026-42353 (i18next-http-middleware path
+/// traversal): the patched fix is `languages.filter(utils.isSafeIdentifier)`
+/// before forwarding `languages` into the backend connector, and the
+/// dual deferred TS-side gap CVE-2026-25544 (Payload sqli).
+fn try_array_method_validator_callback_narrowing(
+    inst: &SsaInst,
+    info: &NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    return_bits: &mut Cap,
+    return_origins: &mut SmallVec<[TaintOrigin; 2]>,
+    state: &mut SsaTaintState,
+    transfer: &SsaTaintTransfer,
+    ssa: &SsaBody,
+) -> bool {
+    if !matches!(transfer.lang, Lang::JavaScript | Lang::TypeScript) {
+        return false;
+    }
+    // Method-call shape: callee text contains a `.` and the trailing
+    // segment is one of the gating array methods.  `findIndex` /
+    // `every` / `some` return scalar shapes (index, boolean) rather
+    // than a filtered collection so they are excluded — element-level
+    // validation does not apply to a numeric/boolean result.
+    let dot = match callee.rfind('.') {
+        Some(p) => p,
+        None => return false,
+    };
+    let method = &callee[dot + 1..];
+    if !matches!(method, "filter" | "find" | "findLast") {
+        return false;
+    }
+    // The first positional argument's callable name.  Two channels:
+    //   1. `info.arg_callees` — populated by `extract_arg_callees`
+    //      (`call_ident_of` walks call shapes inside the arg).  Catches
+    //      `arr.filter(cb())` and dotted-callback shapes where the
+    //      tree-sitter node kind reaches `Kind::CallFn` or
+    //      `Kind::CallMethod`.
+    //   2. SSA `value_defs[v].var_name` for the arg's first SSA value
+    //      — covers the bare-identifier shape (`arr.filter(cb)`)
+    //      where the AST node is a plain identifier and
+    //      `extract_arg_callees` pushes `None` because there is no
+    //      call to recurse into.  This is the shape every patched
+    //      CVE fix uses, so it is the dominant source of validator
+    //      callbacks in real code.
+    let arg0 = match args.first() {
+        Some(a) => a,
+        None => return false,
+    };
+    let cb_from_arg_callees = info.arg_callees.first().and_then(|s| s.as_deref());
+    let cb_from_ssa = arg0.iter().find_map(|&v| {
+        ssa.value_defs
+            .get(v.0 as usize)
+            .and_then(|vd| vd.var_name.as_deref())
+    });
+    let cb_name = match cb_from_arg_callees.or(cb_from_ssa) {
+        Some(n) => n,
+        None => return false,
+    };
+    if crate::ssa::type_facts::classify_input_validator_callee(cb_name)
+        != Some(InputValidatorPolarity::BooleanTrueIsValid)
+    {
+        return false;
+    }
+
+    // Strip every cap from the return value: the returned array (or
+    // single found element) is composed exclusively of elements the
+    // recognised validator approved.  `Cap::all()` is the conservative
+    // ceiling because the validator's body is opaque to this layer; a
+    // future extension could narrow caps by inspecting the body's
+    // rejection patterns.
+    *return_bits = Cap::empty();
+    return_origins.clear();
+
+    // Mark the result's var_name as validated, mirroring the
+    // [`apply_input_validator_branch_narrowing`] insertion.  Useful
+    // for direct same-name reads of the rebound array (`arr =
+    // arr.filter(p)` then `arr.length`) but does not propagate
+    // through Assigns to differently-named bindings (`const lng =
+    // arr[0]`); the `return_bits` strip above is what gates those
+    // downstream flows.
+    if let Some(name) = ssa
+        .value_defs
+        .get(inst.value.0 as usize)
+        .and_then(|vd| vd.var_name.as_deref())
+    {
+        if let Some(sym) = transfer.interner.get(name) {
+            state.validated_must.insert(sym);
+            state.validated_may.insert(sym);
+        }
+    }
+    true
+}
+
 /// Find the latest reaching SSA definition for `var_name` at the end of
 /// `block`.  Mirrors `crate::constraint::lower::resolve_single_var` but
 /// avoids the cross-module privacy leak: callers in this module need it
@@ -4081,6 +4196,24 @@ pub(super) fn transfer_inst(
                 }
             }
 
+            // Receiver-side validator strip.  Some method-call validators
+            // raise on failure rather than transforming a return value,
+            // so the canonical `Sanitizer` mechanism (which clears the
+            // return) is the wrong shape.  After the call returns, the
+            // *receiver* (and any args carrying the same equivalence
+            // class) is proven to satisfy the validated property.  Strip
+            // the registered cap from receiver+args here so that
+            // `path.relative_to(base)` clears `Cap::FILE_IO` from
+            // `path` for downstream uses.  Motivated by CVE-2024-23334
+            // (aiohttp StaticResource symlink-bypass): the patched code
+            // calls `filepath.relative_to(self._directory)` inside a
+            // try/except and serves `filepath` afterwards.
+            if let Some(cap) =
+                crate::labels::lookup_receiver_validator(transfer.lang.as_str(), callee)
+            {
+                strip_cap_from_call_args(args, receiver, state, cap);
+            }
+
             // Alias-aware sanitization: propagate through must-aliased field paths
             if !sanitizer_bits.is_empty() {
                 if let Some(aliases) = transfer.base_aliases {
@@ -4443,6 +4576,28 @@ pub(super) fn transfer_inst(
                     }
                 }
             }
+
+            // JS/TS array-method validator-callback narrowing.  When a
+            // call shape matches `<arr>.filter(<recognised-validator>)`
+            // (or `find` / `findLast`), strip the caps that flowed into
+            // `return_bits` from the receiver — the result holds only
+            // elements the validator approved.  Strict-additive: the
+            // helper is a no-op when the callback name does not match
+            // the BooleanTrueIsValid bucket, leaving the default
+            // propagation result unchanged.  See
+            // [`try_array_method_validator_callback_narrowing`] for the
+            // motivating CVE pair.
+            try_array_method_validator_callback_narrowing(
+                inst,
+                info,
+                callee,
+                args,
+                &mut return_bits,
+                &mut return_origins,
+                state,
+                transfer,
+                ssa,
+            );
 
             // Constructor cap narrowing: a `new X(...)` call returns an object
             // instance, not a string. Caps that name a string-shaped sink

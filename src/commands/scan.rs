@@ -1743,6 +1743,17 @@ pub(crate) fn scan_filesystem_with_observer(
                                 local_gs.insert_auth(key, auth_sum);
                             }
 
+                            // Insert per-Python-file router-dep facts so
+                            // pass 2's auth analysis can lift FastAPI
+                            // router-level `dependencies=[Security(...)]`
+                            // declarations across the
+                            // `<parent>.include_router(<this_file>.<router>,
+                            // ...)` boundary — the canonical airflow
+                            // execution-API auth shape.
+                            if let Some((module_id, facts)) = r.router_facts {
+                                local_gs.insert_router_facts(module_id, facts);
+                            }
+
                             // Record language for progress
                             if let Some(p) = progress {
                                 if let Some(ref lang) = first_lang {
