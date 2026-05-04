@@ -57,7 +57,7 @@ Real disclosed CVEs reduced to minimal reproducers, vulnerable + patched pair pe
 | CVE-2019-13132 | C++        | ZeroMQ libzmq              | MPL-2.0              | memory_safety   | detected |
 | CVE-2022-1941  | C++        | Protocol Buffers           | BSD-3-Clause         | memory_safety   | detected |
 | CVE-2026-25544 | TypeScript | Payload (Drizzle adapter)  | MIT                  | sql_injection   | deferred |
-| CVE-2026-42353 | JavaScript | i18next-http-middleware    | MIT                  | path_traversal  | deferred |
+| CVE-2026-42353 | JavaScript | i18next-http-middleware    | MIT                  | path_traversal  | detected |
 
 Deferred entries are real bugs Nyx can't yet detect. The fixture stays committed with `disabled: true` in ground truth so the gap remains visible.
 
@@ -82,6 +82,7 @@ Most recent first. Metrics are rule-level on the corpus size at that point.
 
 | Date       | Change                                                                       | Corpus | P     | R     | F1    |
 |------------|------------------------------------------------------------------------------|--------|-------|-------|-------|
+| 2026-05-04 | JS/TS array-method validator-callback narrowing (`try_array_method_validator_callback_narrowing` in `src/taint/ssa_transfer/mod.rs`) — `<arr>.filter(<isSafeXxx>)` / `.find` / `.findLast` strips `Cap::all()` from the call result when the callback resolves to a `BooleanTrueIsValid` validator; CVE-2026-42353 (i18next-http-middleware path traversal) re-enabled in ground truth, deferred queue cleared | 563 | 1.000 | 1.000 | 1.000 |
 | 2026-05-04 | JS/TS ternary-RHS source-classification fix in `src/cfg/conditions.rs::lower_ternary_branch` (segment-strip first_member_label on the branch AST) — `let arr = cond ? req.query.lng : "";` now propagates taint through the diamond's join phi instead of lowering both branches to labelless Assign-with-empty-uses; CVE-2026-42353 (i18next-http-middleware path traversal / SSRF) added in corpus disabled — needs Array.prototype.filter(known_validator_callback) precision bridge | 561 | 1.000 | 1.000 | 1.000 |
 | 2026-05-04 | PHP class-method body taint analysis (`declaration_list` / `interface_declaration` / `trait_declaration` / `enum_declaration` mapped to `Kind::Block` in `src/labels/php.rs`); PHP `unary_op_expression` recognised as negation in `detect_negation`; camelCase normalisation in `classify_condition` so `isSafeRemoteUrl(x)` classifies as ValidationCall the same as `is_safe_remote_url(x)`; PHP `$`-sigil stripping in `extract_validation_target`; `fopen` added as PHP SSRF sink; CVE-2026-33486 (roadiz/documents `DownloadedFile::fromUrl(file://)` SSRF/LFI) added | 555 | 1.000 | 1.000 | 1.000 |
 | 2026-05-04 | Python Tier B `py.xss.make_response_format` AST pattern (Flask `make_response(<f-string>)` / `make_response(<concat>)`); CVE-2023-6568 (mlflow reflected XSS) and CVE-2024-21513 (langchain VectorSQLDatabaseChain `_try_eval` over DB rows) added | 550 | 1.000 | 1.000 | 1.000 |

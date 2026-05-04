@@ -10105,8 +10105,8 @@
         "ssrf",
         "ternary-as-value"
       ],
-      "disabled": true,
-      "notes": "CVE-2026-42353 / GHSA-jfgf-83c5-2c4m: i18next-http-middleware <3.9.3 getResourcesHandler forwards user-controlled lng/ns into i18next.services.backendConnector.load(...) without sanitisation. Paired with i18next-fs-backend the unsanitised values reach readFileSync(filename) (path traversal); paired with i18next-http-backend they reach an outgoing HTTP request URL (SSRF). MIT. DISABLED: vulnerable detects via the 2026-05-04 ternary-RHS source-classification fix in src/cfg/conditions.rs::lower_ternary_branch, but the patched counterpart fires a false positive because the engine does not yet recognise Array.prototype.filter(known_validator_callback) as propagating validation to the call result. Same gap as the deferred CVE-2026-25544 (Payload sqli) array-method callback dilution. Tracked in CVE_DEFERRED.md."
+      "disabled": false,
+      "notes": "CVE-2026-42353 / GHSA-jfgf-83c5-2c4m: i18next-http-middleware <3.9.3 getResourcesHandler forwards user-controlled lng/ns into i18next.services.backendConnector.load(...) without sanitisation. Paired with i18next-fs-backend the unsanitised values reach readFileSync(filename) (path traversal); paired with i18next-http-backend they reach an outgoing HTTP request URL (SSRF). MIT. Enabled 2026-05-04 after the array-method validator-callback narrowing (`try_array_method_validator_callback_narrowing` in src/taint/ssa_transfer/mod.rs) closed the dual gap that previously made the patched counterpart fire."
     },
     {
       "case_id": "cve-js-2026-42353-patched",
@@ -10133,8 +10133,8 @@
         "patched",
         "negative"
       ],
-      "disabled": true,
-      "notes": "CVE-2026-42353 patched counterpart: utils.isSafeIdentifier denylist applied via languages.filter(isSafeIdentifier) before forwarding to backend. DISABLED: pairs with the disabled vulnerable entry; the engine does not yet recognise Array.prototype.filter with a known input-validator callback as a sanitiser, so the patched fixture fires a false positive."
+      "disabled": false,
+      "notes": "CVE-2026-42353 patched counterpart: utils.isSafeIdentifier denylist applied via languages.filter(isSafeIdentifier) before forwarding to backend. Enabled 2026-05-04: array-method validator-callback narrowing recognises `<arr>.filter(<is*/has*Valid|isSafe>)` shapes and strips the receiver-derived caps from the call result."
     },
     {
       "case_id": "cve-ts-2023-26159-vulnerable",

@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T12:06:16Z",
+  "timestamp": "2026-05-04T12:58:34Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,10 +9,10 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:4b9d7d7eb39a9f362e5a6ed31909b1edb8238d0609646b299b81ccfcf39a0b98",
+  "ground_truth_hash": "sha256:31304f3d8bee6b130baf3ea888aabf4488901f3e63ce7351ea1b0453363b3d3f",
   "corpus_size": 561,
-  "cases_run": 558,
-  "cases_skipped": 3,
+  "cases_run": 560,
+  "cases_skipped": 1,
   "outcomes": [
     {
       "case_id": "c-buf-001",
@@ -1652,6 +1652,40 @@
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "taint-unsanitised-flow (source 52:30)"
+      ],
+      "security_finding_count": 1,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-js-2026-42353-patched",
+      "file": "cve_corpus/javascript/CVE-2026-42353/patched.js",
+      "language": "javascript",
+      "vuln_class": "safe",
+      "is_vulnerable": false,
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
+      "outcome_location_level": null,
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
+      "non_security_finding_count": 0
+    },
+    {
+      "case_id": "cve-js-2026-42353-vulnerable",
+      "file": "cve_corpus/javascript/CVE-2026-42353/vulnerable.js",
+      "language": "javascript",
+      "vuln_class": "path_traversal",
+      "is_vulnerable": true,
+      "outcome_file_level": "TP",
+      "outcome_rule_level": "TP",
+      "outcome_location_level": null,
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 44:9)"
+      ],
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 44:9)"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -9973,19 +10007,19 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 273,
+    "tp": 274,
     "fp": 0,
     "fn_": 0,
-    "tn": 285,
+    "tn": 286,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
   },
   "aggregate_rule_level": {
-    "tp": 273,
+    "tp": 274,
     "fp": 0,
     "fn_": 0,
-    "tn": 285,
+    "tn": 286,
     "precision": 1.0,
     "recall": 1.0,
     "f1": 1.0
@@ -10028,10 +10062,10 @@
       "f1": 1.0
     },
     "javascript": {
-      "tp": 24,
+      "tp": 25,
       "fp": 0,
       "fn_": 0,
-      "tn": 31,
+      "tn": 32,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10192,7 +10226,7 @@
       "f1": 1.0
     },
     "path_traversal": {
-      "tp": 31,
+      "tp": 32,
       "fp": 0,
       "fn_": 0,
       "tn": 0,
@@ -10222,7 +10256,7 @@
       "tp": 0,
       "fp": 0,
       "fn_": 0,
-      "tn": 283,
+      "tn": 284,
       "precision": 1.0,
       "recall": 1.0,
       "f1": 1.0
@@ -10275,31 +10309,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 88,
-      "fp": 110,
-      "fn_": 185,
-      "tn": 175,
-      "precision": 0.4444444444444444,
-      "recall": 0.32234432234432236,
-      "f1": 0.3736730360934183
+      "tp": 86,
+      "fp": 113,
+      "fn_": 188,
+      "tn": 173,
+      "precision": 0.4321608040201005,
+      "recall": 0.31386861313868614,
+      "f1": 0.3636363636363636
     },
     ">=Low": {
-      "tp": 90,
-      "fp": 140,
-      "fn_": 183,
-      "tn": 145,
-      "precision": 0.391304347826087,
-      "recall": 0.32967032967032966,
-      "f1": 0.35785288270377735
+      "tp": 88,
+      "fp": 142,
+      "fn_": 186,
+      "tn": 144,
+      "precision": 0.3826086956521739,
+      "recall": 0.32116788321167883,
+      "f1": 0.3492063492063492
     },
     ">=Medium": {
-      "tp": 90,
+      "tp": 88,
       "fp": 134,
-      "fn_": 183,
-      "tn": 151,
-      "precision": 0.4017857142857143,
-      "recall": 0.32967032967032966,
-      "f1": 0.3621730382293762
+      "fn_": 186,
+      "tn": 152,
+      "precision": 0.3963963963963964,
+      "recall": 0.32116788321167883,
+      "f1": 0.3548387096774194
     }
   }
 }
