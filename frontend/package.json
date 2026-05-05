@@ -18,13 +18,13 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.100.6",
+    "@tanstack/react-query": "^5.100.9",
     "elkjs": "^0.11.1",
     "graphology": "^0.26.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.14.2",
-    "sigma": "^3.0.2"
+    "sigma": "^3.0.3"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -35,15 +35,15 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
     "@vitest/coverage-v8": "^4.1.5",
-    "eslint": "^10.2.1",
+    "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
-    "globals": "^17.5.0",
-    "jsdom": "^29.1.0",
+    "globals": "^17.6.0",
+    "jsdom": "^29.1.1",
     "license-checker-rseidelsohn": "^4.4.2",
     "prettier": "^3.8.3",
     "typescript": "~6.0.3",
-    "typescript-eslint": "^8.59.1",
+    "typescript-eslint": "^8.59.2",
     "vite": "^8.0.10",
     "vitest": "^4.1.5"
   }
