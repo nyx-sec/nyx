@@ -9,8 +9,9 @@
   --text-tertiary: #6e6e7a;
   --border: #e5e5ea;
   --border-light: #f0f0f4;
-  --accent: #5856d6;
-  --accent-light: #ededfc;
+  --accent: #72f3d7;
+  --accent-light: rgba(114, 243, 215, 0.16);
+  --accent-contrast: #063c35;
   --sev-high: #e74c3c;
   --sev-high-bg: #fdf0ef;
   --sev-medium: #e67e22;
@@ -479,7 +480,7 @@ tr:hover td {
 }
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
   border-color: var(--accent);
 }
 .btn-primary:hover {
@@ -4379,7 +4380,7 @@ tr.selected td {
 }
 .mode-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 /* File tree */
@@ -4556,7 +4557,7 @@ tr.selected td {
 .explorer-inline-notice {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius);
-  background: rgba(88, 86, 214, 0.08);
+  background: rgba(114, 243, 215, 0.16);
   color: var(--text-secondary);
   font-size: var(--text-sm);
 }
@@ -5295,7 +5296,7 @@ tr.selected td {
   background:
     radial-gradient(
       circle at top left,
-      rgba(88, 86, 214, 0.08),
+      rgba(114, 243, 215, 0.16),
       transparent 28%
     ),
     linear-gradient(180deg, var(--bg), var(--bg-secondary));
@@ -5482,7 +5483,7 @@ tr.selected td {
 }
 .ssa-phi-section {
   padding: var(--space-1) var(--space-3);
-  background: rgba(88, 86, 214, 0.05);
+  background: rgba(114, 243, 215, 0.12);
   border-bottom: 1px solid var(--border);
 }
 .ssa-body-section {
@@ -5566,7 +5567,7 @@ tr.selected td {
   color: var(--success);
 }
 .cap-badge-sanitizer {
-  background: rgba(88, 86, 214, 0.1);
+  background: rgba(114, 243, 215, 0.16);
   color: var(--accent);
 }
 .cap-badge-sink {
@@ -5932,8 +5933,9 @@ tr.selected td {
   --text-tertiary: #7c7f88;
   --border: #2a2c33;
   --border-light: #1f2128;
-  --accent: #7d7afa;
-  --accent-light: #2a2756;
+  --accent: #72f3d7;
+  --accent-light: rgba(114, 243, 215, 0.16);
+  --accent-contrast: #063c35;
   --sev-high: #f06860;
   --sev-high-bg: #2c1716;
   --sev-medium: #f0a05a;
@@ -5972,6 +5974,7 @@ tr.selected td {
   --border-light: #4a4a4a;
   --accent: #0000c8;
   --accent-light: #d8d8ff;
+  --accent-contrast: #ffffff;
   --sev-high: #b30000;
   --sev-high-bg: #ffe0e0;
   --sev-medium: #8a3b00;
@@ -6010,6 +6013,7 @@ tr.selected td {
   --border-light: #b8b8b8;
   --accent: #8ab4ff;
   --accent-light: #1a2540;
+  --accent-contrast: #000000;
   --sev-high: #ff8a80;
   --sev-high-bg: #3a0000;
   --sev-medium: #ffc266;

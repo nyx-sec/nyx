@@ -64,7 +64,7 @@ export function OverviewPage() {
 
   const categoryItems = (overview.issue_categories || [])
     .slice(0, 8)
-    .map((b) => ({ label: b.label, value: b.count, color: '#5856d6' }));
+    .map((b) => ({ label: b.label, value: b.count, color: '#72f3d7' }));
 
   const trendData = (trends || []).map((t) => ({
     label: t.timestamp,

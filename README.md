@@ -52,7 +52,7 @@ Everything stays on your machine: loopback-only bind, host-header enforcement, C
 
 The same engine runs headless for CI pipelines. SARIF output uploads directly to GitHub Code Scanning.
 
-<p align="center"><img src="assets/screenshots/cli-scan.png" alt="nyx scan console output: HIGH taint findings across a JS and Python file with source → sink arrows" width="820"/></p>
+<p align="center"><img src="assets/screenshots/cli-scan.gif" alt="nyx scan console output: HIGH taint findings across a JS and Python file with source → sink arrows" width="820"/></p>
 
 ```bash
 # Fail the job on medium or higher, emit SARIF

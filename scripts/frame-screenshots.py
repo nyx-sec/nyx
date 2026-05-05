@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Frame Nyx screenshots with the brand purple gradient.
+"""Frame Nyx screenshots with the brand mint-led four-corner gradient.
 
 Reads a list of PNG paths from argv (or all PNGs under
 assets/screenshots/ if no args) and overwrites each with a framed
 version: inner screenshot with rounded corners, centered on a
-diagonal purple gradient (top-left #8a5bf5 → bottom-right #4d1d97).
+four-corner mint-led gradient (TL #72f3d7, TR #ff6aa2,
+BL #f8c56b, BR #4cc9ff).
 
 Two framing modes:
   - default          inner is resampled to 1600x992, outer is 1800x1113.
@@ -37,14 +38,12 @@ PAD_R = OUTER_W - INNER_W - PAD_L  # 100
 PAD_B = OUTER_H - INNER_H - PAD_T  # 61
 CORNER_RADIUS = 12
 
-# Four-corner bilinear gradient. Sampled from the existing CLI
-# screenshots so every framed asset matches: top-left is the lightest
-# (Tailwind violet-500), the off-diagonal corners are violet-600, and
-# bottom-right is violet-900.
-GRAD_TL = (139,  92, 246)  # #8b5cf6 violet-500
-GRAD_TR = (124,  58, 237)  # #7c3aed violet-600
-GRAD_BL = (124,  58, 237)  # #7c3aed violet-600
-GRAD_BR = ( 76,  29, 149)  # #4c1d95 violet-900
+# Four-corner bilinear gradient. The primary brand accent anchors the
+# frame, with distinct warm/cool corners for richer screenshot depth.
+GRAD_TL = (114, 243, 215)  # #72f3d7
+GRAD_TR = (255, 106, 162)  # #ff6aa2
+GRAD_BL = (248, 197, 107)  # #f8c56b
+GRAD_BR = ( 76, 201, 255)  # #4cc9ff
 
 
 def make_gradient(w: int, h: int) -> Image.Image:
@@ -135,7 +134,7 @@ def frame_one(src: Path, natural: bool = False) -> None:
 
 def frame_gif(src: Path) -> None:
     """Frame an animated GIF in place: every frame gets the same
-    purple gradient frame, then the result is re-encoded as a single-
+    mint-cyan gradient frame, then the result is re-encoded as a single-
     palette GIF.  Calls ffmpeg for the final encode (Pillow's GIF
     output is noticeably worse for large animations).
     """

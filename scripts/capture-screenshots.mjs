@@ -21,7 +21,7 @@
  *                     two-scan history (overview trend, scans list,
  *                     scan detail) plus the static-ish ones
  *                     (triage, explorer, rules, config)
- *   7. frame        — composite the brand purple gradient around every
+ *   7. frame        — composite the brand mint-cyan gradient around every
  *                     captured PNG via scripts/frame-screenshots.py
  *
  * Prerequisites (script asserts each before starting):
@@ -575,7 +575,7 @@ function applyFrames(captured, { natural = false } = {}) {
   if (paths.length === 0) return;
   saveRawCopies(paths);
   const label = natural ? 'natural-size' : 'fixed';
-  console.error(`[frame] applying purple gradient frame (${label}) to ${paths.length} files`);
+  console.error(`[frame] applying mint-led four-corner frame (${label}) to ${paths.length} files`);
   const args = natural ? ['--natural', ...paths] : paths;
   execFileSync('python3', [FRAMER, ...args], { stdio: 'inherit' });
   // Mirror the framed serve-overview.png to the top-level path the

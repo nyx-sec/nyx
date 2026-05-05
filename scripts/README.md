@@ -8,7 +8,7 @@ Local helpers for repo-wide checks and a couple of one-off tools.
 | `check.sh`               | Verify only (no fixes). Mirrors the GitHub Actions CI workflow.                               |
 | `cached-cargo-test.sh`   | Wrap `cargo test` with a source-hash cache; concurrent invocations of the same args share one run. |
 | `capture-screenshots.mjs`| Capture the README stills and demo GIF from a running `nyx serve`. Needs Playwright and ffmpeg. |
-| `frame-screenshots.py`   | Wrap a PNG in the brand purple gradient. Called by `capture-screenshots.mjs` as its final phase, but can be run standalone. |
+| `frame-screenshots.py`   | Wrap a PNG in the brand mint-cyan gradient. Called by `capture-screenshots.mjs` as its final phase, but can be run standalone. |
 
 Fixers stream their output (so you can see what changed); tests run quietly and
 only show output if they fail. Both scripts print a green/red summary at the end
@@ -73,8 +73,9 @@ Stills are captured in two phases:
   `serve-scan-detail.png`, `serve-rules.png`, `serve-config.png`.
 
 Then `frame-screenshots.py` runs over every captured PNG and wraps it in
-the brand purple gradient (1800x1113 outer, 1600x992 inner, 12px rounded
-corners, top-left `#8a5bf5` to bottom-right `#4d1d97`). Finally,
+the brand mint-led four-corner gradient (1800x1113 outer, 1600x992 inner,
+12px rounded corners: TL `#72f3d7`, TR `#ff6aa2`, BL `#f8c56b`, BR
+`#4cc9ff`). Finally,
 `docs/serve-overview.png` is copied to the top-level `overview.png`
 because that is the path the README references.
 
