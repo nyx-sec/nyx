@@ -70,6 +70,9 @@ const SCAN_ROOT = process.env.SCAN_ROOT || '/tmp/nyx-demo-app';
 const OUT_DIR   = process.env.OUT_DIR  || '/Users/elipeter/nyx/assets/screenshots';
 const FRAMER    = process.env.FRAMER   || '/Users/elipeter/nyx/scripts/frame-screenshots.py';
 const NYX_BIN   = process.env.NYX_BIN  || '/Users/elipeter/nyx/target/release/nyx';
+// Sibling marketing site that mirrors a small subset of these assets.
+// Set NYXSCAN_DIR=skip to disable the mirror step.
+const NYXSCAN_DIR = process.env.NYXSCAN_DIR || '/Users/elipeter/nyxscan.dev/assets/screenshots';
 const VIEW = { width: 1440, height: 900 };
 const COLOR_SCHEME = 'light';
 
@@ -590,6 +593,45 @@ function applyFrames(captured, { natural = false } = {}) {
   }
 }
 
+// Mirror the small subset of assets used by the nyxscan.dev landing site
+// so its screenshots can't drift from the canonical ones in this repo.
+// Mirrors the *_raw originals (unframed) — nyxscan.dev draws its own
+// frame/hero treatment in CSS and does not want the in-repo brand frame.
+// Regenerates webp variants for the PNGs (used by hero <picture>/image-set).
+// Skips silently when NYXSCAN_DIR=skip, the dir is missing, or cwebp is
+// not on PATH; this is a convenience step, not a hard requirement.
+const NYXSCAN_MIRROR = [
+  ['docs/serve-overview_raw.png',       'overview.png'],
+  ['docs/serve-finding-detail_raw.png', 'finding-detail.png'],
+  ['cli-scan_raw.gif',                  'cli-scan.gif'],
+];
+function syncNyxscanDev() {
+  if (NYXSCAN_DIR === 'skip') return;
+  if (!existsSync(NYXSCAN_DIR)) {
+    console.error(`[nyxscan] skip — ${NYXSCAN_DIR} does not exist`);
+    return;
+  }
+  let cwebpAvailable = true;
+  try {
+    execFileSync('cwebp', ['-version'], { stdio: 'ignore' });
+  } catch {
+    cwebpAvailable = false;
+    console.error('[nyxscan] cwebp not on PATH — copying PNGs only, webp will be stale');
+  }
+  for (const [srcRel, dstName] of NYXSCAN_MIRROR) {
+    const src = join(OUT_DIR, srcRel);
+    if (!existsSync(src)) continue;
+    const dst = join(NYXSCAN_DIR, dstName);
+    copyFileSync(src, dst);
+    console.error(`[nyxscan] ${srcRel} -> ${dstName}`);
+    if (cwebpAvailable && dstName.endsWith('.png')) {
+      const webp = dst.slice(0, -4) + '.webp';
+      execFileSync('cwebp', ['-quiet', '-q', '82', dst, '-o', webp], { stdio: 'inherit' });
+      console.error(`[nyxscan] ${dstName.slice(0, -4)}.webp`);
+    }
+  }
+}
+
 // Main -----------------------------------------------------------------------
 
 async function main() {
@@ -684,6 +726,8 @@ async function main() {
         const cli = CLI_PNGS.map((p) => join(OUT_DIR, p));
         applyFrames(cli, { natural: true });
       }
+
+      syncNyxscanDev();
     }
   } finally {
     if (browser) await browser.close();
