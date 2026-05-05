@@ -6,7 +6,7 @@ Every finding Nyx emits has a rule ID. This page enumerates the IDs that ship wi
 
 If you'd rather browse rules interactively, [`nyx serve`](serve.md) ships a Rules page that lists every loaded matcher with its language, kind, and capability:
 
-<p align="center"><img src="../assets/screenshots/docs/serve-rules.png" alt="Nyx Rules page: filterable list of 218 rules with language, kind (SOURCE/SANITIZER/SINK), capability, and finding count columns" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-rules.png" alt="Nyx Rules page: filterable list of 218 rules with language, kind (SOURCE/SANITIZER/SINK), capability, and finding count columns" width="900"/></p>
 
 ## ID format
 

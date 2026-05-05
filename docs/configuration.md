@@ -2,7 +2,7 @@
 
 Nyx uses TOML configuration files. A default config is auto-generated on first run. If you'd rather edit settings and rules from the browser, the [Config page in `nyx serve`](serve.md#config) is a live editor that writes back to `nyx.local`:
 
-<p align="center"><img src="../assets/screenshots/docs/serve-config.png" alt="Nyx config page: General settings, Triage Sync toggle, Sources panel with language/matcher/capability dropdowns and a per-language matcher table" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-config.png" alt="Nyx config page: General settings, Triage Sync toggle, Sources panel with language/matcher/capability dropdowns and a per-language matcher table" width="900"/></p>
 
 ## File Locations
 

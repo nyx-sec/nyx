@@ -10,7 +10,7 @@ First run builds a SQLite index under `.nyx/`; later runs skip files whose conte
 
 ## What a finding looks like
 
-<p align="center"><img src="../assets/screenshots/cli-scan.png" alt="nyx scan output: HIGH taint flows from req.params.user, req.query.url, and req.query.path into exec/fetch/fs.readFileSync, framed by the brand mint-cyan gradient" width="900"/></p>
+<p align="center"><img src="assets/screenshots/cli-scan.png" alt="nyx scan output: HIGH taint flows from req.params.user, req.query.url, and req.query.path into exec/fetch/fs.readFileSync, framed by the brand mint-cyan gradient" width="900"/></p>
 
 The same scan in console form:
 

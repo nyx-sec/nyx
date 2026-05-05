@@ -92,7 +92,7 @@ AST-only mode gives you structural pattern matches without taint.
 
 In the browser UI, taint findings render as a numbered flow walk so you can see each hop the engine took:
 
-<p align="center"><img src="../../assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: HIGH taint-unsanitised-flow with numbered source → call → sink steps and How to fix guidance" width="900"/></p>
+<p align="center"><img src="../assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: HIGH taint-unsanitised-flow with numbered source → call → sink steps and How to fix guidance" width="900"/></p>
 
 ## Example
 

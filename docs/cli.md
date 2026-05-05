@@ -95,11 +95,11 @@ nyx scan [PATH] [OPTIONS]
 
 `--fail-on` returns a non-zero exit code when the threshold trips, so CI jobs fail without further wiring:
 
-<p align="center"><img src="../assets/screenshots/docs/cli-failon.png" alt="nyx scan with --fail-on HIGH against a small fixture: three HIGH taint findings printed, followed by exit=1 from the shell" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/cli-failon.png" alt="nyx scan with --fail-on HIGH against a small fixture: three HIGH taint findings printed, followed by exit=1 from the shell" width="900"/></p>
 
 Quality-category and rollup-prone Low findings are filtered down by default. The footer tells you exactly what got dropped and which knob to turn:
 
-<p align="center"><img src="../assets/screenshots/docs/cli-rollup-tail.png" alt="nyx scan tail: warning '*' generated 57 issues; Suppressed 92 LOW/Quality findings; Active filters max_low=20, max_low_per_file=1, max_low_per_rule=10; Use --include-quality, --max-low, or --all to adjust" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/cli-rollup-tail.png" alt="nyx scan tail: warning '*' generated 57 issues; Suppressed 92 LOW/Quality findings; Active filters max_low=20, max_low_per_file=1, max_low_per_rule=10; Use --include-quality, --max-low, or --all to adjust" width="900"/></p>
 
 ### Analysis Engine Toggles
 
@@ -150,7 +150,7 @@ Individual flags override the profile.  For example, `--engine-profile fast --ba
 nyx scan --engine-profile deep --no-smt --explain-engine
 ```
 
-<p align="center"><img src="../assets/screenshots/docs/cli-explain-engine.png" alt="nyx scan --engine-profile deep --explain-engine output: resolved config showing every analysis pass, its current state, and the CLI flag/env var that controls it" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/cli-explain-engine.png" alt="nyx scan --engine-profile deep --explain-engine output: resolved config showing every analysis pass, its current state, and the CLI flag/env var that controls it" width="900"/></p>
 
 ### Examples
 
@@ -215,7 +215,7 @@ nyx index status [PATH]
 
 Display index statistics (file count, size, last modified) for the given path.
 
-<p align="center"><img src="../assets/screenshots/docs/cli-idxstatus.png" alt="nyx index status output: project name, index path under the platform config dir, exists/size/modified fields" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/cli-idxstatus.png" alt="nyx index status output: project name, index path under the platform config dir, exists/size/modified fields" width="900"/></p>
 
 ---
 
@@ -256,7 +256,7 @@ Manage configuration.
 
 Print the effective merged configuration as TOML. Useful for sanity-checking what the scanner is actually using after `nyx.conf` and `nyx.local` merge:
 
-<p align="center"><img src="../assets/screenshots/docs/cli-configshow.png" alt="nyx config show output: TOML dump of the merged scanner config showing [scanner] mode/min_severity/excluded_extensions/excluded_directories, [database] settings, and resolved engine toggles" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/cli-configshow.png" alt="nyx config show output: TOML dump of the merged scanner config showing [scanner] mode/min_severity/excluded_extensions/excluded_directories, [database] settings, and resolved engine toggles" width="900"/></p>
 
 ### `nyx config path`
 

@@ -110,7 +110,7 @@ nyx scan . --severity ">=MEDIUM" --min-confidence medium
 
 Auth findings render alongside taint findings in the [browser UI](serve.md). The flow visualiser shows the sink call, the actor reference (when one was found), and any helper-summary path the engine traversed; the How to fix panel mirrors the rule's recommendation.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: numbered source → call → sink walk with a How to fix panel and an inline evidence object" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: numbered source → call → sink walk with a How to fix panel and an inline evidence object" width="900"/></p>
 
 ## Benchmark corpus
 
