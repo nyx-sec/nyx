@@ -46,6 +46,10 @@ serve = ["dep:axum", "dep:tokio", "dep:tokio-stream", "dep:tower-http"]
 smt = ["dep:z3", "z3/bundled"]
 smt-system-z3 = ["dep:z3"]
 docgen = []
+# Dynamic verification layer: builds harnesses from findings, runs them in a
+# sandbox, reports back whether the sink fires. Off by default until the
+# static side is honest on real corpora (see ROADMAP.md).
+dynamic = []
 
 [lib]
 name = "nyx_scanner"

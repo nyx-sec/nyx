@@ -99,6 +99,8 @@ pub mod commands;
 pub mod constraint;
 pub mod convergence_telemetry;
 pub mod database;
+#[cfg(feature = "dynamic")]
+pub mod dynamic;
 pub mod engine_notes;
 pub mod errors;
 pub mod evidence;
