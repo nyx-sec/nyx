@@ -37,8 +37,12 @@
  *   node scripts/capture-screenshots.mjs --all      # both, in one orchestrated run
  *
  * Output (under assets/screenshots/):
- *   demo.gif                       (~25–30s walkthrough)
+ *   demo.gif                       (~25–30s serve walkthrough)
+ *   demo_raw.gif                   (unframed source — saved before compositing)
+ *   cli-scan.gif                   (~15s CLI scan walkthrough — requires vhs on PATH)
+ *   cli-scan_raw.gif               (unframed source)
  *   overview.png                   (mirror of docs/serve-overview.png; used by README)
+ *   *_raw.png / *_raw.gif          (unframed originals for every captured asset)
  *   docs/serve-overview.png        (overview after scan #2 — trend going down)
  *   docs/serve-findings-list.png   (post-scan-#1 list with multiple highs)
  *   docs/serve-finding-detail.png  (5-hop taint flow visualizer)
@@ -58,7 +62,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import process from 'node:process';
 
 const URL_BASE  = process.env.NYX_URL  || 'http://127.0.0.1:9876';
@@ -412,6 +416,8 @@ async function convertWebmToGif(webm, gifOut) {
 // the framer never resamples the captured text.
 
 const CLI_RENDERER = '/Users/elipeter/nyx/scripts/render-cli.py';
+const VHS_BIN      = process.env.VHS_BIN || 'vhs';
+const CLI_GIF      = join(OUT_DIR, 'cli-scan.gif');
 
 function renderCli(shellCommand, outFile) {
   execFileSync(
@@ -449,9 +455,46 @@ function stageDemoConfigHome() {
   writeFileSync(join(cfgDir, 'nyx.local'), DEMO_NYX_LOCAL);
 }
 
+function captureCliGif() {
+  console.error('[cli-gif/setup] writing v1 demo');
+  writeDemo('v1');
+
+  const tapePath = '/tmp/nyx-cli-scan.tape';
+  const innerGif  = '/tmp/nyx-cli-scan.gif';
+
+  // VHS tape: terminal set to exact inner dimensions so frame-screenshots.py
+  // fixed-mode doesn't need to resample — 1600x992 matches INNER_W x INNER_H.
+  const tape = [
+    `Output "${innerGif}"`,
+    '',
+    'Set Shell "bash"',
+    'Set FontSize 22',
+    'Set Width 1600',
+    'Set Height 992',
+    'Set Framerate 15',
+    'Env CLICOLOR_FORCE "1"',
+    '',
+    'Sleep 500ms',
+    `Type "${NYX_BIN} scan ${SCAN_ROOT}"`,
+    'Sleep 300ms',
+    'Enter',
+    'Sleep 12s',
+    'Sleep 3s',
+  ].join('\n');
+
+  writeFileSync(tapePath, tape);
+  console.error('[cli-gif] recording with vhs');
+  execFileSync(VHS_BIN, [tapePath], { stdio: 'inherit' });
+  copyFileSync(innerGif, CLI_GIF);
+  console.error(`[cli-gif] wrote ${CLI_GIF}`);
+}
+
 function captureCli() {
-  // Re-stage v1 so cli-scan output shows the richer set of findings
-  // (the previous --stills phase patched the demo to v2).
+  captureCliGif();
+
+  // Re-stage v1 so static cli-scan output shows the richer set of findings
+  // (captureCliGif already wrote v1; this is a safety re-stage in case
+  // the previous --stills phase patched the demo to v2).
   console.error('[cli/setup] writing v1 demo');
   writeDemo('v1');
 
@@ -514,12 +557,23 @@ const CLI_PNGS = [
   'docs/cli-configshow.png',
 ];
 
+function saveRawCopies(paths) {
+  for (const p of paths) {
+    if (!existsSync(p)) continue;
+    const ext    = extname(p);
+    const rawPath = p.slice(0, p.length - ext.length) + '_raw' + ext;
+    copyFileSync(p, rawPath);
+    console.error(`[raw] ${rawPath}`);
+  }
+}
+
 function applyFrames(captured, { natural = false } = {}) {
   // Frame only paths captured this run. Re-framing a previously-
   // framed PNG would treat the framed result as the next inner
   // content and produce a frame inside a frame.
   const paths = captured.filter((p) => existsSync(p));
   if (paths.length === 0) return;
+  saveRawCopies(paths);
   const label = natural ? 'natural-size' : 'fixed';
   console.error(`[frame] applying purple gradient frame (${label}) to ${paths.length} files`);
   const args = natural ? ['--natural', ...paths] : paths;
@@ -623,6 +677,7 @@ async function main() {
       const fixed = [];
       if (wantStills) fixed.push(...STILLS_PNGS.map((p) => join(OUT_DIR, p)));
       if (wantGif)    fixed.push(join(OUT_DIR, 'demo.gif'));
+      if (wantCli)    fixed.push(CLI_GIF);
       if (fixed.length) applyFrames(fixed, { natural: false });
 
       if (wantCli) {
