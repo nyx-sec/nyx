@@ -2747,7 +2747,7 @@ mod tests {
         );
         assert_eq!(
             classify("rust", "Redirect::to(next)", Some(&extras)),
-            Some(DataLabel::Sink(Cap::SSRF)),
+            Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
         );
 
         let empty = rust::framework_rules(&FrameworkContext::default());
@@ -2798,7 +2798,7 @@ mod tests {
         );
         assert_eq!(
             classify("rust", "Redirect::to(next)", Some(&extras)),
-            Some(DataLabel::Sink(Cap::SSRF)),
+            Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
         );
     }
 }

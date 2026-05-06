@@ -260,6 +260,20 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
         case_sensitive: false,
     },
+    // ─── SSTI sinks ───
+    //
+    // Twig `\Twig\Environment::createTemplate(string $template)` parses an
+    // arbitrary template source string at runtime; a tainted source yields
+    // SSTI when the resulting template is rendered.  `Environment::render`
+    // / `Environment::load` take a *template name* (file lookup, not source)
+    // and are intentionally excluded.  After PHP scope-resolution stripping
+    // the chain text covers both `$twig->createTemplate($src)` and
+    // `Twig\Environment::createTemplate(...)` shapes.
+    LabelRule {
+        matchers: &["Environment.createTemplate", "Twig.createTemplate"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+    },
 ];
 
 /// Gated sinks for PHP.

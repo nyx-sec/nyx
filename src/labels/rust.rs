@@ -245,6 +245,44 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::DESERIALIZE),
         case_sensitive: false,
     },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // `http::HeaderMap::insert(name, val)` / `append(...)` write a single
+    // header value.  The canonical idiom is `response.headers_mut().insert(...)`
+    // (axum, actix-web `HttpResponse.headers_mut`, hyper `Response::headers_mut`).
+    // After paren-group stripping the chain text becomes
+    // `response.headers_mut.insert`, so suffix matchers on
+    // `headers_mut.insert` / `headers_mut.append` cover the bound-receiver
+    // form regardless of the response builder's concrete type.  Tainted
+    // strings without CRLF stripping enable response splitting.
+    LabelRule {
+        matchers: &["headers_mut.insert", "headers_mut.append"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["strip_crlf", "escape_header", "sanitize_header"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open redirect sinks ───
+    //
+    // axum / rocket `Redirect::to(url)` builds a 3xx response with the URL
+    // in the `Location` header.  Without an allowlist check, a tainted `url`
+    // is the canonical Rust open-redirect vector.  Listed unconditionally
+    // (not gated on framework detection) so non-framework helpers / re-exports
+    // still surface; the framework-conditional rules below are intentionally
+    // not duplicating this label.
+    LabelRule {
+        matchers: &["Redirect::to"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+    },
+    LabelRule {
+        matchers: &["validate_redirect_url", "is_safe_redirect", "strip_scheme"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
@@ -337,11 +375,8 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: true,
         });
-        rules.push(RuntimeLabelRule {
-            matchers: vec!["Redirect::to".into()],
-            label: DataLabel::Sink(Cap::SSRF),
-            case_sensitive: true,
-        });
+        // `Redirect::to` is declared unconditionally as Sink(OPEN_REDIRECT)
+        // in `RULES` above; no framework-conditional duplicate needed.
     }
 
     if ctx.has(DetectedFramework::ActixWeb) {
@@ -395,11 +430,8 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: true,
         });
-        rules.push(RuntimeLabelRule {
-            matchers: vec!["Redirect::to".into()],
-            label: DataLabel::Sink(Cap::SSRF),
-            case_sensitive: true,
-        });
+        // `Redirect::to` is declared unconditionally as Sink(OPEN_REDIRECT)
+        // in `RULES` above; no framework-conditional duplicate needed.
     }
 
     rules

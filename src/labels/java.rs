@@ -370,6 +370,21 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },
+    // ─── SSTI sinks ───
+    //
+    // Apache FreeMarker: `freemarker.template.Template.process(model, writer)`
+    // renders an already-parsed template.  The SSTI vector is when the
+    // template *source* is attacker-influenced (loaded via
+    // `new Template(name, new StringReader(src), cfg)` /
+    // `Configuration.getTemplate(attackerName)`); tainted data reaching
+    // `process` indicates the source-influenced template is being rendered.
+    // Suffix matching on `Template.process` covers the documentation-style
+    // class-qualified call form and bound-receiver `template.process(...)`.
+    LabelRule {
+        matchers: &["Template.process"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {

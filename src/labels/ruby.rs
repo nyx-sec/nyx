@@ -229,7 +229,12 @@ pub static RULES: &[LabelRule] = &[
     // Open redirect: redirect_to with user-controlled destination.
     LabelRule {
         matchers: &["redirect_to"],
-        label: DataLabel::Sink(Cap::SSRF),
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["validate_redirect_url", "is_safe_redirect", "strip_scheme"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },
     // Path traversal: file serving with user-controlled path.
@@ -288,6 +293,37 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["escape_xpath", "xpath_escape"],
         label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
         case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // Rack `Response#set_header(name, value)` / `add_header(name, value)`
+    // and `ActionDispatch::Response#headers[]=` write a single header value.
+    // The subscript-set form `response.headers["X-Foo"] = bar` is not
+    // statically observable as a call, so this rule covers the explicit
+    // method-call form.  Tainted strings without `\r\n` stripping enable
+    // response splitting.
+    LabelRule {
+        matchers: &["set_header", "add_header"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["strip_crlf", "escape_header", "sanitize_header"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // `ERB.new(template_source)` and `Liquid::Template.parse(source)` accept
+    // the template *source string* as arg 0; tainted source there yields
+    // arbitrary template execution at the corresponding `result(binding)` /
+    // `render` step.  `=ERB.new` exact-matcher syntax limits the rule to the
+    // direct call (the leading `=` is the same convention used elsewhere in
+    // this file for Kernel-style globals like `=open`).
+    LabelRule {
+        matchers: &["=ERB.new", "Liquid::Template.parse"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
     },
 ];
 

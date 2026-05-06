@@ -179,6 +179,59 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
         case_sensitive: true,
     },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // `net/http` `ResponseWriter.Header()` returns a `Header` map; calls to
+    // `Set(name, val)` / `Add(name, val)` write a single header value.
+    // After paren-group stripping the chain text becomes
+    // `w.Header.Set` / `w.Header.Add`, so suffix matchers on `Header.Set` /
+    // `Header.Add` cover both the bound-receiver form (`w.Header().Set(...)`)
+    // and the documentation-style class-qualified form (`Header.Set`).
+    // Tainted strings without `\r\n` stripping enable response splitting.
+    LabelRule {
+        matchers: &["Header.Set", "Header.Add"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── Header / CRLF sanitizers ───
+    //
+    // Project-local `stripCRLF` / `escapeHeader` helpers that strip `\r` and
+    // `\n` from a value before it is written to a response header.
+    LabelRule {
+        matchers: &["stripCRLF", "stripCrlf", "escapeHeader", "sanitizeHeader"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open redirect sinks ───
+    //
+    // `net/http` `http.Redirect(w, r, url, code)` writes a `Location` header
+    // and a 3xx status from the supplied URL.  Without an allowlist check,
+    // a tainted `url` is the canonical Go open-redirect vector.
+    LabelRule {
+        matchers: &["http.Redirect"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["validateRedirectUrl", "isSafeRedirect", "stripScheme"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // `text/template` and `html/template` parse a template source string via
+    // `template.New(name).Parse(src)`.  After paren-group stripping the chain
+    // text becomes `template.New.Parse`, so the suffix matcher catches both
+    // packages (`text/template`, `html/template`) regardless of import alias.
+    // `template.ParseFiles` / `ParseGlob` take file paths (path-traversal,
+    // not SSTI) and are intentionally excluded.  `html/template`'s auto-
+    // escaping applies during `Execute`, not `Parse`, so a tainted source
+    // string still yields SSTI.
+    LabelRule {
+        matchers: &["template.New.Parse"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+    },
 ];
 
 /// Argument-role-aware Go sinks.  Two classes coexist on the outbound HTTP
