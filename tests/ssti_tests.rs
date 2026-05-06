@@ -115,3 +115,98 @@ fn python_jinja_template_with_tainted_source_fires() {
 fn python_jinja_constant_source_does_not_fire() {
     assert_clean("python", "safe_jinja_constant.py");
 }
+
+#[test]
+fn python_jinja_compile_expression_with_tainted_source_fires() {
+    assert_unsafe("python", "unsafe_jinja_compile_expression.py");
+}
+
+#[test]
+fn python_render_template_with_tainted_var_does_not_fire() {
+    assert_clean("python", "safe_render_template_var.py");
+}
+
+#[test]
+fn javascript_nunjucks_render_string_tainted_source_fires() {
+    assert_unsafe("javascript", "unsafe_nunjucks_render_string.js");
+}
+
+#[test]
+fn javascript_nunjucks_render_string_const_template_does_not_fire() {
+    assert_clean("javascript", "safe_nunjucks_render_string.js");
+}
+
+#[test]
+fn typescript_nunjucks_render_string_tainted_source_fires() {
+    assert_unsafe("typescript", "unsafe_nunjucks_render_string.ts");
+}
+
+#[test]
+fn typescript_nunjucks_render_string_const_template_does_not_fire() {
+    assert_clean("typescript", "safe_nunjucks_render_string.ts");
+}
+
+#[test]
+fn php_twig_create_template_with_tainted_source_fires() {
+    assert_unsafe("php", "unsafe_twig_create_template.php");
+}
+
+#[test]
+fn php_twig_constant_source_does_not_fire() {
+    assert_clean("php", "safe_twig_constant.php");
+}
+
+#[test]
+fn php_twig_render_with_tainted_var_does_not_fire() {
+    assert_clean("php", "safe_twig_template_var.php");
+}
+
+#[test]
+fn php_smarty_string_prefix_with_tainted_source_fires() {
+    assert_unsafe("php", "unsafe_smarty_string_fetch.php");
+}
+
+#[test]
+fn php_smarty_file_fetch_with_tainted_var_does_not_fire() {
+    assert_clean("php", "safe_smarty_file_fetch.php");
+}
+
+#[test]
+fn java_freemarker_with_tainted_template_source_fires() {
+    assert_unsafe("java", "UnsafeFreemarkerTemplate.java");
+}
+
+#[test]
+fn java_freemarker_constant_template_does_not_fire() {
+    assert_clean("java", "SafeFreemarkerConstant.java");
+}
+
+#[test]
+fn ruby_erb_new_with_tainted_source_fires() {
+    assert_unsafe("ruby", "unsafe_erb_new.rb");
+}
+
+#[test]
+fn ruby_erb_constant_source_does_not_fire() {
+    assert_clean("ruby", "safe_erb_constant.rb");
+}
+
+#[test]
+fn ruby_render_template_with_tainted_var_does_not_fire() {
+    assert_clean("ruby", "safe_erb_template_var.rb");
+}
+
+#[test]
+fn go_text_template_parse_with_tainted_source_fires() {
+    assert_unsafe("go", "unsafe_template_parse.go");
+}
+
+#[test]
+fn go_template_constant_source_does_not_fire() {
+    assert_clean("go", "safe_template_constant.go");
+}
+
+#[test]
+fn go_template_parse_files_with_tainted_var_does_not_fire() {
+    assert_clean("go", "safe_template_parsefiles.go");
+}

@@ -436,6 +436,50 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_kwargs: &[],
         activation: GateActivation::ValueMatch,
     },
+    // Smarty `$smarty->fetch($name)` — only the `string:` resource prefix
+    // accepts an inline template *source*; the bare form (`page.tpl`) is a
+    // file lookup (not SSTI).  Gate activates only when arg 0's leading
+    // literal segment is the `string:` prefix; the constant-string suffix
+    // and concat (`"string:" . $src`) shapes both reach `extract_const_string_arg`'s
+    // leading-literal path and trigger activation.  Payload is arg 0
+    // itself — taint reaching the template source string is the SSTI flow.
+    // Suffix matching catches both `Smarty.fetch` and the bound-receiver
+    // `$smarty->fetch(...)` forms.
+    SinkGate {
+        callee_matcher: "Smarty.fetch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &["string:"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // Twig `\Twig\Environment::createTemplate(string $template)` —
+    // gated SSTI sink.  Activation is unconditional (no value gate);
+    // payload arg 0 is the template source string.  Bare suffix
+    // `createTemplate` matches the idiomatic instance shape
+    // `$twig->createTemplate($src)` (chain text `twig.createTemplate`)
+    // as well as the static `Environment::createTemplate(...)` form;
+    // `createTemplate` is Twig-specific terminology so over-fire risk
+    // is low.  The matching flat rule remains for documentation-style
+    // class-qualified call shapes.
+    SinkGate {
+        callee_matcher: "createTemplate",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {

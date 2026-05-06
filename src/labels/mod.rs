@@ -413,6 +413,7 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     m.insert("c++", cpp::GATED_SINKS);
     m.insert("ruby", ruby::GATED_SINKS);
     m.insert("rb", ruby::GATED_SINKS);
+    m.insert("java", java::GATED_SINKS);
     m
 });
 

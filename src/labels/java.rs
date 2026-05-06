@@ -1,4 +1,6 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig, RuntimeLabelRule};
+use crate::labels::{
+    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+};
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
 
@@ -391,14 +393,19 @@ pub static RULES: &[LabelRule] = &[
     },
     // ─── SSTI sinks ───
     //
-    // Apache FreeMarker: `freemarker.template.Template.process(model, writer)`
-    // renders an already-parsed template.  The SSTI vector is when the
-    // template *source* is attacker-influenced (loaded via
-    // `new Template(name, new StringReader(src), cfg)` /
-    // `Configuration.getTemplate(attackerName)`); tainted data reaching
-    // `process` indicates the source-influenced template is being rendered.
-    // Suffix matching on `Template.process` covers the documentation-style
-    // class-qualified call form and bound-receiver `template.process(...)`.
+    // Apache FreeMarker `Template.process(model, writer)` renders an
+    // already-parsed template; the SSTI vector is when the template source
+    // is attacker-influenced (e.g. `new Template(name, new StringReader(src), cfg)`).
+    // The flat matcher fires only when the receiver chain text resolves to
+    // `Template.process` — typically through a `Template`-typed declared
+    // receiver routed via type-qualified resolution.  Without a `Template`
+    // TypeKind, idiomatic `Template tpl = new Template(...); tpl.process(...)`
+    // shapes are not recognised; tracked under deferred phases.
+    //
+    // Apache Velocity `Velocity.evaluate(ctx, writer, tag, src)` is modelled
+    // as a gated sink in `GATED_SINKS` below so only the template-source
+    // arg (index 3) activates SSTI; tainted variables in the `ctx` arg
+    // (data) stay clean.
     LabelRule {
         matchers: &["Template.process"],
         label: DataLabel::Sink(Cap::SSTI),
@@ -432,6 +439,32 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Sink(Cap::XXE),
         case_sensitive: true,
+    },
+];
+
+/// Java gated sinks.  Argument-position-aware classification for callees
+/// where the SSTI activation is restricted to the template-source arg
+/// rather than every positional argument.
+pub static GATED_SINKS: &[SinkGate] = &[
+    // Apache Velocity static API: `Velocity.evaluate(ctx, writer, logTag, src)`.
+    // Arg 3 carries the inline template source; tainted text at that
+    // position is SSTI.  Tainted data in the context (arg 0) is rendered
+    // through Velocity's escape policy, not parsed as template source, so
+    // those flows must not activate SSTI.  Activation is unconditional;
+    // payload_args narrows the cap to the template-source position.
+    SinkGate {
+        callee_matcher: "Velocity.evaluate",
+        arg_index: 3,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+        payload_args: &[3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
     },
 ];
 

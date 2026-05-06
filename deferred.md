@@ -53,3 +53,11 @@
 
 - ~~PHP (`$twig->createTemplate(...)`)~~, ~~Ruby (`ERB.new`, `Liquid::Template.parse`)~~, ~~Java (Freemarker `Template.process`)~~, ~~Go (`text/template.Parse`)~~ — landed.
 - ~~`nunjucks.renderString(src, ctx)` gated SSTI classifier~~ — landed for JS and TS via `GATED_SINKS` (Destination activation, `payload_args: &[0]`); tainted-`ctx`-only flows now suppressed.
+- ~~PHP `$twig->createTemplate($src)` instance-method recognition + `Smarty.fetch("string:" . $src)` prefix gate~~ — landed in phase 06: `cfg/helpers.rs::root_receiver_text` strips the leading `$` from PHP `variable_name` receivers so chain text presents `.`-only delimiters (suffix-matcher boundary requires `.`/`:`); `labels/php.rs::GATED_SINKS` adds a bare-suffix `createTemplate` SSTI gate (Destination activation, payload arg 0) and a `Smarty.fetch` SSTI gate with `dangerous_prefixes: &["string:"]` so file-path fetches stay clean. Fixtures + tests under `tests/fixtures/ssti/php/` cover unsafe / safe-constant / safe-template-var.
+- ~~Python jinja2 `Environment.compile_expression`~~ — landed: bare-suffix `compile_expression` matcher in `labels/python.rs` (case-sensitive) catches the idiomatic `env.compile_expression(s)` shape without needing a `jinja2.Environment` TypeKind.
+- ~~Java SSTI `Velocity.evaluate(ctx, writer, tag, src)`~~ — landed in phase 06 via a new `GATED_SINKS` table in `labels/java.rs` (registered in `GATED_REGISTRY`) with `payload_args: &[3]` so taint in the context arg (data) is suppressed and only the template-source position activates SSTI.
+
+**Still deferred.**
+
+- FreeMarker `Template tpl = new Template(...); tpl.process(model, out)` recognition — needs a `TypeKind::Template` (or equivalent) so type-qualified resolution rewrites `tpl.process` → `Template.process` against the existing flat rule.  Currently the Java unsafe SSTI fixture uses Apache Velocity's static `Velocity.evaluate` shape because that has a `Class.method` chain text without receiver type inference.
+- Liquid / Mako template-loader paths where the source is loaded from a tainted file system — symbolic-string / config-check pattern hooks.

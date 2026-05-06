@@ -421,6 +421,11 @@ pub static RULES: &[LabelRule] = &[
             "jinja2.Template",
             "jinja2.Environment.from_string",
             "Environment.from_string",
+            // `compile_expression` is jinja2-specific terminology (it returns a
+            // callable from an inline expression source).  Bare suffix lets the
+            // rule fire on idiomatic instance shapes (`env.compile_expression(s)`)
+            // without a `jinja2.Environment` TypeKind.
+            "compile_expression",
             "mako.template.Template",
             "Template.render",
         ],
