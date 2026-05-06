@@ -54,6 +54,7 @@ fn build_rule_list(state: &AppState) -> Vec<RuleInfo> {
                 is_custom: true,
                 is_gated: false,
                 is_class: false,
+                emission_active: true,
                 enabled,
             });
         }

@@ -435,13 +435,13 @@ pub static RULES: &[LabelRule] = &[
     //
     // Template-engine entry points that accept the template *source string*
     // as the first argument: tainted arg 0 lets the attacker drive
-    // arbitrary template execution.  `nunjucks.renderString(src, ctx)`
-    // is gated to arg 0 (the src position) — without gated-sink
-    // infrastructure, any tainted arg here over-fires; conservative.
-    // `_.template` is excluded — it has its own gated CODE_EXEC classifier
-    // (Strapi CVE-2023-22621) that respects the `evaluate:false` opt-out.
+    // arbitrary template execution.  `_.template` is excluded — it has
+    // its own gated CODE_EXEC classifier (Strapi CVE-2023-22621) that
+    // respects the `evaluate:false` opt-out.  `nunjucks.renderString` is
+    // also excluded — see GATED_SINKS below for arg-0-only payload
+    // gating (suppresses tainted-`ctx`-only flows).
     LabelRule {
-        matchers: &["Handlebars.compile", "nunjucks.renderString"],
+        matchers: &["Handlebars.compile"],
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: false,
     },
@@ -925,6 +925,26 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_prefixes: &[],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `nunjucks.renderString(src, ctx)` — Nunjucks SSTI sink.  Only the
+    // template *source* (arg 0) lets an attacker drive template execution;
+    // the `ctx` data object (arg 1) is rendered via the template's escape
+    // policy and is not itself a code-injection vector.  Gate via
+    // Destination-style activation with `payload_args: &[0]` so taint
+    // flowing only into `ctx` is suppressed.
+    SinkGate {
+        callee_matcher: "nunjucks.renderString",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
         payload_args: &[0],
         keyword_name: None,
         dangerous_kwargs: &[],

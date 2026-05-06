@@ -69,6 +69,7 @@ fn list(
                 is_custom: true,
                 is_gated: false,
                 is_class: false,
+                emission_active: true,
                 enabled,
             });
         }
@@ -157,12 +158,22 @@ fn print_class_row(r: &RuleInfo) {
     } else {
         style("off").red().dim().to_string()
     };
+    // Forward-declared classes (registered but not yet wired through
+    // `ast.rs::diag_for_finding`) carry a tag so users don't expect
+    // findings under the class id; live findings still surface under
+    // the legacy `taint-unsanitised-flow` rule id.
+    let tag = if r.emission_active {
+        String::new()
+    } else {
+        format!(" {}", style("(forward-declared)").yellow())
+    };
     println!(
-        "    {} {:<32} {} {}",
+        "    {} {:<32} {} {}{}",
         status,
         style(&r.id).white().bold(),
         style(format!("[{}]", r.cap)).dim(),
         style(&r.title).dim(),
+        tag,
     );
 }
 

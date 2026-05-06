@@ -222,6 +222,32 @@ pub(super) fn extract_const_string_arg(
                 None
             }
         }
+        // PHP double-quoted strings parse as `encapsed_string` whose body is
+        // a sequence of `string_content` / `escape_sequence` / interpolation
+        // nodes.  Treat the string as constant only when every child is a
+        // pure-literal segment (no `variable_name` / `subscript_expression`
+        // interpolations); the returned value is the concatenation of the
+        // literal segments verbatim.
+        "encapsed_string" => {
+            let mut c = arg.walk();
+            let mut buf = String::new();
+            for ch in arg.named_children(&mut c) {
+                match ch.kind() {
+                    "string_content" => {
+                        if let Some(s) = text_of(ch, code) {
+                            buf.push_str(&s);
+                        }
+                    }
+                    "escape_sequence" => {
+                        if let Some(s) = text_of(ch, code) {
+                            buf.push_str(&s);
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+            Some(buf)
+        }
         "template_string" => {
             // Only treat as constant if no interpolation (no template_substitution children)
             let mut c = arg.walk();
@@ -236,6 +262,44 @@ pub(super) fn extract_const_string_arg(
                 Some(raw[1..raw.len() - 1].to_string())
             } else {
                 None
+            }
+        }
+        // Concat-style binary expression with a leading string literal, e.g.
+        // PHP `"Location: " . $url`, JS/TS `"Location: " + url`.  Returns the
+        // left-most literal so prefix-driven gates (`dangerous_prefixes`) can
+        // activate on partially-dynamic concatenations; falls through to
+        // `None` when the leading segment is not a string literal so
+        // exact-`dangerous_values` matching keeps its strict semantics.
+        "binary_expression" => {
+            let left = arg.child_by_field_name("left")?;
+            match left.kind() {
+                "string"
+                | "string_literal"
+                | "interpreted_string_literal"
+                | "raw_string_literal" => {
+                    let raw = text_of(left, code)?;
+                    if raw.len() >= 2 {
+                        Some(raw[1..raw.len() - 1].to_string())
+                    } else {
+                        None
+                    }
+                }
+                "encapsed_string" => {
+                    let mut c = left.walk();
+                    let mut buf = String::new();
+                    for ch in left.named_children(&mut c) {
+                        match ch.kind() {
+                            "string_content" | "escape_sequence" => {
+                                if let Some(s) = text_of(ch, code) {
+                                    buf.push_str(&s);
+                                }
+                            }
+                            _ => return None,
+                        }
+                    }
+                    Some(buf)
+                }
+                _ => None,
             }
         }
         _ => None,

@@ -124,3 +124,13 @@ fn java_send_redirect_with_tainted_url_fires() {
 fn java_validate_url_sanitizes() {
     assert_clean("java", "SafeRedirect.java");
 }
+
+#[test]
+fn php_header_location_with_tainted_url_fires() {
+    assert_unsafe("php", "unsafe_redirect.php");
+}
+
+#[test]
+fn php_validate_redirect_url_sanitizes() {
+    assert_clean("php", "safe_redirect.php");
+}

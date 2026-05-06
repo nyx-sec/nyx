@@ -8141,13 +8141,37 @@ fn type_safe_for_taint_sink(kind: &crate::ssa::type_facts::TypeKind, cap: Cap) -
 fn receiver_incompatible_sink_caps(kind: &crate::ssa::type_facts::TypeKind, sink_caps: Cap) -> Cap {
     use crate::ssa::type_facts::TypeKind;
     let mut remove = Cap::empty();
-    // HTML_ESCAPE requires HTTP response-like receiver
-    if sink_caps.intersects(Cap::HTML_ESCAPE) {
+    // HTML_ESCAPE / OPEN_REDIRECT / HEADER_INJECTION all require an HTTP
+    // response-like receiver: each is a write-side rule that fires when
+    // attacker data is rendered into / written onto the response stream
+    // (`*.send` / `*.redirect` / `*.setHeader` / etc.).  Receivers proven
+    // to be a different class — directory-service connections (LDAP),
+    // database connections, file handles, in-memory collections, query-
+    // builder objects, URL values, HTTP clients (request-side), and so on
+    // — cannot host these sinks even when a same-named matcher
+    // (`*.send`, `*.set`, `*.append`) attaches the label by suffix.
+    let response_like_caps =
+        Cap::HTML_ESCAPE | Cap::OPEN_REDIRECT | Cap::HEADER_INJECTION;
+    if sink_caps.intersects(response_like_caps) {
         match kind {
             TypeKind::HttpResponse => {}               // compatible
             TypeKind::Unknown | TypeKind::Object => {} // could be response
             _ => {
-                remove |= Cap::HTML_ESCAPE;
+                remove |= sink_caps & response_like_caps;
+            }
+        }
+    }
+    // LDAP_INJECTION strictly requires a directory-service receiver.
+    // Non-LdapClient receivers carrying the cap by accident (e.g. a
+    // generic `*.search` suffix matcher firing on a Vec/HashMap) get the
+    // bit stripped.  Unknown/Object stay untouched so type-fact gaps
+    // don't silently drop real sinks.
+    if sink_caps.intersects(Cap::LDAP_INJECTION) {
+        match kind {
+            TypeKind::LdapClient => {}                  // compatible
+            TypeKind::Unknown | TypeKind::Object => {}  // could be ldap
+            _ => {
+                remove |= Cap::LDAP_INJECTION;
             }
         }
     }

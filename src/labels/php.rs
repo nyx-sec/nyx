@@ -247,17 +247,35 @@ pub static RULES: &[LabelRule] = &[
     //
     // PHP's `header($line)` writes a raw header line.  Tainted strings
     // without `\r\n` stripping let an attacker inject extra headers
-    // (response splitting); the same callee is also gated for
-    // open-redirect detection on `Location: ...` forms.
-    LabelRule {
-        matchers: &["=header"],
-        label: DataLabel::Sink(Cap::HEADER_INJECTION),
-        case_sensitive: false,
-    },
+    // (response splitting); see GATED_SINKS for the corresponding
+    // OPEN_REDIRECT co-tag on `Location: ...` forms.
+    //
+    // The HEADER_INJECTION sink is intentionally implemented as a gate
+    // (not a flat rule) so the multi-gate SSA dispatch can co-emit it
+    // alongside the OPEN_REDIRECT gate on the same call site, producing
+    // separate findings for each cap with their canonical rule ids.
     // ─── Header / CRLF sanitizers ───
     LabelRule {
         matchers: &["strip_crlf", "escape_header", "sanitize_header"],
         label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open-redirect URL allowlist sanitizers ───
+    //
+    // Mirrors the JS/TS rule.  Developer-named functions that allowlist
+    // / scheme-strip a redirect URL clear OPEN_REDIRECT taint before it
+    // reaches `header("Location: …")`.  PHP also commonly uses
+    // `snake_case` variants.
+    LabelRule {
+        matchers: &[
+            "validateRedirectUrl",
+            "isSafeRedirect",
+            "stripScheme",
+            "validate_redirect_url",
+            "is_safe_redirect",
+            "strip_scheme",
+        ],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },
     // ─── SSTI sinks ───
@@ -289,18 +307,67 @@ pub static RULES: &[LabelRule] = &[
 ///
 /// Identifier-based activation is enabled via the macro-arg fallback in
 /// `cfg::mod::classify_gated_sink` for `lang == "php"`.
-pub static GATED_SINKS: &[SinkGate] = &[SinkGate {
-    callee_matcher: "curl_setopt",
-    arg_index: 1,
-    dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
-    dangerous_prefixes: &[],
-    label: DataLabel::Sink(Cap::DATA_EXFIL),
-    case_sensitive: true,
-    payload_args: &[2],
-    keyword_name: None,
-    dangerous_kwargs: &[],
-    activation: GateActivation::ValueMatch,
-}];
+pub static GATED_SINKS: &[SinkGate] = &[
+    SinkGate {
+        callee_matcher: "curl_setopt",
+        arg_index: 1,
+        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // PHP `header($line)` HEADER_INJECTION sink.  Modelled as a gate so
+    // it can coexist with the OPEN_REDIRECT gate below: the multi-gate
+    // SSA dispatch needs each capability declared on its own gate filter
+    // to emit one finding per cap.  Always activates (Destination), with
+    // payload arg 0 only (`header()` only accepts the line as arg 0;
+    // arg 1 is `replace`/`response_code`, not the line content).
+    SinkGate {
+        callee_matcher: "=header",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // PHP `header($line)` co-tag for OPEN_REDIRECT.
+    //
+    // The flat HEADER_INJECTION sink (`=header`) above already fires for
+    // any `header(...)` call regardless of the line content.  This gate
+    // adds the OPEN_REDIRECT co-tag specifically when the first argument
+    // is a `Location: ...` header, so the dashboard / OWASP bucket
+    // correctly classifies redirect-class flows independently of CRLF.
+    //
+    // Activation: arg 0 prefix `Location:` (case-insensitive).  When arg
+    // 0 is a constant string starting with `Location:` the gate fires and
+    // checks payload arg 0 for taint; constants like `Content-Type: ...`
+    // are suppressed by the safe-literal branch.  When arg 0 is a binary
+    // expression (`"Location: " . $url`) or otherwise dynamic, the
+    // value-extraction returns `None` and the gate fires conservatively
+    // — matching the existing convention in `setAttribute`/`parseFromString`.
+    SinkGate {
+        callee_matcher: "=header",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &["Location:"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // control-flow

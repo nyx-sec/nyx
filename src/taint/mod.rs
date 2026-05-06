@@ -580,9 +580,19 @@ pub(crate) fn analyse_file_with_lowered(
             f.source.index(),
             !f.path_validated,
             f.path_hash,
+            f.effective_sink_caps.bits(),
         )
     });
-    all_findings.dedup_by_key(|f| (f.body_id, f.sink, f.source, f.path_validated, f.path_hash));
+    all_findings.dedup_by_key(|f| {
+        (
+            f.body_id,
+            f.sink,
+            f.source,
+            f.path_validated,
+            f.path_hash,
+            f.effective_sink_caps.bits(),
+        )
+    });
 
     // 5. Assign stable finding IDs now that `body_id` has been set and
     //    the dedup has picked the final set of distinct flows.  The ID

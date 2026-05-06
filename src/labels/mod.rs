@@ -1476,6 +1476,20 @@ pub struct CapRuleMeta {
     /// `Cap::UNAUTHORIZED_ID`, which still defers to the standalone
     /// `auth_analysis` subsystem unless `enable_auth_as_taint` is on).
     pub default_enabled: bool,
+    /// Whether the diag-id emission path in `ast.rs` actually surfaces
+    /// findings under [`Self::rule_id`].  When `false`, sink findings
+    /// for this cap currently surface under the legacy
+    /// `taint-unsanitised-flow` id (the per-language family-token
+    /// dispatch in [`crate::server::owasp::owasp_bucket_for`] still
+    /// buckets them correctly).  Dashboards and `nyx rules list` consume
+    /// this flag to decide whether to surface the synthetic class entry
+    /// alongside live findings or hide it as forward-declared.
+    ///
+    /// Migrating a cap from `false` → `true` requires adding it to the
+    /// cap-specific routing list in `ast.rs::diag_for_finding`; tests
+    /// that pin the legacy `taint-unsanitised-flow` rule id for that
+    /// cap must be updated to the cap-specific id.
+    pub emission_active: bool,
 }
 
 /// Registry of cap-class metadata.  Keyed in cap-bit order so additions
@@ -1492,6 +1506,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled data flows into a filesystem path without canonicalisation \
              or root-confinement, allowing reads or writes outside the intended directory.",
         default_enabled: true,
+        emission_active: false,
     },
     CapRuleMeta {
         cap: Cap::FMT_STRING,
@@ -1504,6 +1519,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled data is used as a format string argument (printf-family, \
              String.format) and can leak memory or crash the process.",
         default_enabled: true,
+        emission_active: false,
     },
     CapRuleMeta {
         cap: Cap::SQL_QUERY,
@@ -1516,6 +1532,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled data is concatenated into a SQL query string instead of \
              being bound through a parameterised statement.",
         default_enabled: true,
+        emission_active: false,
     },
     CapRuleMeta {
         cap: Cap::DESERIALIZE,
@@ -1529,6 +1546,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
              (pickle, ObjectInputStream, Marshal, unserialize) enabling arbitrary code \
              execution via crafted payloads.",
         default_enabled: true,
+        emission_active: false,
     },
     CapRuleMeta {
         cap: Cap::SSRF,
@@ -1541,6 +1559,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled URL reaches the destination of an outbound HTTP request \
              without an allowlist or scheme/host restriction.",
         default_enabled: true,
+        emission_active: false,
     },
     CapRuleMeta {
         cap: Cap::CODE_EXEC,
@@ -1553,6 +1572,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled data reaches an `eval`/`exec`/shell sink, dynamic \
              require/import, or other arbitrary-code construct.",
         default_enabled: true,
+        emission_active: false,
     },
     CapRuleMeta {
         cap: Cap::CRYPTO,
@@ -1565,6 +1585,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled data drives the algorithm name, key, or seed of a \
              cryptographic primitive (weak-crypto / predictable-randomness).",
         default_enabled: true,
+        emission_active: false,
     },
     CapRuleMeta {
         cap: Cap::UNAUTHORIZED_ID,
@@ -1578,6 +1599,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
              ownership/membership check.  Companion to the standalone `auth_analysis` \
              rule; gated by `scanner.enable_auth_as_taint`.",
         default_enabled: false,
+        emission_active: true,
     },
     CapRuleMeta {
         cap: Cap::DATA_EXFIL,
@@ -1591,6 +1613,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
              headers, or other payload field of an outbound network request to a fixed \
              destination.",
         default_enabled: true,
+        emission_active: true,
     },
     // ── New cap classes (Phase 01) ────────────────────────────────────────
     CapRuleMeta {
@@ -1604,6 +1627,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled data is concatenated into an LDAP filter or DN without \
              RFC 4515 escaping, letting the attacker rewrite the directory query.",
         default_enabled: true,
+        emission_active: true,
     },
     CapRuleMeta {
         cap: Cap::XPATH_INJECTION,
@@ -1617,6 +1641,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
              passed through XPath variable bindings, letting the attacker rewrite the \
              query.",
         default_enabled: true,
+        emission_active: true,
     },
     CapRuleMeta {
         cap: Cap::HEADER_INJECTION,
@@ -1629,6 +1654,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled data lands in an HTTP response header without `\\r\\n` \
              stripping, enabling response splitting and cache-poisoning attacks.",
         default_enabled: true,
+        emission_active: true,
     },
     CapRuleMeta {
         cap: Cap::OPEN_REDIRECT,
@@ -1641,6 +1667,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled URL drives a redirect / `Location` header without an \
              allowlist or relative-URL check, enabling phishing pivots.",
         default_enabled: true,
+        emission_active: true,
     },
     CapRuleMeta {
         cap: Cap::SSTI,
@@ -1654,6 +1681,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
              passed to a server-side renderer (Jinja2, Twig, Handlebars, ERB), enabling \
              arbitrary expression evaluation.",
         default_enabled: true,
+        emission_active: true,
     },
     CapRuleMeta {
         cap: Cap::XXE,
@@ -1667,6 +1695,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
              entities (or missing the secure-processing feature), enabling SSRF, file \
              read, and DoS.",
         default_enabled: true,
+        emission_active: true,
     },
     CapRuleMeta {
         cap: Cap::PROTOTYPE_POLLUTION,
@@ -1679,6 +1708,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
             "Attacker-controlled key reaches an object property assignment that can mutate \
              `Object.prototype` (deep-merge / `__proto__` / dynamic subscript).",
         default_enabled: true,
+        emission_active: true,
     },
 ];
 
@@ -1729,6 +1759,14 @@ pub struct RuleInfo {
     /// "the LDAP injection class exists" with "Java's `DirContext.search`
     /// is a sink for that class".
     pub is_class: bool,
+    /// For class entries (`is_class == true`), whether the diag-id
+    /// emission path in `ast.rs` actually surfaces findings under
+    /// [`Self::id`].  When `false`, the class is registered but live
+    /// findings still emerge under the legacy `taint-unsanitised-flow`
+    /// rule id; dashboards can use this flag to suppress the synthetic
+    /// entry until the cap is migrated to its specific rule id.
+    /// Always `true` for non-class label rules.
+    pub emission_active: bool,
     pub enabled: bool,
 }
 
@@ -1752,6 +1790,7 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
             is_custom: false,
             is_gated: false,
             is_class: true,
+            emission_active: meta.emission_active,
             enabled: meta.default_enabled,
         });
     }
@@ -1780,6 +1819,7 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
                     is_custom: false,
                     is_gated: false,
                     is_class: false,
+                    emission_active: true,
                     enabled: true,
                 });
             }
@@ -1807,6 +1847,7 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
                     is_custom: false,
                     is_gated: true,
                     is_class: false,
+                    emission_active: true,
                     enabled: true,
                 });
             }
@@ -1825,6 +1866,64 @@ pub fn custom_rule_id(lang: &str, kind: &str, matchers: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pin the current set of caps whose `rule_id` is reachable via the
+    /// diag-id routing in `ast.rs::diag_for_finding`.  When migrating a
+    /// legacy cap (e.g. SQL_QUERY → `taint-sql-injection`), update both
+    /// `ast.rs` (add the cap to the cap-specific routing list) and the
+    /// `emission_active: true` flag in `CAP_RULE_REGISTRY`, then update
+    /// this assertion.  The split exists because legacy taint findings
+    /// historically all surfaced under the generic `taint-unsanitised-flow`
+    /// rule id; phase-01 introduced cap-specific routing for new classes
+    /// only.
+    #[test]
+    fn cap_rule_registry_emission_active_set_is_pinned() {
+        let active: Vec<Cap> = CAP_RULE_REGISTRY
+            .iter()
+            .filter(|m| m.emission_active)
+            .map(|m| m.cap)
+            .collect();
+        let expected = [
+            Cap::UNAUTHORIZED_ID,
+            Cap::DATA_EXFIL,
+            Cap::LDAP_INJECTION,
+            Cap::XPATH_INJECTION,
+            Cap::HEADER_INJECTION,
+            Cap::OPEN_REDIRECT,
+            Cap::SSTI,
+            Cap::XXE,
+            Cap::PROTOTYPE_POLLUTION,
+        ];
+        for c in expected {
+            assert!(
+                active.contains(&c),
+                "cap {:?} expected to be emission_active in CAP_RULE_REGISTRY",
+                c
+            );
+        }
+        let inactive: Vec<Cap> = CAP_RULE_REGISTRY
+            .iter()
+            .filter(|m| !m.emission_active)
+            .map(|m| m.cap)
+            .collect();
+        let expected_inactive = [
+            Cap::FILE_IO,
+            Cap::FMT_STRING,
+            Cap::SQL_QUERY,
+            Cap::DESERIALIZE,
+            Cap::SSRF,
+            Cap::CODE_EXEC,
+            Cap::CRYPTO,
+        ];
+        for c in expected_inactive {
+            assert!(
+                inactive.contains(&c),
+                "cap {:?} expected to be emission_inactive in CAP_RULE_REGISTRY (legacy \
+                 finding still emits as taint-unsanitised-flow)",
+                c
+            );
+        }
+    }
 
     #[test]
     fn receiver_validator_python_relative_to() {

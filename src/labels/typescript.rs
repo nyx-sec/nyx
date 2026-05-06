@@ -334,9 +334,10 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     // ─── SSTI sinks ───  (mirrors `labels/javascript.rs`; `_.template`
-    // excluded — gated CODE_EXEC classifier)
+    // and `nunjucks.renderString` excluded — gated classifiers in
+    // GATED_SINKS)
     LabelRule {
-        matchers: &["Handlebars.compile", "nunjucks.renderString"],
+        matchers: &["Handlebars.compile"],
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: false,
     },
@@ -681,6 +682,27 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_prefixes: &[],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `nunjucks.renderString(src, ctx)` — Nunjucks SSTI sink.  Only the
+    // template *source* (arg 0) lets an attacker drive template
+    // execution; the `ctx` data object (arg 1) is rendered via the
+    // template's escape policy and is not itself a code-injection
+    // vector.  Gate via Destination-style activation with
+    // `payload_args: &[0]` so taint flowing only into `ctx` is
+    // suppressed.  Mirrors `labels/javascript.rs`.
+    SinkGate {
+        callee_matcher: "nunjucks.renderString",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
         payload_args: &[0],
         keyword_name: None,
         dangerous_kwargs: &[],
