@@ -1,4 +1,6 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig, RuntimeLabelRule};
+use crate::labels::{
+    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+};
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
 
@@ -338,14 +340,87 @@ pub static RULES: &[LabelRule] = &[
     // ─── XXE sinks ───
     //
     // `REXML::Document.new(xml)` instantiates the (legacy, default-vulnerable)
-    // pure-Ruby XML parser; an attacker-controlled `xml` is XXE.  Nokogiri
-    // (`Nokogiri::XML(xml)` / `Nokogiri::XML::Document.parse(xml)`) is XXE-
-    // safe by default in Nokogiri ≥ 1.10; option-gated detection requires
-    // a Ruby `GATED_SINKS` table and is the deferred Layer 2 follow-up.
+    // pure-Ruby XML parser; an attacker-controlled `xml` is XXE.
+    //
+    // Nokogiri (`Nokogiri::XML(xml)` / `Nokogiri::XML::Document.parse(xml)`)
+    // is XXE-safe by default since 1.10, but resolving external entities
+    // requires explicitly opting in via `Nokogiri::XML::ParseOptions::NOENT`
+    // (or `DTDLOAD` / `DTDATTR`).  Option-flagged detection lives in
+    // `GATED_SINKS` below.
     LabelRule {
         matchers: &["REXML::Document.new"],
         label: DataLabel::Sink(Cap::XXE),
         case_sensitive: true,
+    },
+];
+
+/// Ruby gated sinks.  Argument-role-aware classification for callees that
+/// are XXE-safe by default but become unsafe when the caller passes an
+/// option flag that re-enables external-entity resolution.
+///
+/// Activation uses the bare-leaf comparison: scope-qualified constants like
+/// `Nokogiri::XML::ParseOptions::NOENT` are reduced to the rightmost
+/// `name` segment by the `scope_resolution` branch in
+/// `cfg::literals::extract_const_macro_arg`, so the
+/// `dangerous_values` list stays identifier-bare.
+///
+/// Default-arg semantics: Ruby `Nokogiri::XML(xml)` with no options arg
+/// reaches the gate's `None` activation branch (the activation arg
+/// position simply doesn't exist), which falls through to a conservative
+/// fire.  Callers wishing to suppress the gate explicitly should pass a
+/// safe options literal at the activation position (e.g.
+/// `Nokogiri::XML::ParseOptions::DEFAULT_XML`); any non-dangerous
+/// scope-qualified constant disables the gate.
+pub static GATED_SINKS: &[SinkGate] = &[
+    // `Nokogiri::XML(xml, url=nil, encoding=nil, options=NIL)` — top-level
+    // module method.  arg 3 carries the parse-option flag literal.
+    //
+    // tree-sitter-ruby parses `Nokogiri::XML(args)` as a `call` whose
+    // `receiver` field is the `Nokogiri` constant and `method` field is
+    // the `XML` constant (with `::` as the call operator).  `push_node`'s
+    // `CallMethod` path joins these as `{receiver}.{method}` → matchable
+    // suffix `Nokogiri.XML`.
+    SinkGate {
+        callee_matcher: "Nokogiri.XML",
+        arg_index: 3,
+        dangerous_values: &["NOENT", "DTDLOAD", "DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // `Nokogiri::XML::Document.parse(xml, url=nil, encoding=nil, options=NIL)`
+    // — receiver is the scope_resolution `Nokogiri::XML::Document` (text of
+    // the whole receiver is preserved verbatim) and method is `parse`, so
+    // the constructed callee text is `Nokogiri::XML::Document.parse`.
+    SinkGate {
+        callee_matcher: "Nokogiri::XML::Document.parse",
+        arg_index: 3,
+        dangerous_values: &["NOENT", "DTDLOAD", "DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // `Nokogiri::HTML(html, ..., options)` shares the same option flags as
+    // the XML helper.  Same callee normalization as `Nokogiri.XML`.
+    SinkGate {
+        callee_matcher: "Nokogiri.HTML",
+        arg_index: 3,
+        dangerous_values: &["NOENT", "DTDLOAD", "DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
     },
 ];
 

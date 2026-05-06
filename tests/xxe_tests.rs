@@ -135,3 +135,13 @@ fn javascript_xml2js_default_options_clean() {
 fn ruby_rexml_document_with_tainted_xml_fires() {
     assert_unsafe("ruby", "unsafe_xxe.rb");
 }
+
+#[test]
+fn ruby_nokogiri_xml_with_noent_fires() {
+    assert_unsafe("ruby", "unsafe_xxe_nokogiri.rb");
+}
+
+#[test]
+fn ruby_nokogiri_xml_default_options_clean() {
+    assert_clean("ruby", "safe_xxe_nokogiri.rb");
+}

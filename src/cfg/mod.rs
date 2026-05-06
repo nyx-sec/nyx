@@ -1978,12 +1978,15 @@ pub(super) fn push_node<'a>(
                     extract_const_string_arg(cn, idx, code).or_else(|| {
                         // C/C++ preprocessor macros and PHP `define`d constants
                         // surface as identifier nodes, not string literals.
-                        // Falling back to the macro-arg extractor for those
-                        // languages lets gates like `curl_easy_setopt` /
-                        // `curl_setopt` activate on a `CURLOPT_POSTFIELDS`
-                        // ident match instead of firing conservatively on
-                        // every positional arg.
-                        if matches!(lang, "c" | "cpp" | "c++" | "php") {
+                        // Ruby option constants (e.g.
+                        // `Nokogiri::XML::ParseOptions::NOENT`) surface as
+                        // `scope_resolution` / `constant` nodes.  Falling back
+                        // to the macro-arg extractor for those languages lets
+                        // gates like `curl_easy_setopt` / `curl_setopt` /
+                        // `Nokogiri::XML` activate on a bare-leaf identifier
+                        // match instead of firing conservatively on every
+                        // positional arg.
+                        if matches!(lang, "c" | "cpp" | "c++" | "php" | "ruby" | "rb") {
                             extract_const_macro_arg(cn, idx, code)
                         } else {
                             None

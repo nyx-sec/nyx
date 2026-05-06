@@ -225,7 +225,17 @@ pub mod index {
     /// * `"3"`, `ssa_function_bodies.body` changed from JSON TEXT to
     ///   bincode BLOB.  Old JSON payloads cannot be deserialised by the
     ///   new engine, so they are silently rebuilt on open.
-    pub const SCHEMA_VERSION: &str = "3";
+    /// * `"4"`, `Cap` widened from u16 to u32 to accommodate cap bits
+    ///   ≥ 14 (LDAP_INJECTION, XPATH_INJECTION, HEADER_INJECTION,
+    ///   OPEN_REDIRECT, SSTI, XXE, PROTOTYPE_POLLUTION).  The `Cap`
+    ///   deserialiser accepts both u16- and u32-width JSON values, so
+    ///   pre-bump caches load without crashing, but the cached
+    ///   `source_caps` / `sanitizer_caps` / `sink_caps` blobs were
+    ///   produced before any of these caps could appear and would
+    ///   underreport rules that emit them.  Bumping forces a rescan so
+    ///   newly-emitted gates and sinks land in the cache with the wider
+    ///   footprint.
+    pub const SCHEMA_VERSION: &str = "4";
 
     // TODO: ADD CLEANS FOR EACH TABLE BASED ON PROJECT WHICH RUNS ON CLEAN
     // TODO: ADD DROP AND GIVE A CLI PARAMETER FOR DROP

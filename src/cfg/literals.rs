@@ -335,6 +335,18 @@ pub(super) fn extract_const_macro_arg(
         "identifier" | "name" | "qualified_name" | "scoped_identifier" => {
             text_of(arg, code).map(|s| s.to_string())
         }
+        // Ruby bare constant (`NOENT`) — leaf form.
+        "constant" => text_of(arg, code).map(|s| s.to_string()),
+        // Ruby scope-qualified constant (`Nokogiri::XML::ParseOptions::NOENT`).
+        // Return only the rightmost `name` segment so the gate's
+        // `dangerous_values` list can stay identifier-bare instead of
+        // enumerating every possible namespacing.  Falls back to the full
+        // text if the `name` field is missing for any reason.
+        "scope_resolution" => arg
+            .child_by_field_name("name")
+            .and_then(|n| text_of(n, code))
+            .map(|s| s.to_string())
+            .or_else(|| text_of(arg, code).map(|s| s.to_string())),
         // Integer literals at the activation arg position.  PHP / C / C++
         // commonly use plain `0` to opt into the safe-default option set
         // (e.g. `simplexml_load_string($xml, "SimpleXMLElement", 0)`).  The
