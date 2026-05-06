@@ -130,6 +130,22 @@ function TriageSummary({
     <div className="triage-hero">
       <div className="triage-hero-row">
         <h1 className="triage-hero-title">{headline}</h1>
+        {showSeverity && totalCount > 0 && (
+          <div className="triage-hero-severity">
+            {SEVERITIES.map((sev) => (
+              <span
+                key={sev}
+                className={`triage-sev-stat triage-sev-${sev.toLowerCase()}`}
+              >
+                <span className="triage-sev-dot" aria-hidden />
+                <span className="triage-sev-count">
+                  {(openBySev[sev] ?? 0).toLocaleString()}
+                </span>
+                <span className="triage-sev-name">{sev}</span>
+              </span>
+            ))}
+          </div>
+        )}
         {totalCount > 0 && (
           <button
             type="button"
@@ -142,22 +158,6 @@ function TriageSummary({
           </button>
         )}
       </div>
-      {showSeverity && totalCount > 0 && (
-        <div className="triage-hero-severity">
-          {SEVERITIES.map((sev) => (
-            <span
-              key={sev}
-              className={`triage-sev-stat triage-sev-${sev.toLowerCase()}`}
-            >
-              <span className="triage-sev-dot" aria-hidden />
-              <span className="triage-sev-count">
-                {(openBySev[sev] ?? 0).toLocaleString()}
-              </span>
-              <span className="triage-sev-name">{sev}</span>
-            </span>
-          ))}
-        </div>
-      )}
       {expanded && (
         <div className="triage-state-row">
           <button
@@ -1124,7 +1124,7 @@ export function TriagePage() {
     GROUP_MODES.find((g) => g.value === groupMode)?.label ?? 'None';
 
   return (
-    <div className="triage-page">
+    <div className="triage-page page-shell">
       <TriageSummary
         totalCount={totalCount}
         needsAttention={needsAttention}
@@ -1260,7 +1260,7 @@ export function TriagePage() {
             <input
               className="triage-search"
               type="search"
-              placeholder="Search rule, file, message…"
+              placeholder="Search rule, file, message..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />

@@ -63,7 +63,7 @@ export function TypeFactsAnalysisPanel({
       {securityFacts.length > 0 && (
         <TypeFactGroup
           title="Security-Relevant Types"
-          subtitle="HttpClient, DatabaseConnection, Url, … — drive type-qualified callee resolution and sink suppression"
+          subtitle="HttpClient, DatabaseConnection, Url, and related types drive type-qualified callee resolution and sink suppression"
           facts={securityFacts}
           highlight
         />

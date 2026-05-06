@@ -67,7 +67,7 @@ const STATE_REMEDIATION_HINTS: Record<string, string[]> = {
     'Prefer a language-native cleanup pattern (defer, with, try-with-resources, RAII).',
   ],
   'state-resource-leak-possible': [
-    'Ensure the resource is closed on all code paths — including error and early-return paths.',
+    'Ensure the resource is closed on all code paths, including error and early-return paths.',
     'Put cleanup in a finally/defer block rather than after the happy path.',
   ],
   'state-unauthed-access': [
@@ -636,7 +636,7 @@ const TAINT_REMEDIATION: Record<string, string[]> = {
     'If HTML is unavoidable, run input through a well-maintained sanitizer (DOMPurify, Bleach).',
   ],
   sql: [
-    'Use parameterized queries or a prepared statement — never concatenate user input into SQL.',
+    'Use parameterized queries or a prepared statement. Never concatenate user input into SQL.',
     'Prefer an ORM or query builder that escapes parameters automatically.',
     'Validate input type (integer, enum, allowlist) before the query.',
   ],
@@ -878,6 +878,12 @@ export function FindingDetailPage() {
   const hasRelated = f.related_findings && f.related_findings.length > 0;
   const hasLabels = f.labels && f.labels.length > 0;
   const hasCode = !!f.code_context;
+  const sourcePath = evidence?.source
+    ? `${evidence.source.path}:${evidence.source.line}:${evidence.source.col}`
+    : null;
+  const sinkPath = evidence?.sink
+    ? `${evidence.sink.path}:${evidence.sink.line}:${evidence.sink.col}`
+    : null;
 
   const metaParts: string[] = [];
   if (f.category) metaParts.push(f.category);
@@ -894,7 +900,7 @@ export function FindingDetailPage() {
   }
 
   return (
-    <div className="detail-panel finding-detail">
+    <div className="detail-panel finding-detail page-shell">
       <div className="detail-title-row">
         <h2 className="finding-heading">
           <span
@@ -930,6 +936,22 @@ export function FindingDetailPage() {
           </span>
         ))}
       </div>
+
+      {(sourcePath || sinkPath) && (
+        <div className="path-trace" aria-label="Source to sink path">
+          <div className="path-trace-card">
+            <span className="path-trace-label">Source</span>
+            <code className="path-trace-path">{sourcePath || 'Unknown'}</code>
+          </div>
+          <div className="path-trace-arrow" aria-hidden>
+            &rarr;
+          </div>
+          <div className="path-trace-card">
+            <span className="path-trace-label">Sink</span>
+            <code className="path-trace-path">{sinkPath || 'Unknown'}</code>
+          </div>
+        </div>
+      )}
 
       <StatusControl
         finding={f}
@@ -974,13 +996,6 @@ export function FindingDetailPage() {
         <HowToFix finding={f} />
       </CollapsibleSection>
 
-      {/* Evidence (collapsed by default — overlaps with taint flow) */}
-      {hasEvidence && (
-        <CollapsibleSection title="Evidence" defaultOpen={false}>
-          <EvidenceSection evidence={evidence!} skipStateCard={isState} />
-        </CollapsibleSection>
-      )}
-
       {/* Analysis Notes */}
       {hasNotes && (
         <CollapsibleSection title="Analysis Notes" defaultOpen={false}>
@@ -999,20 +1014,6 @@ export function FindingDetailPage() {
       {hasRelated && (
         <CollapsibleSection title="Related Findings">
           <RelatedFindings findings={f.related_findings} />
-        </CollapsibleSection>
-      )}
-
-      {/* Labels */}
-      {hasLabels && (
-        <CollapsibleSection title="Labels" defaultOpen={false}>
-          <div className="label-list">
-            {f.labels.map(([k, v], i) => (
-              <span key={i} className="label-item">
-                <span className="label-key">{k}:</span>{' '}
-                <span className="label-value">{v}</span>
-              </span>
-            ))}
-          </div>
         </CollapsibleSection>
       )}
 

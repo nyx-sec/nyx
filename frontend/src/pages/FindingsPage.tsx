@@ -567,15 +567,7 @@ export function FindingsPage() {
   const totalPages = Math.ceil(data.total / data.per_page) || 1;
 
   return (
-    <>
-      <div className="page-header">
-        <h2>Findings</h2>
-        <span className="filter-count">
-          {data.total} finding{data.total !== 1 ? 's' : ''}
-          {hasActiveFilters ? ' (filtered)' : ''}
-        </span>
-      </div>
-
+    <div className="findings-page page-shell">
       {/* Filter bar */}
       <div className="filter-bar">
         <input
@@ -793,6 +785,6 @@ export function FindingsPage() {
           onClose={() => setSuppressModalOpen(false)}
         />
       )}
-    </>
+    </div>
   );
 }

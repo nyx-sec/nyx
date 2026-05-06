@@ -31,7 +31,7 @@ const FINDINGS_DEFAULTS: FindingsURLState = {
 };
 
 /** Subset of state we remember across sessions. Filters intentionally are
- * NOT persisted — they're scan-specific and should reset by default, but the
+ * NOT persisted because they're scan-specific and should reset by default, but the
  * URL still reflects them so a shared link reproduces them exactly. */
 interface PersistedFindingsPrefs {
   per_page: string;

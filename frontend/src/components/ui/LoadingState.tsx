@@ -3,7 +3,7 @@ interface LoadingStateProps {
   /**
    * Suppresses the spinner for the first ~150ms so trivially-fast queries
    * don't flash a spinner on screen. The text shows instantly so there's
-   * always *something* — but the visible spin only kicks in if work is
+   * always something, but the visible spin only kicks in if work is
    * actually slow.
    */
   delaySpinnerMs?: number;

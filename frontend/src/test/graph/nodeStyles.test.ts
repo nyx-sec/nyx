@@ -4,7 +4,7 @@ import { getNodeStyle, getEdgeStyle } from '@/graph/styles';
 describe('getNodeStyle', () => {
   it('returns a style for Entry nodes', () => {
     const s = getNodeStyle('Entry');
-    expect(s.fill).toBe('#2ecc71');
+    expect(s.fill).toBe('#1c5c38');
     expect(s.shape).toBe('double');
   });
 
@@ -47,26 +47,26 @@ describe('getNodeStyle', () => {
 
   it('returns a specialized style for recursive call graph nodes', () => {
     const s = getNodeStyle('Call', 'callgraph', { isRecursive: true });
-    expect(s.fill).toBe('#7d6450');
+    expect(s.fill).toBe('#5a5042');
   });
 });
 
 describe('getEdgeStyle', () => {
   it('returns green color for True edges', () => {
     const s = getEdgeStyle('True');
-    expect(s.color).toBe('#2ecc71');
+    expect(s.color).toBe('#1c5c38');
     expect(s.dash).toEqual([]);
   });
 
   it('returns red color for False edges', () => {
     const s = getEdgeStyle('False');
-    expect(s.color).toBe('#e74c3c');
+    expect(s.color).toBe('#9d2f25');
     expect(s.dash).toEqual([]);
   });
 
   it('returns dashed style for Back edges', () => {
     const s = getEdgeStyle('Back');
-    expect(s.color).toBe('#4f78c2');
+    expect(s.color).toBe('#6c6660');
     expect(s.dash).toEqual([7, 4]);
   });
 

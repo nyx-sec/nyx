@@ -44,7 +44,7 @@ const full: FindingView = {
   language: 'python',
   status: 'new',
   triage_state: 'investigating',
-  triage_note: 'Looks real — assigned to alice.',
+  triage_note: 'Looks real - assigned to alice.',
   code_context: {
     start_line: 138,
     highlight_line: 141,
@@ -120,7 +120,7 @@ const full: FindingView = {
 describe('findingToMarkdown', () => {
   it('renders the full finding with all sections', () => {
     const md = findingToMarkdown(full);
-    expect(md).toContain('## py-sqli — User input flows into SQL query.');
+    expect(md).toContain('## py-sqli - User input flows into SQL query.');
     expect(md).toContain('- **Rule**: `py-sqli` (category: `sqli`)');
     expect(md).toContain('- **Severity**: High | **Confidence**: High');
     expect(md).toContain('- **Location**: `src/handlers/login.py:141:10`');
@@ -130,7 +130,7 @@ describe('findingToMarkdown', () => {
     expect(md).toContain('### Explanation\nUntrusted input reaches');
     expect(md).toContain('### Evidence');
     expect(md).toContain(
-      '**Source** — `src/handlers/login.py:138:7` (kind: UserInput)',
+      '**Source**: `src/handlers/login.py:138:7` (kind: UserInput)',
     );
     expect(md).toContain('```python\nrequest.args.get("name")\n```');
     expect(md).toContain('**Guards**: none');
@@ -146,19 +146,19 @@ describe('findingToMarkdown', () => {
     expect(md).toContain('### Notes');
     expect(md).toContain('- Source type: User Input');
     expect(md).toContain('- Path length: 3 blocks');
-    expect(md).toContain('### Triage note\nLooks real — assigned to alice.');
+    expect(md).toContain('### Triage note\nLooks real - assigned to alice.');
     expect(md).toContain('### Confidence reasoning');
     expect(md).toContain('Score: 8.7');
     expect(md).toContain('- **source_kind**: direct user input');
     expect(md).toContain('### Related findings');
     expect(md).toContain(
-      '- `#99` `py-xss` — `src/handlers/login.py:160` (Medium)',
+      '- `#99` `py-xss` - `src/handlers/login.py:160` (Medium)',
     );
   });
 
   it('skips optional sections for a lean finding', () => {
     const md = findingToMarkdown(lean);
-    expect(md).toContain('## js-xss — xss');
+    expect(md).toContain('## js-xss - xss');
     expect(md).toContain('**Confidence**: unknown');
     expect(md).not.toContain('### Message');
     expect(md).not.toContain('### Evidence');

@@ -111,7 +111,7 @@ export function HeaderBar({ onStartScan, onOpenPalette }: HeaderBarProps) {
             className="btn btn-primary btn-sm"
             onClick={onStartScan}
           >
-            Start Scan
+            Start scan
           </button>
         )}
       </div>

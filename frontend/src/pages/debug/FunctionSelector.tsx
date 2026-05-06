@@ -85,7 +85,7 @@ export function FunctionSelector({
 }
 
 function formatFunctionLabel(fn: FunctionInfo): string {
-  const sig = `(${fn.param_count} params) — L${fn.line}`;
+  const sig = `(${fn.param_count} params), L${fn.line}`;
   if (fn.func_kind === 'closure' && fn.container) {
     return `${fn.name} [closure in ${fn.container}] ${sig}`;
   }

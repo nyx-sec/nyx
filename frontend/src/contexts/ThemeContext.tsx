@@ -38,7 +38,7 @@ function resolve(pref: ThemePreference): ResolvedTheme {
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [preference, setPreference] = usePersistedState<ThemePreference>(
     'theme',
-    'system',
+    'light',
   );
 
   const resolved = useMemo(() => resolve(preference), [preference]);

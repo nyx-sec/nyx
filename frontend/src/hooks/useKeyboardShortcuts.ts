@@ -13,7 +13,7 @@ export interface Shortcut {
   handler: (event: KeyboardEvent) => void;
   /**
    * If true, the shortcut still fires when focus is in an input/textarea/
-   * contenteditable. Default is false — shortcuts shouldn't hijack typing.
+   * contenteditable. Default is false, so shortcuts should not hijack typing.
    */
   allowInInput?: boolean;
 }

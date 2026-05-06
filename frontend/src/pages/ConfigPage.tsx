@@ -170,7 +170,7 @@ function KvGrid({ entries }: { entries: Array<[string, React.ReactNode]> }) {
 }
 
 function fmt(v: unknown): React.ReactNode {
-  if (v === null || v === undefined) return <span className="muted">—</span>;
+  if (v === null || v === undefined) return <span className="muted">-</span>;
   if (typeof v === 'boolean')
     return (
       <span className={v ? 'pill pill-on' : 'pill pill-off'}>
@@ -387,7 +387,7 @@ function RawEditor() {
         value={draft ?? ''}
         spellCheck={false}
         onChange={(e) => setDraft(e.target.value)}
-        placeholder="# nyx.local — overrides for the default config.&#10;# Anything you set here wins over nyx.conf."
+        placeholder="# nyx.local - overrides for the default config.&#10;# Anything you set here wins over nyx.conf."
       />
       <p className="config-help">
         Edits are validated against the full config schema before being written.
@@ -608,7 +608,7 @@ export function ConfigPage() {
     setProfileName('');
   }, [profileName, addProfile]);
 
-  if (configLoading) return <LoadingState message="Loading configuration…" />;
+  if (configLoading) return <LoadingState message="Loading configuration..." />;
   if (configError) return <ErrorState message={configError.message} />;
 
   const cfg = config as Record<string, Record<string, unknown>> | undefined;
@@ -616,15 +616,7 @@ export function ConfigPage() {
   const triageSyncOn = !!server?.triage_sync;
 
   return (
-    <>
-      <div className="page-header">
-        <h2>Config</h2>
-        <span className="page-header-sub">
-          Edit defaults, rules, profiles, and the raw <code>nyx.local</code>{' '}
-          file
-        </span>
-      </div>
-
+    <div className="config-page page-shell">
       <div className="config-tabs">
         {(
           [
@@ -866,6 +858,6 @@ export function ConfigPage() {
       )}
 
       {tab === 'raw' && <RawEditor />}
-    </>
+    </div>
   );
 }
