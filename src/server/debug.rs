@@ -1183,6 +1183,7 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::JpaCriteriaQuery => "JpaCriteriaQuery".into(),
         TypeKind::LdapClient => "LdapClient".into(),
         TypeKind::XPathClient => "XPathClient".into(),
+        TypeKind::XmlParser => "XmlParser".into(),
         TypeKind::Dto(_) => "Dto".into(),
     }
 }
@@ -1540,6 +1541,7 @@ pub fn analyse_function_taint(
         receiver_seed: None,
         const_values: Some(&opt.const_values),
         type_facts: Some(&opt.type_facts),
+        xml_parser_config: Some(&opt.xml_parser_config),
         ssa_summaries: None,
         extra_labels: None,
         callee_bodies: None,

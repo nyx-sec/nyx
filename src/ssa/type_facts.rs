@@ -65,6 +65,16 @@ pub enum TypeKind {
     /// every receiver with a generic `query` / `evaluate` method (avoids
     /// collision with PHP `$pdo->query` SQL_QUERY sink).
     XPathClient,
+    /// An XML parser instance produced by a JAXP factory call
+    /// (`DocumentBuilderFactory.newDocumentBuilder()`,
+    /// `SAXParserFactory.newSAXParser()`, `XMLReaderFactory.createXMLReader()`).
+    /// `DOMXPath` and friends keep their own `XPathClient` tag.  Used so
+    /// the type-qualified `XmlParser.parse` rule fires on instance-style
+    /// calls (`builder.parse(input)`) without needing a flat-rule
+    /// matcher per concrete subclass.  Also gates Phase 07's XXE
+    /// config-fact suppression: only XmlParser-typed receivers consult
+    /// the [`crate::ssa::xml_config::XmlParserConfigResult`] sidecar.
+    XmlParser,
     /// A framework-injected DTO body whose field types are known.
     /// Populated when a parameter is recognised as a typed extractor and
     /// the DTO class / struct / Pydantic model is resolvable in scope.
@@ -114,6 +124,7 @@ impl TypeKind {
             Self::JpaCriteriaQuery => Some("JpaCriteriaQuery"),
             Self::LdapClient => Some("LdapClient"),
             Self::XPathClient => Some("XPathClient"),
+            Self::XmlParser => Some("XmlParser"),
             _ => None,
         }
     }
@@ -416,6 +427,18 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "InitialDirContext" | "InitialLdapContext" | "LdapTemplate" => {
                 Some(TypeKind::LdapClient)
             }
+            // JAXP factory-produced XML parser instances.  Each is
+            // XXE-vulnerable by default until hardened with
+            // `setFeature(FEATURE_SECURE_PROCESSING, true)` (or
+            // disallow-doctype-decl, etc.).  Phase 07's
+            // [`crate::ssa::xml_config::XmlParserConfigResult`] suppresses
+            // the XXE bit at the type-qualified `XmlParser.parse` sink
+            // when the receiver carries a hardening fact.
+            "newDocumentBuilder"
+            | "newSAXParser"
+            | "getXMLReader"
+            | "newXMLReader"
+            | "createXMLReader" => Some(TypeKind::XmlParser),
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => match suffix {

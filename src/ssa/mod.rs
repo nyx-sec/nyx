@@ -31,6 +31,7 @@ pub mod param_points_to;
 pub mod pointsto;
 pub mod static_map;
 pub mod type_facts;
+pub mod xml_config;
 
 #[allow(unused_imports)]
 pub use ir::*;
@@ -51,6 +52,13 @@ pub struct OptimizeResult {
     pub const_values: HashMap<SsaValue, const_prop::ConstLattice>,
     /// Type fact analysis results.
     pub type_facts: type_facts::TypeFactResult,
+    /// XML-parser configuration facts (Phase 07): per-receiver SSA value
+    /// `secure_processing` / `disallow_doctype` / `external_entities`
+    /// flags carried forward from setter calls and constructor kwargs.
+    /// Consumed by the SSA taint engine to suppress XXE on parse-class
+    /// sinks whose receiver was provably hardened.
+    #[serde(default)]
+    pub xml_parser_config: xml_config::XmlParserConfigResult,
     /// Base-variable alias groups from copy propagation.
     pub alias_result: alias::BaseAliasResult,
     /// Points-to analysis: per-SSA-value abstract heap object sets.
@@ -100,6 +108,11 @@ pub fn optimize_ssa_with_param_types(
     let type_facts =
         type_facts::analyze_types_with_param_types(body, cfg, &cp.values, lang, param_types);
 
+    // 5b. XML-parser config analysis (Phase 07).  Tracks per-receiver
+    // hardening flags so XXE sinks can be suppressed when the parser was
+    // provably configured for secure processing.
+    let xml_parser_config = xml_config::analyze_xml_parser_config(body, cfg, &cp.values, lang);
+
     // 6. Points-to analysis (uses allocation site detection + SSA def-use)
     let points_to = heap::analyze_points_to(body, cfg, lang);
 
@@ -113,6 +126,7 @@ pub fn optimize_ssa_with_param_types(
     OptimizeResult {
         const_values: cp.values,
         type_facts,
+        xml_parser_config,
         alias_result,
         points_to,
         module_aliases,

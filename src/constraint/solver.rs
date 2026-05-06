@@ -256,6 +256,14 @@ pub fn class_name_to_type_kind(name: &str) -> Option<TypeKind> {
         // resolution rewrites `ctx.search(...)` → `LdapClient.search`.
         "DirContext" | "LdapContext" | "InitialDirContext" | "InitialLdapContext"
         | "LdapTemplate" => Some(TypeKind::LdapClient),
+        // JAXP XML parser instances.  Field/local declarations like
+        // `DocumentBuilder builder = factory.newDocumentBuilder();` route
+        // through this map so the receiver SSA value carries
+        // `TypeKind::XmlParser` and the type-qualified
+        // `XmlParser.parse` rule fires on `builder.parse(...)`.
+        "DocumentBuilder" | "SAXParser" | "XMLReader" | "SAXBuilder" => {
+            Some(TypeKind::XmlParser)
+        }
         // Python qualified type names.
         // Only covers raw lowered names from isinstance(). The lowering in lower.rs
         // extracts the literal type text: isinstance(x, requests.Session) produces

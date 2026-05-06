@@ -101,6 +101,33 @@ fn java_no_xml_parser_clean() {
     assert_clean("java", "SafeXxe.java");
 }
 
+/// Phase 07 acceptance: a `factory.setFeature(FEATURE_SECURE_PROCESSING,
+/// true)` before `builder.parse(...)` produces zero `taint-xxe`
+/// findings.  The hardening fact is recorded on the factory's SSA
+/// value, propagated to the builder via `newDocumentBuilder()`, and
+/// consulted at the parse sink.
+#[test]
+fn java_set_feature_secure_processing_clean() {
+    assert_clean("java", "SafeXxeConfig.java");
+}
+
+/// Phase 07 acceptance: parser variable reassigned across two branches
+/// that both harden the receiver — the SSA phi-meet preserves
+/// `secure_processing = true`, and the downstream parse sink stays
+/// silent.
+#[test]
+fn java_phi_reassigned_factory_clean() {
+    assert_clean("java", "SafeXxePhi.java");
+}
+
+/// Baseline: tainted body wrapped in a string concat, no XML parser
+/// entry point.  `taint-xxe` must not surface from XML-adjacent string
+/// operations.
+#[test]
+fn java_irrelevant_xml_call_clean() {
+    assert_clean("java", "IrrelevantXmlCall.java");
+}
+
 #[test]
 fn python_sax_parse_with_tainted_xml_fires() {
     assert_unsafe("python", "unsafe_xxe.py");
@@ -109,6 +136,19 @@ fn python_sax_parse_with_tainted_xml_fires() {
 #[test]
 fn python_defusedxml_sanitizes() {
     assert_clean("python", "safe_xxe.py");
+}
+
+/// Phase 07 acceptance: `lxml.etree.parse` is XXE-safe by default in
+/// modern lxml (external entity resolution requires explicit
+/// `XMLParser(resolve_entities=True)`).  No `taint-xxe` finding.
+#[test]
+fn python_lxml_default_clean() {
+    assert_clean("python", "safe_lxml.py");
+}
+
+#[test]
+fn python_irrelevant_xml_call_clean() {
+    assert_clean("python", "irrelevant_xml_call.py");
 }
 
 #[test]
@@ -122,6 +162,11 @@ fn php_simplexml_load_string_default_options_clean() {
 }
 
 #[test]
+fn php_irrelevant_xml_call_clean() {
+    assert_clean("php", "irrelevant_xml_call.php");
+}
+
+#[test]
 fn javascript_xml2js_with_process_entities_fires() {
     assert_unsafe("javascript", "unsafe_xxe.js");
 }
@@ -129,6 +174,26 @@ fn javascript_xml2js_with_process_entities_fires() {
 #[test]
 fn javascript_xml2js_default_options_clean() {
     assert_clean("javascript", "safe_xxe.js");
+}
+
+#[test]
+fn javascript_irrelevant_xml_call_clean() {
+    assert_clean("javascript", "irrelevant_xml_call.js");
+}
+
+#[test]
+fn typescript_xml2js_with_process_entities_fires() {
+    assert_unsafe("typescript", "unsafe_xxe.ts");
+}
+
+#[test]
+fn typescript_xml2js_default_options_clean() {
+    assert_clean("typescript", "safe_xxe.ts");
+}
+
+#[test]
+fn typescript_irrelevant_xml_call_clean() {
+    assert_clean("typescript", "irrelevant_xml_call.ts");
 }
 
 #[test]
@@ -144,4 +209,9 @@ fn ruby_nokogiri_xml_with_noent_fires() {
 #[test]
 fn ruby_nokogiri_xml_default_options_clean() {
     assert_clean("ruby", "safe_xxe_nokogiri.rb");
+}
+
+#[test]
+fn ruby_irrelevant_xml_call_clean() {
+    assert_clean("ruby", "irrelevant_xml_call.rb");
 }

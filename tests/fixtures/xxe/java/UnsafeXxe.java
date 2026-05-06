@@ -1,6 +1,6 @@
 // Unsafe: tainted XML reaches DocumentBuilder.parse without secure-processing
-// configuration.  Class-qualified callee text (`javax.xml.parsers.DocumentBuilder.parse`)
-// matches the flat XXE rule via suffix.
+// configuration.  The instance receiver `builder` carries TypeKind::XmlParser
+// (Phase 07) so the type-qualified `XmlParser.parse` sink rule fires.
 import javax.servlet.http.HttpServletRequest;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -12,6 +12,6 @@ public class UnsafeXxe {
         String body = req.getParameter("xml");
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
         DocumentBuilder builder = factory.newDocumentBuilder();
-        return javax.xml.parsers.DocumentBuilder.parse(new ByteArrayInputStream(body.getBytes()));
+        return builder.parse(new ByteArrayInputStream(body.getBytes()));
     }
 }

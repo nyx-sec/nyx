@@ -440,6 +440,27 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::XXE),
         case_sensitive: true,
     },
+    // ─── XXE config-setter sanitizers ───
+    //
+    // Phase 07: a JAXP `setFeature(...)` / `setExpandEntityReferences(...)`
+    // call is itself a label-level Sanitizer for `Cap::XXE` so that the
+    // *call's return value* (rare but exists for fluent factory APIs)
+    // does not carry XXE through it.  The real load-bearing suppression
+    // is the receiver-fact path in
+    // [`crate::ssa::xml_config::XmlParserConfigResult`], which the SSA
+    // sink emission consults at every parse-class sink site.  This rule
+    // is conservative noise reduction for downstream sinks that consume
+    // the setter call's value.
+    LabelRule {
+        matchers: &[
+            "setFeature",
+            "setExpandEntityReferences",
+            "setXIncludeAware",
+            "setValidating",
+        ],
+        label: DataLabel::Sanitizer(Cap::XXE),
+        case_sensitive: true,
+    },
 ];
 
 /// Java gated sinks.  Argument-position-aware classification for callees

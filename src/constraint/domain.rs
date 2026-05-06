@@ -188,6 +188,7 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         TypeKind::JpaCriteriaQuery => 14,
         TypeKind::LdapClient => 15,
         TypeKind::XPathClient => 16,
+        TypeKind::XmlParser => 17,
         // the analysis DTO types carry per-field structural info that the
         // bitset domain can't represent.  Collapse to Unknown so callers
         // still see "any type possible" rather than crashing on an
@@ -216,6 +217,7 @@ fn type_kind_from_index(idx: u32) -> Option<TypeKind> {
         14 => Some(TypeKind::JpaCriteriaQuery),
         15 => Some(TypeKind::LdapClient),
         16 => Some(TypeKind::XPathClient),
+        17 => Some(TypeKind::XmlParser),
         _ => None,
     }
 }

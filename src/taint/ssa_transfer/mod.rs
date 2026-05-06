@@ -105,6 +105,12 @@ pub struct SsaTaintTransfer<'a> {
     /// Type facts from type analysis.
     /// Used for type-aware sink filtering (e.g., suppress SQL injection for int-typed values).
     pub type_facts: Option<&'a crate::ssa::type_facts::TypeFactResult>,
+    /// XML-parser config facts (Phase 07).  Used to suppress XXE bits at
+    /// parse-class sinks whose receiver was provably hardened
+    /// (`setFeature(FEATURE_SECURE_PROCESSING, true)`, etc.).  Strictly
+    /// additive: `None` falls back to the existing flat / gated XXE
+    /// classification.
+    pub xml_parser_config: Option<&'a crate::ssa::xml_config::XmlParserConfigResult>,
     /// Precise per-function SSA summaries for intra-file callee resolution.
     /// Checked before legacy FuncSummary resolution.
     ///
@@ -2203,6 +2209,7 @@ fn inline_analyse_callee(
         receiver_seed: receiver_seed.as_ref(),
         const_values: Some(&callee_body.opt.const_values),
         type_facts: Some(&callee_body.opt.type_facts),
+        xml_parser_config: Some(&callee_body.opt.xml_parser_config),
         ssa_summaries: transfer.ssa_summaries,
         extra_labels: transfer.extra_labels,
         base_aliases: Some(&callee_body.opt.alias_result),
@@ -6083,6 +6090,28 @@ fn collect_block_events(
             continue;
         }
 
+        if sink_caps.is_empty() {
+            continue;
+        }
+
+        // Phase 07: XXE config-fact suppression.  A parse-class sink whose
+        // receiver was provably hardened (`setFeature(FEATURE_SECURE_PROCESSING,
+        // true)`, `setExpandEntityReferences(false)`, etc.) is not an XXE
+        // flow — drop the bit before downstream sink emission.  Runs after
+        // type-qualified resolution / module alias resolution so the XXE
+        // bit added by `XmlParser.parse` resolution is visible here.
+        if sink_caps.intersects(Cap::XXE) {
+            if let SsaOp::Call {
+                receiver: Some(rv), ..
+            } = &inst.op
+            {
+                if let Some(xc) = transfer.xml_parser_config {
+                    if crate::ssa::xml_config::xxe_safe(Some(*rv), xc) {
+                        sink_caps &= !Cap::XXE;
+                    }
+                }
+            }
+        }
         if sink_caps.is_empty() {
             continue;
         }
