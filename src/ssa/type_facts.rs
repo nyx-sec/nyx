@@ -439,6 +439,14 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             | "getXMLReader"
             | "newXMLReader"
             | "createXMLReader" => Some(TypeKind::XmlParser),
+            // `XPathFactory.newXPath()` returns a JAXP `XPath` instance.
+            // Mapping it to `XPathClient` lets the type-qualified resolver
+            // pick up `xpath.evaluate(...)` against the existing
+            // `XPathClient.evaluate` rule and lets the
+            // [`crate::ssa::xpath_config::XPathConfigResult`] sidecar
+            // suppress XPATH_INJECTION when the receiver was bound to an
+            // `XPathVariableResolver`.
+            "newXPath" => Some(TypeKind::XPathClient),
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => match suffix {

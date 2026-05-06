@@ -1542,6 +1542,7 @@ pub fn analyse_function_taint(
         const_values: Some(&opt.const_values),
         type_facts: Some(&opt.type_facts),
         xml_parser_config: Some(&opt.xml_parser_config),
+        xpath_config: Some(&opt.xpath_config),
         ssa_summaries: None,
         extra_labels: None,
         callee_bodies: None,

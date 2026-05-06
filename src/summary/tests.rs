@@ -1029,6 +1029,7 @@ fn make_callee_body(
                 facts: std::collections::HashMap::new(),
             },
             xml_parser_config: crate::ssa::xml_config::XmlParserConfigResult::default(),
+            xpath_config: crate::ssa::xpath_config::XPathConfigResult::default(),
             alias_result: crate::ssa::alias::BaseAliasResult::empty(),
             points_to: crate::ssa::heap::PointsToResult::empty(),
             module_aliases: std::collections::HashMap::new(),

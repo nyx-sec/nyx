@@ -339,18 +339,15 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
         case_sensitive: false,
     },
-    // Parameterised XPath via `XPath.setXPathVariableResolver(resolver)` is
-    // the RFC-correct binding: the resolver carries user values as named
-    // variables and the expression contains `$name` references rather than
-    // string concatenation.  Treating the resolver argument as a sanitizer
-    // clears XPATH_INJECTION on values routed through the resolver
-    // construction so any later `evaluate(...)` on the bound XPath instance
-    // stays clean.
-    LabelRule {
-        matchers: &["setXPathVariableResolver"],
-        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
-        case_sensitive: false,
-    },
+    // Parameterised XPath via `XPath.setXPathVariableResolver(resolver)`
+    // suppression is implemented as a receiver-config sidecar in
+    // [`crate::ssa::xpath_config::XPathConfigResult`]: a
+    // `setXPathVariableResolver` call on a receiver carrying
+    // `TypeKind::XPathClient` flips the receiver's `has_resolver` flag,
+    // and the SSA sink-emission site strips `Cap::XPATH_INJECTION` from
+    // any later `xpath.evaluate(taintedExpr, ...)` whose receiver is
+    // provably bound.  No flat sanitizer rule is needed (and a
+    // name-only rule would clear the wrong call site).
     // ─── Header / CRLF injection sinks ───
     //
     // `HttpServletResponse.setHeader(name, val)` / `addHeader(name, val)`

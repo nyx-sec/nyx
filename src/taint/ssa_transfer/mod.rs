@@ -111,6 +111,12 @@ pub struct SsaTaintTransfer<'a> {
     /// additive: `None` falls back to the existing flat / gated XXE
     /// classification.
     pub xml_parser_config: Option<&'a crate::ssa::xml_config::XmlParserConfigResult>,
+    /// XPath-receiver config facts.  Used to suppress XPATH_INJECTION at
+    /// `evaluate` / `compile` sinks whose receiver was provably bound to
+    /// an `XPathVariableResolver` (parameterised-XPath shape).  Strictly
+    /// additive: `None` falls back to the existing flat / gated XPATH
+    /// classification.
+    pub xpath_config: Option<&'a crate::ssa::xpath_config::XPathConfigResult>,
     /// Precise per-function SSA summaries for intra-file callee resolution.
     /// Checked before legacy FuncSummary resolution.
     ///
@@ -2210,6 +2216,7 @@ fn inline_analyse_callee(
         const_values: Some(&callee_body.opt.const_values),
         type_facts: Some(&callee_body.opt.type_facts),
         xml_parser_config: Some(&callee_body.opt.xml_parser_config),
+        xpath_config: Some(&callee_body.opt.xpath_config),
         ssa_summaries: transfer.ssa_summaries,
         extra_labels: transfer.extra_labels,
         base_aliases: Some(&callee_body.opt.alias_result),
@@ -6108,6 +6115,40 @@ fn collect_block_events(
                 if let Some(xc) = transfer.xml_parser_config {
                     if crate::ssa::xml_config::xxe_safe(Some(*rv), xc) {
                         sink_caps &= !Cap::XXE;
+                    }
+                }
+            }
+        }
+        if sink_caps.is_empty() {
+            continue;
+        }
+
+        // XPath resolver-binding suppression.  An XPath `evaluate` /
+        // `compile` sink whose receiver was provably bound to an
+        // `XPathVariableResolver` is treated as parameterised and the
+        // XPATH_INJECTION bit is stripped.  Mirrors the XXE config-fact
+        // shape above.  Only fires when the receiver also carries
+        // `TypeKind::XPathClient` (gates the suppression behind
+        // type-fact disambiguation so a generic `obj.evaluate(...)`
+        // matched as XPATH_INJECTION via name-only labelling does not
+        // accidentally clear).
+        if sink_caps.intersects(Cap::XPATH_INJECTION) {
+            if let SsaOp::Call {
+                receiver: Some(rv), ..
+            } = &inst.op
+            {
+                if let Some(xpc) = transfer.xpath_config {
+                    let receiver_is_xpath = transfer
+                        .type_facts
+                        .and_then(|tf| tf.get_type(*rv))
+                        .map(|kind| {
+                            matches!(kind, crate::ssa::type_facts::TypeKind::XPathClient)
+                        })
+                        .unwrap_or(false);
+                    if receiver_is_xpath
+                        && crate::ssa::xpath_config::xpath_safe(Some(*rv), xpc)
+                    {
+                        sink_caps &= !Cap::XPATH_INJECTION;
                     }
                 }
             }

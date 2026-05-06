@@ -126,6 +126,15 @@ fn java_parameterised_xpath_does_not_fire() {
     assert_clean("java", "ParameterizedXpath.java");
 }
 
+#[test]
+fn java_tainted_expr_with_resolver_does_not_fire() {
+    // Receiver-config sidecar (`src/ssa/xpath_config.rs`) clears
+    // XPATH_INJECTION on `xpath.evaluate(taintedExpr, ...)` when the
+    // bound XPath instance had `setXPathVariableResolver` called on it
+    // first.  Without the sidecar this fixture would fire.
+    assert_clean("java", "TaintedParameterizedXpath.java");
+}
+
 // ── Python ───────────────────────────────────────────────────────────────
 
 #[test]

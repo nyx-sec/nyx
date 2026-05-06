@@ -264,6 +264,12 @@ pub fn class_name_to_type_kind(name: &str) -> Option<TypeKind> {
         "DocumentBuilder" | "SAXParser" | "XMLReader" | "SAXBuilder" => {
             Some(TypeKind::XmlParser)
         }
+        // JAXP XPath instances.  `XPath xpath = factory.newXPath();`
+        // routes through this map so the receiver carries
+        // `TypeKind::XPathClient`, enabling the type-qualified
+        // `XPathClient.evaluate` resolution and the resolver-binding
+        // suppression sidecar.
+        "XPath" | "XPathExpression" => Some(TypeKind::XPathClient),
         // Python qualified type names.
         // Only covers raw lowered names from isinstance(). The lowering in lower.rs
         // extracts the literal type text: isinstance(x, requests.Session) produces
