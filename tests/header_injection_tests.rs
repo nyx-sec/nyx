@@ -174,3 +174,52 @@ fn python_subscript_set_with_tainted_value_fires() {
 fn python_subscript_set_with_strip_crlf_sanitized() {
     assert_clean("python", "safe_subscript_set.py");
 }
+
+#[test]
+fn go_set_header_with_tainted_value_fires() {
+    assert_unsafe("go", "unsafe_set_header.go");
+}
+
+#[test]
+fn go_strip_crlf_sanitizes() {
+    assert_clean("go", "safe_set_header.go");
+}
+
+#[test]
+fn rust_set_header_with_tainted_value_fires() {
+    assert_unsafe("rust", "unsafe_set_header.rs");
+}
+
+#[test]
+fn rust_strip_crlf_sanitizes() {
+    assert_clean("rust", "safe_set_header.rs");
+}
+
+/// Phase 04 acceptance: PHP `header("Location: " . $url)` must surface both
+/// `taint-header-injection` and `taint-open-redirect` findings on the same
+/// call site.  The flat HEADER_INJECTION rule (gated `=header`, payload arg 0)
+/// and the OPEN_REDIRECT co-tag (gated on the `Location:` first-arg prefix)
+/// share the call node, so the multi-gate SSA dispatch must emit one finding
+/// per cap.  The fixture lives under `open_redirect/php/`.
+#[test]
+fn php_header_location_cofires_header_injection_and_open_redirect() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("open_redirect")
+        .join("php");
+    let diags = diags_for_file(&dir, "unsafe_redirect.php");
+    let header_count = count_by_prefix(&diags, "taint-header-injection");
+    let redirect_count = count_by_prefix(&diags, "taint-open-redirect");
+    assert!(
+        header_count >= 1 && redirect_count >= 1,
+        "expected both taint-header-injection (>=1, got {header_count}) and \
+         taint-open-redirect (>=1, got {redirect_count}) on \
+         open_redirect/php/unsafe_redirect.php.\n\
+         All diags: {:#?}",
+        diags
+            .iter()
+            .map(|d| format!("{}:{} [{}] {}", d.path, d.line, d.severity.as_db_str(), d.id))
+            .collect::<Vec<_>>(),
+    );
+}
