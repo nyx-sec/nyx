@@ -431,17 +431,44 @@ pub static RULES: &[LabelRule] = &[
     // ─── Open redirect sinks ───
     //
     // Express response redirect: `res.redirect(url)`.  Browser-side
-    // navigation: `window.location` / `location.href` assignment is a
-    // sink-by-assignment shape; only `location.replace` / `location.assign`
-    // fire as direct calls here.
+    // navigation: `location.replace` / `location.assign` fire as direct
+    // calls; `window.location = url` / `window.location.href = url` /
+    // `location.href = url` fire as assignment-LHS sinks via the
+    // `member_expr_text` classification path in `cfg::push_node`.
+    // `router.navigate` covers the Angular Router (`Router.navigate`,
+    // `Router.navigateByUrl`) and the React-Router `useNavigate`-returned
+    // `navigate` function; suffix matching catches both the bound-receiver
+    // and direct-call shapes.
     LabelRule {
-        matchers: &["res.redirect", "location.replace", "location.assign"],
+        matchers: &[
+            "res.redirect",
+            "location.replace",
+            "location.assign",
+            "router.navigate",
+            "router.navigateByUrl",
+            "window.location",
+            "window.location.href",
+            "location.href",
+        ],
         label: DataLabel::Sink(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },
     // ─── Open-redirect URL allowlist sanitizers ───
+    //
+    // Project-local helpers that allowlist hosts or enforce relative-only
+    // URLs.  `validateRedirectUrl` / `isSafeRedirect` are the canonical
+    // developer-named allowlist helpers; `stripScheme` clears any absolute
+    // scheme and degrades the URL to a relative path.  `ensureRelativeUrl`
+    // / `assertRelativePath` cover the leading-slash / no-scheme idiom.
     LabelRule {
-        matchers: &["validateRedirectUrl", "isSafeRedirect", "stripScheme"],
+        matchers: &[
+            "validateRedirectUrl",
+            "isSafeRedirect",
+            "stripScheme",
+            "ensureRelativeUrl",
+            "assertRelativePath",
+            "isRelativeUrl",
+        ],
         label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },

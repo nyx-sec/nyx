@@ -267,19 +267,34 @@ pub static RULES: &[LabelRule] = &[
     },
     // ─── Open redirect sinks ───
     //
-    // axum / rocket `Redirect::to(url)` builds a 3xx response with the URL
-    // in the `Location` header.  Without an allowlist check, a tainted `url`
-    // is the canonical Rust open-redirect vector.  Listed unconditionally
-    // (not gated on framework detection) so non-framework helpers / re-exports
-    // still surface; the framework-conditional rules below are intentionally
-    // not duplicating this label.
+    // axum / rocket `Redirect::to(url)` / `Redirect::permanent(url)` /
+    // `Redirect::temporary(url)` build a 3xx response with the URL in the
+    // `Location` header.  Without an allowlist check, a tainted `url` is
+    // the canonical Rust open-redirect vector.  Listed unconditionally (not
+    // gated on framework detection) so non-framework helpers / re-exports
+    // still surface; the framework-conditional rules below are
+    // intentionally not duplicating this label.  Actix
+    // `HttpResponse::Found().header("Location", x)` is covered by the
+    // existing `header` HEADER_INJECTION sink and any Location-line
+    // co-tagging is deferred to the abstract-string-domain pattern hook.
     LabelRule {
-        matchers: &["Redirect::to"],
+        matchers: &[
+            "Redirect::to",
+            "Redirect::permanent",
+            "Redirect::temporary",
+        ],
         label: DataLabel::Sink(Cap::OPEN_REDIRECT),
         case_sensitive: true,
     },
     LabelRule {
-        matchers: &["validate_redirect_url", "is_safe_redirect", "strip_scheme"],
+        matchers: &[
+            "validate_redirect_url",
+            "is_safe_redirect",
+            "strip_scheme",
+            "ensure_relative_url",
+            "assert_relative_path",
+            "is_relative_url",
+        ],
         label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },

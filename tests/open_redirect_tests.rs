@@ -1,12 +1,17 @@
 //! Phase 05 integration tests for `Cap::OPEN_REDIRECT`.
 //!
-//! Fixtures under `tests/fixtures/open_redirect/<lang>/`:
+//! Each supported language has three fixtures under
+//! `tests/fixtures/open_redirect/<lang>/`:
 //!
 //! * `unsafe_redirect.*` — taint flows from a request source into a
 //!   redirect API.  Must produce >=1 `taint-open-redirect` finding.
 //! * `safe_redirect.*` — same flow routed through a developer-named
 //!   `validateRedirectUrl` / `validate_redirect_url` allowlist.  Must
 //!   produce 0 findings.
+//! * `safe_relative_redirect.*` — same flow routed through an
+//!   `ensureRelativeUrl` / `ensure_relative_url` helper that enforces a
+//!   leading `/` and rejects scheme-prefixed values (relative-only path).
+//!   Must produce 0 findings.
 
 mod common;
 
@@ -96,6 +101,11 @@ fn javascript_validate_url_sanitizes() {
 }
 
 #[test]
+fn javascript_relative_only_sanitizes() {
+    assert_clean("javascript", "safe_relative_redirect.js");
+}
+
+#[test]
 fn typescript_redirect_with_tainted_url_fires() {
     assert_unsafe("typescript", "unsafe_redirect.ts");
 }
@@ -103,6 +113,11 @@ fn typescript_redirect_with_tainted_url_fires() {
 #[test]
 fn typescript_validate_url_sanitizes() {
     assert_clean("typescript", "safe_redirect.ts");
+}
+
+#[test]
+fn typescript_relative_only_sanitizes() {
+    assert_clean("typescript", "safe_relative_redirect.ts");
 }
 
 #[test]
@@ -116,6 +131,11 @@ fn python_validate_url_sanitizes() {
 }
 
 #[test]
+fn python_relative_only_sanitizes() {
+    assert_clean("python", "safe_relative_redirect.py");
+}
+
+#[test]
 fn java_send_redirect_with_tainted_url_fires() {
     assert_unsafe("java", "UnsafeRedirect.java");
 }
@@ -126,6 +146,11 @@ fn java_validate_url_sanitizes() {
 }
 
 #[test]
+fn java_relative_only_sanitizes() {
+    assert_clean("java", "SafeRelativeRedirect.java");
+}
+
+#[test]
 fn php_header_location_with_tainted_url_fires() {
     assert_unsafe("php", "unsafe_redirect.php");
 }
@@ -133,4 +158,54 @@ fn php_header_location_with_tainted_url_fires() {
 #[test]
 fn php_validate_redirect_url_sanitizes() {
     assert_clean("php", "safe_redirect.php");
+}
+
+#[test]
+fn php_relative_only_sanitizes() {
+    assert_clean("php", "safe_relative_redirect.php");
+}
+
+#[test]
+fn ruby_redirect_to_with_tainted_url_fires() {
+    assert_unsafe("ruby", "unsafe_redirect.rb");
+}
+
+#[test]
+fn ruby_validate_redirect_url_sanitizes() {
+    assert_clean("ruby", "safe_redirect.rb");
+}
+
+#[test]
+fn ruby_relative_only_sanitizes() {
+    assert_clean("ruby", "safe_relative_redirect.rb");
+}
+
+#[test]
+fn go_http_redirect_with_tainted_url_fires() {
+    assert_unsafe("go", "unsafe_redirect.go");
+}
+
+#[test]
+fn go_validate_redirect_url_sanitizes() {
+    assert_clean("go", "safe_redirect.go");
+}
+
+#[test]
+fn go_relative_only_sanitizes() {
+    assert_clean("go", "safe_relative_redirect.go");
+}
+
+#[test]
+fn rust_axum_redirect_to_with_tainted_url_fires() {
+    assert_unsafe("rust", "unsafe_redirect.rs");
+}
+
+#[test]
+fn rust_validate_redirect_url_sanitizes() {
+    assert_clean("rust", "safe_redirect.rs");
+}
+
+#[test]
+fn rust_relative_only_sanitizes() {
+    assert_clean("rust", "safe_relative_redirect.rs");
 }

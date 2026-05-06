@@ -228,14 +228,29 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
-    // Open redirect: redirect_to with user-controlled destination.
+    // Open redirect: redirect_to (Rails) / redirect (Sinatra) with
+    // user-controlled destination.  `redirect` is a top-level Sinatra
+    // helper; case-sensitive matching keeps it from over-firing on
+    // unrelated identifiers.  `redirect_to` is the Rails canonical.
     LabelRule {
         matchers: &["redirect_to"],
         label: DataLabel::Sink(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &["validate_redirect_url", "is_safe_redirect", "strip_scheme"],
+        matchers: &["redirect"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+    },
+    LabelRule {
+        matchers: &[
+            "validate_redirect_url",
+            "is_safe_redirect",
+            "strip_scheme",
+            "ensure_relative_url",
+            "assert_relative_path",
+            "is_relative_url",
+        ],
         label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },

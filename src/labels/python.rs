@@ -398,7 +398,14 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: true,
     },
     LabelRule {
-        matchers: &["validate_redirect_url", "is_safe_redirect", "strip_scheme"],
+        matchers: &[
+            "validate_redirect_url",
+            "is_safe_redirect",
+            "strip_scheme",
+            "ensure_relative_url",
+            "assert_relative_path",
+            "is_relative_url",
+        ],
         label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },

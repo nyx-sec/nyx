@@ -334,12 +334,28 @@ pub static RULES: &[LabelRule] = &[
     },
     // ─── Open redirect sinks ───  (mirrors `labels/javascript.rs`)
     LabelRule {
-        matchers: &["res.redirect", "location.replace", "location.assign"],
+        matchers: &[
+            "res.redirect",
+            "location.replace",
+            "location.assign",
+            "router.navigate",
+            "router.navigateByUrl",
+            "window.location",
+            "window.location.href",
+            "location.href",
+        ],
         label: DataLabel::Sink(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &["validateRedirectUrl", "isSafeRedirect", "stripScheme"],
+        matchers: &[
+            "validateRedirectUrl",
+            "isSafeRedirect",
+            "stripScheme",
+            "ensureRelativeUrl",
+            "assertRelativePath",
+            "isRelativeUrl",
+        ],
         label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },
