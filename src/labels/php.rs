@@ -178,6 +178,88 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: true,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // PHP's procedural LDAP API: `ldap_search($ds, $base, $filter)`,
+    // `ldap_list($ds, $base, $filter)`, `ldap_read($ds, $base, $filter)`.
+    // The filter argument is the LDAP-injection vector when concatenated
+    // with attacker-controlled input.
+    LabelRule {
+        matchers: &["ldap_search", "ldap_list", "ldap_read"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── LDAP-filter sanitizer ───
+    //
+    // `ldap_escape($value, $ignore, LDAP_ESCAPE_FILTER)` applies RFC 4515
+    // escaping; treat any `ldap_escape` call as clearing the LDAP_INJECTION
+    // cap (the no-flag default also escapes filter metacharacters
+    // conservatively).
+    LabelRule {
+        matchers: &["ldap_escape"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // `DOMXPath::query($expr, $ctx)` and `DOMXPath::evaluate($expr, $ctx)`
+    // accept the expression string as arg 0; concatenated user input there
+    // is the canonical PHP XPath-injection vector.  `SimpleXMLElement::xpath`
+    // takes the same shape.  Direct flat matchers cover the
+    // class-qualified call forms.
+    // Type-qualified rewrites: `$xp = new DOMXPath($doc)` tags `$xp` as
+    // `TypeKind::XPathClient`, so `$xp->query(...)` / `$xp->evaluate(...)`
+    // resolve to `XPathClient.query` / `XPathClient.evaluate`.  Without
+    // the distinct TypeKind, bare `query` would match the SQL_QUERY sink.
+    LabelRule {
+        matchers: &[
+            "XPathClient.query",
+            "XPathClient.evaluate",
+            "DOMXPath::query",
+            "DOMXPath::evaluate",
+            "SimpleXMLElement::xpath",
+        ],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // Bare `xpath` method: SimpleXMLElement instances expose `->xpath($expr)`
+    // and Symfony / DOMCrawler wrappers do the same.  Suffix matching on
+    // `xpath` covers `$xml->xpath(...)` and similar bound-receiver shapes
+    // where the receiver type is not statically known.  Case-sensitive to
+    // avoid collisions with the `XPath` capitalisation used by qualified
+    // names.
+    LabelRule {
+        matchers: &["xpath"],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // No PHP standard library helper escapes XPath metacharacters; project-
+    // local `escape_xpath` / `xpath_escape` are the developer-named
+    // equivalents.
+    LabelRule {
+        matchers: &["escape_xpath", "xpath_escape"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // PHP's `header($line)` writes a raw header line.  Tainted strings
+    // without `\r\n` stripping let an attacker inject extra headers
+    // (response splitting); the same callee is also gated for
+    // open-redirect detection on `Location: ...` forms.
+    LabelRule {
+        matchers: &["=header"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF sanitizers ───
+    LabelRule {
+        matchers: &["strip_crlf", "escape_header", "sanitize_header"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
 ];
 
 /// Gated sinks for PHP.

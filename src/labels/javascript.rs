@@ -310,6 +310,141 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // `ldapjs`: both the bound-variable idiom
+    // `const client = ldap.createClient({...}); client.search(...)` and the
+    // chained idiom `ldap.createClient({...}).search(...)` are covered by
+    // type-qualified receiver resolution.  The receiver of the inner call is
+    // typed `TypeKind::LdapClient` via `ssa::type_facts::constructor_type`,
+    // and (for the bound-variable form) closure-captured types are forwarded
+    // into the per-function type-fact result by
+    // [`crate::taint::inject_external_type_facts`], so the qualified callee
+    // text resolves to `LdapClient.search` in both shapes.
+    LabelRule {
+        matchers: &["LdapClient.search"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizers ───
+    //
+    // The `ldap-escape` package exports `filter` and `dn` tagged-template
+    // helpers (`filter`\`(uid=${input})\``).  After tree-sitter lifts the
+    // template-tag identifier, the callee text is the function name; suffix
+    // matching on `ldapEscape` / `ldapescape` covers `const ldapEscape =
+    // require('ldap-escape')` plus default-import shapes.
+    LabelRule {
+        matchers: &["ldapEscape", "ldap-escape", "ldapescape.filter", "ldapescape.dn"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // `document.evaluate(expr, contextNode, ...)` (DOM) and the npm `xpath`
+    // package's `xpath.select(expr, doc)` / `xpath.evaluate(expr, doc, ...)`
+    // accept the expression string as arg 0; concatenated user input there
+    // is the canonical XPath-injection vector.
+    LabelRule {
+        matchers: &[
+            "document.evaluate",
+            "xpath.select",
+            "xpath.evaluate",
+            "xpath.select1",
+        ],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // No standard library helper escapes XPath metacharacters; project-local
+    // `escapeXpath` / `xpathEscape` are the developer-named equivalents.
+    LabelRule {
+        matchers: &["escapeXpath", "xpathEscape", "escape_xpath"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // Express/Fastify/Node `http` response APIs that write a single header
+    // value: `res.setHeader(name, val)` (case-insensitive verb), `res.set`,
+    // `res.header`, `res.append`.  Tainted strings here without `\r\n`
+    // stripping let an attacker inject extra headers (response splitting).
+    LabelRule {
+        matchers: &["setHeader", "res.set", "res.header", "res.append"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF sanitizers ───
+    //
+    // Project-local `stripCRLF` / `escapeHeader` helpers that strip `\r` and
+    // `\n` from a value before it is written to a response header.
+    LabelRule {
+        matchers: &["stripCRLF", "stripCrlf", "escapeHeader", "sanitizeHeader"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Prototype pollution sinks (library-mediated) ───
+    //
+    // Recursive merge / deep-assign helpers from lodash / common bundles.
+    // Tainted source-object flowing into the second argument can rewrite
+    // `__proto__` or `constructor` on the target.  Argument-role
+    // distinction (target vs src) is not modelled here; multi-source
+    // bundles (jQuery.extend deep) over-fire only if the caller passes
+    // attacker-controlled data as the source.  `_.template` is excluded
+    // — it is handled separately as a gated CODE_EXEC sink (Strapi
+    // CVE-2023-22621 evaluate:false suppression).
+    LabelRule {
+        matchers: &[
+            "_.merge",
+            "_.mergeWith",
+            "_.defaultsDeep",
+            "_.set",
+            "_.setWith",
+            "deepMerge",
+            "defaultsDeep",
+        ],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+    },
+    // `Object.assign(target, src)` is benign with literal-source but
+    // dangerous when `src` is attacker-controlled (req.body etc.).
+    // Suffix matching catches the qualified call form.
+    LabelRule {
+        matchers: &["Object.assign"],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+    },
+    // ─── Open redirect sinks ───
+    //
+    // Express response redirect: `res.redirect(url)`.  Browser-side
+    // navigation: `window.location` / `location.href` assignment is a
+    // sink-by-assignment shape; only `location.replace` / `location.assign`
+    // fire as direct calls here.
+    LabelRule {
+        matchers: &["res.redirect", "location.replace", "location.assign"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── Open-redirect URL allowlist sanitizers ───
+    LabelRule {
+        matchers: &["validateRedirectUrl", "isSafeRedirect", "stripScheme"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // Template-engine entry points that accept the template *source string*
+    // as the first argument: tainted arg 0 lets the attacker drive
+    // arbitrary template execution.  `nunjucks.renderString(src, ctx)`
+    // is gated to arg 0 (the src position) — without gated-sink
+    // infrastructure, any tainted arg here over-fires; conservative.
+    // `_.template` is excluded — it has its own gated CODE_EXEC classifier
+    // (Strapi CVE-2023-22621) that respects the `evaluate:false` opt-out.
+    LabelRule {
+        matchers: &["Handlebars.compile", "nunjucks.renderString"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+    },
 ];
 
 /// Callee patterns that must never be classified as source/sanitizer/sink.

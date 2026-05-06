@@ -1181,6 +1181,8 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::LocalCollection => "LocalCollection".into(),
         TypeKind::RequestBuilder => "RequestBuilder".into(),
         TypeKind::JpaCriteriaQuery => "JpaCriteriaQuery".into(),
+        TypeKind::LdapClient => "LdapClient".into(),
+        TypeKind::XPathClient => "XPathClient".into(),
         TypeKind::Dto(_) => "Dto".into(),
     }
 }

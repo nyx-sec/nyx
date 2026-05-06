@@ -265,6 +265,111 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::CODE_EXEC),
         case_sensitive: false,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // JNDI / Spring LDAP search APIs accept an attacker-influenceable filter
+    // expression as either the second positional argument (`DirContext.search(name,
+    // filter, controls)` / `LdapTemplate.search(base, filter, mapper)`).  Without
+    // RFC 4515 escaping the filter can be rewritten to bypass authentication or
+    // exfiltrate directory entries.  Type-qualified resolution rewrites
+    // `ctx.search(...)` → `LdapClient.search` when the receiver carries a
+    // `TypeKind::LdapClient` fact (set by `class_name_to_type_kind` for the
+    // declared types `DirContext`, `InitialDirContext`, `LdapContext`,
+    // `LdapTemplate`, or by `constructor_type` for `new InitialDirContext(...)`
+    // / `new InitialLdapContext(...)`).  Direct flat matchers cover the
+    // documentation-style class-qualified call forms that bypass receiver
+    // typing.
+    LabelRule {
+        matchers: &[
+            "LdapClient.search",
+            "LdapClient.searchByEntity",
+            "LdapClient.searchForObject",
+            "LdapClient.searchForContext",
+            "DirContext.search",
+            "LdapTemplate.search",
+            "LdapTemplate.searchByEntity",
+            "LdapTemplate.searchForObject",
+            "LdapTemplate.searchForContext",
+            "ctx.search",
+        ],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizers ───
+    //
+    // Spring LDAP's `LdapEncoder.filterEncode(s)` applies RFC 4515 escaping to
+    // metacharacters (`\`, `*`, `(`, `)`, ` `).  `nameEncode` performs the
+    // companion DN-component escaping.  Both fully clear the LDAP_INJECTION
+    // cap; downstream sinks see a sanitised value.
+    LabelRule {
+        matchers: &["LdapEncoder.filterEncode", "LdapEncoder.nameEncode"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // `javax.xml.xpath.XPath.evaluate(expr, source, ...)` and the matching
+    // `XPathExpression.evaluate(source)` accept an attacker-influenceable
+    // expression string.  Without parameterisation via
+    // `XPathVariableResolver` the expression can be rewritten to bypass
+    // authentication or exfiltrate document subtrees.  `XPath.compile(expr)`
+    // is the equivalent pre-compile entry point.  Direct flat matchers cover
+    // the documentation-style class-qualified call forms.
+    LabelRule {
+        matchers: &[
+            "XPath.evaluate",
+            "XPath.compile",
+            "XPathExpression.evaluate",
+            "xpath.evaluate",
+            "xpath.compile",
+        ],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // OWASP ESAPI's `Encoder.encodeForXPath(s)` escapes the XPath
+    // metacharacters (`'`, `"`, `[`, `]`, `(`, `)`, `,`, `=`, `<`, `>`,
+    // `*`).  Project-local `xpathEscape` / `escapeXpath` are the common
+    // developer-named equivalents.
+    LabelRule {
+        matchers: &["Encoder.encodeForXPath", "xpathEscape", "escapeXpath"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // `HttpServletResponse.setHeader(name, val)` / `addHeader(name, val)`
+    // accept a single header value; tainted strings without `\r\n` stripping
+    // let an attacker inject extra headers (response splitting).
+    // `addCookie(c)` carries a `Cookie` whose constructor takes a value
+    // string; track at the higher-level setHeader / addHeader entry points.
+    LabelRule {
+        matchers: &["setHeader", "addHeader", "addCookie"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF sanitizers ───
+    LabelRule {
+        matchers: &["stripCRLF", "stripCrlf", "escapeHeader", "sanitizeHeader"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open redirect sinks ───
+    //
+    // Servlet API: `HttpServletResponse.sendRedirect(url)`.  Spring MVC
+    // controllers can also return a `"redirect:"` prefixed string but that
+    // sink shape is not modelled here.
+    LabelRule {
+        matchers: &["sendRedirect"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["validateRedirectUrl", "isSafeRedirect", "stripScheme"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {

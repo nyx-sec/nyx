@@ -284,6 +284,130 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::DESERIALIZE),
         case_sensitive: false,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // python-ldap exposes module-level `ldap.search_s` / `ldap.search_ext_s`
+    // and method-style `conn.search_s(base, scope, filter)` after `conn =
+    // ldap.initialize(url)`.  Suffix matching on the method names catches both
+    // the qualified form (`ldap.search_s`, matched as a literal) and the
+    // bound-receiver form (`conn.search_s` ends with `search_s`).  ldap3 uses
+    // `Connection(server, ...)` whose `.search(...)` accepts a filter kwarg /
+    // positional; receiver typing tags the connection as `TypeKind::LdapClient`
+    // so type-qualified resolution rewrites `conn.search` → `LdapClient.search`.
+    LabelRule {
+        matchers: &[
+            "ldap.search_s",
+            "ldap.search_ext_s",
+            "search_s",
+            "search_ext_s",
+            "LdapClient.search",
+            "ldap3.Connection.search",
+        ],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizers ───
+    //
+    // python-ldap: `ldap.filter.escape_filter_chars(s)` and ldap3's
+    // `ldap3.utils.conv.escape_filter_chars(s)` both apply RFC 4515 escaping
+    // to filter metacharacters.  Suffix matching on `escape_filter_chars`
+    // covers both the fully-qualified import and the bare-name destructured
+    // import (`from ldap.filter import escape_filter_chars`).
+    LabelRule {
+        matchers: &[
+            "escape_filter_chars",
+            "ldap.filter.escape_filter_chars",
+            "ldap3.utils.conv.escape_filter_chars",
+        ],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // lxml: `tree.xpath(expr)` / `etree.XPath(expr)` accept an
+    // attacker-influenceable expression string.  ElementTree's
+    // `find` / `findall` / `findtext` accept the same kind of XPath subset
+    // and admit injection when the path is built by string concatenation.
+    // Suffix matching on the bare method names catches both
+    // `lxml.etree._Element.xpath(...)` and `tree.xpath(...)` shapes.
+    LabelRule {
+        matchers: &[
+            "xpath",
+            "lxml.etree.XPath",
+            "etree.XPath",
+            "ElementTree.find",
+            "ElementTree.findall",
+            "ElementTree.findtext",
+        ],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // No standard library helper escapes XPath metacharacters; project-local
+    // `escape_xpath` / `xpath_escape` are the developer-named equivalents.
+    LabelRule {
+        matchers: &["escape_xpath", "xpath_escape"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // Flask / Werkzeug response APIs that write a single header value:
+    // `response.headers.add(name, val)`, `response.set_cookie(name, val)`,
+    // `response.headers[name] = val` (subscript-set is harder to track
+    // textually; rely on the `add` / `set_cookie` entry points and the
+    // explicit `Headers.add` form).
+    LabelRule {
+        matchers: &["headers.add", "headers.set", "set_cookie"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF sanitizers ───
+    LabelRule {
+        matchers: &["strip_crlf", "escape_header", "sanitize_header"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open redirect sinks ───
+    //
+    // Flask `redirect(url)`, Django `HttpResponseRedirect(url)`, FastAPI /
+    // Starlette `RedirectResponse(url=...)`.  Tainted URL flowing to any of
+    // these without an allowlist check is an open-redirect vector.
+    LabelRule {
+        matchers: &[
+            "redirect",
+            "flask.redirect",
+            "django.shortcuts.redirect",
+            "HttpResponseRedirect",
+            "RedirectResponse",
+        ],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+    },
+    LabelRule {
+        matchers: &["validate_redirect_url", "is_safe_redirect", "strip_scheme"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // Template-engine constructors / `from_string` factories that accept the
+    // template *source string* as arg 0.  `flask.render_template` takes a
+    // file PATH (not source) so does NOT match here — the safe API stays
+    // clean by name.
+    LabelRule {
+        matchers: &[
+            "=Template",
+            "jinja2.Template",
+            "jinja2.Environment.from_string",
+            "Environment.from_string",
+            "mako.template.Template",
+            "Template.render",
+        ],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+    },
 ];
 
 /// Method-call validators that strip caps from their *receiver* (and

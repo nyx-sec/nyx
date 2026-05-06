@@ -244,6 +244,51 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // `Net::LDAP.new(host:, ...).search(base:, filter:, ...)` is the canonical
+    // ruby-ldap shape.  Type-qualified resolution rewrites `ldap.search` →
+    // `LdapClient.search` when the receiver was constructed via `Net::LDAP.new`
+    // / `Net::LDAP.open` (see [`crate::ssa::type_facts::constructor_type`]).
+    // The chained literal form `Net::LDAP.new(...).search(...)` is also caught
+    // by the suffix matcher `Net::LDAP.search` after `()` stripping (the
+    // post-strip text is `Net::LDAP.new.search`, which ends in `.search`; the
+    // explicit `LDAP.search` keyword form `Net::LDAP.search(filter)` matches
+    // the same matcher directly).
+    LabelRule {
+        matchers: &["LdapClient.search", "Net::LDAP.search"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizer ───
+    //
+    // `Net::LDAP::Filter.escape(value)` applies RFC 4515 escaping; treat any
+    // call as clearing the LDAP_INJECTION cap.
+    LabelRule {
+        matchers: &["Net::LDAP::Filter.escape"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // `Nokogiri::XML::Node#xpath(expr)`, `at_xpath(expr)`, and `search(expr)`
+    // accept the expression string as arg 0; concatenated user input there is
+    // the canonical Nokogiri XPath-injection vector.  Suffix matching on the
+    // bare method names catches the bound-receiver form (`doc.xpath(expr)`).
+    LabelRule {
+        matchers: &["xpath", "at_xpath"],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // No Nokogiri / stdlib helper escapes XPath metacharacters; project-local
+    // `escape_xpath` / `xpath_escape` are the developer-named equivalents.
+    LabelRule {
+        matchers: &["escape_xpath", "xpath_escape"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {

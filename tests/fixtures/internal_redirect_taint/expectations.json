@@ -1,6 +1,6 @@
 {
   "required_findings": [
-    { "id_prefix": "taint-unsanitised-flow", "min_count": 1 }
+    { "id_prefix": "taint-open-redirect", "min_count": 1 }
   ],
   "forbidden_findings": [],
   "noise_budget": {

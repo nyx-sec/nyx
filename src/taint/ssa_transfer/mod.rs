@@ -5891,6 +5891,34 @@ fn collect_block_events(
             sink_caps &= !Cap::DATA_EXFIL;
         }
 
+        // Receiver-type-incompatibility stripping.  When the receiver's type
+        // proves a structurally-attached cap cannot apply (e.g. an
+        // `LdapClient` receiver carrying an `HTML_ESCAPE` Sink label that was
+        // attached to the CFG node by a `*.send`/`*.json`-style suffix
+        // matcher), drop the offending bits *before* the type-qualified-
+        // resolution branch below, so that branch is reachable on the
+        // remaining empty `sink_caps` and can re-anchor a precise sink class
+        // (`LdapClient.search` → `Cap::LDAP_INJECTION`).  Both the
+        // flow-sensitive type from `path_env` and the static type from
+        // `type_facts` are consulted; the static path is what enables
+        // closure-captured receivers (parent body → child body via
+        // [`crate::taint::inject_external_type_facts`]) to participate.
+        if let SsaOp::Call {
+            receiver: Some(rv), ..
+        } = &inst.op
+        {
+            if let Some(ref env) = state.path_env {
+                if let Some(kind) = env.get(*rv).types.as_singleton() {
+                    sink_caps &= !receiver_incompatible_sink_caps(&kind, sink_caps);
+                }
+            }
+            if let Some(tf) = transfer.type_facts {
+                if let Some(kind) = tf.get_type(*rv) {
+                    sink_caps &= !receiver_incompatible_sink_caps(kind, sink_caps);
+                }
+            }
+        }
+
         // Type-qualified sink resolution: when normal sink resolution found nothing,
         // try using the receiver's inferred type to construct a qualified callee name.
         if sink_caps.is_empty() {
@@ -6055,20 +6083,6 @@ fn collect_block_events(
             continue;
         }
 
-        // Receiver type incompatibility check.
-        // If the receiver's flow-sensitive type proves it cannot be the kind
-        // of object the sink expects (e.g., Int receiver → not an HTTP response
-        // sink), strip those sink caps.
-        if let Some(ref env) = state.path_env {
-            if let SsaOp::Call {
-                receiver: Some(rv), ..
-            } = &inst.op
-            {
-                if let Some(kind) = env.get(*rv).types.as_singleton() {
-                    sink_caps &= !receiver_incompatible_sink_caps(&kind, sink_caps);
-                }
-            }
-        }
         if sink_caps.is_empty() {
             continue;
         }

@@ -603,6 +603,23 @@ fn build_taint_diag(
             }
             _ => crate::patterns::Severity::Medium,
         }
+    } else if let Some(meta) = [
+        crate::labels::Cap::LDAP_INJECTION,
+        crate::labels::Cap::XPATH_INJECTION,
+        crate::labels::Cap::HEADER_INJECTION,
+        crate::labels::Cap::OPEN_REDIRECT,
+        crate::labels::Cap::SSTI,
+        crate::labels::Cap::XXE,
+        crate::labels::Cap::PROTOTYPE_POLLUTION,
+    ]
+    .iter()
+    .find(|c| effective_caps.contains(**c))
+    .and_then(|c| crate::labels::cap_rule_meta(*c))
+    {
+        // New cap classes draw severity from the rule registry so a single
+        // edit to `CAP_RULE_REGISTRY` cascades through SARIF, the dashboard,
+        // and the integration suite without per-language source-kind nudges.
+        meta.severity
     } else {
         severity_for_source_kind(finding.source_kind)
     };

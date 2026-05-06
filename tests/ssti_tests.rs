@@ -1,0 +1,117 @@
+//! Phase 06 integration tests for `Cap::SSTI`.
+//!
+//! Fixtures under `tests/fixtures/ssti/<lang>/`:
+//!
+//! * `unsafe_*` — taint flows from a request source into a template
+//!   compile / from_string / render call as the template *source* arg.
+//!   Must produce >=1 `taint-template-injection` finding.
+//! * `safe_*_constant` — template source is a literal; variables at
+//!   render time may carry user input but do not activate SSTI.  Must
+//!   produce 0 findings.
+
+mod common;
+
+use common::count_by_prefix;
+use nyx_scanner::commands::scan::Diag;
+use nyx_scanner::utils::config::{AnalysisMode, Config};
+use std::path::{Path, PathBuf};
+
+const RULE_PREFIX: &str = "taint-template-injection";
+
+fn fixture_dir(lang: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("ssti")
+        .join(lang)
+}
+
+fn test_config() -> Config {
+    let mut cfg = Config::default();
+    cfg.scanner.mode = AnalysisMode::Full;
+    cfg.scanner.read_vcsignore = false;
+    cfg.scanner.require_git_to_read_vcsignore = false;
+    cfg.scanner.enable_state_analysis = true;
+    cfg.scanner.enable_auth_analysis = true;
+    cfg.scanner.include_nonprod = true;
+    cfg.performance.worker_threads = Some(1);
+    cfg.performance.batch_size = 64;
+    cfg.performance.channel_multiplier = 1;
+    cfg
+}
+
+fn scan_dir(path: &Path) -> Vec<Diag> {
+    nyx_scanner::scan_no_index(path, &test_config()).expect("scan_no_index should succeed")
+}
+
+fn diags_for_file(dir: &Path, file_suffix: &str) -> Vec<Diag> {
+    scan_dir(dir)
+        .into_iter()
+        .filter(|d| {
+            std::path::Path::new(&d.path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                == Some(file_suffix)
+        })
+        .collect()
+}
+
+fn assert_unsafe(lang: &str, file_suffix: &str) {
+    let dir = fixture_dir(lang);
+    let diags = diags_for_file(&dir, file_suffix);
+    let count = count_by_prefix(&diags, RULE_PREFIX);
+    assert!(
+        count >= 1,
+        "{lang}/{file_suffix}: expected >=1 {RULE_PREFIX} finding, got {count}.\n\
+         All diags: {:#?}",
+        diags
+            .iter()
+            .map(|d| format!("{}:{} [{}] {}", d.path, d.line, d.severity.as_db_str(), d.id))
+            .collect::<Vec<_>>(),
+    );
+}
+
+fn assert_clean(lang: &str, file_suffix: &str) {
+    let dir = fixture_dir(lang);
+    let diags = diags_for_file(&dir, file_suffix);
+    let matching: Vec<_> = diags.iter().filter(|d| d.id.starts_with(RULE_PREFIX)).collect();
+    assert!(
+        matching.is_empty(),
+        "{lang}/{file_suffix}: expected 0 {RULE_PREFIX} findings, got {}:\n{:#?}",
+        matching.len(),
+        matching
+            .iter()
+            .map(|d| format!("{}:{} {}", d.path, d.line, d.id))
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn javascript_handlebars_compile_with_tainted_source_fires() {
+    assert_unsafe("javascript", "unsafe_handlebars_compile.js");
+}
+
+#[test]
+fn javascript_handlebars_constant_source_does_not_fire() {
+    assert_clean("javascript", "safe_handlebars_constant.js");
+}
+
+#[test]
+fn typescript_handlebars_compile_with_tainted_source_fires() {
+    assert_unsafe("typescript", "unsafe_handlebars_compile.ts");
+}
+
+#[test]
+fn typescript_handlebars_constant_source_does_not_fire() {
+    assert_clean("typescript", "safe_handlebars_constant.ts");
+}
+
+#[test]
+fn python_jinja_template_with_tainted_source_fires() {
+    assert_unsafe("python", "unsafe_jinja_template.py");
+}
+
+#[test]
+fn python_jinja_constant_source_does_not_fire() {
+    assert_clean("python", "safe_jinja_constant.py");
+}

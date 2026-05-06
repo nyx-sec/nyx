@@ -52,6 +52,19 @@ pub enum TypeKind {
     /// where openmrs / xwiki / keycloak Hibernate DAOs build queries
     /// via `cb.createQuery(Foo.class)` + `Root` / `Predicate` API.
     JpaCriteriaQuery,
+    /// An LDAP directory-service client / connection (`DirContext`,
+    /// `LdapTemplate`, `Net::LDAP`, `ldap3.Connection`, `ldap.createClient`,
+    /// `ldap.DialURL`, etc.).  Distinct from `DatabaseConnection` so the
+    /// type-qualified `LdapClient.search` rule fires only on directory
+    /// search APIs rather than every DB receiver with a `search` method.
+    LdapClient,
+    /// An XPath query / evaluation client (`DOMXPath`, `XPath`,
+    /// `XPathExpression`, `lxml.etree.XPath`, etc.).  Distinct from
+    /// `DatabaseConnection` so the type-qualified `XPathClient.query` /
+    /// `XPathClient.evaluate` rules fire only on XPath APIs rather than
+    /// every receiver with a generic `query` / `evaluate` method (avoids
+    /// collision with PHP `$pdo->query` SQL_QUERY sink).
+    XPathClient,
     /// A framework-injected DTO body whose field types are known.
     /// Populated when a parameter is recognised as a typed extractor and
     /// the DTO class / struct / Pydantic model is resolvable in scope.
@@ -99,6 +112,8 @@ impl TypeKind {
             Self::Url => Some("URL"),
             Self::RequestBuilder => Some("RequestBuilder"),
             Self::JpaCriteriaQuery => Some("JpaCriteriaQuery"),
+            Self::LdapClient => Some("LdapClient"),
+            Self::XPathClient => Some("XPathClient"),
             _ => None,
         }
     }
@@ -392,6 +407,15 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "createCriteriaUpdate" | "createCriteriaDelete" | "createTupleQuery" | "subquery" => {
                 Some(TypeKind::JpaCriteriaQuery)
             }
+            // LDAP directory-service clients.  `new InitialDirContext(env)` /
+            // `new InitialLdapContext(env, ctls)` instantiate the JNDI LDAP
+            // provider; `new LdapTemplate(...)` / `LdapTemplate.<init>` is the
+            // Spring LDAP wrapper.  Both expose `search` / `searchByEntity`
+            // /`searchForObject` overloads where filter/DN strings are LDAP
+            // injection sinks.
+            "InitialDirContext" | "InitialLdapContext" | "LdapTemplate" => {
+                Some(TypeKind::LdapClient)
+            }
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => match suffix {
@@ -409,6 +433,12 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // `elementsMap.get(id)`, `origIdToDuplicateId.get(...)`,
             // `groupIdMapForOperation.set(...)` shapes).
             "Map" | "Set" | "WeakMap" | "WeakSet" | "Array" => Some(TypeKind::LocalCollection),
+            // ldapjs client factory: `ldap.createClient({ url: '…' })` returns
+            // a Client whose `search(base, opts, cb)` is an LDAP injection
+            // sink.  Match the qualified callee text rather than the bare
+            // `createClient` suffix to avoid widening to unrelated factories
+            // with the same verb name.
+            "createClient" if callee.contains("ldap") => Some(TypeKind::LdapClient),
             _ => None,
         },
         Lang::Python => {
@@ -429,6 +459,15 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             } else if suffix == "open" && !callee.contains('.') {
                 // Bare `open()` is file I/O in Python
                 Some(TypeKind::FileHandle)
+            } else if callee == "ldap.initialize"
+                || callee == "ldap3.Connection"
+                || callee.ends_with(".initialize") && callee.contains("ldap")
+            {
+                // python-ldap: `conn = ldap.initialize(url)` returns an
+                // LDAPObject whose `search_s` / `search_ext_s` methods are
+                // LDAP-injection sinks.  ldap3: `Connection(server, ...)`
+                // returns a Connection with a `search()` method.
+                Some(TypeKind::LdapClient)
             } else {
                 None
             }
@@ -442,6 +481,10 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 Some(TypeKind::FileHandle)
             } else if callee.contains("url.") && suffix == "Parse" {
                 Some(TypeKind::Url)
+            } else if callee.contains("ldap.") && matches!(suffix, "Dial" | "DialURL" | "DialTLS") {
+                // go-ldap (`github.com/go-ldap/ldap/v3`): `conn, _ := ldap.DialURL(url)`
+                // returns `*ldap.Conn` whose `Search(req)` is an LDAP-injection sink.
+                Some(TypeKind::LdapClient)
             } else {
                 None
             }
@@ -451,6 +494,10 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "curl_init" => Some(TypeKind::HttpClient),
             "fopen" => Some(TypeKind::FileHandle),
             "SplFileObject" => Some(TypeKind::FileHandle),
+            // DOMXPath: `$xp = new DOMXPath($doc)`.  `$xp->query($expr)` /
+            // `$xp->evaluate($expr)` are XPath-injection sinks; without a
+            // distinct TypeKind they collide with the bare `query` SQL sink.
+            "DOMXPath" => Some(TypeKind::XPathClient),
             _ => None,
         },
         Lang::C => match suffix {
@@ -524,6 +571,11 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 Some(TypeKind::DatabaseConnection)
             } else if after_colons.starts_with("File.") && matches!(suffix, "open" | "new") {
                 Some(TypeKind::FileHandle)
+            } else if callee.contains("Net::LDAP") && matches!(suffix, "new" | "open") {
+                // net-ldap gem: `Net::LDAP.new(host: ...)` / `Net::LDAP.open`
+                // returns a connection whose `search(base:, filter:)` accepts
+                // an attacker-influenceable filter expression.
+                Some(TypeKind::LdapClient)
             } else {
                 None
             }

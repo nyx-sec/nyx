@@ -255,6 +255,91 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // Mirror of `labels/javascript.rs`; ldapjs / ts-ldapjs has the same
+    // `client.search(...)` shape.  Type-qualified resolution covers both
+    // `const client = ldap.createClient({...}); client.search(...)` (bound
+    // variable, type forwarded from the parent body via
+    // [`crate::taint::inject_external_type_facts`]) and the chained
+    // `ldap.createClient({...}).search(...)` form.
+    LabelRule {
+        matchers: &["LdapClient.search"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizers ───
+    LabelRule {
+        matchers: &["ldapEscape", "ldap-escape", "ldapescape.filter", "ldapescape.dn"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath injection sinks ───  (mirrors `labels/javascript.rs`)
+    LabelRule {
+        matchers: &[
+            "document.evaluate",
+            "xpath.select",
+            "xpath.evaluate",
+            "xpath.select1",
+        ],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath escape sanitizers ───  (mirrors `labels/javascript.rs`)
+    LabelRule {
+        matchers: &["escapeXpath", "xpathEscape", "escape_xpath"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───  (mirrors `labels/javascript.rs`)
+    LabelRule {
+        matchers: &["setHeader", "res.set", "res.header", "res.append"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF sanitizers ───  (mirrors `labels/javascript.rs`)
+    LabelRule {
+        matchers: &["stripCRLF", "stripCrlf", "escapeHeader", "sanitizeHeader"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Prototype pollution sinks ───  (mirrors `labels/javascript.rs`)
+    LabelRule {
+        matchers: &[
+            "_.merge",
+            "_.mergeWith",
+            "_.defaultsDeep",
+            "_.set",
+            "_.setWith",
+            "deepMerge",
+            "defaultsDeep",
+        ],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["Object.assign"],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+    },
+    // ─── Open redirect sinks ───  (mirrors `labels/javascript.rs`)
+    LabelRule {
+        matchers: &["res.redirect", "location.replace", "location.assign"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["validateRedirectUrl", "isSafeRedirect", "stripScheme"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───  (mirrors `labels/javascript.rs`; `_.template`
+    // excluded — gated CODE_EXEC classifier)
+    LabelRule {
+        matchers: &["Handlebars.compile", "nunjucks.renderString"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+    },
 ];
 
 /// Callee patterns that must never be classified as source/sanitizer/sink.

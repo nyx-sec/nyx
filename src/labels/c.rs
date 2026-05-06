@@ -67,6 +67,30 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // OpenLDAP / libldap surface: `ldap_search_s(ld, base, scope, filter, ...)`
+    // and the asynchronous variant `ldap_search_ext_s(ld, base, scope, filter,
+    // attrs, attrsonly, serverctrls, clientctrls, timeout, sizelimit, *res)`.
+    // The filter argument (position 3) is the LDAP-injection vector.  No
+    // standard libldap escape helper exists in the C surface; sanitisation is
+    // typically caller-implemented (`sanitize_*` covers the developer-named
+    // case via the existing prefix rule above).
+    LabelRule {
+        matchers: &["ldap_search_s", "ldap_search_ext_s"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // libxml2 evaluation entry points: `xmlXPathEvalExpression(expr, ctx)`,
+    // `xmlXPathEval(expr, ctx)`, `xmlXPathCompile(expr)`.  The expression
+    // string is arg 0 and is the canonical XPath-injection vector.
+    LabelRule {
+        matchers: &["xmlXPathEvalExpression", "xmlXPathEval", "xmlXPathCompile"],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
 ];
 
 /// Gated sinks for C.

@@ -250,6 +250,12 @@ pub fn class_name_to_type_kind(name: &str) -> Option<TypeKind> {
         // Java I/O supertypes (enables hierarchy fallback for subtypes)
         | "InputStream" | "OutputStream" | "Reader" | "Writer" | "PrintWriter"
         | "BufferedInputStream" | "BufferedOutputStream" => Some(TypeKind::FileHandle),
+        // JNDI / Spring LDAP directory-service types.  Field- and method-typed
+        // declarations (`DirContext ctx = ...`, `LdapTemplate ldapTemplate;`)
+        // attach this fact to the receiver SSA value so type-qualified
+        // resolution rewrites `ctx.search(...)` → `LdapClient.search`.
+        "DirContext" | "LdapContext" | "InitialDirContext" | "InitialLdapContext"
+        | "LdapTemplate" => Some(TypeKind::LdapClient),
         // Python qualified type names.
         // Only covers raw lowered names from isinstance(). The lowering in lower.rs
         // extracts the literal type text: isinstance(x, requests.Session) produces

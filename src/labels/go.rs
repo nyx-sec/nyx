@@ -148,6 +148,37 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::CRYPTO),
         case_sensitive: false,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // go-ldap (`github.com/go-ldap/ldap/v3`): `conn, _ := ldap.DialURL(url);
+    // req := ldap.NewSearchRequest(base, scope, deref, sizeLimit, timeLimit,
+    // typesOnly, filter, attrs, controls)`.  The filter argument (position 6)
+    // is the LDAP-injection vector; passing the request to `conn.Search(req)`
+    // executes the filter.  Type-qualified resolution rewrites `conn.Search`
+    // → `LdapClient.Search` when the receiver was returned by
+    // `ldap.DialURL` / `ldap.Dial` / `ldap.DialTLS` (see
+    // [`crate::ssa::type_facts::constructor_type`]).  We also tag
+    // `ldap.NewSearchRequest` directly so taint reaching the filter argument
+    // surfaces at the construction call (matches the typical FP-free shape
+    // where the request is built once and passed straight to `Search`).
+    LabelRule {
+        matchers: &[
+            "LdapClient.Search",
+            "LdapClient.SearchWithPaging",
+            "ldap.NewSearchRequest",
+        ],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizer ───
+    //
+    // go-ldap exposes `ldap.EscapeFilter(s string) string` (RFC 4515 metachar
+    // escaping).  Treat any call as clearing the LDAP_INJECTION cap.
+    LabelRule {
+        matchers: &["ldap.EscapeFilter"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
 ];
 
 /// Argument-role-aware Go sinks.  Two classes coexist on the outbound HTTP

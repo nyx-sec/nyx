@@ -113,22 +113,22 @@ impl ConstValue {
 
 // ── TypeSet ─────────────────────────────────────────────────────────────
 
-/// Bitset over [`TypeKind`] variants (12 bits used of u16).
+/// Bitset over [`TypeKind`] variants (17 bits used of u32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TypeSet(u16);
+pub struct TypeSet(u32);
 
 impl TypeSet {
-    /// All 12 type bits set, no type constraint (Top).
-    pub const TOP: Self = Self(0x0FFF);
+    /// All 17 type bits set, no type constraint (Top).
+    pub const TOP: Self = Self(0x0001_FFFF);
     /// No type bits, unsatisfiable (Bottom).
     pub const BOTTOM: Self = Self(0);
 
     pub fn singleton(kind: &TypeKind) -> Self {
-        Self(1u16 << type_kind_index(kind))
+        Self(1u32 << type_kind_index(kind))
     }
 
     pub fn contains(&self, kind: &TypeKind) -> bool {
-        self.0 & (1u16 << type_kind_index(kind)) != 0
+        self.0 & (1u32 << type_kind_index(kind)) != 0
     }
 
     /// Meet (intersection): refine type knowledge.
@@ -156,7 +156,7 @@ impl TypeSet {
 
     /// Check if this set contains exactly one type matching the given kind.
     pub fn is_singleton_of(&self, kind: &TypeKind) -> bool {
-        self.0 != 0 && self.0 == (1u16 << type_kind_index(kind))
+        self.0 != 0 && self.0 == (1u32 << type_kind_index(kind))
     }
 
     /// Return the TypeKind if this is a singleton set (exactly one type).
@@ -186,6 +186,8 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         TypeKind::LocalCollection => 12,
         TypeKind::RequestBuilder => 13,
         TypeKind::JpaCriteriaQuery => 14,
+        TypeKind::LdapClient => 15,
+        TypeKind::XPathClient => 16,
         // the analysis DTO types carry per-field structural info that the
         // bitset domain can't represent.  Collapse to Unknown so callers
         // still see "any type possible" rather than crashing on an
@@ -212,6 +214,8 @@ fn type_kind_from_index(idx: u32) -> Option<TypeKind> {
         12 => Some(TypeKind::LocalCollection),
         13 => Some(TypeKind::RequestBuilder),
         14 => Some(TypeKind::JpaCriteriaQuery),
+        15 => Some(TypeKind::LdapClient),
+        16 => Some(TypeKind::XPathClient),
         _ => None,
     }
 }
@@ -801,7 +805,7 @@ pub struct PathEnv {
     /// Per-key meet count for widening decisions.
     meet_counts: SmallVec<[(SsaValue, u8); 8]>,
     /// Refinement counter (bounded per block).
-    refine_count: u16,
+    refine_count: u32,
 }
 
 impl PathEnv {
@@ -837,7 +841,7 @@ impl PathEnv {
         if self.unsat {
             return;
         }
-        if self.refine_count >= MAX_REFINE_PER_BLOCK as u16 {
+        if self.refine_count >= MAX_REFINE_PER_BLOCK as u32 {
             return; // bounded
         }
         let canonical = self.uf.find_immutable(v);
@@ -860,7 +864,7 @@ impl PathEnv {
         // but `refine_single` is also invoked directly from `assume_eq`,
         // `assume_neq`, and a few internal sites.  Large generated inputs
         // (thousands of short statements on one line) can drive millions
-        // of calls and overflow a plain u16 `refine_count`.  Saturate to
+        // of calls and overflow a plain u32 `refine_count`.  Saturate to
         // stay within bounds, the refinement pipeline is already
         // idempotent past the cap, so saturation is semantically a no-op.
         self.refine_count = self.refine_count.saturating_add(1);
