@@ -6436,7 +6436,7 @@ fn pick_primary_sink_sites(
         return Vec::new();
     };
     let mut out: Vec<SinkSite> = Vec::new();
-    let mut seen: HashSet<(String, u32, u32, u16)> = HashSet::new();
+    let mut seen: HashSet<(String, u32, u32, u32)> = HashSet::new();
     for (param_idx, sites) in param_to_sink_sites {
         let Some(arg_vals) = args.get(*param_idx) else {
             continue;
@@ -6475,7 +6475,7 @@ fn pick_primary_sink_sites_from_resolved(
         return Vec::new();
     }
     let mut out: Vec<SinkSite> = Vec::new();
-    let mut seen: HashSet<(String, u32, u32, u16)> = HashSet::new();
+    let mut seen: HashSet<(String, u32, u32, u32)> = HashSet::new();
     for (_, sites) in param_to_sink_sites {
         for site in sites {
             if site.line == 0 {

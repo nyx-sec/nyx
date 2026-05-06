@@ -74,6 +74,14 @@ pub enum CapName {
     Crypto,
     /// Request-bound identifier not yet ownership-checked.
     UnauthorizedId,
+    DataExfil,
+    LdapInjection,
+    XpathInjection,
+    HeaderInjection,
+    OpenRedirect,
+    Ssti,
+    Xxe,
+    PrototypePollution,
     All,
 }
 
@@ -94,6 +102,14 @@ impl CapName {
             Self::CodeExec => Cap::CODE_EXEC,
             Self::Crypto => Cap::CRYPTO,
             Self::UnauthorizedId => Cap::UNAUTHORIZED_ID,
+            Self::DataExfil => Cap::DATA_EXFIL,
+            Self::LdapInjection => Cap::LDAP_INJECTION,
+            Self::XpathInjection => Cap::XPATH_INJECTION,
+            Self::HeaderInjection => Cap::HEADER_INJECTION,
+            Self::OpenRedirect => Cap::OPEN_REDIRECT,
+            Self::Ssti => Cap::SSTI,
+            Self::Xxe => Cap::XXE,
+            Self::PrototypePollution => Cap::PROTOTYPE_POLLUTION,
             Self::All => Cap::all(),
         }
     }
@@ -115,6 +131,14 @@ impl fmt::Display for CapName {
             Self::CodeExec => write!(f, "code_exec"),
             Self::Crypto => write!(f, "crypto"),
             Self::UnauthorizedId => write!(f, "unauthorized_id"),
+            Self::DataExfil => write!(f, "data_exfil"),
+            Self::LdapInjection => write!(f, "ldap_injection"),
+            Self::XpathInjection => write!(f, "xpath_injection"),
+            Self::HeaderInjection => write!(f, "header_injection"),
+            Self::OpenRedirect => write!(f, "open_redirect"),
+            Self::Ssti => write!(f, "ssti"),
+            Self::Xxe => write!(f, "xxe"),
+            Self::PrototypePollution => write!(f, "prototype_pollution"),
             Self::All => write!(f, "all"),
         }
     }
@@ -137,11 +161,21 @@ impl FromStr for CapName {
             "code_exec" => Ok(Self::CodeExec),
             "crypto" => Ok(Self::Crypto),
             "unauthorized_id" => Ok(Self::UnauthorizedId),
+            "data_exfil" | "data_exfiltration" => Ok(Self::DataExfil),
+            "ldap_injection" | "ldapi" => Ok(Self::LdapInjection),
+            "xpath_injection" | "xpathi" => Ok(Self::XpathInjection),
+            "header_injection" | "crlf" | "response_splitting" => Ok(Self::HeaderInjection),
+            "open_redirect" | "redirect" => Ok(Self::OpenRedirect),
+            "ssti" | "template_injection" => Ok(Self::Ssti),
+            "xxe" => Ok(Self::Xxe),
+            "prototype_pollution" | "proto_pollution" => Ok(Self::PrototypePollution),
             "all" => Ok(Self::All),
             _ => Err(format!(
                 "invalid cap name: {s:?} (expected env_var, html_escape, shell_escape, \
                  url_encode, json_parse, file_io, fmt_string, sql_query, deserialize, \
-                 ssrf, code_exec, crypto, unauthorized_id, all)"
+                 ssrf, code_exec, crypto, unauthorized_id, data_exfil, ldap_injection, \
+                 xpath_injection, header_injection, open_redirect, ssti, xxe, \
+                 prototype_pollution, all)"
             )),
         }
     }

@@ -251,7 +251,7 @@ mod inline_cache_epoch_tests {
         ArgTaintSig(SmallVec::new())
     }
 
-    fn shape(caps_bits: u16) -> CachedInlineShape {
+    fn shape(caps_bits: u32) -> CachedInlineShape {
         CachedInlineShape(Some(ReturnShape {
             caps: Cap::from_bits_retain(caps_bits),
             internal_origins: SmallVec::new(),
@@ -448,7 +448,7 @@ mod binding_key_tests {
 
     // ── seed_lookup ────────────────────────────────────────────────────
 
-    fn taint(caps: u16) -> VarTaint {
+    fn taint(caps: u32) -> VarTaint {
         VarTaint {
             caps: Cap::from_bits_truncate(caps),
             origins: smallvec![],
@@ -1709,7 +1709,7 @@ mod fanout_merge_tests {
         ];
 
         let m = merge_resolved_summaries_fanout(a, b);
-        let mut sorted: Vec<(usize, u16)> = m
+        let mut sorted: Vec<(usize, u32)> = m
             .param_to_sink
             .iter()
             .map(|(i, c)| (*i, c.bits()))

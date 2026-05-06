@@ -32,6 +32,18 @@ pub fn owasp_bucket_for(rule_id: &str) -> Option<(&'static str, &'static str)> {
         return None;
     }
 
+    // Cap-class rule ids carry their canonical OWASP code in
+    // `CAP_RULE_REGISTRY`; consult that first so adding a new cap class
+    // does not require updating two tables.  The legacy family-token
+    // dispatch below covers per-language tree-sitter pattern rules
+    // (`js.xss.outer_html` style) that have no cap entry.
+    if let Some(meta) = crate::labels::CAP_RULE_REGISTRY
+        .iter()
+        .find(|m| rule_id.starts_with(m.rule_id))
+    {
+        return Some((meta.owasp_code, meta.owasp_label));
+    }
+
     Some(match family {
         // A01, Broken Access Control
         "auth" | "csrf" | "mass_assign" | "path" | "redirect" => ("A01", "Broken Access Control"),
@@ -39,10 +51,10 @@ pub fn owasp_bucket_for(rule_id: &str) -> Option<(&'static str, &'static str)> {
         "crypto" | "secrets" => ("A02", "Cryptographic Failures"),
         // A03, Injection (covers SQLi, XSS, command, code-eval, template, NoSQL, LDAP, reflection,
         // and engine-level taint findings without a more specific family tag).
-        "sqli" | "xss" | "cmdi" | "code_exec" | "template" | "nosql" | "ldap" | "reflection"
-        | "taint" => ("A03", "Injection"),
-        // A05, Security Misconfiguration (TLS verify off, cookie flags, prototype pollution)
-        "config" | "transport" | "prototype" => ("A05", "Security Misconfiguration"),
+        "sqli" | "xss" | "cmdi" | "code_exec" | "template" | "nosql" | "ldap" | "xpath"
+        | "header" | "reflection" | "taint" => ("A03", "Injection"),
+        // A05, Security Misconfiguration (TLS verify off, cookie flags, prototype pollution, XXE)
+        "config" | "transport" | "prototype" | "xxe" => ("A05", "Security Misconfiguration"),
         // A08, Software and Data Integrity Failures
         "deser" => ("A08", "Software and Data Integrity Failures"),
         // A09, Logging & Monitoring Failures
@@ -111,6 +123,30 @@ fn issue_category_label(rule_id: &str) -> &'static str {
     // dashboard category badge matches the rule semantics.
     if rule_id.starts_with("taint-data-exfiltration") {
         return "Data Exfiltration";
+    }
+    // Cap-class rule ids share the `taint` family token but each represent
+    // a distinct vulnerability class.  Match them before falling through
+    // to family-based dispatch so the dashboard surfaces the right badge.
+    if rule_id.starts_with("taint-ldap-injection") {
+        return "LDAP Injection";
+    }
+    if rule_id.starts_with("taint-xpath-injection") {
+        return "XPath Injection";
+    }
+    if rule_id.starts_with("taint-header-injection") {
+        return "Header Injection";
+    }
+    if rule_id.starts_with("taint-open-redirect") {
+        return "Open Redirect";
+    }
+    if rule_id.starts_with("taint-template-injection") {
+        return "Template Injection";
+    }
+    if rule_id.starts_with("taint-xxe") {
+        return "XXE";
+    }
+    if rule_id.starts_with("taint-prototype-pollution") {
+        return "Prototype Pollution";
     }
     match extract_family(rule_id) {
         "sqli" => "SQL Injection",

@@ -544,14 +544,14 @@ pub(crate) fn deduplicate_taint_flows(diags: &mut Vec<Diag>) {
         id.starts_with(TAINT_BASE)
     }
 
-    fn sink_cap_bits(d: &Diag) -> u16 {
+    fn sink_cap_bits(d: &Diag) -> u32 {
         d.evidence.as_ref().map(|e| e.sink_caps).unwrap_or(0)
     }
 
     // Group candidates by (path, line, severity, sink_cap_bits). Only
     // `taint-unsanitised-flow` rule IDs participate; findings with other
     // bases (e.g. `js.code_exec.eval`) are left untouched per guardrails.
-    let mut groups: HashMap<(String, usize, Severity, u16), Vec<usize>> = HashMap::new();
+    let mut groups: HashMap<(String, usize, Severity, u32), Vec<usize>> = HashMap::new();
     for (i, d) in diags.iter().enumerate() {
         if is_taint_flow(&d.id) {
             groups
@@ -690,8 +690,8 @@ pub const SCC_UNCONVERGED_CROSS_FILE_NOTE_PREFIX: &str = "scc_unconverged:cross-
 /// file set.  Semantics match [`diff_cap_snapshots`], a key that
 /// appears or disappears counts as changed.
 fn changed_cap_keys_of(
-    before: &HashMap<crate::symbol::FuncKey, (u16, u16, u16, Vec<usize>)>,
-    after: &HashMap<crate::symbol::FuncKey, (u16, u16, u16, Vec<usize>)>,
+    before: &HashMap<crate::symbol::FuncKey, (u32, u32, u32, Vec<usize>)>,
+    after: &HashMap<crate::symbol::FuncKey, (u32, u32, u32, Vec<usize>)>,
 ) -> HashSet<crate::symbol::FuncKey> {
     let mut changed = HashSet::new();
     for (k, v_after) in after {
