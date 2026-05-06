@@ -400,34 +400,15 @@ pub static RULES: &[LabelRule] = &[
     // ─── Prototype pollution sinks (library-mediated) ───
     //
     // Recursive merge / deep-assign helpers from lodash / common bundles.
-    // Tainted source-object flowing into the second argument can rewrite
-    // `__proto__` or `constructor` on the target.  Argument-role
-    // distinction (target vs src) is not modelled here; multi-source
-    // bundles (jQuery.extend deep) over-fire only if the caller passes
-    // attacker-controlled data as the source.  `_.template` is excluded
-    // — it is handled separately as a gated CODE_EXEC sink (Strapi
-    // CVE-2023-22621 evaluate:false suppression).
-    LabelRule {
-        matchers: &[
-            "_.merge",
-            "_.mergeWith",
-            "_.defaultsDeep",
-            "_.set",
-            "_.setWith",
-            "deepMerge",
-            "defaultsDeep",
-        ],
-        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
-        case_sensitive: false,
-    },
-    // `Object.assign(target, src)` is benign with literal-source but
-    // dangerous when `src` is attacker-controlled (req.body etc.).
-    // Suffix matching catches the qualified call form.
-    LabelRule {
-        matchers: &["Object.assign"],
-        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
-        case_sensitive: true,
-    },
+    // Argument-role gating (target vs src) is enforced via Destination
+    // activation in `GATED_SINKS` below: only taint flowing into the
+    // source-object arguments (positions 1+) activates; tainted-target-
+    // only is benign because writes to a tainted target object don't
+    // pollute `Object.prototype`.  Flat rules here are intentionally
+    // empty for the merge family; see GATED_SINKS for the per-call
+    // gating.  `_.template` is excluded — it is handled separately as
+    // a gated CODE_EXEC sink (Strapi CVE-2023-22621 evaluate:false
+    // suppression).
     // ─── Open redirect sinks ───
     //
     // Express response redirect: `res.redirect(url)`.  Browser-side
@@ -1028,6 +1009,173 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: false,
         payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── Prototype pollution gates ────────────────────────────────────────
+    //
+    // Library-mediated recursive merge / deep-assign helpers.  Argument-
+    // role gating: `(target, src1, src2, ...)` — only taint reaching a
+    // *source* position (index 1+) can pollute `Object.prototype` via
+    // `__proto__` / `constructor` keys on attacker-controlled input.
+    // Tainted target alone is benign (it just mutates that object).
+    // `payload_args: &[1, 2, 3, 4, 5]` covers the canonical 1-target +
+    // up-to-5-source signatures used by lodash / Object.assign / jQuery
+    // extend; arity beyond 5 is rare in practice and would over-suppress
+    // only at the long tail.
+    SinkGate {
+        callee_matcher: "_.merge",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.mergeWith",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.defaultsDeep",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `_.set(obj, path, value)` — both `path` (arg 1) and `value` (arg 2)
+    // can drive prototype pollution: a tainted path of `__proto__.foo`
+    // mutates `Object.prototype`, and a tainted value into `obj.__proto__`
+    // does the same.  Object (arg 0) is the canonical target.
+    SinkGate {
+        callee_matcher: "_.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.setWith",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Generic project-local deep-merge helpers.  Suffix-matched so any
+    // `*.deepMerge` / `*.defaultsDeep` qualified call also resolves.
+    SinkGate {
+        callee_matcher: "deepMerge",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "defaultsDeep",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `Object.assign(target, ...sources)` is safe with constant-literal
+    // sources (`{a: 1, b: 2}`) but dangerous with attacker-controlled
+    // input (`req.body`).  Gate target out of payload_args so tainted-
+    // target alone does not fire.
+    SinkGate {
+        callee_matcher: "Object.assign",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // jQuery / Zepto `$.extend(target, ...sources)` and `jQuery.extend`.
+    // Arg 0 may be a deep-flag boolean (`true`) when the deep-merge form
+    // is in use, in which case sources start at arg 2.  Cover both
+    // shapes by listing arg 1, 2, 3, 4 in `payload_args`: a `true` first
+    // arg never carries taint, so its inclusion is harmless; for the
+    // shallow `$.extend(target, src)` form, src at arg 1 still fires.
+    SinkGate {
+        callee_matcher: "$.extend",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jQuery.extend",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {

@@ -314,24 +314,12 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     // ─── Prototype pollution sinks ───  (mirrors `labels/javascript.rs`)
-    LabelRule {
-        matchers: &[
-            "_.merge",
-            "_.mergeWith",
-            "_.defaultsDeep",
-            "_.set",
-            "_.setWith",
-            "deepMerge",
-            "defaultsDeep",
-        ],
-        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
-        case_sensitive: false,
-    },
-    LabelRule {
-        matchers: &["Object.assign"],
-        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
-        case_sensitive: true,
-    },
+    //
+    // Argument-role gating is enforced via Destination activation in
+    // `GATED_SINKS` below: only taint flowing into source-object
+    // arguments (positions 1+) activates; tainted-target alone is
+    // benign.  Flat rules here are intentionally empty for the merge
+    // family.
     // ─── Open redirect sinks ───  (mirrors `labels/javascript.rs`)
     LabelRule {
         matchers: &[
@@ -753,6 +741,152 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: false,
         payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── Prototype pollution gates ────────────────────────────────────────
+    //
+    // Mirrors `labels/javascript.rs` GATED_SINKS proto-pollution block.
+    // Argument-role gating: `(target, src1, src2, ...)`, only source
+    // positions trigger.  See the JS module for the rationale and the
+    // `payload_args` width choice.
+    SinkGate {
+        callee_matcher: "_.merge",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.mergeWith",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.defaultsDeep",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.setWith",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "deepMerge",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "defaultsDeep",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "Object.assign",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "$.extend",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jQuery.extend",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {

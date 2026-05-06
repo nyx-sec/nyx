@@ -1231,6 +1231,55 @@ pub static GATED_SINKS: &[SinkGate] = &[
     },
 ];
 
+/// Prototype-pollution-style gates for Python.  Opt-in via the
+/// `NYX_PYTHON_PROTO_POLLUTION` env var (see
+/// `super::env_python_proto_pollution`); when enabled they are merged
+/// into the language's `GATED_REGISTRY` slice at startup.
+///
+/// Coverage is deliberately narrow: the `dict.update(target, src)`
+/// class-method form (where the first arg is the target and the second
+/// is the source) is the canonical attack shape for `__class__` /
+/// `__dict__` pollution in Python frameworks that thread user input
+/// through configuration objects.  The bound-method form
+/// (`config.update(req_data)`) is handled by the suffix-matched
+/// `dict.update` callee text only when the receiver text literally
+/// equals `dict`, keeping the gate from over-firing on every `update`
+/// method in the codebase.
+pub static PROTO_POLLUTION_GATES: &[SinkGate] = &[
+    // `dict.update(target, src)` — class-method form.  Argument-role
+    // gating: only `src` (arg 1) taint activates; tainted target alone
+    // is benign.
+    SinkGate {
+        callee_matcher: "dict.update",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `obj.__dict__.update(src)` — instance-attribute pollution shape.
+    SinkGate {
+        callee_matcher: "__dict__.update",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+];
+
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // control-flow
     "if_statement"          => Kind::If,

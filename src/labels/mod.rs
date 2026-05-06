@@ -404,8 +404,23 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     m.insert("js", javascript::GATED_SINKS);
     m.insert("typescript", typescript::GATED_SINKS);
     m.insert("ts", typescript::GATED_SINKS);
-    m.insert("python", python::GATED_SINKS);
-    m.insert("py", python::GATED_SINKS);
+
+    // Python prototype-pollution gates are opt-in: `dict.update(target,
+    // src)` overlaps too broadly with non-pollution use of `update`
+    // (Counter, namespaced state mutation) to ship as a default sink.
+    // The `NYX_PYTHON_PROTO_POLLUTION` env var enables them; when set
+    // the merged slice is leaked into a `'static` reference so the
+    // registry's lifetime invariant holds.
+    let python_gates: &'static [SinkGate] = if env_python_proto_pollution() {
+        let mut combined: Vec<SinkGate> = python::GATED_SINKS.to_vec();
+        combined.extend_from_slice(python::PROTO_POLLUTION_GATES);
+        Box::leak(combined.into_boxed_slice())
+    } else {
+        python::GATED_SINKS
+    };
+    m.insert("python", python_gates);
+    m.insert("py", python_gates);
+
     m.insert("go", go::GATED_SINKS);
     m.insert("php", php::GATED_SINKS);
     m.insert("c", c::GATED_SINKS);
@@ -416,6 +431,16 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     m.insert("java", java::GATED_SINKS);
     m
 });
+
+/// Feature flag for the Python prototype-pollution gates.  Disabled by
+/// default; set `NYX_PYTHON_PROTO_POLLUTION=1` (or `true`) to enable
+/// `dict.update` / `__dict__.update` proto-pollution detection.
+fn env_python_proto_pollution() -> bool {
+    matches!(
+        std::env::var("NYX_PYTHON_PROTO_POLLUTION").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
+    )
+}
 
 /// Per-language exclusion patterns: callee text that must never be classified.
 static EXCLUDES: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::new(|| {

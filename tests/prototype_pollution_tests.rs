@@ -102,6 +102,11 @@ fn javascript_lodash_merge_constant_source_does_not_fire() {
 }
 
 #[test]
+fn javascript_object_assign_constant_source_does_not_fire() {
+    assert_clean("javascript", "safe_object_assign_const.js");
+}
+
+#[test]
 fn typescript_lodash_merge_with_tainted_source_fires() {
     assert_unsafe("typescript", "unsafe_lodash_merge.ts");
 }
@@ -109,4 +114,14 @@ fn typescript_lodash_merge_with_tainted_source_fires() {
 #[test]
 fn typescript_lodash_merge_constant_source_does_not_fire() {
     assert_clean("typescript", "safe_lodash_merge_const.ts");
+}
+
+#[test]
+fn typescript_object_assign_with_tainted_source_fires() {
+    assert_unsafe("typescript", "unsafe_object_assign.ts");
+}
+
+#[test]
+fn typescript_object_assign_constant_source_does_not_fire() {
+    assert_clean("typescript", "safe_object_assign_const.ts");
 }
