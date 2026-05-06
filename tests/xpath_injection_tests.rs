@@ -121,6 +121,11 @@ fn java_baseline_constant_expr_does_not_fire() {
     assert_clean("java", "BaselineConstantXpath.java");
 }
 
+#[test]
+fn java_parameterised_xpath_does_not_fire() {
+    assert_clean("java", "ParameterizedXpath.java");
+}
+
 // ── Python ───────────────────────────────────────────────────────────────
 
 #[test]

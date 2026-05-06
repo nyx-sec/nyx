@@ -337,6 +337,18 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
         case_sensitive: false,
     },
+    // Parameterised XPath via `XPath.setXPathVariableResolver(resolver)` is
+    // the RFC-correct binding: the resolver carries user values as named
+    // variables and the expression contains `$name` references rather than
+    // string concatenation.  Treating the resolver argument as a sanitizer
+    // clears XPATH_INJECTION on values routed through the resolver
+    // construction so any later `evaluate(...)` on the bound XPath instance
+    // stays clean.
+    LabelRule {
+        matchers: &["setXPathVariableResolver"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
     // ─── Header / CRLF injection sinks ───
     //
     // `HttpServletResponse.setHeader(name, val)` / `addHeader(name, val)`
