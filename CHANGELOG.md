@@ -4,7 +4,15 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
-A round of cross-file FastAPI auth, two new sink/validator classes, a ~957-FP Go DAO helper precision pass, four CVE corpus pairs, and a performance pass on the auth extractor pipeline plus SCCP and the global summaries hash map.
+A round of cross-file FastAPI auth, two new sink/validator classes, a ~957-FP Go DAO helper precision pass, four CVE corpus pairs, a local web UI visual refresh, and a performance pass on the auth extractor pipeline plus SCCP and the global summaries hash map.
+
+### Changed
+
+- Refreshed the local web UI visual system around the mint-cyan Nyx brand: warmer light surfaces, deep green accents, updated severity/confidence colors, tighter typography, smaller radii, denser cards, table, badge, button, header, and sidebar styling, and matched graph/code-viewer colors.
+- Reworked the main `nyx serve` surfaces for a more operational layout. Overview now uses the refreshed health-score card and chart grid; Scans has a fixed compact table with capped language badges; Scan Detail places summary and timing data side by side; Triage, Rules, Config, Explorer, Finding Detail, Scan Compare, and Debug pages received focused spacing, overflow, and density fixes.
+- Updated the SPA and embedded server bundle to share branded assets: PNG favicons, Apple touch icon, sidebar logo image, refreshed SVG favicon, and Rust static handlers for the new `/logo.png` and favicon files.
+- Regenerated README/docs screenshots and GIFs against the new UI treatment at 1600x992, saving raw originals before framing and adding CLI GIF plus combined CLI-to-serve demo GIF capture support.
+- Extended the screenshot capture workflow with mint-led framing copy, optional `nyxscan.dev` asset mirroring, WebP regeneration for mirrored PNGs, and raw `_raw` image/GIF outputs for downstream reuse.
 
 ### Added
 
