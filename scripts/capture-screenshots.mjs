@@ -74,7 +74,7 @@ const NYX_BIN   = process.env.NYX_BIN  || '/Users/elipeter/nyx/target/release/ny
 // Sibling marketing site that mirrors a small subset of these assets.
 // Set NYXSCAN_DIR=skip to disable the mirror step.
 const NYXSCAN_DIR = process.env.NYXSCAN_DIR || '/Users/elipeter/nyxscan.dev/assets/screenshots';
-const VIEW = { width: 1280, height: 960 };
+const VIEW = { width: 1600, height: 992 };
 const COLOR_SCHEME = 'light';
 
 const args = new Set(process.argv.slice(2));
@@ -614,8 +614,8 @@ async function captureComboGif() {
     '',
     'Set Shell "bash"',
     'Set FontSize 22',
-    'Set Width 1280',
-    'Set Height 960',
+    'Set Width 1600',
+    'Set Height 992',
     'Set Framerate 15',
     'Env CLICOLOR_FORCE "1"',
     '',
@@ -695,8 +695,8 @@ async function captureComboGif() {
     '-ignore_loop', '1', '-r', '15', '-i', cliGifPath,
     '-ss', '1.0', '-r', '15', '-i', webmPath,
     '-filter_complex',
-      '[0:v]scale=1280:960:flags=lanczos,fps=15[cli];' +
-      '[1:v]scale=1280:960:flags=lanczos,fps=15[bro];' +
+      '[0:v]scale=1600:992:flags=lanczos,fps=15[cli];' +
+      '[1:v]scale=1600:992:flags=lanczos,fps=15[bro];' +
       '[cli][bro]concat=n=2:v=1:a=0[out]',
     '-map', '[out]',
     '-c:v', 'libx264', '-crf', '28', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
