@@ -430,7 +430,10 @@ export function ScanDetailPage() {
             Compare with Previous
           </button>
         )}
-        <span className={`status-badge ${scan.status}`} style={{ marginLeft: 'auto' }}>
+        <span
+          className={`status-badge ${scan.status}`}
+          style={{ marginLeft: 'auto' }}
+        >
           <span className={`status-dot ${scan.status}`}></span>
           {scan.status}
         </span>

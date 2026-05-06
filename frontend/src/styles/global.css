@@ -7507,7 +7507,10 @@ tbody tr.clickable:nth-child(even):hover td {
 }
 
 .overview-page .overview-chart-grid {
-  grid-template-columns: minmax(0, 1.35fr) minmax(240px, 0.72fr) minmax(220px, 0.68fr);
+  grid-template-columns: minmax(0, 1.35fr) minmax(240px, 0.72fr) minmax(
+      220px,
+      0.68fr
+    );
   gap: var(--space-4);
   margin-bottom: var(--space-5);
 }
@@ -8102,10 +8105,9 @@ tr.cursor td {
 }
 
 .config-form-row {
-  grid-template-columns: minmax(120px, 170px) minmax(220px, 1fr) minmax(
-      120px,
-      180px
-    ) auto;
+  grid-template-columns:
+    minmax(120px, 170px) minmax(220px, 1fr) minmax(120px, 180px)
+    auto;
 }
 
 .label-table th,
