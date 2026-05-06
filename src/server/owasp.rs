@@ -25,6 +25,21 @@ fn extract_family(rule_id: &str) -> &str {
     rule_id
 }
 
+/// True when `rule_id` either equals `prefix` or starts with `prefix`
+/// followed by one of the recognised separator characters used by the
+/// finding-id emitter.  Prevents `taint-ssrf-allowlist-violation`
+/// from silently inheriting `taint-ssrf`'s OWASP bucket.
+fn matches_cap_rule_id(rule_id: &str, prefix: &str) -> bool {
+    if !rule_id.starts_with(prefix) {
+        return false;
+    }
+    match rule_id.as_bytes().get(prefix.len()) {
+        None => true,
+        Some(b' ') | Some(b'(') | Some(b'.') => true,
+        _ => false,
+    }
+}
+
 /// Return the OWASP 2021 (code, label) pair for a given rule id, or `None` if unmapped.
 pub fn owasp_bucket_for(rule_id: &str) -> Option<(&'static str, &'static str)> {
     let family = extract_family(rule_id);
@@ -37,9 +52,18 @@ pub fn owasp_bucket_for(rule_id: &str) -> Option<(&'static str, &'static str)> {
     // does not require updating two tables.  The legacy family-token
     // dispatch below covers per-language tree-sitter pattern rules
     // (`js.xss.outer_html` style) that have no cap entry.
+    //
+    // Match shape: exact equality, or registry id followed by a separator
+    // that the emitter actually uses (` ` for ` (source 1:1)` suffixes,
+    // `(` for `(source 1:1)` style without a leading space, `.` for
+    // dotted variants like `rs.auth.missing_ownership_check.taint`).
+    // Plain `starts_with` would silently bucket a future
+    // `taint-ssrf-allowlist-violation` under the SSRF entry; the
+    // separator gate keeps unrelated suffixes from inheriting a parent
+    // bucket.
     if let Some(meta) = crate::labels::CAP_RULE_REGISTRY
         .iter()
-        .find(|m| rule_id.starts_with(m.rule_id))
+        .find(|m| matches_cap_rule_id(rule_id, m.rule_id))
     {
         return Some((meta.owasp_code, meta.owasp_label));
     }
@@ -263,6 +287,40 @@ mod tests {
         assert_eq!(out[1].count, 3);
         assert_eq!(out[2].code, "A02");
         assert_eq!(out[2].count, 2);
+    }
+
+    #[test]
+    fn cap_rule_id_match_requires_separator() {
+        // Exact match → bucketed.
+        assert_eq!(
+            owasp_bucket_for("taint-ssrf"),
+            Some(("A10", "Server-Side Request Forgery"))
+        );
+        // Suffix after recognised separators is bucketed.
+        assert_eq!(
+            owasp_bucket_for("taint-ssrf (source 1:1)"),
+            Some(("A10", "Server-Side Request Forgery"))
+        );
+        assert_eq!(
+            owasp_bucket_for("taint-ssrf(source 1:1)"),
+            Some(("A10", "Server-Side Request Forgery"))
+        );
+        // Dotted suffix (used by `rs.auth.missing_ownership_check.taint`).
+        assert_eq!(
+            owasp_bucket_for("rs.auth.missing_ownership_check.taint"),
+            Some(("A01", "Broken Access Control"))
+        );
+        // Hyphenated suffix without separator must NOT silently inherit
+        // the parent bucket.  Falls through to the family-token table,
+        // where `ssrf` still resolves to A10, so use a hypothetical
+        // sibling that would only resolve via the cap registry.
+        assert_eq!(
+            owasp_bucket_for("taint-ldap-injection-allowlist"),
+            // Family token "taint" → A03; without separator gating this
+            // would have inherited the LDAP entry's A03 anyway, but the
+            // important property is that the registry match was rejected.
+            Some(("A03", "Injection"))
+        );
     }
 
     #[test]

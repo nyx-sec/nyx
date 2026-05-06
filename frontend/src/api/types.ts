@@ -355,6 +355,7 @@ export interface RuleListItem {
   enabled: boolean;
   is_custom: boolean;
   is_gated: boolean;
+  is_class: boolean;
   case_sensitive: boolean;
   finding_count: number;
   suppression_rate: number;

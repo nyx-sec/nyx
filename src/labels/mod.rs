@@ -1723,6 +1723,12 @@ pub struct RuleInfo {
     pub case_sensitive: bool,
     pub is_custom: bool,
     pub is_gated: bool,
+    /// Cap-class registry entry (one per `Cap` with a canonical rule id),
+    /// distinct from per-language sink/source/sanitizer match rules.  The
+    /// dashboard groups these separately so the rules surface does not mix
+    /// "the LDAP injection class exists" with "Java's `DirContext.search`
+    /// is a sink for that class".
+    pub is_class: bool,
     pub enabled: bool,
 }
 
@@ -1745,6 +1751,7 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
             case_sensitive: false,
             is_custom: false,
             is_gated: false,
+            is_class: true,
             enabled: meta.default_enabled,
         });
     }
@@ -1772,6 +1779,7 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
                     case_sensitive: rule.case_sensitive,
                     is_custom: false,
                     is_gated: false,
+                    is_class: false,
                     enabled: true,
                 });
             }
@@ -1798,6 +1806,7 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
                     case_sensitive: gate.case_sensitive,
                     is_custom: false,
                     is_gated: true,
+                    is_class: false,
                     enabled: true,
                 });
             }

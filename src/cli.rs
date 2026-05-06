@@ -49,6 +49,7 @@ impl Commands {
         match self {
             Commands::Scan { explain_engine, .. } => *explain_engine,
             Commands::List { .. } => true,
+            Commands::Rules { .. } => true,
             Commands::Config { action } => {
                 matches!(action, ConfigAction::Show { .. } | ConfigAction::Path)
             }
@@ -459,6 +460,12 @@ pub enum Commands {
         action: ConfigAction,
     },
 
+    /// Browse the built-in rule registry (cap classes + per-language label rules)
+    Rules {
+        #[command(subcommand)]
+        action: RulesAction,
+    },
+
     /// Start the local web UI for browsing scan results
     Serve {
         /// Path to scan root (defaults to current directory)
@@ -522,6 +529,36 @@ pub enum ConfigAction {
         /// Function name that terminates execution (e.g. process.exit)
         #[arg(long)]
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RulesAction {
+    /// List built-in rules
+    List {
+        /// Filter by language slug (e.g. javascript, java, python). Cap-class
+        /// entries (`language = "all"`) are always shown unless `--no-class`
+        /// is set.
+        #[arg(long)]
+        lang: Option<String>,
+
+        /// Filter by rule kind (`class`, `source`, `sink`, `sanitizer`).
+        #[arg(long)]
+        kind: Option<String>,
+
+        /// Show only the cap-class registry entries (one per vulnerability
+        /// class), suppressing per-language label rules.
+        #[arg(long, conflicts_with = "no_class")]
+        class_only: bool,
+
+        /// Suppress cap-class registry entries (show only per-language label
+        /// rules and gated sinks).
+        #[arg(long)]
+        no_class: bool,
+
+        /// Emit JSON instead of the human-readable table.
+        #[arg(long)]
+        json: bool,
     },
 }
 

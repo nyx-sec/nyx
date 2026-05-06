@@ -10,6 +10,7 @@ pub mod clean;
 pub mod config;
 pub mod index;
 pub mod list;
+pub mod rules;
 pub mod scan;
 #[cfg(feature = "serve")]
 pub mod serve;
@@ -351,6 +352,9 @@ pub fn handle_command(
                     self::config::add_terminator(config_dir, &lang, &name)?
                 }
             }
+        }
+        Commands::Rules { action } => {
+            self::rules::handle(action, config)?;
         }
         Commands::Serve {
             path,
