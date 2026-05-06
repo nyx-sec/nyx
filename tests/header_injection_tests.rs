@@ -144,3 +144,33 @@ fn ruby_subscript_set_with_tainted_value_fires() {
 fn ruby_subscript_set_with_strip_crlf_sanitized() {
     assert_clean("ruby", "safe_subscript_set.rb");
 }
+
+#[test]
+fn javascript_subscript_set_with_tainted_value_fires() {
+    assert_unsafe("javascript", "unsafe_subscript_set.js");
+}
+
+#[test]
+fn javascript_subscript_set_with_strip_crlf_sanitized() {
+    assert_clean("javascript", "safe_subscript_set.js");
+}
+
+#[test]
+fn typescript_subscript_set_with_tainted_value_fires() {
+    assert_unsafe("typescript", "unsafe_subscript_set.ts");
+}
+
+#[test]
+fn typescript_subscript_set_with_strip_crlf_sanitized() {
+    assert_clean("typescript", "safe_subscript_set.ts");
+}
+
+#[test]
+fn python_subscript_set_with_tainted_value_fires() {
+    assert_unsafe("python", "unsafe_subscript_set.py");
+}
+
+#[test]
+fn python_subscript_set_with_strip_crlf_sanitized() {
+    assert_clean("python", "safe_subscript_set.py");
+}

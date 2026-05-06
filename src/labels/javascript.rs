@@ -374,6 +374,20 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HEADER_INJECTION),
         case_sensitive: false,
     },
+    // Subscript-set form: `res.headers["X-Foo"] = bar` /
+    // `response.headers["X-Foo"] = bar`.  The LHS-subscript classification
+    // path in `cfg/mod.rs::push_node` walks into the subscript's `object`
+    // and classifies its member-expression text, so the bare bracket form
+    // fires alongside `setHeader` / `res.set` / `res.header` / `res.append`.
+    LabelRule {
+        matchers: &[
+            "res.headers",
+            "response.headers",
+            "self.response.headers",
+        ],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
     // ─── Header / CRLF sanitizers ───
     //
     // Project-local `stripCRLF` / `escapeHeader` helpers that strip `\r` and

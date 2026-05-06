@@ -297,6 +297,16 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::HEADER_INJECTION),
         case_sensitive: false,
     },
+    // Subscript-set form (mirrors `labels/javascript.rs`).
+    LabelRule {
+        matchers: &[
+            "res.headers",
+            "response.headers",
+            "self.response.headers",
+        ],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
     // ─── Header / CRLF sanitizers ───  (mirrors `labels/javascript.rs`)
     LabelRule {
         matchers: &["stripCRLF", "stripCrlf", "escapeHeader", "sanitizeHeader"],

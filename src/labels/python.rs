@@ -355,11 +355,23 @@ pub static RULES: &[LabelRule] = &[
     //
     // Flask / Werkzeug response APIs that write a single header value:
     // `response.headers.add(name, val)`, `response.set_cookie(name, val)`,
-    // `response.headers[name] = val` (subscript-set is harder to track
-    // textually; rely on the `add` / `set_cookie` entry points and the
-    // explicit `Headers.add` form).
+    // and the bare subscript-set form `response.headers[name] = val`.
+    // The subscript-set form is picked up via the LHS-subscript
+    // classification path in `cfg/mod.rs::push_node`: the LHS object's
+    // member-expression text matches `response.headers` /
+    // `self.response.headers` and tags the assignment as a HEADER_INJECTION
+    // sink.
     LabelRule {
         matchers: &["headers.add", "headers.set", "set_cookie"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &[
+            "response.headers",
+            "self.response.headers",
+            "resp.headers",
+        ],
         label: DataLabel::Sink(Cap::HEADER_INJECTION),
         case_sensitive: false,
     },
