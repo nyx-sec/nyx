@@ -1,6 +1,7 @@
-//! Phase 08 integration tests for `Cap::PROTOTYPE_POLLUTION` (label-only).
+//! Phase 08 + Phase 09 integration tests for `Cap::PROTOTYPE_POLLUTION`.
 //!
-//! Fixtures under `tests/fixtures/prototype_pollution/<lang>/`:
+//! Phase 08 (library-mediated) fixtures live under
+//! `tests/fixtures/prototype_pollution/<lang>/`:
 //!
 //! * `unsafe_lodash_merge.*` — `_.merge(target, req.body)` shape; must
 //!   produce >=1 `taint-prototype-pollution` finding.
@@ -8,6 +9,18 @@
 //!   must produce >=1 finding (JS-only fixture).
 //! * `safe_lodash_merge_const.*` — constant-source merge; must produce 0
 //!   findings.
+//!
+//! Phase 09 (full-SSA dynamic-key sink) fixtures live under
+//! `tests/fixtures/prototype_pollution/full/`:
+//!
+//! * `unsafe_dynamic_key.js` — `target[req.query.k] = req.query.v`; must
+//!   produce >=1 finding via the synthetic `__index_set__` node.
+//! * `safe_reject_list.js` — `if (k === "__proto__" || …) return;` guard;
+//!   must produce 0 findings.
+//! * `safe_object_create_null.js` — receiver assigned `Object.create(null)`;
+//!   must produce 0 findings.
+//! * `safe_allowlist.js` — `if (k === "name" || k === "id") obj[k] = v`
+//!   on the true arm; must produce 0 findings.
 
 mod common;
 
@@ -124,4 +137,26 @@ fn typescript_object_assign_with_tainted_source_fires() {
 #[test]
 fn typescript_object_assign_constant_source_does_not_fire() {
     assert_clean("typescript", "safe_object_assign_const.ts");
+}
+
+// ── Phase 09: full-SSA dynamic-key sink ───────────────────────────────────
+
+#[test]
+fn full_ssa_dynamic_key_with_tainted_key_fires() {
+    assert_unsafe("full", "unsafe_dynamic_key.js");
+}
+
+#[test]
+fn full_ssa_reject_list_guard_does_not_fire() {
+    assert_clean("full", "safe_reject_list.js");
+}
+
+#[test]
+fn full_ssa_object_create_null_receiver_does_not_fire() {
+    assert_clean("full", "safe_object_create_null.js");
+}
+
+#[test]
+fn full_ssa_allowlist_guard_does_not_fire() {
+    assert_clean("full", "safe_allowlist.js");
 }

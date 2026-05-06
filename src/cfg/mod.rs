@@ -2888,6 +2888,37 @@ fn try_lower_subscript_write(
     *call_ordinal += 1;
     let mut uses_all: Vec<String> = vec![arr_text.clone(), idx_text.clone()];
     uses_all.extend(rhs_uses.iter().cloned());
+
+    // Phase 09: prototype pollution sink classification on the synthetic
+    // `__index_set__` node for JS/TS.  Tainted *key* in `obj[key] = val`
+    // is the pollution channel (a `__proto__` / `constructor` literal flowing
+    // through `key` mutates `Object.prototype` globally), so the gate's
+    // payload arg list is `[0]` (the key only — the value at index 1 is
+    // benign on its own).  Sanitizer recognition is structural (no taint
+    // engine plumbing) and runs before label attachment, so suppressed
+    // shapes never enter the SSA sink scan:
+    //   * constant string key whose literal value is not in the dangerous
+    //     set (`__proto__` / `constructor` / `prototype`),
+    //   * receiver was assigned `Object.create(null)` in this function
+    //     (no prototype chain to pollute),
+    //   * the assignment is dominated by an `if` whose condition rejects
+    //     dangerous keys with an early `return` / `throw` / `break`, or
+    //     that allowlists the key against safe constants on its true arm.
+    let mut pp_labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
+    let mut pp_payload_args: Option<Vec<usize>> = None;
+    if matches!(lang, "javascript" | "typescript" | "js" | "ts")
+        && !pp_should_suppress_index_set(
+            assign_ast,
+            subscript_node,
+            &arr_text,
+            &idx_text,
+            code,
+        )
+    {
+        pp_labels.push(DataLabel::Sink(Cap::PROTOTYPE_POLLUTION));
+        pp_payload_args = Some(vec![0]);
+    }
+
     let n = g.add_node(NodeInfo {
         kind: StmtKind::Call,
         call: CallMeta {
@@ -2895,9 +2926,11 @@ fn try_lower_subscript_write(
             receiver: Some(arr_text.clone()),
             arg_uses: vec![vec![idx_text.clone()], rhs_uses.clone()],
             call_ordinal: ord,
+            sink_payload_args: pp_payload_args,
             ..Default::default()
         },
         taint: TaintMeta {
+            labels: pp_labels,
             uses: uses_all,
             ..Default::default()
         },
@@ -2909,6 +2942,525 @@ fn try_lower_subscript_write(
     });
     connect_all(g, preds, n, EdgeKind::Seq);
     Some(n)
+}
+
+/// Phase 09 prototype-pollution suppression decisions for the synthetic
+/// `__index_set__` node emitted by `try_lower_subscript_write`.
+///
+/// Returns `true` when the assignment is provably safe and the
+/// `Cap::PROTOTYPE_POLLUTION` sink label should be elided.  The four
+/// recognised shapes mirror the phase 09 acceptance fixtures:
+///
+/// 1. Constant string key whose value is not one of the dangerous
+///    keys (`__proto__`, `constructor`, `prototype`).  A literal-keyed
+///    write cannot pollute even if the value is tainted.
+/// 2. Receiver `arr_text` was initialised by a same-function statement
+///    of the form `<arr_text> = Object.create(null)` — null-prototype
+///    objects have no `Object.prototype` to pollute.
+/// 3. Reject pattern `if (idx === "__proto__" || idx === "constructor"
+///    || idx === "prototype") <return/throw/break>` enclosing the
+///    assignment.  The dangerous-key path terminates before reaching
+///    the synthesised store.
+/// 4. Allowlist pattern `if (idx === "name" || idx === "id") { obj[idx]
+///    = v }`.  The assignment only executes when `idx` is one of a
+///    small set of known-safe constants.
+///
+/// Conservative: any unrecognised shape returns `false` so the sink
+/// label is attached and the SSA layer decides on taint reachability.
+fn pp_should_suppress_index_set(
+    assign_ast: Node,
+    subscript_node: Node,
+    arr_text: &str,
+    idx_text: &str,
+    code: &[u8],
+) -> bool {
+    // 1. Constant-key fold.
+    if let Some(idx_node) = subscript_node
+        .child_by_field_name("index")
+        .or_else(|| subscript_node.child_by_field_name("subscript"))
+        .or_else(|| {
+            let mut cur = subscript_node.walk();
+            subscript_node.named_children(&mut cur).nth(1)
+        })
+    {
+        if let Some(literal) = pp_string_literal_value(idx_node, code) {
+            return !pp_is_dangerous_proto_key(&literal);
+        }
+    }
+
+    // 2. Null-prototype receiver fact.
+    if pp_receiver_is_null_prototype(assign_ast, arr_text, code) {
+        return true;
+    }
+
+    // 3 + 4. Dominator-style guard ancestors (reject + allowlist).
+    if pp_is_guarded_by_proto_check(assign_ast, idx_text, code) {
+        return true;
+    }
+
+    false
+}
+
+/// Dangerous prototype-pollution key strings.  Matches the literal
+/// values that JS engines treat as references into the prototype chain.
+fn pp_is_dangerous_proto_key(s: &str) -> bool {
+    matches!(s, "__proto__" | "constructor" | "prototype")
+}
+
+/// Extract the value of a JS/TS string literal node, stripping the
+/// outer quote bytes (single, double, or backtick).  Returns `None`
+/// for non-literal nodes, template literals containing interpolation,
+/// or anything that doesn't resemble a single-segment string.
+fn pp_string_literal_value(n: Node, code: &[u8]) -> Option<String> {
+    let kind = n.kind();
+    if !matches!(kind, "string" | "string_literal" | "template_string") {
+        return None;
+    }
+    let raw = std::str::from_utf8(&code[n.start_byte()..n.end_byte()]).ok()?;
+    if raw.len() < 2 {
+        return None;
+    }
+    let bytes = raw.as_bytes();
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    if !matches!(first, b'"' | b'\'' | b'`') || first != last {
+        return None;
+    }
+    let inner = &raw[1..raw.len() - 1];
+    // Reject template literals carrying `${...}` interpolation — we
+    // can't fold those to a single concrete value.
+    if first == b'`' && inner.contains("${") {
+        return None;
+    }
+    Some(inner.to_string())
+}
+
+/// Walk up to the enclosing function/method/closure body for `from` and
+/// scan every statement looking for an assignment / declarator of the
+/// form `<target> = Object.create(null)`.  Conservative: only matches
+/// the literal `null` argument, no aliasing through intermediate
+/// variables.
+fn pp_receiver_is_null_prototype(from: Node, target: &str, code: &[u8]) -> bool {
+    let Some(func_body) = pp_enclosing_function_body(from) else {
+        return false;
+    };
+    let mut found = false;
+    pp_walk(func_body, &mut |n| {
+        if found {
+            return false;
+        }
+        if pp_node_assigns_object_create_null(n, target, code) {
+            found = true;
+            return false;
+        }
+        true
+    });
+    found
+}
+
+/// True when `n` is an assignment / variable_declarator / lexical
+/// declaration whose target identifier text equals `target` and whose
+/// initialiser is `Object.create(null)`.
+fn pp_node_assigns_object_create_null(n: Node, target: &str, code: &[u8]) -> bool {
+    // Variable declarator: `const target = Object.create(null);`
+    if matches!(n.kind(), "variable_declarator") {
+        let name = n
+            .child_by_field_name("name")
+            .and_then(|name| text_of(name, code));
+        if name.as_deref() != Some(target) {
+            return false;
+        }
+        let init = n
+            .child_by_field_name("value")
+            .or_else(|| n.child_by_field_name("init"));
+        return init
+            .map(|i| pp_call_is_object_create_null(i, code))
+            .unwrap_or(false);
+    }
+    // Assignment expression: `target = Object.create(null);`
+    if matches!(n.kind(), "assignment_expression" | "assignment") {
+        let lhs = n
+            .child_by_field_name("left")
+            .and_then(|l| text_of(l, code));
+        if lhs.as_deref() != Some(target) {
+            return false;
+        }
+        let rhs = n.child_by_field_name("right");
+        return rhs
+            .map(|r| pp_call_is_object_create_null(r, code))
+            .unwrap_or(false);
+    }
+    false
+}
+
+/// True when `n` is (or wraps) a `Object.create(null)` call expression.
+fn pp_call_is_object_create_null(n: Node, code: &[u8]) -> bool {
+    // Unwrap wrappers: parenthesised expressions, await, type-cast (TS
+    // `as`).  Best-effort: the conservative branch returns false.
+    let mut cur = n;
+    for _ in 0..4 {
+        match cur.kind() {
+            "parenthesized_expression" => {
+                if let Some(inner) = cur.named_child(0) {
+                    cur = inner;
+                    continue;
+                }
+            }
+            "await_expression" => {
+                if let Some(inner) = cur.child_by_field_name("argument") {
+                    cur = inner;
+                    continue;
+                }
+            }
+            "as_expression" | "type_assertion" => {
+                if let Some(inner) = cur.named_child(0) {
+                    cur = inner;
+                    continue;
+                }
+            }
+            _ => break,
+        }
+    }
+    if !matches!(cur.kind(), "call_expression") {
+        return false;
+    }
+    let callee = cur
+        .child_by_field_name("function")
+        .and_then(|f| text_of(f, code))
+        .unwrap_or_default();
+    if callee != "Object.create" {
+        return false;
+    }
+    let args = cur.child_by_field_name("arguments");
+    let Some(args) = args else { return false };
+    let mut cursor = args.walk();
+    let named: Vec<Node> = args.named_children(&mut cursor).collect();
+    if named.len() != 1 {
+        return false;
+    }
+    matches!(named[0].kind(), "null")
+        || text_of(named[0], code).as_deref() == Some("null")
+}
+
+/// Walk every descendant node of `root` invoking `visit`.  Stops
+/// descending whenever the callback returns `false`.  Used by the
+/// prototype-pollution suppressor to scan an enclosing function body
+/// without recursing into nested function declarations / closures.
+fn pp_walk<'a>(root: Node<'a>, visit: &mut dyn FnMut(Node<'a>) -> bool) {
+    if !visit(root) {
+        return;
+    }
+    // Skip nested function bodies — assignments in inner closures
+    // shouldn't satisfy the receiver-fact for the outer scope.
+    if matches!(
+        root.kind(),
+        "function_declaration"
+            | "function"
+            | "function_expression"
+            | "arrow_function"
+            | "method_definition"
+            | "generator_function_declaration"
+    ) {
+        return;
+    }
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        pp_walk(child, visit);
+    }
+}
+
+/// Return the body subtree of the closest enclosing function /
+/// method / closure ancestor of `from`.  Falls back to the program
+/// root when `from` is at top level so module-scope receivers still
+/// participate in the receiver-fact scan.
+fn pp_enclosing_function_body(from: Node) -> Option<Node> {
+    let mut cur = from;
+    while let Some(parent) = cur.parent() {
+        match parent.kind() {
+            "function_declaration"
+            | "function"
+            | "function_expression"
+            | "arrow_function"
+            | "method_definition"
+            | "generator_function_declaration" => {
+                return parent.child_by_field_name("body").or(Some(parent));
+            }
+            "program" | "source_file" => return Some(parent),
+            _ => {}
+        }
+        cur = parent;
+    }
+    Some(cur)
+}
+
+/// Walk up from the assignment node looking for two structural guard
+/// shapes:
+///
+/// * **Reject pattern** — a *previous sibling* `if_statement` in any
+///   enclosing block whose condition is `idx === DANGEROUS [|| …]` and
+///   whose consequence terminates control flow (`return` / `throw` /
+///   `break` / `continue`).  The dangerous-key path never reaches the
+///   subsequent assignment.
+/// * **Allowlist pattern** — an *ancestor* `if_statement` whose
+///   condition is `idx === SAFE [|| …]` and through whose consequence
+///   the descendant flows.  Only the safe-key arm reaches the
+///   assignment.
+///
+/// Both shapes must compare against the same key variable as the
+/// synthetic `__index_set__` node.  Stops at the enclosing function so
+/// guards in an outer scope around a closure passed elsewhere don't
+/// accidentally suppress inner assignments.
+fn pp_is_guarded_by_proto_check(from: Node, idx_text: &str, code: &[u8]) -> bool {
+    let mut cur = from;
+    while let Some(parent) = cur.parent() {
+        match parent.kind() {
+            "function_declaration"
+            | "function"
+            | "function_expression"
+            | "arrow_function"
+            | "method_definition"
+            | "generator_function_declaration"
+            | "program"
+            | "source_file" => return false,
+            "if_statement" => {
+                if let Some(cond) = parent.child_by_field_name("condition") {
+                    let consequence = parent.child_by_field_name("consequence");
+                    if let Some(verdict) =
+                        pp_classify_proto_guard(cond, consequence, cur, idx_text, code)
+                    {
+                        return verdict;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Reject pattern: scan previous siblings in the parent block
+        // for `if (idx === DANGEROUS [|| …]) { return; }` shapes that
+        // dominate the assignment via early-return.
+        let mut sibling_cursor = parent.walk();
+        for sibling in parent.named_children(&mut sibling_cursor) {
+            if sibling.start_byte() >= cur.start_byte() {
+                break;
+            }
+            if sibling.kind() != "if_statement" {
+                continue;
+            }
+            if pp_is_reject_pattern(sibling, idx_text, code) {
+                return true;
+            }
+        }
+
+        cur = parent;
+    }
+    false
+}
+
+/// True when `if_node` is `if (idx === DANGEROUS [|| idx === DANGEROUS]
+/// …) { return; / throw …; / break; }` shaped — every disjunct
+/// compares the named key variable to a dangerous prototype key, and
+/// the consequence terminates control flow.
+fn pp_is_reject_pattern(if_node: Node, idx_text: &str, code: &[u8]) -> bool {
+    let Some(cond) = if_node.child_by_field_name("condition") else {
+        return false;
+    };
+    let consequence = if_node.child_by_field_name("consequence");
+    let clauses = pp_split_or_clauses(cond);
+    if clauses.is_empty() {
+        return false;
+    }
+    for clause in &clauses {
+        let Some((var, lit)) = pp_extract_eq_compare(*clause, code) else {
+            return false;
+        };
+        if var != idx_text || !pp_is_dangerous_proto_key(&lit) {
+            return false;
+        }
+    }
+    consequence.map(pp_block_terminates).unwrap_or(false)
+}
+
+/// Decide whether an enclosing `if` clause around an `__index_set__`
+/// statement constitutes a prototype-pollution guard.
+///
+/// `cond` is the if's condition expression, `consequence` is the
+/// optional consequence block, and `descendant` is the node on the
+/// path from the if-statement down to the assignment (used to
+/// distinguish "assignment lives inside the consequence" from
+/// "assignment lives after the if").  `idx_text` is the textual key
+/// variable used by the synthetic `__index_set__`.
+///
+/// Returns `Some(true)` to suppress, `Some(false)` to keep the gate
+/// (e.g. an unrelated guard), and `None` when the if-statement is
+/// not a recognised guard so the walker continues outward.
+fn pp_classify_proto_guard(
+    cond: Node,
+    consequence: Option<Node>,
+    descendant: Node,
+    idx_text: &str,
+    code: &[u8],
+) -> Option<bool> {
+    let cond_clauses = pp_split_or_clauses(cond);
+    if cond_clauses.is_empty() {
+        return None;
+    }
+
+    let mut all_against_idx = true;
+    let mut all_dangerous = true;
+    let mut all_safe = true;
+    for clause in &cond_clauses {
+        let Some((var, lit)) = pp_extract_eq_compare(*clause, code) else {
+            return None;
+        };
+        if var != idx_text {
+            all_against_idx = false;
+            break;
+        }
+        let dangerous = pp_is_dangerous_proto_key(&lit);
+        if dangerous {
+            all_safe = false;
+        } else {
+            all_dangerous = false;
+        }
+    }
+    if !all_against_idx {
+        return None;
+    }
+
+    let consequence_contains_descendant = consequence
+        .map(|c| pp_subtree_contains(c, descendant))
+        .unwrap_or(false);
+
+    // Allowlist pattern: every clause is `idx === SAFE` and the
+    // assignment lives inside the consequence (true arm).
+    if all_safe && consequence_contains_descendant {
+        return Some(true);
+    }
+
+    // Reject pattern: every clause is `idx === DANGEROUS` and the
+    // consequence terminates control flow before reaching the
+    // assignment.  Only suppress when the assignment is *outside* the
+    // consequence (i.e., follows the if).
+    if all_dangerous
+        && !consequence_contains_descendant
+        && consequence.map(pp_block_terminates).unwrap_or(false)
+    {
+        return Some(true);
+    }
+
+    None
+}
+
+/// True when `descendant` is identical to or transitively a child of
+/// `root`.  Identity is checked via byte-range equality because
+/// tree-sitter `Node` doesn't implement `Eq` directly.
+fn pp_subtree_contains(root: Node, descendant: Node) -> bool {
+    let dr = (descendant.start_byte(), descendant.end_byte());
+    let rr = (root.start_byte(), root.end_byte());
+    dr.0 >= rr.0 && dr.1 <= rr.1
+}
+
+/// True when `block` (typically an `if` consequence) terminates
+/// control flow on every path: the last meaningful statement is a
+/// return / throw / break / continue.  Conservative — falls back to
+/// `false` for empty blocks or anything non-trivial.
+fn pp_block_terminates(block: Node) -> bool {
+    // Bare statement consequence (no braces): the if's consequence is
+    // the terminator itself.
+    if pp_is_terminator(block) {
+        return true;
+    }
+    if !matches!(block.kind(), "statement_block" | "block") {
+        return false;
+    }
+    let mut cursor = block.walk();
+    let last_stmt = block.named_children(&mut cursor).last();
+    match last_stmt {
+        Some(s) => pp_is_terminator(s),
+        None => false,
+    }
+}
+
+/// True when `n` is a control-flow-ending statement: return / throw /
+/// break / continue.
+fn pp_is_terminator(n: Node) -> bool {
+    matches!(
+        n.kind(),
+        "return_statement" | "throw_statement" | "break_statement" | "continue_statement"
+    )
+}
+
+/// Split an expression by top-level `||` operators.  Returns the
+/// individual disjunct sub-expressions.  Single (non-OR) expressions
+/// yield a one-element vector.  Walks `binary_expression` nodes whose
+/// `operator` field is `||` and recurses into both sides.
+fn pp_split_or_clauses<'a>(expr: Node<'a>) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    pp_collect_or_clauses(expr, &mut out);
+    out
+}
+
+fn pp_collect_or_clauses<'a>(expr: Node<'a>, out: &mut Vec<Node<'a>>) {
+    let stripped = pp_unwrap_paren(expr);
+    if matches!(stripped.kind(), "binary_expression") {
+        let op = stripped
+            .child_by_field_name("operator")
+            .map(|o| o.kind())
+            .unwrap_or("");
+        if op == "||" {
+            if let Some(l) = stripped.child_by_field_name("left") {
+                pp_collect_or_clauses(l, out);
+            }
+            if let Some(r) = stripped.child_by_field_name("right") {
+                pp_collect_or_clauses(r, out);
+            }
+            return;
+        }
+    }
+    out.push(stripped);
+}
+
+fn pp_unwrap_paren(n: Node) -> Node {
+    let mut cur = n;
+    while matches!(cur.kind(), "parenthesized_expression") {
+        match cur.named_child(0) {
+            Some(inner) => cur = inner,
+            None => break,
+        }
+    }
+    cur
+}
+
+/// Extract `(var_text, literal_value)` from an equality comparison
+/// `var === "literal"` / `var == "literal"` (and reversed forms).
+/// Returns `None` for any other shape.
+fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
+    let stripped = pp_unwrap_paren(expr);
+    if !matches!(stripped.kind(), "binary_expression") {
+        return None;
+    }
+    let op = stripped
+        .child_by_field_name("operator")
+        .map(|o| o.kind())
+        .unwrap_or("");
+    if !matches!(op, "===" | "==") {
+        return None;
+    }
+    let left = stripped.child_by_field_name("left")?;
+    let right = stripped.child_by_field_name("right")?;
+    let left = pp_unwrap_paren(left);
+    let right = pp_unwrap_paren(right);
+    if let (Some(lv), Some(rs)) = (text_of(left, code), pp_string_literal_value(right, code)) {
+        if matches!(left.kind(), "identifier" | "shorthand_property_identifier") {
+            return Some((lv, rs));
+        }
+    }
+    if let (Some(rv), Some(ls)) = (text_of(right, code), pp_string_literal_value(left, code)) {
+        if matches!(right.kind(), "identifier" | "shorthand_property_identifier") {
+            return Some((rv, ls));
+        }
+    }
+    None
 }
 
 /// Step 1 (`pre_emit_arg_source_nodes`): scan the AST, create Source nodes,
