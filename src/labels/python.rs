@@ -408,6 +408,48 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: true,
     },
+    // ─── XXE sinks ───
+    //
+    // Python's stock `xml.sax.parseString` / `xml.sax.parse` parsers are
+    // XXE-vulnerable by default; `xml.dom.minidom.parseString` /
+    // `xml.dom.minidom.parse` likewise resolve external entities through
+    // the underlying expat parser unless the entity-loader is hardened.
+    // Each entry is the dotted-module suffix; bare `parseString` / `parse`
+    // are intentionally avoided to prevent collisions with JSON parsers
+    // (`json.loads`), `lxml.etree.fromstring` is excluded — modern lxml
+    // disables external entities by default and would over-fire here.
+    LabelRule {
+        matchers: &[
+            "xml.sax.parseString",
+            "xml.sax.parse",
+            "xml.dom.minidom.parseString",
+            "xml.dom.minidom.parse",
+            "xml.dom.pulldom.parseString",
+            "xml.dom.pulldom.parse",
+        ],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+    },
+    // `defusedxml.*` is the canonical hardened drop-in: every parser in
+    // the package strips external-entity / DTD resolution and raises on
+    // the patterns that would otherwise XXE.  Treat any defusedxml
+    // call as an XXE sanitizer.
+    LabelRule {
+        matchers: &[
+            "defusedxml.ElementTree.fromstring",
+            "defusedxml.ElementTree.parse",
+            "defusedxml.minidom.parseString",
+            "defusedxml.minidom.parse",
+            "defusedxml.sax.parseString",
+            "defusedxml.sax.parse",
+            "defusedxml.pulldom.parseString",
+            "defusedxml.pulldom.parse",
+            "defusedxml.lxml.fromstring",
+            "defusedxml.lxml.parse",
+        ],
+        label: DataLabel::Sanitizer(Cap::XXE),
+        case_sensitive: true,
+    },
 ];
 
 /// Method-call validators that strip caps from their *receiver* (and

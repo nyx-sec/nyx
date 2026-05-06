@@ -1811,6 +1811,31 @@ pub(super) fn push_node<'a>(
                     labels.push(l);
                 }
             }
+            // Subscript-set form: `response.headers["X-Foo"] = bar`
+            // (Ruby `element_reference`, JS/TS `subscript_expression`,
+            // Python `subscript`).  The LHS has no `property` field, so
+            // walk into the subscript's `object` and try classifying its
+            // member-expression text (e.g. `response.headers`).  This
+            // lets header-injection sinks fire on the bare bracket form
+            // alongside the `set_header` / `headers_mut.insert` method
+            // shapes already covered above.
+            if labels.is_empty()
+                && matches!(
+                    lhs.kind(),
+                    "subscript_expression" | "subscript" | "element_reference"
+                )
+            {
+                let obj = lhs
+                    .child_by_field_name("object")
+                    .or_else(|| lhs.child_by_field_name("value"))
+                    .or_else(|| lhs.child(0));
+                if let Some(obj_node) = obj
+                    && let Some(obj_text) = member_expr_text(obj_node, code)
+                    && let Some(l) = classify(lang, &obj_text, extra)
+                {
+                    labels.push(l);
+                }
+            }
         }
     }
 

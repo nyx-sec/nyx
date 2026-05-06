@@ -298,12 +298,22 @@ pub static RULES: &[LabelRule] = &[
     //
     // Rack `Response#set_header(name, value)` / `add_header(name, value)`
     // and `ActionDispatch::Response#headers[]=` write a single header value.
-    // The subscript-set form `response.headers["X-Foo"] = bar` is not
-    // statically observable as a call, so this rule covers the explicit
-    // method-call form.  Tainted strings without `\r\n` stripping enable
-    // response splitting.
+    // The subscript-set form `response.headers["X-Foo"] = bar` is picked up
+    // via the LHS-subscript classification path in `cfg/mod.rs`: when the
+    // LHS object's member-expression text matches `response.headers` (or a
+    // synonym), the assignment is tagged as a HEADER_INJECTION sink.
+    // Tainted strings without `\r\n` stripping enable response splitting.
     LabelRule {
         matchers: &["set_header", "add_header"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &[
+            "response.headers",
+            "res.headers",
+            "self.response.headers",
+        ],
         label: DataLabel::Sink(Cap::HEADER_INJECTION),
         case_sensitive: false,
     },
@@ -323,6 +333,18 @@ pub static RULES: &[LabelRule] = &[
     LabelRule {
         matchers: &["=ERB.new", "Liquid::Template.parse"],
         label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+    },
+    // ─── XXE sinks ───
+    //
+    // `REXML::Document.new(xml)` instantiates the (legacy, default-vulnerable)
+    // pure-Ruby XML parser; an attacker-controlled `xml` is XXE.  Nokogiri
+    // (`Nokogiri::XML(xml)` / `Nokogiri::XML::Document.parse(xml)`) is XXE-
+    // safe by default in Nokogiri ≥ 1.10; option-gated detection requires
+    // a Ruby `GATED_SINKS` table and is the deferred Layer 2 follow-up.
+    LabelRule {
+        matchers: &["REXML::Document.new"],
+        label: DataLabel::Sink(Cap::XXE),
         case_sensitive: true,
     },
 ];

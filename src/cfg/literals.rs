@@ -335,6 +335,15 @@ pub(super) fn extract_const_macro_arg(
         "identifier" | "name" | "qualified_name" | "scoped_identifier" => {
             text_of(arg, code).map(|s| s.to_string())
         }
+        // Integer literals at the activation arg position.  PHP / C / C++
+        // commonly use plain `0` to opt into the safe-default option set
+        // (e.g. `simplexml_load_string($xml, "SimpleXMLElement", 0)`).  The
+        // gate's `dangerous_values` list is identifier-only, so returning
+        // the literal text lets the comparison fail against `LIBXML_NOENT`
+        // and suppresses the conservative-fire branch.
+        "integer" | "integer_literal" | "number_literal" | "decimal_integer_literal" => {
+            text_of(arg, code).map(|s| s.to_string())
+        }
         _ => None,
     }
 }

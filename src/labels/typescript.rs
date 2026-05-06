@@ -341,6 +341,12 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: false,
     },
+    // ─── XXE sinks ───  (mirrors `labels/javascript.rs`)
+    LabelRule {
+        matchers: &["libxmljs.parseXmlString", "libxmljs.parseXml"],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+    },
 ];
 
 /// Callee patterns that must never be classified as source/sanitizer/sink.
@@ -393,6 +399,23 @@ pub static GATED_SINKS: &[SinkGate] = &[
         payload_args: &[0],
         keyword_name: None,
         dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // ── XML XXE gates, mirrors `labels/javascript.rs` ────────────────────
+    SinkGate {
+        callee_matcher: "xml2js.parseString",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[
+            ("processEntities", &["true"]),
+            ("explicitEntities", &["true"]),
+            ("strict", &["false"]),
+        ],
         activation: GateActivation::ValueMatch,
     },
     // ── Outbound HTTP clients (SSRF), see javascript.rs for rationale ────

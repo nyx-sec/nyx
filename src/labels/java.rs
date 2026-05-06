@@ -385,6 +385,35 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: true,
     },
+    // ─── XXE sinks ───
+    //
+    // Java's stock XML parsers (JAXP) are XXE-vulnerable by default: the
+    // factories ship with external-entity / DTD resolution enabled and only
+    // become safe after `setFeature(FEATURE_SECURE_PROCESSING, true)` /
+    // disabling `external-general-entities` / `external-parameter-entities`.
+    // Tainted XML reaching any of these parser entry points is treated as
+    // an XXE flow; a config-check sanitizer pass (Phase XXE Layer 2) is
+    // out of scope for this rule and is the follow-up listed in
+    // `.pitboss/play/deferred.md`.
+    //
+    // Class-qualified suffix matching covers both the documentation-style
+    // `javax.xml.parsers.DocumentBuilder.parse(...)` form and the bound-
+    // receiver `XmlParser.parse(...)` form (when the receiver's TypeKind
+    // resolves to `XmlParser`).  Bare `parse` is intentionally avoided to
+    // prevent collisions with `Integer.parseInt`, `LocalDate.parse`,
+    // generic JSON parsers, etc.
+    LabelRule {
+        matchers: &[
+            "DocumentBuilder.parse",
+            "SAXParser.parse",
+            "XMLReader.parse",
+            "SAXBuilder.build",
+            "XmlParser.parse",
+            "XmlParser.build",
+        ],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {

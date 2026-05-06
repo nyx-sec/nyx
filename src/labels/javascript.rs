@@ -445,6 +445,20 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: false,
     },
+    // ─── XXE sinks ───
+    //
+    // libxmljs `parseXmlString` / `parseXml` resolve external entities by
+    // default when called with `{ noent: true }` or
+    // `{ replaceEntities: true }`.  The flat-rule modeling treats any call
+    // as a sink, the safe path requires explicit option suppression.
+    // libxmljs's own default ignores entities so the sink is conservative
+    // here; xml2js / fast-xml-parser are gated below in GATED_SINKS to
+    // suppress the safe-default case.
+    LabelRule {
+        matchers: &["libxmljs.parseXmlString", "libxmljs.parseXml"],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+    },
 ];
 
 /// Callee patterns that must never be classified as source/sanitizer/sink.
@@ -555,6 +569,33 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_kwargs: &[],
         activation: GateActivation::ValueMatch,
     },
+    // ── XML XXE gates ─────────────────────────────────────────────────────
+    //
+    // `xml2js.parseString(xml, opts, cb)` is XXE-safe by default; opts
+    // `{ explicitChildren: true, charkey: '__cdata' }` are benign, but
+    // resolving entities at the underlying sax-js layer requires user
+    // intent.  The gate fires only when the option object literal carries
+    // an entity-resolution kwarg with a truthy value (or is dynamic).  Only
+    // the XML payload (arg 0) is the protected position.
+    SinkGate {
+        callee_matcher: "xml2js.parseString",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[
+            ("processEntities", &["true"]),
+            ("explicitEntities", &["true"]),
+            ("strict", &["false"]),
+        ],
+        activation: GateActivation::ValueMatch,
+    },
+    // Note: `fast-xml-parser` (`new XMLParser({...}).parse(xml)`) is XXE-safe
+    // by default; flagging it would require constructor-option tracking via
+    // TypeFacts (XmlParser type with config carry).  Deferred to Layer 2.
     // ── Outbound HTTP clients (SSRF) ──────────────────────────────────────
     //
     // Policy: SSRF fires only when taint reaches the destination-bearing

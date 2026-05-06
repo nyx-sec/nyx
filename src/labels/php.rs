@@ -292,6 +292,23 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: true,
     },
+    // ─── XXE sanitizers ───
+    //
+    // `libxml_disable_entity_loader(true)` (PHP <8) / `libxml_set_external_entity_loader($cb)`
+    // disable external-entity expansion process-wide.  Treat their return
+    // value as XXE-cleared so config-style fixtures (`libxml_disable_entity_loader(true);
+    // simplexml_load_string($xml, ...)`) suppress the gate when the call is
+    // present in the same SSA scope.  The flat-rule sanitizer is a coarse
+    // approximation, the real config-check pattern would track parser-instance
+    // hardening (deferred Layer 2).
+    LabelRule {
+        matchers: &[
+            "libxml_disable_entity_loader",
+            "libxml_set_external_entity_loader",
+        ],
+        label: DataLabel::Sanitizer(Cap::XXE),
+        case_sensitive: false,
+    },
 ];
 
 /// Gated sinks for PHP.
@@ -339,6 +356,52 @@ pub static GATED_SINKS: &[SinkGate] = &[
         activation: GateActivation::Destination {
             object_destination_fields: &[],
         },
+    },
+    // PHP `simplexml_load_string($xml, $class, $options)` —
+    // XXE sink gated on the `LIBXML_NOENT` flag (or `LIBXML_DTDLOAD`,
+    // `LIBXML_DTDATTR`).  PHP's libxml is XXE-safe by default since 2.9.0;
+    // the gate fires only when the `$options` literal includes one of the
+    // dangerous flags.  Identifier-based activation works via the macro-arg
+    // fallback in `cfg::mod::classify_gated_sink` for `lang == "php"`.
+    SinkGate {
+        callee_matcher: "simplexml_load_string",
+        arg_index: 2,
+        dangerous_values: &["LIBXML_NOENT", "LIBXML_DTDLOAD", "LIBXML_DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    SinkGate {
+        callee_matcher: "simplexml_load_file",
+        arg_index: 2,
+        dangerous_values: &["LIBXML_NOENT", "LIBXML_DTDLOAD", "LIBXML_DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // DOMDocument::loadXML($xml, $options) — same gating as
+    // simplexml_load_string.  The chain-normalised callee text for
+    // `$dom->loadXML(...)` is `dom.loadXML`; suffix matching on
+    // `loadXML` covers the bound-receiver form.
+    SinkGate {
+        callee_matcher: "loadXML",
+        arg_index: 1,
+        dangerous_values: &["LIBXML_NOENT", "LIBXML_DTDLOAD", "LIBXML_DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
     },
     // PHP `header($line)` co-tag for OPEN_REDIRECT.
     //
