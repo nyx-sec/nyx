@@ -1,0 +1,6 @@
+{
+  "name": "web-app",
+  "version": "0.0.0",
+  "main": "src/index.ts",
+  "private": true
+}

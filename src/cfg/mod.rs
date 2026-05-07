@@ -709,6 +709,13 @@ pub struct FileCfg {
     /// extractor (Go, C) and for files with no inheritance / impl
     /// declarations.
     pub hierarchy_edges: Vec<(String, String)>,
+    /// Phase-04 resolver output: per-file import bindings resolved
+    /// against the project [`crate::resolve::ModuleGraph`]. Populated
+    /// post-`build_cfg` by [`crate::ast::ParsedFile::from_source`] when
+    /// a [`crate::resolve::ModuleGraph`] is available on the active
+    /// `Config`. Empty for non-JS/TS files, scans without a configured
+    /// resolver, and unit tests that build a CFG directly.
+    pub resolved_imports: Vec<crate::resolve::ImportBinding>,
 }
 
 impl FileCfg {
@@ -5434,6 +5441,7 @@ pub(crate) fn build_cfg<'a>(
         import_bindings,
         promisify_aliases,
         hierarchy_edges,
+        resolved_imports: Vec::new(),
     }
 }
 

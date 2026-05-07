@@ -428,6 +428,35 @@ impl FuncSummary {
             kind: self.kind,
         }
     }
+
+    /// Phase-04 [`FuncKey`] builder that consults a project-wide
+    /// [`crate::resolve::ModuleGraph`].
+    ///
+    /// When the file producing this summary lies inside a discovered
+    /// package, `namespace` becomes `"@scope/name::src/file.ts"`;
+    /// otherwise the result matches [`Self::func_key`] exactly.
+    /// Phase 04 only adds the helper, no resolution call site uses
+    /// it. Phase 10 switches the JS/TS pass-1 path to call this
+    /// instead of [`Self::func_key`].
+    pub fn func_key_with_resolver(
+        &self,
+        scan_root: Option<&str>,
+        module_graph: Option<&crate::resolve::ModuleGraph>,
+    ) -> FuncKey {
+        FuncKey {
+            lang: Lang::from_slug(&self.lang).unwrap_or(Lang::Rust),
+            namespace: crate::symbol::namespace_with_package(
+                &self.file_path,
+                scan_root,
+                module_graph,
+            ),
+            container: self.container.clone(),
+            name: self.name.clone(),
+            arity: Some(self.param_count),
+            disambig: self.disambig,
+            kind: self.kind,
+        }
+    }
 }
 
 // ── Callee resolution ────────────────────────────────────────────────────

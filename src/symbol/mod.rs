@@ -262,5 +262,31 @@ pub fn normalize_namespace(abs_path: &str, root: Option<&str>) -> String {
     abs_path.to_string()
 }
 
+/// Phase-04 namespace builder that prefixes a project-relative path with
+/// the canonical package name when the importer file lies inside a
+/// resolved [`crate::resolve::PackageEntry`].
+///
+/// Returns `"@scope/name::src/file.ts"` when the file is in a package
+/// and `"src/file.ts"` (the same value `normalize_namespace` produces)
+/// otherwise. Phase 04 ships this helper unused at the resolution
+/// site, phase 10 will route [`FuncKey`] construction through it for
+/// JS/TS files so cross-file callee lookup honours the package
+/// boundary.
+pub fn namespace_with_package(
+    abs_path: &str,
+    root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
+) -> String {
+    let plain = normalize_namespace(abs_path, root);
+    let Some(graph) = module_graph else {
+        return plain;
+    };
+    let path = std::path::Path::new(abs_path);
+    match graph.package_for(path) {
+        Some(pkg) => format!("{}::{}", pkg.name, plain),
+        None => plain,
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -65,6 +65,80 @@ implied or surfaced but did not finish.
       classification), but the divergence from the plan was not
       requested. Decide: keep the broader rewrite (and update the plan
       retroactively in commentary) or narrow to the await-token case.
+- [ ] Phase 04 audit — `FuncKey.namespace` package prefix is wired
+      via a new helper `FuncSummary::func_key_with_resolver` but no
+      call site uses it yet. The plan called this out explicitly
+      ("No resolver consumer turns this on yet — Phase 10 does"), so
+      the deferral is intentional, but phase 10 must remember to
+      switch JS/TS pass-1 summary insertion in `scan_filesystem`
+      (`local_gs.insert(s.func_key(Some(&root_str)), s)`) and
+      `scan_with_index_parallel` to the new helper. SQLite caches of
+      summaries written under the old format will need a rebuild on
+      first scan after the cutover.
+- [ ] Phase 04 audit — the plan said "stash the resolved key on
+      each import node so passes 1 and 2 can use it" but the actual
+      stash is at the file level (`FileCfg.resolved_imports` plus a
+      project-wide `ImportTable` keyed by importer path). Per-import
+      AST-node stashing would let phases 05/09/10 look up a specific
+      `import_clause` node's resolved file without re-parsing the
+      file's import list. Park because the file-level lookup
+      (`graph.imports_for(file)`) covers the use cases described in
+      phases 05/09/10 deliverables; revisit only if a downstream
+      consumer needs node-precise resolution.
+- [ ] Phase 04 audit — the resolver only consumes JS/TS imports.
+      Python `from X import Y`, Java `import a.b.C;`, and Rust
+      `use ::path` already have separate resolvers
+      (`cfg::imports::extract_import_bindings`, `rust_resolve.rs`).
+      A unified `Imports` table covering every language would let
+      cross-file taint use a single API; out of scope for the TS/JS
+      foundation phase.
+- [ ] Phase 04 audit — `package_for` returns the deepest-root
+      package, but `package_entry_main` only honours the entry's
+      manifest `main`/`module`/`types` field. Workspaces that ship
+      `exports` maps (subpath exports, conditional exports) will
+      fall back to `index.{ext}` lookup and miss explicit subpath
+      definitions. Park, real fixtures using `exports` haven't
+      surfaced in the recall corpus yet; revisit when phase 09/10
+      finds a recall gap traceable to this.
+- [ ] Phase 04 / recall_gaps mismatch — the phase header table in
+      `tests/recall_gaps.rs` maps `jsx_dangerous_html` to phase 04,
+      but the phase 04 prompt the implementer received explicitly
+      forbids un-ignoring any new gap test ("nothing new un-ignored
+      here, the resolver feeds a `FuncKey.namespace` field that is
+      currently unused at the resolution site — Phase 10 turns it
+      on"). The test stays ignored; whichever phase actually
+      delivers JSX-rendered-html taint coverage (likely phase 10
+      once the resolver is consumed, or a dedicated phase 04b) must
+      flip the `#[ignore]` and provide the fixture. Update the
+      header table at the same time so the in-file map matches the
+      runner's plan.
+- [ ] Phase 04 audit — `ModuleGraph::imports_for` returns
+      `Vec<ImportBinding>` rather than the `&[ImportBinding]`
+      slice the plan specified. The implementer wrapped the
+      `ImportTable` in an `RwLock` so per-file entries can be
+      written concurrently from rayon CFG workers, which forces a
+      clone on every read. Either pre-populate the table before
+      pass 1 (drops the lock and restores the slice signature) or
+      accept the divergence and update the plan signature
+      retroactively.
+- [ ] Phase 04 audit — `strip_jsonc` in `src/resolve/mod.rs` is
+      byte-oriented (`out.push(b as char)`) and corrupts non-ASCII
+      bytes inside JSON strings: a UTF-8 multi-byte sequence is
+      re-encoded as two-byte UTF-8 per original byte before
+      `serde_json` parses it, garbling the content. tsconfig /
+      package.json files with non-ASCII names, paths, or comments
+      will misparse or silently drop characters. Fix: iterate by
+      `char` (or copy non-ASCII bytes through verbatim) so the
+      output stays valid UTF-8.
+- [ ] Phase 04 audit — no test exercises the JS/TS import
+      extraction wired into `ParsedFile::from_source`. The new
+      `src/resolve/tests.rs` only covers `resolve_specifier`;
+      nothing parses `tests/fixtures/resolver/apps/web/src/index.ts`
+      end-to-end and asserts that `ModuleGraph::imports_for` returns
+      the expected `ImportBinding` rows for the relative, scoped,
+      alias, and `node:*` specifiers it imports. Add a parsed-file
+      integration test before phase 09/10 starts depending on the
+      file-level binding view.
 
 ## Deferred phases
 

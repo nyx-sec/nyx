@@ -245,6 +245,25 @@ pub(crate) fn ensure_framework_ctx(root: &Path, cfg: &Config) -> Option<Config> 
     Some(c)
 }
 
+/// Build a [`crate::resolve::ModuleGraph`] for `root` and stash it on a
+/// clone of `cfg`. Returns `None` when the cfg already carries one or
+/// when the build produced an empty graph.
+///
+/// Mirrors `ensure_framework_ctx`'s lifecycle: scan-path entry points
+/// call this once between the file walk and pass 1, the graph is shared
+/// across all per-file analysis via `Config::module_graph`. Building is
+/// best-effort, errors during fs walk land as missing entries rather
+/// than aborts.
+pub(crate) fn ensure_module_graph(root: &Path, cfg: &Config) -> Option<Config> {
+    if cfg.module_graph.is_some() {
+        return None;
+    }
+    let graph = crate::resolve::build_module_graph(&[root.to_path_buf()]);
+    let mut c = cfg.clone();
+    c.module_graph = Some(std::sync::Arc::new(graph));
+    Some(c)
+}
+
 /// Does `path` belong to a Preview-tier language (C or C++)?
 ///
 /// Drives the one-time `preview-tier scan` banner in `handle()`.  Tracks
@@ -1568,6 +1587,15 @@ pub(crate) fn scan_filesystem_with_observer(
     };
     tracing::info!(file_count = all_paths.len(), "file walk complete");
 
+    // ── Build TS/JS module graph once for the scan root ──────────────────
+    // Phase 04: resolver foundation. The graph is built between walk and
+    // pass 1 so every per-file analysis (CFG-time import classification,
+    // pass-2 cross-file lookup) sees the same view. Build cost is bounded
+    // (no AST parsing, manifests only) and the result lives behind an
+    // `Arc` on `Config::module_graph`.
+    let owned_cfg_with_graph = ensure_module_graph(root, cfg);
+    let cfg = owned_cfg_with_graph.as_ref().unwrap_or(cfg);
+
     if let Some(flag) = preview_tier_seen {
         if all_paths.iter().any(|p| is_preview_tier_path(p)) {
             flag.store(true, Ordering::Relaxed);
@@ -2056,6 +2084,12 @@ pub fn scan_with_index_parallel_observer(
             None,
         );
     }
+
+    // Phase 04: build the TS/JS module graph between fs walk and pass 1
+    // so the indexed scan path sees the same resolver state as the
+    // non-indexed path (`scan_filesystem_with_observer`).
+    let owned_cfg_with_graph = ensure_module_graph(scan_root, cfg);
+    let cfg = owned_cfg_with_graph.as_ref().unwrap_or(cfg);
 
     let current_files: HashSet<PathBuf> = files.iter().cloned().collect();
     let removed_files: Vec<PathBuf> = indexed_files

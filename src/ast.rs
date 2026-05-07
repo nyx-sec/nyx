@@ -1213,13 +1213,35 @@ impl<'a> ParsedFile<'a> {
         } else {
             None
         };
-        let file_cfg = build_cfg(
+        let mut file_cfg = build_cfg(
             &source.tree,
             source.bytes,
             source.lang_slug,
             &source.file_path_str,
             rules_ref,
         );
+
+        // Phase 04: when the scan paths produced a project ModuleGraph,
+        // resolve this file's imports against it and stash both on the
+        // FileCfg (for local consumers) and on the global per-file
+        // ImportTable (for cross-file lookups in phases 05/09/10). The
+        // wiring is no-op for non-JS/TS files and for direct callers of
+        // `analyse_file_fused` that pass a `Config` without a resolver
+        // (e.g. unit tests).
+        if let Some(graph) = cfg.module_graph.as_deref() {
+            let bindings = crate::resolve::extract_resolved_imports(
+                &source.tree,
+                source.bytes,
+                source.path,
+                graph,
+                source.lang_slug,
+            );
+            if !bindings.is_empty() {
+                graph.record_imports_for_file(source.path.to_path_buf(), bindings.clone());
+                file_cfg.resolved_imports = bindings;
+            }
+        }
+
         Self {
             source,
             file_cfg,
