@@ -64,6 +64,83 @@ fn async_await() {
     );
 }
 
+/// Phase 03 recall-gap: `.then(cb)` propagates the receiver Promise's
+/// resolved value into the callback's first parameter.  The taint trace
+/// surfaces at the `.then(cb)` call site via the engine's callback-pattern
+/// emission (`source_to_callback` paired with `cb`'s `param_to_sink`).
+#[test]
+fn promise_then_callback() {
+    let findings = scan_fixture("promise_then_callback");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "promise_then_callback.ts",
+            sink_line: 12,
+            source_line: Some(7),
+        },
+    );
+}
+
+/// Phase 03 recall-gap: `Promise.all([...])` returns a value carrying the
+/// union of element taints; `p.then(cb)` then exposes it to the sink at
+/// the `.then` call site via the callback-pattern emission.
+#[test]
+fn promise_all_taint() {
+    let findings = scan_fixture("promise_all_taint");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "promise_all_taint.ts",
+            sink_line: 11,
+            source_line: None,
+        },
+    );
+}
+
+/// Phase 03 recall-gap: `for await (const x of iter)` taints `x` from the
+/// iterator (Web Streams / async-iterable request body).
+#[test]
+fn for_await_of_stream() {
+    let findings = scan_fixture("for_await_of_stream");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "for_await_of_stream.ts",
+            sink_line: 5,
+            source_line: None,
+        },
+    );
+}
+
+/// Phase 03 re-entrancy guard: a 2-deep `.then` chain whose inner callback
+/// awaits another promise.  Confirms the inline cache does not deadlock and
+/// k=1 depth is still enforced.  Outer-level taint must still reach the sink
+/// even when the inner level cannot recurse.
+#[test]
+fn promise_then_chain_reentrant() {
+    let findings = scan_fixture("promise_then_chain");
+    // The chain deliberately has two `.then` levels.  At k=1 the inner
+    // `.then(inner)` cannot recurse, so the engine treats the inner
+    // callback's body as opaque and propagates conservatively.  We only
+    // assert the run does not panic and produces *some* finding for this
+    // file (taint reaches the inner sink via the outer flow).
+    let any = findings
+        .iter()
+        .any(|f| f.path.ends_with("promise_then_chain.ts"));
+    assert!(
+        any,
+        "expected at least one finding from promise_then_chain.ts, got:\n{}",
+        findings
+            .iter()
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
 #[test]
 #[ignore = "PHASE 03 unblocks"]
 fn fs_promises() {

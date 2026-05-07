@@ -604,6 +604,58 @@ pub fn lookup(lang: &str, raw: &str) -> Kind {
         .unwrap_or(Kind::Other)
 }
 
+/// Promise-callback methods (`p.then(cb)`, `p.catch(cb)`, `p.finally(cb)`).
+///
+/// These are not sinks. The taint engine consumes this predicate to recognise
+/// the receiver as a Promise whose resolved value will be fed to the callback's
+/// first parameter.  See phase 03 of `plan.md` for the recall-gap rationale.
+///
+/// JS/TS only.  `callee_leaf` is expected to be the post-`callee_leaf_name`
+/// short form (e.g. `"then"`, not `"p.then"`).
+pub fn is_promise_callback_method(lang: &str, callee_leaf: &str) -> bool {
+    if !matches!(
+        lang,
+        "javascript" | "js" | "typescript" | "ts" | "tsx"
+    ) {
+        return false;
+    }
+    matches!(callee_leaf, "then" | "catch" | "finally")
+}
+
+/// Static `Promise.*` combinator a call resolves to, or `None`.
+///
+/// Combinators wrap arguments into a single Promise:
+///   * `Promise.resolve(x)` — identity for `x`.
+///   * `Promise.all([a, b])` — array whose elements have per-arg taint.
+///   * `Promise.allSettled([...])` — same shape as `all`, conservative union.
+///   * `Promise.race([...])` — first-to-settle, conservative union.
+///
+/// `callee` is the full callee text (e.g. `"Promise.all"`) since the leaf
+/// segment alone (`"all"`) is too generic to match safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseCombinatorKind {
+    Resolve,
+    All,
+    AllSettled,
+    Race,
+}
+
+pub fn is_promise_combinator(lang: &str, callee: &str) -> Option<PromiseCombinatorKind> {
+    if !matches!(
+        lang,
+        "javascript" | "js" | "typescript" | "ts" | "tsx"
+    ) {
+        return None;
+    }
+    match callee {
+        "Promise.resolve" => Some(PromiseCombinatorKind::Resolve),
+        "Promise.all" => Some(PromiseCombinatorKind::All),
+        "Promise.allSettled" => Some(PromiseCombinatorKind::AllSettled),
+        "Promise.race" => Some(PromiseCombinatorKind::Race),
+        _ => None,
+    }
+}
+
 /// The kind of taint source, used to refine finding severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

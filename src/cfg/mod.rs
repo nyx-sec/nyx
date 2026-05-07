@@ -1624,6 +1624,21 @@ pub(super) fn push_node<'a>(
         text = "subshell".to_string();
     }
 
+    // JS/TS `for (… of iter)` / `for (… in iter)` / `for await (… of iter)`:
+    // tree-sitter classifies all three as `for_in_statement` with the
+    // iterator on the `right` field.  Use the iterator expression's text
+    // (e.g. `"req.body"`) for label classification so the loop binding
+    // inherits a Source taint when the iterator matches a Source rule.
+    // Without this, the for_in_statement's text is the full multi-line
+    // loop, which never matches any short suffix-style Source matcher.
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && ast.kind() == "for_in_statement"
+        && let Some(right) = ast.child_by_field_name("right")
+        && let Some(iter_text) = text_of(right, code)
+    {
+        text = iter_text;
+    }
+
     // If this is a declaration/expression wrapper or an assignment that
     // *contains* a call, prefer the first inner call identifier instead of
     // the whole line.  Track the inner call's byte span so we can populate

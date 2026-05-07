@@ -1956,12 +1956,21 @@ fn apply_path_fact_branch_narrowing_with_interner(
 // ── Context-Sensitive Inline Analysis Functions ───────────────────────
 
 /// Build a compact taint signature from the actual argument taint at a call site.
-fn build_arg_taint_sig(
+/// Cache-key builder.  Folds optional Phase 03 promise-callback seeds in.
+///
+/// Cap bits from `promise_callback_seeds[i] = (idx, taint)` are unioned
+/// onto position `idx` of the signature so two cache lookups for the
+/// same callback function but different receiver-promise taints map to
+/// distinct entries.  Without this, an unseeded `cb()` call earlier in
+/// the same file would poison the cache for a later seeded
+/// `p.then(cb)`.
+fn build_arg_taint_sig_with_seeds(
     args: &[SmallVec<[SsaValue; 2]>],
     receiver: &Option<SsaValue>,
     state: &SsaTaintState,
+    promise_callback_seeds: PromiseCallbackSeeds<'_>,
 ) -> ArgTaintSig {
-    let mut sig = SmallVec::new();
+    let mut sig: SmallVec<[(usize, u32); 4]> = SmallVec::new();
 
     // Receiver taint at position usize::MAX (sentinel)
     if let Some(rv) = receiver {
@@ -1980,6 +1989,20 @@ fn build_arg_taint_sig(
         }
         if !caps.is_empty() {
             sig.push((i, caps.bits()));
+        }
+    }
+
+    // Phase 03: fold extra param seeds into the signature so two
+    // callers seeding the same callback with different caps cache
+    // separately.
+    for (idx, seed) in promise_callback_seeds {
+        if seed.caps.is_empty() {
+            continue;
+        }
+        if let Some(slot) = sig.iter_mut().find(|(j, _)| *j == *idx) {
+            slot.1 |= seed.caps.bits();
+        } else {
+            sig.push((*idx, seed.caps.bits()));
         }
     }
 
@@ -2018,6 +2041,35 @@ fn inline_analyse_callee(
     cfg: &Cfg,
     caller_ssa: &SsaBody,
     call_inst: &SsaInst,
+) -> Option<InlineResult> {
+    inline_analyse_callee_with_seeds(
+        callee, args, receiver, state, transfer, cfg, caller_ssa, call_inst, &[],
+    )
+}
+
+/// Promise-callback seed entries plumbed into [`inline_analyse_callee_with_seeds`].
+///
+/// Each entry is `(param_idx, seed)`: when the inline-analyzed callee binds
+/// `Param { index: param_idx }`, the corresponding parameter's entry-state
+/// taint is unioned with `seed` *before* `run_ssa_taint_full` executes.
+///
+/// Phase 03 uses this to seed the first parameter of a `.then(cb)` /
+/// `.catch(cb)` callback with the receiver Promise's resolved-value taint
+/// when the callback itself is the inlined callee (the outer `.then` call's
+/// receiver does not appear in `args`, so the existing `arg → param` seed
+/// mechanism would otherwise lose the flow).
+pub(crate) type PromiseCallbackSeeds<'a> = &'a [(usize, VarTaint)];
+
+fn inline_analyse_callee_with_seeds(
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    receiver: &Option<SsaValue>,
+    state: &SsaTaintState,
+    transfer: &SsaTaintTransfer,
+    cfg: &Cfg,
+    caller_ssa: &SsaBody,
+    call_inst: &SsaInst,
+    promise_callback_seeds: PromiseCallbackSeeds<'_>,
 ) -> Option<InlineResult> {
     // Enforce k=1 depth limit
     if transfer.context_depth >= 1 {
@@ -2126,8 +2178,9 @@ fn inline_analyse_callee(
         return None;
     }
 
-    // Build cache key from actual argument taint
-    let sig = build_arg_taint_sig(args, receiver, state);
+    // Build cache key from actual argument taint, folding any extra
+    // promise-callback seeds into the signature.
+    let sig = build_arg_taint_sig_with_seeds(args, receiver, state, promise_callback_seeds);
 
     // Check cache (keyed by FuncKey + arg signature).  The cached value
     // is a structural shape, re-attribute origins to the current call
@@ -2195,7 +2248,32 @@ fn inline_analyse_callee(
         }
     };
 
-    let param_seed: Vec<Option<VarTaint>> = args.iter().map(combine_taint).collect();
+    let mut param_seed: Vec<Option<VarTaint>> = args.iter().map(combine_taint).collect();
+    // Phase 03 promise-callback hook: union extra per-param seeds (from
+    // `.then(cb)` / `.catch(cb)` resolved-value flows) into `param_seed`.
+    // Cap union + origin merge keeps the cache key (`ArgTaintSig`) the
+    // same shape as a normal call: the seeded caps end up reflected in
+    // the `(idx, caps_bits)` signature, so two callbacks with different
+    // receiver caps cache under different keys.
+    if !promise_callback_seeds.is_empty() {
+        for (idx, seed) in promise_callback_seeds {
+            while param_seed.len() <= *idx {
+                param_seed.push(None);
+            }
+            let merged = match param_seed[*idx].take() {
+                None => seed.clone(),
+                Some(mut existing) => {
+                    existing.caps |= seed.caps;
+                    for o in &seed.origins {
+                        push_origin_bounded(&mut existing.origins, *o);
+                    }
+                    existing.uses_summary |= seed.uses_summary;
+                    existing
+                }
+            };
+            param_seed[*idx] = Some(merged);
+        }
+    }
     let receiver_seed: Option<VarTaint> = receiver.and_then(|rv| {
         state.get(rv).map(|taint| VarTaint {
             caps: taint.caps,
@@ -3258,6 +3336,259 @@ fn ssa_value_validated_bits(
     }
 }
 
+/// Phase 03: handle JS/TS Promise-callback method calls (`.then(cb)`,
+/// `.catch(cb)`, `.finally(cb)`).
+///
+/// Returns `true` when the call was recognised as a Promise callback and
+/// fully handled here (caller returns from the Call arm without further
+/// processing).  Returns `false` for any other call.
+///
+/// Semantics:
+///   * `p.then(cb)` — `cb`'s first parameter receives `p`'s resolved-value
+///     taint; result of `then(cb)` carries `cb`'s return taint plus a
+///     conservative copy of `p`'s taint (subsequent `.then` calls in a
+///     chain re-feed it).
+///   * `p.catch(cb)` — same shape as `.then`.  The receiver may have
+///     resolved or rejected, but at the taint level we treat both
+///     identically (caps are coarse enough that a rejection-only flow
+///     does not need a separate channel).
+///   * `p.finally(cb)` — `cb` takes no value parameter; result is `p`'s
+///     taint unchanged.
+fn try_apply_promise_callback(
+    inst: &SsaInst,
+    info: &crate::cfg::NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    receiver: &Option<SsaValue>,
+    state: &mut SsaTaintState,
+    transfer: &SsaTaintTransfer,
+    cfg: &Cfg,
+    caller_ssa: &SsaBody,
+) -> bool {
+    let leaf = crate::callgraph::callee_leaf_name(callee);
+    if !crate::labels::is_promise_callback_method(transfer.lang.as_str(), leaf) {
+        return false;
+    }
+
+    // Upstream Promise taint = receiver taint + every non-callback arg's
+    // taint.  When the upstream is a chained expression
+    // (`Promise.resolve(req.body).then(cb)`), tree-sitter's receiver field
+    // resolves to the chain-root identifier (`Promise` here), which has no
+    // useful taint; the chained subexpression's taint instead surfaces in
+    // the implicit-uses arg group emitted by SSA `build_call_args`.
+    // Unioning both channels covers the named-promise (`p.then(cb)`),
+    // chained (`Promise.resolve(x).then(cb)`), and `await`-wrapped
+    // (`await p.then(cb)` lowered to `Assign` over the call result) shapes.
+    let mut receiver_taint = VarTaint {
+        caps: Cap::empty(),
+        origins: SmallVec::new(),
+        uses_summary: false,
+    };
+    if let Some(rv) = receiver {
+        if let Some(t) = state.get(*rv) {
+            receiver_taint.caps |= t.caps;
+            for o in &t.origins {
+                push_origin_bounded(&mut receiver_taint.origins, *o);
+            }
+            receiver_taint.uses_summary |= t.uses_summary;
+        }
+    }
+    for (idx, arg_group) in args.iter().enumerate() {
+        if idx == 0 {
+            // Skip the callback argument itself; its taint is the function
+            // reference, not the value flowed into the callback.
+            continue;
+        }
+        for &v in arg_group {
+            if let Some(t) = state.get(v) {
+                receiver_taint.caps |= t.caps;
+                for o in &t.origins {
+                    push_origin_bounded(&mut receiver_taint.origins, *o);
+                }
+                receiver_taint.uses_summary |= t.uses_summary;
+            }
+        }
+    }
+    let receiver_taint: Option<VarTaint> = if receiver_taint.caps.is_empty() {
+        None
+    } else {
+        Some(receiver_taint)
+    };
+
+    // Combine receiver taint into the result so chain-style `.then().then()`
+    // continues to flow even when the callback's body is opaque or absent
+    // (e.g. trailing `.then(console.log)`).  For `finally`, callback has no
+    // value param and the chain just forwards `p`.
+    let mut combined_caps = Cap::empty();
+    let mut combined_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    let mut combined_summary = false;
+    if let Some(ref rt) = receiver_taint {
+        combined_caps |= rt.caps;
+        for o in &rt.origins {
+            push_origin_bounded(&mut combined_origins, *o);
+        }
+        combined_summary |= rt.uses_summary;
+    }
+
+    if !matches!(leaf, "finally") {
+        // Pull the callback function out of arg[0]; the .finally callback
+        // has no resolved-value parameter so its inline analysis does not
+        // need a seed and we leave the callback opaque (chain just
+        // forwards `p`).
+        if let Some(cb_arg) = args.first() {
+            for &cb_v in cb_arg {
+                let cb_name = caller_ssa
+                    .value_defs
+                    .get(cb_v.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref());
+                let Some(name) = cb_name else { continue };
+                // Promise callbacks accept only the resolved value as
+                // arg[0]; build synthetic args so the existing
+                // `arg_uses → param_seed` path still runs (constants,
+                // origin chain truncation, abstract-state seeding).
+                // The dedicated `promise_callback_seeds` channel then
+                // unions the receiver's taint into param[0]'s entry
+                // state for callbacks whose declared arity is zero
+                // (e.g. `() => doStuff()` reading from a closed-over
+                // promise field).
+                let synthetic_args: Vec<SmallVec<[SsaValue; 2]>> = Vec::new();
+                let seeds: smallvec::SmallVec<[(usize, VarTaint); 1]> =
+                    if let Some(ref rt) = receiver_taint {
+                        smallvec::smallvec![(0, rt.clone())]
+                    } else {
+                        smallvec::SmallVec::new()
+                    };
+                if let Some(result) = inline_analyse_callee_with_seeds(
+                    name,
+                    &synthetic_args,
+                    &None,
+                    state,
+                    transfer,
+                    cfg,
+                    caller_ssa,
+                    inst,
+                    seeds.as_slice(),
+                ) {
+                    if let Some(rt) = result.return_taint {
+                        combined_caps |= rt.caps;
+                        for o in &rt.origins {
+                            push_origin_bounded(&mut combined_origins, *o);
+                        }
+                        combined_summary |= rt.uses_summary;
+                    }
+                }
+            }
+        }
+    }
+
+    // Source/sanitizer labels on the .then/.catch node itself stay
+    // honoured: a custom rule that taints `then` (rare but possible) or
+    // sanitises it should still apply.
+    for lbl in &info.taint.labels {
+        match lbl {
+            DataLabel::Source(bits) => {
+                combined_caps |= *bits;
+                let source_kind = crate::labels::infer_source_kind(*bits, callee);
+                let origin = TaintOrigin {
+                    node: inst.cfg_node,
+                    source_kind,
+                    source_span: None,
+                };
+                if !combined_origins.iter().any(|o| o.node == inst.cfg_node) {
+                    combined_origins.push(origin);
+                }
+            }
+            DataLabel::Sanitizer(bits) => {
+                combined_caps &= !*bits;
+            }
+            _ => {}
+        }
+    }
+
+    if combined_caps.is_empty() {
+        state.remove(inst.value);
+    } else {
+        state.set(
+            inst.value,
+            VarTaint {
+                caps: combined_caps,
+                origins: combined_origins,
+                uses_summary: combined_summary,
+            },
+        );
+    }
+    true
+}
+
+/// Phase 03: handle JS/TS `Promise.resolve|all|allSettled|race(...)`.
+///
+/// For all four shapes the conservative approximation is: result = union
+/// of every argument's taint.  `Promise.all` would in principle produce
+/// a per-element-tainted array, but downstream destructuring already
+/// taints all bindings via the existing destructuring handling, so the
+/// scalar union is precise enough at the recall-gap level.
+fn try_apply_promise_combinator(
+    inst: &SsaInst,
+    info: &crate::cfg::NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    state: &mut SsaTaintState,
+    transfer: &SsaTaintTransfer,
+) -> bool {
+    if crate::labels::is_promise_combinator(transfer.lang.as_str(), callee).is_none() {
+        return false;
+    }
+
+    let mut caps = Cap::empty();
+    let mut origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    let mut uses_summary = false;
+    for arg_group in args {
+        for &v in arg_group {
+            if let Some(taint) = state.get(v) {
+                caps |= taint.caps;
+                uses_summary |= taint.uses_summary;
+                for o in &taint.origins {
+                    push_origin_bounded(&mut origins, *o);
+                }
+            }
+        }
+    }
+
+    // Honour custom Source/Sanitizer labels on the Promise.* call node.
+    for lbl in &info.taint.labels {
+        match lbl {
+            DataLabel::Source(bits) => {
+                caps |= *bits;
+                let source_kind = crate::labels::infer_source_kind(*bits, callee);
+                let origin = TaintOrigin {
+                    node: inst.cfg_node,
+                    source_kind,
+                    source_span: None,
+                };
+                if !origins.iter().any(|o| o.node == inst.cfg_node) {
+                    origins.push(origin);
+                }
+            }
+            DataLabel::Sanitizer(bits) => caps &= !*bits,
+            _ => {}
+        }
+    }
+
+    if caps.is_empty() {
+        state.remove(inst.value);
+    } else {
+        state.set(
+            inst.value,
+            VarTaint {
+                caps,
+                origins,
+                uses_summary,
+            },
+        );
+    }
+    true
+}
+
 /// Transfer a single SSA instruction.
 pub(super) fn transfer_inst(
     inst: &SsaInst,
@@ -3326,6 +3657,19 @@ pub(super) fn transfer_inst(
             // taint through their return value, they are framework scaffolding,
             // not data-flow operations.
             if crate::labels::is_excluded(transfer.lang.as_str(), callee.as_bytes()) {
+                return;
+            }
+
+            // Phase 03 Promise plumbing: handle `.then(cb)`/`.catch(cb)`/
+            // `.finally(cb)` and `Promise.resolve|all|allSettled|race(...)`
+            // before the rest of the Call arm.  Returning early avoids
+            // re-classifying these as ordinary calls (no summary, no sink),
+            // which would otherwise drop the receiver/element taint flow.
+            if try_apply_promise_callback(inst, info, callee, args, receiver, state, transfer, cfg, ssa)
+            {
+                return;
+            }
+            if try_apply_promise_combinator(inst, info, callee, args, state, transfer) {
                 return;
             }
 
@@ -6108,22 +6452,100 @@ fn collect_block_events(
             }
         }
 
+        // Phase 03: Promise-callback synthetic source_to_callback.  When
+        // the call is `p.then(cb)` / `p.catch(cb)` with a tainted
+        // receiver, the callback's first parameter receives the
+        // resolved-value taint.  Synthesise a single-entry
+        // `source_to_callback = [(0, receiver_caps)]` so the
+        // existing callback-pattern detector below pairs `cb`'s
+        // `param_to_sink` with the receiver's caps and emits the
+        // sink finding.
+        let synthetic_promise_callback: Option<(usize, Cap)> = match &inst.op {
+            SsaOp::Call {
+                callee, receiver, ..
+            } => {
+                let leaf = crate::callgraph::callee_leaf_name(callee);
+                if crate::labels::is_promise_callback_method(transfer.lang.as_str(), leaf)
+                    && !matches!(leaf, "finally")
+                {
+                    let mut recv_caps = Cap::empty();
+                    if let Some(rv) = receiver {
+                        if let Some(t) = state.get(*rv) {
+                            recv_caps |= t.caps;
+                        }
+                    }
+                    if recv_caps.is_empty() {
+                        None
+                    } else {
+                        Some((0usize, recv_caps))
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         if sink_caps.is_empty() {
             // Callback pattern: check if callee has source_to_callback and the
             // actual callback argument has a matching param_to_sink.
             if let SsaOp::Call { callee, .. } = &inst.op {
                 let caller_func = info.ast.enclosing_func.as_deref().unwrap_or("");
                 // Use arg_uses.len() for arity (see transfer_inst's Call arm).
-                if let Some(resolved) = resolve_callee_hinted(
+                let resolved = resolve_callee_hinted(
                     transfer,
                     callee,
                     caller_func,
                     info.call.call_ordinal,
                     Some(info.call.arg_uses.len()),
-                ) {
-                    for &(cb_idx, src_caps) in &resolved.source_to_callback {
-                        let cb_name = info.arg_callees.get(cb_idx).and_then(|ac| ac.as_ref());
-                        if let Some(cb_callee) = cb_name {
+                );
+                // Collect source_to_callback entries: real summary (if any)
+                // plus the Phase 03 synthetic entry for promise callbacks.
+                let mut s2c: SmallVec<[(usize, Cap); 2]> = SmallVec::new();
+                if let Some(ref r) = resolved {
+                    for &e in &r.source_to_callback {
+                        s2c.push(e);
+                    }
+                }
+                if let Some(entry) = synthetic_promise_callback {
+                    if !s2c.iter().any(|&(i, _)| i == entry.0) {
+                        s2c.push(entry);
+                    }
+                }
+                if !s2c.is_empty() {
+                    for &(cb_idx, src_caps) in &s2c {
+                        // Two channels for resolving the callback's name:
+                        //   1. `info.arg_callees` — populated when the
+                        //      argument is a tree-sitter call/function node;
+                        //      the typical path for inline arrow callbacks
+                        //      and for native CallFn/CallMethod arguments.
+                        //   2. SSA `value_defs.var_name` of the argument
+                        //      itself — a plain identifier reference such as
+                        //      `p.then(cb)` doesn't classify as a Call AST
+                        //      node so `arg_callees[0]` is `None`, but the
+                        //      lowered SSA value carries the identifier text
+                        //      via `var_name`.  Falling back to it lets
+                        //      Phase 03 promise-callback synthesis resolve
+                        //      the named-callback shape.
+                        let arg_callees_name: Option<String> = info
+                            .arg_callees
+                            .get(cb_idx)
+                            .and_then(|ac| ac.clone());
+                        let ssa_var_name: Option<String> = if let SsaOp::Call { args, .. } =
+                            &inst.op
+                        {
+                            args.get(cb_idx).and_then(|grp| {
+                                grp.iter().find_map(|v| {
+                                    ssa.value_defs
+                                        .get(v.0 as usize)
+                                        .and_then(|vd| vd.var_name.clone())
+                                        .filter(|n| !n.contains('.') && !n.is_empty())
+                                })
+                            })
+                        } else {
+                            None
+                        };
+                        let cb_callee_owned = arg_callees_name.or(ssa_var_name);
+                        if let Some(cb_callee) = cb_callee_owned.as_deref() {
                             // First try the standard summary-based resolution
                             // path (covers user-defined functions and built-ins
                             // that landed in label-derived summaries upstream).
