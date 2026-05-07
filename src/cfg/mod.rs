@@ -521,6 +521,13 @@ pub struct NodeInfo {
     /// resources captured by the closure body, so the lifecycle of those
     /// captures must remain unchanged on the assignment node.
     pub rhs_is_function_literal: bool,
+    /// True when this CFG node was produced from a tree-sitter
+    /// `await_expression` (JS/TS `Kind::AwaitForward`).  The SSA lowering
+    /// emits `SsaOp::Assign(operand)` for such nodes so taint, origins,
+    /// and abstract-domain facts forward 1:1 across the await boundary.
+    /// Strictly additive: when `false`, legacy lowering applies.
+    #[serde(default)]
+    pub is_await_forward: bool,
 }
 
 impl NodeInfo {
@@ -2771,6 +2778,7 @@ pub(super) fn push_node<'a>(
         is_numeric_length_access: detect_numeric_length_access(ast, lang, code),
         member_field: detect_member_field_assignment(ast, code),
         rhs_is_function_literal: rhs_is_function_literal(ast, lang),
+        is_await_forward: ast.kind() == "await_expression",
     });
 
     debug!(

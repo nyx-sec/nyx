@@ -300,6 +300,11 @@ pub enum Kind {
     /// any other sequential statement in the CFG but explicitly classified so
     /// code that inspects `Kind` can recognise it.
     Seq,
+    /// Async-await unary forward.  An `await x` expression evaluates `x` and
+    /// resolves to the same value/taint, modelled as a 1:1 copy.  Lowered to
+    /// SSA as `SsaOp::Assign(operand)` so taint, origins, and abstract value
+    /// pass through unchanged.
+    AwaitForward,
     Other,
 }
 

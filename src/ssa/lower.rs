@@ -1258,6 +1258,27 @@ fn rename_variables(
                 } else {
                     SsaOp::Assign(uses)
                 }
+            } else if info.is_await_forward
+                && info.call.callee.is_none()
+                && !info.taint.uses.is_empty()
+            {
+                // `await x` resolves to the same value as `x` — model as a 1:1
+                // copy so taint, origins, and abstract-domain facts forward
+                // unchanged.  Gated on `callee.is_none()` so an await-wrapped
+                // call still lowers as a Call op rather than being collapsed
+                // to Assign (today CFG splits `await foo(x)` into two nodes,
+                // but the guard keeps the invariant explicit).
+                let uses: SmallVec<[SsaValue; 4]> = info
+                    .taint
+                    .uses
+                    .iter()
+                    .filter_map(|u| var_stacks.get(u).and_then(|s| s.last().copied()))
+                    .collect();
+                if uses.is_empty() {
+                    SsaOp::Nop
+                } else {
+                    SsaOp::Assign(uses)
+                }
             } else if matches!(
                 info.kind,
                 StmtKind::Entry

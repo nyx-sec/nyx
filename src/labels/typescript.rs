@@ -958,6 +958,7 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "expression_statement"  => Kind::CallWrapper,
     "as_expression"         => Kind::Seq,
     "type_assertion"        => Kind::Seq,
+    "await_expression"      => Kind::AwaitForward,
 
     // trivia
     "comment"               => Kind::Trivia,

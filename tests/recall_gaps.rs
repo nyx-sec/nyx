@@ -51,7 +51,6 @@ use common::recall::{assert_finding, scan_fixture, ExpectedFinding};
 use std::path::Path;
 
 #[test]
-#[ignore = "PHASE 02 unblocks"]
 fn async_await() {
     let findings = scan_fixture("async_await");
     assert_finding(
@@ -59,8 +58,8 @@ fn async_await() {
         ExpectedFinding {
             rule_id: "taint-unsanitised-flow",
             file_suffix: "handler.js",
-            sink_line: 0,
-            source_line: None,
+            sink_line: 6,
+            source_line: Some(4),
         },
     );
 }
