@@ -1,4 +1,6 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig, RuntimeLabelRule};
+use crate::labels::{
+    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+};
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
 
@@ -297,6 +299,40 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
+    },
+];
+
+/// Rust gated sinks.  Argument-position-aware classification for callees
+/// where activation depends on a literal arg value rather than the bare
+/// callee name.
+pub static GATED_SINKS: &[SinkGate] = &[
+    // actix-web `HttpResponse::Found().header("Location", url)` (and other
+    // builder variants like `Ok().header(...)`, `MovedPermanently().header(...)`).
+    // After chain normalisation the callee text is e.g.
+    // `HttpResponse.Found.header`; suffix matching on `header` covers every
+    // builder variant.
+    //
+    // Activation: arg 0 case-insensitive equality with `"Location"`.  When
+    // arg 0 is a constant string equal to `Location` the gate fires and
+    // checks payload arg 1 for taint; constants like `"Content-Type"` are
+    // suppressed by the safe-literal branch.  When arg 0 is dynamic the
+    // gate fires conservatively (per the existing `setAttribute` /
+    // `parseFromString` convention).
+    //
+    // Mirrors PHP's `=header` Location gate; the Rust analog is split
+    // across two args (`name`, `value`) instead of PHP's single `Location: ...`
+    // line.
+    SinkGate {
+        callee_matcher: "header",
+        arg_index: 0,
+        dangerous_values: &["Location"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
     },
 ];
 
