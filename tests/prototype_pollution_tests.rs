@@ -164,6 +164,39 @@ fn typescript_object_assign_constant_source_does_not_fire() {
     assert_clean("typescript", "safe_object_assign_const.ts");
 }
 
+// ── Bare `extend` deep-merge gate (LiteralOnly activation) ────────────────
+
+#[test]
+fn javascript_bare_extend_deep_with_tainted_source_fires() {
+    // `const { extend } = require('jquery'); extend(true, target, req.body)`
+    // — bare suffix matcher fires when arg 0 is literal `true`.
+    assert_unsafe("javascript", "unsafe_bare_extend_deep.js");
+}
+
+#[test]
+fn javascript_bare_extend_class_extension_does_not_fire() {
+    // `Backbone.Model.extend({...})` — arg 0 is an object literal, not the
+    // deep flag, so LiteralOnly activation suppresses.
+    assert_clean("javascript", "safe_bare_extend_class.js");
+}
+
+#[test]
+fn javascript_bare_extend_dynamic_arg0_does_not_fire() {
+    // `extend(target, req.body)` — arg 0 is dynamic; LiteralOnly skips the
+    // conservative ALL_ARGS_PAYLOAD branch.
+    assert_clean("javascript", "safe_bare_extend_dynamic.js");
+}
+
+#[test]
+fn typescript_bare_extend_deep_with_tainted_source_fires() {
+    assert_unsafe("typescript", "unsafe_bare_extend_deep.ts");
+}
+
+#[test]
+fn typescript_bare_extend_class_extension_does_not_fire() {
+    assert_clean("typescript", "safe_bare_extend_class.ts");
+}
+
 // ── Phase 09: full-SSA dynamic-key sink ───────────────────────────────────
 
 #[test]

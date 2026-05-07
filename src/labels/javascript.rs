@@ -1182,6 +1182,26 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // Bare `extend` (suffix-matched) for jQuery's deep form imported as a
+    // bound name: `const { extend } = require('jquery'); extend(true, t, s)`.
+    // Suffix `extend` would over-fire on Backbone's `Model.extend(proto)` /
+    // `View.extend({...})` class-extension idiom, so this gate uses
+    // `LiteralOnly` activation: it fires only when arg 0 is the literal
+    // boolean `true` (the deep-flag form, never used by Backbone subclassing).
+    // Sources start at arg 2 because arg 0 is the flag and arg 1 is the
+    // target; tainting the target alone is benign.
+    SinkGate {
+        callee_matcher: "extend",
+        arg_index: 0,
+        dangerous_values: &["true"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::LiteralOnly,
+    },
     // `set-value` standalone helper: `setValue(obj, key, val)` — historic
     // CVE-2019-10747 (set-value <2.0.1) and CVE-2021-23440 (set-value <4.0.1)
     // recursive set-by-path helper that did not block `__proto__` keys.

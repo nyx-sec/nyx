@@ -272,6 +272,11 @@ pub(super) fn extract_const_string_arg(
                 None
             }
         }
+        // Boolean literals — JS/TS `true`/`false` are their own node kinds; some
+        // grammars wrap them as identifiers carrying the keyword text.  Returned
+        // verbatim so `dangerous_values` matching can detect deep-flag forms
+        // like `extend(true, target, src)`.
+        "true" | "false" => Some(arg.kind().to_string()),
         // PHP double-quoted strings parse as `encapsed_string` whose body is
         // a sequence of `string_content` / `escape_sequence` / interpolation
         // nodes.  Treat the string as constant only when every child is a

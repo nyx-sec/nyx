@@ -66,6 +66,17 @@ pub enum GateActivation {
     /// selects which attribute is being set) and `parseFromString` (activation
     /// arg selects the MIME type).
     ValueMatch,
+    /// Strict literal-value activation.  The gate fires only when the
+    /// activation arg is a literal that matches `dangerous_values` /
+    /// `dangerous_prefixes`.  Unknown/dynamic activation arg suppresses
+    /// (no conservative ALL_ARGS_PAYLOAD push).
+    ///
+    /// Used for ambiguously-named matchers where the dangerous shape is
+    /// only identifiable by an explicit literal flag — e.g. bare `extend`
+    /// where the deep-merge form is `extend(true, target, src)` but
+    /// Backbone's `Model.extend({proto})` shares the suffix.  Conservative
+    /// fallback would over-fire on the class-extension form.
+    LiteralOnly,
     /// Destination-bearing flow activation.  The gate fires when taint reaches
     /// a declared destination location at the call site, no literal
     /// inspection, no prefix heuristic.
@@ -1345,7 +1356,15 @@ pub fn classify_gated_sink(
             // where `userAttr` is user-controlled) is itself a vulnerability
             // path. Return ALL_ARGS_PAYLOAD so downstream sink scanning
             // considers every positional argument.
+            //
+            // `LiteralOnly` opts out of this conservative branch: the gate
+            // requires positive literal evidence to fire, so unknown
+            // activation suppresses entirely (avoids false positives on
+            // ambiguously-named suffix matchers like bare `extend`).
             None => {
+                if matches!(gate.activation, GateActivation::LiteralOnly) {
+                    continue;
+                }
                 out.push(GateMatch {
                     label: gate.label,
                     payload_args: ALL_ARGS_PAYLOAD,

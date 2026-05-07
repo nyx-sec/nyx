@@ -893,6 +893,22 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // Bare `extend` (suffix-matched) — see labels/javascript.rs for full
+    // rationale.  `LiteralOnly` activation requires arg 0 to be literal `true`
+    // so Backbone's `Model.extend({proto})` class-extension form does not
+    // fire (its arg 0 is an object literal, not a boolean).
+    SinkGate {
+        callee_matcher: "extend",
+        arg_index: 0,
+        dangerous_values: &["true"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::LiteralOnly,
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
