@@ -334,7 +334,12 @@ pub static RULES: &[LabelRule] = &[
     // matching on `ldapEscape` / `ldapescape` covers `const ldapEscape =
     // require('ldap-escape')` plus default-import shapes.
     LabelRule {
-        matchers: &["ldapEscape", "ldap-escape", "ldapescape.filter", "ldapescape.dn"],
+        matchers: &[
+            "ldapEscape",
+            "ldap-escape",
+            "ldapescape.filter",
+            "ldapescape.dn",
+        ],
         label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
         case_sensitive: false,
     },
@@ -380,11 +385,7 @@ pub static RULES: &[LabelRule] = &[
     // and classifies its member-expression text, so the bare bracket form
     // fires alongside `setHeader` / `res.set` / `res.header` / `res.append`.
     LabelRule {
-        matchers: &[
-            "res.headers",
-            "response.headers",
-            "self.response.headers",
-        ],
+        matchers: &["res.headers", "response.headers", "self.response.headers"],
         label: DataLabel::Sink(Cap::HEADER_INJECTION),
         case_sensitive: false,
     },

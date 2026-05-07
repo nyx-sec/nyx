@@ -367,11 +367,7 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &[
-            "response.headers",
-            "self.response.headers",
-            "resp.headers",
-        ],
+        matchers: &["response.headers", "self.response.headers", "resp.headers"],
         label: DataLabel::Sink(Cap::HEADER_INJECTION),
         case_sensitive: false,
     },

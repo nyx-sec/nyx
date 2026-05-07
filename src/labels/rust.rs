@@ -280,11 +280,7 @@ pub static RULES: &[LabelRule] = &[
     // existing `header` HEADER_INJECTION sink and any Location-line
     // co-tagging is deferred to the abstract-string-domain pattern hook.
     LabelRule {
-        matchers: &[
-            "Redirect::to",
-            "Redirect::permanent",
-            "Redirect::temporary",
-        ],
+        matchers: &["Redirect::to", "Redirect::permanent", "Redirect::temporary"],
         label: DataLabel::Sink(Cap::OPEN_REDIRECT),
         case_sensitive: true,
     },

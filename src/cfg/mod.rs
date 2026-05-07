@@ -67,12 +67,11 @@ use literals::{
     arg0_kind_and_interpolation, call_ident_of, def_use, detect_go_replace_call_sanitizer,
     detect_rust_replace_chain_sanitizer, extract_arg_callees, extract_arg_string_literals,
     extract_arg_uses, extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
-    is_object_create_null_call,
     extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
     extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
     find_call_node, find_call_node_deep, find_chained_inner_call, has_keyword_arg,
-    has_object_arg_property, has_only_literal_args, is_parameterized_query_call,
-    java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
+    has_object_arg_property, has_only_literal_args, is_object_create_null_call,
+    is_parameterized_query_call, java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
     js_chain_outer_method_for_inner, ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
 use params::{
@@ -2951,13 +2950,7 @@ fn try_lower_subscript_write(
     let mut pp_labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
     let mut pp_payload_args: Option<Vec<usize>> = None;
     if matches!(lang, "javascript" | "typescript" | "js" | "ts")
-        && !pp_should_suppress_index_set(
-            assign_ast,
-            subscript_node,
-            &arr_text,
-            &idx_text,
-            code,
-        )
+        && !pp_should_suppress_index_set(assign_ast, subscript_node, &arr_text, &idx_text, code)
     {
         pp_labels.push(DataLabel::Sink(Cap::PROTOTYPE_POLLUTION));
         pp_payload_args = Some(vec![0]);

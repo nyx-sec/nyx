@@ -307,7 +307,11 @@ fn new_cap_classes_round_trip_serde() {
         | Cap::PROTOTYPE_POLLUTION;
 
     // Sanity: bit-width must accommodate every new cap.
-    assert_ne!(new_caps.bits(), 0, "every new cap must carry a non-zero bit");
+    assert_ne!(
+        new_caps.bits(),
+        0,
+        "every new cap must carry a non-zero bit"
+    );
     assert_eq!(
         new_caps.bits().count_ones(),
         7,
@@ -329,7 +333,10 @@ fn new_cap_classes_round_trip_serde() {
         | Cap::CRYPTO
         | Cap::UNAUTHORIZED_ID
         | Cap::DATA_EXFIL;
-    assert!((existing & new_caps).is_empty(), "new caps must not collide");
+    assert!(
+        (existing & new_caps).is_empty(),
+        "new caps must not collide"
+    );
 
     let summary = FuncSummary {
         name: "all_new_classes".into(),

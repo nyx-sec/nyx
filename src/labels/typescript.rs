@@ -270,7 +270,12 @@ pub static RULES: &[LabelRule] = &[
     },
     // ─── LDAP-filter sanitizers ───
     LabelRule {
-        matchers: &["ldapEscape", "ldap-escape", "ldapescape.filter", "ldapescape.dn"],
+        matchers: &[
+            "ldapEscape",
+            "ldap-escape",
+            "ldapescape.filter",
+            "ldapescape.dn",
+        ],
         label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
         case_sensitive: false,
     },
@@ -299,11 +304,7 @@ pub static RULES: &[LabelRule] = &[
     },
     // Subscript-set form (mirrors `labels/javascript.rs`).
     LabelRule {
-        matchers: &[
-            "res.headers",
-            "response.headers",
-            "self.response.headers",
-        ],
+        matchers: &["res.headers", "response.headers", "self.response.headers"],
         label: DataLabel::Sink(Cap::HEADER_INJECTION),
         case_sensitive: false,
     },

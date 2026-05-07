@@ -75,7 +75,13 @@ fn python_dict_update_with_tainted_source_fires() {
          All diags: {:#?}",
         diags
             .iter()
-            .map(|d| format!("{}:{} [{}] {}", d.path, d.line, d.severity.as_db_str(), d.id))
+            .map(|d| format!(
+                "{}:{} [{}] {}",
+                d.path,
+                d.line,
+                d.severity.as_db_str(),
+                d.id
+            ))
             .collect::<Vec<_>>(),
     );
 }

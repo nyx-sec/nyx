@@ -21,7 +21,14 @@ pub fn handle(action: RulesAction, config: &Config) -> NyxResult<()> {
             class_only,
             no_class,
             json: as_json,
-        } => list(config, lang.as_deref(), kind.as_deref(), class_only, no_class, as_json),
+        } => list(
+            config,
+            lang.as_deref(),
+            kind.as_deref(),
+            class_only,
+            no_class,
+            as_json,
+        ),
     }
 }
 

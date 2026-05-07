@@ -1867,7 +1867,9 @@ fn call_node_kwargs_lifts_javascript_object_literal_pairs() {
         .expect("child_process.exec call node should exist");
     let kwargs = &call_node.call.kwargs;
     assert!(
-        kwargs.iter().any(|(k, vs)| k == "shell" && vs.iter().any(|v| v == "true")),
+        kwargs
+            .iter()
+            .any(|(k, vs)| k == "shell" && vs.iter().any(|v| v == "true")),
         "JS object-literal `{{ shell: true }}` should surface as kwarg, got {kwargs:?}"
     );
 }

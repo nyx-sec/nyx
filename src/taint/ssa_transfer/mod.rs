@@ -6101,10 +6101,7 @@ fn collect_block_events(
                         .unwrap_or(callee_str.as_str());
                     // `feed` covers Python lxml incremental parsing
                     // (`parser.feed(body); parser.close()`).
-                    if matches!(
-                        suffix,
-                        "parse" | "parseString" | "parseFromString" | "feed"
-                    ) {
+                    if matches!(suffix, "parse" | "parseString" | "parseFromString" | "feed") {
                         sink_caps |= Cap::XXE;
                     }
                 }
@@ -6256,13 +6253,9 @@ fn collect_block_events(
                     let receiver_is_xpath = transfer
                         .type_facts
                         .and_then(|tf| tf.get_type(*rv))
-                        .map(|kind| {
-                            matches!(kind, crate::ssa::type_facts::TypeKind::XPathClient)
-                        })
+                        .map(|kind| matches!(kind, crate::ssa::type_facts::TypeKind::XPathClient))
                         .unwrap_or(false);
-                    if receiver_is_xpath
-                        && crate::ssa::xpath_config::xpath_safe(Some(*rv), xpc)
-                    {
+                    if receiver_is_xpath && crate::ssa::xpath_config::xpath_safe(Some(*rv), xpc) {
                         sink_caps &= !Cap::XPATH_INJECTION;
                     }
                 }
@@ -6293,10 +6286,7 @@ fn collect_block_events(
                         .type_facts
                         .and_then(|tf| tf.get_type(*rv))
                         .map(|kind| {
-                            matches!(
-                                kind,
-                                crate::ssa::type_facts::TypeKind::NullPrototypeObject
-                            )
+                            matches!(kind, crate::ssa::type_facts::TypeKind::NullPrototypeObject)
                         })
                         .unwrap_or(false);
                     if receiver_is_null_proto {
@@ -8372,8 +8362,7 @@ fn receiver_incompatible_sink_caps(kind: &crate::ssa::type_facts::TypeKind, sink
     // builder objects, URL values, HTTP clients (request-side), and so on
     // — cannot host these sinks even when a same-named matcher
     // (`*.send`, `*.set`, `*.append`) attaches the label by suffix.
-    let response_like_caps =
-        Cap::HTML_ESCAPE | Cap::OPEN_REDIRECT | Cap::HEADER_INJECTION;
+    let response_like_caps = Cap::HTML_ESCAPE | Cap::OPEN_REDIRECT | Cap::HEADER_INJECTION;
     if sink_caps.intersects(response_like_caps) {
         match kind {
             TypeKind::HttpResponse => {}               // compatible
@@ -8390,8 +8379,8 @@ fn receiver_incompatible_sink_caps(kind: &crate::ssa::type_facts::TypeKind, sink
     // don't silently drop real sinks.
     if sink_caps.intersects(Cap::LDAP_INJECTION) {
         match kind {
-            TypeKind::LdapClient => {}                  // compatible
-            TypeKind::Unknown | TypeKind::Object => {}  // could be ldap
+            TypeKind::LdapClient => {}                 // compatible
+            TypeKind::Unknown | TypeKind::Object => {} // could be ldap
             _ => {
                 remove |= Cap::LDAP_INJECTION;
             }

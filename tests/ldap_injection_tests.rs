@@ -80,12 +80,19 @@ fn assert_unsafe(lang: &str, file_suffix: &str) {
     let diags = diags_for_file(&dir, file_suffix);
     let count = count_by_prefix(&diags, RULE_PREFIX);
     assert_eq!(
-        count, 1,
+        count,
+        1,
         "{lang}/{file_suffix}: expected exactly 1 {RULE_PREFIX} finding, got {count}.\n\
          All diags: {:#?}",
         diags
             .iter()
-            .map(|d| format!("{}:{} [{}] {}", d.path, d.line, d.severity.as_db_str(), d.id))
+            .map(|d| format!(
+                "{}:{} [{}] {}",
+                d.path,
+                d.line,
+                d.severity.as_db_str(),
+                d.id
+            ))
             .collect::<Vec<_>>(),
     );
     let high = diags
@@ -93,7 +100,8 @@ fn assert_unsafe(lang: &str, file_suffix: &str) {
         .filter(|d| d.id.starts_with(RULE_PREFIX) && d.severity.as_db_str() == "HIGH")
         .count();
     assert_eq!(
-        high, 1,
+        high,
+        1,
         "{lang}/{file_suffix}: expected exactly 1 HIGH-severity {RULE_PREFIX} finding, got {high}.\n\
          All matching: {:#?}",
         diags
@@ -107,7 +115,10 @@ fn assert_unsafe(lang: &str, file_suffix: &str) {
 fn assert_clean(lang: &str, file_suffix: &str) {
     let dir = ldap_fixture_dir(lang);
     let diags = diags_for_file(&dir, file_suffix);
-    let matching: Vec<_> = diags.iter().filter(|d| d.id.starts_with(RULE_PREFIX)).collect();
+    let matching: Vec<_> = diags
+        .iter()
+        .filter(|d| d.id.starts_with(RULE_PREFIX))
+        .collect();
     assert!(
         matching.is_empty(),
         "{lang}/{file_suffix}: expected 0 {RULE_PREFIX} findings, got {}:\n{:#?}",

@@ -1112,10 +1112,8 @@ fn analyse_multi_body(
     // results.  Only populated when a body produces a non-empty set of
     // typed named values, i.e. it has at least one named SSA value with
     // a concrete `TypeKind` after optimisation.
-    let mut body_var_types: HashMap<
-        BodyId,
-        HashMap<String, crate::ssa::type_facts::TypeKind>,
-    > = HashMap::new();
+    let mut body_var_types: HashMap<BodyId, HashMap<String, crate::ssa::type_facts::TypeKind>> =
+        HashMap::new();
 
     // ── Pass 1: lexical containment propagation ──────────────────────
     for &idx in &order {

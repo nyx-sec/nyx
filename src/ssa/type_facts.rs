@@ -457,10 +457,7 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // [`crate::ssa::xml_config::XmlParserConfigResult`] suppresses
             // the XXE bit at the type-qualified `XmlParser.parse` sink
             // when the receiver carries a hardening fact.
-            "newDocumentBuilder"
-            | "newSAXParser"
-            | "getXMLReader"
-            | "newXMLReader"
+            "newDocumentBuilder" | "newSAXParser" | "getXMLReader" | "newXMLReader"
             | "createXMLReader" => Some(TypeKind::XmlParser),
             // `XPathFactory.newXPath()` returns a JAXP `XPath` instance.
             // Mapping it to `XPathClient` lets the type-qualified resolver

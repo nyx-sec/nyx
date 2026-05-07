@@ -1551,8 +1551,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A01",
         owasp_label: "Broken Access Control",
-        description:
-            "Attacker-controlled data flows into a filesystem path without canonicalisation \
+        description: "Attacker-controlled data flows into a filesystem path without canonicalisation \
              or root-confinement, allowing reads or writes outside the intended directory.",
         default_enabled: true,
         emission_active: false,
@@ -1564,8 +1563,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A03",
         owasp_label: "Injection",
-        description:
-            "Attacker-controlled data is used as a format string argument (printf-family, \
+        description: "Attacker-controlled data is used as a format string argument (printf-family, \
              String.format) and can leak memory or crash the process.",
         default_enabled: true,
         emission_active: false,
@@ -1577,8 +1575,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A03",
         owasp_label: "Injection",
-        description:
-            "Attacker-controlled data is concatenated into a SQL query string instead of \
+        description: "Attacker-controlled data is concatenated into a SQL query string instead of \
              being bound through a parameterised statement.",
         default_enabled: true,
         emission_active: false,
@@ -1590,8 +1587,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A08",
         owasp_label: "Software and Data Integrity Failures",
-        description:
-            "Attacker-controlled bytes are fed to an unsafe object deserialiser \
+        description: "Attacker-controlled bytes are fed to an unsafe object deserialiser \
              (pickle, ObjectInputStream, Marshal, unserialize) enabling arbitrary code \
              execution via crafted payloads.",
         default_enabled: true,
@@ -1604,8 +1600,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A10",
         owasp_label: "Server-Side Request Forgery",
-        description:
-            "Attacker-controlled URL reaches the destination of an outbound HTTP request \
+        description: "Attacker-controlled URL reaches the destination of an outbound HTTP request \
              without an allowlist or scheme/host restriction.",
         default_enabled: true,
         emission_active: false,
@@ -1617,8 +1612,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A03",
         owasp_label: "Injection",
-        description:
-            "Attacker-controlled data reaches an `eval`/`exec`/shell sink, dynamic \
+        description: "Attacker-controlled data reaches an `eval`/`exec`/shell sink, dynamic \
              require/import, or other arbitrary-code construct.",
         default_enabled: true,
         emission_active: false,
@@ -1630,8 +1624,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::Medium,
         owasp_code: "A02",
         owasp_label: "Cryptographic Failures",
-        description:
-            "Attacker-controlled data drives the algorithm name, key, or seed of a \
+        description: "Attacker-controlled data drives the algorithm name, key, or seed of a \
              cryptographic primitive (weak-crypto / predictable-randomness).",
         default_enabled: true,
         emission_active: false,
@@ -1643,8 +1636,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A01",
         owasp_label: "Broken Access Control",
-        description:
-            "Request-bound identifier reaches a privileged sink without an intervening \
+        description: "Request-bound identifier reaches a privileged sink without an intervening \
              ownership/membership check.  Companion to the standalone `auth_analysis` \
              rule; gated by `scanner.enable_auth_as_taint`.",
         default_enabled: false,
@@ -1657,8 +1649,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A04",
         owasp_label: "Insecure Design",
-        description:
-            "Sensitive data (cookies, headers, env, db rows, files) flows into the body, \
+        description: "Sensitive data (cookies, headers, env, db rows, files) flows into the body, \
              headers, or other payload field of an outbound network request to a fixed \
              destination.",
         default_enabled: true,
@@ -1672,8 +1663,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A03",
         owasp_label: "Injection",
-        description:
-            "Attacker-controlled data is concatenated into an LDAP filter or DN without \
+        description: "Attacker-controlled data is concatenated into an LDAP filter or DN without \
              RFC 4515 escaping, letting the attacker rewrite the directory query.",
         default_enabled: true,
         emission_active: true,
@@ -1685,8 +1675,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A03",
         owasp_label: "Injection",
-        description:
-            "Attacker-controlled data is concatenated into an XPath expression instead of \
+        description: "Attacker-controlled data is concatenated into an XPath expression instead of \
              passed through XPath variable bindings, letting the attacker rewrite the \
              query.",
         default_enabled: true,
@@ -1699,8 +1688,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A03",
         owasp_label: "Injection",
-        description:
-            "Attacker-controlled data lands in an HTTP response header without `\\r\\n` \
+        description: "Attacker-controlled data lands in an HTTP response header without `\\r\\n` \
              stripping, enabling response splitting and cache-poisoning attacks.",
         default_enabled: true,
         emission_active: true,
@@ -1712,8 +1700,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::Medium,
         owasp_code: "A01",
         owasp_label: "Broken Access Control",
-        description:
-            "Attacker-controlled URL drives a redirect / `Location` header without an \
+        description: "Attacker-controlled URL drives a redirect / `Location` header without an \
              allowlist or relative-URL check, enabling phishing pivots.",
         default_enabled: true,
         emission_active: true,
@@ -1725,8 +1712,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A03",
         owasp_label: "Injection",
-        description:
-            "Attacker controls the template *source string* (not just template variables) \
+        description: "Attacker controls the template *source string* (not just template variables) \
              passed to a server-side renderer (Jinja2, Twig, Handlebars, ERB), enabling \
              arbitrary expression evaluation.",
         default_enabled: true,
@@ -1739,8 +1725,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A05",
         owasp_label: "Security Misconfiguration",
-        description:
-            "Attacker-controlled XML reaches a parser configured to resolve external \
+        description: "Attacker-controlled XML reaches a parser configured to resolve external \
              entities (or missing the secure-processing feature), enabling SSRF, file \
              read, and DoS.",
         default_enabled: true,
@@ -1753,8 +1738,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         severity: crate::patterns::Severity::High,
         owasp_code: "A05",
         owasp_label: "Security Misconfiguration",
-        description:
-            "Attacker-controlled key reaches an object property assignment that can mutate \
+        description: "Attacker-controlled key reaches an object property assignment that can mutate \
              `Object.prototype` (deep-merge / `__proto__` / dynamic subscript).",
         default_enabled: true,
         emission_active: true,

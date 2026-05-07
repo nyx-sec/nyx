@@ -279,10 +279,7 @@ fn is_leading_slash_check(text: &str) -> bool {
             // Tail after the strpos `)` should compare against 0 with
             // `===` / `==`.  Allow whitespace.
             let tail = after[close + 1..].trim_start();
-            if let Some(rest) = tail
-                .strip_prefix("===")
-                .or_else(|| tail.strip_prefix("=="))
-            {
+            if let Some(rest) = tail.strip_prefix("===").or_else(|| tail.strip_prefix("==")) {
                 if rest.trim() == "0" {
                     return true;
                 }
@@ -428,7 +425,12 @@ fn has_capital_host_accessor(text: &str) -> bool {
 /// target shape used by [`extract_validation_target`].
 fn extract_host_allowlist_target(text: &str) -> Option<String> {
     let lower = text.to_ascii_lowercase();
-    for probe in ["new url(", "urllib.parse.urlparse(", "urlparse(", "url.parse("] {
+    for probe in [
+        "new url(",
+        "urllib.parse.urlparse(",
+        "urlparse(",
+        "url.parse(",
+    ] {
         if let Some(idx) = lower.find(probe) {
             let args_start = idx + probe.len();
             if args_start <= text.len() {
@@ -453,9 +455,9 @@ fn extract_host_allowlist_target(text: &str) -> Option<String> {
 /// stripped, e.g. Rust `&parsed.host_str()`); `None` otherwise.
 fn extract_host_accessor_receiver(text: &str) -> Option<String> {
     let probes: &[(&str, bool)] = &[
-        (".host_str(", false),  // Rust, case-stable
-        (".Hostname(", false),  // Go
-        (".Host", true),        // Go, requires `==`/`!=` after
+        (".host_str(", false), // Rust, case-stable
+        (".Hostname(", false), // Go
+        (".Host", true),       // Go, requires `==`/`!=` after
     ];
     for (probe, requires_eq) in probes {
         if let Some(idx) = text.find(probe) {

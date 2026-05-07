@@ -99,10 +99,7 @@ impl XmlParserConfigResult {
 /// * Receiver carries no config fact → returns `false`.
 /// * `external_entities` flag is set → returns `false` even if a safe
 ///   flag is also set, since the unsafe opt-in dominates.
-pub fn xxe_safe(
-    receiver: Option<SsaValue>,
-    xml_config: &XmlParserConfigResult,
-) -> bool {
+pub fn xxe_safe(receiver: Option<SsaValue>, xml_config: &XmlParserConfigResult) -> bool {
     let Some(rv) = receiver else {
         return false;
     };
@@ -163,7 +160,9 @@ fn classify_call(
 
     // Helper: lookup the const lattice for arg N's first SSA value.
     let arg_const = |n: usize| -> Option<&ConstLattice> {
-        args.get(n).and_then(|vals| vals.first()).and_then(|v| consts.get(v))
+        args.get(n)
+            .and_then(|vals| vals.first())
+            .and_then(|v| consts.get(v))
     };
     // Helper: text of the const lattice (for string/identifier comparison).
     let arg_text = |n: usize| -> Option<String> {
@@ -385,19 +384,14 @@ pub fn analyze_xml_parser_config(
                             // argument; tree-sitter-python keywords surface
                             // the value identifier in the `values` slot.
                             if values.iter().any(|v| v == "True" || v == "true") {
-                                let entry = configs
-                                    .entry(inst.value)
-                                    .or_default();
+                                let entry = configs.entry(inst.value).or_default();
                                 entry.external_entities = true;
                             } else if values.iter().any(|v| v == "False" || v == "false") {
-                                let entry = configs
-                                    .entry(inst.value)
-                                    .or_default();
+                                let entry = configs.entry(inst.value).or_default();
                                 entry.disallow_doctype = true;
                             }
                         }
-                        if name == "no_network"
-                            && values.iter().any(|v| v == "True" || v == "true")
+                        if name == "no_network" && values.iter().any(|v| v == "True" || v == "true")
                         {
                             let entry = configs.entry(inst.value).or_default();
                             entry.disallow_doctype = true;
@@ -418,9 +412,7 @@ pub fn analyze_xml_parser_config(
                 {
                     let kwargs = lookup_kwargs(inst.cfg_node);
                     for (name, values) in &kwargs {
-                        if name == "processEntities"
-                            && values.iter().any(|v| v == "true")
-                        {
+                        if name == "processEntities" && values.iter().any(|v| v == "true") {
                             let entry = configs.entry(inst.value).or_default();
                             entry.external_entities = true;
                         }
@@ -519,10 +511,7 @@ pub fn analyze_xml_parser_config(
                     let inherit = matches!(lang, Lang::Java)
                         && matches!(
                             suffix,
-                            "newDocumentBuilder"
-                                | "newSAXParser"
-                                | "getXMLReader"
-                                | "newXMLReader"
+                            "newDocumentBuilder" | "newSAXParser" | "getXMLReader" | "newXMLReader"
                         );
                     if inherit {
                         if let Some(parent) = configs.get(rv).copied() {

@@ -68,9 +68,7 @@ impl XPathConfigResult {
     /// True when the value carries a config fact proving resolver
     /// binding.
     pub fn is_parameterised(&self, v: SsaValue) -> bool {
-        self.configs
-            .get(&v)
-            .is_some_and(|c| c.is_parameterised())
+        self.configs.get(&v).is_some_and(|c| c.is_parameterised())
     }
 }
 
@@ -138,7 +136,7 @@ pub fn analyze_xpath_config(body: &SsaBody, cfg: &Cfg, lang: Option<Lang>) -> XP
     // phi joins.  Caps the iteration count: in practice 2-3 rounds
     // suffice on intra-procedural shapes.
     let _ = cfg; // CFG retained for parity with `xml_config`; reserved for
-                 // future kwarg-driven seeds (e.g. constructor options).
+    // future kwarg-driven seeds (e.g. constructor options).
     for _ in 0..6 {
         let mut changed = false;
         for block in &body.blocks {
@@ -168,8 +166,7 @@ pub fn analyze_xpath_config(body: &SsaBody, cfg: &Cfg, lang: Option<Lang>) -> XP
                     if uses.len() == 1 {
                         if let Some(src_cfg) = configs.get(&uses[0]).copied() {
                             if src_cfg != XPathReceiverConfig::default() {
-                                let prev =
-                                    configs.get(&inst.value).copied().unwrap_or_default();
+                                let prev = configs.get(&inst.value).copied().unwrap_or_default();
                                 let new_cfg = prev.union(&src_cfg);
                                 if Some(new_cfg) != configs.get(&inst.value).copied() {
                                     configs.insert(inst.value, new_cfg);
@@ -201,17 +198,13 @@ mod tests {
 
     #[test]
     fn has_resolver_marks_parameterised() {
-        let c = XPathReceiverConfig {
-            has_resolver: true,
-        };
+        let c = XPathReceiverConfig { has_resolver: true };
         assert!(c.is_parameterised());
     }
 
     #[test]
     fn meet_keeps_intersection() {
-        let a = XPathReceiverConfig {
-            has_resolver: true,
-        };
+        let a = XPathReceiverConfig { has_resolver: true };
         let b = XPathReceiverConfig {
             has_resolver: false,
         };
@@ -221,12 +214,8 @@ mod tests {
 
     #[test]
     fn meet_both_set_keeps_set() {
-        let a = XPathReceiverConfig {
-            has_resolver: true,
-        };
-        let b = XPathReceiverConfig {
-            has_resolver: true,
-        };
+        let a = XPathReceiverConfig { has_resolver: true };
+        let b = XPathReceiverConfig { has_resolver: true };
         let m = a.meet(&b);
         assert!(m.has_resolver);
     }
@@ -240,12 +229,7 @@ mod tests {
     #[test]
     fn xpath_safe_uses_receiver_config() {
         let mut configs = HashMap::new();
-        configs.insert(
-            SsaValue(7),
-            XPathReceiverConfig {
-                has_resolver: true,
-            },
-        );
+        configs.insert(SsaValue(7), XPathReceiverConfig { has_resolver: true });
         let result = XPathConfigResult { configs };
         assert!(xpath_safe(Some(SsaValue(7)), &result));
         assert!(!xpath_safe(Some(SsaValue(8)), &result));
