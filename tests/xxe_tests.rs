@@ -134,6 +134,11 @@ fn python_sax_parse_with_tainted_xml_fires() {
 }
 
 #[test]
+fn python_lxml_resolve_entities_fires() {
+    assert_unsafe("python", "unsafe_lxml_resolve_entities.py");
+}
+
+#[test]
 fn python_defusedxml_sanitizes() {
     assert_clean("python", "safe_xxe.py");
 }
@@ -177,6 +182,11 @@ fn javascript_xml2js_default_options_clean() {
 }
 
 #[test]
+fn javascript_fast_xml_parser_with_process_entities_fires() {
+    assert_unsafe("javascript", "unsafe_fast_xml_parser.js");
+}
+
+#[test]
 fn javascript_irrelevant_xml_call_clean() {
     assert_clean("javascript", "irrelevant_xml_call.js");
 }
@@ -189,6 +199,11 @@ fn typescript_xml2js_with_process_entities_fires() {
 #[test]
 fn typescript_xml2js_default_options_clean() {
     assert_clean("typescript", "safe_xxe.ts");
+}
+
+#[test]
+fn typescript_fast_xml_parser_with_process_entities_fires() {
+    assert_unsafe("typescript", "unsafe_fast_xml_parser.ts");
 }
 
 #[test]

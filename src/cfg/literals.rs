@@ -813,35 +813,72 @@ pub(super) fn find_chained_inner_call<'a>(
         return Some((function, inner_text));
     }
     // The function/method field for a chained call is a member_expression
-    // (JS/TS) or attribute (Python) etc.; its `object` field is the
-    // receiver expression.  Only proceed when that receiver is itself a
-    // call.
-    let object = function.child_by_field_name("object")?;
+    // (JS/TS), attribute (Python), or field_expression (Rust); its
+    // receiver is the `object` field (JS/TS/Python) or `value` field
+    // (Rust).  Only proceed when that receiver is itself a call.
+    let object = function
+        .child_by_field_name("object")
+        .or_else(|| function.child_by_field_name("value"))?;
     if !matches!(lookup(lang, object.kind()), Kind::CallFn | Kind::CallMethod) {
         return None;
     }
-    // Recurse: the inner call may itself be chained
-    // (`axios.get(u).then(h).catch(h)`, innermost is `axios.get`).
-    if let Some(inner) = find_chained_inner_call(object, lang, code) {
-        return Some(inner);
-    }
-    // `object` is the innermost call_expression in the chain.  Extract
-    // its callee identifier the same way `first_call_ident_with_span`
-    // does for a CallFn (member_expression text → "http.get").
-    let inner_func = object
+    // Decide whether `object` is itself a chained method call (its
+    // function/method field is a member-style expression). When yes,
+    // recurse one more level so deeper chains resolve to their innermost
+    // method (e.g. `axios.get(u).then(h).catch(h)` → `axios.get`).
+    // When no — the receiver is a plain function/constructor call like
+    // Rust's `HttpResponse::Found()` — descending one more level would
+    // strand us on the non-method leaf whose text would not match any
+    // gate matcher. Stop here and return the current `outer` level,
+    // which IS the innermost method call.
+    let object_function = object
         .child_by_field_name("function")
-        .or_else(|| object.child_by_field_name("method"))
-        .or_else(|| object.child_by_field_name("name"))?;
-    // Multi-line dotted member expressions (`http\n  .get`) include
-    // formatting whitespace in the source-text slice. The labels map
-    // keys are literal `"http.get"` etc., strip whitespace so the
-    // chained-call inner-gate rebinding fires for both single-line and
-    // multi-line chain styles. Also strips `\r` for CRLF sources.
-    // Motivated by upstream Parse Server CVE-2025-64430 which uses the
-    // multi-line `http\n  .get(uri, ...)\n  .on(...)` form.
-    let raw = text_of(inner_func, code)?;
+        .or_else(|| object.child_by_field_name("method"));
+    let object_is_chained_method = object_function
+        .map(|f| {
+            matches!(
+                f.kind(),
+                "member_expression"
+                    | "attribute"
+                    | "field_expression"
+                    | "scoped_identifier"
+                    | "scope_resolution"
+            ) && f
+                .child_by_field_name("object")
+                .or_else(|| f.child_by_field_name("value"))
+                .is_some()
+        })
+        .unwrap_or(false);
+    if object_is_chained_method {
+        // Recurse: the inner call may itself be chained.
+        if let Some(inner) = find_chained_inner_call(object, lang, code) {
+            return Some(inner);
+        }
+        // `object` is the innermost call_expression in the chain.  Extract
+        // its callee identifier the same way `first_call_ident_with_span`
+        // does for a CallFn (member_expression text → "http.get").
+        let inner_func = object
+            .child_by_field_name("function")
+            .or_else(|| object.child_by_field_name("method"))
+            .or_else(|| object.child_by_field_name("name"))?;
+        // Multi-line dotted member expressions (`http\n  .get`) include
+        // formatting whitespace in the source-text slice. The labels map
+        // keys are literal `"http.get"` etc., strip whitespace so the
+        // chained-call inner-gate rebinding fires for both single-line and
+        // multi-line chain styles. Also strips `\r` for CRLF sources.
+        // Motivated by upstream Parse Server CVE-2025-64430 which uses the
+        // multi-line `http\n  .get(uri, ...)\n  .on(...)` form.
+        let raw = text_of(inner_func, code)?;
+        let inner_text: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        return Some((object, inner_text));
+    }
+    // Receiver is a non-chained call (Rust constructor `Foo::new()` /
+    // `HttpResponse::Found()`, JS bare `f()`).  Outer level IS the
+    // innermost method call — return its own function text so gate
+    // matching sees the method name.
+    let raw = text_of(function, code)?;
     let inner_text: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
-    Some((object, inner_text))
+    Some((outer, inner_text))
 }
 
 /// Recursively walk the receiver chain of `outer` (a CallFn / CallMethod
@@ -1474,6 +1511,47 @@ pub(super) fn extract_kwargs(call_node: Node, code: &[u8]) -> Vec<(String, Vec<S
     let mut cursor = args_node.walk();
     for child in args_node.named_children(&mut cursor) {
         let kind = child.kind();
+        // JS/TS object-literal positional arg: `f(x, { a: true, b: 'str' })`.
+        // The pairs inside the object are not tree-sitter
+        // `keyword_argument` nodes (those are Python/Ruby), but
+        // downstream consumers (xml_config's
+        // `lookup_kwargs(inst.cfg_node)` JS branch checking
+        // `processEntities`) expect these fields in the kwargs vector.
+        // Lift each `pair` (and `shorthand_property_identifier`) into
+        // the kwargs list using the property name as kwarg name and the
+        // raw text of the value expression as the single value.
+        // Boolean / numeric / string / identifier values all surface as
+        // their textual form, which is what xml_config's kwarg-value
+        // matchers (e.g. `v == "true"`) compare against.
+        if kind == "object" {
+            let mut oc = child.walk();
+            for pair in child.named_children(&mut oc) {
+                let pk = pair.kind();
+                if pk == "pair" {
+                    let Some(kn) = pair.child_by_field_name("key") else {
+                        continue;
+                    };
+                    let Some(vn) = pair.child_by_field_name("value") else {
+                        continue;
+                    };
+                    let Some(raw_name) = text_of(kn, code) else {
+                        continue;
+                    };
+                    let name = raw_name
+                        .trim_start_matches(['"', '\''])
+                        .trim_end_matches(['"', '\''])
+                        .to_string();
+                    if let Some(val_text) = text_of(vn, code) {
+                        out.push((name, vec![val_text.to_string()]));
+                    }
+                } else if pk == "shorthand_property_identifier" {
+                    if let Some(name) = text_of(pair, code) {
+                        out.push((name.to_string(), vec![name.to_string()]));
+                    }
+                }
+            }
+            continue;
+        }
         if kind != "keyword_argument" && kind != "named_argument" {
             continue;
         }
@@ -1498,6 +1576,32 @@ pub(super) fn extract_kwargs(call_node: Node, code: &[u8]) -> Vec<(String, Vec<S
         collect_idents_with_paths(vn, code, &mut idents, &mut paths);
         let mut combined = paths;
         combined.extend(idents);
+        // Boolean / numeric literal kwarg values (Python `True`/`False`,
+        // Ruby `true`/`false`/integer/float, JS `true`/`false`/number)
+        // do not surface through `collect_idents_with_paths` — the value
+        // node's kind is `true`/`false`/`integer`/`float`/`number`, not
+        // an identifier kind.  Capture the raw text so consumers like
+        // `xml_config::classify_call` (which checks
+        // `values.iter().any(|v| v == "True" || v == "true")` for the
+        // lxml `resolve_entities=True` opt-in) can match.
+        if combined.is_empty() {
+            if matches!(
+                vn.kind(),
+                "true"
+                    | "false"
+                    | "integer"
+                    | "float"
+                    | "number"
+                    | "string"
+                    | "string_literal"
+                    | "true_constant"
+                    | "false_constant"
+            ) {
+                if let Some(txt) = text_of(vn, code) {
+                    combined.push(txt.trim_matches(['"', '\'']).to_string());
+                }
+            }
+        }
         out.push((name, combined));
     }
     out

@@ -1841,9 +1841,12 @@ def outer(cmd):
     assert_eq!(kwargs[1].0, "check");
 }
 
-/// Languages without keyword-argument grammar should leave `kwargs` empty.
+/// JS object-literal positional args lift their `pair` children into
+/// `kwargs` so consumers like xml_config's `processEntities` /
+/// `resolve_entities` opt-in detector can read them without re-walking
+/// the tree-sitter AST.
 #[test]
-fn call_node_kwargs_empty_for_javascript() {
+fn call_node_kwargs_lifts_javascript_object_literal_pairs() {
     let src = br"
             function outer(cmd) {
                 child_process.exec(cmd, { shell: true });
@@ -1861,9 +1864,10 @@ fn call_node_kwargs_empty_for_javascript() {
                     .is_some_and(|c| c.ends_with("exec"))
         })
         .expect("child_process.exec call node should exist");
+    let kwargs = &call_node.call.kwargs;
     assert!(
-        call_node.call.kwargs.is_empty(),
-        "JS object-literal arg is not a keyword_argument — kwargs should stay empty"
+        kwargs.iter().any(|(k, vs)| k == "shell" && vs.iter().any(|v| v == "true")),
+        "JS object-literal `{{ shell: true }}` should surface as kwarg, got {kwargs:?}"
     );
 }
 

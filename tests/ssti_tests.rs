@@ -182,6 +182,11 @@ fn java_freemarker_constant_template_does_not_fire() {
 }
 
 #[test]
+fn java_freemarker_template_process_with_tainted_source_fires() {
+    assert_unsafe("java", "UnsafeFreemarkerProcess.java");
+}
+
+#[test]
 fn ruby_erb_new_with_tainted_source_fires() {
     assert_unsafe("ruby", "unsafe_erb_new.rb");
 }

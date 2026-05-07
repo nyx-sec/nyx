@@ -270,6 +270,11 @@ pub fn class_name_to_type_kind(name: &str) -> Option<TypeKind> {
         // `XPathClient.evaluate` resolution and the resolver-binding
         // suppression sidecar.
         "XPath" | "XPathExpression" => Some(TypeKind::XPathClient),
+        // Apache FreeMarker `Template` declared receiver type.  Routes
+        // `Template tpl = ...; tpl.process(model, out)` through
+        // type-qualified resolution to `Template.process`, the SSTI
+        // sink defined in `labels/java.rs`.
+        "Template" => Some(TypeKind::Template),
         // Python qualified type names.
         // Only covers raw lowered names from isinstance(). The lowering in lower.rs
         // extracts the literal type text: isinstance(x, requests.Session) produces

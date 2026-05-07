@@ -219,3 +219,8 @@ fn rust_actix_location_header_with_tainted_url_fires() {
 fn rust_actix_content_type_header_clean() {
     assert_clean("rust", "safe_actix_content_type.rs");
 }
+
+#[test]
+fn rust_actix_location_header_chained_finish_fires() {
+    assert_unsafe("rust", "unsafe_actix_location_chained.rs");
+}

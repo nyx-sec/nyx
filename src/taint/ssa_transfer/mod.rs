@@ -5996,6 +5996,42 @@ fn collect_block_events(
             }
         }
 
+        // Phase 07: ADD XXE on opt-in. When the receiver was constructed
+        // with an explicit external-entity opt-in
+        // (`new XMLParser({ processEntities: true })`,
+        // `lxml.etree.XMLParser(resolve_entities=True)`), the subsequent
+        // `parser.parse(xml)` is an XXE flow even though the callee
+        // carries no flat XXE rule (fast-xml-parser and lxml are
+        // XXE-safe by default).  Runs BEFORE the empty check below so a
+        // previously-empty sink_caps becomes non-empty and downstream
+        // emission proceeds.  The complementary `xxe_safe` suppress path
+        // still runs after this; a call where the receiver was both
+        // opt-in AND later hardened by a setter results in net-zero
+        // (suppress strips what we added).
+        if let SsaOp::Call {
+            receiver: Some(rv),
+            callee: callee_str,
+            ..
+        } = &inst.op
+        {
+            if let Some(xc) = transfer.xml_parser_config {
+                if xc.is_unsafe_explicit(*rv) {
+                    let suffix = callee_str
+                        .rsplit(['.', ':'])
+                        .next()
+                        .unwrap_or(callee_str.as_str());
+                    // `feed` covers Python lxml incremental parsing
+                    // (`parser.feed(body); parser.close()`).
+                    if matches!(
+                        suffix,
+                        "parse" | "parseString" | "parseFromString" | "feed"
+                    ) {
+                        sink_caps |= Cap::XXE;
+                    }
+                }
+            }
+        }
+
         if sink_caps.is_empty() {
             // Callback pattern: check if callee has source_to_callback and the
             // actual callback argument has a matching param_to_sink.

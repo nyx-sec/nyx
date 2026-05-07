@@ -65,6 +65,17 @@ pub enum TypeKind {
     /// every receiver with a generic `query` / `evaluate` method (avoids
     /// collision with PHP `$pdo->query` SQL_QUERY sink).
     XPathClient,
+    /// A pre-parsed template object whose `process` / `merge` /
+    /// `render` method renders bound data through an already-compiled
+    /// template body.  The SSTI vector is when the template *source*
+    /// fed to the constructor / factory was attacker-influenced; the
+    /// render-time call site is the sink.  Currently populated by
+    /// `new freemarker.template.Template(...)`; the type-qualified
+    /// resolver rewrites `tpl.process(...)` → `Template.process` so
+    /// the existing flat SSTI rule fires on idiomatic
+    /// `Template tpl = new Template(...); tpl.process(model, out)`
+    /// shapes.
+    Template,
     /// An XML parser instance produced by a JAXP factory call
     /// (`DocumentBuilderFactory.newDocumentBuilder()`,
     /// `SAXParserFactory.newSAXParser()`, `XMLReaderFactory.createXMLReader()`).
@@ -125,6 +136,7 @@ impl TypeKind {
             Self::LdapClient => Some("LdapClient"),
             Self::XPathClient => Some("XPathClient"),
             Self::XmlParser => Some("XmlParser"),
+            Self::Template => Some("Template"),
             _ => None,
         }
     }
@@ -447,6 +459,14 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // suppress XPATH_INJECTION when the receiver was bound to an
             // `XPathVariableResolver`.
             "newXPath" => Some(TypeKind::XPathClient),
+            // Apache FreeMarker `new Template(name, reader, cfg)` /
+            // `cfg.getTemplate(name)`.  The `Template` instance's
+            // `.process(model, out)` is an SSTI sink when the
+            // constructor source / template body came from tainted
+            // input.  Type-qualified resolution rewrites
+            // `tpl.process(...)` → `Template.process` against the
+            // existing flat rule in `labels/java.rs`.
+            "Template" | "getTemplate" => Some(TypeKind::Template),
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => match suffix {
