@@ -120,6 +120,31 @@ fn javascript_object_assign_constant_source_does_not_fire() {
 }
 
 #[test]
+fn javascript_set_value_with_tainted_key_fires() {
+    // `set-value` standalone helper (CVE-2019-10747).  Tainted `key` /
+    // `value` from req.body must surface PROTOTYPE_POLLUTION.
+    assert_unsafe("javascript", "unsafe_set_value.js");
+}
+
+#[test]
+fn javascript_set_value_constant_does_not_fire() {
+    assert_clean("javascript", "safe_set_value_const.js");
+}
+
+#[test]
+fn javascript_dot_prop_set_with_tainted_path_fires() {
+    // `dot-prop` `dotProp.set(obj, path, val)` — CVE-2020-8116.
+    assert_unsafe("javascript", "unsafe_dot_prop_set.js");
+}
+
+#[test]
+fn javascript_jsonpath_set_with_tainted_path_fires() {
+    // `jsonpath` `jp.set(obj, path, val)` — prototype chain mutation
+    // when `path` carries `__proto__` segments.
+    assert_unsafe("javascript", "unsafe_jsonpath_set.js");
+}
+
+#[test]
 fn typescript_lodash_merge_with_tainted_source_fires() {
     assert_unsafe("typescript", "unsafe_lodash_merge.ts");
 }

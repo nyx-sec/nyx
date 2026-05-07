@@ -1967,18 +1967,45 @@ pub(super) fn push_node<'a>(
     {
         let gate_call = call_ast.or_else(|| find_call_node_deep(ast, lang, 4));
         if let Some(cn) = gate_call {
-            let gate_callee_text = if call_ast.is_some() {
+            // Derive the gate's callee text from the call's
+            // `function`/`method`/`name` field, falling back to `text`.
+            //
+            // The default is `text`, which by this point reflects the
+            // qualified callee for method calls (`Velocity.evaluate`,
+            // `$smarty->fetch`) reconstructed in the `Kind::CallMethod`
+            // arm.  When `first_member_label` rewrites `text` to a member
+            // Source like `req.body` (because the wrapper carries one as
+            // an argument), the rewrite is correct for source attribution
+            // but defeats gate matching against a bare callee
+            // (`setValue(target, req.body, …)` would gate-match
+            // `req.body` instead of `setValue`).
+            //
+            // Detect that case structurally: a Source label is present AND
+            // the call's function-field text differs from `text`.  The
+            // function field carries the actual callee identifier; when it
+            // disagrees with `text`, `text` was clobbered by a member-source
+            // override and the function field is the right gate target.
+            // Whitespace is stripped to mirror `find_chained_inner_call`
+            // so multi-line chains (`http\n  .get(...)`) still match flat
+            // gate matchers like `http.get`.
+            let function_field_text: Option<String> = cn
+                .child_by_field_name("function")
+                .or_else(|| cn.child_by_field_name("method"))
+                .or_else(|| cn.child_by_field_name("name"))
+                .and_then(|f| text_of(f, code))
+                .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect::<String>());
+            let has_source_label = labels
+                .iter()
+                .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
+            let gate_callee_text = if let Some(ff) = function_field_text.as_deref()
+                && has_source_label
+                && ff != text.as_str()
+            {
+                ff.to_string()
+            } else if call_ast.is_some() {
                 text.clone()
             } else {
-                // Inner call reached via wrapper, use the call-expression's
-                // function name directly. Falls back to `text` so non-call-
-                // expression kinds (method calls, Ruby `call` nodes, macros)
-                // still have a usable callee string.
-                cn.child_by_field_name("function")
-                    .or_else(|| cn.child_by_field_name("method"))
-                    .or_else(|| cn.child_by_field_name("name"))
-                    .and_then(|f| text_of(f, code))
-                    .unwrap_or_else(|| text.clone())
+                function_field_text.unwrap_or_else(|| text.clone())
             };
             let matches = classify_gated_sink(
                 lang,

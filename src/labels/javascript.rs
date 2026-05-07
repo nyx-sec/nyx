@@ -1182,6 +1182,75 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &[],
         },
     },
+    // `set-value` standalone helper: `setValue(obj, key, val)` — historic
+    // CVE-2019-10747 (set-value <2.0.1) and CVE-2021-23440 (set-value <4.0.1)
+    // recursive set-by-path helper that did not block `__proto__` keys.
+    // Suffix-matched so qualified imports (`require('set-value')`) bound to
+    // `setValue` still resolve.
+    SinkGate {
+        callee_matcher: "setValue",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `dot-prop` standalone helper: `dotProp.set(obj, path, val)` —
+    // CVE-2020-8116.  Path is a dotted-string with prototype-key support;
+    // a tainted `path` of `__proto__.x` mutates Object.prototype.
+    SinkGate {
+        callee_matcher: "dotProp.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `JSONPath` / `jsonpath-plus` `JSONPath({path: p, json: o, callback: fn})`
+    // historically supported a `resultType: 'value'` mode that, combined with
+    // `parent`/`parentProperty` writes inside the callback, can mutate the
+    // prototype chain.  Recognise the `jp.set(obj, path, value)` family
+    // (jsonpath, jsonpath-plus) on the same shape as `_.set`.
+    SinkGate {
+        callee_matcher: "jp.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jsonpath.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {

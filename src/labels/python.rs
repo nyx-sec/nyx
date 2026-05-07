@@ -432,6 +432,26 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: true,
     },
+    // Template-loader paths: a tainted `name` lets the attacker swap the
+    // resolved template behind the renderer.  Mako's `TemplateLookup.get_template`
+    // and Jinja2's `Environment.get_template` / `select_template` /
+    // `loader.get_source` all take a template name (path-like) as arg 0.
+    // Modeling these as SSTI sinks captures the loader-path attack — the
+    // file resolver itself becomes the gadget when the name is attacker-controlled.
+    LabelRule {
+        matchers: &[
+            "TemplateLookup.get_template",
+            "Environment.get_template",
+            "Environment.select_template",
+            "loader.get_source",
+            // Bare-suffix forms for the idiomatic instance shapes
+            // (`env.get_template(name)`, `lookup.get_template(name)`).
+            "get_template",
+            "select_template",
+        ],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+    },
     // ─── XXE sinks ───
     //
     // Python's stock `xml.sax.parseString` / `xml.sax.parse` parsers are

@@ -245,6 +245,24 @@ fn rust_relative_only_sanitizes() {
 }
 
 #[test]
+fn rust_host_allowlist_multi_statement_sanitizes() {
+    // Multi-statement form: `let parsed = Url::parse(x)?` followed by a
+    // separate `if parsed.host_str() == Some(ALLOWED)` check.  Recognised
+    // by PredicateKind::HostAllowlistValidated via the `.host_str()`
+    // accessor probe (no parse call needed in the condition text).
+    assert_clean("rust", "safe_host_allowlist_redirect.rs");
+}
+
+#[test]
+fn go_host_allowlist_multi_statement_sanitizes() {
+    // Multi-statement form: `parsed, err := url.Parse(x)` followed by a
+    // separate `if parsed.Host == allowedHost` check.  Recognised by
+    // PredicateKind::HostAllowlistValidated via the case-sensitive
+    // capital-`H` `.Host` accessor probe.
+    assert_clean("go", "safe_host_allowlist_redirect.go");
+}
+
+#[test]
 fn rust_actix_location_header_with_tainted_url_fires() {
     assert_unsafe("rust", "unsafe_actix_location.rs");
 }

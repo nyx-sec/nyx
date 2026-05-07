@@ -2239,6 +2239,33 @@ mod tests {
     // own non-piping semantics.  Without the sigil, the suffix-with-
     // boundary matcher would over-fire on every `X.open` call.
     #[test]
+    fn classify_javascript_set_value_is_proto_pollution_gate() {
+        let no_kw = |_: &str| None;
+        let no_kw_present = |_: &str| false;
+        let result = classify_gated_sink("javascript", "setValue", |_| None, no_kw, no_kw_present);
+        assert!(
+            result
+                .iter()
+                .any(|m| m.label == DataLabel::Sink(Cap::PROTOTYPE_POLLUTION)),
+            "expected PROTOTYPE_POLLUTION gate match for bare `setValue`, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_javascript_dot_prop_set_is_proto_pollution_gate() {
+        let no_kw = |_: &str| None;
+        let no_kw_present = |_: &str| false;
+        let result =
+            classify_gated_sink("javascript", "dotProp.set", |_| None, no_kw, no_kw_present);
+        assert!(
+            result
+                .iter()
+                .any(|m| m.label == DataLabel::Sink(Cap::PROTOTYPE_POLLUTION)),
+            "expected PROTOTYPE_POLLUTION gate match for `dotProp.set`, got {result:?}"
+        );
+    }
+
+    #[test]
     fn classify_ruby_bare_open_is_shell_escape_sink() {
         let result = classify("ruby", "open", None);
         assert_eq!(result, Some(DataLabel::Sink(Cap::SHELL_ESCAPE)));

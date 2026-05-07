@@ -127,6 +127,25 @@ fn python_render_template_with_tainted_var_does_not_fire() {
 }
 
 #[test]
+fn python_mako_lookup_get_template_with_tainted_name_fires() {
+    // Mako TemplateLookup.get_template loader-path pattern.  Tainted
+    // `name` selects which file becomes the rendered template — arbitrary
+    // template execution modeled as SSTI on the loader-path arg.
+    assert_unsafe("python", "unsafe_mako_lookup_get_template.py");
+}
+
+#[test]
+fn python_mako_lookup_constant_name_does_not_fire() {
+    assert_clean("python", "safe_mako_lookup_constant.py");
+}
+
+#[test]
+fn python_jinja_get_template_with_tainted_name_fires() {
+    // Jinja2 Environment.get_template loader-path pattern.
+    assert_unsafe("python", "unsafe_jinja_get_template.py");
+}
+
+#[test]
 fn javascript_nunjucks_render_string_tainted_source_fires() {
     assert_unsafe("javascript", "unsafe_nunjucks_render_string.js");
 }
