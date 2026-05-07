@@ -1020,6 +1020,7 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "as_expression"         => Kind::Seq,
     "type_assertion"        => Kind::Seq,
     "await_expression"      => Kind::AwaitForward,
+    "jsx_attribute"         => Kind::JsxAttr,
 
     // trivia
     "comment"               => Kind::Trivia,

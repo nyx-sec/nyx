@@ -3125,8 +3125,213 @@ fn try_lower_spring_redirect_return(
     Some(n)
 }
 
-/// Prototype-pollution suppression decisions for the synthetic
-/// `__index_set__` node emitted by `try_lower_subscript_write`.
+/// React JSX `dangerouslySetInnerHTML={{ __html: x }}` recogniser.  Walks
+/// `stmt_ast` for every `jsx_attribute` named `dangerouslySetInnerHTML` whose
+/// value is a `jsx_expression → object → pair[key="__html"]` shape, and
+/// synthesises a CFG call node `dangerouslySetInnerHTML(__html_value)` with
+/// `Sink(HTML_ESCAPE)` and `sink_payload_args = [0]`.  The synthetic node's
+/// span is the `__html` value subtree so finding-line attribution lands on
+/// the payload, not the attribute name.
+///
+/// Returns the new frontier (synthetic exits) when one or more sinks were
+/// emitted; otherwise returns `preds` unchanged.
+///
+/// Sanitizer-aware: when the `__html` value is a single call expression
+/// whose callee classifies as a `Sanitizer`, the synthetic sink is still
+/// emitted but its argument list is empty so no taint flows into it.
+/// JS/TS only — JSX has no counterpart in the other supported languages.
+fn try_lower_jsx_dangerous_html(
+    stmt_ast: Node,
+    preds: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &[u8],
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
+) -> Vec<NodeIndex> {
+    if !matches!(lang, "javascript" | "js" | "typescript" | "ts" | "tsx") {
+        return preds.to_vec();
+    }
+    let mut attrs: Vec<Node> = Vec::new();
+    collect_jsx_dangerous_html_attrs(stmt_ast, code, &mut attrs);
+    if attrs.is_empty() {
+        return preds.to_vec();
+    }
+    let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
+    let mut frontier: Vec<NodeIndex> = preds.to_vec();
+    for attr in attrs {
+        let Some(html_value) = jsx_extract_html_value(attr, code) else {
+            continue;
+        };
+        let span = (html_value.start_byte(), html_value.end_byte());
+        let ord = *call_ordinal;
+        *call_ordinal += 1;
+
+        // Sanitizer-aware: if the value subtree is a call to a known
+        // sanitizer, emit the sink with no argument-side taint flow so the
+        // synthetic site stays silent on already-sanitized payloads.
+        let arg_uses_idents: Vec<String> = if jsx_value_is_sanitized(html_value, lang, code, extra)
+        {
+            Vec::new()
+        } else {
+            let mut idents: Vec<String> = Vec::new();
+            collect_idents(html_value, code, &mut idents);
+            idents
+        };
+
+        let mut labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
+        labels.push(DataLabel::Sink(Cap::HTML_ESCAPE));
+
+        let n = g.add_node(NodeInfo {
+            kind: StmtKind::Call,
+            call: CallMeta {
+                callee: Some("dangerouslySetInnerHTML".to_string()),
+                arg_uses: vec![arg_uses_idents.clone()],
+                call_ordinal: ord,
+                sink_payload_args: Some(vec![0]),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                labels,
+                uses: arg_uses_idents,
+                ..Default::default()
+            },
+            ast: AstMeta {
+                span,
+                enclosing_func: enclosing_func.map(|s| s.to_string()),
+            },
+            ..Default::default()
+        });
+        connect_all(g, &frontier, n, EdgeKind::Seq);
+        frontier = vec![n];
+    }
+    frontier
+}
+
+/// Walk `root` collecting every `jsx_attribute` descendant whose name (via
+/// the source bytes in `code`) equals `dangerouslySetInnerHTML`.
+fn collect_jsx_dangerous_html_attrs<'a>(
+    root: Node<'a>,
+    code: &[u8],
+    out: &mut Vec<Node<'a>>,
+) {
+    let mut stack: Vec<Node<'a>> = vec![root];
+    while let Some(node) = stack.pop() {
+        if node.kind() == "jsx_attribute" && jsx_attr_name_is(node, "dangerouslySetInnerHTML", code)
+        {
+            out.push(node);
+            // Don't recurse into the attribute's own subtree; nested JSX
+            // attributes inside the value are vanishingly rare and would
+            // double-emit if the value contained another React element.
+            continue;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+}
+
+/// Read the attribute name off a `jsx_attribute` node and compare against
+/// `expected`.  Looks at the `name` field (or first named child) and reads
+/// its UTF-8 text from `code`.
+fn jsx_attr_name_is(attr: Node, expected: &str, code: &[u8]) -> bool {
+    let name_node = match attr
+        .child_by_field_name("name")
+        .or_else(|| attr.named_child(0))
+    {
+        Some(n) => n,
+        None => return false,
+    };
+    text_of(name_node, code)
+        .map(|t| t == expected)
+        .unwrap_or(false)
+}
+
+/// Resolve the `__html` value subtree of a JSX
+/// `dangerouslySetInnerHTML={{ __html: <value> }}` attribute.  Returns the
+/// AST node for `<value>` or `None` if the shape doesn't match.
+fn jsx_extract_html_value<'a>(attr: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
+    let value = attr
+        .child_by_field_name("value")
+        .or_else(|| attr.named_child(1))?;
+    // Strip the `{...}` wrapper.  tree-sitter exposes this as
+    // `jsx_expression`; defensive against grammar variants by also
+    // accepting the inner expression directly.
+    let inner = if value.kind() == "jsx_expression" {
+        let mut cur = value.walk();
+        value
+            .named_children(&mut cur)
+            .find(|c| c.kind() != "comment")?
+    } else {
+        value
+    };
+    let object_kind = inner.kind();
+    if !matches!(object_kind, "object" | "object_expression" | "object_literal") {
+        return None;
+    }
+    let mut cur = inner.walk();
+    for pair in inner.named_children(&mut cur) {
+        if !matches!(pair.kind(), "pair" | "property" | "shorthand_property_identifier") {
+            continue;
+        }
+        let key_node = pair
+            .child_by_field_name("key")
+            .or_else(|| pair.named_child(0));
+        let val_node = pair
+            .child_by_field_name("value")
+            .or_else(|| pair.named_child(1));
+        let (Some(k), Some(v)) = (key_node, val_node) else {
+            continue;
+        };
+        let key_text = text_of(k, code).unwrap_or_default();
+        // Strip surrounding quotes for `"__html"` / `'__html'` literal keys.
+        let key_trim = key_text
+            .trim_matches(|c| c == '"' || c == '\'' || c == '`');
+        if key_trim == "__html" {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Returns true when `value_ast` is a single call expression whose callee
+/// classifies as a `Sanitizer` under the JS/TS rule set.  Used to suppress
+/// argument-side taint flow on the synthetic `dangerouslySetInnerHTML` sink
+/// when the payload has already been routed through a sanitizer.
+fn jsx_value_is_sanitized(
+    value_ast: Node,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> bool {
+    let mut cur = value_ast;
+    while cur.kind() == "parenthesized_expression" {
+        let Some(inner) = cur.named_child(0) else {
+            return false;
+        };
+        cur = inner;
+    }
+    if !matches!(cur.kind(), "call_expression" | "call") {
+        return false;
+    }
+    let callee = match cur
+        .child_by_field_name("function")
+        .or_else(|| cur.child_by_field_name("name"))
+    {
+        Some(c) => c,
+        None => return false,
+    };
+    let callee_text = match text_of(callee, code) {
+        Some(t) => t,
+        None => return false,
+    };
+    let labels = classify_all(lang, &callee_text, extra);
+    labels
+        .iter()
+        .any(|l| matches!(l, DataLabel::Sanitizer(_)))
+}
 ///
 /// Returns `true` when the assignment is provably safe and the
 /// `Cap::PROTOTYPE_POLLUTION` sink label should be elided.  The three
@@ -4225,6 +4430,21 @@ pub(super) fn build_sub<'a>(
                 );
                 apply_arg_source_bindings(g, call_idx, &src_bindings, &src_uses_only);
                 connect_all(g, &effective_preds, call_idx, EdgeKind::Seq);
+                // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
+                // (Phase 06): inserted between the wrapping Call (the inner
+                // sanitizer / source call picked up by find_classifiable_inner_call)
+                // and the Return so the synthetic sink fires on the
+                // post-sanitization payload.
+                let post_jsx = try_lower_jsx_dangerous_html(
+                    ast,
+                    &[call_idx],
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                );
                 let ret = push_node(
                     g,
                     StmtKind::Return,
@@ -4235,7 +4455,7 @@ pub(super) fn build_sub<'a>(
                     0,
                     analysis_rules,
                 );
-                connect_all(g, &[call_idx], ret, EdgeKind::Seq);
+                connect_all(g, &post_jsx, ret, EdgeKind::Seq);
 
                 // Recurse into any function expressions nested inside the
                 // returned call's arguments (e.g.
@@ -4295,6 +4515,19 @@ pub(super) fn build_sub<'a>(
                 ) {
                     effective_preds = vec![synth];
                 }
+                // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
+                // (Phase 06) — fires when the JSX has no descendant call so
+                // the wrapping Return arm reaches this branch.
+                effective_preds = try_lower_jsx_dangerous_html(
+                    ast,
+                    &effective_preds,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                    analysis_rules,
+                );
                 let ret = push_node(
                     g,
                     StmtKind::Return,
@@ -5014,6 +5247,22 @@ pub(super) fn build_sub<'a>(
 
             connect_all(g, &effective_preds, node, EdgeKind::Seq);
 
+            // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
+            // (Phase 06): chained after the wrapper Call/Seq for cases like
+            // `<div .../>;` (expression_statement) where the JSX appears as
+            // a top-level expression statement.  No-op when the wrapper has
+            // no matching JSX descendant.
+            let post_jsx_frontier = try_lower_jsx_dangerous_html(
+                ast,
+                &[node],
+                g,
+                lang,
+                code,
+                enclosing_func,
+                call_ordinal,
+                analysis_rules,
+            );
+
             // If the callee is a configured terminator, treat as a dead end
             if kind == StmtKind::Call
                 && let Some(callee) = &g[node].call.callee
@@ -5091,7 +5340,7 @@ pub(super) fn build_sub<'a>(
                 return vec![true_gate, false_gate];
             }
 
-            vec![node]
+            post_jsx_frontier
         }
 
         // Direct call nodes (Ruby `call`, Python `call`, etc. when they appear
@@ -5234,16 +5483,59 @@ pub(super) fn build_sub<'a>(
                 analysis_rules,
             );
             connect_all(g, preds, n, EdgeKind::Seq);
-            vec![n]
+            // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
+            // (Phase 06): chained after the assignment for shapes like
+            // `const el = <div .../>`. No-op when no matching JSX descendant
+            // is found in the assignment subtree.
+            try_lower_jsx_dangerous_html(
+                ast,
+                &[n],
+                g,
+                lang,
+                code,
+                enclosing_func,
+                call_ordinal,
+                analysis_rules,
+            )
         }
 
         // Trivia we drop completely ---------------------------------------------
         Kind::Trivia => preds.to_vec(),
 
+        // React JSX attribute (`name={value}`).  The CFG builder synthesises
+        // a sink Call node when the attribute is `dangerouslySetInnerHTML`
+        // with a `{__html: x}` shape; otherwise no node is added (JSX
+        // attributes carry no execution semantics on their own).
+        Kind::JsxAttr => try_lower_jsx_dangerous_html(
+            ast,
+            preds,
+            g,
+            lang,
+            code,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+        ),
+
         // ─────────────────────────────────────────────────────────────────
         //  Every other node = simple sequential statement
         // ─────────────────────────────────────────────────────────────────
         _ => {
+            // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis
+            // (Phase 06): handles arrow-bodied components like
+            // `() => <div .../>` that reach this arm without a wrapping
+            // return / call statement.  Strictly additive — when no JSX
+            // attribute matches the helper returns `preds` unchanged.
+            let preds_v = try_lower_jsx_dangerous_html(
+                ast,
+                preds,
+                g,
+                lang,
+                code,
+                enclosing_func,
+                call_ordinal,
+                analysis_rules,
+            );
             let n = push_node(
                 g,
                 StmtKind::Seq,
@@ -5254,7 +5546,7 @@ pub(super) fn build_sub<'a>(
                 0,
                 analysis_rules,
             );
-            connect_all(g, preds, n, EdgeKind::Seq);
+            connect_all(g, &preds_v, n, EdgeKind::Seq);
             vec![n]
         }
     }

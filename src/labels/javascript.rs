@@ -1382,6 +1382,7 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "lexical_declaration"   => Kind::CallWrapper,
     "expression_statement"  => Kind::CallWrapper,
     "await_expression"      => Kind::AwaitForward,
+    "jsx_attribute"         => Kind::JsxAttr,
 
     // trivia
     "comment"               => Kind::Trivia,

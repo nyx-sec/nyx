@@ -721,6 +721,27 @@ pub fn lang_slug_for_path(path: &Path) -> Option<&'static str> {
 
 /// Resolve a file extension to a (tree‑sitter Language, slug) pair.
 fn lang_for_path(path: &Path) -> Option<(Language, &'static str)> {
+    // Distinguish `.tsx` from `.ts` before normalising via `lowercase_ext` —
+    // the latter merges both into the `"ts"` slug, which would lose the
+    // information needed to pick the JSX-aware TSX grammar.  The slug returned
+    // here stays `"typescript"` for both so all downstream KINDS / RULES /
+    // PARAM_CONFIG entries apply uniformly.
+    let raw_ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if matches!(raw_ext.as_deref(), Some("tsx")) {
+        return Some((
+            Language::from(tree_sitter_typescript::LANGUAGE_TSX),
+            "typescript",
+        ));
+    }
+    if matches!(raw_ext.as_deref(), Some("jsx")) {
+        return Some((
+            Language::from(tree_sitter_javascript::LANGUAGE),
+            "javascript",
+        ));
+    }
     match lowercase_ext(path) {
         Some("rs") => Some((Language::from(tree_sitter_rust::LANGUAGE), "rust")),
         Some("c") => Some((Language::from(tree_sitter_c::LANGUAGE), "c")),
@@ -739,14 +760,6 @@ fn lang_for_path(path: &Path) -> Option<(Language, &'static str)> {
         Some("py") => Some((Language::from(tree_sitter_python::LANGUAGE), "python")),
         Some("ts") => Some((
             Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
-            "typescript",
-        )),
-        // TSX grammar is a superset of TypeScript plus JSX element/attribute
-        // nodes, all TypeScript KINDS / RULES / PARAM_CONFIG entries apply,
-        // and JSX-specific sinks (e.g. `dangerouslySetInnerHTML`) layer on top
-        // via the same `typescript` slug.
-        Some("tsx") => Some((
-            Language::from(tree_sitter_typescript::LANGUAGE_TSX),
             "typescript",
         )),
         Some("js") => Some((

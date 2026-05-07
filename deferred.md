@@ -21,7 +21,10 @@ implied or surfaced but did not finish.
       phase that un-ignores each test must update its `sink_line` (and,
       where stable, `source_line`) to a real fixture line. Phase 03 did
       this for `promise_then_callback`, `promise_all_taint`, and
-      `for_await_of_stream`; phases 04–08 still own their own.
+      `for_await_of_stream`; phase 06 did it for `jsx_dangerous_html`
+      (sink_line = 8 on `page.tsx`, the `__html: input` value span);
+      `orm_builders`, `ssrf_url_builders`, `cross_package_ipa`, and
+      `nextjs_entrypoints` still own their own.
 - [ ] Chained-receiver Promise shape: `Promise.resolve(req.body).then(cb)`
       and `Promise.all([...]).then(cb)` collapse in CFG (the outer `.then`
       call's text is rewritten to the inner call_expression text), so the
@@ -100,18 +103,12 @@ implied or surfaced but did not finish.
       definitions. Park, real fixtures using `exports` haven't
       surfaced in the recall corpus yet; revisit when phase 09/10
       finds a recall gap traceable to this.
-- [ ] Phase 04 / recall_gaps mismatch — the phase header table in
-      `tests/recall_gaps.rs` maps `jsx_dangerous_html` to phase 04,
-      but the phase 04 prompt the implementer received explicitly
-      forbids un-ignoring any new gap test ("nothing new un-ignored
-      here, the resolver feeds a `FuncKey.namespace` field that is
-      currently unused at the resolution site — Phase 10 turns it
-      on"). The test stays ignored; whichever phase actually
-      delivers JSX-rendered-html taint coverage (likely phase 10
-      once the resolver is consumed, or a dedicated phase 04b) must
-      flip the `#[ignore]` and provide the fixture. Update the
-      header table at the same time so the in-file map matches the
-      runner's plan.
+- [x] Phase 04 / recall_gaps mismatch — the phase header table in
+      `tests/recall_gaps.rs` mapped `jsx_dangerous_html` to phase 04,
+      but the phase 04 prompt forbade un-ignoring any new gap test.
+      Phase 06 actually delivers JSX-rendered-html taint coverage; the
+      header table is updated and the test is now un-ignored against
+      `page.tsx` / `page_safe_literal.tsx` / `page_indirect.tsx`.
 - [ ] Phase 04 audit — `ModuleGraph::imports_for` returns
       `Vec<ImportBinding>` rather than the `&[ImportBinding]`
       slice the plan specified. The implementer wrapped the
@@ -216,6 +213,58 @@ implied or surfaced but did not finish.
       `classify_gated_only` helper so the post-pass skips the
       redundant flat-rule scan it has already done during initial
       classification.
+- [ ] Phase 06 audit — `utils::ext::lowercase_ext` collapses both
+      `.ts` and `.tsx` to the slug `"ts"`, masking the JSX/TSX
+      distinction.  Phase 06 worked around this in
+      `ast::lang_for_path` with an early-return on the raw path
+      extension that selects `LANGUAGE_TSX` for `.tsx` files, but
+      the original `Some("tsx") =>` arm in the match block (which
+      the workaround predates) is now dead code.  Cleanup: either
+      teach `lowercase_ext` to keep the `tsx`/`jsx` distinctions
+      and update every consumer, or remove the dead match arm and
+      keep the early-return as the canonical path.  Existing tests
+      that assert `lowercase_ext("file.tsx") == "ts"` would need to
+      be revised under the first option.
+- [ ] Phase 06 audit — `Kind::JsxAttr` is a unit variant rather
+      than the `JsxAttr { name: SmolStr }` variant the phase
+      prompt requested.  Reason: `Kind` must remain `Copy` to fit
+      `phf_map` storage, and the static KINDS map can only
+      construct values from const expressions.  The attribute
+      name is read from the AST at the consumption site
+      (`jsx_attr_name_is`) instead.  Switch to a fielded variant
+      (and drop `Copy`) only if a future phase needs name-bearing
+      Kind variants for additional JSX-specific dispatch (e.g.
+      multiple synthesised callees per attribute name); today
+      one shape (`dangerouslySetInnerHTML`) is enough.
+- [ ] Phase 06 audit — JSX synthesis is hooked into the wrapping
+      arms (`Kind::Return`, `Kind::CallWrapper`, `Kind::Assignment`,
+      and the wildcard `_` fallback).  JSX expressions inside
+      conditional expressions, ternary RHS branches, or other
+      unusual containers may not surface a `jsx_attribute` to the
+      helper because the wrapping arm short-circuits before the
+      JSX subtree is reachable.  Out of scope until a real fixture
+      surfaces a missed shape; revisit by lifting the helper to a
+      tree-wide post-pass over `build_cfg`.
+- [ ] Phase 06 audit — sanitizer-aware `__html` stripping only
+      recognises the shape `__html: SANITIZER(args)` where the
+      callee classifies as `Sanitizer` under
+      `classify_all`.  Multi-step sanitization
+      (`__html: pipe(input, sanitize, escape)`,
+      `__html: chain.escape().sanitize()`) and shapes where the
+      sanitised value is bound to a separate variable
+      (`const clean = sanitize(x); __html: clean`) fall through.
+      Variable-bound sanitization works today via SSA value
+      tracking on the bound name; the chained / higher-order
+      shapes need a richer recogniser.  Defer until a fixture
+      surfaces an FP.
+- [ ] Phase 06 audit — JSX is recognised only for React TSX/JSX
+      via the tree-sitter-typescript and tree-sitter-javascript
+      grammars.  Other JSX-flavour template languages (Svelte
+      `bind:innerHTML`, Vue `v-html`, Solid's
+      `innerHTML` directive) carry the same XSS-by-default
+      semantics but use entirely separate grammars.  Out of
+      scope; revisit when a gap test arrives for one of those
+      ecosystems.
 
 ## Deferred phases
 

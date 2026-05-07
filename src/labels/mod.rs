@@ -342,6 +342,12 @@ pub enum Kind {
     /// SSA as `SsaOp::Assign(operand)` so taint, origins, and abstract value
     /// pass through unchanged.
     AwaitForward,
+    /// JSX attribute (`<Tag name={value} />`).  Dispatched in the CFG so the
+    /// builder can recognise React-specific shapes such as
+    /// `dangerouslySetInnerHTML={{ __html: x }}` and synthesise a sink call.
+    /// The attribute name is read from the AST at CFG-build time, not carried
+    /// in this enum (which must remain `Copy` for `phf_map` storage).
+    JsxAttr,
     Other,
 }
 

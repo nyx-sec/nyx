@@ -32,18 +32,24 @@
 //!
 //! Every phase un-ignores exactly the tests it owns. The mapping is stable:
 //!
-//! | Phase | Test fn               |
-//! |-------|-----------------------|
-//! | 02    | `async_await`         |
-//! | 03    | `fs_promises`         |
-//! | 04    | `jsx_dangerous_html`  |
-//! | 05    | `orm_builders`        |
-//! | 06    | `ssrf_url_builders`   |
-//! | 07    | `cross_package_ipa`   |
-//! | 08    | `nextjs_entrypoints`  |
+//! | Phase | Test fn                       |
+//! |-------|-------------------------------|
+//! | 02    | `async_await`                 |
+//! | 03    | `promise_then_callback`,      |
+//! |       | `promise_all_taint`,          |
+//! |       | `for_await_of_stream`,        |
+//! |       | `promise_then_chain_reentrant`|
+//! | 05    | `fs_promises_*`               |
+//! | 06    | `jsx_dangerous_html`          |
+//! | TBD   | `orm_builders`,               |
+//! |       | `ssrf_url_builders`,          |
+//! |       | `cross_package_ipa`,          |
+//! |       | `nextjs_entrypoints`          |
 //!
-//! Phases beyond 08 may add further `#[ignore]`d tests; do not move tests
-//! between owners.
+//! Phase 04 ships the TS/JS module resolver foundation but un-ignores no
+//! gap tests of its own — the resolver feeds `FuncKey.namespace` for later
+//! phases.  Phases beyond the table may add further `#[ignore]`d tests;
+//! do not move tests between owners.
 
 mod common;
 
@@ -219,8 +225,11 @@ fn fs_promises_safe_userfn() {
     );
 }
 
+/// Phase 06 recall-gap: React JSX `<div dangerouslySetInnerHTML={{__html:
+/// x}} />`.  The CFG builder synthesises a sink call from the JSX
+/// attribute, so the auto-seeded `input` formal flows into HTML_ESCAPE at
+/// the `__html: input` value-span line.
 #[test]
-#[ignore = "PHASE 04 unblocks"]
 fn jsx_dangerous_html() {
     let findings = scan_fixture("jsx_dangerous_html");
     assert_finding(
@@ -228,9 +237,41 @@ fn jsx_dangerous_html() {
         ExpectedFinding {
             rule_id: "taint-unsanitised-flow",
             file_suffix: "page.tsx",
-            sink_line: 0,
+            sink_line: 8,
             source_line: None,
         },
+    );
+    // Negative — `__html` is a string literal, no taint flows.
+    let leak_literal = findings.iter().any(|f| {
+        f.path.ends_with("page_safe_literal.tsx")
+            && (f.id.starts_with("taint-unsanitised-flow")
+                || f.id.starts_with("cfg-unguarded-sink"))
+    });
+    assert!(
+        !leak_literal,
+        "literal __html must not fire dangerouslySetInnerHTML; got:\n{}",
+        findings
+            .iter()
+            .filter(|f| f.path.ends_with("page_safe_literal.tsx"))
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    // Negative — `__html: DOMPurify.sanitize(input)` is sanitized.
+    let leak_indirect = findings.iter().any(|f| {
+        f.path.ends_with("page_indirect.tsx")
+            && (f.id.starts_with("taint-unsanitised-flow")
+                || f.id.starts_with("cfg-unguarded-sink"))
+    });
+    assert!(
+        !leak_indirect,
+        "DOMPurify.sanitize-routed payload must not fire dangerouslySetInnerHTML; got:\n{}",
+        findings
+            .iter()
+            .filter(|f| f.path.ends_with("page_indirect.tsx"))
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }
 
@@ -250,7 +291,7 @@ fn orm_builders() {
 }
 
 #[test]
-#[ignore = "PHASE 06 unblocks"]
+#[ignore = "future phase: SSRF URL-builder shapes"]
 fn ssrf_url_builders() {
     let findings = scan_fixture("ssrf_url_builders");
     assert_finding(
