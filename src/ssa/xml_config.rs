@@ -510,9 +510,7 @@ pub fn analyze_xml_parser_config(
                             suffix,
                             "newDocumentBuilder" | "newSAXParser" | "getXMLReader" | "newXMLReader"
                         );
-                    if inherit
-                        && let Some(parent) = configs.get(rv).copied()
-                    {
+                    if inherit && let Some(parent) = configs.get(rv).copied() {
                         let prev = configs.get(&inst.value).copied().unwrap_or_default();
                         let new_cfg = prev.union(&parent);
                         if Some(new_cfg) != configs.get(&inst.value).copied()
