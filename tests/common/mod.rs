@@ -1,5 +1,7 @@
 // Shared test helpers for integration and perf tests.
 
+pub mod recall;
+
 use nyx_scanner::commands::scan::Diag;
 use nyx_scanner::utils::config::{AnalysisMode, Config};
 use serde::Deserialize;

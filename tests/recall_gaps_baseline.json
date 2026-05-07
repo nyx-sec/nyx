@@ -1,0 +1,50 @@
+{
+  "_doc": "Frozen recall-gap baseline captured during pitboss phase 01. Phases 02-11 prove non-regression by re-running the corpus scan and verifying corpus_findings_total does not drop. Hard rule: pitboss agents may not write under .pitboss/, so the baseline lives here in tests/ next to the harness it documents.",
+  "captured_on": "2026-05-07",
+  "captured_against": "master @ 7d0e7320 (new capacity bits)",
+  "recall_gaps_tests": {
+    "binary": "recall_gaps",
+    "ignored_count": 7,
+    "ignored": [
+      "async_await",
+      "fs_promises",
+      "jsx_dangerous_html",
+      "orm_builders",
+      "ssrf_url_builders",
+      "cross_package_ipa",
+      "nextjs_entrypoints"
+    ],
+    "non_ignored": [
+      "baseline_loads"
+    ]
+  },
+  "corpus_finding_lines": {
+    "scan_root": "tests/fixtures",
+    "command": "nyx scan tests/fixtures --index off --format console",
+    "output_lines": 6225,
+    "json_command": "nyx scan tests/fixtures --index off --format json",
+    "findings_total": 1092,
+    "findings_by_severity": {
+      "Medium": 1072,
+      "Low": 20
+    },
+    "rule_id_distinct": 84,
+    "rule_id_top": {
+      "taint-unsanitised-flow": 511,
+      "state-unauthed-access": 36,
+      "py.cmdi.subprocess_shell": 35,
+      "js.code_exec.eval": 30,
+      "taint-data-exfiltration": 29,
+      "js.auth.missing_ownership_check": 26,
+      "go.cmdi.exec_command": 20,
+      "taint-open-redirect": 19,
+      "cfg-unguarded-sink": 18,
+      "state-use-after-close": 17,
+      "java.cmdi.runtime_exec": 17,
+      "taint-prototype-pollution": 16,
+      "taint-template-injection": 15,
+      "py.auth.missing_ownership_check": 15,
+      "rb.cmdi.system_interp": 14
+    }
+  }
+}
