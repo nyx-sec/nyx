@@ -135,10 +135,17 @@ Sources, sanitizers, and sinks are linked by named capabilities. A sanitizer onl
 | `sql_query` | | parameterized query binders | `cursor.execute`, `db.query` with concatenation |
 | `deserialize` | | | `pickle.loads`, `yaml.load`, `Marshal.load` |
 | `ssrf` | | URL-prefix locks | `requests.get`, `fetch` URL arg, outbound HTTP destination |
-| `data_exfil` | cookies, headers, env, db rows, file reads (Sensitive-tier sources only) | | `fetch` body / headers / json, `XMLHttpRequest.send` body |
 | `code_exec` | | | `eval`, `exec`, `Function` |
 | `crypto` | | | weak-algorithm constructors |
 | `unauthorized_id` | request-bound scoped IDs (Rust auth analysis) | ownership check | row-level write |
+| `ldap_injection` | | `ldap-escape` filter / dn helpers, project-local `escapeLdapFilter` | `DirContext.search`, `LdapClient.search`, `ldap_search`, `Net::LDAP#search`, `ldap_search_ext_s` |
+| `xpath_injection` | | bound `XPathVariableResolver`, `escapeXpath` / `xpathEscape` helpers | `XPath.evaluate`, `DOMXPath::query`, `document.evaluate`, `xpath.select`, `etree.XPath` |
+| `header_injection` | | `stripCRLF` / `escapeHeader` / `sanitizeHeader` | `setHeader`, `res.set`, `res.append`, `headers["X-Foo"] = bar`, `Header().Set`, `header()`, `setcookie` |
+| `open_redirect` | | leading-slash check (`startsWith("/")`), URL-parse + host allowlist (`new URL(x).host === ALLOWED`) | `Redirect::to`, Spring `redirect:` view name, `flask.redirect`, `http.Redirect`, `redirect_to` |
+| `ssti` | | | template constructors fed by tainted source: `Jinja2 Template(...)`, `freemarker.Template`, `Twig::createTemplate`, Handlebars `compile`, `ERB.new`, Mako `Template(...)` |
+| `xxe` | | hardened parser config (`secure_processing`, `disallow-doctype-decl`, `processEntities: false`, `LIBXML_NOENT` not set) | `DocumentBuilder.parse`, `SAXParser.parse`, `xml2js`, `fast-xml-parser`, `lxml.etree.parse`, `xmlReadFile` |
+| `prototype_pollution` | | constant-key fold, reject / allowlist guards on the key, `Object.create(null)` receivers | `obj[tainted] = v` synthetic `__index_set__`, `_.merge`, `_.set`, `dotProp.set`, `objectPath.set`, jQuery `extend(true, ...)` |
+| `data_exfil` | cookies, headers, env, db rows, file reads (Sensitive-tier sources only) | | `fetch` body / headers / json, `XMLHttpRequest.send` body |
 | `all` | Sources typically use `all` so they match any sink | | |
 
 Sources typically use `cap = "all"` so they match every sink. Sinks declare the specific cap they need. Sanitizers only clear the cap they name.

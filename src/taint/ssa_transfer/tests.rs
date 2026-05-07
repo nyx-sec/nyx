@@ -1522,10 +1522,10 @@ mod receiver_candidates_field_proj_tests {
 
     #[test]
     fn field_proj_receiver_walks_to_typed_root_in_go() {
-        // Go is not Rust, so pre-Phase-4 the candidate walk would have
-        // returned ONLY the immediate receiver (v2 = FieldProj). With
-        // We walk through FieldProj.receiver to recover v0 (the
-        // typed root `c`).
+        // Go is not Rust, so before the FieldProj walk fix the candidate
+        // walk would have returned ONLY the immediate receiver
+        // (v2 = FieldProj). We now walk through FieldProj.receiver to
+        // recover v0 (the typed root `c`).
         let body = body_with_field_proj_chain();
         let cands =
             super::super::receiver_candidates_for_type_lookup(SsaValue(2), Some(&body), Lang::Go);

@@ -61,7 +61,7 @@ pub static RULES: &[LabelRule] = &[
     // pattern that follows `from flask import session`.  The `=session`
     // exact-match form fires only when the call is the bare top-level
     // `session(...)` so accidental field projections like
-    // `obj.client.session` (Phase 2 chained-receiver lowering) don't get
+    // `obj.client.session` (chained-receiver lowering) don't get
     // mis-labelled as sources.
     LabelRule {
         matchers: &[

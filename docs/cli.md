@@ -275,7 +275,7 @@ Add a custom taint rule. Written to `nyx.local`.
 | `--lang` | `rust`, `javascript`, `typescript`, `python`, `go`, `java`, `c`, `cpp`, `php`, `ruby` |
 | `--matcher` | Function or property name to match |
 | `--kind` | `source`, `sanitizer`, `sink` |
-| `--cap` | `env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `code_exec`, `crypto`, `unauthorized_id`, `all` |
+| `--cap` | `env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `code_exec`, `crypto`, `unauthorized_id`, `data_exfil`, `ldap_injection`, `xpath_injection`, `header_injection`, `open_redirect`, `ssti`, `xxe`, `prototype_pollution`, `all` |
 
 ### `nyx config add-terminator`
 
@@ -284,6 +284,41 @@ nyx config add-terminator --lang <LANG> --name <NAME>
 ```
 
 Add a terminator function (e.g. `process.exit`). Written to `nyx.local`.
+
+---
+
+## `nyx rules`
+
+Browse the built-in rule registry from the terminal. Same dataset the dashboard's Rules page reads from: cap-class entries (one per `Cap` with a canonical rule id), per-language label rules (sink / source / sanitizer), gated sinks, and any custom rules from your config.
+
+### `nyx rules list`
+
+```
+nyx rules list [--lang <SLUG>] [--kind <KIND>] [--class-only|--no-class] [--json]
+```
+
+| Flag | Values |
+|------|--------|
+| `--lang` | Language slug (`javascript`, `typescript`, `python`, `java`, `php`, `go`, `ruby`, `rust`, `c`, `cpp`). Cap-class entries (`language = "all"`) still surface alongside any language filter unless `--no-class` is set. |
+| `--kind` | `class` (cap-class entry), `source`, `sink`, `sanitizer` |
+| `--class-only` | Show only the cap-class registry entries, suppressing per-language label rules and gated sinks. |
+| `--no-class` | Suppress cap-class registry entries, show only per-language label rules and gated sinks. Conflicts with `--class-only`. |
+| `--json` | Emit JSON instead of the human-readable table. Schema matches the `/api/rules` response. |
+
+Examples:
+
+```bash
+# Browse the seven new vulnerability classes
+nyx rules list --class-only
+
+# All Java sinks
+nyx rules list --lang java --kind sink
+
+# JSON output for scripted filtering
+nyx rules list --json | jq '.[] | select(.cap == "ldap_injection")'
+```
+
+The `enabled` column reflects the `analysis.disabled_rules` overlay from your config, so a rule disabled in `nyx.local` shows up here too. Custom rules added via `nyx config add-rule` appear at the end with `is_custom: true`.
 
 ---
 

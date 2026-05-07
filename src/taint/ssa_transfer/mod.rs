@@ -105,8 +105,8 @@ pub struct SsaTaintTransfer<'a> {
     /// Type facts from type analysis.
     /// Used for type-aware sink filtering (e.g., suppress SQL injection for int-typed values).
     pub type_facts: Option<&'a crate::ssa::type_facts::TypeFactResult>,
-    /// XML-parser config facts (Phase 07).  Used to suppress XXE bits at
-    /// parse-class sinks whose receiver was provably hardened
+    /// XML-parser config facts. Used to suppress XXE bits at parse-class
+    /// sinks whose receiver was provably hardened
     /// (`setFeature(FEATURE_SECURE_PROCESSING, true)`, etc.).  Strictly
     /// additive: `None` falls back to the existing flat / gated XXE
     /// classification.
@@ -6075,7 +6075,7 @@ fn collect_block_events(
             }
         }
 
-        // Phase 07: ADD XXE on opt-in. When the receiver was constructed
+        // ADD XXE on opt-in. When the receiver was constructed
         // with an explicit external-entity opt-in
         // (`new XMLParser({ processEntities: true })`,
         // `lxml.etree.XMLParser(resolve_entities=True)`), the subsequent
@@ -6213,10 +6213,10 @@ fn collect_block_events(
             continue;
         }
 
-        // Phase 07: XXE config-fact suppression.  A parse-class sink whose
-        // receiver was provably hardened (`setFeature(FEATURE_SECURE_PROCESSING,
+        // XXE config-fact suppression.  A parse-class sink whose receiver
+        // was provably hardened (`setFeature(FEATURE_SECURE_PROCESSING,
         // true)`, `setExpandEntityReferences(false)`, etc.) is not an XXE
-        // flow — drop the bit before downstream sink emission.  Runs after
+        // flow. Drop the bit before downstream sink emission.  Runs after
         // type-qualified resolution / module alias resolution so the XXE
         // bit added by `XmlParser.parse` resolution is visible here.
         if sink_caps.intersects(Cap::XXE) {
@@ -6265,7 +6265,7 @@ fn collect_block_events(
             continue;
         }
 
-        // Phase 09 prototype-pollution suppression (flow-sensitive).
+        // Prototype-pollution suppression (flow-sensitive).
         // `Object.create(null)` produces a `NullPrototypeObject`-typed
         // value; subscript writes to such an object cannot pollute
         // `Object.prototype` because there is no prototype chain.
@@ -9613,7 +9613,7 @@ fn resolve_callee_full(
     }
 
     // 0.5) Cross-file SSA summaries (GlobalSummaries.ssa_by_key) with
-    // optional Phase-6 hierarchy fan-out.
+    // optional class-hierarchy fan-out.
     //
     // When the call has an authoritative receiver type AND
     // `GlobalSummaries::install_hierarchy` has been called AND the
@@ -9717,7 +9717,7 @@ fn resolve_callee_full(
         }
     }
 
-    // 2) Global same-language (FuncSummary path) with Phase-6 hierarchy
+    // 2) Global same-language (FuncSummary path) with class-hierarchy
     // fan-out.  Same semantics as step 0.5 but on coarse FuncSummary
     // entries, the SSA path missed because no implementer had an SSA
     // summary, so we widen the FuncSummary lookup symmetrically.

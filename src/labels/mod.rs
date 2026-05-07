@@ -1655,7 +1655,7 @@ pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
         default_enabled: true,
         emission_active: true,
     },
-    // ── New cap classes (Phase 01) ────────────────────────────────────────
+    // ── Cap-specific rule ids ────────────────────────────────────────────
     CapRuleMeta {
         cap: Cap::LDAP_INJECTION,
         rule_id: "taint-ldap-injection",
@@ -1907,8 +1907,9 @@ mod tests {
     /// `emission_active: true` flag in `CAP_RULE_REGISTRY`, then update
     /// this assertion.  The split exists because legacy taint findings
     /// historically all surfaced under the generic `taint-unsanitised-flow`
-    /// rule id; phase-01 introduced cap-specific routing for new classes
-    /// only.
+    /// rule id; the seven cap-specific routes (LDAP / XPath / header /
+    /// open redirect / SSTI / XXE / prototype pollution) plus
+    /// `unauthorized_id` and `data_exfil` are the only ones wired through.
     #[test]
     fn cap_rule_registry_emission_active_set_is_pinned() {
         let active: Vec<Cap> = CAP_RULE_REGISTRY

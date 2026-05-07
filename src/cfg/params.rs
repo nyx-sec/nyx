@@ -13,7 +13,7 @@ use tree_sitter::Node;
 /// of `build_cfg`.  Returns the [`TypeKind::Dto`] carrying the
 /// per-field type map when the class is declared in the same file;
 /// returns `None` otherwise so callers can fall through to the
-/// pre-Phase-6 behaviour (Object / Unknown).
+/// generic Object / Unknown classification.
 fn lookup_dto_class(class_name: &str) -> Option<TypeKind> {
     DTO_CLASSES.with(|cell| cell.borrow().get(class_name).cloned().map(TypeKind::Dto))
 }
@@ -27,7 +27,7 @@ fn lookup_dto_class(class_name: &str) -> Option<TypeKind> {
 /// for the JS/TS object-pattern formal `({ a, b, c })`, the entry is
 /// `("a", None, ["b", "c"])`.  Strictly additive: when the param is
 /// not a destructured pattern (or the language has no destructure
-/// concept), behaviour is identical to the pre-Phase-5 names-only path.
+/// concept), behaviour is identical to the names-only path.
 ///
 /// Closes the residual gap behind CVE-2026-25544 (PayloadCMS Drizzle
 /// SQL injection): a per-parameter taint probe that seeds only the

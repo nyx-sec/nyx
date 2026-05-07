@@ -292,10 +292,10 @@ fn cap_bits_round_trip_serde() {
     assert!(!json.contains("propagates_taint"));
 }
 
-/// Phase 01: every new cap class persists across the serde JSON
-/// round-trip used for SQLite blob storage and the `/debug` endpoint.
-/// Catches a width-mismatch (cap bits truncated to u16) as a hard fail
-/// rather than silent zeroing of the upper bits.
+/// Every new cap class persists across the serde JSON round-trip used
+/// for SQLite blob storage and the `/debug` endpoint.  Catches a
+/// width-mismatch (cap bits truncated to u16) as a hard fail rather than
+/// silent zeroing of the upper bits.
 #[test]
 fn new_cap_classes_round_trip_serde() {
     let new_caps = Cap::LDAP_INJECTION

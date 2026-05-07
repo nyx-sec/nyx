@@ -186,7 +186,7 @@ Two passes over the filesystem, with an optional SQLite index to skip unchanged 
 3. **Pass 2**: re-analyze each file with cross-file context under bounded context sensitivity (k=1 inlining for intra-file callees, SCC fixpoint capped at 64 iterations, and summary fallback for callees above the inline body-size cap). A forward dataflow worklist propagates taint through the SSA lattice with guaranteed convergence. Call-graph SCCs iterate to fixed-point (within the cap) so mutually recursive functions get accurate summaries.
 4. **Rank, dedupe, emit**: findings are scored by severity × evidence strength × source-kind exploitability, then emitted to console, JSON, or SARIF.
 
-Detector families: taint (cross-file source→sink), CFG structural (auth gaps, unguarded sinks, resource leaks), state model (use-after-close, double-close, must-leak, unauthed-access), AST patterns (tree-sitter structural match). Full detector docs: [Detectors](https://elicpeter.github.io/nyx/detectors.html).
+Detector families: taint (cross-file source→sink, with cap-specific rule classes for SQLi, XSS, command/code exec, deserialization, SSRF, path traversal, format string, crypto, LDAP injection, XPath injection, HTTP header / response splitting, open redirect, server-side template injection, XXE, prototype pollution, data exfiltration, and the auth fold-in), CFG structural (auth gaps, unguarded sinks, resource leaks), state model (use-after-close, double-close, must-leak, unauthed-access), AST patterns (tree-sitter structural match). Full detector docs: [Detectors](https://elicpeter.github.io/nyx/detectors.html).
 
 ---
 
@@ -211,7 +211,7 @@ kind     = "sanitizer"
 cap      = "html_escape"
 ```
 
-Or add rules interactively: `nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`. Caps: `env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `data_exfil`, `code_exec`, `crypto`, `unauthorized_id`, `all`. Full schema: [Configuration](https://elicpeter.github.io/nyx/configuration.html).
+Or add rules interactively: `nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`. Caps: `env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `data_exfil`, `code_exec`, `crypto`, `unauthorized_id`, `ldap_injection`, `xpath_injection`, `header_injection`, `open_redirect`, `ssti`, `xxe`, `prototype_pollution`, `all`. Full schema: [Configuration](https://elicpeter.github.io/nyx/configuration.html). Run `nyx rules list` to browse the registry from the terminal.
 
 ---
 

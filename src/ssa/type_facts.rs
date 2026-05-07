@@ -82,9 +82,9 @@ pub enum TypeKind {
     /// `DOMXPath` and friends keep their own `XPathClient` tag.  Used so
     /// the type-qualified `XmlParser.parse` rule fires on instance-style
     /// calls (`builder.parse(input)`) without needing a flat-rule
-    /// matcher per concrete subclass.  Also gates Phase 07's XXE
-    /// config-fact suppression: only XmlParser-typed receivers consult
-    /// the [`crate::ssa::xml_config::XmlParserConfigResult`] sidecar.
+    /// matcher per concrete subclass.  Also gates the XXE config-fact
+    /// suppression: only XmlParser-typed receivers consult the
+    /// [`crate::ssa::xml_config::XmlParserConfigResult`] sidecar.
     XmlParser,
     /// A framework-injected DTO body whose field types are known.
     /// Populated when a parameter is recognised as a typed extractor and
@@ -95,11 +95,11 @@ pub enum TypeKind {
     /// An object created with `Object.create(null)` — has no prototype
     /// chain, so subscript-write keys cannot pollute `Object.prototype`.
     /// Populated for JS/TS values whose constructor call is
-    /// `Object.create(null)`. Phase 09's PROTOTYPE_POLLUTION suppression
-    /// at the synthetic `__index_set__` sink consults this fact (via
-    /// SSA receiver value) so the suppression is flow-sensitive: if a
-    /// phi join leaves the receiver only sometimes null-prototyped, the
-    /// fact widens to `Unknown` and the sink fires on the unsafe path.
+    /// `Object.create(null)`. The PROTOTYPE_POLLUTION suppression at the
+    /// synthetic `__index_set__` sink consults this fact (via SSA receiver
+    /// value) so the suppression is flow-sensitive: if a phi join leaves
+    /// the receiver only sometimes null-prototyped, the fact widens to
+    /// `Unknown` and the sink fires on the unsafe path.
     NullPrototypeObject,
 }
 
@@ -453,10 +453,10 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // JAXP factory-produced XML parser instances.  Each is
             // XXE-vulnerable by default until hardened with
             // `setFeature(FEATURE_SECURE_PROCESSING, true)` (or
-            // disallow-doctype-decl, etc.).  Phase 07's
-            // [`crate::ssa::xml_config::XmlParserConfigResult`] suppresses
-            // the XXE bit at the type-qualified `XmlParser.parse` sink
-            // when the receiver carries a hardening fact.
+            // disallow-doctype-decl, etc.). The
+            // [`crate::ssa::xml_config::XmlParserConfigResult`] sidecar
+            // suppresses the XXE bit at the type-qualified `XmlParser.parse`
+            // sink when the receiver carries a hardening fact.
             "newDocumentBuilder" | "newSAXParser" | "getXMLReader" | "newXMLReader"
             | "createXMLReader" => Some(TypeKind::XmlParser),
             // `XPathFactory.newXPath()` returns a JAXP `XPath` instance.
@@ -879,8 +879,7 @@ pub fn analyze_types(
 /// Same as [`analyze_types`] but seeds [`SsaOp::Param`] values with
 /// per-position [`TypeKind`] facts from `param_types` (parallel-vec to
 /// the function's BodyMeta.params).  An entry of `None` (or an out-of-
-/// range index) leaves the value at the default Param fact (Unknown),
-/// preserving the pre-Phase-3 behaviour.
+/// range index) leaves the value at the default Param fact (Unknown).
 pub fn analyze_types_with_param_types(
     body: &SsaBody,
     cfg: &Cfg,
@@ -921,8 +920,7 @@ pub fn analyze_types_with_param_types(
                 SsaOp::Param { index } => {
                     // Seed from the function's BodyMeta.param_types when
                     // a TypeKind was recovered at CFG construction time.
-                    // Out-of-range / None entries fall back to Unknown,
-                    // matching the pre-Phase-3 behaviour.
+                    // Out-of-range / None entries fall back to Unknown.
                     match param_types.get(*index).and_then(|t| t.clone()) {
                         Some(tk) => TypeFact::from_kind(tk),
                         None => TypeFact::unknown(),
@@ -931,12 +929,12 @@ pub fn analyze_types_with_param_types(
                 SsaOp::SelfParam => TypeFact::from_kind(TypeKind::Object),
                 SsaOp::CatchParam => TypeFact::from_kind(TypeKind::Object),
                 SsaOp::Call { callee, args, .. } => {
-                    // Phase 09: CFG marks `Object.create(null)` (and
-                    // future null-prototype constructors) at lowering
-                    // time.  Honour it ahead of generic constructor /
-                    // arg-aware dispatch so the returned SsaValue
-                    // carries `NullPrototypeObject` for prototype-
-                    // pollution suppression.
+                    // CFG marks `Object.create(null)` (and future
+                    // null-prototype constructors) at lowering time.
+                    // Honour it ahead of generic constructor / arg-aware
+                    // dispatch so the returned SsaValue carries
+                    // `NullPrototypeObject` for prototype-pollution
+                    // suppression.
                     let null_proto = cfg
                         .node_weight(inst.cfg_node)
                         .map(|ni| ni.call.produces_null_proto)
@@ -1790,7 +1788,7 @@ mod tests {
 
     /// Param values seeded from `param_types` must surface
     /// the right TypeKind for downstream sink suppression.  An out-of-
-    /// range index falls back to Unknown (the pre-Phase-3 default).
+    /// range index falls back to Unknown.
     #[test]
     fn param_types_seed_param_value_facts() {
         use crate::cfg::Cfg;
@@ -1851,7 +1849,7 @@ mod tests {
         // Index 99 is out of range → falls back to Unknown.
         assert_eq!(result.get_type(SsaValue(1)), Some(&TypeKind::Unknown));
 
-        // Empty slice = pre-Phase-3 behaviour.
+        // Empty slice = type-unaware fallback (analyze_types path).
         let result2 = analyze_types(&body, &cfg, &consts, Some(Lang::Java));
         assert_eq!(result2.get_type(SsaValue(0)), Some(&TypeKind::Unknown));
     }
@@ -2487,7 +2485,7 @@ mod tests {
         ));
     }
 
-    // ── JPA Criteria query suppression (Phase: real-repo openmrs FP) ───
+    // ── JPA Criteria query suppression (real-repo openmrs FP) ─────────
     //
     // These tests pin the `TypeKind::JpaCriteriaQuery` variant + the
     // `is_safe_query_object_arg` predicate + the

@@ -53,7 +53,7 @@ pub struct OptimizeResult {
     pub const_values: HashMap<SsaValue, const_prop::ConstLattice>,
     /// Type fact analysis results.
     pub type_facts: type_facts::TypeFactResult,
-    /// XML-parser configuration facts (Phase 07): per-receiver SSA value
+    /// XML-parser configuration facts: per-receiver SSA value
     /// `secure_processing` / `disallow_doctype` / `external_entities`
     /// flags carried forward from setter calls and constructor kwargs.
     /// Consumed by the SSA taint engine to suppress XXE on parse-class
@@ -116,9 +116,9 @@ pub fn optimize_ssa_with_param_types(
     let type_facts =
         type_facts::analyze_types_with_param_types(body, cfg, &cp.values, lang, param_types);
 
-    // 5b. XML-parser config analysis (Phase 07).  Tracks per-receiver
-    // hardening flags so XXE sinks can be suppressed when the parser was
-    // provably configured for secure processing.
+    // 5b. XML-parser config analysis.  Tracks per-receiver hardening
+    // flags so XXE sinks can be suppressed when the parser was provably
+    // configured for secure processing.
     let xml_parser_config = xml_config::analyze_xml_parser_config(body, cfg, &cp.values, lang);
 
     // 5c. XPath-receiver config analysis.  Tracks per-receiver

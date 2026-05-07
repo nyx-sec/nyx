@@ -1671,10 +1671,10 @@ fn cpp_builder_chain_const_host_silent() {
 
 /// inline member-function bodies inside a
 /// `class_specifier` must be extracted as separate functions and
-/// intra-file calls must resolve to their bodies. Pre-Phase-4, the
-/// `class_specifier` AST kind was unmapped in cpp KINDS, so the CFG
-/// walker treated the entire class as a leaf `Seq` node and never
-/// descended into inline methods.
+/// intra-file calls must resolve to their bodies. Before the cpp KINDS
+/// fix the `class_specifier` AST kind was unmapped, so the CFG walker
+/// treated the entire class as a leaf `Seq` node and never descended
+/// into inline methods.
 #[test]
 fn cpp_inline_class_method_resolves() {
     let src = b"#include <cstdlib>\nclass Inner {\npublic:\n  void run(const char* arg) { std::system(arg); }\n};\nint main() {\n  char* input = std::getenv(\"X\");\n  Inner inner;\n  inner.run(input);\n  return 0;\n}\n";

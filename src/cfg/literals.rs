@@ -1963,11 +1963,11 @@ pub(super) fn extract_arg_string_literals(call_node: Node, code: &[u8]) -> Vec<O
                 raw.and_then(|s| strip_literal_quotes(&s, target, code))
             }
             // Boolean / null / numeric literal tokens — capture verbatim so
-            // downstream pattern-aware analysis (e.g. Phase 07's XXE
-            // config-fact pass that needs to read the boolean polarity arg
-            // of `setFeature(NAME, true)`) can recover the literal text
-            // without re-walking the AST.  Existing string-only consumers
-            // (URL prefix matching, etc.) are unaffected: a "true" / "false"
+            // downstream pattern-aware analysis (e.g. the XXE config-fact
+            // pass that needs to read the boolean polarity arg of
+            // `setFeature(NAME, true)`) can recover the literal text without
+            // re-walking the AST.  Existing string-only consumers (URL
+            // prefix matching, etc.) are unaffected: a "true" / "false"
             // token never satisfies their matching predicates.
             "true"
             | "false"

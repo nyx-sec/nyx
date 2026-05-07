@@ -7,8 +7,8 @@
 //! are treated as parameterised and the `XPATH_INJECTION` bit is
 //! stripped from the sink's cap mask.
 //!
-//! Same engine shape as Phase 07's `XmlParserConfigResult`: a small
-//! forward dataflow run alongside type-fact analysis.  Phi nodes
+//! Same engine shape as [`crate::ssa::xml_config::XmlParserConfigResult`]:
+//! a small forward dataflow run alongside type-fact analysis. Phi nodes
 //! propagate the meet of operand configs (a flag is "set" only when all
 //! reaching operands set it), copy assignments propagate the receiver's
 //! config, and `setXPathVariableResolver` calls update the receiver's
@@ -109,8 +109,8 @@ pub fn analyze_xpath_config(body: &SsaBody, cfg: &Cfg, lang: Option<Lang>) -> XP
     // `setXPathVariableResolver` updates the call's receiver in place;
     // any non-null argument is treated as a resolver binding.  Argument
     // null-check would require a const-prop fact, but the conservative
-    // direction here is to assume the bound value is non-null (matches
-    // Phase 07 setter semantics).
+    // direction here is to assume the bound value is non-null (matches the
+    // XML parser-config setter semantics).
     for block in &body.blocks {
         for inst in block.body.iter() {
             if let SsaOp::Call {

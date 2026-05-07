@@ -971,10 +971,10 @@ fn run_topo_batches(
             // with a 64-iter budget; the classifier only needs the tail.
             let mut delta_trajectory: smallvec::SmallVec<[u32; 4]> = smallvec::SmallVec::new();
 
-            // Phase-B worklist: files to re-analyse in this iteration.
+            // SCC fixpoint worklist: files to re-analyse in this iteration.
             // Initialised to the full batch so iteration 0 behaves like
-            // the pre-Phase-B implementation; subsequent iterations
-            // prune to files containing a caller of a changed summary.
+            // the unconditional re-analysis; subsequent iterations prune
+            // to files containing a caller of a changed summary.
             //
             // Storing `PathBuf` clones (matching how the rest of the
             // SCC loop identifies files) so membership tests are cheap

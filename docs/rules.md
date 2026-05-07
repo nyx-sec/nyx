@@ -24,13 +24,22 @@ Language prefixes: `rs`, `c`, `cpp`, `go`, `java`, `js`, `ts`, `py`, `php`, `rb`
 
 ### Taint
 
-One rule covers every source-to-sink flow. The parenthetical identifies the source location.
+The taint family is split into cap-specific rule classes. The `taint-unsanitised-flow` id is the catch-all for the legacy caps that have not migrated to a dedicated rule id yet (`sql_query`, `ssrf`, `code_exec`, `file_io`, `fmt_string`, `deserialize`, `crypto`). The seven new vulnerability classes plus auth and data-exfil emerge under their own rule id. The parenthetical identifies the source location.
 
-| Rule ID | Severity |
-|---|---|
-| `taint-unsanitised-flow (source L:C)` | Varies by source kind and sink capability |
+| Rule ID | Cap | Severity |
+|---|---|---|
+| `taint-unsanitised-flow (source L:C)` | `sql_query` / `ssrf` / `code_exec` / `file_io` / `fmt_string` / `deserialize` / `crypto` | Varies |
+| `taint-ldap-injection` | `ldap_injection` | High |
+| `taint-xpath-injection` | `xpath_injection` | High |
+| `taint-header-injection` | `header_injection` | High |
+| `taint-open-redirect` | `open_redirect` | Medium |
+| `taint-template-injection` | `ssti` | High |
+| `taint-xxe` | `xxe` | High |
+| `taint-prototype-pollution` | `prototype_pollution` | High |
+| `taint-data-exfiltration` | `data_exfil` | High / Medium |
+| `rs.auth.missing_ownership_check.taint` | `unauthorized_id` | High |
 
-The matcher sets (sources, sanitizers, sinks, gated sinks) live per-language in `src/labels/<lang>.rs`. [Language maturity](language-maturity.md) gives per-language counts and what's covered.
+Each cap-class entry is registered in `CAP_RULE_REGISTRY` (`src/labels/mod.rs`). Browse the registry from the CLI with `nyx rules list --class-only`, or via the dashboard's Rules page. The matcher sets (sources, sanitizers, sinks, gated sinks) live per-language in `src/labels/<lang>.rs`. [Language maturity](language-maturity.md) gives per-language counts and what's covered.
 
 ### CFG structural
 
@@ -257,6 +266,8 @@ The tables below are generated from `src/patterns/<lang>.rs` by [`tools/docgen`]
 
 `nyx config add-rule --cap <name>` and `[analysis.languages.*.rules]` in config accept:
 
-`env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `code_exec`, `crypto`, `unauthorized_id`, `all`
+`env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `code_exec`, `crypto`, `unauthorized_id`, `data_exfil`, `ldap_injection`, `xpath_injection`, `header_injection`, `open_redirect`, `ssti`, `xxe`, `prototype_pollution`, `all`
 
-Source for both the enum and the `to_cap` mapping: [`src/labels/mod.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/mod.rs) (`Cap`) and [`src/utils/config.rs`](https://github.com/elicpeter/nyx/blob/master/src/utils/config.rs) (`CapName`).
+Aliases: `data_exfiltration` for `data_exfil`, `ldapi` for `ldap_injection`, `xpathi` for `xpath_injection`, `crlf` and `response_splitting` for `header_injection`, `redirect` for `open_redirect`, `template_injection` for `ssti`, `proto_pollution` for `prototype_pollution`.
+
+Source for both the enum and the `to_cap` mapping: [`src/labels/mod.rs`](https://github.com/elicpeter/nyx/blob/master/src/labels/mod.rs) (`Cap` and `CAP_RULE_REGISTRY`) and [`src/utils/config.rs`](https://github.com/elicpeter/nyx/blob/master/src/utils/config.rs) (`CapName`).

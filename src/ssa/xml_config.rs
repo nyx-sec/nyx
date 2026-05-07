@@ -1,18 +1,18 @@
 //! Per-SSA-value XML-parser configuration tracking.
 //!
-//! Phase 07: tracks "is this XML parser configured to disable external
-//! entities / DTD resolution" facts on parser-receiver SSA values.  When a
-//! parse-class sink is reached and the receiver is provably configured for
-//! secure processing, the XXE bit is stripped from the sink's cap mask.
+//! Tracks "is this XML parser configured to disable external entities / DTD
+//! resolution" facts on parser-receiver SSA values. When a parse-class sink
+//! is reached and the receiver is provably configured for secure processing,
+//! the XXE bit is stripped from the sink's cap mask.
 //!
-//! The pass is intentionally a small forward dataflow run alongside
-//! type-fact analysis — it does NOT flow through the SSA taint engine's
-//! worklist.  Phi nodes propagate the meet of operand configs (a flag is
-//! "set" only when all reaching operands set it), and copy assignments
-//! propagate the receiver's config.  Recognised setter calls update the
-//! receiver's config in place; identity-style transformer calls that
-//! produce a child parser (e.g. `factory.newDocumentBuilder()`) inherit
-//! the receiver's config into the result value.
+//! The pass is intentionally a small forward dataflow run alongside type-fact
+//! analysis. It does NOT flow through the SSA taint engine's worklist. Phi
+//! nodes propagate the meet of operand configs (a flag is "set" only when all
+//! reaching operands set it), and copy assignments propagate the receiver's
+//! config. Recognised setter calls update the receiver's config in place;
+//! identity-style transformer calls that produce a child parser (e.g.
+//! `factory.newDocumentBuilder()`) inherit the receiver's config into the
+//! result value.
 
 use std::collections::HashMap;
 

@@ -359,12 +359,12 @@ pub struct CallMeta {
     /// must not survive into the constructed object.
     #[serde(default)]
     pub is_constructor: bool,
-    /// True when this call is `Object.create(null)` (or alias) — the
-    /// returned value has no prototype chain.  Consumed by TypeFacts to
-    /// tag the SsaValue with [`crate::ssa::type_facts::TypeKind::NullPrototypeObject`]
-    /// so Phase 09's PROTOTYPE_POLLUTION suppression can fire flow-
-    /// sensitively at the synthetic `__index_set__` sink.  Set during
-    /// CFG node construction so SSA does not need to re-walk the AST.
+    /// True when this call is `Object.create(null)` (or alias). The returned
+    /// value has no prototype chain.  Consumed by TypeFacts to tag the
+    /// SsaValue with [`crate::ssa::type_facts::TypeKind::NullPrototypeObject`]
+    /// so PROTOTYPE_POLLUTION suppression can fire flow-sensitively at the
+    /// synthetic `__index_set__` sink.  Set during CFG node construction so
+    /// SSA does not need to re-walk the AST.
     #[serde(default)]
     pub produces_null_proto: bool,
 }
@@ -609,8 +609,7 @@ pub struct BodyMeta {
     /// decorators / annotations / static type text at CFG construction
     /// time.  Same length as `params`; positions with no recoverable
     /// type info are `None`.  Strictly additive, when every entry is
-    /// `None`, downstream behaviour is identical to the pre-Phase-1
-    /// engine.
+    /// `None`, downstream behaviour is identical to the type-unaware path.
     pub param_types: Vec<Option<crate::ssa::type_facts::TypeKind>>,
     /// Per-parameter destructured-binding sibling names.  Same length
     /// as `params`; entry `i` lists field names bound by the same
@@ -2719,10 +2718,10 @@ pub(super) fn push_node<'a>(
         || call_ast
             .is_some_and(|cn| matches!(cn.kind(), "new_expression" | "object_creation_expression"));
 
-    // Phase 09: detect `Object.create(null)` so TypeFacts can tag the
-    // returned SsaValue with `NullPrototypeObject` for flow-sensitive
+    // Detect `Object.create(null)` so TypeFacts can tag the returned
+    // SsaValue with `NullPrototypeObject` for flow-sensitive
     // prototype-pollution suppression.  Restricted to JS/TS where
-    // Object.create is the idiomatic null-prototype constructor.
+    // `Object.create` is the idiomatic null-prototype constructor.
     let produces_null_proto = matches!(lang, "javascript" | "typescript")
         && call_ast.is_some_and(|cn| is_object_create_null_call(cn, code));
 
@@ -2932,7 +2931,7 @@ fn try_lower_subscript_write(
     let mut uses_all: Vec<String> = vec![arr_text.clone(), idx_text.clone()];
     uses_all.extend(rhs_uses.iter().cloned());
 
-    // Phase 09: prototype pollution sink classification on the synthetic
+    // Prototype pollution sink classification on the synthetic
     // `__index_set__` node for JS/TS.  Tainted *key* in `obj[key] = val`
     // is the pollution channel (a `__proto__` / `constructor` literal flowing
     // through `key` mutates `Object.prototype` globally), so the gate's
@@ -3096,7 +3095,7 @@ fn try_lower_spring_redirect_return(
     Some(n)
 }
 
-/// Phase 09 prototype-pollution suppression decisions for the synthetic
+/// Prototype-pollution suppression decisions for the synthetic
 /// `__index_set__` node emitted by `try_lower_subscript_write`.
 ///
 /// Returns `true` when the assignment is provably safe and the
