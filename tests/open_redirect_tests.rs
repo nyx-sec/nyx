@@ -106,6 +106,14 @@ fn javascript_relative_only_sanitizes() {
 }
 
 #[test]
+fn javascript_host_allowlist_sanitizes() {
+    // `new URL(target).host === ALLOWED_HOST` is recognised by
+    // PredicateKind::HostAllowlistValidated which clears Cap::OPEN_REDIRECT
+    // on the validated branch.
+    assert_clean("javascript", "safe_host_allowlist_redirect.js");
+}
+
+#[test]
 fn typescript_redirect_with_tainted_url_fires() {
     assert_unsafe("typescript", "unsafe_redirect.ts");
 }
@@ -121,6 +129,11 @@ fn typescript_relative_only_sanitizes() {
 }
 
 #[test]
+fn typescript_host_allowlist_sanitizes() {
+    assert_clean("typescript", "safe_host_allowlist_redirect.ts");
+}
+
+#[test]
 fn python_redirect_with_tainted_url_fires() {
     assert_unsafe("python", "unsafe_redirect.py");
 }
@@ -133,6 +146,11 @@ fn python_validate_url_sanitizes() {
 #[test]
 fn python_relative_only_sanitizes() {
     assert_clean("python", "safe_relative_redirect.py");
+}
+
+#[test]
+fn python_host_allowlist_sanitizes() {
+    assert_clean("python", "safe_host_allowlist_redirect.py");
 }
 
 #[test]

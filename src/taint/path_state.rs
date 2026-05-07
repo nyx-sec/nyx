@@ -40,6 +40,16 @@ pub enum PredicateKind {
     /// Mirrors [`ShellMetaValidated`](Self::ShellMetaValidated) but with
     /// non-inverted polarity (true branch is the validated path).
     RelativeUrlValidated,
+    /// Inline URL-parse + host-allowlist validation:
+    /// `new URL(x).host === ALLOWED` (JS/TS),
+    /// `urlparse(x).netloc == ALLOWED` (Python),
+    /// `urlparse(x).hostname in ALLOWED_HOSTS` (Python).
+    /// The TRUE branch constrains the parsed URL's host to a developer-chosen
+    /// allowlist value, the canonical multi-statement open-redirect sanitiser
+    /// for absolute URLs.  Cap-aware: clears
+    /// [`crate::labels::Cap::OPEN_REDIRECT`] only on the validated branch so
+    /// non-redirect sinks downstream still fire on residual taint.
+    HostAllowlistValidated,
     /// Bounded-length rejection: `x.len() > N` / `x.length < N` with N >= 2.
     ///
     /// Commonly paired with `ShellMetaValidated` in OR-chain rejection
@@ -302,6 +312,76 @@ fn is_leading_slash_check(text: &str) -> bool {
     false
 }
 
+/// Check whether `text` is an inline URL-parse + host-allowlist validation.
+///
+/// Recognises the canonical multi-statement open-redirect sanitiser shapes:
+///
+/// * `new URL(<X>).host === ALLOWED` / `new URL(<X>).hostname === ALLOWED`
+///   / `new URL(<X>).origin === ALLOWED` (JS/TS) — accepts `==` and `===`.
+/// * `urlparse(<X>).netloc == ALLOWED` / `urlparse(<X>).hostname == ALLOWED`
+///   (Python `urllib.parse.urlparse` and the `urlparse.urlparse` legacy alias)
+///   — accepts `==`.
+/// * `urllib.parse.urlparse(<X>).netloc == ALLOWED` (qualified Python form).
+///
+/// The right-hand side may be a string literal or a bare identifier
+/// (`ALLOWED_HOST` / `cfg.allowed_origin`) — what matters is that the
+/// validation pins the parsed host to one fixed value, locking off the
+/// scheme/authority that would otherwise let the redirect leave the trusted
+/// origin.  The membership form
+/// `ALLOWED_HOSTS.includes(new URL(<X>).host)` / `urlparse(<X>).host in ALLOWED`
+/// is intentionally NOT recognised here, those fall through to
+/// `AllowlistCheck` whose generic validated-must mechanic already clears
+/// every cap for the matched receiver / member token.
+///
+/// Conservative: requires both the parse-call AND the `.host`-style accessor
+/// AND the equality operator in the same condition text.  Negation prefixes
+/// are not stripped, the caller's polarity-inversion machinery handles
+/// `!`-wrapped forms uniformly.
+fn is_host_allowlist_check(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    // Need an equality operator so we know the host is being pinned to a
+    // specific allowed value (not e.g. assigned, indexed, or used as a key).
+    if !(lower.contains("==") || lower.contains("!=")) {
+        return false;
+    }
+    let has_parse_call = lower.contains("new url(")
+        || lower.contains("urlparse(")
+        || lower.contains("url.parse(")
+        || lower.contains("urllib.parse.urlparse(");
+    if !has_parse_call {
+        return false;
+    }
+    // Need a host-style accessor on the parse result.
+    lower.contains(".host") || lower.contains(".hostname") || lower.contains(".netloc") || lower.contains(".origin")
+}
+
+/// Extract the parse-call argument from a host-allowlist condition.
+///
+/// Recognises `new URL(<X>)`, `urlparse(<X>)`, `URL.parse(<X>)`,
+/// `urllib.parse.urlparse(<X>)`.  Returns `Some("X")` when the argument is a
+/// bare identifier (with optional `&` or PHP `$` sigil stripped); returns
+/// `None` for nested expressions / multi-arg calls so branch narrowing
+/// doesn't widen to a non-existent var.  Mirrors the conservative target
+/// shape used by [`extract_validation_target`].
+fn extract_host_allowlist_target(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    for probe in ["new url(", "urllib.parse.urlparse(", "urlparse(", "url.parse("] {
+        if let Some(idx) = lower.find(probe) {
+            let args_start = idx + probe.len();
+            if args_start <= text.len() {
+                if let Some(first_arg) = first_call_arg(&text[args_start..]) {
+                    let first_arg = first_arg.strip_prefix('&').unwrap_or(first_arg).trim();
+                    let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
+                    if !first_arg.is_empty() && is_identifier(first_arg) {
+                        return Some(first_arg.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Check whether `text` looks like a bounded-length rejection:
 /// `x.len() > N`, `x.len() < N`, `x.length >= N`, etc. where `N` is an
 /// integer literal >= 2.  Excludes `> 0` / `>= 1` / `< 1`, those are
@@ -463,6 +543,17 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     // AllowlistCheck (which would otherwise capture `.starts_with(`).
     if is_leading_slash_check(text) {
         return PredicateKind::RelativeUrlValidated;
+    }
+
+    // ── Host-allowlist URL-parse validation ─────────────────────────────
+    //
+    // `new URL(x).host === ALLOWED` (JS/TS), `urlparse(x).netloc == ALLOWED`
+    // (Python), etc.  Matched BEFORE AllowlistCheck so the membership form
+    // `ALLOWED.includes(new URL(x).host)` doesn't fall through here, and
+    // BEFORE the generic Comparison branch so the equality operator
+    // doesn't classify generically.
+    if is_host_allowlist_check(text) {
+        return PredicateKind::HostAllowlistValidated;
     }
 
     // ── Allowlist / membership checks ────────────────────────────────────
@@ -692,6 +783,12 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
             // `.starts_with("/")`, or first arg of `strpos($x, "/")`.
             // Same machinery as ShellMetaValidated.
             let target = extract_validation_target(text);
+            (kind, target)
+        }
+        PredicateKind::HostAllowlistValidated => {
+            // Argument of the parse call: `new URL(x).host` → `x`,
+            // `urlparse(x).netloc` → `x`.
+            let target = extract_host_allowlist_target(text);
             (kind, target)
         }
         PredicateKind::Comparison => {
@@ -1872,6 +1969,66 @@ mod tests {
     fn bounded_length_accepts_small_bounds() {
         assert!(is_bounded_length_check("x.len() > 2"));
         assert!(is_bounded_length_check("x.len() <= 256"));
+    }
+
+    // ── HostAllowlistValidated ────────────────────────────────────────────
+
+    #[test]
+    fn classify_host_allowlist_js_strict_eq() {
+        assert_eq!(
+            classify_condition("new URL(target).host === ALLOWED_HOST"),
+            PredicateKind::HostAllowlistValidated
+        );
+        assert_eq!(
+            classify_condition("new URL(target).hostname === \"trusted.example.com\""),
+            PredicateKind::HostAllowlistValidated
+        );
+        assert_eq!(
+            classify_condition("new URL(target).origin === ALLOWED_ORIGIN"),
+            PredicateKind::HostAllowlistValidated
+        );
+    }
+
+    #[test]
+    fn classify_host_allowlist_python_urlparse() {
+        assert_eq!(
+            classify_condition("urlparse(target).netloc == ALLOWED_HOST"),
+            PredicateKind::HostAllowlistValidated
+        );
+        assert_eq!(
+            classify_condition("urllib.parse.urlparse(target).hostname == \"trusted.example.com\""),
+            PredicateKind::HostAllowlistValidated
+        );
+    }
+
+    #[test]
+    fn target_host_allowlist_extracts_parse_arg_js() {
+        let (kind, target) =
+            classify_condition_with_target("new URL(target).host === ALLOWED_HOST");
+        assert_eq!(kind, PredicateKind::HostAllowlistValidated);
+        assert_eq!(target.as_deref(), Some("target"));
+    }
+
+    #[test]
+    fn target_host_allowlist_extracts_parse_arg_python() {
+        let (kind, target) =
+            classify_condition_with_target("urlparse(target).netloc == ALLOWED_HOST");
+        assert_eq!(kind, PredicateKind::HostAllowlistValidated);
+        assert_eq!(target.as_deref(), Some("target"));
+    }
+
+    #[test]
+    fn host_allowlist_requires_parse_call() {
+        // Bare `.host == X` without a parse call is not host-allowlist.
+        let kind = classify_condition("u.host == ALLOWED_HOST");
+        assert_ne!(kind, PredicateKind::HostAllowlistValidated);
+    }
+
+    #[test]
+    fn host_allowlist_requires_equality_op() {
+        // `new URL(x)` without an equality op is not host-allowlist.
+        let kind = classify_condition("new URL(target).host");
+        assert_ne!(kind, PredicateKind::HostAllowlistValidated);
     }
 }
 

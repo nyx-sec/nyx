@@ -1257,6 +1257,47 @@ fn apply_branch_predicates(
         }
     }
 
+    // HostAllowlistValidated: TRUE branch is the validated path
+    // (`new URL(x).host === ALLOWED` succeeded → `x` cannot redirect off-host).
+    // Cap-aware: clear `Cap::OPEN_REDIRECT` only; non-redirect sinks downstream
+    // still fire on the residual taint caps.  Mirrors the
+    // `RelativeUrlValidated` handler exactly, the only difference is the
+    // recogniser shape (multi-statement parse + host comparison instead of
+    // inline leading-slash check).
+    if kind == PredicateKind::HostAllowlistValidated && polarity {
+        for var in condition_vars {
+            let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
+            for (val, _) in state.values.iter() {
+                if let Some(name) = ssa
+                    .value_defs
+                    .get(val.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                {
+                    if name == var {
+                        to_clear.push(*val);
+                    }
+                }
+            }
+            for val in to_clear {
+                if let Some(taint) = state.get(val).cloned() {
+                    let new_caps = taint.caps & !Cap::OPEN_REDIRECT;
+                    if new_caps.is_empty() {
+                        state.remove(val);
+                    } else {
+                        state.set(
+                            val,
+                            VarTaint {
+                                caps: new_caps,
+                                origins: taint.origins,
+                                uses_summary: taint.uses_summary,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ShellMetaValidated: inverted polarity, the FALSE branch (no metachar
     // found) is the validated path; the TRUE branch is the rejection path.
     //

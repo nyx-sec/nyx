@@ -128,6 +128,25 @@ fn java_irrelevant_xml_call_clean() {
     assert_clean("java", "IrrelevantXmlCall.java");
 }
 
+/// Log4Shell XXE-leg shape (CVE-2022-23305 / CVE-2022-23307 lineage):
+/// DOMConfigurator-style loader takes an XML config path from the
+/// request, parses through an unhardened `DocumentBuilder`.  Exercises
+/// the TypeFacts-tagged builder receiver + xml_config sidecar end-to-end.
+#[test]
+fn java_log4j_config_loader_with_tainted_path_fires() {
+    assert_unsafe("java", "UnsafeLog4jConfig.java");
+}
+
+/// Log4Shell XXE-leg hardened: same DOMConfigurator-style loader but
+/// `factory.setFeature(FEATURE_SECURE_PROCESSING, true)` and
+/// `disallow-doctype-decl` precede the `newDocumentBuilder()` call.
+/// xml_config sidecar propagates the hardening fact to the builder so
+/// the parse sink suppresses the XXE bit.
+#[test]
+fn java_log4j_config_loader_secure_processing_clean() {
+    assert_clean("java", "SafeLog4jConfig.java");
+}
+
 #[test]
 fn python_sax_parse_with_tainted_xml_fires() {
     assert_unsafe("python", "unsafe_xxe.py");
