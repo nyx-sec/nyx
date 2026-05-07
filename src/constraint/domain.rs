@@ -113,13 +113,13 @@ impl ConstValue {
 
 // ── TypeSet ─────────────────────────────────────────────────────────────
 
-/// Bitset over [`TypeKind`] variants (17 bits used of u32).
+/// Bitset over [`TypeKind`] variants (19 bits used of u32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TypeSet(u32);
 
 impl TypeSet {
-    /// All 17 type bits set, no type constraint (Top).
-    pub const TOP: Self = Self(0x0001_FFFF);
+    /// All 19 type bits set, no type constraint (Top).
+    pub const TOP: Self = Self(0x0007_FFFF);
     /// No type bits, unsatisfiable (Bottom).
     pub const BOTTOM: Self = Self(0);
 
