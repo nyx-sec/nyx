@@ -105,6 +105,18 @@ pub struct SsaTaintTransfer<'a> {
     /// Type facts from type analysis.
     /// Used for type-aware sink filtering (e.g., suppress SQL injection for int-typed values).
     pub type_facts: Option<&'a crate::ssa::type_facts::TypeFactResult>,
+    /// XML-parser config facts. Used to suppress XXE bits at parse-class
+    /// sinks whose receiver was provably hardened
+    /// (`setFeature(FEATURE_SECURE_PROCESSING, true)`, etc.).  Strictly
+    /// additive: `None` falls back to the existing flat / gated XXE
+    /// classification.
+    pub xml_parser_config: Option<&'a crate::ssa::xml_config::XmlParserConfigResult>,
+    /// XPath-receiver config facts.  Used to suppress XPATH_INJECTION at
+    /// `evaluate` / `compile` sinks whose receiver was provably bound to
+    /// an `XPathVariableResolver` (parameterised-XPath shape).  Strictly
+    /// additive: `None` falls back to the existing flat / gated XPATH
+    /// classification.
+    pub xpath_config: Option<&'a crate::ssa::xpath_config::XPathConfigResult>,
     /// Precise per-function SSA summaries for intra-file callee resolution.
     /// Checked before legacy FuncSummary resolution.
     ///
@@ -1207,6 +1219,85 @@ fn apply_branch_predicates(
         }
     }
 
+    // RelativeUrlValidated: TRUE branch is the validated path
+    // (`x.startsWith("/")` succeeded → `x` cannot redirect off-host).
+    // Cap-aware: clear `Cap::OPEN_REDIRECT` only; non-redirect sinks
+    // (XSS / SQLi / FILE_IO) downstream still fire on residual taint.
+    if kind == PredicateKind::RelativeUrlValidated && polarity {
+        for var in condition_vars {
+            let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
+            for (val, _) in state.values.iter() {
+                if let Some(name) = ssa
+                    .value_defs
+                    .get(val.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                {
+                    if name == var {
+                        to_clear.push(*val);
+                    }
+                }
+            }
+            for val in to_clear {
+                if let Some(taint) = state.get(val).cloned() {
+                    let new_caps = taint.caps & !Cap::OPEN_REDIRECT;
+                    if new_caps.is_empty() {
+                        state.remove(val);
+                    } else {
+                        state.set(
+                            val,
+                            VarTaint {
+                                caps: new_caps,
+                                origins: taint.origins,
+                                uses_summary: taint.uses_summary,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // HostAllowlistValidated: TRUE branch is the validated path
+    // (`new URL(x).host === ALLOWED` succeeded → `x` cannot redirect off-host).
+    // Cap-aware: clear `Cap::OPEN_REDIRECT` only; non-redirect sinks downstream
+    // still fire on the residual taint caps.  Mirrors the
+    // `RelativeUrlValidated` handler exactly, the only difference is the
+    // recogniser shape (multi-statement parse + host comparison instead of
+    // inline leading-slash check).
+    if kind == PredicateKind::HostAllowlistValidated && polarity {
+        for var in condition_vars {
+            let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
+            for (val, _) in state.values.iter() {
+                if let Some(name) = ssa
+                    .value_defs
+                    .get(val.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                {
+                    if name == var {
+                        to_clear.push(*val);
+                    }
+                }
+            }
+            for val in to_clear {
+                if let Some(taint) = state.get(val).cloned() {
+                    let new_caps = taint.caps & !Cap::OPEN_REDIRECT;
+                    if new_caps.is_empty() {
+                        state.remove(val);
+                    } else {
+                        state.set(
+                            val,
+                            VarTaint {
+                                caps: new_caps,
+                                origins: taint.origins,
+                                uses_summary: taint.uses_summary,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ShellMetaValidated: inverted polarity, the FALSE branch (no metachar
     // found) is the validated path; the TRUE branch is the rejection path.
     //
@@ -2203,6 +2294,8 @@ fn inline_analyse_callee(
         receiver_seed: receiver_seed.as_ref(),
         const_values: Some(&callee_body.opt.const_values),
         type_facts: Some(&callee_body.opt.type_facts),
+        xml_parser_config: Some(&callee_body.opt.xml_parser_config),
+        xpath_config: Some(&callee_body.opt.xpath_config),
         ssa_summaries: transfer.ssa_summaries,
         extra_labels: transfer.extra_labels,
         base_aliases: Some(&callee_body.opt.alias_result),
@@ -5891,6 +5984,34 @@ fn collect_block_events(
             sink_caps &= !Cap::DATA_EXFIL;
         }
 
+        // Receiver-type-incompatibility stripping.  When the receiver's type
+        // proves a structurally-attached cap cannot apply (e.g. an
+        // `LdapClient` receiver carrying an `HTML_ESCAPE` Sink label that was
+        // attached to the CFG node by a `*.send`/`*.json`-style suffix
+        // matcher), drop the offending bits *before* the type-qualified-
+        // resolution branch below, so that branch is reachable on the
+        // remaining empty `sink_caps` and can re-anchor a precise sink class
+        // (`LdapClient.search` → `Cap::LDAP_INJECTION`).  Both the
+        // flow-sensitive type from `path_env` and the static type from
+        // `type_facts` are consulted; the static path is what enables
+        // closure-captured receivers (parent body → child body via
+        // [`crate::taint::inject_external_type_facts`]) to participate.
+        if let SsaOp::Call {
+            receiver: Some(rv), ..
+        } = &inst.op
+        {
+            if let Some(ref env) = state.path_env {
+                if let Some(kind) = env.get(*rv).types.as_singleton() {
+                    sink_caps &= !receiver_incompatible_sink_caps(&kind, sink_caps);
+                }
+            }
+            if let Some(tf) = transfer.type_facts {
+                if let Some(kind) = tf.get_type(*rv) {
+                    sink_caps &= !receiver_incompatible_sink_caps(kind, sink_caps);
+                }
+            }
+        }
+
         // Type-qualified sink resolution: when normal sink resolution found nothing,
         // try using the receiver's inferred type to construct a qualified callee name.
         if sink_caps.is_empty() {
@@ -5949,6 +6070,39 @@ fn collect_block_events(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // ADD XXE on opt-in. When the receiver was constructed
+        // with an explicit external-entity opt-in
+        // (`new XMLParser({ processEntities: true })`,
+        // `lxml.etree.XMLParser(resolve_entities=True)`), the subsequent
+        // `parser.parse(xml)` is an XXE flow even though the callee
+        // carries no flat XXE rule (fast-xml-parser and lxml are
+        // XXE-safe by default).  Runs BEFORE the empty check below so a
+        // previously-empty sink_caps becomes non-empty and downstream
+        // emission proceeds.  The complementary `xxe_safe` suppress path
+        // still runs after this; a call where the receiver was both
+        // opt-in AND later hardened by a setter results in net-zero
+        // (suppress strips what we added).
+        if let SsaOp::Call {
+            receiver: Some(rv),
+            callee: callee_str,
+            ..
+        } = &inst.op
+        {
+            if let Some(xc) = transfer.xml_parser_config {
+                if xc.is_unsafe_explicit(*rv) {
+                    let suffix = callee_str
+                        .rsplit(['.', ':'])
+                        .next()
+                        .unwrap_or(callee_str.as_str());
+                    // `feed` covers Python lxml incremental parsing
+                    // (`parser.feed(body); parser.close()`).
+                    if matches!(suffix, "parse" | "parseString" | "parseFromString" | "feed") {
+                        sink_caps |= Cap::XXE;
                     }
                 }
             }
@@ -6055,17 +6209,89 @@ fn collect_block_events(
             continue;
         }
 
-        // Receiver type incompatibility check.
-        // If the receiver's flow-sensitive type proves it cannot be the kind
-        // of object the sink expects (e.g., Int receiver → not an HTTP response
-        // sink), strip those sink caps.
-        if let Some(ref env) = state.path_env {
+        if sink_caps.is_empty() {
+            continue;
+        }
+
+        // XXE config-fact suppression.  A parse-class sink whose receiver
+        // was provably hardened (`setFeature(FEATURE_SECURE_PROCESSING,
+        // true)`, `setExpandEntityReferences(false)`, etc.) is not an XXE
+        // flow. Drop the bit before downstream sink emission.  Runs after
+        // type-qualified resolution / module alias resolution so the XXE
+        // bit added by `XmlParser.parse` resolution is visible here.
+        if sink_caps.intersects(Cap::XXE) {
             if let SsaOp::Call {
                 receiver: Some(rv), ..
             } = &inst.op
             {
-                if let Some(kind) = env.get(*rv).types.as_singleton() {
-                    sink_caps &= !receiver_incompatible_sink_caps(&kind, sink_caps);
+                if let Some(xc) = transfer.xml_parser_config {
+                    if crate::ssa::xml_config::xxe_safe(Some(*rv), xc) {
+                        sink_caps &= !Cap::XXE;
+                    }
+                }
+            }
+        }
+        if sink_caps.is_empty() {
+            continue;
+        }
+
+        // XPath resolver-binding suppression.  An XPath `evaluate` /
+        // `compile` sink whose receiver was provably bound to an
+        // `XPathVariableResolver` is treated as parameterised and the
+        // XPATH_INJECTION bit is stripped.  Mirrors the XXE config-fact
+        // shape above.  Only fires when the receiver also carries
+        // `TypeKind::XPathClient` (gates the suppression behind
+        // type-fact disambiguation so a generic `obj.evaluate(...)`
+        // matched as XPATH_INJECTION via name-only labelling does not
+        // accidentally clear).
+        if sink_caps.intersects(Cap::XPATH_INJECTION) {
+            if let SsaOp::Call {
+                receiver: Some(rv), ..
+            } = &inst.op
+            {
+                if let Some(xpc) = transfer.xpath_config {
+                    let receiver_is_xpath = transfer
+                        .type_facts
+                        .and_then(|tf| tf.get_type(*rv))
+                        .map(|kind| matches!(kind, crate::ssa::type_facts::TypeKind::XPathClient))
+                        .unwrap_or(false);
+                    if receiver_is_xpath && crate::ssa::xpath_config::xpath_safe(Some(*rv), xpc) {
+                        sink_caps &= !Cap::XPATH_INJECTION;
+                    }
+                }
+            }
+        }
+        if sink_caps.is_empty() {
+            continue;
+        }
+
+        // Prototype-pollution suppression (flow-sensitive).
+        // `Object.create(null)` produces a `NullPrototypeObject`-typed
+        // value; subscript writes to such an object cannot pollute
+        // `Object.prototype` because there is no prototype chain.
+        // Receiver SsaValue is read off the synthetic `__index_set__`
+        // Call op; phi joins downgrade to `Unknown` via `TypeFact::meet`
+        // so an if/else where only one branch initialises with
+        // `Object.create(null)` keeps the PROTOTYPE_POLLUTION bit on
+        // the unsafe path.
+        if sink_caps.intersects(Cap::PROTOTYPE_POLLUTION) {
+            if let SsaOp::Call {
+                callee,
+                receiver: Some(rv),
+                ..
+            } = &inst.op
+            {
+                if callee == "__index_set__" {
+                    let receiver_is_null_proto = transfer
+                        .type_facts
+                        .and_then(|tf| tf.get_type(*rv))
+                        .map(|kind| {
+                            matches!(kind, crate::ssa::type_facts::TypeKind::NullPrototypeObject)
+                        })
+                        .unwrap_or(false);
+                    if receiver_is_null_proto {
+                        sink_caps &= !Cap::PROTOTYPE_POLLUTION;
+                    }
                 }
             }
         }
@@ -6436,7 +6662,7 @@ fn pick_primary_sink_sites(
         return Vec::new();
     };
     let mut out: Vec<SinkSite> = Vec::new();
-    let mut seen: HashSet<(String, u32, u32, u16)> = HashSet::new();
+    let mut seen: HashSet<(String, u32, u32, u32)> = HashSet::new();
     for (param_idx, sites) in param_to_sink_sites {
         let Some(arg_vals) = args.get(*param_idx) else {
             continue;
@@ -6475,7 +6701,7 @@ fn pick_primary_sink_sites_from_resolved(
         return Vec::new();
     }
     let mut out: Vec<SinkSite> = Vec::new();
-    let mut seen: HashSet<(String, u32, u32, u16)> = HashSet::new();
+    let mut seen: HashSet<(String, u32, u32, u32)> = HashSet::new();
     for (_, sites) in param_to_sink_sites {
         for site in sites {
             if site.line == 0 {
@@ -8127,13 +8353,36 @@ fn type_safe_for_taint_sink(kind: &crate::ssa::type_facts::TypeKind, cap: Cap) -
 fn receiver_incompatible_sink_caps(kind: &crate::ssa::type_facts::TypeKind, sink_caps: Cap) -> Cap {
     use crate::ssa::type_facts::TypeKind;
     let mut remove = Cap::empty();
-    // HTML_ESCAPE requires HTTP response-like receiver
-    if sink_caps.intersects(Cap::HTML_ESCAPE) {
+    // HTML_ESCAPE / OPEN_REDIRECT / HEADER_INJECTION all require an HTTP
+    // response-like receiver: each is a write-side rule that fires when
+    // attacker data is rendered into / written onto the response stream
+    // (`*.send` / `*.redirect` / `*.setHeader` / etc.).  Receivers proven
+    // to be a different class — directory-service connections (LDAP),
+    // database connections, file handles, in-memory collections, query-
+    // builder objects, URL values, HTTP clients (request-side), and so on
+    // — cannot host these sinks even when a same-named matcher
+    // (`*.send`, `*.set`, `*.append`) attaches the label by suffix.
+    let response_like_caps = Cap::HTML_ESCAPE | Cap::OPEN_REDIRECT | Cap::HEADER_INJECTION;
+    if sink_caps.intersects(response_like_caps) {
         match kind {
             TypeKind::HttpResponse => {}               // compatible
             TypeKind::Unknown | TypeKind::Object => {} // could be response
             _ => {
-                remove |= Cap::HTML_ESCAPE;
+                remove |= sink_caps & response_like_caps;
+            }
+        }
+    }
+    // LDAP_INJECTION strictly requires a directory-service receiver.
+    // Non-LdapClient receivers carrying the cap by accident (e.g. a
+    // generic `*.search` suffix matcher firing on a Vec/HashMap) get the
+    // bit stripped.  Unknown/Object stay untouched so type-fact gaps
+    // don't silently drop real sinks.
+    if sink_caps.intersects(Cap::LDAP_INJECTION) {
+        match kind {
+            TypeKind::LdapClient => {}                 // compatible
+            TypeKind::Unknown | TypeKind::Object => {} // could be ldap
+            _ => {
+                remove |= Cap::LDAP_INJECTION;
             }
         }
     }
@@ -9364,7 +9613,7 @@ fn resolve_callee_full(
     }
 
     // 0.5) Cross-file SSA summaries (GlobalSummaries.ssa_by_key) with
-    // optional Phase-6 hierarchy fan-out.
+    // optional class-hierarchy fan-out.
     //
     // When the call has an authoritative receiver type AND
     // `GlobalSummaries::install_hierarchy` has been called AND the
@@ -9468,7 +9717,7 @@ fn resolve_callee_full(
         }
     }
 
-    // 2) Global same-language (FuncSummary path) with Phase-6 hierarchy
+    // 2) Global same-language (FuncSummary path) with class-hierarchy
     // fan-out.  Same semantics as step 0.5 but on coarse FuncSummary
     // entries, the SSA path missed because no implementer had an SSA
     // summary, so we widen the FuncSummary lookup symmetrically.

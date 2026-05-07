@@ -66,6 +66,17 @@ pub enum GateActivation {
     /// selects which attribute is being set) and `parseFromString` (activation
     /// arg selects the MIME type).
     ValueMatch,
+    /// Strict literal-value activation.  The gate fires only when the
+    /// activation arg is a literal that matches `dangerous_values` /
+    /// `dangerous_prefixes`.  Unknown/dynamic activation arg suppresses
+    /// (no conservative ALL_ARGS_PAYLOAD push).
+    ///
+    /// Used for ambiguously-named matchers where the dangerous shape is
+    /// only identifiable by an explicit literal flag — e.g. bare `extend`
+    /// where the deep-merge form is `extend(true, target, src)` but
+    /// Backbone's `Model.extend({proto})` shares the suffix.  Conservative
+    /// fallback would over-fire on the class-extension form.
+    LiteralOnly,
     /// Destination-bearing flow activation.  The gate fires when taint reaches
     /// a declared destination location at the call site, no literal
     /// inspection, no prefix heuristic.
@@ -156,53 +167,83 @@ bitflags! {
     /// In practice: a finding fires when a tainted value reaches a sink and
     /// `(value_caps & sink_caps) != 0`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Cap: u16 {
+    pub struct Cap: u32 {
         /// Taint that originated from an environment variable read.
         /// Used as a source-origin marker for env-injection rules.
-        const ENV_VAR         = 0b0000_0000_0000_0001;  // bit 0
+        const ENV_VAR              = 1 << 0;
         /// Sanitizer: the value has passed through HTML entity escaping.
         /// Strips XSS risk from values that reach HTML output sinks.
-        const HTML_ESCAPE     = 0b0000_0000_0000_0010;  // bit 1
+        const HTML_ESCAPE          = 1 << 1;
         /// Sanitizer: the value has been shell-argument escaped.
         /// Strips command-injection risk before shell sinks.
-        const SHELL_ESCAPE    = 0b0000_0000_0000_0100;  // bit 2
+        const SHELL_ESCAPE         = 1 << 2;
         /// Sanitizer: the value has been percent-encoded for use in a URL.
-        const URL_ENCODE      = 0b0000_0000_0000_1000;  // bit 3
+        const URL_ENCODE           = 1 << 3;
         /// Sanitizer: the value was parsed through a structured JSON decoder
         /// (as opposed to `eval`-based or regex parsing).
-        const JSON_PARSE      = 0b0000_0000_0001_0000;  // bit 4
+        const JSON_PARSE           = 1 << 4;
         /// Sink: file system read or write operation (path traversal, arbitrary
         /// file read/write).
-        const FILE_IO         = 0b0000_0000_0010_0000;  // bit 5
+        const FILE_IO              = 1 << 5;
         /// Sink: format string injection (e.g. `printf`-family, `String.format`).
-        const FMT_STRING      = 0b0000_0000_0100_0000;  // bit 6
+        const FMT_STRING           = 1 << 6;
         /// Sink: SQL query construction. Fires for string-concatenated queries
         /// and parameterized-query builders where the query text itself is tainted.
-        const SQL_QUERY       = 0b0000_0000_1000_0000;  // bit 7
+        const SQL_QUERY            = 1 << 7;
         /// Sink: unsafe object deserialization (Java `ObjectInputStream`,
         /// Python `pickle`, Ruby `Marshal`, PHP `unserialize`, etc.).
-        const DESERIALIZE     = 0b0000_0001_0000_0000;  // bit 8
+        const DESERIALIZE          = 1 << 8;
         /// Sink: server-side request forgery. Fires when attacker-controlled
         /// data reaches the destination URL of an outbound HTTP request.
-        const SSRF            = 0b0000_0010_0000_0000;  // bit 9
+        const SSRF                 = 1 << 9;
         /// Sink: code or command execution (shell injection, `eval`, `exec`,
         /// dynamic `require`/`import`, template injection).
-        const CODE_EXEC       = 0b0000_0100_0000_0000;  // bit 10
+        const CODE_EXEC            = 1 << 10;
         /// Sink: cryptographic operation with a tainted algorithm name or seed
         /// (weak-crypto / predictable-randomness patterns).
-        const CRYPTO          = 0b0000_1000_0000_0000;  // bit 11
+        const CRYPTO               = 1 << 11;
         /// Request-bound, caller-supplied identifier that has not yet been
         /// validated against an ownership/membership check.  Used as the
         /// carrier cap for folding `auth_analysis` into the SSA/taint
         /// engine.
-        const UNAUTHORIZED_ID = 0b0001_0000_0000_0000;  // bit 12
+        const UNAUTHORIZED_ID      = 1 << 12;
         /// Cross-boundary data-exfiltration: tainted sensitive data flowing
         /// into outbound request bodies, headers, or other payload-bearing
         /// fields of network egress APIs.  Distinct from `SSRF` (attacker
         /// control over the destination URL), `DATA_EXFIL` fires when the
         /// destination is fixed but attacker-influenced data leaves the
         /// process via the request payload.
-        const DATA_EXFIL      = 0b0010_0000_0000_0000;  // bit 13
+        const DATA_EXFIL           = 1 << 13;
+        /// Sink: LDAP search/query construction. Fires when attacker-controlled
+        /// data reaches a directory-service filter or DN argument without
+        /// LDAP-filter escaping.
+        const LDAP_INJECTION       = 1 << 14;
+        /// Sink: XPath expression construction. Fires when attacker-controlled
+        /// data is concatenated into an XPath query rather than passed via
+        /// XPath variable bindings.
+        const XPATH_INJECTION      = 1 << 15;
+        /// Sink: HTTP response header value (or any CRLF-sensitive output).
+        /// Fires when attacker-controlled data lands in a `Set-Header` /
+        /// header-add call without `\r\n` stripping (response splitting).
+        const HEADER_INJECTION     = 1 << 16;
+        /// Sink: redirect / `Location` header destination. Fires when an
+        /// attacker-controlled URL reaches a redirect call without an
+        /// allowlist or relative-URL check.
+        const OPEN_REDIRECT        = 1 << 17;
+        /// Sink: server-side template injection. Fires when the **template
+        /// source string** itself is attacker-controlled (e.g.
+        /// `Template(user_input).render()`), distinct from rendering a
+        /// trusted template with tainted variables.
+        const SSTI                 = 1 << 18;
+        /// Sink: XML external entity resolution. Fires when attacker-controlled
+        /// XML reaches a parser configured to resolve external entities (or
+        /// missing the secure-processing feature).
+        const XXE                  = 1 << 19;
+        /// Sink: prototype pollution. Fires when an attacker-controlled key
+        /// reaches an object property assignment that can mutate
+        /// `Object.prototype` (`__proto__`, `constructor.prototype`, deep-merge
+        /// helpers).
+        const PROTOTYPE_POLLUTION  = 1 << 20;
     }
 }
 
@@ -214,14 +255,18 @@ impl Default for Cap {
 
 impl serde::Serialize for Cap {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_u16(self.bits())
+        s.serialize_u32(self.bits())
     }
 }
 
 impl<'de> serde::Deserialize<'de> for Cap {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let bits = u16::deserialize(d)?;
-        Ok(Cap::from_bits_truncate(bits))
+        // Accept any unsigned integer width (existing JSON written with the
+        // u16 representation must continue to deserialise into the widened
+        // u32 cap field). serde-json hands these through `deserialize_u64`;
+        // the truncating cast preserves all currently-defined cap bits.
+        let bits = u64::deserialize(d)?;
+        Ok(Cap::from_bits_truncate(bits as u32))
     }
 }
 
@@ -370,15 +415,45 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     m.insert("js", javascript::GATED_SINKS);
     m.insert("typescript", typescript::GATED_SINKS);
     m.insert("ts", typescript::GATED_SINKS);
-    m.insert("python", python::GATED_SINKS);
-    m.insert("py", python::GATED_SINKS);
+
+    // Python prototype-pollution gates are opt-in: `dict.update(target,
+    // src)` overlaps too broadly with non-pollution use of `update`
+    // (Counter, namespaced state mutation) to ship as a default sink.
+    // The `NYX_PYTHON_PROTO_POLLUTION` env var enables them; when set
+    // the merged slice is leaked into a `'static` reference so the
+    // registry's lifetime invariant holds.
+    let python_gates: &'static [SinkGate] = if env_python_proto_pollution() {
+        let mut combined: Vec<SinkGate> = python::GATED_SINKS.to_vec();
+        combined.extend_from_slice(python::PROTO_POLLUTION_GATES);
+        Box::leak(combined.into_boxed_slice())
+    } else {
+        python::GATED_SINKS
+    };
+    m.insert("python", python_gates);
+    m.insert("py", python_gates);
+
     m.insert("go", go::GATED_SINKS);
     m.insert("php", php::GATED_SINKS);
     m.insert("c", c::GATED_SINKS);
     m.insert("cpp", cpp::GATED_SINKS);
     m.insert("c++", cpp::GATED_SINKS);
+    m.insert("ruby", ruby::GATED_SINKS);
+    m.insert("rb", ruby::GATED_SINKS);
+    m.insert("java", java::GATED_SINKS);
+    m.insert("rust", rust::GATED_SINKS);
+    m.insert("rs", rust::GATED_SINKS);
     m
 });
+
+/// Feature flag for the Python prototype-pollution gates.  Disabled by
+/// default; set `NYX_PYTHON_PROTO_POLLUTION=1` (or `true`) to enable
+/// `dict.update` / `__dict__.update` proto-pollution detection.
+fn env_python_proto_pollution() -> bool {
+    matches!(
+        std::env::var("NYX_PYTHON_PROTO_POLLUTION").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
+    )
+}
 
 /// Per-language exclusion patterns: callee text that must never be classified.
 static EXCLUDES: Lazy<HashMap<&'static str, &'static [&'static str]>> = Lazy::new(|| {
@@ -725,6 +800,13 @@ pub fn parse_cap(s: &str) -> Option<Cap> {
         "crypto" => Some(Cap::CRYPTO),
         "unauthorized_id" => Some(Cap::UNAUTHORIZED_ID),
         "data_exfil" | "data_exfiltration" => Some(Cap::DATA_EXFIL),
+        "ldap_injection" | "ldapi" => Some(Cap::LDAP_INJECTION),
+        "xpath_injection" | "xpathi" => Some(Cap::XPATH_INJECTION),
+        "header_injection" | "crlf" | "response_splitting" => Some(Cap::HEADER_INJECTION),
+        "open_redirect" | "redirect" => Some(Cap::OPEN_REDIRECT),
+        "ssti" | "template_injection" => Some(Cap::SSTI),
+        "xxe" => Some(Cap::XXE),
+        "prototype_pollution" | "proto_pollution" => Some(Cap::PROTOTYPE_POLLUTION),
         "all" => Some(Cap::all()),
         _ => None,
     }
@@ -1274,7 +1356,15 @@ pub fn classify_gated_sink(
             // where `userAttr` is user-controlled) is itself a vulnerability
             // path. Return ALL_ARGS_PAYLOAD so downstream sink scanning
             // considers every positional argument.
+            //
+            // `LiteralOnly` opts out of this conservative branch: the gate
+            // requires positive literal evidence to fire, so unknown
+            // activation suppresses entirely (avoids false positives on
+            // ambiguously-named suffix matchers like bare `extend`).
             None => {
+                if matches!(gate.activation, GateActivation::LiteralOnly) {
+                    continue;
+                }
                 out.push(GateMatch {
                     label: gate.label,
                     payload_args: ALL_ARGS_PAYLOAD,
@@ -1396,8 +1486,281 @@ pub fn cap_to_name(cap: Cap) -> &'static str {
         Cap::CODE_EXEC => "code_exec",
         Cap::CRYPTO => "crypto",
         Cap::UNAUTHORIZED_ID => "unauthorized_id",
+        Cap::DATA_EXFIL => "data_exfil",
+        Cap::LDAP_INJECTION => "ldap_injection",
+        Cap::XPATH_INJECTION => "xpath_injection",
+        Cap::HEADER_INJECTION => "header_injection",
+        Cap::OPEN_REDIRECT => "open_redirect",
+        Cap::SSTI => "ssti",
+        Cap::XXE => "xxe",
+        Cap::PROTOTYPE_POLLUTION => "prototype_pollution",
         _ => "unknown",
     }
+}
+
+// ── Cap rule registry ────────────────────────────────────────────────────
+//
+// Static, single-source-of-truth metadata table keyed by [`Cap`].  Every
+// vulnerability class with its own canonical rule id appears here; the
+// per-language `RULES` arrays only carry the language-specific match shapes.
+// Sink-cap fields on a finding (or `Cap::DATA_EXFIL` carried alongside) feed
+// `cap_rule_meta()` to pick the rule id surfaced to SARIF, the dashboard,
+// and `enumerate_builtin_rules()` for `nyx rules list`.
+
+/// Static metadata for one cap-defined vulnerability class.
+#[derive(Debug, Clone, Copy)]
+pub struct CapRuleMeta {
+    pub cap: Cap,
+    /// Canonical rule id surfaced by finding emission (no source-suffix).
+    pub rule_id: &'static str,
+    /// Display title for `nyx rules list` and dashboard.
+    pub title: &'static str,
+    pub severity: crate::patterns::Severity,
+    /// OWASP 2021 code (e.g. `"A03"`).
+    pub owasp_code: &'static str,
+    /// OWASP 2021 long label (e.g. `"Injection"`).
+    pub owasp_label: &'static str,
+    pub description: &'static str,
+    /// `false` only for caps gated behind a config flag (e.g.
+    /// `Cap::UNAUTHORIZED_ID`, which still defers to the standalone
+    /// `auth_analysis` subsystem unless `enable_auth_as_taint` is on).
+    pub default_enabled: bool,
+    /// Whether the diag-id emission path in `ast.rs` actually surfaces
+    /// findings under [`Self::rule_id`].  When `false`, sink findings
+    /// for this cap currently surface under the legacy
+    /// `taint-unsanitised-flow` id (the per-language family-token
+    /// dispatch in [`crate::server::owasp::owasp_bucket_for`] still
+    /// buckets them correctly).  Dashboards and `nyx rules list` consume
+    /// this flag to decide whether to surface the synthetic class entry
+    /// alongside live findings or hide it as forward-declared.
+    ///
+    /// Migrating a cap from `false` → `true` requires adding it to the
+    /// cap-specific routing list in `ast.rs::diag_for_finding`; tests
+    /// that pin the legacy `taint-unsanitised-flow` rule id for that
+    /// cap must be updated to the cap-specific id.
+    pub emission_active: bool,
+}
+
+/// Registry of cap-class metadata.  Keyed in cap-bit order so additions
+/// stay clustered with their bitflag declarations.
+pub static CAP_RULE_REGISTRY: &[CapRuleMeta] = &[
+    CapRuleMeta {
+        cap: Cap::FILE_IO,
+        rule_id: "taint-path-traversal",
+        title: "Path Traversal / Arbitrary File Access",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A01",
+        owasp_label: "Broken Access Control",
+        description: "Attacker-controlled data flows into a filesystem path without canonicalisation \
+             or root-confinement, allowing reads or writes outside the intended directory.",
+        default_enabled: true,
+        emission_active: false,
+    },
+    CapRuleMeta {
+        cap: Cap::FMT_STRING,
+        rule_id: "taint-format-string",
+        title: "Format String Injection",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A03",
+        owasp_label: "Injection",
+        description: "Attacker-controlled data is used as a format string argument (printf-family, \
+             String.format) and can leak memory or crash the process.",
+        default_enabled: true,
+        emission_active: false,
+    },
+    CapRuleMeta {
+        cap: Cap::SQL_QUERY,
+        rule_id: "taint-sql-injection",
+        title: "SQL Injection",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A03",
+        owasp_label: "Injection",
+        description: "Attacker-controlled data is concatenated into a SQL query string instead of \
+             being bound through a parameterised statement.",
+        default_enabled: true,
+        emission_active: false,
+    },
+    CapRuleMeta {
+        cap: Cap::DESERIALIZE,
+        rule_id: "taint-deserialization",
+        title: "Unsafe Deserialization",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A08",
+        owasp_label: "Software and Data Integrity Failures",
+        description: "Attacker-controlled bytes are fed to an unsafe object deserialiser \
+             (pickle, ObjectInputStream, Marshal, unserialize) enabling arbitrary code \
+             execution via crafted payloads.",
+        default_enabled: true,
+        emission_active: false,
+    },
+    CapRuleMeta {
+        cap: Cap::SSRF,
+        rule_id: "taint-ssrf",
+        title: "Server-Side Request Forgery",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A10",
+        owasp_label: "Server-Side Request Forgery",
+        description: "Attacker-controlled URL reaches the destination of an outbound HTTP request \
+             without an allowlist or scheme/host restriction.",
+        default_enabled: true,
+        emission_active: false,
+    },
+    CapRuleMeta {
+        cap: Cap::CODE_EXEC,
+        rule_id: "taint-code-execution",
+        title: "Code / Command Execution",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A03",
+        owasp_label: "Injection",
+        description: "Attacker-controlled data reaches an `eval`/`exec`/shell sink, dynamic \
+             require/import, or other arbitrary-code construct.",
+        default_enabled: true,
+        emission_active: false,
+    },
+    CapRuleMeta {
+        cap: Cap::CRYPTO,
+        rule_id: "taint-crypto-misuse",
+        title: "Tainted Cryptographic Parameter",
+        severity: crate::patterns::Severity::Medium,
+        owasp_code: "A02",
+        owasp_label: "Cryptographic Failures",
+        description: "Attacker-controlled data drives the algorithm name, key, or seed of a \
+             cryptographic primitive (weak-crypto / predictable-randomness).",
+        default_enabled: true,
+        emission_active: false,
+    },
+    CapRuleMeta {
+        cap: Cap::UNAUTHORIZED_ID,
+        rule_id: "rs.auth.missing_ownership_check.taint",
+        title: "Missing Ownership Check (taint variant)",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A01",
+        owasp_label: "Broken Access Control",
+        description: "Request-bound identifier reaches a privileged sink without an intervening \
+             ownership/membership check.  Companion to the standalone `auth_analysis` \
+             rule; gated by `scanner.enable_auth_as_taint`.",
+        default_enabled: false,
+        emission_active: true,
+    },
+    CapRuleMeta {
+        cap: Cap::DATA_EXFIL,
+        rule_id: "taint-data-exfiltration",
+        title: "Sensitive Data Exfiltration",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A04",
+        owasp_label: "Insecure Design",
+        description: "Sensitive data (cookies, headers, env, db rows, files) flows into the body, \
+             headers, or other payload field of an outbound network request to a fixed \
+             destination.",
+        default_enabled: true,
+        emission_active: true,
+    },
+    // ── Cap-specific rule ids ────────────────────────────────────────────
+    CapRuleMeta {
+        cap: Cap::LDAP_INJECTION,
+        rule_id: "taint-ldap-injection",
+        title: "LDAP Injection",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A03",
+        owasp_label: "Injection",
+        description: "Attacker-controlled data is concatenated into an LDAP filter or DN without \
+             RFC 4515 escaping, letting the attacker rewrite the directory query.",
+        default_enabled: true,
+        emission_active: true,
+    },
+    CapRuleMeta {
+        cap: Cap::XPATH_INJECTION,
+        rule_id: "taint-xpath-injection",
+        title: "XPath Injection",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A03",
+        owasp_label: "Injection",
+        description: "Attacker-controlled data is concatenated into an XPath expression instead of \
+             passed through XPath variable bindings, letting the attacker rewrite the \
+             query.",
+        default_enabled: true,
+        emission_active: true,
+    },
+    CapRuleMeta {
+        cap: Cap::HEADER_INJECTION,
+        rule_id: "taint-header-injection",
+        title: "HTTP Header / Response Splitting",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A03",
+        owasp_label: "Injection",
+        description: "Attacker-controlled data lands in an HTTP response header without `\\r\\n` \
+             stripping, enabling response splitting and cache-poisoning attacks.",
+        default_enabled: true,
+        emission_active: true,
+    },
+    CapRuleMeta {
+        cap: Cap::OPEN_REDIRECT,
+        rule_id: "taint-open-redirect",
+        title: "Open Redirect",
+        severity: crate::patterns::Severity::Medium,
+        owasp_code: "A01",
+        owasp_label: "Broken Access Control",
+        description: "Attacker-controlled URL drives a redirect / `Location` header without an \
+             allowlist or relative-URL check, enabling phishing pivots.",
+        default_enabled: true,
+        emission_active: true,
+    },
+    CapRuleMeta {
+        cap: Cap::SSTI,
+        rule_id: "taint-template-injection",
+        title: "Server-Side Template Injection",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A03",
+        owasp_label: "Injection",
+        description: "Attacker controls the template *source string* (not just template variables) \
+             passed to a server-side renderer (Jinja2, Twig, Handlebars, ERB), enabling \
+             arbitrary expression evaluation.",
+        default_enabled: true,
+        emission_active: true,
+    },
+    CapRuleMeta {
+        cap: Cap::XXE,
+        rule_id: "taint-xxe",
+        title: "XML External Entity Resolution",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A05",
+        owasp_label: "Security Misconfiguration",
+        description: "Attacker-controlled XML reaches a parser configured to resolve external \
+             entities (or missing the secure-processing feature), enabling SSRF, file \
+             read, and DoS.",
+        default_enabled: true,
+        emission_active: true,
+    },
+    CapRuleMeta {
+        cap: Cap::PROTOTYPE_POLLUTION,
+        rule_id: "taint-prototype-pollution",
+        title: "Prototype Pollution",
+        severity: crate::patterns::Severity::High,
+        owasp_code: "A05",
+        owasp_label: "Security Misconfiguration",
+        description: "Attacker-controlled key reaches an object property assignment that can mutate \
+             `Object.prototype` (deep-merge / `__proto__` / dynamic subscript).",
+        default_enabled: true,
+        emission_active: true,
+    },
+];
+
+/// Resolve a cap to its canonical rule metadata.  Returns `None` for caps
+/// without a rule-emission role (origin / sanitizer markers like
+/// [`Cap::ENV_VAR`], [`Cap::HTML_ESCAPE`]).
+pub fn cap_rule_meta(cap: Cap) -> Option<&'static CapRuleMeta> {
+    CAP_RULE_REGISTRY.iter().find(|m| m.cap == cap)
+}
+
+/// Resolve any subset of `effective_caps` to a single rule id.  When
+/// multiple bits are set, picks the first registry entry that intersects
+/// (registry order is bit-position).  Returns `None` when no bit in the
+/// set has a registered rule id.
+pub fn rule_id_for_caps(effective_caps: Cap) -> Option<&'static str> {
+    CAP_RULE_REGISTRY
+        .iter()
+        .find(|m| effective_caps.contains(m.cap))
+        .map(|m| m.rule_id)
 }
 
 /// Generate a stable rule ID from language, kind, and matchers.
@@ -1418,17 +1781,52 @@ pub struct RuleInfo {
     pub language: String,
     pub kind: String,
     pub cap: String,
-    pub cap_bits: u16,
+    pub cap_bits: u32,
     pub matchers: Vec<String>,
     pub case_sensitive: bool,
     pub is_custom: bool,
     pub is_gated: bool,
+    /// Cap-class registry entry (one per `Cap` with a canonical rule id),
+    /// distinct from per-language sink/source/sanitizer match rules.  The
+    /// dashboard groups these separately so the rules surface does not mix
+    /// "the LDAP injection class exists" with "Java's `DirContext.search`
+    /// is a sink for that class".
+    pub is_class: bool,
+    /// For class entries (`is_class == true`), whether the diag-id
+    /// emission path in `ast.rs` actually surfaces findings under
+    /// [`Self::id`].  When `false`, the class is registered but live
+    /// findings still emerge under the legacy `taint-unsanitised-flow`
+    /// rule id; dashboards can use this flag to suppress the synthetic
+    /// entry until the cap is migrated to its specific rule id.
+    /// Always `true` for non-class label rules.
+    pub emission_active: bool,
     pub enabled: bool,
 }
 
 /// Enumerate all built-in rules across all languages.
 pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
     let mut out = Vec::new();
+
+    // Cap-class entries (one per registered vulnerability class). Kind
+    // `class` so dashboards can distinguish them from per-language
+    // sink/source/sanitizer entries.
+    for meta in CAP_RULE_REGISTRY {
+        out.push(RuleInfo {
+            id: meta.rule_id.to_string(),
+            title: meta.title.to_string(),
+            language: "all".to_string(),
+            kind: "class".to_string(),
+            cap: cap_to_name(meta.cap).to_string(),
+            cap_bits: meta.cap.bits(),
+            matchers: Vec::new(),
+            case_sensitive: false,
+            is_custom: false,
+            is_gated: false,
+            is_class: true,
+            emission_active: meta.emission_active,
+            enabled: meta.default_enabled,
+        });
+    }
 
     for &lang in CANONICAL_LANGS {
         if let Some(rules) = REGISTRY.get(lang) {
@@ -1453,6 +1851,8 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
                     case_sensitive: rule.case_sensitive,
                     is_custom: false,
                     is_gated: false,
+                    is_class: false,
+                    emission_active: true,
                     enabled: true,
                 });
             }
@@ -1479,6 +1879,8 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
                     case_sensitive: gate.case_sensitive,
                     is_custom: false,
                     is_gated: true,
+                    is_class: false,
+                    emission_active: true,
                     enabled: true,
                 });
             }
@@ -1497,6 +1899,65 @@ pub fn custom_rule_id(lang: &str, kind: &str, matchers: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pin the current set of caps whose `rule_id` is reachable via the
+    /// diag-id routing in `ast.rs::diag_for_finding`.  When migrating a
+    /// legacy cap (e.g. SQL_QUERY → `taint-sql-injection`), update both
+    /// `ast.rs` (add the cap to the cap-specific routing list) and the
+    /// `emission_active: true` flag in `CAP_RULE_REGISTRY`, then update
+    /// this assertion.  The split exists because legacy taint findings
+    /// historically all surfaced under the generic `taint-unsanitised-flow`
+    /// rule id; the seven cap-specific routes (LDAP / XPath / header /
+    /// open redirect / SSTI / XXE / prototype pollution) plus
+    /// `unauthorized_id` and `data_exfil` are the only ones wired through.
+    #[test]
+    fn cap_rule_registry_emission_active_set_is_pinned() {
+        let active: Vec<Cap> = CAP_RULE_REGISTRY
+            .iter()
+            .filter(|m| m.emission_active)
+            .map(|m| m.cap)
+            .collect();
+        let expected = [
+            Cap::UNAUTHORIZED_ID,
+            Cap::DATA_EXFIL,
+            Cap::LDAP_INJECTION,
+            Cap::XPATH_INJECTION,
+            Cap::HEADER_INJECTION,
+            Cap::OPEN_REDIRECT,
+            Cap::SSTI,
+            Cap::XXE,
+            Cap::PROTOTYPE_POLLUTION,
+        ];
+        for c in expected {
+            assert!(
+                active.contains(&c),
+                "cap {:?} expected to be emission_active in CAP_RULE_REGISTRY",
+                c
+            );
+        }
+        let inactive: Vec<Cap> = CAP_RULE_REGISTRY
+            .iter()
+            .filter(|m| !m.emission_active)
+            .map(|m| m.cap)
+            .collect();
+        let expected_inactive = [
+            Cap::FILE_IO,
+            Cap::FMT_STRING,
+            Cap::SQL_QUERY,
+            Cap::DESERIALIZE,
+            Cap::SSRF,
+            Cap::CODE_EXEC,
+            Cap::CRYPTO,
+        ];
+        for c in expected_inactive {
+            assert!(
+                inactive.contains(&c),
+                "cap {:?} expected to be emission_inactive in CAP_RULE_REGISTRY (legacy \
+                 finding still emits as taint-unsanitised-flow)",
+                c
+            );
+        }
+    }
 
     #[test]
     fn receiver_validator_python_relative_to() {
@@ -1781,6 +2242,33 @@ mod tests {
     // from `File.open` / `IO.open` / `URI.open`, each of which has its
     // own non-piping semantics.  Without the sigil, the suffix-with-
     // boundary matcher would over-fire on every `X.open` call.
+    #[test]
+    fn classify_javascript_set_value_is_proto_pollution_gate() {
+        let no_kw = |_: &str| None;
+        let no_kw_present = |_: &str| false;
+        let result = classify_gated_sink("javascript", "setValue", |_| None, no_kw, no_kw_present);
+        assert!(
+            result
+                .iter()
+                .any(|m| m.label == DataLabel::Sink(Cap::PROTOTYPE_POLLUTION)),
+            "expected PROTOTYPE_POLLUTION gate match for bare `setValue`, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn classify_javascript_dot_prop_set_is_proto_pollution_gate() {
+        let no_kw = |_: &str| None;
+        let no_kw_present = |_: &str| false;
+        let result =
+            classify_gated_sink("javascript", "dotProp.set", |_| None, no_kw, no_kw_present);
+        assert!(
+            result
+                .iter()
+                .any(|m| m.label == DataLabel::Sink(Cap::PROTOTYPE_POLLUTION)),
+            "expected PROTOTYPE_POLLUTION gate match for `dotProp.set`, got {result:?}"
+        );
+    }
+
     #[test]
     fn classify_ruby_bare_open_is_shell_escape_sink() {
         let result = classify("ruby", "open", None);
@@ -2419,7 +2907,7 @@ mod tests {
         );
         assert_eq!(
             classify("rust", "Redirect::to(next)", Some(&extras)),
-            Some(DataLabel::Sink(Cap::SSRF)),
+            Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
         );
 
         let empty = rust::framework_rules(&FrameworkContext::default());
@@ -2470,7 +2958,7 @@ mod tests {
         );
         assert_eq!(
             classify("rust", "Redirect::to(next)", Some(&extras)),
-            Some(DataLabel::Sink(Cap::SSRF)),
+            Some(DataLabel::Sink(Cap::OPEN_REDIRECT)),
         );
     }
 }

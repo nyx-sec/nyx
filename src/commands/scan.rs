@@ -544,14 +544,14 @@ pub(crate) fn deduplicate_taint_flows(diags: &mut Vec<Diag>) {
         id.starts_with(TAINT_BASE)
     }
 
-    fn sink_cap_bits(d: &Diag) -> u16 {
+    fn sink_cap_bits(d: &Diag) -> u32 {
         d.evidence.as_ref().map(|e| e.sink_caps).unwrap_or(0)
     }
 
     // Group candidates by (path, line, severity, sink_cap_bits). Only
     // `taint-unsanitised-flow` rule IDs participate; findings with other
     // bases (e.g. `js.code_exec.eval`) are left untouched per guardrails.
-    let mut groups: HashMap<(String, usize, Severity, u16), Vec<usize>> = HashMap::new();
+    let mut groups: HashMap<(String, usize, Severity, u32), Vec<usize>> = HashMap::new();
     for (i, d) in diags.iter().enumerate() {
         if is_taint_flow(&d.id) {
             groups
@@ -690,8 +690,8 @@ pub const SCC_UNCONVERGED_CROSS_FILE_NOTE_PREFIX: &str = "scc_unconverged:cross-
 /// file set.  Semantics match [`diff_cap_snapshots`], a key that
 /// appears or disappears counts as changed.
 fn changed_cap_keys_of(
-    before: &HashMap<crate::symbol::FuncKey, (u16, u16, u16, Vec<usize>)>,
-    after: &HashMap<crate::symbol::FuncKey, (u16, u16, u16, Vec<usize>)>,
+    before: &HashMap<crate::symbol::FuncKey, (u32, u32, u32, Vec<usize>)>,
+    after: &HashMap<crate::symbol::FuncKey, (u32, u32, u32, Vec<usize>)>,
 ) -> HashSet<crate::symbol::FuncKey> {
     let mut changed = HashSet::new();
     for (k, v_after) in after {
@@ -971,10 +971,10 @@ fn run_topo_batches(
             // with a 64-iter budget; the classifier only needs the tail.
             let mut delta_trajectory: smallvec::SmallVec<[u32; 4]> = smallvec::SmallVec::new();
 
-            // Phase-B worklist: files to re-analyse in this iteration.
+            // SCC fixpoint worklist: files to re-analyse in this iteration.
             // Initialised to the full batch so iteration 0 behaves like
-            // the pre-Phase-B implementation; subsequent iterations
-            // prune to files containing a caller of a changed summary.
+            // the unconditional re-analysis; subsequent iterations prune
+            // to files containing a caller of a changed summary.
             //
             // Storing `PathBuf` clones (matching how the rest of the
             // SCC loop identifies files) so membership tests are cheap

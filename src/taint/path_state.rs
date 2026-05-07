@@ -30,6 +30,26 @@ pub enum PredicateKind {
     /// and the **false branch is the validated path**.  Use inverted polarity
     /// when applying branch predicates.
     ShellMetaValidated,
+    /// Inline relative-URL validation: `x.startsWith("/")` / `x.starts_with("/")`
+    /// / `x.startswith("/")` / `strpos(x, "/") === 0`.  The TRUE branch
+    /// constrains `x` to a relative path (no scheme, no `//host`), which is
+    /// the standard inline form of an open-redirect sanitiser when the
+    /// developer didn't extract a named helper.  Cap-aware: clears
+    /// [`crate::labels::Cap::OPEN_REDIRECT`] only on the validated branch
+    /// so non-redirect sinks downstream still fire on the residual taint.
+    /// Mirrors [`ShellMetaValidated`](Self::ShellMetaValidated) but with
+    /// non-inverted polarity (true branch is the validated path).
+    RelativeUrlValidated,
+    /// Inline URL-parse + host-allowlist validation:
+    /// `new URL(x).host === ALLOWED` (JS/TS),
+    /// `urlparse(x).netloc == ALLOWED` (Python),
+    /// `urlparse(x).hostname in ALLOWED_HOSTS` (Python).
+    /// The TRUE branch constrains the parsed URL's host to a developer-chosen
+    /// allowlist value, the canonical multi-statement open-redirect sanitiser
+    /// for absolute URLs.  Cap-aware: clears
+    /// [`crate::labels::Cap::OPEN_REDIRECT`] only on the validated branch so
+    /// non-redirect sinks downstream still fire on residual taint.
+    HostAllowlistValidated,
     /// Bounded-length rejection: `x.len() > N` / `x.length < N` with N >= 2.
     ///
     /// Commonly paired with `ShellMetaValidated` in OR-chain rejection
@@ -176,6 +196,324 @@ fn is_metachar_regex_class(text: &str) -> bool {
         }
     }
     false
+}
+
+/// Check whether `text` is an inline relative-URL validation: a leading-
+/// slash check on a string variable.  Recognised shapes:
+///
+/// * `<X>.startsWith("/")` — JS/TS/Java/Kotlin
+/// * `<X>.starts_with("/")` — Rust
+/// * `<X>.startswith("/")` — Python
+/// * `strpos($X, "/") === 0` / `mb_strpos(...)` — PHP
+/// * `<X>[0] === "/"` / `<X>[0] == '/'` — JS/TS direct index
+///
+/// Negation prefixes (`!`, `not`) are NOT stripped, the caller's
+/// classification path handles those uniformly via the predicate
+/// polarity inversion machinery.
+fn is_leading_slash_check(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    // Method-call form: `.startswith("/")` covers JS/TS/Java (`startsWith`
+    // lower-cases to `startswith`), Python (`startswith`), Rust
+    // (`starts_with` → `starts_with` after lower).  Keep the variants
+    // explicit so we don't miss the underscore form.
+    for method in [".startswith(", ".starts_with("] {
+        if let Some(idx) = lower.find(method) {
+            let args_start = idx + method.len();
+            if let Some(needle) = extract_first_string_arg(&lower[args_start..]) {
+                if needle == "/" {
+                    return true;
+                }
+            }
+        }
+    }
+    // PHP `strpos($x, "/") === 0` / `mb_strpos($x, "/") === 0` — leading-
+    // slash detection via offset-zero substring match.  Both equality
+    // forms (`===`, `==`) accepted; the `0` literal is the load-bearing
+    // bit.  Conservative: requires the closing `=== 0` form; bare
+    // `strpos(...)` (truthy check) is not recognised.
+    for prefix in ["strpos(", "mb_strpos("] {
+        if let Some(start) = lower.find(prefix) {
+            let after = &lower[start + prefix.len()..];
+            // Find the closing paren of the strpos call.
+            let mut depth = 1usize;
+            let bytes = after.as_bytes();
+            let mut close = None;
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            let Some(close) = close else { continue };
+            let args = &after[..close];
+            // Need at least one comma so we have two args.
+            let mut depth = 0i32;
+            let mut comma = None;
+            for (j, ch) in args.char_indices() {
+                match ch {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        comma = Some(j);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let Some(comma) = comma else { continue };
+            let second = args[comma + 1..].trim();
+            // Strip optional surrounding parens / quotes.
+            let needle = second.trim_matches(|c: char| c == '"' || c == '\'');
+            if needle != "/" {
+                continue;
+            }
+            // Tail after the strpos `)` should compare against 0 with
+            // `===` / `==`.  Allow whitespace.
+            let tail = after[close + 1..].trim_start();
+            if let Some(rest) = tail.strip_prefix("===").or_else(|| tail.strip_prefix("==")) {
+                if rest.trim() == "0" {
+                    return true;
+                }
+            }
+        }
+    }
+    // Direct subscript form: `<X>[0] === '/'` / `<X>[0] == "/"`.
+    // Conservative: the literal `[0]` immediately followed by an
+    // equality op and a single-char `/` literal.
+    for op in ["===", "=="] {
+        let probe = format!("[0] {}", op);
+        if let Some(idx) = lower.find(&probe) {
+            let after = lower[idx + probe.len()..].trim_start();
+            if after.starts_with("'/'") || after.starts_with("\"/\"") {
+                return true;
+            }
+        }
+        // Without spaces around the operator: `[0]==='/'`.
+        let probe_tight = format!("[0]{}", op);
+        if let Some(idx) = lower.find(&probe_tight) {
+            let after = lower[idx + probe_tight.len()..].trim_start();
+            if after.starts_with("'/'") || after.starts_with("\"/\"") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check whether `text` is an inline URL-parse + host-allowlist validation.
+///
+/// Recognises the canonical multi-statement open-redirect sanitiser shapes:
+///
+/// * `new URL(<X>).host === ALLOWED` / `new URL(<X>).hostname === ALLOWED`
+///   / `new URL(<X>).origin === ALLOWED` (JS/TS) — accepts `==` and `===`.
+/// * `urlparse(<X>).netloc == ALLOWED` / `urlparse(<X>).hostname == ALLOWED`
+///   (Python `urllib.parse.urlparse` and the `urlparse.urlparse` legacy alias)
+///   — accepts `==`.
+/// * `urllib.parse.urlparse(<X>).netloc == ALLOWED` (qualified Python form).
+/// * `<parsed>.host_str() == ALLOWED` (Rust `url::Url::host_str()`).
+/// * `<parsed>.Host == ALLOWED` / `<parsed>.Hostname() == ALLOWED`
+///   (Go `*url.URL` — case-sensitive capital `H`).
+///
+/// The Rust/Go forms intentionally do not look for the parse call in the
+/// condition text — those parse on a separate line (`let parsed = Url::parse(x)?`,
+/// `parsed, err := url.Parse(x)`) and the validated branch then references
+/// `parsed` directly as the redirect target.  Distinctive accessor names
+/// (`.host_str()`, capital-`H` `.Host`/`.Hostname()`) gate the match so a bare
+/// `u.host == X` (lowercase, ambiguous) still falls through to `Comparison`.
+///
+/// The right-hand side may be a string literal or a bare identifier
+/// (`ALLOWED_HOST` / `cfg.allowed_origin`) — what matters is that the
+/// validation pins the parsed host to one fixed value, locking off the
+/// scheme/authority that would otherwise let the redirect leave the trusted
+/// origin.  The membership form
+/// `ALLOWED_HOSTS.includes(new URL(<X>).host)` / `urlparse(<X>).host in ALLOWED`
+/// is intentionally NOT recognised here, those fall through to
+/// `AllowlistCheck` whose generic validated-must mechanic already clears
+/// every cap for the matched receiver / member token.
+///
+/// Negation prefixes are not stripped, the caller's polarity-inversion
+/// machinery handles `!`-wrapped forms uniformly.
+fn is_host_allowlist_check(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    // Need an equality operator so we know the host is being pinned to a
+    // specific allowed value (not e.g. assigned, indexed, or used as a key).
+    if !(lower.contains("==") || lower.contains("!=")) {
+        return false;
+    }
+    let has_parse_call = lower.contains("new url(")
+        || lower.contains("urlparse(")
+        || lower.contains("url.parse(")
+        || lower.contains("urllib.parse.urlparse(");
+    if has_parse_call {
+        // Need a host-style accessor on the parse result.
+        return lower.contains(".host")
+            || lower.contains(".hostname")
+            || lower.contains(".netloc")
+            || lower.contains(".origin");
+    }
+    // Multi-statement form: parse happened on a prior line.  Match
+    // distinctive Rust/Go accessor names so we don't misclassify a
+    // generic `obj.host == X` field comparison.
+    //
+    //   Rust: `parsed.host_str() == Some("x")`
+    //   Go:   `parsed.Host == "x"` / `parsed.Hostname() == "x"`
+    //
+    // `.host_str()` is Rust-specific (lowercase-stable identifier).
+    // `.Host`/`.Hostname()` use case-sensitive capital `H` to avoid
+    // matching lowercase `u.host` (which `host_allowlist_requires_parse_call`
+    // explicitly excludes).
+    if lower.contains(".host_str(") {
+        return true;
+    }
+    if has_capital_host_accessor(text) {
+        return true;
+    }
+    false
+}
+
+/// Test whether `text` contains a Go-style capital-`H` URL host accessor:
+/// `.Host` (followed by whitespace or `==`/`!=`) or `.Hostname(`.
+fn has_capital_host_accessor(text: &str) -> bool {
+    if text.contains(".Hostname(") {
+        return true;
+    }
+    let mut rest = text;
+    while let Some(pos) = rest.find(".Host") {
+        let after = &rest[pos + ".Host".len()..];
+        // Reject `.Hostname` (handled above) and any continuation that
+        // would make `.Host` part of a longer identifier (`.Hostess` etc.).
+        let next = after.chars().next();
+        let is_terminator = match next {
+            None => true,
+            Some(c) => !c.is_ascii_alphanumeric() && c != '_',
+        };
+        if is_terminator {
+            // Require an equality op somewhere after the accessor so it's
+            // a comparison, not e.g. an assignment target.
+            let trimmed = after.trim_start();
+            if trimmed.starts_with("==") || trimmed.starts_with("!=") {
+                return true;
+            }
+        }
+        rest = after;
+    }
+    false
+}
+
+/// Extract the parse-call argument from a host-allowlist condition.
+///
+/// Inline form (single-statement parse + check, JS/TS/Python):
+/// recognises `new URL(<X>)`, `urlparse(<X>)`, `URL.parse(<X>)`,
+/// `urllib.parse.urlparse(<X>)`.  Returns `Some("X")` when the argument is a
+/// bare identifier (with optional `&` or PHP `$` sigil stripped).
+///
+/// Multi-statement form (Rust/Go): recognises the receiver of `.host_str()`,
+/// case-sensitive `.Host`/`.Hostname()` and returns the receiver identifier
+/// (the parsed-URL var), which is what downstream code redirects on.
+///
+/// Returns `None` for nested expressions / multi-arg calls so branch
+/// narrowing doesn't widen to a non-existent var.  Mirrors the conservative
+/// target shape used by [`extract_validation_target`].
+fn extract_host_allowlist_target(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    for probe in [
+        "new url(",
+        "urllib.parse.urlparse(",
+        "urlparse(",
+        "url.parse(",
+    ] {
+        if let Some(idx) = lower.find(probe) {
+            let args_start = idx + probe.len();
+            if args_start <= text.len() {
+                if let Some(first_arg) = first_call_arg(&text[args_start..]) {
+                    let first_arg = first_arg.strip_prefix('&').unwrap_or(first_arg).trim();
+                    let first_arg = first_arg.strip_prefix('$').unwrap_or(first_arg);
+                    if !first_arg.is_empty() && is_identifier(first_arg) {
+                        return Some(first_arg.to_string());
+                    }
+                }
+            }
+        }
+    }
+    // Multi-statement form: receiver of the host accessor is the
+    // parsed-URL var.  Walk the original text (case-sensitive for Go).
+    extract_host_accessor_receiver(text)
+}
+
+/// Walk `text` for `<receiver>.host_str(` (Rust), `<receiver>.Host` followed
+/// by `==`/`!=` (Go), or `<receiver>.Hostname(` (Go).  Returns `Some(receiver)`
+/// when the receiver is a bare identifier (optionally with a `&` deref-prefix
+/// stripped, e.g. Rust `&parsed.host_str()`); `None` otherwise.
+fn extract_host_accessor_receiver(text: &str) -> Option<String> {
+    let probes: &[(&str, bool)] = &[
+        (".host_str(", false), // Rust, case-stable
+        (".Hostname(", false), // Go
+        (".Host", true),       // Go, requires `==`/`!=` after
+    ];
+    for (probe, requires_eq) in probes {
+        if let Some(idx) = text.find(probe) {
+            if *requires_eq {
+                let after = &text[idx + probe.len()..];
+                // Reject `.Hostname` (handled by its own probe) and any
+                // longer-identifier continuation.
+                if let Some(c) = after.chars().next()
+                    && (c.is_ascii_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                let trimmed = after.trim_start();
+                if !(trimmed.starts_with("==") || trimmed.starts_with("!=")) {
+                    continue;
+                }
+            }
+            let before = &text[..idx];
+            // Receiver = trailing identifier of `before`, optionally
+            // preceded by `&` (Rust deref).  `parsed.foo.host_str()`
+            // would yield `foo`, which is not a parse var, so we
+            // conservatively reject any receiver with a `.` or `::`.
+            let recv = trailing_identifier(before)?;
+            if recv.contains('.') || recv.contains(':') {
+                return None;
+            }
+            return Some(recv);
+        }
+    }
+    None
+}
+
+/// Walk back from the end of `s` and return the trailing identifier token.
+///
+/// `&parsed` → `Some("parsed")`, `foo.bar` → `Some("bar")`,
+/// `()` → `None`.  Used by [`extract_host_accessor_receiver`] to pull the
+/// parsed-URL var out of `parsed.host_str() == ...`.
+fn trailing_identifier(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 {
+        let c = bytes[end - 1];
+        if c.is_ascii_alphanumeric() || c == b'_' {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    if end == bytes.len() {
+        return None;
+    }
+    let ident = &s[end..];
+    if ident.is_empty() || ident.as_bytes()[0].is_ascii_digit() {
+        return None;
+    }
+    Some(ident.to_string())
 }
 
 /// Check whether `text` looks like a bounded-length rejection:
@@ -328,6 +666,28 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     // case-accurate, `;` / `|` / `&` have no case.
     if is_shell_metachar_rejection(text) {
         return PredicateKind::ShellMetaValidated;
+    }
+
+    // ── Inline relative-URL validation ──────────────────────────────────
+    //
+    // `x.startsWith("/")` (JS/TS/Java/Kotlin), `x.starts_with("/")` (Rust),
+    // `x.startswith("/")` (Python), `strpos($x, "/") === 0` (PHP).
+    // The TRUE branch constrains `x` to a leading-slash relative path —
+    // the canonical inline open-redirect sanitiser.  Matched BEFORE
+    // AllowlistCheck (which would otherwise capture `.starts_with(`).
+    if is_leading_slash_check(text) {
+        return PredicateKind::RelativeUrlValidated;
+    }
+
+    // ── Host-allowlist URL-parse validation ─────────────────────────────
+    //
+    // `new URL(x).host === ALLOWED` (JS/TS), `urlparse(x).netloc == ALLOWED`
+    // (Python), etc.  Matched BEFORE AllowlistCheck so the membership form
+    // `ALLOWED.includes(new URL(x).host)` doesn't fall through here, and
+    // BEFORE the generic Comparison branch so the equality operator
+    // doesn't classify generically.
+    if is_host_allowlist_check(text) {
+        return PredicateKind::HostAllowlistValidated;
     }
 
     // ── Allowlist / membership checks ────────────────────────────────────
@@ -550,6 +910,19 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
             // being validated.  Reuses the validation extractor which already
             // handles `x.method(arg)` → `"x"`.
             let target = extract_validation_target(text);
+            (kind, target)
+        }
+        PredicateKind::RelativeUrlValidated => {
+            // Receiver of `.startsWith("/")` / `.startswith("/")` /
+            // `.starts_with("/")`, or first arg of `strpos($x, "/")`.
+            // Same machinery as ShellMetaValidated.
+            let target = extract_validation_target(text);
+            (kind, target)
+        }
+        PredicateKind::HostAllowlistValidated => {
+            // Argument of the parse call: `new URL(x).host` → `x`,
+            // `urlparse(x).netloc` → `x`.
+            let target = extract_host_allowlist_target(text);
             (kind, target)
         }
         PredicateKind::Comparison => {
@@ -1730,6 +2103,150 @@ mod tests {
     fn bounded_length_accepts_small_bounds() {
         assert!(is_bounded_length_check("x.len() > 2"));
         assert!(is_bounded_length_check("x.len() <= 256"));
+    }
+
+    // ── HostAllowlistValidated ────────────────────────────────────────────
+
+    #[test]
+    fn classify_host_allowlist_js_strict_eq() {
+        assert_eq!(
+            classify_condition("new URL(target).host === ALLOWED_HOST"),
+            PredicateKind::HostAllowlistValidated
+        );
+        assert_eq!(
+            classify_condition("new URL(target).hostname === \"trusted.example.com\""),
+            PredicateKind::HostAllowlistValidated
+        );
+        assert_eq!(
+            classify_condition("new URL(target).origin === ALLOWED_ORIGIN"),
+            PredicateKind::HostAllowlistValidated
+        );
+    }
+
+    #[test]
+    fn classify_host_allowlist_python_urlparse() {
+        assert_eq!(
+            classify_condition("urlparse(target).netloc == ALLOWED_HOST"),
+            PredicateKind::HostAllowlistValidated
+        );
+        assert_eq!(
+            classify_condition("urllib.parse.urlparse(target).hostname == \"trusted.example.com\""),
+            PredicateKind::HostAllowlistValidated
+        );
+    }
+
+    #[test]
+    fn target_host_allowlist_extracts_parse_arg_js() {
+        let (kind, target) =
+            classify_condition_with_target("new URL(target).host === ALLOWED_HOST");
+        assert_eq!(kind, PredicateKind::HostAllowlistValidated);
+        assert_eq!(target.as_deref(), Some("target"));
+    }
+
+    #[test]
+    fn target_host_allowlist_extracts_parse_arg_python() {
+        let (kind, target) =
+            classify_condition_with_target("urlparse(target).netloc == ALLOWED_HOST");
+        assert_eq!(kind, PredicateKind::HostAllowlistValidated);
+        assert_eq!(target.as_deref(), Some("target"));
+    }
+
+    #[test]
+    fn host_allowlist_requires_parse_call() {
+        // Bare `.host == X` without a parse call is not host-allowlist.
+        let kind = classify_condition("u.host == ALLOWED_HOST");
+        assert_ne!(kind, PredicateKind::HostAllowlistValidated);
+    }
+
+    #[test]
+    fn host_allowlist_requires_equality_op() {
+        // `new URL(x)` without an equality op is not host-allowlist.
+        let kind = classify_condition("new URL(target).host");
+        assert_ne!(kind, PredicateKind::HostAllowlistValidated);
+    }
+
+    // ── Multi-statement form: Rust `.host_str()` ──────────────────────────
+
+    #[test]
+    fn classify_host_allowlist_rust_host_str() {
+        assert_eq!(
+            classify_condition("parsed.host_str() == Some(\"trusted.example.com\")"),
+            PredicateKind::HostAllowlistValidated
+        );
+    }
+
+    #[test]
+    fn target_host_allowlist_rust_host_str_extracts_receiver() {
+        let (kind, target) =
+            classify_condition_with_target("parsed.host_str() == Some(\"trusted.example.com\")");
+        assert_eq!(kind, PredicateKind::HostAllowlistValidated);
+        assert_eq!(target.as_deref(), Some("parsed"));
+    }
+
+    #[test]
+    fn target_host_allowlist_rust_host_str_strips_amp_deref() {
+        // `&parsed.host_str()` is not idiomatic but we still pull out the
+        // receiver via the trailing-identifier walk.
+        let (kind, target) =
+            classify_condition_with_target("&parsed.host_str() == Some(\"trusted.com\")");
+        assert_eq!(kind, PredicateKind::HostAllowlistValidated);
+        assert_eq!(target.as_deref(), Some("parsed"));
+    }
+
+    // ── Multi-statement form: Go `.Host` / `.Hostname()` ──────────────────
+
+    #[test]
+    fn classify_host_allowlist_go_capital_host() {
+        assert_eq!(
+            classify_condition("parsed.Host == \"trusted.example.com\""),
+            PredicateKind::HostAllowlistValidated
+        );
+    }
+
+    #[test]
+    fn classify_host_allowlist_go_hostname_method() {
+        assert_eq!(
+            classify_condition("parsed.Hostname() == \"trusted.example.com\""),
+            PredicateKind::HostAllowlistValidated
+        );
+    }
+
+    #[test]
+    fn target_host_allowlist_go_extracts_receiver() {
+        let (kind, target) =
+            classify_condition_with_target("parsed.Host == \"trusted.example.com\"");
+        assert_eq!(kind, PredicateKind::HostAllowlistValidated);
+        assert_eq!(target.as_deref(), Some("parsed"));
+    }
+
+    #[test]
+    fn target_host_allowlist_go_hostname_extracts_receiver() {
+        let (kind, target) =
+            classify_condition_with_target("parsed.Hostname() == \"trusted.example.com\"");
+        assert_eq!(kind, PredicateKind::HostAllowlistValidated);
+        assert_eq!(target.as_deref(), Some("parsed"));
+    }
+
+    #[test]
+    fn host_allowlist_rejects_lowercase_host_field() {
+        // `.host` (lowercase) without a parse call must NOT match — that
+        // shape is too generic (could be any struct field named `host`).
+        let kind = classify_condition("u.host == ALLOWED_HOST");
+        assert_ne!(kind, PredicateKind::HostAllowlistValidated);
+    }
+
+    #[test]
+    fn host_allowlist_rejects_capital_host_without_eq() {
+        // `parsed.Host` used as a side-effect call argument, not a guard.
+        let kind = classify_condition("log(parsed.Host)");
+        assert_ne!(kind, PredicateKind::HostAllowlistValidated);
+    }
+
+    #[test]
+    fn host_allowlist_rejects_capital_host_substring_in_identifier() {
+        // `.Hostess` is NOT `.Host` — must not match.
+        let kind = classify_condition("party.Hostess == \"alice\"");
+        assert_ne!(kind, PredicateKind::HostAllowlistValidated);
     }
 }
 

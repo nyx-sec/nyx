@@ -217,15 +217,15 @@ pub struct Evidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbolic: Option<SymbolicVerdict>,
 
-    /// Resolved sink capability bits (u16 from `Cap::bits()`).
+    /// Resolved sink capability bits (u32 from `Cap::bits()`).
     ///
     /// Used by deduplication to distinguish findings that share a
     /// `(path, line, severity)` key but target different sinks (e.g.
     /// `sink_sql(x); sink_shell(x);` on the same line). 0 when the sink
     /// caps could not be resolved at the CFG node (e.g. pure summary
     /// resolution where the caller's sink node carries no label).
-    #[serde(default, skip_serializing_if = "is_zero_u16")]
-    pub sink_caps: u16,
+    #[serde(default, skip_serializing_if = "is_zero_cap_bits")]
+    pub sink_caps: u32,
 
     /// Engine provenance notes attached to this finding (e.g. "worklist
     /// iteration budget was hit before convergence"), propagated from
@@ -243,7 +243,7 @@ pub struct Evidence {
     pub data_exfil_field: Option<String>,
 }
 
-fn is_zero_u16(v: &u16) -> bool {
+fn is_zero_cap_bits(v: &u32) -> bool {
     *v == 0
 }
 

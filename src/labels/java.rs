@@ -1,4 +1,6 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig, RuntimeLabelRule};
+use crate::labels::{
+    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+};
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
 
@@ -264,6 +266,223 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Sink(Cap::CODE_EXEC),
         case_sensitive: false,
+    },
+    // ─── LDAP injection sinks ───
+    //
+    // JNDI / Spring LDAP search APIs accept an attacker-influenceable filter
+    // expression as either the second positional argument (`DirContext.search(name,
+    // filter, controls)` / `LdapTemplate.search(base, filter, mapper)`).  Without
+    // RFC 4515 escaping the filter can be rewritten to bypass authentication or
+    // exfiltrate directory entries.  Type-qualified resolution rewrites
+    // `ctx.search(...)` → `LdapClient.search` when the receiver carries a
+    // `TypeKind::LdapClient` fact (set by `class_name_to_type_kind` for the
+    // declared types `DirContext`, `InitialDirContext`, `LdapContext`,
+    // `LdapTemplate`, or by `constructor_type` for `new InitialDirContext(...)`
+    // / `new InitialLdapContext(...)`).  Direct flat matchers cover the
+    // documentation-style class-qualified call forms that bypass receiver
+    // typing.
+    LabelRule {
+        matchers: &[
+            "LdapClient.search",
+            "LdapClient.searchByEntity",
+            "LdapClient.searchForObject",
+            "LdapClient.searchForContext",
+            "DirContext.search",
+            "LdapTemplate.search",
+            "LdapTemplate.searchByEntity",
+            "LdapTemplate.searchForObject",
+            "LdapTemplate.searchForContext",
+            "ctx.search",
+        ],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizers ───
+    //
+    // Spring LDAP's `LdapEncoder.filterEncode(s)` applies RFC 4515 escaping to
+    // metacharacters (`\`, `*`, `(`, `)`, ` `).  `nameEncode` performs the
+    // companion DN-component escaping.  Both fully clear the LDAP_INJECTION
+    // cap; downstream sinks see a sanitised value.
+    LabelRule {
+        matchers: &["LdapEncoder.filterEncode", "LdapEncoder.nameEncode"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // `javax.xml.xpath.XPath.evaluate(expr, source, ...)` and the matching
+    // `XPathExpression.evaluate(source)` accept an attacker-influenceable
+    // expression string.  Without parameterisation via
+    // `XPathVariableResolver` the expression can be rewritten to bypass
+    // authentication or exfiltrate document subtrees.  `XPath.compile(expr)`
+    // is the equivalent pre-compile entry point.  Direct flat matchers cover
+    // the documentation-style class-qualified call forms.
+    LabelRule {
+        matchers: &[
+            "XPath.evaluate",
+            "XPath.compile",
+            "XPathExpression.evaluate",
+            "xpath.evaluate",
+            "xpath.compile",
+        ],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // OWASP ESAPI's `Encoder.encodeForXPath(s)` escapes the XPath
+    // metacharacters (`'`, `"`, `[`, `]`, `(`, `)`, `,`, `=`, `<`, `>`,
+    // `*`).  Project-local `xpathEscape` / `escapeXpath` are the common
+    // developer-named equivalents.
+    LabelRule {
+        matchers: &["Encoder.encodeForXPath", "xpathEscape", "escapeXpath"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // Parameterised XPath via `XPath.setXPathVariableResolver(resolver)`
+    // suppression is implemented as a receiver-config sidecar in
+    // [`crate::ssa::xpath_config::XPathConfigResult`]: a
+    // `setXPathVariableResolver` call on a receiver carrying
+    // `TypeKind::XPathClient` flips the receiver's `has_resolver` flag,
+    // and the SSA sink-emission site strips `Cap::XPATH_INJECTION` from
+    // any later `xpath.evaluate(taintedExpr, ...)` whose receiver is
+    // provably bound.  No flat sanitizer rule is needed (and a
+    // name-only rule would clear the wrong call site).
+    // ─── Header / CRLF injection sinks ───
+    //
+    // `HttpServletResponse.setHeader(name, val)` / `addHeader(name, val)`
+    // accept a single header value; tainted strings without `\r\n` stripping
+    // let an attacker inject extra headers (response splitting).
+    // `addCookie(c)` carries a `Cookie` whose constructor takes a value
+    // string; track at the higher-level setHeader / addHeader entry points.
+    LabelRule {
+        matchers: &["setHeader", "addHeader", "addCookie"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF sanitizers ───
+    LabelRule {
+        matchers: &["stripCRLF", "stripCrlf", "escapeHeader", "sanitizeHeader"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open redirect sinks ───
+    //
+    // Servlet API: `HttpServletResponse.sendRedirect(url)`.  Spring MVC
+    // controllers can also return a `"redirect:"` prefixed string but that
+    // sink shape is not modelled here.
+    LabelRule {
+        matchers: &["sendRedirect"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &[
+            "validateRedirectUrl",
+            "isSafeRedirect",
+            "stripScheme",
+            "ensureRelativeUrl",
+            "assertRelativePath",
+            "isRelativeUrl",
+        ],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // Apache FreeMarker `Template.process(model, writer)` renders an
+    // already-parsed template; the SSTI vector is when the template source
+    // is attacker-influenced (e.g. `new Template(name, new StringReader(src), cfg)`).
+    // The flat matcher fires only when the receiver chain text resolves to
+    // `Template.process` — typically through a `Template`-typed declared
+    // receiver routed via type-qualified resolution.  Without a `Template`
+    // TypeKind, idiomatic `Template tpl = new Template(...); tpl.process(...)`
+    // shapes are not recognised; tracked under deferred phases.
+    //
+    // Apache Velocity `Velocity.evaluate(ctx, writer, tag, src)` is modelled
+    // as a gated sink in `GATED_SINKS` below so only the template-source
+    // arg (index 3) activates SSTI; tainted variables in the `ctx` arg
+    // (data) stay clean.
+    LabelRule {
+        matchers: &["Template.process"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+    },
+    // ─── XXE sinks ───
+    //
+    // Java's stock XML parsers (JAXP) are XXE-vulnerable by default: the
+    // factories ship with external-entity / DTD resolution enabled and only
+    // become safe after `setFeature(FEATURE_SECURE_PROCESSING, true)` /
+    // disabling `external-general-entities` / `external-parameter-entities`.
+    // Tainted XML reaching any of these parser entry points is treated as
+    // an XXE flow; a config-check sanitizer pass (Phase XXE Layer 2) is
+    // out of scope for this rule and is the follow-up listed in
+    // `.pitboss/play/deferred.md`.
+    //
+    // Class-qualified suffix matching covers both the documentation-style
+    // `javax.xml.parsers.DocumentBuilder.parse(...)` form and the bound-
+    // receiver `XmlParser.parse(...)` form (when the receiver's TypeKind
+    // resolves to `XmlParser`).  Bare `parse` is intentionally avoided to
+    // prevent collisions with `Integer.parseInt`, `LocalDate.parse`,
+    // generic JSON parsers, etc.
+    LabelRule {
+        matchers: &[
+            "DocumentBuilder.parse",
+            "SAXParser.parse",
+            "XMLReader.parse",
+            "SAXBuilder.build",
+            "XmlParser.parse",
+            "XmlParser.build",
+        ],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+    },
+    // ─── XXE config-setter sanitizers ───
+    //
+    // Phase 07: a JAXP `setFeature(...)` / `setExpandEntityReferences(...)`
+    // call is itself a label-level Sanitizer for `Cap::XXE` so that the
+    // *call's return value* (rare but exists for fluent factory APIs)
+    // does not carry XXE through it.  The real load-bearing suppression
+    // is the receiver-fact path in
+    // [`crate::ssa::xml_config::XmlParserConfigResult`], which the SSA
+    // sink emission consults at every parse-class sink site.  This rule
+    // is conservative noise reduction for downstream sinks that consume
+    // the setter call's value.
+    LabelRule {
+        matchers: &[
+            "setFeature",
+            "setExpandEntityReferences",
+            "setXIncludeAware",
+            "setValidating",
+        ],
+        label: DataLabel::Sanitizer(Cap::XXE),
+        case_sensitive: true,
+    },
+];
+
+/// Java gated sinks.  Argument-position-aware classification for callees
+/// where the SSTI activation is restricted to the template-source arg
+/// rather than every positional argument.
+pub static GATED_SINKS: &[SinkGate] = &[
+    // Apache Velocity static API: `Velocity.evaluate(ctx, writer, logTag, src)`.
+    // Arg 3 carries the inline template source; tainted text at that
+    // position is SSTI.  Tainted data in the context (arg 0) is rendered
+    // through Velocity's escape policy, not parsed as template source, so
+    // those flows must not activate SSTI.  Activation is unconditional;
+    // payload_args narrows the cap to the template-source position.
+    SinkGate {
+        callee_matcher: "Velocity.evaluate",
+        arg_index: 3,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+        payload_args: &[3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
     },
 ];
 

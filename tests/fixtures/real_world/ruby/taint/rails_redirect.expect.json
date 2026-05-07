@@ -11,7 +11,7 @@
   ],
   "expected": [
     {
-      "rule_id": "taint-unsanitised-flow",
+      "rule_id": "taint-open-redirect",
       "severity": null,
       "must_match": true,
       "line_range": [

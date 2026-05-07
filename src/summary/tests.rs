@@ -9,7 +9,7 @@ fn cap_sites(cap: Cap) -> SmallVec<[SinkSite; 1]> {
     smallvec![SinkSite::cap_only(cap)]
 }
 
-fn make(name: &str, src: u16, san: u16, sink: u16) -> FuncSummary {
+fn make(name: &str, src: u32, san: u32, sink: u32) -> FuncSummary {
     FuncSummary {
         name: name.into(),
         file_path: "test.rs".into(),
@@ -263,7 +263,7 @@ fn lookup_same_lang_returns_all_matches() {
 }
 
 #[test]
-fn u16_caps_round_trip_serde() {
+fn cap_bits_round_trip_serde() {
     let summary = FuncSummary {
         name: "dangerous".into(),
         file_path: "test.rs".into(),
@@ -292,9 +292,96 @@ fn u16_caps_round_trip_serde() {
     assert!(!json.contains("propagates_taint"));
 }
 
+/// Every new cap class persists across the serde JSON round-trip used
+/// for SQLite blob storage and the `/debug` endpoint.  Catches a
+/// width-mismatch (cap bits truncated to u16) as a hard fail rather than
+/// silent zeroing of the upper bits.
+#[test]
+fn new_cap_classes_round_trip_serde() {
+    let new_caps = Cap::LDAP_INJECTION
+        | Cap::XPATH_INJECTION
+        | Cap::HEADER_INJECTION
+        | Cap::OPEN_REDIRECT
+        | Cap::SSTI
+        | Cap::XXE
+        | Cap::PROTOTYPE_POLLUTION;
+
+    // Sanity: bit-width must accommodate every new cap.
+    assert_ne!(
+        new_caps.bits(),
+        0,
+        "every new cap must carry a non-zero bit"
+    );
+    assert_eq!(
+        new_caps.bits().count_ones(),
+        7,
+        "exactly seven bits must be set across the new caps"
+    );
+
+    // Bit collisions with existing caps would mask a finding.
+    let existing = Cap::ENV_VAR
+        | Cap::HTML_ESCAPE
+        | Cap::SHELL_ESCAPE
+        | Cap::URL_ENCODE
+        | Cap::JSON_PARSE
+        | Cap::FILE_IO
+        | Cap::FMT_STRING
+        | Cap::SQL_QUERY
+        | Cap::DESERIALIZE
+        | Cap::SSRF
+        | Cap::CODE_EXEC
+        | Cap::CRYPTO
+        | Cap::UNAUTHORIZED_ID
+        | Cap::DATA_EXFIL;
+    assert!(
+        (existing & new_caps).is_empty(),
+        "new caps must not collide"
+    );
+
+    let summary = FuncSummary {
+        name: "all_new_classes".into(),
+        file_path: "fixture.rs".into(),
+        lang: "rust".into(),
+        param_count: 0,
+        param_names: vec![],
+        source_caps: 0,
+        sanitizer_caps: 0,
+        sink_caps: new_caps.bits(),
+        propagating_params: vec![],
+        propagates_taint: false,
+        tainted_sink_params: vec![],
+        callees: vec![],
+        ..Default::default()
+    };
+
+    // serde JSON round-trip (the on-disk SQLite format).
+    let json = serde_json::to_string(&summary).unwrap();
+    let back: FuncSummary = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.sink_caps, new_caps.bits());
+    assert!(back.sink_caps().contains(Cap::LDAP_INJECTION));
+    assert!(back.sink_caps().contains(Cap::PROTOTYPE_POLLUTION));
+
+    // Cap registry must surface a rule id for each new cap.
+    for cap in [
+        Cap::LDAP_INJECTION,
+        Cap::XPATH_INJECTION,
+        Cap::HEADER_INJECTION,
+        Cap::OPEN_REDIRECT,
+        Cap::SSTI,
+        Cap::XXE,
+        Cap::PROTOTYPE_POLLUTION,
+    ] {
+        let meta = crate::labels::cap_rule_meta(cap)
+            .unwrap_or_else(|| panic!("missing CAP_RULE_REGISTRY entry for {cap:?}"));
+        assert!(meta.rule_id.starts_with("taint-"));
+        assert!(!meta.title.is_empty());
+        assert!(!meta.description.is_empty());
+    }
+}
+
 #[test]
 fn backward_compat_u8_json_deserializes() {
-    // Old u8-range values still deserialize correctly into u16 fields
+    // Old u8-range values still deserialize correctly into u32 fields
     let json = r#"{
         "name": "old_func",
         "file_path": "legacy.py",
@@ -948,6 +1035,8 @@ fn make_callee_body(
             type_facts: crate::ssa::type_facts::TypeFactResult {
                 facts: std::collections::HashMap::new(),
             },
+            xml_parser_config: crate::ssa::xml_config::XmlParserConfigResult::default(),
+            xpath_config: crate::ssa::xpath_config::XPathConfigResult::default(),
             alias_result: crate::ssa::alias::BaseAliasResult::empty(),
             points_to: crate::ssa::heap::PointsToResult::empty(),
             module_aliases: std::collections::HashMap::new(),
@@ -1413,7 +1502,7 @@ fn fs_with(
     arity: usize,
     kind: FuncKind,
     disambig: Option<u32>,
-    sink_bits: u16,
+    sink_bits: u32,
 ) -> (FuncKey, FuncSummary) {
     let key = FuncKey {
         lang: Lang::Java,
@@ -1611,7 +1700,7 @@ fn interop_lookup_returns_none_when_disambig_none_matches_many() {
     // and only disambig distinguishes them, the relaxed interop lookup must
     // return None rather than picking arbitrarily.
     let mut gs = GlobalSummaries::new();
-    let mk = |disambig: u32, bits: u16| {
+    let mk = |disambig: u32, bits: u32| {
         let k = FuncKey {
             lang: Lang::Go,
             namespace: "lib.go".into(),
@@ -2102,7 +2191,7 @@ fn method_summary(
     container: &str,
     name: &str,
     arity: usize,
-    sink_bits: u16,
+    sink_bits: u32,
 ) -> (FuncKey, FuncSummary) {
     fs_with(
         namespace,
@@ -2119,7 +2208,7 @@ fn free_summary(
     namespace: &str,
     name: &str,
     arity: usize,
-    sink_bits: u16,
+    sink_bits: u32,
 ) -> (FuncKey, FuncSummary) {
     fs_with(
         namespace,
@@ -2912,7 +3001,7 @@ fn legacy_summary(
     param_names: Vec<String>,
     kind: FuncKind,
     container: &str,
-    sink: u16,
+    sink: u32,
 ) -> FuncSummary {
     FuncSummary {
         name: name.into(),
@@ -3778,7 +3867,7 @@ fn cross_file_devirt_does_not_union_unrelated_findbyids() {
     use crate::labels::Cap;
     use crate::symbol::FuncKey;
 
-    fn method_summary(name: &str, container: &str, file: &str, sink_caps: u16) -> FuncSummary {
+    fn method_summary(name: &str, container: &str, file: &str, sink_caps: u32) -> FuncSummary {
         FuncSummary {
             name: name.into(),
             file_path: file.into(),
@@ -3989,7 +4078,7 @@ mod hierarchy_widened_tests {
         container: &str,
         name: &str,
         arity: usize,
-        sink_bits: u16,
+        sink_bits: u32,
         hierarchy_edges: Vec<(String, String)>,
     ) -> (FuncKey, FuncSummary) {
         let (key, mut summary) = fs_with(

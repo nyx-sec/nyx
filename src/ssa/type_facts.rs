@@ -52,12 +52,55 @@ pub enum TypeKind {
     /// where openmrs / xwiki / keycloak Hibernate DAOs build queries
     /// via `cb.createQuery(Foo.class)` + `Root` / `Predicate` API.
     JpaCriteriaQuery,
+    /// An LDAP directory-service client / connection (`DirContext`,
+    /// `LdapTemplate`, `Net::LDAP`, `ldap3.Connection`, `ldap.createClient`,
+    /// `ldap.DialURL`, etc.).  Distinct from `DatabaseConnection` so the
+    /// type-qualified `LdapClient.search` rule fires only on directory
+    /// search APIs rather than every DB receiver with a `search` method.
+    LdapClient,
+    /// An XPath query / evaluation client (`DOMXPath`, `XPath`,
+    /// `XPathExpression`, `lxml.etree.XPath`, etc.).  Distinct from
+    /// `DatabaseConnection` so the type-qualified `XPathClient.query` /
+    /// `XPathClient.evaluate` rules fire only on XPath APIs rather than
+    /// every receiver with a generic `query` / `evaluate` method (avoids
+    /// collision with PHP `$pdo->query` SQL_QUERY sink).
+    XPathClient,
+    /// A pre-parsed template object whose `process` / `merge` /
+    /// `render` method renders bound data through an already-compiled
+    /// template body.  The SSTI vector is when the template *source*
+    /// fed to the constructor / factory was attacker-influenced; the
+    /// render-time call site is the sink.  Currently populated by
+    /// `new freemarker.template.Template(...)`; the type-qualified
+    /// resolver rewrites `tpl.process(...)` → `Template.process` so
+    /// the existing flat SSTI rule fires on idiomatic
+    /// `Template tpl = new Template(...); tpl.process(model, out)`
+    /// shapes.
+    Template,
+    /// An XML parser instance produced by a JAXP factory call
+    /// (`DocumentBuilderFactory.newDocumentBuilder()`,
+    /// `SAXParserFactory.newSAXParser()`, `XMLReaderFactory.createXMLReader()`).
+    /// `DOMXPath` and friends keep their own `XPathClient` tag.  Used so
+    /// the type-qualified `XmlParser.parse` rule fires on instance-style
+    /// calls (`builder.parse(input)`) without needing a flat-rule
+    /// matcher per concrete subclass.  Also gates the XXE config-fact
+    /// suppression: only XmlParser-typed receivers consult the
+    /// [`crate::ssa::xml_config::XmlParserConfigResult`] sidecar.
+    XmlParser,
     /// A framework-injected DTO body whose field types are known.
     /// Populated when a parameter is recognised as a typed extractor and
     /// the DTO class / struct / Pydantic model is resolvable in scope.
     /// Strictly additive, without a DTO definition, callers fall back
     /// to name-only resolution.
     Dto(DtoFields),
+    /// An object created with `Object.create(null)` — has no prototype
+    /// chain, so subscript-write keys cannot pollute `Object.prototype`.
+    /// Populated for JS/TS values whose constructor call is
+    /// `Object.create(null)`. The PROTOTYPE_POLLUTION suppression at the
+    /// synthetic `__index_set__` sink consults this fact (via SSA receiver
+    /// value) so the suppression is flow-sensitive: if a phi join leaves
+    /// the receiver only sometimes null-prototyped, the fact widens to
+    /// `Unknown` and the sink fires on the unsafe path.
+    NullPrototypeObject,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -99,6 +142,10 @@ impl TypeKind {
             Self::Url => Some("URL"),
             Self::RequestBuilder => Some("RequestBuilder"),
             Self::JpaCriteriaQuery => Some("JpaCriteriaQuery"),
+            Self::LdapClient => Some("LdapClient"),
+            Self::XPathClient => Some("XPathClient"),
+            Self::XmlParser => Some("XmlParser"),
+            Self::Template => Some("Template"),
             _ => None,
         }
     }
@@ -288,9 +335,11 @@ pub fn is_safe_query_object_arg(
 /// authoritative, and consumers see Unknown instead of a wrong
 /// type tag.
 ///
-/// `_args` and `_consts` are kept on the signature so we can later
-/// add arg-shape narrowing when class-literal lowering captures
-/// `Foo.class` as an arg-use.
+/// `_args` and `_consts` allow arg-shape narrowing when an arg's
+/// constant value distinguishes overloads.  Reserved for future Java
+/// `createQuery(Foo.class)` shape (the `Object.create(null)` case is
+/// driven by the `produces_null_proto` CFG flag instead, since a
+/// literal `null` arg leaves no SSA value to inspect).
 fn arg_aware_call_type(
     lang: Lang,
     callee: &str,
@@ -392,6 +441,40 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "createCriteriaUpdate" | "createCriteriaDelete" | "createTupleQuery" | "subquery" => {
                 Some(TypeKind::JpaCriteriaQuery)
             }
+            // LDAP directory-service clients.  `new InitialDirContext(env)` /
+            // `new InitialLdapContext(env, ctls)` instantiate the JNDI LDAP
+            // provider; `new LdapTemplate(...)` / `LdapTemplate.<init>` is the
+            // Spring LDAP wrapper.  Both expose `search` / `searchByEntity`
+            // /`searchForObject` overloads where filter/DN strings are LDAP
+            // injection sinks.
+            "InitialDirContext" | "InitialLdapContext" | "LdapTemplate" => {
+                Some(TypeKind::LdapClient)
+            }
+            // JAXP factory-produced XML parser instances.  Each is
+            // XXE-vulnerable by default until hardened with
+            // `setFeature(FEATURE_SECURE_PROCESSING, true)` (or
+            // disallow-doctype-decl, etc.). The
+            // [`crate::ssa::xml_config::XmlParserConfigResult`] sidecar
+            // suppresses the XXE bit at the type-qualified `XmlParser.parse`
+            // sink when the receiver carries a hardening fact.
+            "newDocumentBuilder" | "newSAXParser" | "getXMLReader" | "newXMLReader"
+            | "createXMLReader" => Some(TypeKind::XmlParser),
+            // `XPathFactory.newXPath()` returns a JAXP `XPath` instance.
+            // Mapping it to `XPathClient` lets the type-qualified resolver
+            // pick up `xpath.evaluate(...)` against the existing
+            // `XPathClient.evaluate` rule and lets the
+            // [`crate::ssa::xpath_config::XPathConfigResult`] sidecar
+            // suppress XPATH_INJECTION when the receiver was bound to an
+            // `XPathVariableResolver`.
+            "newXPath" => Some(TypeKind::XPathClient),
+            // Apache FreeMarker `new Template(name, reader, cfg)` /
+            // `cfg.getTemplate(name)`.  The `Template` instance's
+            // `.process(model, out)` is an SSTI sink when the
+            // constructor source / template body came from tainted
+            // input.  Type-qualified resolution rewrites
+            // `tpl.process(...)` → `Template.process` against the
+            // existing flat rule in `labels/java.rs`.
+            "Template" | "getTemplate" => Some(TypeKind::Template),
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => match suffix {
@@ -409,6 +492,12 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // `elementsMap.get(id)`, `origIdToDuplicateId.get(...)`,
             // `groupIdMapForOperation.set(...)` shapes).
             "Map" | "Set" | "WeakMap" | "WeakSet" | "Array" => Some(TypeKind::LocalCollection),
+            // ldapjs client factory: `ldap.createClient({ url: '…' })` returns
+            // a Client whose `search(base, opts, cb)` is an LDAP injection
+            // sink.  Match the qualified callee text rather than the bare
+            // `createClient` suffix to avoid widening to unrelated factories
+            // with the same verb name.
+            "createClient" if callee.contains("ldap") => Some(TypeKind::LdapClient),
             _ => None,
         },
         Lang::Python => {
@@ -429,6 +518,15 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             } else if suffix == "open" && !callee.contains('.') {
                 // Bare `open()` is file I/O in Python
                 Some(TypeKind::FileHandle)
+            } else if callee == "ldap.initialize"
+                || callee == "ldap3.Connection"
+                || callee.ends_with(".initialize") && callee.contains("ldap")
+            {
+                // python-ldap: `conn = ldap.initialize(url)` returns an
+                // LDAPObject whose `search_s` / `search_ext_s` methods are
+                // LDAP-injection sinks.  ldap3: `Connection(server, ...)`
+                // returns a Connection with a `search()` method.
+                Some(TypeKind::LdapClient)
             } else {
                 None
             }
@@ -442,6 +540,10 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 Some(TypeKind::FileHandle)
             } else if callee.contains("url.") && suffix == "Parse" {
                 Some(TypeKind::Url)
+            } else if callee.contains("ldap.") && matches!(suffix, "Dial" | "DialURL" | "DialTLS") {
+                // go-ldap (`github.com/go-ldap/ldap/v3`): `conn, _ := ldap.DialURL(url)`
+                // returns `*ldap.Conn` whose `Search(req)` is an LDAP-injection sink.
+                Some(TypeKind::LdapClient)
             } else {
                 None
             }
@@ -451,6 +553,10 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "curl_init" => Some(TypeKind::HttpClient),
             "fopen" => Some(TypeKind::FileHandle),
             "SplFileObject" => Some(TypeKind::FileHandle),
+            // DOMXPath: `$xp = new DOMXPath($doc)`.  `$xp->query($expr)` /
+            // `$xp->evaluate($expr)` are XPath-injection sinks; without a
+            // distinct TypeKind they collide with the bare `query` SQL sink.
+            "DOMXPath" => Some(TypeKind::XPathClient),
             _ => None,
         },
         Lang::C => match suffix {
@@ -524,6 +630,11 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 Some(TypeKind::DatabaseConnection)
             } else if after_colons.starts_with("File.") && matches!(suffix, "open" | "new") {
                 Some(TypeKind::FileHandle)
+            } else if callee.contains("Net::LDAP") && matches!(suffix, "new" | "open") {
+                // net-ldap gem: `Net::LDAP.new(host: ...)` / `Net::LDAP.open`
+                // returns a connection whose `search(base:, filter:)` accepts
+                // an attacker-influenceable filter expression.
+                Some(TypeKind::LdapClient)
             } else {
                 None
             }
@@ -768,8 +879,7 @@ pub fn analyze_types(
 /// Same as [`analyze_types`] but seeds [`SsaOp::Param`] values with
 /// per-position [`TypeKind`] facts from `param_types` (parallel-vec to
 /// the function's BodyMeta.params).  An entry of `None` (or an out-of-
-/// range index) leaves the value at the default Param fact (Unknown),
-/// preserving the pre-Phase-3 behaviour.
+/// range index) leaves the value at the default Param fact (Unknown).
 pub fn analyze_types_with_param_types(
     body: &SsaBody,
     cfg: &Cfg,
@@ -810,8 +920,7 @@ pub fn analyze_types_with_param_types(
                 SsaOp::Param { index } => {
                     // Seed from the function's BodyMeta.param_types when
                     // a TypeKind was recovered at CFG construction time.
-                    // Out-of-range / None entries fall back to Unknown,
-                    // matching the pre-Phase-3 behaviour.
+                    // Out-of-range / None entries fall back to Unknown.
                     match param_types.get(*index).and_then(|t| t.clone()) {
                         Some(tk) => TypeFact::from_kind(tk),
                         None => TypeFact::unknown(),
@@ -820,7 +929,19 @@ pub fn analyze_types_with_param_types(
                 SsaOp::SelfParam => TypeFact::from_kind(TypeKind::Object),
                 SsaOp::CatchParam => TypeFact::from_kind(TypeKind::Object),
                 SsaOp::Call { callee, args, .. } => {
-                    if let Some(ty) = lang.and_then(|l| constructor_type(l, callee)) {
+                    // CFG marks `Object.create(null)` (and future
+                    // null-prototype constructors) at lowering time.
+                    // Honour it ahead of generic constructor / arg-aware
+                    // dispatch so the returned SsaValue carries
+                    // `NullPrototypeObject` for prototype-pollution
+                    // suppression.
+                    let null_proto = cfg
+                        .node_weight(inst.cfg_node)
+                        .map(|ni| ni.call.produces_null_proto)
+                        .unwrap_or(false);
+                    if null_proto {
+                        TypeFact::from_kind(TypeKind::NullPrototypeObject)
+                    } else if let Some(ty) = lang.and_then(|l| constructor_type(l, callee)) {
                         TypeFact::from_kind(ty)
                     } else if let Some(ty) =
                         lang.and_then(|l| arg_aware_call_type(l, callee, args, consts))
@@ -1667,7 +1788,7 @@ mod tests {
 
     /// Param values seeded from `param_types` must surface
     /// the right TypeKind for downstream sink suppression.  An out-of-
-    /// range index falls back to Unknown (the pre-Phase-3 default).
+    /// range index falls back to Unknown.
     #[test]
     fn param_types_seed_param_value_facts() {
         use crate::cfg::Cfg;
@@ -1728,7 +1849,7 @@ mod tests {
         // Index 99 is out of range → falls back to Unknown.
         assert_eq!(result.get_type(SsaValue(1)), Some(&TypeKind::Unknown));
 
-        // Empty slice = pre-Phase-3 behaviour.
+        // Empty slice = type-unaware fallback (analyze_types path).
         let result2 = analyze_types(&body, &cfg, &consts, Some(Lang::Java));
         assert_eq!(result2.get_type(SsaValue(0)), Some(&TypeKind::Unknown));
     }
@@ -2364,7 +2485,7 @@ mod tests {
         ));
     }
 
-    // ── JPA Criteria query suppression (Phase: real-repo openmrs FP) ───
+    // ── JPA Criteria query suppression (real-repo openmrs FP) ─────────
     //
     // These tests pin the `TypeKind::JpaCriteriaQuery` variant + the
     // `is_safe_query_object_arg` predicate + the

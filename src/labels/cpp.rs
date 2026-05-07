@@ -89,6 +89,24 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // OpenLDAP / libldap C interface (also used from C++ wrappers): the filter
+    // argument carries attacker-controlled data unless explicitly escaped.
+    LabelRule {
+        matchers: &["ldap_search_s", "ldap_search_ext_s"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // libxml2 (the dominant C++ XML parser surface): `xmlXPathEvalExpression`,
+    // `xmlXPathEval`, `xmlXPathCompile` accept the expression string as arg 0.
+    LabelRule {
+        matchers: &["xmlXPathEvalExpression", "xmlXPathEval", "xmlXPathCompile"],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
 ];
 
 /// Gated sinks for C++.

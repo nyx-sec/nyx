@@ -195,6 +195,56 @@ pub(super) fn extract_destination_kwarg_pairs(
 
 /// Extract the string-literal content at argument position `index` (0-based).
 /// Returns `None` if the argument is not a string literal or the index is out of range.
+/// True when `call_node` is `Object.create(null)` (or its parenthesised /
+/// awaited / type-cast wrappers).  Strict literal-`null` first-arg match,
+/// no aliasing through intermediate variables.  Caller restricts to JS/TS.
+pub(super) fn is_object_create_null_call(call_node: Node, code: &[u8]) -> bool {
+    if !matches!(call_node.kind(), "call_expression") {
+        return false;
+    }
+    let callee = call_node
+        .child_by_field_name("function")
+        .and_then(|f| text_of(f, code))
+        .unwrap_or_default();
+    if callee != "Object.create" {
+        return false;
+    }
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let named: Vec<Node> = args.named_children(&mut cursor).collect();
+    if named.len() != 1 {
+        return false;
+    }
+    let mut arg = named[0];
+    // Unwrap parens / await / TS type-assertions.
+    for _ in 0..4 {
+        match arg.kind() {
+            "parenthesized_expression" => {
+                if let Some(inner) = arg.named_child(0) {
+                    arg = inner;
+                    continue;
+                }
+            }
+            "await_expression" => {
+                if let Some(inner) = arg.child_by_field_name("argument") {
+                    arg = inner;
+                    continue;
+                }
+            }
+            "as_expression" | "type_assertion" => {
+                if let Some(inner) = arg.named_child(0) {
+                    arg = inner;
+                    continue;
+                }
+            }
+            _ => break,
+        }
+    }
+    arg.kind() == "null" || text_of(arg, code).as_deref() == Some("null")
+}
+
 pub(super) fn extract_const_string_arg(
     call_node: Node,
     index: usize,
@@ -222,6 +272,37 @@ pub(super) fn extract_const_string_arg(
                 None
             }
         }
+        // Boolean literals — JS/TS `true`/`false` are their own node kinds; some
+        // grammars wrap them as identifiers carrying the keyword text.  Returned
+        // verbatim so `dangerous_values` matching can detect deep-flag forms
+        // like `extend(true, target, src)`.
+        "true" | "false" => Some(arg.kind().to_string()),
+        // PHP double-quoted strings parse as `encapsed_string` whose body is
+        // a sequence of `string_content` / `escape_sequence` / interpolation
+        // nodes.  Treat the string as constant only when every child is a
+        // pure-literal segment (no `variable_name` / `subscript_expression`
+        // interpolations); the returned value is the concatenation of the
+        // literal segments verbatim.
+        "encapsed_string" => {
+            let mut c = arg.walk();
+            let mut buf = String::new();
+            for ch in arg.named_children(&mut c) {
+                match ch.kind() {
+                    "string_content" => {
+                        if let Some(s) = text_of(ch, code) {
+                            buf.push_str(&s);
+                        }
+                    }
+                    "escape_sequence" => {
+                        if let Some(s) = text_of(ch, code) {
+                            buf.push_str(&s);
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+            Some(buf)
+        }
         "template_string" => {
             // Only treat as constant if no interpolation (no template_substitution children)
             let mut c = arg.walk();
@@ -236,6 +317,44 @@ pub(super) fn extract_const_string_arg(
                 Some(raw[1..raw.len() - 1].to_string())
             } else {
                 None
+            }
+        }
+        // Concat-style binary expression with a leading string literal, e.g.
+        // PHP `"Location: " . $url`, JS/TS `"Location: " + url`.  Returns the
+        // left-most literal so prefix-driven gates (`dangerous_prefixes`) can
+        // activate on partially-dynamic concatenations; falls through to
+        // `None` when the leading segment is not a string literal so
+        // exact-`dangerous_values` matching keeps its strict semantics.
+        "binary_expression" => {
+            let left = arg.child_by_field_name("left")?;
+            match left.kind() {
+                "string"
+                | "string_literal"
+                | "interpreted_string_literal"
+                | "raw_string_literal" => {
+                    let raw = text_of(left, code)?;
+                    if raw.len() >= 2 {
+                        Some(raw[1..raw.len() - 1].to_string())
+                    } else {
+                        None
+                    }
+                }
+                "encapsed_string" => {
+                    let mut c = left.walk();
+                    let mut buf = String::new();
+                    for ch in left.named_children(&mut c) {
+                        match ch.kind() {
+                            "string_content" | "escape_sequence" => {
+                                if let Some(s) = text_of(ch, code) {
+                                    buf.push_str(&s);
+                                }
+                            }
+                            _ => return None,
+                        }
+                    }
+                    Some(buf)
+                }
+                _ => None,
             }
         }
         _ => None,
@@ -269,6 +388,27 @@ pub(super) fn extract_const_macro_arg(
         // Scoped C++ identifiers (`Curl::OPT_POSTFIELDS`) and PHP namespaced
         // names also surface here so the dangerous_values match catches them.
         "identifier" | "name" | "qualified_name" | "scoped_identifier" => {
+            text_of(arg, code).map(|s| s.to_string())
+        }
+        // Ruby bare constant (`NOENT`) — leaf form.
+        "constant" => text_of(arg, code).map(|s| s.to_string()),
+        // Ruby scope-qualified constant (`Nokogiri::XML::ParseOptions::NOENT`).
+        // Return only the rightmost `name` segment so the gate's
+        // `dangerous_values` list can stay identifier-bare instead of
+        // enumerating every possible namespacing.  Falls back to the full
+        // text if the `name` field is missing for any reason.
+        "scope_resolution" => arg
+            .child_by_field_name("name")
+            .and_then(|n| text_of(n, code))
+            .map(|s| s.to_string())
+            .or_else(|| text_of(arg, code).map(|s| s.to_string())),
+        // Integer literals at the activation arg position.  PHP / C / C++
+        // commonly use plain `0` to opt into the safe-default option set
+        // (e.g. `simplexml_load_string($xml, "SimpleXMLElement", 0)`).  The
+        // gate's `dangerous_values` list is identifier-only, so returning
+        // the literal text lets the comparison fail against `LIBXML_NOENT`
+        // and suppresses the conservative-fire branch.
+        "integer" | "integer_literal" | "number_literal" | "decimal_integer_literal" => {
             text_of(arg, code).map(|s| s.to_string())
         }
         _ => None,
@@ -728,35 +868,72 @@ pub(super) fn find_chained_inner_call<'a>(
         return Some((function, inner_text));
     }
     // The function/method field for a chained call is a member_expression
-    // (JS/TS) or attribute (Python) etc.; its `object` field is the
-    // receiver expression.  Only proceed when that receiver is itself a
-    // call.
-    let object = function.child_by_field_name("object")?;
+    // (JS/TS), attribute (Python), or field_expression (Rust); its
+    // receiver is the `object` field (JS/TS/Python) or `value` field
+    // (Rust).  Only proceed when that receiver is itself a call.
+    let object = function
+        .child_by_field_name("object")
+        .or_else(|| function.child_by_field_name("value"))?;
     if !matches!(lookup(lang, object.kind()), Kind::CallFn | Kind::CallMethod) {
         return None;
     }
-    // Recurse: the inner call may itself be chained
-    // (`axios.get(u).then(h).catch(h)`, innermost is `axios.get`).
-    if let Some(inner) = find_chained_inner_call(object, lang, code) {
-        return Some(inner);
-    }
-    // `object` is the innermost call_expression in the chain.  Extract
-    // its callee identifier the same way `first_call_ident_with_span`
-    // does for a CallFn (member_expression text → "http.get").
-    let inner_func = object
+    // Decide whether `object` is itself a chained method call (its
+    // function/method field is a member-style expression). When yes,
+    // recurse one more level so deeper chains resolve to their innermost
+    // method (e.g. `axios.get(u).then(h).catch(h)` → `axios.get`).
+    // When no — the receiver is a plain function/constructor call like
+    // Rust's `HttpResponse::Found()` — descending one more level would
+    // strand us on the non-method leaf whose text would not match any
+    // gate matcher. Stop here and return the current `outer` level,
+    // which IS the innermost method call.
+    let object_function = object
         .child_by_field_name("function")
-        .or_else(|| object.child_by_field_name("method"))
-        .or_else(|| object.child_by_field_name("name"))?;
-    // Multi-line dotted member expressions (`http\n  .get`) include
-    // formatting whitespace in the source-text slice. The labels map
-    // keys are literal `"http.get"` etc., strip whitespace so the
-    // chained-call inner-gate rebinding fires for both single-line and
-    // multi-line chain styles. Also strips `\r` for CRLF sources.
-    // Motivated by upstream Parse Server CVE-2025-64430 which uses the
-    // multi-line `http\n  .get(uri, ...)\n  .on(...)` form.
-    let raw = text_of(inner_func, code)?;
+        .or_else(|| object.child_by_field_name("method"));
+    let object_is_chained_method = object_function
+        .map(|f| {
+            matches!(
+                f.kind(),
+                "member_expression"
+                    | "attribute"
+                    | "field_expression"
+                    | "scoped_identifier"
+                    | "scope_resolution"
+            ) && f
+                .child_by_field_name("object")
+                .or_else(|| f.child_by_field_name("value"))
+                .is_some()
+        })
+        .unwrap_or(false);
+    if object_is_chained_method {
+        // Recurse: the inner call may itself be chained.
+        if let Some(inner) = find_chained_inner_call(object, lang, code) {
+            return Some(inner);
+        }
+        // `object` is the innermost call_expression in the chain.  Extract
+        // its callee identifier the same way `first_call_ident_with_span`
+        // does for a CallFn (member_expression text → "http.get").
+        let inner_func = object
+            .child_by_field_name("function")
+            .or_else(|| object.child_by_field_name("method"))
+            .or_else(|| object.child_by_field_name("name"))?;
+        // Multi-line dotted member expressions (`http\n  .get`) include
+        // formatting whitespace in the source-text slice. The labels map
+        // keys are literal `"http.get"` etc., strip whitespace so the
+        // chained-call inner-gate rebinding fires for both single-line and
+        // multi-line chain styles. Also strips `\r` for CRLF sources.
+        // Motivated by upstream Parse Server CVE-2025-64430 which uses the
+        // multi-line `http\n  .get(uri, ...)\n  .on(...)` form.
+        let raw = text_of(inner_func, code)?;
+        let inner_text: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+        return Some((object, inner_text));
+    }
+    // Receiver is a non-chained call (Rust constructor `Foo::new()` /
+    // `HttpResponse::Found()`, JS bare `f()`).  Outer level IS the
+    // innermost method call — return its own function text so gate
+    // matching sees the method name.
+    let raw = text_of(function, code)?;
     let inner_text: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
-    Some((object, inner_text))
+    Some((outer, inner_text))
 }
 
 /// Recursively walk the receiver chain of `outer` (a CallFn / CallMethod
@@ -1389,6 +1566,47 @@ pub(super) fn extract_kwargs(call_node: Node, code: &[u8]) -> Vec<(String, Vec<S
     let mut cursor = args_node.walk();
     for child in args_node.named_children(&mut cursor) {
         let kind = child.kind();
+        // JS/TS object-literal positional arg: `f(x, { a: true, b: 'str' })`.
+        // The pairs inside the object are not tree-sitter
+        // `keyword_argument` nodes (those are Python/Ruby), but
+        // downstream consumers (xml_config's
+        // `lookup_kwargs(inst.cfg_node)` JS branch checking
+        // `processEntities`) expect these fields in the kwargs vector.
+        // Lift each `pair` (and `shorthand_property_identifier`) into
+        // the kwargs list using the property name as kwarg name and the
+        // raw text of the value expression as the single value.
+        // Boolean / numeric / string / identifier values all surface as
+        // their textual form, which is what xml_config's kwarg-value
+        // matchers (e.g. `v == "true"`) compare against.
+        if kind == "object" {
+            let mut oc = child.walk();
+            for pair in child.named_children(&mut oc) {
+                let pk = pair.kind();
+                if pk == "pair" {
+                    let Some(kn) = pair.child_by_field_name("key") else {
+                        continue;
+                    };
+                    let Some(vn) = pair.child_by_field_name("value") else {
+                        continue;
+                    };
+                    let Some(raw_name) = text_of(kn, code) else {
+                        continue;
+                    };
+                    let name = raw_name
+                        .trim_start_matches(['"', '\''])
+                        .trim_end_matches(['"', '\''])
+                        .to_string();
+                    if let Some(val_text) = text_of(vn, code) {
+                        out.push((name, vec![val_text.to_string()]));
+                    }
+                } else if pk == "shorthand_property_identifier" {
+                    if let Some(name) = text_of(pair, code) {
+                        out.push((name.to_string(), vec![name.to_string()]));
+                    }
+                }
+            }
+            continue;
+        }
         if kind != "keyword_argument" && kind != "named_argument" {
             continue;
         }
@@ -1413,6 +1631,32 @@ pub(super) fn extract_kwargs(call_node: Node, code: &[u8]) -> Vec<(String, Vec<S
         collect_idents_with_paths(vn, code, &mut idents, &mut paths);
         let mut combined = paths;
         combined.extend(idents);
+        // Boolean / numeric literal kwarg values (Python `True`/`False`,
+        // Ruby `true`/`false`/integer/float, JS `true`/`false`/number)
+        // do not surface through `collect_idents_with_paths` — the value
+        // node's kind is `true`/`false`/`integer`/`float`/`number`, not
+        // an identifier kind.  Capture the raw text so consumers like
+        // `xml_config::classify_call` (which checks
+        // `values.iter().any(|v| v == "True" || v == "true")` for the
+        // lxml `resolve_entities=True` opt-in) can match.
+        if combined.is_empty() {
+            if matches!(
+                vn.kind(),
+                "true"
+                    | "false"
+                    | "integer"
+                    | "float"
+                    | "number"
+                    | "string"
+                    | "string_literal"
+                    | "true_constant"
+                    | "false_constant"
+            ) {
+                if let Some(txt) = text_of(vn, code) {
+                    combined.push(txt.trim_matches(['"', '\'']).to_string());
+                }
+            }
+        }
         out.push((name, combined));
     }
     out
@@ -1718,6 +1962,29 @@ pub(super) fn extract_arg_string_literals(call_node: Node, code: &[u8]) -> Vec<O
                 let raw = text_of(target, code);
                 raw.and_then(|s| strip_literal_quotes(&s, target, code))
             }
+            // Boolean / null / numeric literal tokens — capture verbatim so
+            // downstream pattern-aware analysis (e.g. the XXE config-fact
+            // pass that needs to read the boolean polarity arg of
+            // `setFeature(NAME, true)`) can recover the literal text without
+            // re-walking the AST.  Existing string-only consumers (URL
+            // prefix matching, etc.) are unaffected: a "true" / "false"
+            // token never satisfies their matching predicates.
+            "true"
+            | "false"
+            | "null"
+            | "null_literal"
+            | "nil"
+            | "nil_literal"
+            | "none"
+            | "boolean_literal"
+            | "true_literal"
+            | "false_literal"
+            | "decimal_integer_literal"
+            | "integer_literal"
+            | "integer"
+            | "number"
+            | "number_literal"
+            | "decimal_literal" => text_of(target, code).map(|s| s.to_string()),
             _ => None,
         };
         result.push(literal);

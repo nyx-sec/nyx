@@ -21,7 +21,7 @@ pub(super) const MAX_INLINE_BLOCKS: usize = 500;
 /// Compact cache key: per-arg-position cap bits (sorted, non-empty
 /// only). Origin identity is not part of the key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ArgTaintSig(pub(super) SmallVec<[(usize, u16); 4]>);
+pub(crate) struct ArgTaintSig(pub(super) SmallVec<[(usize, u32); 4]>);
 
 /// Call-site-adapted result of inline-analyzing a callee. Built fresh
 /// per call site so origins point to the current caller's chain.
@@ -79,7 +79,7 @@ pub(crate) struct ReturnShape {
 impl CachedInlineShape {
     /// Cap bits of the return value, or zero if this shape records "no
     /// return taint".  Used by [`inline_cache_fingerprint`].
-    fn return_caps_bits(&self) -> u16 {
+    fn return_caps_bits(&self) -> u32 {
         self.0.as_ref().map(|s| s.caps.bits()).unwrap_or(0)
     }
 }
@@ -101,7 +101,7 @@ pub(crate) fn inline_cache_clear_epoch(cache: &mut InlineCache) {
 #[allow(dead_code)]
 pub(crate) fn inline_cache_fingerprint(
     cache: &InlineCache,
-) -> HashMap<(FuncKey, ArgTaintSig), u16> {
+) -> HashMap<(FuncKey, ArgTaintSig), u32> {
     cache
         .iter()
         .map(|(k, v)| (k.clone(), v.return_caps_bits()))

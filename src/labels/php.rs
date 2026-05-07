@@ -178,6 +178,143 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: true,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // PHP's procedural LDAP API: `ldap_search($ds, $base, $filter)`,
+    // `ldap_list($ds, $base, $filter)`, `ldap_read($ds, $base, $filter)`.
+    // The filter argument is the LDAP-injection vector when concatenated
+    // with attacker-controlled input.
+    LabelRule {
+        matchers: &["ldap_search", "ldap_list", "ldap_read"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── LDAP-filter sanitizer ───
+    //
+    // `ldap_escape($value, $ignore, LDAP_ESCAPE_FILTER)` applies RFC 4515
+    // escaping; treat any `ldap_escape` call as clearing the LDAP_INJECTION
+    // cap (the no-flag default also escapes filter metacharacters
+    // conservatively).
+    LabelRule {
+        matchers: &["ldap_escape"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // `DOMXPath::query($expr, $ctx)` and `DOMXPath::evaluate($expr, $ctx)`
+    // accept the expression string as arg 0; concatenated user input there
+    // is the canonical PHP XPath-injection vector.  `SimpleXMLElement::xpath`
+    // takes the same shape.  Direct flat matchers cover the
+    // class-qualified call forms.
+    // Type-qualified rewrites: `$xp = new DOMXPath($doc)` tags `$xp` as
+    // `TypeKind::XPathClient`, so `$xp->query(...)` / `$xp->evaluate(...)`
+    // resolve to `XPathClient.query` / `XPathClient.evaluate`.  Without
+    // the distinct TypeKind, bare `query` would match the SQL_QUERY sink.
+    LabelRule {
+        matchers: &[
+            "XPathClient.query",
+            "XPathClient.evaluate",
+            "DOMXPath::query",
+            "DOMXPath::evaluate",
+            "SimpleXMLElement::xpath",
+        ],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // Bare `xpath` method: SimpleXMLElement instances expose `->xpath($expr)`
+    // and Symfony / DOMCrawler wrappers do the same.  Suffix matching on
+    // `xpath` covers `$xml->xpath(...)` and similar bound-receiver shapes
+    // where the receiver type is not statically known.  Case-sensitive to
+    // avoid collisions with the `XPath` capitalisation used by qualified
+    // names.
+    LabelRule {
+        matchers: &["xpath"],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // No PHP standard library helper escapes XPath metacharacters; project-
+    // local `escape_xpath` / `xpath_escape` are the developer-named
+    // equivalents.
+    LabelRule {
+        matchers: &["escape_xpath", "xpath_escape"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // PHP's `header($line)` writes a raw header line.  Tainted strings
+    // without `\r\n` stripping let an attacker inject extra headers
+    // (response splitting); see GATED_SINKS for the corresponding
+    // OPEN_REDIRECT co-tag on `Location: ...` forms.
+    //
+    // The HEADER_INJECTION sink is intentionally implemented as a gate
+    // (not a flat rule) so the multi-gate SSA dispatch can co-emit it
+    // alongside the OPEN_REDIRECT gate on the same call site, producing
+    // separate findings for each cap with their canonical rule ids.
+    // ─── Header / CRLF sanitizers ───
+    LabelRule {
+        matchers: &["strip_crlf", "escape_header", "sanitize_header"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open-redirect URL allowlist sanitizers ───
+    //
+    // Mirrors the JS/TS rule.  Developer-named functions that allowlist
+    // / scheme-strip a redirect URL clear OPEN_REDIRECT taint before it
+    // reaches `header("Location: …")`.  PHP also commonly uses
+    // `snake_case` variants.
+    LabelRule {
+        matchers: &[
+            "validateRedirectUrl",
+            "isSafeRedirect",
+            "stripScheme",
+            "validate_redirect_url",
+            "is_safe_redirect",
+            "strip_scheme",
+            "ensure_relative_url",
+            "ensureRelativeUrl",
+            "assert_relative_path",
+            "assertRelativePath",
+            "is_relative_url",
+            "isRelativeUrl",
+        ],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // Twig `\Twig\Environment::createTemplate(string $template)` parses an
+    // arbitrary template source string at runtime; a tainted source yields
+    // SSTI when the resulting template is rendered.  `Environment::render`
+    // / `Environment::load` take a *template name* (file lookup, not source)
+    // and are intentionally excluded.  After PHP scope-resolution stripping
+    // the chain text covers both `$twig->createTemplate($src)` and
+    // `Twig\Environment::createTemplate(...)` shapes.
+    LabelRule {
+        matchers: &["Environment.createTemplate", "Twig.createTemplate"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+    },
+    // ─── XXE sanitizers ───
+    //
+    // `libxml_disable_entity_loader(true)` (PHP <8) / `libxml_set_external_entity_loader($cb)`
+    // disable external-entity expansion process-wide.  Treat their return
+    // value as XXE-cleared so config-style fixtures (`libxml_disable_entity_loader(true);
+    // simplexml_load_string($xml, ...)`) suppress the gate when the call is
+    // present in the same SSA scope.  The flat-rule sanitizer is a coarse
+    // approximation, the real config-check pattern would track parser-instance
+    // hardening (deferred Layer 2).
+    LabelRule {
+        matchers: &[
+            "libxml_disable_entity_loader",
+            "libxml_set_external_entity_loader",
+        ],
+        label: DataLabel::Sanitizer(Cap::XXE),
+        case_sensitive: false,
+    },
 ];
 
 /// Gated sinks for PHP.
@@ -193,18 +330,157 @@ pub static RULES: &[LabelRule] = &[
 ///
 /// Identifier-based activation is enabled via the macro-arg fallback in
 /// `cfg::mod::classify_gated_sink` for `lang == "php"`.
-pub static GATED_SINKS: &[SinkGate] = &[SinkGate {
-    callee_matcher: "curl_setopt",
-    arg_index: 1,
-    dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
-    dangerous_prefixes: &[],
-    label: DataLabel::Sink(Cap::DATA_EXFIL),
-    case_sensitive: true,
-    payload_args: &[2],
-    keyword_name: None,
-    dangerous_kwargs: &[],
-    activation: GateActivation::ValueMatch,
-}];
+pub static GATED_SINKS: &[SinkGate] = &[
+    SinkGate {
+        callee_matcher: "curl_setopt",
+        arg_index: 1,
+        dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // PHP `header($line)` HEADER_INJECTION sink.  Modelled as a gate so
+    // it can coexist with the OPEN_REDIRECT gate below: the multi-gate
+    // SSA dispatch needs each capability declared on its own gate filter
+    // to emit one finding per cap.  Always activates (Destination), with
+    // payload arg 0 only (`header()` only accepts the line as arg 0;
+    // arg 1 is `replace`/`response_code`, not the line content).
+    SinkGate {
+        callee_matcher: "=header",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // PHP `simplexml_load_string($xml, $class, $options)` —
+    // XXE sink gated on the `LIBXML_NOENT` flag (or `LIBXML_DTDLOAD`,
+    // `LIBXML_DTDATTR`).  PHP's libxml is XXE-safe by default since 2.9.0;
+    // the gate fires only when the `$options` literal includes one of the
+    // dangerous flags.  Identifier-based activation works via the macro-arg
+    // fallback in `cfg::mod::classify_gated_sink` for `lang == "php"`.
+    SinkGate {
+        callee_matcher: "simplexml_load_string",
+        arg_index: 2,
+        dangerous_values: &["LIBXML_NOENT", "LIBXML_DTDLOAD", "LIBXML_DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    SinkGate {
+        callee_matcher: "simplexml_load_file",
+        arg_index: 2,
+        dangerous_values: &["LIBXML_NOENT", "LIBXML_DTDLOAD", "LIBXML_DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // DOMDocument::loadXML($xml, $options) — same gating as
+    // simplexml_load_string.  The chain-normalised callee text for
+    // `$dom->loadXML(...)` is `dom.loadXML`; suffix matching on
+    // `loadXML` covers the bound-receiver form.
+    SinkGate {
+        callee_matcher: "loadXML",
+        arg_index: 1,
+        dangerous_values: &["LIBXML_NOENT", "LIBXML_DTDLOAD", "LIBXML_DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // PHP `header($line)` co-tag for OPEN_REDIRECT.
+    //
+    // The flat HEADER_INJECTION sink (`=header`) above already fires for
+    // any `header(...)` call regardless of the line content.  This gate
+    // adds the OPEN_REDIRECT co-tag specifically when the first argument
+    // is a `Location: ...` header, so the dashboard / OWASP bucket
+    // correctly classifies redirect-class flows independently of CRLF.
+    //
+    // Activation: arg 0 prefix `Location:` (case-insensitive).  When arg
+    // 0 is a constant string starting with `Location:` the gate fires and
+    // checks payload arg 0 for taint; constants like `Content-Type: ...`
+    // are suppressed by the safe-literal branch.  When arg 0 is a binary
+    // expression (`"Location: " . $url`) or otherwise dynamic, the
+    // value-extraction returns `None` and the gate fires conservatively
+    // — matching the existing convention in `setAttribute`/`parseFromString`.
+    SinkGate {
+        callee_matcher: "=header",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &["Location:"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // Smarty `$smarty->fetch($name)` — only the `string:` resource prefix
+    // accepts an inline template *source*; the bare form (`page.tpl`) is a
+    // file lookup (not SSTI).  Gate activates only when arg 0's leading
+    // literal segment is the `string:` prefix; the constant-string suffix
+    // and concat (`"string:" . $src`) shapes both reach `extract_const_string_arg`'s
+    // leading-literal path and trigger activation.  Payload is arg 0
+    // itself — taint reaching the template source string is the SSTI flow.
+    // Suffix matching catches both `Smarty.fetch` and the bound-receiver
+    // `$smarty->fetch(...)` forms.
+    SinkGate {
+        callee_matcher: "Smarty.fetch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &["string:"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // Twig `\Twig\Environment::createTemplate(string $template)` —
+    // gated SSTI sink.  Activation is unconditional (no value gate);
+    // payload arg 0 is the template source string.  Bare suffix
+    // `createTemplate` matches the idiomatic instance shape
+    // `$twig->createTemplate($src)` (chain text `twig.createTemplate`)
+    // as well as the static `Environment::createTemplate(...)` form;
+    // `createTemplate` is Twig-specific terminology so over-fire risk
+    // is low.  The matching flat rule remains for documentation-style
+    // class-qualified call shapes.
+    SinkGate {
+        callee_matcher: "createTemplate",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
     // control-flow

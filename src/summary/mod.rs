@@ -49,7 +49,7 @@ pub struct SinkSite {
 impl SinkSite {
     /// Dedup key: two sites with the same `(file_rel, line, col, cap)`
     /// describe the same consumption and collapse on merge.
-    pub(crate) fn dedup_key(&self) -> (&str, u32, u32, u16) {
+    pub(crate) fn dedup_key(&self) -> (&str, u32, u32, u32) {
         (self.file_rel.as_str(), self.line, self.col, self.cap.bits())
     }
 
@@ -277,18 +277,18 @@ pub struct FuncSummary {
     pub param_names: Vec<String>,
 
     // ── Taint behaviour ──────────────────────────────────────────────────
-    // Stored as raw `u16` so serde doesn't need to know about `bitflags`.
+    // Stored as raw `u32` so serde doesn't need to know about `bitflags`.
     /// Caps this function **introduces**, i.e. the return value carries
     /// freshly‑tainted data even if no argument was tainted.
-    pub source_caps: u16,
+    pub source_caps: u32,
 
     /// Caps this function **cleans**, passing tainted data through this
     /// function strips the corresponding bits.
-    pub sanitizer_caps: u16,
+    pub sanitizer_caps: u32,
 
     /// Caps this function **consumes unsafely**, calling it with tainted
     /// arguments that still carry these bits is a finding.
-    pub sink_caps: u16,
+    pub sink_caps: u32,
 
     /// Which parameter indices (0‑based) flow through to the return value.
     #[serde(default)]
@@ -1163,7 +1163,7 @@ impl GlobalSummaries {
     /// Returns `(source_caps, sanitizer_caps, sink_caps, propagating_params)`
     /// per key.  Used by the SCC fixed-point loop to detect when an iteration
     /// has not changed any summary, i.e. convergence.
-    pub fn snapshot_caps(&self) -> HashMap<FuncKey, (u16, u16, u16, Vec<usize>)> {
+    pub fn snapshot_caps(&self) -> HashMap<FuncKey, (u32, u32, u32, Vec<usize>)> {
         self.by_key
             .iter()
             .map(|(k, s)| {

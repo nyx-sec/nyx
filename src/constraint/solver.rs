@@ -250,6 +250,31 @@ pub fn class_name_to_type_kind(name: &str) -> Option<TypeKind> {
         // Java I/O supertypes (enables hierarchy fallback for subtypes)
         | "InputStream" | "OutputStream" | "Reader" | "Writer" | "PrintWriter"
         | "BufferedInputStream" | "BufferedOutputStream" => Some(TypeKind::FileHandle),
+        // JNDI / Spring LDAP directory-service types.  Field- and method-typed
+        // declarations (`DirContext ctx = ...`, `LdapTemplate ldapTemplate;`)
+        // attach this fact to the receiver SSA value so type-qualified
+        // resolution rewrites `ctx.search(...)` → `LdapClient.search`.
+        "DirContext" | "LdapContext" | "InitialDirContext" | "InitialLdapContext"
+        | "LdapTemplate" => Some(TypeKind::LdapClient),
+        // JAXP XML parser instances.  Field/local declarations like
+        // `DocumentBuilder builder = factory.newDocumentBuilder();` route
+        // through this map so the receiver SSA value carries
+        // `TypeKind::XmlParser` and the type-qualified
+        // `XmlParser.parse` rule fires on `builder.parse(...)`.
+        "DocumentBuilder" | "SAXParser" | "XMLReader" | "SAXBuilder" => {
+            Some(TypeKind::XmlParser)
+        }
+        // JAXP XPath instances.  `XPath xpath = factory.newXPath();`
+        // routes through this map so the receiver carries
+        // `TypeKind::XPathClient`, enabling the type-qualified
+        // `XPathClient.evaluate` resolution and the resolver-binding
+        // suppression sidecar.
+        "XPath" | "XPathExpression" => Some(TypeKind::XPathClient),
+        // Apache FreeMarker `Template` declared receiver type.  Routes
+        // `Template tpl = ...; tpl.process(model, out)` through
+        // type-qualified resolution to `Template.process`, the SSTI
+        // sink defined in `labels/java.rs`.
+        "Template" => Some(TypeKind::Template),
         // Python qualified type names.
         // Only covers raw lowered names from isinstance(). The lowering in lower.rs
         // extracts the literal type text: isinstance(x, requests.Session) produces

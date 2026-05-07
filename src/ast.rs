@@ -377,7 +377,7 @@ fn build_taint_diag(
     // Resolved sink capability bits, used by deduplication to distinguish
     // sinks with different cap types on the same source line (e.g.
     // `sink_sql(x); sink_shell(x);`).
-    let sink_caps_bits: u16 = cfg_graph[finding.sink]
+    let sink_caps_bits: u32 = cfg_graph[finding.sink]
         .taint
         .labels
         .iter()
@@ -385,7 +385,7 @@ fn build_taint_diag(
             crate::labels::DataLabel::Sink(c) => Some(c.bits()),
             _ => None,
         })
-        .fold(0u16, |acc, b| acc | b);
+        .fold(0u32, |acc, b| acc | b);
 
     // Cap-specific rule-id routing.
     //
@@ -508,11 +508,38 @@ fn build_taint_diag(
             || (finding.source_kind.sensitivity() >= crate::labels::Sensitivity::Sensitive
                 && (flow_has_body_bind || source_is_credential_bearing)));
 
+    // Cap-specific rule routing.  Auth-as-taint and data-exfil keep their
+    // pre-existing branches so the routing rules they encode (auth-finding
+    // namespace alignment; body-bind / source-sensitivity gate) stay
+    // exactly as before.  New cap classes (LDAP / XPath / Header / Open
+    // redirect / SSTI / XXE / Prototype pollution) route through
+    // `cap_rule_meta()` so the canonical rule ids in the registry are the
+    // single source of truth.  Legacy generic taint findings continue to
+    // emit `taint-unsanitised-flow`.
     let diag_id = if effective_caps.contains(crate::labels::Cap::UNAUTHORIZED_ID) {
         "rs.auth.missing_ownership_check.taint".to_string()
     } else if is_data_exfil_rule {
         format!(
             "taint-data-exfiltration (source {}:{})",
+            source_point.row + 1,
+            source_point.column + 1
+        )
+    } else if let Some(meta) = [
+        crate::labels::Cap::LDAP_INJECTION,
+        crate::labels::Cap::XPATH_INJECTION,
+        crate::labels::Cap::HEADER_INJECTION,
+        crate::labels::Cap::OPEN_REDIRECT,
+        crate::labels::Cap::SSTI,
+        crate::labels::Cap::XXE,
+        crate::labels::Cap::PROTOTYPE_POLLUTION,
+    ]
+    .iter()
+    .find(|c| effective_caps.contains(**c))
+    .and_then(|c| crate::labels::cap_rule_meta(*c))
+    {
+        format!(
+            "{} (source {}:{})",
+            meta.rule_id,
             source_point.row + 1,
             source_point.column + 1
         )
@@ -576,6 +603,23 @@ fn build_taint_diag(
             }
             _ => crate::patterns::Severity::Medium,
         }
+    } else if let Some(meta) = [
+        crate::labels::Cap::LDAP_INJECTION,
+        crate::labels::Cap::XPATH_INJECTION,
+        crate::labels::Cap::HEADER_INJECTION,
+        crate::labels::Cap::OPEN_REDIRECT,
+        crate::labels::Cap::SSTI,
+        crate::labels::Cap::XXE,
+        crate::labels::Cap::PROTOTYPE_POLLUTION,
+    ]
+    .iter()
+    .find(|c| effective_caps.contains(**c))
+    .and_then(|c| crate::labels::cap_rule_meta(*c))
+    {
+        // New cap classes draw severity from the rule registry so a single
+        // edit to `CAP_RULE_REGISTRY` cascades through SARIF, the dashboard,
+        // and the integration suite without per-language source-kind nudges.
+        meta.severity
     } else {
         severity_for_source_kind(finding.source_kind)
     };

@@ -4,7 +4,7 @@
   "modes": ["full"],
   "expected": [
     {
-      "rule_id": "taint-unsanitised-flow",
+      "rule_id": "taint-open-redirect",
       "severity": null,
       "must_match": true,
       "line_range": [1, 3],
@@ -12,7 +12,7 @@
       "notes": "location.hash flows directly into location.assign — open redirect"
     },
     {
-      "rule_id": "taint-unsanitised-flow",
+      "rule_id": "taint-open-redirect",
       "severity": null,
       "must_match": true,
       "line_range": [5, 6],
