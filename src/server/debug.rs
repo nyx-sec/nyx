@@ -1188,6 +1188,11 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::Dto(_) => "Dto".into(),
         TypeKind::NullPrototypeObject => "NullPrototypeObject".into(),
         TypeKind::FileSystemPromisesNs => "FileSystemPromisesNs".into(),
+        TypeKind::Sequelize => "Sequelize".into(),
+        TypeKind::TypeOrmRepo => "TypeOrmRepo".into(),
+        TypeKind::TypeOrmManager => "TypeOrmManager".into(),
+        TypeKind::MikroOrmEm => "MikroOrmEm".into(),
+        TypeKind::DrizzleSqlBuilder => "DrizzleSqlBuilder".into(),
     }
 }
 

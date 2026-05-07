@@ -290,6 +290,26 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
+    // ── Phase 07 — ORM query-builder receiver-typed sinks ──
+    // See `labels/javascript.rs` for the design rationale; mirrored here so
+    // TypeScript fixtures pick up the same coverage.  Receiver TypeKinds
+    // are populated by [`crate::ssa::type_facts::constructor_type`] for
+    // `new Sequelize(...)` / `getRepository(...)` / `getManager()` /
+    // `createEntityManager()`; the type-qualified resolver rewrites
+    // `<recv>.<method>` → `<TypePrefix>.<method>` against these matchers.
+    LabelRule {
+        matchers: &[
+            "Sequelize.literal",
+            "TypeOrmRepo.query",
+            "TypeOrmRepo.createQueryBuilder",
+            "TypeOrmManager.query",
+            "TypeOrmManager.createQueryBuilder",
+            "MikroOrmEm.execute",
+            "DrizzleSqlBuilder.raw",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+    },
     // ─── LDAP injection sinks ───
     //
     // Mirror of `labels/javascript.rs`; ldapjs / ts-ldapjs has the same
@@ -430,27 +450,47 @@ pub static EXCLUDES: &[&str] = &[
 /// `javascript.rs::GATED_LABEL_RULES` for the design rationale; both
 /// language registries carry the same matcher list to keep .ts and .js
 /// fixtures in lockstep.
-pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[GatedLabelRule {
-    matchers: &[
-        "readFile",
-        "writeFile",
-        "unlink",
-        "open",
-        "stat",
-        "readdir",
-        "mkdir",
-        "rmdir",
-        "rm",
-        "appendFile",
-        "copyFile",
-        "rename",
-        "truncate",
-        "chmod",
-    ],
-    label: DataLabel::Sink(Cap::FILE_IO),
-    case_sensitive: false,
-    gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
-}];
+pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
+    GatedLabelRule {
+        matchers: &[
+            "readFile",
+            "writeFile",
+            "unlink",
+            "open",
+            "stat",
+            "readdir",
+            "mkdir",
+            "rmdir",
+            "rm",
+            "appendFile",
+            "copyFile",
+            "rename",
+            "truncate",
+            "chmod",
+        ],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: false,
+        gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
+    },
+    // Phase 07 — Knex bare-name raw-SQL escape hatches. See
+    // `labels/javascript.rs::GATED_LABEL_RULES` for the rationale; this
+    // mirror keeps `.ts` and `.js` fixtures in lockstep.
+    GatedLabelRule {
+        matchers: &["whereRaw", "orderByRaw", "havingRaw"],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        gate: LabelGate::FileImportsModule(&["knex"]),
+    },
+    // Phase 07 — Drizzle `sql` template-tag builder. See
+    // `labels/javascript.rs::GATED_LABEL_RULES` for the two callee
+    // shapes covered (`sql\`...\`` and `sql.raw(...)`).
+    GatedLabelRule {
+        matchers: &["=sql", "sql.raw"],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
+    },
+];
 
 pub static GATED_SINKS: &[SinkGate] = &[
     SinkGate {

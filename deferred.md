@@ -265,6 +265,83 @@ implied or surfaced but did not finish.
       semantics but use entirely separate grammars.  Out of
       scope; revisit when a gap test arrives for one of those
       ecosystems.
+- [ ] Phase 07 audit — `ssa::type_facts::constructor_type` (TS/JS)
+      assigns the new ORM TypeKinds (`Sequelize`, `TypeOrmRepo`,
+      `TypeOrmManager`, `MikroOrmEm`) by suffix-matching alone, with
+      no import-table gate. The phase 07 plan called for
+      "Use Phase 04's import table to only assign the TypeKind when
+      the symbol resolves to the real ORM package", but threading the
+      import map through `optimize_ssa` → `analyze_types_with_param_types`
+      → `constructor_type` is invasive (six call sites). The leaf-suffix
+      names are distinctive enough that misfires are unlikely on real
+      code; revisit when a fixture surfaces a false positive (e.g. an
+      app-internal class named `Sequelize` with a `.literal()` helper).
+- [ ] Phase 07 audit — `TypeKind::DrizzleSqlBuilder` and its
+      `label_prefix` + `DrizzleSqlBuilder.raw` flat rule are wired
+      end-to-end, but the variant is never assigned by
+      `constructor_type` because the imported `sql` symbol from
+      `drizzle-orm` is not produced by a constructor call (just an
+      import binding). Phase 07 ships the leading-identifier
+      `LabelGate::ImportedFromModule(&["drizzle-orm"])` shape via
+      GATED_LABEL_RULES instead, so the TypeKind path is reachable
+      only by future SSA-time import-aware tagging. Either remove the
+      variant or land a tagging pass that types Param/Source values
+      whose name resolves to an imported binding.
+- [ ] Phase 07 audit — receiver-type-qualified ORM sinks
+      (`TypeOrmRepo.query`, `MikroOrmEm.execute`, etc.) are flat
+      label rules, so they fire on taint into ANY positional argument
+      rather than gating to the SQL-template position. The negative
+      parameterised fixture (`sqli_typeorm_safe_parameterized.ts`)
+      passes only because no user input flows into the call at all;
+      a real-world `repo.query("SELECT $1", [tainted])` would FP.
+      Wire SinkGate semantics through the type-qualified resolver path
+      so `TypeOrmRepo.query` carries `payload_args = &[0]` and
+      bind-array taint (arg 1+) is suppressed.
+- [ ] Phase 07 audit — `LabelGate::FileImportsModule(&["knex"])` for
+      Knex `whereRaw` / `orderByRaw` / `havingRaw` fires whenever any
+      file-local binding maps to `knex`, including peripheral imports
+      (e.g. `import { Knex } from 'knex'` for type-only use). A
+      tighter gate would witness only the query-builder factory call
+      (`const db = knex({...})`) but needs receiver-type tracking
+      that constructor_type does not currently produce for the bare
+      `knex` callee. Revisit when an FP surfaces.
+- [ ] Phase 07 audit — no positive MikroORM fixture ships in the
+      `orm_builders` directory. The `MikroOrmEm.execute` rule + the
+      `createEntityManager` constructor_type entry are wired but only
+      validated through the type system, not by a scan-time fixture.
+      Add `sqli_mikroorm_execute.ts` once a real fixture pattern is
+      identified, or drop the rule until then.
+- [ ] Phase 07 audit — `Sequelize` constructor maps to
+      `TypeKind::Sequelize` purely from leaf-suffix matching on
+      `new_expression`. The mapping fires on `new Sequelize(...)` but
+      not on the alternate factory shape `Sequelize.define(...)`
+      (which returns a Model class, distinct from the Sequelize
+      instance). The plan listed `sequelize.literal` as a factory in
+      the constructor_type table, but `sequelize.literal()` returns a
+      Literal value, not a Sequelize instance — typing that result as
+      `Sequelize` would mis-shape. Skip until a fixture surfaces a
+      gap.
+- [ ] Phase 07 audit — **`await` blocks receiver-type-qualified sink
+      resolution**. Reproduction: `await repo.query("SELECT … '" + name
+      + "'")` after `const repo = getRepository(User)` does NOT fire
+      `TypeOrmRepo.query` SQL_QUERY; the same call without `await`
+      fires HIGH at the call site. The fixture
+      `sqli_typeorm_query.ts` test passes only by coincidence — the
+      `res.json(rows)` XSS finding lands on the expected sink_line
+      (17), masking that the actual TypeORM SQL_QUERY rule never
+      fires. Same shape will silently break future `TypeOrmManager.query`
+      / `MikroOrmEm.execute` / `Sequelize.literal` fixtures whenever
+      the realistic `await callee(...)` form is used. Likely cause:
+      await-expression SSA lowering interposes between the `repo`
+      receiver value and the inner `Call` op so
+      `resolve_type_qualified_labels`'s receiver lookup misses the
+      type fact. Fix probably touches `cfg/mod.rs` await
+      lowering + `taint::ssa_transfer::receiver_candidates_for_type_lookup`.
+      Two follow-ups required: (a) land the resolver/lowering fix;
+      (b) tighten `tests/recall_gaps.rs::orm_builders` to assert the
+      finding's capability (`SQL_QUERY`) — currently only `rule_id`
+      and `sink_line` are checked, which is why this regression went
+      green.
 
 ## Deferred phases
 

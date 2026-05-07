@@ -206,6 +206,17 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         // has no dedicated slot; share the Object index so singleton
         // recovery still hands back a usable TypeKind.
         TypeKind::FileSystemPromisesNs => 3,
+        // Phase 07 ORM receiver TypeKinds. They participate only in the
+        // type-qualified callee resolver via their `label_prefix()`; the
+        // bitset domain's flow-sensitive narrowing has no dedicated slot
+        // for them, so collapse to Object (3). Singleton recovery from
+        // the index will hand back `Object`, which is a benign upper
+        // bound for the ORM receiver shapes.
+        TypeKind::Sequelize
+        | TypeKind::TypeOrmRepo
+        | TypeKind::TypeOrmManager
+        | TypeKind::MikroOrmEm
+        | TypeKind::DrizzleSqlBuilder => 3,
     }
 }
 

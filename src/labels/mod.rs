@@ -50,6 +50,13 @@ pub enum LabelGate {
     /// receiver-type qualification also satisfies the gate (see Phase 05's
     /// `TypeKind::FileSystemPromisesNs`).
     ImportedFromModule(&'static [&'static str]),
+    /// Fires when *any* local-name in the file's import view resolves to one
+    /// of the listed specifiers, regardless of which identifier leads the
+    /// call. Used for Phase 07 ORM bare-name method sinks (Knex's `whereRaw`
+    /// / `orderByRaw` / `havingRaw`) where the receiver is a query-builder
+    /// instance whose binding name is arbitrary (`db`, `qb`, `users`, ...)
+    /// and the import witness is the package itself.
+    FileImportsModule(&'static [&'static str]),
 }
 
 /// A label rule that only fires when its [`LabelGate`] is satisfied at the
@@ -1416,6 +1423,19 @@ fn gate_satisfied(
             modules
                 .iter()
                 .any(|m| source_module.eq_ignore_ascii_case(m))
+        }
+        LabelGate::FileImportsModule(modules) => {
+            let Some(ctx) = ctx else {
+                return false;
+            };
+            let Some(map) = ctx.local_imports else {
+                return false;
+            };
+            map.values().any(|source_module| {
+                modules
+                    .iter()
+                    .any(|m| source_module.eq_ignore_ascii_case(m))
+            })
         }
     }
 }

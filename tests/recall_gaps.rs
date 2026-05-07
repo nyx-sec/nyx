@@ -41,8 +41,8 @@
 //! |       | `promise_then_chain_reentrant`|
 //! | 05    | `fs_promises_*`               |
 //! | 06    | `jsx_dangerous_html`          |
-//! | TBD   | `orm_builders`,               |
-//! |       | `ssrf_url_builders`,          |
+//! | 07    | `orm_builders`                |
+//! | TBD   | `ssrf_url_builders`,          |
 //! |       | `cross_package_ipa`,          |
 //! |       | `nextjs_entrypoints`          |
 //!
@@ -275,19 +275,60 @@ fn jsx_dangerous_html() {
     );
 }
 
+/// Phase 07 recall-gap: ORM query-builder raw-SQL escape hatches.
+/// Coverage:
+///   - Drizzle `sql.raw(x)` and tagged-template `sql\`...\`` shapes
+///     (leading-id `ImportedFromModule(&["drizzle-orm"])` gate)
+///   - Sequelize `sequelize.literal(x)` via receiver-type
+///     qualification (`TypeKind::Sequelize` → `Sequelize.literal`)
+///   - TypeORM `repo.query(...)` via receiver-type qualification
+///     (`TypeKind::TypeOrmRepo` → `TypeOrmRepo.query`)
+///   - Knex `db.whereRaw(...)` via the new file-level
+///     `FileImportsModule(&["knex"])` gate
+/// Negatives:
+///   - parameterised TypeORM `repo.query("...", [const])` stays silent
+///   - bare `whereRaw` / `literal` calls in a file without ORM imports
 #[test]
-#[ignore = "PHASE 05 unblocks"]
 fn orm_builders() {
     let findings = scan_fixture("orm_builders");
-    assert_finding(
-        &findings,
-        ExpectedFinding {
-            rule_id: "taint-unsanitised-flow",
-            file_suffix: "repo.ts",
-            sink_line: 0,
-            source_line: None,
-        },
-    );
+
+    let positives = [
+        ("sqli_drizzle_sql_raw.ts", 13usize),
+        ("sqli_drizzle_tagged_template.ts", 14usize),
+        ("sqli_sequelize_literal.ts", 14usize),
+        ("sqli_typeorm_query.ts", 17usize),
+        ("sqli_knex_where_raw.ts", 15usize),
+    ];
+    for (file, sink_line) in positives {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: file,
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
+
+    let negatives = ["sqli_typeorm_safe_parameterized.ts", "sqli_no_orm_import_safe.ts"];
+    for file in negatives {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && (f.id.starts_with("taint-unsanitised-flow")
+                    || f.id.starts_with("cfg-unguarded-sink"))
+        });
+        assert!(
+            !leak,
+            "ORM negative fixture {file} must not fire SQL_QUERY; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
 }
 
 #[test]
@@ -306,7 +347,7 @@ fn ssrf_url_builders() {
 }
 
 #[test]
-#[ignore = "PHASE 07 unblocks"]
+#[ignore = "future phase: cross-package IPA"]
 fn cross_package_ipa() {
     let findings = scan_fixture("cross_package_ipa");
     assert_finding(

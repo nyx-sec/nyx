@@ -112,6 +112,29 @@ pub enum TypeKind {
     /// the receiver only sometimes null-prototyped, the fact widens to
     /// `Unknown` and the sink fires on the unsafe path.
     NullPrototypeObject,
+    /// A Sequelize ORM instance produced by `new Sequelize(...)`. The
+    /// type-qualified resolver rewrites `sequelize.literal(x)` →
+    /// `Sequelize.literal` against a flat SQL_QUERY rule, so user-supplied
+    /// strings flowing into Sequelize raw-SQL helpers are caught.
+    Sequelize,
+    /// A TypeORM `Repository<T>` instance, produced by
+    /// `getRepository(Entity)` / `manager.getRepository(Entity)`.
+    /// `repo.query(sql)` and `repo.createQueryBuilder().query` etc. are
+    /// SQL_QUERY sinks — type-qualified callees match flat
+    /// `TypeOrmRepo.<method>` rules.
+    TypeOrmRepo,
+    /// A TypeORM `EntityManager` produced by `getManager()` /
+    /// `connection.manager`. Same sink shape as `Repository<T>`.
+    TypeOrmManager,
+    /// A MikroORM `EntityManager` produced by `orm.em.fork()` /
+    /// `createEntityManager()`. `em.execute(sql)` is the raw-SQL sink.
+    MikroOrmEm,
+    /// A Drizzle `sql` template-tag builder imported from `drizzle-orm`.
+    /// `sqlBuilder.raw(x)` is a SQL_QUERY sink (raw escape hatch).  The
+    /// imported `sql` symbol receives this type via the file-level
+    /// import-aware tagging in [`infer_call_return_type_with_args`] so
+    /// type-qualified `DrizzleSqlBuilder.raw` resolution fires.
+    DrizzleSqlBuilder,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -158,6 +181,11 @@ impl TypeKind {
             Self::XmlParser => Some("XmlParser"),
             Self::Template => Some("Template"),
             Self::FileSystemPromisesNs => Some("FileSystemPromisesNs"),
+            Self::Sequelize => Some("Sequelize"),
+            Self::TypeOrmRepo => Some("TypeOrmRepo"),
+            Self::TypeOrmManager => Some("TypeOrmManager"),
+            Self::MikroOrmEm => Some("MikroOrmEm"),
+            Self::DrizzleSqlBuilder => Some("DrizzleSqlBuilder"),
             _ => None,
         }
     }
@@ -507,6 +535,18 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             match suffix {
             "URL" => Some(TypeKind::Url),
             "Request" | "XMLHttpRequest" => Some(TypeKind::HttpClient),
+            // Phase 07 — ORM constructors / factory functions. Coverage:
+            // `new Sequelize(...)`           → Sequelize
+            // `getRepository(Entity)`        → TypeOrmRepo  (typeorm)
+            // `getManager()`                 → TypeOrmManager (typeorm)
+            // `createEntityManager()`        → MikroOrmEm (@mikro-orm/core)
+            // The leaf-suffix names are distinctive enough that user code
+            // is unlikely to collide; if a fixture surfaces a misfire,
+            // gate via `local_imports` (see deferred.md follow-up).
+            "Sequelize" => Some(TypeKind::Sequelize),
+            "getRepository" => Some(TypeKind::TypeOrmRepo),
+            "getManager" => Some(TypeKind::TypeOrmManager),
+            "createEntityManager" => Some(TypeKind::MikroOrmEm),
             // JS built-in collection constructors. `new Map()` / `new Set()`
             // / `new WeakMap()` / `new WeakSet()` / `new Array()` produce
             // in-memory collections; downstream `m.get(k)` / `m.set(k, v)`

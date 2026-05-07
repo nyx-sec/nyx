@@ -345,6 +345,32 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
+    // ── Phase 07 — ORM query-builder receiver-typed sinks ──
+    //
+    // Each rule here matches a callee text constructed by
+    // `resolve_type_qualified_labels` when a value's inferred TypeKind has a
+    // `label_prefix()`.  The matcher form `<TypePrefix>.<method>` is the
+    // wire shape produced by that helper.  The receiver TypeKinds
+    // themselves are populated by [`crate::ssa::type_facts::constructor_type`]
+    // (TS/JS branch): `new Sequelize(...)` → `Sequelize`,
+    // `getRepository(Entity)` → `TypeOrmRepo`,
+    // `getManager()` → `TypeOrmManager`,
+    // `createEntityManager()` → `MikroOrmEm`.  Without a typed receiver the
+    // qualified callee text is never built, so these rules cannot misfire on
+    // unrelated `.literal()` / `.query()` / `.execute()` methods.
+    LabelRule {
+        matchers: &[
+            "Sequelize.literal",
+            "TypeOrmRepo.query",
+            "TypeOrmRepo.createQueryBuilder",
+            "TypeOrmManager.query",
+            "TypeOrmManager.createQueryBuilder",
+            "MikroOrmEm.execute",
+            "DrizzleSqlBuilder.raw",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+    },
     // ─── LDAP injection sinks ───
     //
     // `ldapjs`: both the bound-variable idiom
@@ -570,27 +596,52 @@ pub static EXCLUDES: &[&str] = &[
 /// member-access forms continue to fire via the flat FILE_IO matcher
 /// list (no gate needed because the `fs.promises.` prefix is itself
 /// witness to the resolution).
-pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[GatedLabelRule {
-    matchers: &[
-        "readFile",
-        "writeFile",
-        "unlink",
-        "open",
-        "stat",
-        "readdir",
-        "mkdir",
-        "rmdir",
-        "rm",
-        "appendFile",
-        "copyFile",
-        "rename",
-        "truncate",
-        "chmod",
-    ],
-    label: DataLabel::Sink(Cap::FILE_IO),
-    case_sensitive: false,
-    gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
-}];
+pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
+    GatedLabelRule {
+        matchers: &[
+            "readFile",
+            "writeFile",
+            "unlink",
+            "open",
+            "stat",
+            "readdir",
+            "mkdir",
+            "rmdir",
+            "rm",
+            "appendFile",
+            "copyFile",
+            "rename",
+            "truncate",
+            "chmod",
+        ],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: false,
+        gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
+    },
+    // Phase 07 — Knex bare-name raw-SQL escape hatches. The receiver in
+    // `db.whereRaw(sql)` shape is an arbitrary local binding (`db`, `qb`,
+    // `users`, ...) so leading-identifier gating cannot witness the
+    // import; use a file-level gate that fires when *any* binding in the
+    // file resolves to `knex`.
+    GatedLabelRule {
+        matchers: &["whereRaw", "orderByRaw", "havingRaw"],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        gate: LabelGate::FileImportsModule(&["knex"]),
+    },
+    // Phase 07 — Drizzle `sql` template-tag builder.  Two shapes:
+    //   - `sql.raw(x)`              → callee text "sql.raw" (member call)
+    //   - `sql\`SELECT ${x}\``       → callee text "sql"      (tag call)
+    // Both leading-identifier-gate against the imported `sql` symbol from
+    // `drizzle-orm`. `=sql` is exact-only so unrelated `.sql()` methods do
+    // not collide; `sql.raw` carries its own member-access matcher.
+    GatedLabelRule {
+        matchers: &["=sql", "sql.raw"],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
+    },
+];
 
 pub static GATED_SINKS: &[SinkGate] = &[
     SinkGate {
