@@ -30,6 +30,16 @@ pub enum PredicateKind {
     /// and the **false branch is the validated path**.  Use inverted polarity
     /// when applying branch predicates.
     ShellMetaValidated,
+    /// Inline relative-URL validation: `x.startsWith("/")` / `x.starts_with("/")`
+    /// / `x.startswith("/")` / `strpos(x, "/") === 0`.  The TRUE branch
+    /// constrains `x` to a relative path (no scheme, no `//host`), which is
+    /// the standard inline form of an open-redirect sanitiser when the
+    /// developer didn't extract a named helper.  Cap-aware: clears
+    /// [`crate::labels::Cap::OPEN_REDIRECT`] only on the validated branch
+    /// so non-redirect sinks downstream still fire on the residual taint.
+    /// Mirrors [`ShellMetaValidated`](Self::ShellMetaValidated) but with
+    /// non-inverted polarity (true branch is the validated path).
+    RelativeUrlValidated,
     /// Bounded-length rejection: `x.len() > N` / `x.length < N` with N >= 2.
     ///
     /// Commonly paired with `ShellMetaValidated` in OR-chain rejection
@@ -173,6 +183,120 @@ fn is_metachar_regex_class(text: &str) -> bool {
             rest = &after[close + 1..];
         } else {
             break;
+        }
+    }
+    false
+}
+
+/// Check whether `text` is an inline relative-URL validation: a leading-
+/// slash check on a string variable.  Recognised shapes:
+///
+/// * `<X>.startsWith("/")` — JS/TS/Java/Kotlin
+/// * `<X>.starts_with("/")` — Rust
+/// * `<X>.startswith("/")` — Python
+/// * `strpos($X, "/") === 0` / `mb_strpos(...)` — PHP
+/// * `<X>[0] === "/"` / `<X>[0] == '/'` — JS/TS direct index
+///
+/// Negation prefixes (`!`, `not`) are NOT stripped, the caller's
+/// classification path handles those uniformly via the predicate
+/// polarity inversion machinery.
+fn is_leading_slash_check(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    // Method-call form: `.startswith("/")` covers JS/TS/Java (`startsWith`
+    // lower-cases to `startswith`), Python (`startswith`), Rust
+    // (`starts_with` → `starts_with` after lower).  Keep the variants
+    // explicit so we don't miss the underscore form.
+    for method in [".startswith(", ".starts_with("] {
+        if let Some(idx) = lower.find(method) {
+            let args_start = idx + method.len();
+            if let Some(needle) = extract_first_string_arg(&lower[args_start..]) {
+                if needle == "/" {
+                    return true;
+                }
+            }
+        }
+    }
+    // PHP `strpos($x, "/") === 0` / `mb_strpos($x, "/") === 0` — leading-
+    // slash detection via offset-zero substring match.  Both equality
+    // forms (`===`, `==`) accepted; the `0` literal is the load-bearing
+    // bit.  Conservative: requires the closing `=== 0` form; bare
+    // `strpos(...)` (truthy check) is not recognised.
+    for prefix in ["strpos(", "mb_strpos("] {
+        if let Some(start) = lower.find(prefix) {
+            let after = &lower[start + prefix.len()..];
+            // Find the closing paren of the strpos call.
+            let mut depth = 1usize;
+            let bytes = after.as_bytes();
+            let mut close = None;
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            let Some(close) = close else { continue };
+            let args = &after[..close];
+            // Need at least one comma so we have two args.
+            let mut depth = 0i32;
+            let mut comma = None;
+            for (j, ch) in args.char_indices() {
+                match ch {
+                    '(' | '[' | '{' => depth += 1,
+                    ')' | ']' | '}' => depth -= 1,
+                    ',' if depth == 0 => {
+                        comma = Some(j);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let Some(comma) = comma else { continue };
+            let second = args[comma + 1..].trim();
+            // Strip optional surrounding parens / quotes.
+            let needle = second.trim_matches(|c: char| c == '"' || c == '\'');
+            if needle != "/" {
+                continue;
+            }
+            // Tail after the strpos `)` should compare against 0 with
+            // `===` / `==`.  Allow whitespace.
+            let tail = after[close + 1..].trim_start();
+            if let Some(rest) = tail
+                .strip_prefix("===")
+                .or_else(|| tail.strip_prefix("=="))
+            {
+                if rest.trim() == "0" {
+                    return true;
+                }
+            }
+        }
+    }
+    // Direct subscript form: `<X>[0] === '/'` / `<X>[0] == "/"`.
+    // Conservative: the literal `[0]` immediately followed by an
+    // equality op and a single-char `/` literal.
+    for op in ["===", "=="] {
+        let probe = format!("[0] {}", op);
+        if let Some(idx) = lower.find(&probe) {
+            let after = lower[idx + probe.len()..].trim_start();
+            if after.starts_with("'/'") || after.starts_with("\"/\"") {
+                return true;
+            }
+        }
+        // Without spaces around the operator: `[0]==='/'`.
+        let probe_tight = format!("[0]{}", op);
+        if let Some(idx) = lower.find(&probe_tight) {
+            let after = lower[idx + probe_tight.len()..].trim_start();
+            if after.starts_with("'/'") || after.starts_with("\"/\"") {
+                return true;
+            }
         }
     }
     false
@@ -328,6 +452,17 @@ pub fn classify_condition(text: &str) -> PredicateKind {
     // case-accurate, `;` / `|` / `&` have no case.
     if is_shell_metachar_rejection(text) {
         return PredicateKind::ShellMetaValidated;
+    }
+
+    // ── Inline relative-URL validation ──────────────────────────────────
+    //
+    // `x.startsWith("/")` (JS/TS/Java/Kotlin), `x.starts_with("/")` (Rust),
+    // `x.startswith("/")` (Python), `strpos($x, "/") === 0` (PHP).
+    // The TRUE branch constrains `x` to a leading-slash relative path —
+    // the canonical inline open-redirect sanitiser.  Matched BEFORE
+    // AllowlistCheck (which would otherwise capture `.starts_with(`).
+    if is_leading_slash_check(text) {
+        return PredicateKind::RelativeUrlValidated;
     }
 
     // ── Allowlist / membership checks ────────────────────────────────────
@@ -549,6 +684,13 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
             // The receiver of `.contains(…)` / `.includes(…)` is the value
             // being validated.  Reuses the validation extractor which already
             // handles `x.method(arg)` → `"x"`.
+            let target = extract_validation_target(text);
+            (kind, target)
+        }
+        PredicateKind::RelativeUrlValidated => {
+            // Receiver of `.startsWith("/")` / `.startswith("/")` /
+            // `.starts_with("/")`, or first arg of `strpos($x, "/")`.
+            // Same machinery as ShellMetaValidated.
             let target = extract_validation_target(text);
             (kind, target)
         }

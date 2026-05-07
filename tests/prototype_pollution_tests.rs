@@ -157,6 +157,15 @@ fn full_ssa_object_create_null_receiver_does_not_fire() {
 }
 
 #[test]
+fn full_ssa_partial_null_proto_fires_on_unsafe_branch() {
+    // Phase 09 flow-sensitivity regression: previous AST scan suppressed
+    // any same-function `Object.create(null)` assignment, masking the
+    // unsafe else-branch.  TypeFacts phi-meet now joins to Unknown so
+    // the PROTOTYPE_POLLUTION sink fires.
+    assert_unsafe("full", "unsafe_partial_null_proto.js");
+}
+
+#[test]
 fn full_ssa_allowlist_guard_does_not_fire() {
     assert_clean("full", "safe_allowlist.js");
 }

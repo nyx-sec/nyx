@@ -196,6 +196,11 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         // unhandled variant.  Same-file/cross-file Dto-aware paths read
         // the structured TypeKind directly, not via this index.
         TypeKind::Dto(_) => 6,
+        // NullPrototypeObject is a JS-only sub-kind of Object used for
+        // flow-sensitive prototype-pollution suppression.  The bitset
+        // domain has no dedicated slot, share the Object index so
+        // singleton recovery still maps to a meaningful TypeKind.
+        TypeKind::NullPrototypeObject => 3,
     }
 }
 

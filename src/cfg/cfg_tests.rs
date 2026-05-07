@@ -1190,6 +1190,7 @@ fn clone_preserves_all_sub_structs() {
             destination_uses: None,
             gate_filters: Vec::new(),
             is_constructor: false,
+            produces_null_proto: false,
         },
         taint: TaintMeta {
             labels: {

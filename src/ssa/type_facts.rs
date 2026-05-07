@@ -92,6 +92,15 @@ pub enum TypeKind {
     /// Strictly additive, without a DTO definition, callers fall back
     /// to name-only resolution.
     Dto(DtoFields),
+    /// An object created with `Object.create(null)` — has no prototype
+    /// chain, so subscript-write keys cannot pollute `Object.prototype`.
+    /// Populated for JS/TS values whose constructor call is
+    /// `Object.create(null)`. Phase 09's PROTOTYPE_POLLUTION suppression
+    /// at the synthetic `__index_set__` sink consults this fact (via
+    /// SSA receiver value) so the suppression is flow-sensitive: if a
+    /// phi join leaves the receiver only sometimes null-prototyped, the
+    /// fact widens to `Unknown` and the sink fires on the unsafe path.
+    NullPrototypeObject,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -326,9 +335,11 @@ pub fn is_safe_query_object_arg(
 /// authoritative, and consumers see Unknown instead of a wrong
 /// type tag.
 ///
-/// `_args` and `_consts` are kept on the signature so we can later
-/// add arg-shape narrowing when class-literal lowering captures
-/// `Foo.class` as an arg-use.
+/// `_args` and `_consts` allow arg-shape narrowing when an arg's
+/// constant value distinguishes overloads.  Reserved for future Java
+/// `createQuery(Foo.class)` shape (the `Object.create(null)` case is
+/// driven by the `produces_null_proto` CFG flag instead, since a
+/// literal `null` arg leaves no SSA value to inspect).
 fn arg_aware_call_type(
     lang: Lang,
     callee: &str,
@@ -923,7 +934,19 @@ pub fn analyze_types_with_param_types(
                 SsaOp::SelfParam => TypeFact::from_kind(TypeKind::Object),
                 SsaOp::CatchParam => TypeFact::from_kind(TypeKind::Object),
                 SsaOp::Call { callee, args, .. } => {
-                    if let Some(ty) = lang.and_then(|l| constructor_type(l, callee)) {
+                    // Phase 09: CFG marks `Object.create(null)` (and
+                    // future null-prototype constructors) at lowering
+                    // time.  Honour it ahead of generic constructor /
+                    // arg-aware dispatch so the returned SsaValue
+                    // carries `NullPrototypeObject` for prototype-
+                    // pollution suppression.
+                    let null_proto = cfg
+                        .node_weight(inst.cfg_node)
+                        .map(|ni| ni.call.produces_null_proto)
+                        .unwrap_or(false);
+                    if null_proto {
+                        TypeFact::from_kind(TypeKind::NullPrototypeObject)
+                    } else if let Some(ty) = lang.and_then(|l| constructor_type(l, callee)) {
                         TypeFact::from_kind(ty)
                     } else if let Some(ty) =
                         lang.and_then(|l| arg_aware_call_type(l, callee, args, consts))

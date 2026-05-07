@@ -195,6 +195,56 @@ pub(super) fn extract_destination_kwarg_pairs(
 
 /// Extract the string-literal content at argument position `index` (0-based).
 /// Returns `None` if the argument is not a string literal or the index is out of range.
+/// True when `call_node` is `Object.create(null)` (or its parenthesised /
+/// awaited / type-cast wrappers).  Strict literal-`null` first-arg match,
+/// no aliasing through intermediate variables.  Caller restricts to JS/TS.
+pub(super) fn is_object_create_null_call(call_node: Node, code: &[u8]) -> bool {
+    if !matches!(call_node.kind(), "call_expression") {
+        return false;
+    }
+    let callee = call_node
+        .child_by_field_name("function")
+        .and_then(|f| text_of(f, code))
+        .unwrap_or_default();
+    if callee != "Object.create" {
+        return false;
+    }
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let named: Vec<Node> = args.named_children(&mut cursor).collect();
+    if named.len() != 1 {
+        return false;
+    }
+    let mut arg = named[0];
+    // Unwrap parens / await / TS type-assertions.
+    for _ in 0..4 {
+        match arg.kind() {
+            "parenthesized_expression" => {
+                if let Some(inner) = arg.named_child(0) {
+                    arg = inner;
+                    continue;
+                }
+            }
+            "await_expression" => {
+                if let Some(inner) = arg.child_by_field_name("argument") {
+                    arg = inner;
+                    continue;
+                }
+            }
+            "as_expression" | "type_assertion" => {
+                if let Some(inner) = arg.named_child(0) {
+                    arg = inner;
+                    continue;
+                }
+            }
+            _ => break,
+        }
+    }
+    arg.kind() == "null" || text_of(arg, code).as_deref() == Some("null")
+}
+
 pub(super) fn extract_const_string_arg(
     call_node: Node,
     index: usize,

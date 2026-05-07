@@ -1186,6 +1186,7 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::XmlParser => "XmlParser".into(),
         TypeKind::Template => "Template".into(),
         TypeKind::Dto(_) => "Dto".into(),
+        TypeKind::NullPrototypeObject => "NullPrototypeObject".into(),
     }
 }
 

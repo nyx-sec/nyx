@@ -67,6 +67,7 @@ use literals::{
     arg0_kind_and_interpolation, call_ident_of, def_use, detect_go_replace_call_sanitizer,
     detect_rust_replace_chain_sanitizer, extract_arg_callees, extract_arg_string_literals,
     extract_arg_uses, extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
+    is_object_create_null_call,
     extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
     extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
     find_call_node, find_call_node_deep, find_chained_inner_call, has_keyword_arg,
@@ -359,6 +360,14 @@ pub struct CallMeta {
     /// must not survive into the constructed object.
     #[serde(default)]
     pub is_constructor: bool,
+    /// True when this call is `Object.create(null)` (or alias) — the
+    /// returned value has no prototype chain.  Consumed by TypeFacts to
+    /// tag the SsaValue with [`crate::ssa::type_facts::TypeKind::NullPrototypeObject`]
+    /// so Phase 09's PROTOTYPE_POLLUTION suppression can fire flow-
+    /// sensitively at the synthetic `__index_set__` sink.  Set during
+    /// CFG node construction so SSA does not need to re-walk the AST.
+    #[serde(default)]
+    pub produces_null_proto: bool,
 }
 
 /// One gate's contribution at a call site whose callee matches multiple
@@ -2684,6 +2693,13 @@ pub(super) fn push_node<'a>(
         || call_ast
             .is_some_and(|cn| matches!(cn.kind(), "new_expression" | "object_creation_expression"));
 
+    // Phase 09: detect `Object.create(null)` so TypeFacts can tag the
+    // returned SsaValue with `NullPrototypeObject` for flow-sensitive
+    // prototype-pollution suppression.  Restricted to JS/TS where
+    // Object.create is the idiomatic null-prototype constructor.
+    let produces_null_proto = matches!(lang, "javascript" | "typescript")
+        && call_ast.is_some_and(|cn| is_object_create_null_call(cn, code));
+
     let idx = g.add_node(NodeInfo {
         kind,
         call: CallMeta {
@@ -2700,6 +2716,7 @@ pub(super) fn push_node<'a>(
             destination_uses,
             gate_filters,
             is_constructor,
+            produces_null_proto,
         },
         taint: TaintMeta {
             labels,
@@ -2944,33 +2961,150 @@ fn try_lower_subscript_write(
     Some(n)
 }
 
+/// Spring MVC controller-return open-redirect recogniser.  Detects the
+/// shape `return "redirect:" + tainted` (Java string concatenation) and
+/// emits a synthetic `__spring_redirect__` Call sink with
+/// `Sink(OPEN_REDIRECT)` so the existing taint pipeline propagates the
+/// concatenated suffix through the OPEN_REDIRECT cap.  The synthetic
+/// node sequences between `preds` and the eventual Return node.
+///
+/// Returns `Some(synthetic_idx)` when matched, otherwise `None`.
+/// Java only — Spring's `redirect:` view-name convention has no
+/// counterpart in the other supported languages, and matching the
+/// literal across non-Spring code would over-fire.
+fn try_lower_spring_redirect_return(
+    ast: Node,
+    preds: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &[u8],
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+) -> Option<NodeIndex> {
+    if lang != "java" {
+        return None;
+    }
+    // `return EXPR ;` — find the returned expression.  tree-sitter-java
+    // wraps the value in a `return_statement` whose first named child
+    // is the expression.
+    let expr = ast.named_child(0)?;
+    // Strip parentheses.
+    let mut cur = expr;
+    while cur.kind() == "parenthesized_expression" {
+        cur = cur.named_child(0)?;
+    }
+    if cur.kind() != "binary_expression" {
+        return None;
+    }
+    let op = cur.child_by_field_name("operator")?;
+    let op_text = text_of(op, code)?;
+    if op_text != "+" {
+        return None;
+    }
+    // Walk leftmost descent through left-associated `+` chains so that
+    // `"redirect:" + a + b` still matches (the AST nests as
+    // `(("redirect:" + a) + b)`).
+    let mut leftmost = cur;
+    loop {
+        let left = leftmost.child_by_field_name("left")?;
+        let mut left_inner = left;
+        while left_inner.kind() == "parenthesized_expression" {
+            left_inner = left_inner.named_child(0)?;
+        }
+        if left_inner.kind() == "binary_expression" {
+            let op_l = left_inner.child_by_field_name("operator")?;
+            if text_of(op_l, code).as_deref() == Some("+") {
+                leftmost = left_inner;
+                continue;
+            }
+        }
+        // `left_inner` is the leftmost atom — must be a string literal
+        // whose constant value starts with `redirect:`.
+        if !matches!(left_inner.kind(), "string_literal" | "string") {
+            return None;
+        }
+        let lit = text_of(left_inner, code)?;
+        if lit.len() < 2 {
+            return None;
+        }
+        let inner = &lit[1..lit.len() - 1];
+        if !inner.starts_with("redirect:") {
+            return None;
+        }
+        break;
+    }
+
+    // Collect identifiers referenced anywhere in the original concat
+    // expression — the tainted URL piece is one of them.  Receiver-style
+    // method calls (`view.toString()`) are intentionally captured via
+    // the bare identifier; precision improvements are deferred to the
+    // SSA / abstract-string layer.
+    let mut concat_uses: Vec<String> = Vec::new();
+    collect_idents(cur, code, &mut concat_uses);
+    if concat_uses.is_empty() {
+        return None;
+    }
+
+    let span = (ast.start_byte(), ast.end_byte());
+    let ord = *call_ordinal;
+    *call_ordinal += 1;
+
+    let mut labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
+    labels.push(DataLabel::Sink(Cap::OPEN_REDIRECT));
+
+    let n = g.add_node(NodeInfo {
+        kind: StmtKind::Call,
+        call: CallMeta {
+            callee: Some("__spring_redirect__".to_string()),
+            arg_uses: vec![concat_uses.clone()],
+            call_ordinal: ord,
+            sink_payload_args: Some(vec![0]),
+            ..Default::default()
+        },
+        taint: TaintMeta {
+            labels,
+            uses: concat_uses,
+            ..Default::default()
+        },
+        ast: AstMeta {
+            span,
+            enclosing_func: enclosing_func.map(|s| s.to_string()),
+        },
+        ..Default::default()
+    });
+    connect_all(g, preds, n, EdgeKind::Seq);
+    Some(n)
+}
+
 /// Phase 09 prototype-pollution suppression decisions for the synthetic
 /// `__index_set__` node emitted by `try_lower_subscript_write`.
 ///
 /// Returns `true` when the assignment is provably safe and the
-/// `Cap::PROTOTYPE_POLLUTION` sink label should be elided.  The four
-/// recognised shapes mirror the phase 09 acceptance fixtures:
+/// `Cap::PROTOTYPE_POLLUTION` sink label should be elided.  The three
+/// CFG-layer recognised shapes are flow-insensitive AST patterns:
 ///
 /// 1. Constant string key whose value is not one of the dangerous
 ///    keys (`__proto__`, `constructor`, `prototype`).  A literal-keyed
 ///    write cannot pollute even if the value is tainted.
-/// 2. Receiver `arr_text` was initialised by a same-function statement
-///    of the form `<arr_text> = Object.create(null)` — null-prototype
-///    objects have no `Object.prototype` to pollute.
-/// 3. Reject pattern `if (idx === "__proto__" || idx === "constructor"
+/// 2. Reject pattern `if (idx === "__proto__" || idx === "constructor"
 ///    || idx === "prototype") <return/throw/break>` enclosing the
 ///    assignment.  The dangerous-key path terminates before reaching
 ///    the synthesised store.
-/// 4. Allowlist pattern `if (idx === "name" || idx === "id") { obj[idx]
+/// 3. Allowlist pattern `if (idx === "name" || idx === "id") { obj[idx]
 ///    = v }`.  The assignment only executes when `idx` is one of a
 ///    small set of known-safe constants.
+///
+/// The null-prototype receiver suppression (`Object.create(null)`) is
+/// handled flow-sensitively in the SSA taint engine via
+/// `TypeKind::NullPrototypeObject`, since AST scans cannot honour
+/// branch-local re-bindings or phi joins.
 ///
 /// Conservative: any unrecognised shape returns `false` so the sink
 /// label is attached and the SSA layer decides on taint reachability.
 fn pp_should_suppress_index_set(
     assign_ast: Node,
     subscript_node: Node,
-    arr_text: &str,
+    _arr_text: &str,
     idx_text: &str,
     code: &[u8],
 ) -> bool {
@@ -2988,12 +3122,7 @@ fn pp_should_suppress_index_set(
         }
     }
 
-    // 2. Null-prototype receiver fact.
-    if pp_receiver_is_null_prototype(assign_ast, arr_text, code) {
-        return true;
-    }
-
-    // 3 + 4. Dominator-style guard ancestors (reject + allowlist).
+    // 2 + 3. Dominator-style guard ancestors (reject + allowlist).
     if pp_is_guarded_by_proto_check(assign_ast, idx_text, code) {
         return true;
     }
@@ -3033,164 +3162,6 @@ fn pp_string_literal_value(n: Node, code: &[u8]) -> Option<String> {
         return None;
     }
     Some(inner.to_string())
-}
-
-/// Walk up to the enclosing function/method/closure body for `from` and
-/// scan every statement looking for an assignment / declarator of the
-/// form `<target> = Object.create(null)`.  Conservative: only matches
-/// the literal `null` argument, no aliasing through intermediate
-/// variables.
-fn pp_receiver_is_null_prototype(from: Node, target: &str, code: &[u8]) -> bool {
-    let Some(func_body) = pp_enclosing_function_body(from) else {
-        return false;
-    };
-    let mut found = false;
-    pp_walk(func_body, &mut |n| {
-        if found {
-            return false;
-        }
-        if pp_node_assigns_object_create_null(n, target, code) {
-            found = true;
-            return false;
-        }
-        true
-    });
-    found
-}
-
-/// True when `n` is an assignment / variable_declarator / lexical
-/// declaration whose target identifier text equals `target` and whose
-/// initialiser is `Object.create(null)`.
-fn pp_node_assigns_object_create_null(n: Node, target: &str, code: &[u8]) -> bool {
-    // Variable declarator: `const target = Object.create(null);`
-    if matches!(n.kind(), "variable_declarator") {
-        let name = n
-            .child_by_field_name("name")
-            .and_then(|name| text_of(name, code));
-        if name.as_deref() != Some(target) {
-            return false;
-        }
-        let init = n
-            .child_by_field_name("value")
-            .or_else(|| n.child_by_field_name("init"));
-        return init
-            .map(|i| pp_call_is_object_create_null(i, code))
-            .unwrap_or(false);
-    }
-    // Assignment expression: `target = Object.create(null);`
-    if matches!(n.kind(), "assignment_expression" | "assignment") {
-        let lhs = n
-            .child_by_field_name("left")
-            .and_then(|l| text_of(l, code));
-        if lhs.as_deref() != Some(target) {
-            return false;
-        }
-        let rhs = n.child_by_field_name("right");
-        return rhs
-            .map(|r| pp_call_is_object_create_null(r, code))
-            .unwrap_or(false);
-    }
-    false
-}
-
-/// True when `n` is (or wraps) a `Object.create(null)` call expression.
-fn pp_call_is_object_create_null(n: Node, code: &[u8]) -> bool {
-    // Unwrap wrappers: parenthesised expressions, await, type-cast (TS
-    // `as`).  Best-effort: the conservative branch returns false.
-    let mut cur = n;
-    for _ in 0..4 {
-        match cur.kind() {
-            "parenthesized_expression" => {
-                if let Some(inner) = cur.named_child(0) {
-                    cur = inner;
-                    continue;
-                }
-            }
-            "await_expression" => {
-                if let Some(inner) = cur.child_by_field_name("argument") {
-                    cur = inner;
-                    continue;
-                }
-            }
-            "as_expression" | "type_assertion" => {
-                if let Some(inner) = cur.named_child(0) {
-                    cur = inner;
-                    continue;
-                }
-            }
-            _ => break,
-        }
-    }
-    if !matches!(cur.kind(), "call_expression") {
-        return false;
-    }
-    let callee = cur
-        .child_by_field_name("function")
-        .and_then(|f| text_of(f, code))
-        .unwrap_or_default();
-    if callee != "Object.create" {
-        return false;
-    }
-    let args = cur.child_by_field_name("arguments");
-    let Some(args) = args else { return false };
-    let mut cursor = args.walk();
-    let named: Vec<Node> = args.named_children(&mut cursor).collect();
-    if named.len() != 1 {
-        return false;
-    }
-    matches!(named[0].kind(), "null")
-        || text_of(named[0], code).as_deref() == Some("null")
-}
-
-/// Walk every descendant node of `root` invoking `visit`.  Stops
-/// descending whenever the callback returns `false`.  Used by the
-/// prototype-pollution suppressor to scan an enclosing function body
-/// without recursing into nested function declarations / closures.
-fn pp_walk<'a>(root: Node<'a>, visit: &mut dyn FnMut(Node<'a>) -> bool) {
-    if !visit(root) {
-        return;
-    }
-    // Skip nested function bodies — assignments in inner closures
-    // shouldn't satisfy the receiver-fact for the outer scope.
-    if matches!(
-        root.kind(),
-        "function_declaration"
-            | "function"
-            | "function_expression"
-            | "arrow_function"
-            | "method_definition"
-            | "generator_function_declaration"
-    ) {
-        return;
-    }
-    let mut cursor = root.walk();
-    for child in root.named_children(&mut cursor) {
-        pp_walk(child, visit);
-    }
-}
-
-/// Return the body subtree of the closest enclosing function /
-/// method / closure ancestor of `from`.  Falls back to the program
-/// root when `from` is at top level so module-scope receivers still
-/// participate in the receiver-fact scan.
-fn pp_enclosing_function_body(from: Node) -> Option<Node> {
-    let mut cur = from;
-    while let Some(parent) = cur.parent() {
-        match parent.kind() {
-            "function_declaration"
-            | "function"
-            | "function_expression"
-            | "arrow_function"
-            | "method_definition"
-            | "generator_function_declaration" => {
-                return parent.child_by_field_name("body").or(Some(parent));
-            }
-            "program" | "source_file" => return Some(parent),
-            _ => {}
-        }
-        cur = parent;
-    }
-    Some(cur)
 }
 
 /// Walk up from the assignment node looking for two structural guard
@@ -4262,6 +4233,21 @@ pub(super) fn build_sub<'a>(
 
                 Vec::new()
             } else {
+                // Spring MVC `return "redirect:" + url` open-redirect
+                // synthetic-sink emission.  When matched the synthetic
+                // call sequences between `preds` and the Return node.
+                let mut effective_preds: Vec<NodeIndex> = preds.to_vec();
+                if let Some(synth) = try_lower_spring_redirect_return(
+                    ast,
+                    &effective_preds,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                ) {
+                    effective_preds = vec![synth];
+                }
                 let ret = push_node(
                     g,
                     StmtKind::Return,
@@ -4272,7 +4258,7 @@ pub(super) fn build_sub<'a>(
                     0,
                     analysis_rules,
                 );
-                connect_all(g, preds, ret, EdgeKind::Seq);
+                connect_all(g, &effective_preds, ret, EdgeKind::Seq);
                 Vec::new() // terminates this path
             }
         }

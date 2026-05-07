@@ -151,6 +151,22 @@ fn java_relative_only_sanitizes() {
 }
 
 #[test]
+fn java_spring_mvc_redirect_prefix_with_tainted_url_fires() {
+    // Spring MVC controller-return shape: `return "redirect:" + url` is
+    // matched structurally at CFG construction by emitting a synthetic
+    // `__spring_redirect__` Sink(OPEN_REDIRECT) call before the Return.
+    assert_unsafe("java", "UnsafeSpringRedirect.java");
+}
+
+#[test]
+fn java_inline_relative_check_sanitizes() {
+    // Inline `target.startsWith("/")` guard with no named helper; the
+    // RelativeUrlValidated predicate strips OPEN_REDIRECT on the true
+    // branch so `res.sendRedirect(target)` is not flagged.
+    assert_clean("java", "SafeInlineRelative.java");
+}
+
+#[test]
 fn php_header_location_with_tainted_url_fires() {
     assert_unsafe("php", "unsafe_redirect.php");
 }

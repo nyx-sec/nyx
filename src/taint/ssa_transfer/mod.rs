@@ -1219,6 +1219,44 @@ fn apply_branch_predicates(
         }
     }
 
+    // RelativeUrlValidated: TRUE branch is the validated path
+    // (`x.startsWith("/")` succeeded → `x` cannot redirect off-host).
+    // Cap-aware: clear `Cap::OPEN_REDIRECT` only; non-redirect sinks
+    // (XSS / SQLi / FILE_IO) downstream still fire on residual taint.
+    if kind == PredicateKind::RelativeUrlValidated && polarity {
+        for var in condition_vars {
+            let mut to_clear: SmallVec<[SsaValue; 4]> = SmallVec::new();
+            for (val, _) in state.values.iter() {
+                if let Some(name) = ssa
+                    .value_defs
+                    .get(val.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref())
+                {
+                    if name == var {
+                        to_clear.push(*val);
+                    }
+                }
+            }
+            for val in to_clear {
+                if let Some(taint) = state.get(val).cloned() {
+                    let new_caps = taint.caps & !Cap::OPEN_REDIRECT;
+                    if new_caps.is_empty() {
+                        state.remove(val);
+                    } else {
+                        state.set(
+                            val,
+                            VarTaint {
+                                caps: new_caps,
+                                origins: taint.origins,
+                                uses_summary: taint.uses_summary,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ShellMetaValidated: inverted polarity, the FALSE branch (no metachar
     // found) is the validated path; the TRUE branch is the rejection path.
     //
@@ -6185,6 +6223,43 @@ fn collect_block_events(
                         && crate::ssa::xpath_config::xpath_safe(Some(*rv), xpc)
                     {
                         sink_caps &= !Cap::XPATH_INJECTION;
+                    }
+                }
+            }
+        }
+        if sink_caps.is_empty() {
+            continue;
+        }
+
+        // Phase 09 prototype-pollution suppression (flow-sensitive).
+        // `Object.create(null)` produces a `NullPrototypeObject`-typed
+        // value; subscript writes to such an object cannot pollute
+        // `Object.prototype` because there is no prototype chain.
+        // Receiver SsaValue is read off the synthetic `__index_set__`
+        // Call op; phi joins downgrade to `Unknown` via `TypeFact::meet`
+        // so an if/else where only one branch initialises with
+        // `Object.create(null)` keeps the PROTOTYPE_POLLUTION bit on
+        // the unsafe path.
+        if sink_caps.intersects(Cap::PROTOTYPE_POLLUTION) {
+            if let SsaOp::Call {
+                callee,
+                receiver: Some(rv),
+                ..
+            } = &inst.op
+            {
+                if callee == "__index_set__" {
+                    let receiver_is_null_proto = transfer
+                        .type_facts
+                        .and_then(|tf| tf.get_type(*rv))
+                        .map(|kind| {
+                            matches!(
+                                kind,
+                                crate::ssa::type_facts::TypeKind::NullPrototypeObject
+                            )
+                        })
+                        .unwrap_or(false);
+                    if receiver_is_null_proto {
+                        sink_caps &= !Cap::PROTOTYPE_POLLUTION;
                     }
                 }
             }
