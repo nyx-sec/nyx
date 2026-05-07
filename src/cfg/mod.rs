@@ -3300,9 +3300,7 @@ fn pp_classify_proto_guard(
     let mut all_dangerous = true;
     let mut all_safe = true;
     for clause in &cond_clauses {
-        let Some((var, lit)) = pp_extract_eq_compare(*clause, code) else {
-            return None;
-        };
+        let (var, lit) = pp_extract_eq_compare(*clause, code)?;
         if var != idx_text {
             all_against_idx = false;
             break;

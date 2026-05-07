@@ -250,16 +250,15 @@ fn classify_call(
                     if value == Some(true) {
                         cfg.disallow_doctype = true;
                     }
-                } else if name_lit.contains("external-general-entities")
+                } else if (name_lit.contains("external-general-entities")
                     || name_lit.contains("external-parameter-entities")
                     || name_lit.contains("load-external-dtd")
                     || any_ident("external-general-entities")
                     || any_ident("external-parameter-entities")
-                    || any_ident("load-external-dtd")
+                    || any_ident("load-external-dtd"))
+                    && value == Some(false)
                 {
-                    if value == Some(false) {
-                        cfg.disallow_doctype = true;
-                    }
+                    cfg.disallow_doctype = true;
                 }
                 if cfg == XmlParserConfig::default() {
                     ConfigEffect::None
@@ -439,11 +438,11 @@ pub fn analyze_xml_parser_config(
                         }
                     }
                     ConfigEffect::InheritFromReceiver => {
-                        if let Some(rv) = *receiver {
-                            if let Some(parent) = configs.get(&rv).copied() {
-                                let entry = configs.entry(inst.value).or_default();
-                                *entry = entry.union(&parent);
-                            }
+                        if let Some(rv) = *receiver
+                            && let Some(parent) = configs.get(&rv).copied()
+                        {
+                            let entry = configs.entry(inst.value).or_default();
+                            *entry = entry.union(&parent);
                         }
                     }
                     ConfigEffect::SeedResult(seed) => {
@@ -471,30 +470,28 @@ pub fn analyze_xml_parser_config(
                             Some(prev) => prev.meet(&cfg_val),
                         });
                     }
-                    if let Some(joined) = acc {
-                        if joined != XmlParserConfig::default() {
-                            let prev = configs.get(&inst.value).copied();
-                            if prev != Some(joined) {
-                                configs.insert(inst.value, joined);
-                                changed = true;
-                            }
+                    if let Some(joined) = acc
+                        && joined != XmlParserConfig::default()
+                    {
+                        let prev = configs.get(&inst.value).copied();
+                        if prev != Some(joined) {
+                            configs.insert(inst.value, joined);
+                            changed = true;
                         }
                     }
                 }
             }
             for inst in &block.body {
-                if let SsaOp::Assign(uses) = &inst.op {
-                    if uses.len() == 1 {
-                        if let Some(src_cfg) = configs.get(&uses[0]).copied() {
-                            if src_cfg != XmlParserConfig::default() {
-                                let prev = configs.get(&inst.value).copied().unwrap_or_default();
-                                let new_cfg = prev.union(&src_cfg);
-                                if Some(new_cfg) != configs.get(&inst.value).copied() {
-                                    configs.insert(inst.value, new_cfg);
-                                    changed = true;
-                                }
-                            }
-                        }
+                if let SsaOp::Assign(uses) = &inst.op
+                    && uses.len() == 1
+                    && let Some(src_cfg) = configs.get(&uses[0]).copied()
+                    && src_cfg != XmlParserConfig::default()
+                {
+                    let prev = configs.get(&inst.value).copied().unwrap_or_default();
+                    let new_cfg = prev.union(&src_cfg);
+                    if Some(new_cfg) != configs.get(&inst.value).copied() {
+                        configs.insert(inst.value, new_cfg);
+                        changed = true;
                     }
                 }
                 // InheritFromReceiver may need a re-pass when the
@@ -513,16 +510,16 @@ pub fn analyze_xml_parser_config(
                             suffix,
                             "newDocumentBuilder" | "newSAXParser" | "getXMLReader" | "newXMLReader"
                         );
-                    if inherit {
-                        if let Some(parent) = configs.get(rv).copied() {
-                            let prev = configs.get(&inst.value).copied().unwrap_or_default();
-                            let new_cfg = prev.union(&parent);
-                            if Some(new_cfg) != configs.get(&inst.value).copied()
-                                && new_cfg != XmlParserConfig::default()
-                            {
-                                configs.insert(inst.value, new_cfg);
-                                changed = true;
-                            }
+                    if inherit
+                        && let Some(parent) = configs.get(rv).copied()
+                    {
+                        let prev = configs.get(&inst.value).copied().unwrap_or_default();
+                        let new_cfg = prev.union(&parent);
+                        if Some(new_cfg) != configs.get(&inst.value).copied()
+                            && new_cfg != XmlParserConfig::default()
+                        {
+                            configs.insert(inst.value, new_cfg);
+                            changed = true;
                         }
                     }
                 }

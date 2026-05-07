@@ -800,6 +800,7 @@ fn inject_external_type_facts(
 /// Analyse a single body with an optional parent seed.
 ///
 /// Shared logic extracted from `analyse_multi_body` to avoid deep nesting.
+#[allow(clippy::type_complexity)]
 fn analyse_body_with_seed(
     body: &BodyCfg,
     lang: Lang,

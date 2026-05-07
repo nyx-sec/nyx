@@ -118,11 +118,11 @@ pub fn analyze_xpath_config(body: &SsaBody, cfg: &Cfg, lang: Option<Lang>) -> XP
             } = &inst.op
             {
                 let suffix = callee.rsplit(['.', ':']).next().unwrap_or(callee);
-                if suffix == "setXPathVariableResolver" {
-                    if let Some(rv) = receiver {
-                        let entry = configs.entry(*rv).or_default();
-                        entry.has_resolver = true;
-                    }
+                if suffix == "setXPathVariableResolver"
+                    && let Some(rv) = receiver
+                {
+                    let entry = configs.entry(*rv).or_default();
+                    entry.has_resolver = true;
                 }
             }
         }
@@ -150,30 +150,28 @@ pub fn analyze_xpath_config(body: &SsaBody, cfg: &Cfg, lang: Option<Lang>) -> XP
                             Some(prev) => prev.meet(&cfg_val),
                         });
                     }
-                    if let Some(joined) = acc {
-                        if joined != XPathReceiverConfig::default() {
-                            let prev = configs.get(&inst.value).copied();
-                            if prev != Some(joined) {
-                                configs.insert(inst.value, joined);
-                                changed = true;
-                            }
+                    if let Some(joined) = acc
+                        && joined != XPathReceiverConfig::default()
+                    {
+                        let prev = configs.get(&inst.value).copied();
+                        if prev != Some(joined) {
+                            configs.insert(inst.value, joined);
+                            changed = true;
                         }
                     }
                 }
             }
             for inst in &block.body {
-                if let SsaOp::Assign(uses) = &inst.op {
-                    if uses.len() == 1 {
-                        if let Some(src_cfg) = configs.get(&uses[0]).copied() {
-                            if src_cfg != XPathReceiverConfig::default() {
-                                let prev = configs.get(&inst.value).copied().unwrap_or_default();
-                                let new_cfg = prev.union(&src_cfg);
-                                if Some(new_cfg) != configs.get(&inst.value).copied() {
-                                    configs.insert(inst.value, new_cfg);
-                                    changed = true;
-                                }
-                            }
-                        }
+                if let SsaOp::Assign(uses) = &inst.op
+                    && uses.len() == 1
+                    && let Some(src_cfg) = configs.get(&uses[0]).copied()
+                    && src_cfg != XPathReceiverConfig::default()
+                {
+                    let prev = configs.get(&inst.value).copied().unwrap_or_default();
+                    let new_cfg = prev.union(&src_cfg);
+                    if Some(new_cfg) != configs.get(&inst.value).copied() {
+                        configs.insert(inst.value, new_cfg);
+                        changed = true;
                     }
                 }
             }

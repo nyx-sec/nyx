@@ -99,10 +99,10 @@ fn list(
                 return false;
             }
         }
-        if let Some(want) = kind_filter {
-            if !r.kind.eq_ignore_ascii_case(want) {
-                return false;
-            }
+        if let Some(want) = kind_filter
+            && !r.kind.eq_ignore_ascii_case(want)
+        {
+            return false;
         }
         true
     });

@@ -33,11 +33,10 @@ fn matches_cap_rule_id(rule_id: &str, prefix: &str) -> bool {
     if !rule_id.starts_with(prefix) {
         return false;
     }
-    match rule_id.as_bytes().get(prefix.len()) {
-        None => true,
-        Some(b' ') | Some(b'(') | Some(b'.') => true,
-        _ => false,
-    }
+    matches!(
+        rule_id.as_bytes().get(prefix.len()),
+        None | Some(b' ') | Some(b'(') | Some(b'.')
+    )
 }
 
 /// Return the OWASP 2021 (code, label) pair for a given rule id, or `None` if unmapped.
