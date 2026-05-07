@@ -122,7 +122,8 @@ fn list(
     // Header.
     println!(
         "{}",
-        style("Built-in rules (registry + per-language label rules)").bold()
+        style("Rules (built-in registry, per-language labels, and custom rules from config)")
+            .bold()
     );
     println!();
 
@@ -136,10 +137,22 @@ fn list(
         println!();
     }
 
-    let label_rules: Vec<&RuleInfo> = rules.iter().filter(|r| !r.is_class).collect();
-    if !label_rules.is_empty() {
-        println!("  {}", style("Label rules").cyan().bold());
-        for r in &label_rules {
+    let builtin_label_rules: Vec<&RuleInfo> = rules
+        .iter()
+        .filter(|r| !r.is_class && !r.is_custom)
+        .collect();
+    if !builtin_label_rules.is_empty() {
+        println!("  {}", style("Built-in label rules").cyan().bold());
+        for r in &builtin_label_rules {
+            print_label_row(r);
+        }
+        println!();
+    }
+
+    let custom_rules: Vec<&RuleInfo> = rules.iter().filter(|r| r.is_custom).collect();
+    if !custom_rules.is_empty() {
+        println!("  {}", style("Custom rules (from config)").cyan().bold());
+        for r in &custom_rules {
             print_label_row(r);
         }
         println!();
@@ -148,9 +161,10 @@ fn list(
     println!(
         "{}",
         style(format!(
-            "{} class · {} label · {} total",
+            "{} class · {} built-in label · {} custom · {} total",
             class_rules.len(),
-            label_rules.len(),
+            builtin_label_rules.len(),
+            custom_rules.len(),
             rules.len()
         ))
         .dim()
