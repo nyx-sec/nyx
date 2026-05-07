@@ -92,6 +92,17 @@ pub enum TypeKind {
     /// Strictly additive, without a DTO definition, callers fall back
     /// to name-only resolution.
     Dto(DtoFields),
+    /// The `node:fs/promises` namespace. Receivers typed as
+    /// `FileSystemPromisesNs` resolve method calls (`recv.readFile(...)`,
+    /// `recv.open(...)`, ...) through the type-qualified rewrite to
+    /// `FileSystemPromisesNs.<method>`, which the Phase 05 FILE_IO
+    /// matcher list covers without an [`crate::labels::LabelGate`]
+    /// (the receiver type is itself the import witness). Populated by
+    /// [`constructor_type`] for `fs.promises` and
+    /// `require('fs').promises`; further refinement (FieldProj-driven
+    /// narrowing for `const fsp = fs.promises`) tracked in
+    /// `deferred.md`.
+    FileSystemPromisesNs,
     /// An object created with `Object.create(null)` — has no prototype
     /// chain, so subscript-write keys cannot pollute `Object.prototype`.
     /// Populated for JS/TS values whose constructor call is
@@ -146,6 +157,7 @@ impl TypeKind {
             Self::XPathClient => Some("XPathClient"),
             Self::XmlParser => Some("XmlParser"),
             Self::Template => Some("Template"),
+            Self::FileSystemPromisesNs => Some("FileSystemPromisesNs"),
             _ => None,
         }
     }
@@ -477,7 +489,22 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "Template" | "getTemplate" => Some(TypeKind::Template),
             _ => None,
         },
-        Lang::JavaScript | Lang::TypeScript => match suffix {
+        Lang::JavaScript | Lang::TypeScript => {
+            // Phase 05 — `const fsp = require('fs').promises;` and the
+            // bare `fs.promises` member-access form. Recognised here so
+            // `fsp.readFile(p)` resolves through receiver-type
+            // qualification to `FileSystemPromisesNs.readFile`. Match
+            // the full callee text (not just the `promises` suffix) so
+            // unrelated `.promises` accessors don't collide.
+            if callee == "fs.promises"
+                || callee == "require('fs').promises"
+                || callee == "require(\"fs\").promises"
+                || callee == "require('node:fs').promises"
+                || callee == "require(\"node:fs\").promises"
+            {
+                return Some(TypeKind::FileSystemPromisesNs);
+            }
+            match suffix {
             "URL" => Some(TypeKind::Url),
             "Request" | "XMLHttpRequest" => Some(TypeKind::HttpClient),
             // JS built-in collection constructors. `new Map()` / `new Set()`
@@ -499,7 +526,8 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // with the same verb name.
             "createClient" if callee.contains("ldap") => Some(TypeKind::LdapClient),
             _ => None,
-        },
+            }
+        }
         Lang::Python => {
             // Python uses qualified names: requests.get, sqlite3.connect, etc.
             if callee.starts_with("requests.")

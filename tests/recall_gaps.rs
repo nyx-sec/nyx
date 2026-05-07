@@ -141,18 +141,81 @@ fn promise_then_chain_reentrant() {
     );
 }
 
+/// Phase 05 recall-gap: `import { readFile } from 'fs/promises'` →
+/// `await readFile(req.body.path)` is a FILE_IO sink. The bare-name
+/// `readFile` matcher only fires because the file's import table maps
+/// the binding to `fs/promises`, satisfying the
+/// `LabelGate::ImportedFromModule` gate.
 #[test]
-#[ignore = "PHASE 03 unblocks"]
-fn fs_promises() {
+fn fs_promises_readfile() {
     let findings = scan_fixture("fs_promises");
     assert_finding(
         &findings,
         ExpectedFinding {
             rule_id: "taint-unsanitised-flow",
-            file_suffix: "handler.js",
-            sink_line: 0,
-            source_line: None,
+            file_suffix: "path_traversal_fs_promises_readfile.ts",
+            sink_line: 10,
+            source_line: Some(9),
         },
+    );
+}
+
+/// Phase 05 recall-gap: `await open(req.query.path, "r")` ─ same gate,
+/// different fs/promises method.  Confirms the matcher list covers
+/// `open` alongside `readFile`.
+#[test]
+fn fs_promises_open() {
+    let findings = scan_fixture("fs_promises");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "path_traversal_fs_promises_open.ts",
+            sink_line: 10,
+            source_line: Some(9),
+        },
+    );
+}
+
+/// Phase 05 recall-gap: the `node:` URL specifier flavour — `import {
+/// writeFile } from 'node:fs/promises'`.  Both spellings must satisfy
+/// the gate.
+#[test]
+fn fs_promises_node_import() {
+    let findings = scan_fixture("fs_promises");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "path_traversal_node_fs_promises_import.ts",
+            sink_line: 10,
+            source_line: Some(9),
+        },
+    );
+}
+
+/// Phase 05 negative: a user-defined `readFile` (no import) must not
+/// fire the gated FILE_IO sink.  The whole point of the import gate.
+#[test]
+fn fs_promises_safe_userfn() {
+    let findings = scan_fixture("fs_promises");
+    let leak = findings.iter().any(|f| {
+        f.path
+            .ends_with("path_traversal_fs_promises_safe_userfn.ts")
+            && (f.id.starts_with("taint-unsanitised-flow")
+                || f.id.starts_with("cfg-unguarded-sink"))
+    });
+    assert!(
+        !leak,
+        "user-defined readFile should not fire the fs/promises gate; got:\n{}",
+        findings
+            .iter()
+            .filter(|f| f
+                .path
+                .ends_with("path_traversal_fs_promises_safe_userfn.ts"))
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }
 

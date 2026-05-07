@@ -38,6 +38,43 @@ pub struct LabelRule {
     pub case_sensitive: bool,
 }
 
+/// Activation gate carried by a [`GatedLabelRule`]. Phase 05 introduces the
+/// import-derived gate so JS/TS bare-name `fs/promises` sinks (`readFile`,
+/// `writeFile`, ...) only fire when the call resolves to that module — a
+/// flat bare-name match would over-fire on user-defined `readFile` helpers.
+#[derive(Debug, Clone, Copy)]
+pub enum LabelGate {
+    /// Fires only when the call's leading identifier is locally bound by an
+    /// import / `require` whose `source_module` equals one of the listed
+    /// specifiers. The synthetic prefix `FileSystemPromisesNs.` produced by
+    /// receiver-type qualification also satisfies the gate (see Phase 05's
+    /// `TypeKind::FileSystemPromisesNs`).
+    ImportedFromModule(&'static [&'static str]),
+}
+
+/// A label rule that only fires when its [`LabelGate`] is satisfied at the
+/// call site. The matcher / label / case-sensitivity semantics mirror
+/// [`LabelRule`]; the gate is checked by [`classify_all_ctx`] using the
+/// caller-supplied [`ClassificationContext`].
+#[derive(Debug, Clone, Copy)]
+pub struct GatedLabelRule {
+    pub matchers: &'static [&'static str],
+    pub label: DataLabel,
+    pub case_sensitive: bool,
+    pub gate: LabelGate,
+}
+
+/// Per-file context consulted by [`classify_all_ctx`] when evaluating
+/// gated rules. Threaded from the CFG layer's gated post-pass; `None`
+/// elsewhere keeps existing classification paths intact.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ClassificationContext<'a> {
+    /// Local-name → source-module view of the file's imports. The map is
+    /// computed at CFG build time (see `cfg::imports::extract_local_import_view`)
+    /// so the gate fires before the project-wide resolver runs.
+    pub local_imports: Option<&'a std::collections::HashMap<String, String>>,
+}
+
 /// Sentinel returned by [`classify_gated_sink`] for the dynamic/unknown-activation
 /// branch: the gate fires conservatively and every positional argument must be
 /// considered a potential tainted payload, not just the explicit `payload_args`.
@@ -449,6 +486,19 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     m.insert("rs", rust::GATED_SINKS);
     m
 });
+
+/// Per-language registry of [`GatedLabelRule`] entries. Phase 05 wires
+/// JS/TS only (the `fs/promises` FILE_IO matcher set); other languages
+/// fall back to an empty slice.
+static GATED_LABEL_REGISTRY: Lazy<HashMap<&'static str, &'static [GatedLabelRule]>> =
+    Lazy::new(|| {
+        let mut m = HashMap::new();
+        m.insert("javascript", javascript::GATED_LABEL_RULES);
+        m.insert("js", javascript::GATED_LABEL_RULES);
+        m.insert("typescript", typescript::GATED_LABEL_RULES);
+        m.insert("ts", typescript::GATED_LABEL_RULES);
+        m
+    });
 
 /// Feature flag for the Python prototype-pollution gates.  Disabled by
 /// default; set `NYX_PYTHON_PROTO_POLLUTION=1` (or `true`) to enable
@@ -1253,6 +1303,133 @@ pub fn classify_all(
     }
 
     out
+}
+
+/// Classify a call with an optional [`ClassificationContext`] enabling
+/// gated rule evaluation.
+///
+/// This is a strict superset of [`classify_all`]: the same flat-rule
+/// matching runs first, then any per-language [`GatedLabelRule`] is
+/// evaluated against `ctx`. A `None` context (or a context with no
+/// `local_imports`) leaves only the synthetic receiver-type prefix
+/// (`FileSystemPromisesNs.`) able to satisfy the gate.
+pub fn classify_all_ctx(
+    lang: &str,
+    text: &str,
+    extra: Option<&[RuntimeLabelRule]>,
+    ctx: Option<&ClassificationContext<'_>>,
+) -> SmallVec<[DataLabel; 2]> {
+    let mut out = classify_all(lang, text, extra);
+
+    let gated = match GATED_LABEL_REGISTRY.get(lang).or_else(|| {
+        let key = lang.to_ascii_lowercase();
+        GATED_LABEL_REGISTRY.get(key.as_str())
+    }) {
+        Some(g) => *g,
+        None => return out,
+    };
+    if gated.is_empty() {
+        return out;
+    }
+
+    let head = text.split(['(', '<']).next().unwrap_or("");
+    let trimmed = head.trim().as_bytes();
+    if is_excluded(lang, trimmed) {
+        return out;
+    }
+    let full_normalized = normalize_chained_call(text);
+    let full_norm_bytes = full_normalized.as_bytes();
+
+    #[inline]
+    fn push_dedup(out: &mut SmallVec<[DataLabel; 2]>, label: DataLabel) {
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    }
+
+    // Pass 1: exact / suffix.
+    for rule in gated {
+        for raw in rule.matchers {
+            let m = raw.as_bytes();
+            if m.last() == Some(&b'_') {
+                continue;
+            }
+            let matches = match_suffix_cs(trimmed, m, rule.case_sensitive)
+                || match_suffix_cs(full_norm_bytes, m, rule.case_sensitive);
+            if matches && gate_satisfied(&rule.gate, head, ctx) {
+                push_dedup(&mut out, rule.label);
+            }
+        }
+    }
+    // Pass 2: prefix.
+    for rule in gated {
+        for raw in rule.matchers {
+            let m = raw.as_bytes();
+            if m.last() == Some(&b'_')
+                && (starts_with_cs(trimmed, m, rule.case_sensitive)
+                    || starts_with_cs(full_norm_bytes, m, rule.case_sensitive))
+                && gate_satisfied(&rule.gate, head, ctx)
+            {
+                push_dedup(&mut out, rule.label);
+            }
+        }
+    }
+
+    out
+}
+
+/// Evaluate a [`LabelGate`] against the call's leading identifier and the
+/// caller-supplied context. Currently handles
+/// [`LabelGate::ImportedFromModule`]; receiver-type qualification satisfies
+/// the gate via the synthetic `FileSystemPromisesNs.` prefix produced by
+/// [`crate::ssa::type_facts::TypeKind::FileSystemPromisesNs::label_prefix`].
+fn gate_satisfied(
+    gate: &LabelGate,
+    callee_head: &str,
+    ctx: Option<&ClassificationContext<'_>>,
+) -> bool {
+    match gate {
+        LabelGate::ImportedFromModule(modules) => {
+            let leading = leading_identifier(callee_head);
+            // Receiver-type qualification: synthesised callee text
+            // begins with the type's `label_prefix()`. Phase 05 only
+            // ships `FileSystemPromisesNs` for the fs/promises gate;
+            // expand the allowlist if more receiver-typed gates land.
+            if leading == "FileSystemPromisesNs" {
+                return true;
+            }
+            let Some(ctx) = ctx else {
+                return false;
+            };
+            let Some(map) = ctx.local_imports else {
+                return false;
+            };
+            let Some(source_module) = map.get(leading) else {
+                return false;
+            };
+            modules
+                .iter()
+                .any(|m| source_module.eq_ignore_ascii_case(m))
+        }
+    }
+}
+
+/// Leading identifier of a call expression's text — the segment up to the
+/// first `.`, `:`, `(`, or `<`. Used to drive ImportTable lookups.
+fn leading_identifier(callee_head: &str) -> &str {
+    let bytes = callee_head.as_bytes();
+    let mut end = 0;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'.' | b':' | b'(' | b'<' | b' ' | b'[' => {
+                end = i;
+                return &callee_head[..end];
+            }
+            _ => {}
+        }
+        end = i + 1;
+    }
+    &callee_head[..end]
 }
 
 /// Result of a gated-sink classification.

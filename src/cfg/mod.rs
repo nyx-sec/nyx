@@ -60,7 +60,7 @@ pub(crate) use helpers::{
     collect_idents, collect_idents_with_paths, find_constructor_type_child, first_call_ident,
     has_call_descendant, member_expr_text, root_receiver_text, text_of,
 };
-use imports::{extract_import_bindings, extract_promisify_aliases};
+use imports::{extract_import_bindings, extract_local_import_view, extract_promisify_aliases};
 #[cfg(test)]
 use literals::has_sql_placeholders;
 use literals::{
@@ -5418,6 +5418,18 @@ pub(crate) fn build_cfg<'a>(
         apply_promisify_labels(&mut bodies, &promisify_aliases, lang, extra);
     }
 
+    // Phase 05 — JS/TS gated FILE_IO sinks (`readFile`, `writeFile`, ...)
+    // for `node:fs/promises` callees. Runs after CFG construction so the
+    // per-file local-import view is available; classify_all_ctx looks up
+    // each call's leading identifier in the view to decide whether the
+    // ImportedFromModule gate fires.
+    if matches!(lang, "javascript" | "typescript" | "tsx") {
+        let local_imports = extract_local_import_view(tree, code);
+        if !local_imports.is_empty() {
+            apply_gated_label_rules(&mut bodies, lang, extra, &local_imports);
+        }
+    }
+
     // Clear the per-file DFS-index map so it does not leak to the next
     // file built on this thread.
     clear_fn_dfs_indices();
@@ -5486,6 +5498,43 @@ fn apply_promisify_labels(
             }
             let info = &mut body.graph[idx];
             for lbl in wrapped_labels {
+                if !info.taint.labels.contains(&lbl) {
+                    info.taint.labels.push(lbl);
+                }
+            }
+        }
+    }
+}
+
+/// Phase 05 — apply [`crate::labels::GatedLabelRule`] entries against
+/// every call node in the file. The local-import view supplies the
+/// gate evaluation context so a bare-name `readFile(...)` only fires
+/// when the file actually imports `readFile` from `fs/promises` /
+/// `node:fs/promises` (or is renamed via `import * as fsp` /
+/// `import { readFile as rf }`). Strictly additive: only inserts new
+/// labels, never removes existing ones.
+fn apply_gated_label_rules(
+    bodies: &mut [BodyCfg],
+    lang: &str,
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+    local_imports: &std::collections::HashMap<String, String>,
+) {
+    let ctx = crate::labels::ClassificationContext {
+        local_imports: Some(local_imports),
+    };
+    for body in bodies.iter_mut() {
+        let indices: Vec<NodeIndex> = body.graph.node_indices().collect();
+        for idx in indices {
+            let Some(callee) = body.graph[idx].call.callee.clone() else {
+                continue;
+            };
+            let labels =
+                crate::labels::classify_all_ctx(lang, &callee, extra, Some(&ctx));
+            if labels.is_empty() {
+                continue;
+            }
+            let info = &mut body.graph[idx];
+            for lbl in labels {
                 if !info.taint.labels.contains(&lbl) {
                     info.taint.labels.push(lbl);
                 }

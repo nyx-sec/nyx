@@ -139,6 +139,83 @@ implied or surfaced but did not finish.
       alias, and `node:*` specifiers it imports. Add a parsed-file
       integration test before phase 09/10 starts depending on the
       file-level binding view.
+- [ ] Phase 05 audit — `cfg::imports::extract_local_import_view`
+      duplicates ~80% of `resolve::extract_resolved_imports`. The
+      gated post-pass needs the local-name → source-module view at
+      `build_cfg` time, when the resolver-backed `ImportTable` is
+      not yet populated. A future cleanup could collapse them by
+      moving import-clause extraction into a shared, resolver-free
+      walker that both the resolver and the gated post-pass call.
+- [ ] Phase 05 audit — `TypeKind::FileSystemPromisesNs` constructor
+      mapping in `type_facts.rs::constructor_type` only matches the
+      exact callee strings `fs.promises`, `require('fs').promises`,
+      and the double-quoted / `node:fs` permutations. The
+      receiver-type fallback path therefore fires only when an SSA
+      `Call` op carries that exact text. The destructured-assignment
+      shape `const fsp = fs.promises;` (a member-access RHS, not a
+      `Call`) is not yet covered. Wire FieldProj-driven narrowing
+      (when the receiver of `.promises` is `FileSystemNs`-typed,
+      project to `FileSystemPromisesNs`) when a real fixture
+      surfaces it.
+- [ ] Phase 05 audit — `gate_satisfied()` in `labels/mod.rs`
+      hard-codes the `FileSystemPromisesNs` receiver-type prefix
+      that satisfies `LabelGate::ImportedFromModule`. If a future
+      gate ships for another module (e.g. `node:child_process`
+      promises wrapper) we'll need a registry mapping
+      `LabelGate::ImportedFromModule(modules)` to the set of
+      receiver-type prefixes that count as a witness, instead of
+      the single hard-coded match.
+- [ ] Phase 05 audit — `JS_TS_HANDLER_PARAM_NAMES` auto-seeding in
+      the SSA layer has no relation to the gated rule, but Phase 05
+      fixtures revealed that `req.body.path` flows through `req`
+      → `path` without explicit auto-seeding because the express
+      `Request` typed-extractor pipeline already lights up the
+      `req.body` source. If a fixture stops firing because the
+      handler-param auto-seed and Phase 05 gate disagree on which
+      identifier carries taint, audit `is_js_ts_handler_param_name`
+      first.
+- [ ] Phase 05 fixture cleanup — the four fs/promises fixtures live
+      in a shared `tests/fixtures/realistic/fs_promises/` directory
+      because `scan_fixture()` accepts a directory, not a file.
+      Each `fs_promises_*` test re-scans the entire directory; this
+      multiplies wall time on cold caches. Once a future phase
+      teaches the harness to scan a single file (or splits the
+      directory), trim the redundant scans.
+- [ ] Phase 05 audit — `tests/recall_gaps.rs` header table (lines
+      35-44) is stale: claims phase 03 owns `fs_promises`, but the
+      actual phase 03 (Promise callbacks) added `promise_then_*` /
+      `promise_all_*` / `for_await_of_*` tests, and phase 05
+      replaced `fs_promises` with `fs_promises_readfile` /
+      `_open` / `_node_import` / `_safe_userfn`. The phase 04
+      audit already flagged the `jsx_dangerous_html` row;
+      reconcile the whole table when a phase that touches it
+      lands so each row maps to the phase that actually un-ignored
+      its tests.
+- [ ] Phase 05 audit — `type_facts.rs::constructor_type` exact-string
+      arms `"require('fs').promises"`, `"require(\"fs\").promises"`,
+      `"require('node:fs').promises"`, and `"require(\"node:fs\").promises"`
+      are dead in practice: SSA decomposes member-of-call into
+      separate Call + FieldProj ops, so the full expression text
+      never reaches `constructor_type` as a callee string. The
+      `"fs.promises"` arm has the same shape (member access, not a
+      call) and likely also never fires. Remove these arms or
+      back them with a real path (e.g. a SymbolicValue-driven
+      constructor pass that walks member-of-call shapes).
+- [ ] Phase 05 audit — `extract_local_import_view` handles
+      `import * as fsp from 'fs/promises'` (namespace_import) and
+      `const { readFile } = require('fs/promises')` (object_pattern
+      destructuring), but no recall_gaps fixture exercises either
+      shape. The four shipped fixtures cover only the named-import
+      form. Add positive fixtures for the namespace-import and
+      require-form shapes before relying on those code paths.
+- [ ] Phase 05 audit — `cfg::apply_gated_label_rules` re-runs
+      `classify_all_ctx`, which re-runs the entire flat
+      `classify_all` pipeline, for every call node in every JS/TS
+      file with at least one import. Once the gated registry
+      grows beyond the single fs/promises rule, factor out a
+      `classify_gated_only` helper so the post-pass skips the
+      redundant flat-rule scan it has already done during initial
+      classification.
 
 ## Deferred phases
 

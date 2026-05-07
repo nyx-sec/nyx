@@ -1187,6 +1187,7 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::Template => "Template".into(),
         TypeKind::Dto(_) => "Dto".into(),
         TypeKind::NullPrototypeObject => "NullPrototypeObject".into(),
+        TypeKind::FileSystemPromisesNs => "FileSystemPromisesNs".into(),
     }
 }
 

@@ -1,7 +1,141 @@
 use super::{
     ImportBinding, ImportBindings, PromisifyAlias, PromisifyAliases, member_expr_text, text_of,
 };
+use std::collections::HashMap;
 use tree_sitter::{Node, Tree};
+
+/// File-local view of every JS/TS import binding: local-name → source-module
+/// specifier (verbatim from the `import` / `require` site, without `node:`
+/// stripping). Built once per CFG pass; consumed by the gated-label
+/// post-pass via [`crate::labels::ClassificationContext::local_imports`].
+///
+/// Records every binding regardless of aliasing (the legacy
+/// [`extract_import_bindings`] only preserves *renamed* bindings, which is
+/// not enough for Phase 05's `import { readFile } from 'fs/promises'`
+/// shape where `local_name == imported_name`).
+pub(super) fn extract_local_import_view(tree: &Tree, code: &[u8]) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+
+    for child in root.children(&mut cursor) {
+        match child.kind() {
+            "import_statement" => collect_es_import(child, code, &mut out),
+            "lexical_declaration" | "variable_declaration" => {
+                collect_require_decl(child, code, &mut out)
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn collect_es_import(node: Node, code: &[u8], out: &mut HashMap<String, String>) {
+    let Some(source) = node
+        .child_by_field_name("source")
+        .and_then(|s| text_of(s, code))
+    else {
+        return;
+    };
+    let module = source
+        .trim_matches(|c| c == '\'' || c == '"' || c == '`')
+        .to_string();
+    if module.is_empty() {
+        return;
+    }
+    let mut c1 = node.walk();
+    for clause in node.children(&mut c1) {
+        if clause.kind() != "import_clause" {
+            continue;
+        }
+        let mut c2 = clause.walk();
+        for part in clause.children(&mut c2) {
+            match part.kind() {
+                "identifier" => {
+                    if let Some(name) = text_of(part, code) {
+                        out.insert(name, module.clone());
+                    }
+                }
+                "namespace_import" => {
+                    let mut c3 = part.walk();
+                    for ns_child in part.children(&mut c3) {
+                        if ns_child.kind() == "identifier"
+                            && let Some(name) = text_of(ns_child, code)
+                        {
+                            out.insert(name, module.clone());
+                        }
+                    }
+                }
+                "named_imports" => {
+                    let mut c3 = part.walk();
+                    for spec in part.children(&mut c3) {
+                        if spec.kind() != "import_specifier" {
+                            continue;
+                        }
+                        let original = spec
+                            .child_by_field_name("name")
+                            .and_then(|n| text_of(n, code));
+                        let alias = spec
+                            .child_by_field_name("alias")
+                            .and_then(|n| text_of(n, code));
+                        let local = alias.or(original);
+                        if let Some(local) = local {
+                            out.insert(local, module.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn collect_require_decl(node: Node, code: &[u8], out: &mut HashMap<String, String>) {
+    let mut cursor = node.walk();
+    for decl in node.children(&mut cursor) {
+        if decl.kind() != "variable_declarator" {
+            continue;
+        }
+        let (Some(pattern), Some(value)) = (
+            decl.child_by_field_name("name"),
+            decl.child_by_field_name("value"),
+        ) else {
+            continue;
+        };
+        let Some(module) = extract_require_module(value, code) else {
+            continue;
+        };
+        match pattern.kind() {
+            "identifier" => {
+                if let Some(name) = text_of(pattern, code) {
+                    out.insert(name, module);
+                }
+            }
+            "object_pattern" => {
+                let mut pc = pattern.walk();
+                for pair in pattern.children(&mut pc) {
+                    match pair.kind() {
+                        "shorthand_property_identifier_pattern" | "identifier" => {
+                            if let Some(name) = text_of(pair, code) {
+                                out.insert(name, module.clone());
+                            }
+                        }
+                        "pair_pattern" => {
+                            let local = pair
+                                .child_by_field_name("value")
+                                .and_then(|n| text_of(n, code));
+                            if let Some(local) = local {
+                                out.insert(local, module.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 // -------------------------------------------------------------------------
 //  Import binding extraction

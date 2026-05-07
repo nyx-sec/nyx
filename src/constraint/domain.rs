@@ -201,6 +201,11 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         // domain has no dedicated slot, share the Object index so
         // singleton recovery still maps to a meaningful TypeKind.
         TypeKind::NullPrototypeObject => 3,
+        // FileSystemPromisesNs is a JS-only namespace receiver type used
+        // by the Phase 05 fs/promises sink resolver. The bitset domain
+        // has no dedicated slot; share the Object index so singleton
+        // recovery still hands back a usable TypeKind.
+        TypeKind::FileSystemPromisesNs => 3,
     }
 }
 

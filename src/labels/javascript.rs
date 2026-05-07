@@ -1,5 +1,6 @@
 use crate::labels::{
-    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+    Cap, DataLabel, GateActivation, GatedLabelRule, Kind, LabelGate, LabelRule, ParamConfig,
+    RuntimeLabelRule, SinkGate,
 };
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
@@ -253,6 +254,40 @@ pub static RULES: &[LabelRule] = &[
             "fs.unlinkSync",
             "fs.readdir",
             "fs.readdirSync",
+            // Phase 05 — `node:fs/promises` member-access forms covered
+            // here. Bare-name forms (`readFile`, `open`, ...) and
+            // `fsp.readFile` namespace-import forms ride the gated
+            // matcher in `GATED_LABEL_RULES`. Receiver-type fallback
+            // synthesises `FileSystemPromisesNs.<method>` (handled
+            // below).
+            "fs.promises.readFile",
+            "fs.promises.writeFile",
+            "fs.promises.unlink",
+            "fs.promises.open",
+            "fs.promises.stat",
+            "fs.promises.readdir",
+            "fs.promises.mkdir",
+            "fs.promises.rmdir",
+            "fs.promises.rm",
+            "fs.promises.appendFile",
+            "fs.promises.copyFile",
+            "fs.promises.rename",
+            "fs.promises.truncate",
+            "fs.promises.chmod",
+            "FileSystemPromisesNs.readFile",
+            "FileSystemPromisesNs.writeFile",
+            "FileSystemPromisesNs.unlink",
+            "FileSystemPromisesNs.open",
+            "FileSystemPromisesNs.stat",
+            "FileSystemPromisesNs.readdir",
+            "FileSystemPromisesNs.mkdir",
+            "FileSystemPromisesNs.rmdir",
+            "FileSystemPromisesNs.rm",
+            "FileSystemPromisesNs.appendFile",
+            "FileSystemPromisesNs.copyFile",
+            "FileSystemPromisesNs.rename",
+            "FileSystemPromisesNs.truncate",
+            "FileSystemPromisesNs.chmod",
         ],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
@@ -526,6 +561,36 @@ pub static EXCLUDES: &[&str] = &[
     "container.exec",
     "exec.start",
 ];
+
+/// Phase 05 — `node:fs/promises` path-traversal sinks. The matcher list
+/// holds the bare-name and `<ns>.<method>` member-access shapes; the
+/// [`LabelGate::ImportedFromModule`] gate suppresses bare-name matches
+/// unless the file actually imports the method from `node:fs/promises`
+/// or `fs/promises`. Bare-name only — `fs.promises.readFile`-style
+/// member-access forms continue to fire via the flat FILE_IO matcher
+/// list (no gate needed because the `fs.promises.` prefix is itself
+/// witness to the resolution).
+pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[GatedLabelRule {
+    matchers: &[
+        "readFile",
+        "writeFile",
+        "unlink",
+        "open",
+        "stat",
+        "readdir",
+        "mkdir",
+        "rmdir",
+        "rm",
+        "appendFile",
+        "copyFile",
+        "rename",
+        "truncate",
+        "chmod",
+    ],
+    label: DataLabel::Sink(Cap::FILE_IO),
+    case_sensitive: false,
+    gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
+}];
 
 pub static GATED_SINKS: &[SinkGate] = &[
     SinkGate {
