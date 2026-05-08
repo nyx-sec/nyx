@@ -3149,7 +3149,7 @@ fn try_lower_spring_redirect_return(
 /// whose callee classifies as a `Sanitizer`, the synthetic sink is still
 /// emitted but its argument list is empty so no taint flows into it.
 /// JS/TS only — JSX has no counterpart in the other supported languages.
-fn try_lower_jsx_dangerous_html(
+pub(super) fn try_lower_jsx_dangerous_html(
     stmt_ast: Node,
     preds: &[NodeIndex],
     g: &mut Cfg,
@@ -3305,10 +3305,24 @@ fn jsx_extract_html_value<'a>(attr: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
     None
 }
 
-/// Returns true when `value_ast` is a single call expression whose callee
-/// classifies as a `Sanitizer` under the JS/TS rule set.  Used to suppress
-/// argument-side taint flow on the synthetic `dangerouslySetInnerHTML` sink
-/// when the payload has already been routed through a sanitizer.
+/// Returns true when `value_ast` is a call expression whose payload is
+/// already routed through a `Sanitizer`.  Used to suppress argument-side
+/// taint flow on the synthetic `dangerouslySetInnerHTML` sink.
+///
+/// Recognised shapes (JS/TS):
+///
+/// 1. Direct call: outer callee classifies as `Sanitizer` under the
+///    rule set, e.g. `__html: DOMPurify.sanitize(input)`.
+/// 2. Function-composition helpers — `pipe(input, sanitizeHtml, ...)`,
+///    `compose(DOMPurify.sanitize, escapeHtml)(input)`, etc.  When the
+///    outer callee leaf is one of `pipe` / `flow` / `compose` /
+///    `flowRight` / `pipeWith` (covers fp-ts, Ramda, Lodash/fp,
+///    Effect-TS), any argument whose text classifies as `Sanitizer`
+///    is treated as the sanitization step.
+///
+/// Variable-bound sanitization (`const clean = sanitize(x); __html: clean`)
+/// is handled by SSA value tracking on the bound identifier and does not
+/// pass through this recogniser.
 fn jsx_value_is_sanitized(
     value_ast: Node,
     lang: &str,
@@ -3336,10 +3350,46 @@ fn jsx_value_is_sanitized(
         Some(t) => t,
         None => return false,
     };
+
+    // 1. Direct sanitizer call.
     let labels = classify_all(lang, &callee_text, extra);
-    labels
-        .iter()
-        .any(|l| matches!(l, DataLabel::Sanitizer(_)))
+    if labels.iter().any(|l| matches!(l, DataLabel::Sanitizer(_))) {
+        return true;
+    }
+
+    // 2. Function-composition helper.  Strip namespace qualifiers from the
+    //    callee so `_.flow` / `R.pipe` / `fp.compose` all reduce to the
+    //    leaf helper name.
+    let leaf_callee = callee_text
+        .rsplit(['.', ':'])
+        .next()
+        .unwrap_or(callee_text.as_str());
+    let is_compose_helper = matches!(
+        leaf_callee,
+        "pipe" | "flow" | "compose" | "flowRight" | "pipeWith"
+    );
+    if is_compose_helper {
+        if let Some(args) = cur.child_by_field_name("arguments") {
+            let mut walker = args.walk();
+            for arg in args.named_children(&mut walker) {
+                if matches!(arg.kind(), "comment") {
+                    continue;
+                }
+                let Some(arg_text) = text_of(arg, code) else {
+                    continue;
+                };
+                let arg_labels = classify_all(lang, &arg_text, extra);
+                if arg_labels
+                    .iter()
+                    .any(|l| matches!(l, DataLabel::Sanitizer(_)))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
 }
 ///
 /// Returns `true` when the assignment is provably safe and the

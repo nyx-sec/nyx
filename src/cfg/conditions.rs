@@ -2,7 +2,7 @@ use super::helpers::first_member_label;
 use super::{
     AstMeta, Cfg, EdgeKind, MAX_COND_VARS, MAX_CONDITION_TEXT_LEN, NodeInfo, StmtKind,
     collect_idents, connect_all, detect_eq_with_const, detect_negation, has_call_descendant,
-    member_expr_text, push_node, text_of,
+    member_expr_text, push_node, text_of, try_lower_jsx_dangerous_html,
 };
 use crate::labels::{DataLabel, LangAnalysisRules, classify};
 use crate::utils::snippet::truncate_at_char_boundary;
@@ -378,7 +378,24 @@ pub(super) fn lower_ternary_branch<'a>(
     }
 
     connect_all(g, preds, node, pred_edge);
-    vec![node]
+
+    // React JSX `dangerouslySetInnerHTML={{__html: x}}` synthesis when the
+    // branch expression is itself a JSX element (or contains one as a
+    // descendant).  Without this, `cond ? <div dangerouslySetInnerHTML=...
+    // /> : null` and similar ternary-RHS shapes never reach the
+    // `Kind::Return` / `Kind::Assignment` arms that own the synthesis hook,
+    // because `build_ternary_diamond` lowers each branch directly.
+    let post_jsx = try_lower_jsx_dangerous_html(
+        branch_ast,
+        &[node],
+        g,
+        lang,
+        code,
+        enclosing_func,
+        call_ordinal,
+        analysis_rules,
+    );
+    post_jsx
 }
 
 /// Extract `(lhs_ast, ternary_ast)` when `outer_ast` is an expression-statement

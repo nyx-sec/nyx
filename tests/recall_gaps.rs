@@ -364,6 +364,39 @@ fn jsx_dangerous_html() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
+    // Negative — `__html: pipe(input, sanitizeHtml, DOMPurify.sanitize)` —
+    // the fp-ts composition recogniser detects sanitizers in argument
+    // position and suppresses the synthetic sink's argument-side flow.
+    let leak_pipe = findings.iter().any(|f| {
+        f.path.ends_with("page_pipe.tsx")
+            && (f.id.starts_with("taint-unsanitised-flow")
+                || f.id.starts_with("cfg-unguarded-sink"))
+    });
+    assert!(
+        !leak_pipe,
+        "pipe(...sanitizers) payload must not fire dangerouslySetInnerHTML; got:\n{}",
+        findings
+            .iter()
+            .filter(|f| f.path.ends_with("page_pipe.tsx"))
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    // Positive (item 11) — JSX inside a ternary RHS branch.  The synthesis
+    // hook in `lower_ternary_branch` reaches the `__html: input` value span
+    // even though the wrapping arm short-circuits into the ternary diamond.
+    let hits_ternary: Vec<&_> = findings
+        .iter()
+        .filter(|f| {
+            f.path.ends_with("page_ternary.tsx")
+                && (f.id.starts_with("taint-unsanitised-flow")
+                    || f.id.starts_with("cfg-unguarded-sink"))
+        })
+        .collect();
+    assert!(
+        !hits_ternary.is_empty(),
+        "ternary-branch dangerouslySetInnerHTML must fire a sink; got nothing for page_ternary.tsx"
+    );
 }
 
 /// Phase 07 recall-gap: ORM query-builder raw-SQL escape hatches.

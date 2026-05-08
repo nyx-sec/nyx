@@ -90,27 +90,6 @@ implied or surfaced but did not finish.
       Kind variants for additional JSX-specific dispatch (e.g.
       multiple synthesised callees per attribute name); today
       one shape (`dangerouslySetInnerHTML`) is enough.
-- [ ] Phase 06 audit — JSX synthesis is hooked into the wrapping
-      arms (`Kind::Return`, `Kind::CallWrapper`, `Kind::Assignment`,
-      and the wildcard `_` fallback).  JSX expressions inside
-      conditional expressions, ternary RHS branches, or other
-      unusual containers may not surface a `jsx_attribute` to the
-      helper because the wrapping arm short-circuits before the
-      JSX subtree is reachable.  Out of scope until a real fixture
-      surfaces a missed shape; revisit by lifting the helper to a
-      tree-wide post-pass over `build_cfg`.
-- [ ] Phase 06 audit — sanitizer-aware `__html` stripping only
-      recognises the shape `__html: SANITIZER(args)` where the
-      callee classifies as `Sanitizer` under
-      `classify_all`.  Multi-step sanitization
-      (`__html: pipe(input, sanitize, escape)`,
-      `__html: chain.escape().sanitize()`) and shapes where the
-      sanitised value is bound to a separate variable
-      (`const clean = sanitize(x); __html: clean`) fall through.
-      Variable-bound sanitization works today via SSA value
-      tracking on the bound name; the chained / higher-order
-      shapes need a richer recogniser.  Defer until a fixture
-      surfaces an FP.
 - [ ] Phase 06 audit — JSX is recognised only for React TSX/JSX
       via the tree-sitter-typescript and tree-sitter-javascript
       grammars.  Other JSX-flavour template languages (Svelte
