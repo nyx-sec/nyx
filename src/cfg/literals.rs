@@ -1542,6 +1542,18 @@ pub(super) fn extract_arg_uses(call_node: Node, code: &[u8]) -> Vec<Vec<String>>
         return result;
     }
 
+    // Rust `tokio::join!` / `futures::join!` (and their `try_*` variants).
+    // tree-sitter-rust models macro args as a `token_tree` rather than an
+    // `arguments` field, so a vanilla extraction returns nothing.  Walk the
+    // top-level token_tree splitting on `,` separators, lifting identifiers
+    // out of each chunk so the existing PromiseCombinator transfer can union
+    // arg-side taint into the resulting tuple value.
+    if call_node.kind() == "macro_invocation"
+        && let Some(arg_uses) = extract_rust_macro_join_arg_uses(call_node, code)
+    {
+        return arg_uses;
+    }
+
     let Some(args_node) = call_node.child_by_field_name("arguments") else {
         return Vec::new();
     };
@@ -1573,6 +1585,82 @@ pub(super) fn extract_arg_uses(call_node: Node, code: &[u8]) -> Vec<Vec<String>>
         result.push(combined);
     }
     result
+}
+
+/// `tokio::join!` / `futures::join!` (and their `try_*` variants) bundle
+/// concurrently-awaited futures into a tuple result.  tree-sitter-rust
+/// represents the args as a `token_tree` whose children alternate between
+/// expressions and `,` separators (`token_tree` itself nests on every
+/// parenthesised group, e.g. the `(x)` inside `fetch(x)`).  Walk the
+/// top-level token_tree, segment by `,` leaves, and lift identifiers out
+/// of each chunk so the SSA Call op carries one positional arg per future.
+///
+/// Returns `Some(arg_uses)` only when the macro is one of the recognised
+/// join macros, so `extract_arg_uses` can fall through to its normal
+/// `arguments`-field path for every other macro shape (`format!`,
+/// `println!`, custom DSL macros) where arg lifting could disturb existing
+/// label / SSA flow.
+pub(super) fn extract_rust_macro_join_arg_uses(
+    call_node: Node,
+    code: &[u8],
+) -> Option<Vec<Vec<String>>> {
+    let macro_node = call_node.child_by_field_name("macro")?;
+    let macro_text = text_of(macro_node, code)?;
+    if !is_rust_join_macro(&macro_text) {
+        return None;
+    }
+    let tt = match call_node.child_by_field_name("token_tree") {
+        Some(t) => t,
+        None => {
+            let mut cursor = call_node.walk();
+            call_node
+                .children(&mut cursor)
+                .find(|c| c.kind() == "token_tree")?
+        }
+    };
+    let mut chunks: Vec<Vec<Node>> = vec![Vec::new()];
+    let mut cursor = tt.walk();
+    for child in tt.children(&mut cursor) {
+        // Skip the surrounding `(`/`)` punctuation.
+        if !child.is_named() {
+            let kind = child.kind();
+            if kind == "," {
+                chunks.push(Vec::new());
+                continue;
+            }
+            if kind == "(" || kind == ")" {
+                continue;
+            }
+        }
+        chunks.last_mut().unwrap().push(child);
+    }
+    let mut result = Vec::new();
+    for chunk in chunks {
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut idents = Vec::new();
+        let mut paths = Vec::new();
+        for n in chunk {
+            collect_idents_with_paths(n, code, &mut idents, &mut paths);
+        }
+        let mut combined = paths;
+        combined.extend(idents);
+        result.push(combined);
+    }
+    Some(result)
+}
+
+fn is_rust_join_macro(macro_text: &str) -> bool {
+    matches!(
+        macro_text,
+        "tokio::join"
+            | "tokio::try_join"
+            | "futures::join"
+            | "futures::try_join"
+            | "join"
+            | "try_join"
+    )
 }
 
 /// Extract keyword / named argument bindings for a call node.

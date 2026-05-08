@@ -370,6 +370,10 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "let_declaration"        => Kind::CallWrapper,
     "expression_statement"   => Kind::CallWrapper,
     "assignment_expression"  => Kind::Assignment,
+    // `x.await` postfix.  Documented per-language so the contract does
+    // not depend on the raw-string fallback in `cfg::push_node`; SSA
+    // lowering emits `Assign(operand)` for these nodes.
+    "await_expression"       => Kind::AwaitForward,
 
     // struct expressions, recurse so env::var() calls inside field
     // initialisers produce Source-labelled CFG nodes (needed for summaries).

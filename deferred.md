@@ -341,6 +341,72 @@ implied or surfaced but did not finish.
       retroactive Phase 01 perf line if a future replan asks for
       one.
 
+- [ ] Phase 12 audit — the Rust `handler.rs` fixture uses a hand-rolled
+      `Headers::get` async method rather than a real axum extractor
+      (e.g. `Body::data().await`).  Reason: nyx is text-driven, so the
+      fixture only needs to match the existing `headers.get` Source
+      matcher; pulling in axum / hyper as test deps would inflate the
+      fixture footprint.  If a future phase wants a real axum-extractor
+      shape exercised end-to-end, add a `Source` rule for
+      `Body.data` / `Body.collect` and reshape the fixture.
+
+- [ ] Phase 12 audit — `is_promise_combinator("rust", ...)` recognises
+      the qualified macro paths (`tokio::join`, `futures::join`, plus
+      `try_*`) but not the bare `join!` / `try_join!` form that fires
+      after `use tokio::join;`.  `extract_arg_uses` accepts the bare
+      names so a future combinator-recognition extension can light them
+      up, but the conservative posture today is to not match bare
+      `join` (the leaf is too generic; collisions with non-macro user
+      callees of the same name would surface as combinators).  Add bare
+      recognition behind a per-file import-aware check
+      (`use tokio::join;` rebind detection in
+      `cfg::imports::extract_local_import_view`) when a real-world
+      fixture surfaces the bare-import shape.
+
+- [ ] Phase 12 audit — Python `async for x in stream:` and sync
+      `for x in stream:` share the same `for_statement` AST node
+      (the `async` token is unnamed).  The iterator-text rewrite in
+      `cfg::push_node` therefore fires uniformly, not gated on the
+      async modifier.  This is the same pragmatic choice the JS
+      branch made (which covers `for`, `for...of`, `for...in`, and
+      `for await...of` identically).  If async-iterator semantics
+      ever diverge from the sync form (e.g. `__aiter__`-only sources
+      that should not light up via the shared rewrite), gate the
+      Python rewrite on the presence of an `async` leaf child.
+
+- [ ] Phase 12 audit — `tokio::join!`'s tuple result is currently
+      modelled as a single SSA value carrying the union of every
+      argument's taint, mirroring the existing JS `Promise.all`
+      convention (see Phase 03's deferred per-element-precision
+      item).  Field projection (`results.0`) inherits taint via the
+      receiver chain, so the recall fixture lights up for the
+      union-tainted index.  The same per-element precision lift the
+      JS combinator wants would also benefit the Rust tuple form;
+      both share the upstream tuple/array-element lattice extension.
+
+- [ ] Phase 12 audit — the new `extract_rust_macro_join_arg_uses`
+      helper splits the `token_tree` on `,` leaves to segment
+      arguments.  This is correct for simple shapes
+      (`tokio::join!(fetch(a), fetch(b))`) and for nested calls,
+      because nested `()` groups become inner `token_tree` nodes
+      that the splitter walks transparently.  It does NOT special-
+      case macro-internal repetition (`token_repetition`) or
+      metavariable substitutions, both legal at the grammar level.
+      A bug-hunt fixture that lands a `tokio::join!` arg containing
+      `$($x:expr),*` would cause arg-grouping to misalign; bridge by
+      treating `token_repetition` as a sub-expression boundary if
+      that shape becomes load-bearing.
+
+- [ ] Phase 12 audit — the `await_emits_at_most_one_assign_per_node`
+      ssa-equivalence test in `tests/ssa_equivalence_tests.rs`
+      currently asserts the bound on a single hand-crafted Rust
+      fixture (`tests/fixtures/realistic/async_await/await_count.rs`).
+      The same invariant holds for every Rust file in the SSA
+      corpus, but extending the assertion across the corpus would
+      slow this tier from ~10 ms to seconds (every fixture re-lowered
+      and re-walked).  Park the corpus-wide variant until a CI
+      perf budget for ssa-equivalence-tests is established.
+
 ## Deferred phases
 
 (none)

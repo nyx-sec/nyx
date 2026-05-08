@@ -715,17 +715,35 @@ pub enum PromiseCombinatorKind {
 }
 
 pub fn is_promise_combinator(lang: &str, callee: &str) -> Option<PromiseCombinatorKind> {
-    if !matches!(
-        lang,
-        "javascript" | "js" | "typescript" | "ts" | "tsx"
-    ) {
-        return None;
-    }
-    match callee {
-        "Promise.resolve" => Some(PromiseCombinatorKind::Resolve),
-        "Promise.all" => Some(PromiseCombinatorKind::All),
-        "Promise.allSettled" => Some(PromiseCombinatorKind::AllSettled),
-        "Promise.race" => Some(PromiseCombinatorKind::Race),
+    match lang {
+        "javascript" | "js" | "typescript" | "ts" | "tsx" => match callee {
+            "Promise.resolve" => Some(PromiseCombinatorKind::Resolve),
+            "Promise.all" => Some(PromiseCombinatorKind::All),
+            "Promise.allSettled" => Some(PromiseCombinatorKind::AllSettled),
+            "Promise.race" => Some(PromiseCombinatorKind::Race),
+            _ => None,
+        },
+        // Python: `asyncio.gather(...)` / `asyncio.wait(...)` resolve to a
+        // tuple/list whose elements carry the union of argument taints.
+        // `asyncio.wait` returns `(done, pending)` sets but the same
+        // conservative scalar-union approximation applies, downstream
+        // destructuring already taints all bindings.
+        "python" | "py" => match callee {
+            "asyncio.gather" | "asyncio.wait" => Some(PromiseCombinatorKind::All),
+            _ => None,
+        },
+        // Rust: `tokio::join!` / `futures::join!` (and their `try_*`
+        // variants) evaluate every future concurrently and bind the
+        // tuple of resolved values.  `cfg::push_node` rewrites the
+        // macro_invocation's `arg_uses` so each future's tainted inputs
+        // surface as a positional arg; this combinator entry then unions
+        // them onto the tuple value.
+        "rust" | "rs" => match callee {
+            "tokio::join" | "tokio::try_join" | "futures::join" | "futures::try_join" => {
+                Some(PromiseCombinatorKind::All)
+            }
+            _ => None,
+        },
         _ => None,
     }
 }

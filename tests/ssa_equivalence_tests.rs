@@ -707,6 +707,69 @@ fn build_and_lower_all(path: &Path, cfg: &Config) -> usize {
     n
 }
 
+// ── Phase 12: Rust `await_expression` Assign-op count ───────────────────
+//
+// Each Rust `await_expression` node carries `is_await_forward = true`
+// (set via the new `Kind::AwaitForward` mapping in `src/labels/rust.rs`).
+// The SSA lowering must emit at most one `SsaOp::Assign` per such CFG
+// node — duplicating the emission would inflate the body's value count
+// and propagate the awaited taint twice.  Use the new
+// `tests/fixtures/realistic/async_await/await_count.rs` fixture which
+// places three `await_expression` nodes in distinct positions.
+#[test]
+fn await_emits_at_most_one_assign_per_node() {
+    use nyx_scanner::ssa::SsaOp;
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/realistic/async_await/await_count.rs");
+    let cfg = test_config(AnalysisMode::Full);
+    let (file_cfg, _) = build_cfg_for_file(&fixture, &cfg)
+        .expect("parse fixture")
+        .expect("non-empty bodies");
+
+    let mut total_await_nodes = 0usize;
+    for body in &file_cfg.bodies {
+        let graph = &body.graph;
+
+        // Collect CFG node indices whose NodeInfo has `is_await_forward`.
+        let await_nodes: Vec<_> = graph
+            .node_indices()
+            .filter(|n| graph[*n].is_await_forward)
+            .collect();
+        total_await_nodes += await_nodes.len();
+
+        let ssa = match lower_to_ssa(graph, body.entry, None, true) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        // Count Assign ops attributed to each await CFG node.
+        for cfg_node in &await_nodes {
+            let assign_count: usize = ssa
+                .blocks
+                .iter()
+                .flat_map(|b| b.body.iter())
+                .filter(|inst| inst.cfg_node == *cfg_node && matches!(inst.op, SsaOp::Assign(_)))
+                .count();
+            assert!(
+                assign_count <= 1,
+                "await_expression CFG node {:?} lowered to {} Assign ops (expected <= 1) in body {:?}",
+                cfg_node,
+                assign_count,
+                body.meta.name.as_deref().unwrap_or("<toplevel>"),
+            );
+        }
+    }
+    // Sanity guard: the fixture is hand-crafted to put `await_expression`
+    // nodes in three positions (let-binding, statement, implicit return).
+    // If the Rust KINDS-map entry regresses or the per-node `is_await_forward`
+    // dispatch breaks, this count drops to zero and the count-cap above
+    // becomes vacuous.  Pin a lower bound so the regression surfaces here.
+    assert!(
+        total_await_nodes >= 1,
+        "expected at least one await_expression CFG node across all bodies, got 0 — fixture or mapping regressed"
+    );
+}
+
 // ── Catch-block orphan invariant ────────────────────────────────────────
 //
 // Construct a synthetic SsaBody where a block carries `SsaOp::CatchParam`

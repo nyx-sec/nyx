@@ -1667,6 +1667,20 @@ pub(super) fn push_node<'a>(
         text = iter_text;
     }
 
+    // Python `for x in iter:` / `async for x in iter:`: tree-sitter-python
+    // emits both shapes as `for_statement` (the `async` keyword is an
+    // unnamed leaf child).  Same loop-binding-inherits-iterator-taint
+    // semantics as the JS rewrite above: classify against the iterator
+    // text so a `Source` matcher on `request.json` lights up when the
+    // loop iterates an awaitable request body.
+    if lang == "python"
+        && ast.kind() == "for_statement"
+        && let Some(right) = ast.child_by_field_name("right")
+        && let Some(iter_text) = text_of(right, code)
+    {
+        text = iter_text;
+    }
+
     // If this is a declaration/expression wrapper or an assignment that
     // *contains* a call, prefer the first inner call identifier instead of
     // the whole line.  Track the inner call's byte span so we can populate
@@ -2859,7 +2873,7 @@ pub(super) fn push_node<'a>(
         is_numeric_length_access: detect_numeric_length_access(ast, lang, code),
         member_field: detect_member_field_assignment(ast, code),
         rhs_is_function_literal: rhs_is_function_literal(ast, lang),
-        is_await_forward: ast.kind() == "await_expression",
+        is_await_forward: lookup(lang, ast.kind()) == Kind::AwaitForward,
     });
 
     debug!(

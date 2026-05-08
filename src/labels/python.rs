@@ -1329,6 +1329,13 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "call"                  => Kind::CallFn,
     "assignment"            => Kind::Assignment,
     "expression_statement"  => Kind::CallWrapper,
+    // tree-sitter-python emits `await x` as a named `await` node (no
+    // `_expression` suffix, unlike JS/TS).  Map it to `AwaitForward` so
+    // the SSA lowering forwards the awaited value 1:1, mirroring the
+    // JS/TS contract.  Async-for in Python is plain `for_statement` with
+    // an unnamed `async` token child; the iterator-text rewrite in
+    // `cfg::push_node` covers both sync and async forms uniformly.
+    "await"                 => Kind::AwaitForward,
 
     // trivia
     "comment"               => Kind::Trivia,

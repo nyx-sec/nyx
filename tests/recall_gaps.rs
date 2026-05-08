@@ -58,7 +58,7 @@ use nyx_scanner::labels::Cap;
 use std::path::Path;
 
 #[test]
-fn async_await() {
+fn async_await_js() {
     let findings = scan_fixture("async_await");
     // JS form — exercises the JavaScript `await_expression` KINDS-map entry.
     assert_finding(
@@ -86,6 +86,84 @@ fn async_await() {
             file_suffix: "handler.ts",
             sink_line: 5,
             source_line: Some(3),
+        },
+    );
+}
+
+/// Phase 12 recall-gap (Python).  tree-sitter-python emits `await x` as a
+/// named `await` node (no `_expression` suffix).  Without the
+/// `"await" => Kind::AwaitForward` entry in `src/labels/python.rs` and the
+/// corresponding `Kind`-driven `is_await_forward` flag in `cfg::push_node`,
+/// the engine never models the await boundary as a 1:1 forward and the
+/// FastAPI-shape `await request.json()` source never reaches `cursor.execute`.
+#[test]
+fn async_await_py() {
+    let findings = scan_fixture("async_await/handler.py");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "handler.py",
+            sink_line: 8,
+            source_line: None,
+        },
+    );
+}
+
+/// Phase 12 recall-gap (Python combinator).  `asyncio.gather(...)` is
+/// registered as `PromiseCombinatorKind::All` for Python in
+/// `is_promise_combinator`; argument taint unions onto the awaited result.
+#[test]
+fn async_await_py_gather() {
+    let findings = scan_fixture("async_await/gather.py");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "gather.py",
+            sink_line: 14,
+            source_line: None,
+        },
+    );
+}
+
+/// Phase 12 recall-gap (Rust).  `x.await` is now mapped explicitly to
+/// `Kind::AwaitForward` in `src/labels/rust.rs`; the `is_await_forward`
+/// flag is set via `lookup(lang, ast.kind()) == Kind::AwaitForward`
+/// rather than the raw-string `ast.kind() == "await_expression"` check.
+/// The header-shape source flows across the await into the
+/// `Command::new("sh").arg(&cmd)` shell-injection sink.
+#[test]
+fn async_await_rs() {
+    let findings = scan_fixture("async_await/handler.rs");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "handler.rs",
+            sink_line: 26,
+            source_line: Some(25),
+        },
+    );
+}
+
+/// Phase 12 recall-gap (Rust combinator).  `tokio::join!(...)` is a
+/// `macro_invocation` whose args live inside a `token_tree`.
+/// `extract_arg_uses` walks the token_tree splitting on `,` so the SSA
+/// Call carries one arg group per future, and
+/// `is_promise_combinator("rust", "tokio::join")` routes it through the
+/// existing combinator transfer.  The unioned env-var taint flows into
+/// `reqwest::get` (SSRF sink).
+#[test]
+fn async_await_rs_join() {
+    let findings = scan_fixture("async_await/tokio_join.rs");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "tokio_join.rs",
+            sink_line: 11,
+            source_line: None,
         },
     );
 }
