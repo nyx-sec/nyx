@@ -1339,6 +1339,34 @@ impl<'a> ParsedFile<'a> {
             }
         }
 
+        // Phase 10 — annotate entry-point summaries.  Match each
+        // summary's body span (looked up via `FuncSummaries` keyed on
+        // `FuncKey`) against the per-file `entry_kinds` table so the
+        // tag survives SQLite round-trips and cross-file consumption.
+        if !self.file_cfg.entry_kinds.is_empty() {
+            // Build a (name, container, disambig) → span lookup from
+            // the file's bodies so we can associate each exported
+            // FuncSummary with its body span.
+            let mut by_identity: std::collections::HashMap<
+                (String, String, Option<u32>),
+                (usize, usize),
+            > = std::collections::HashMap::new();
+            for body in self.file_cfg.function_bodies() {
+                if let Some(key) = &body.meta.func_key {
+                    by_identity.insert(
+                        (key.name.clone(), key.container.clone(), key.disambig),
+                        body.meta.span,
+                    );
+                }
+            }
+            for s in &mut out {
+                let id = (s.name.clone(), s.container.clone(), s.disambig);
+                if let Some(span) = by_identity.get(&id) {
+                    s.entry_kind = self.file_cfg.entry_kinds.get(span).cloned();
+                }
+            }
+        }
+
         // Rust-specific enrichment: derive the crate-relative module path for
         // this file and parse every top-level `use` declaration into an alias
         // map. The information lets the call graph resolve same-name functions
@@ -1533,6 +1561,20 @@ impl<'a> ParsedFile<'a> {
         } else {
             Some(self.lang_rules.extra_labels.as_slice())
         };
+        // Phase-09 cross-package import lookup. Built per-file from the
+        // resolver's verdict; consumed by `resolve_callee_full` step 0.7
+        // when a flat-name lookup would otherwise miss.
+        let cross_package_imports = crate::taint::build_cross_package_func_keys(
+            &self.file_cfg.resolved_imports,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+            caller_lang,
+        );
+        let cross_package_imports_ref = if cross_package_imports.is_empty() {
+            None
+        } else {
+            Some(&cross_package_imports)
+        };
         let taint_results = crate::taint::analyse_file_with_lowered(
             &self.file_cfg,
             self.local_summaries(),
@@ -1543,6 +1585,7 @@ impl<'a> ParsedFile<'a> {
             extra,
             ssa_summaries,
             callee_bodies,
+            cross_package_imports_ref,
         );
         // Drain the path-safe-suppressed sink-span set published by the
         // SSA taint engine.  Used below by the state-analysis pass to

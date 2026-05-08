@@ -530,34 +530,78 @@ fn ssrf_url_builders() {
     );
 }
 
+/// Phase 09 recall-gap: cross-package IPA via FuncKey namespace
+/// resolution.  `unsafeHandler` calls `escapeHtmlNoop` (a passthrough
+/// imported from `@scope/util/sanitize`); the engine sees the imported
+/// callee's SSA summary via step 0.7 of `resolve_callee_full` and
+/// therefore propagates `req.query.x` taint into `res.send` on line 7.
+/// `safeHandler` calls `stripTags` (a real `replace`-based sanitizer
+/// imported from `@scope/util/strip`) and must stay silent.
 #[test]
-#[ignore = "future phase: cross-package IPA"]
 fn cross_package_ipa() {
     let findings = scan_fixture("cross_package_ipa");
     assert_finding(
         &findings,
         ExpectedFinding {
             rule_id: "taint-unsanitised-flow",
-            file_suffix: "consumer.ts",
-            sink_line: 0,
-            source_line: None,
+            file_suffix: "handler.ts",
+            sink_line: 7,
+            source_line: Some(5),
         },
+    );
+    let safe_hit = findings.iter().any(|f| {
+        f.id.starts_with("taint-unsanitised-flow")
+            && f.path.ends_with("handler.ts")
+            && f.line == 13
+    });
+    assert!(
+        !safe_hit,
+        "cross-package sanitizer fixture must stay silent at handler.ts:13; got:\n{}",
+        findings
+            .iter()
+            .filter(|f| f.path.ends_with("handler.ts"))
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }
 
+/// Phase 10 recall-gap: Next.js entry-point detection.  Coverage:
+///   - App Router POST handler at `app/api/users/route.ts`: the first
+///     formal is typed as `TypeKind::Request`, so `await req.json()`
+///     surfaces as a SQL_QUERY sink at the `db.query(body)` call.
+///   - File-level `'use server'` directive
+///     (`nextjs_server_action.ts`, `nextjs_use_server_directive.ts`):
+///     every exported function's formals are seeded as Source taint
+///     at SSA entry.
+///   - Function-level `'use server'`
+///     (`nextjs_use_server_function_level.ts`): only the directive-
+///     bearing function is treated as a server action.
+///   - `next/headers` `cookies()` import-gated source: the gated rule
+///     fires only when `cookies` is bound from `next/headers`.
 #[test]
-#[ignore = "PHASE 08 unblocks"]
 fn nextjs_entrypoints() {
     let findings = scan_fixture("nextjs_entrypoints");
-    assert_finding(
-        &findings,
-        ExpectedFinding {
-            rule_id: "taint-unsanitised-flow",
-            file_suffix: "route.ts",
-            sink_line: 0,
-            source_line: None,
-        },
-    );
+
+    // Each fixture asserts the SQL sink fires.
+    let positives = [
+        ("route.ts", 11usize),
+        ("nextjs_server_action.ts", 11usize),
+        ("nextjs_use_server_directive.ts", 9usize),
+        ("nextjs_use_server_function_level.ts", 8usize),
+        ("nextjs_cookies_source.ts", 12usize),
+    ];
+    for (file, sink_line) in positives {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: file,
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
 }
 
 #[test]

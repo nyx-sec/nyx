@@ -388,6 +388,16 @@ pub struct FuncSummary {
     /// [`crate::callgraph::TypeHierarchyIndex`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hierarchy_edges: Vec<(String, String)>,
+
+    /// Phase-10 Next.js entry-point classification.  When `Some(_)`,
+    /// the function is treated as an externally-driven entry point
+    /// whose parameters are seeded as `TaintOrigin::Source` at SSA
+    /// entry, mirroring the way an HTTP request handler's formals are
+    /// adversary-controlled by default.  `None` for ordinary
+    /// helpers — pass-2 keeps its existing baseline-subtraction
+    /// semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_kind: Option<crate::entry_points::EntryKind>,
 }
 
 // ── Cap conversion helpers ──────────────────────────────────────────────

@@ -30,6 +30,24 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // Phase 10 — Web `Request` receiver-method reads.  Triggered when
+    // the SSA receiver carries `TypeKind::Request` (Next.js App
+    // Router handler's first formal) and the type-qualified resolver
+    // rewrites `req.json()` → `Request.json` etc.  The reads return
+    // user-controlled bytes / strings; the matchers also cover
+    // `Request.url` and `Request.headers.get(...)` which both expose
+    // header / URL state to the handler.
+    LabelRule {
+        matchers: &[
+            "Request.json",
+            "Request.formData",
+            "Request.text",
+            "Request.url",
+            "Request.headers.get",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
     // ───────── Sanitizers ──────────
     LabelRule {
         matchers: &["JSON.parse"],
@@ -491,6 +509,18 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
         gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
+    },
+    // Phase 10 — Next.js `cookies()` / `headers()` helpers from the
+    // `next/headers` module return adversary-controlled
+    // request-bound state (cookies carry session tokens, headers
+    // carry auth material).  Gated on the import so app-internal
+    // helpers named `cookies` or `headers` keep their default
+    // classification.
+    GatedLabelRule {
+        matchers: &["cookies", "headers"],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+        gate: LabelGate::ImportedFromModule(&["next/headers"]),
     },
 ];
 

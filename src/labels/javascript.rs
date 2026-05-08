@@ -30,6 +30,21 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // Phase 10 — Web `Request` receiver-method reads.  Triggered when
+    // the SSA receiver carries `TypeKind::Request` and the
+    // type-qualified resolver rewrites `req.json()` → `Request.json`
+    // etc.  Mirrors the matching list in `labels/typescript.rs`.
+    LabelRule {
+        matchers: &[
+            "Request.json",
+            "Request.formData",
+            "Request.text",
+            "Request.url",
+            "Request.headers.get",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+    },
     // ───────── Sanitizers ──────────
     LabelRule {
         matchers: &["JSON.parse"],
@@ -644,6 +659,15 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
         gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
+    },
+    // Phase 10 — Next.js `cookies()` / `headers()` from `next/headers`
+    // return adversary-controlled request-bound state.  Mirrors the
+    // entry in `labels/typescript.rs::GATED_LABEL_RULES`.
+    GatedLabelRule {
+        matchers: &["cookies", "headers"],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+        gate: LabelGate::ImportedFromModule(&["next/headers"]),
     },
 ];
 

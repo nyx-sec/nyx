@@ -59,6 +59,7 @@ pub mod index {
             disambig INTEGER,
             kind TEXT NOT NULL DEFAULT 'fn',
             summary TEXT NOT NULL,
+            entry_kind TEXT,
             updated_at INTEGER NOT NULL,
             UNIQUE(project, file_path, name, container, arity, disambig, kind)
         );
@@ -76,6 +77,7 @@ pub mod index {
             disambig INTEGER,
             kind TEXT NOT NULL DEFAULT 'fn',
             summary TEXT NOT NULL,
+            entry_kind TEXT,
             updated_at INTEGER NOT NULL,
             UNIQUE(project, file_path, name, container, arity, disambig, kind)
         );
@@ -400,6 +402,14 @@ pub mod index {
                     conn.execute_batch(SCHEMA)?;
                 }
 
+                // Phase 10 — `entry_kind` column on (ssa_)function_summaries.
+                // Non-destructive `ALTER TABLE ... ADD COLUMN` so existing
+                // rows survive the upgrade.  The column is nullable; the
+                // INSERT paths write the JSON-encoded `EntryKind` text or
+                // NULL when the function is not an entry point.
+                Self::ensure_column(&conn, "function_summaries", "entry_kind", "TEXT")?;
+                Self::ensure_column(&conn, "ssa_function_summaries", "entry_kind", "TEXT")?;
+
                 // Ensure the auth_check_summaries table exists for DBs
                 // created before this column set was introduced.  The
                 // `CREATE TABLE IF NOT EXISTS` in SCHEMA handles new DBs;
@@ -431,6 +441,33 @@ pub mod index {
                 Self::check_engine_version(&conn)?;
             }
             Ok(pool)
+        }
+
+        /// Add a column to an existing table when it is missing.
+        ///
+        /// Non-destructive: leaves all existing rows untouched, populating
+        /// the new column with NULL.  Used to thread additive schema
+        /// changes (Phase 10's `entry_kind`) into pre-existing databases
+        /// without forcing a full cache rebuild.
+        fn ensure_column(
+            conn: &Connection,
+            table: &str,
+            column: &str,
+            sqlite_type: &str,
+        ) -> NyxResult<()> {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let cols: std::collections::HashSet<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            if cols.contains(column) {
+                return Ok(());
+            }
+            tracing::info!("adding column {column} to {table}");
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {sqlite_type}"
+            ))?;
+            Ok(())
         }
 
         /// Check stored schema version against the compiled-in value.
@@ -801,14 +838,21 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO function_summaries
                         (project, file_path, file_hash, name, arity, lang,
-                         container, disambig, kind, summary, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         container, disambig, kind, summary, entry_kind, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )?;
 
                 for s in summaries {
                     let json = serde_json::to_string(s)
                         .map_err(|e| NyxError::Msg(format!("summary serialise: {e}")))?;
                     let disambig_sql = s.disambig.map(|d| d as i64);
+                    let entry_kind_sql = s
+                        .entry_kind
+                        .as_ref()
+                        .map(|ek| {
+                            serde_json::to_string(ek).unwrap_or_else(|_| String::new())
+                        })
+                        .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
                         path_str,
@@ -820,6 +864,7 @@ pub mod index {
                         disambig_sql,
                         s.kind.as_str(),
                         json,
+                        entry_kind_sql,
                         now
                     ])?;
                 }
@@ -863,8 +908,8 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO ssa_function_summaries
                         (project, file_path, file_hash, name, arity, lang, namespace,
-                         container, disambig, kind, summary, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         container, disambig, kind, summary, entry_kind, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 )?;
 
                 for (name, arity, lang, namespace, container, disambig, kind, summary) in summaries
@@ -872,6 +917,13 @@ pub mod index {
                     let json = serde_json::to_string(summary)
                         .map_err(|e| NyxError::Msg(format!("SSA summary serialise: {e}")))?;
                     let disambig_sql = disambig.map(|d| d as i64);
+                    let entry_kind_sql = summary
+                        .entry_kind
+                        .as_ref()
+                        .map(|ek| {
+                            serde_json::to_string(ek).unwrap_or_else(|_| String::new())
+                        })
+                        .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
                         path_str,
@@ -884,6 +936,7 @@ pub mod index {
                         disambig_sql,
                         kind.as_str(),
                         json,
+                        entry_kind_sql,
                         now
                     ])?;
                 }
@@ -1406,13 +1459,20 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO function_summaries
                         (project, file_path, file_hash, name, arity, lang,
-                         container, disambig, kind, summary, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         container, disambig, kind, summary, entry_kind, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )?;
                 for s in func_summaries {
                     let json = serde_json::to_string(s)
                         .map_err(|e| NyxError::Msg(format!("summary serialise: {e}")))?;
                     let disambig_sql = s.disambig.map(|d| d as i64);
+                    let entry_kind_sql = s
+                        .entry_kind
+                        .as_ref()
+                        .map(|ek| {
+                            serde_json::to_string(ek).unwrap_or_else(|_| String::new())
+                        })
+                        .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
                         path_str,
@@ -1424,6 +1484,7 @@ pub mod index {
                         disambig_sql,
                         s.kind.as_str(),
                         json,
+                        entry_kind_sql,
                         now
                     ])?;
                 }
@@ -1439,8 +1500,8 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO ssa_function_summaries
                         (project, file_path, file_hash, name, arity, lang, namespace,
-                         container, disambig, kind, summary, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         container, disambig, kind, summary, entry_kind, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 )?;
                 for (name, arity, lang, namespace, container, disambig, kind, summary) in
                     ssa_summaries
@@ -1448,6 +1509,13 @@ pub mod index {
                     let json = serde_json::to_string(summary)
                         .map_err(|e| NyxError::Msg(format!("SSA summary serialise: {e}")))?;
                     let disambig_sql = disambig.map(|d| d as i64);
+                    let entry_kind_sql = summary
+                        .entry_kind
+                        .as_ref()
+                        .map(|ek| {
+                            serde_json::to_string(ek).unwrap_or_else(|_| String::new())
+                        })
+                        .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
                         path_str,
@@ -1460,6 +1528,7 @@ pub mod index {
                         disambig_sql,
                         kind.as_str(),
                         json,
+                        entry_kind_sql,
                         now
                     ])?;
                 }
@@ -2539,6 +2608,7 @@ fn ssa_summaries_round_trip() {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         ),
         (
@@ -2575,6 +2645,7 @@ fn ssa_summaries_round_trip() {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         ),
     ];
@@ -2749,6 +2820,7 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash_v1, &sums_v1)
@@ -2787,6 +2859,7 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash_v2, &sums_v2)
@@ -2846,6 +2919,7 @@ fn clear_drops_ssa_summaries_table() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash, &sums)
@@ -3122,6 +3196,7 @@ fn make_test_ssa_summary() -> crate::summary::ssa_summary::SsaFuncSummary {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     }
 }
 
@@ -3434,6 +3509,151 @@ fn missing_ssa_namespace_column_triggers_recreate() {
     idx.replace_ssa_summaries_for_file(&f, &hash, &sums)
         .unwrap();
     assert_eq!(idx.load_all_ssa_summaries().unwrap().len(), 1);
+}
+
+/// Phase 10 migration test.  Build a database whose
+/// `(ssa_)function_summaries` tables are at the post-Phase 09 shape
+/// (namespace + container + disambig + kind columns present, but no
+/// `entry_kind` column).  Insert a row directly so the migration must
+/// preserve it.  After `init`, the column should exist on both tables
+/// without dropping the pre-existing data.
+#[test]
+fn entry_kind_column_added_in_place_without_data_loss() {
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+
+    // Hand-build a pre-Phase-10 schema (no `entry_kind` column).
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL, path TEXT NOT NULL,
+                hash BLOB NOT NULL, mtime INTEGER NOT NULL,
+                scanned_at INTEGER NOT NULL, UNIQUE(project, path)
+            );
+            CREATE TABLE function_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL, file_path TEXT NOT NULL,
+                file_hash BLOB NOT NULL, name TEXT NOT NULL,
+                arity INTEGER NOT NULL DEFAULT -1, lang TEXT NOT NULL,
+                container TEXT NOT NULL DEFAULT '',
+                disambig INTEGER,
+                kind TEXT NOT NULL DEFAULT 'fn',
+                summary TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                UNIQUE(project, file_path, name, container, arity, disambig, kind)
+            );
+            CREATE TABLE ssa_function_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL, file_path TEXT NOT NULL,
+                file_hash BLOB NOT NULL, name TEXT NOT NULL,
+                arity INTEGER NOT NULL DEFAULT -1, lang TEXT NOT NULL,
+                namespace TEXT NOT NULL DEFAULT '',
+                container TEXT NOT NULL DEFAULT '',
+                disambig INTEGER,
+                kind TEXT NOT NULL DEFAULT 'fn',
+                summary TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                UNIQUE(project, file_path, name, container, arity, disambig, kind)
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO function_summaries
+                (project, file_path, file_hash, name, arity, lang,
+                 container, disambig, kind, summary, updated_at)
+             VALUES ('proj', 'lib.py', X'00', 'old_func', 1, 'python',
+                     '', NULL, 'fn', '{}', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ssa_function_summaries
+                (project, file_path, file_hash, name, arity, lang,
+                 namespace, container, disambig, kind, summary, updated_at)
+             VALUES ('proj', 'lib.py', X'00', 'old_func', 1, 'python',
+                     '', '', NULL, 'fn', '{}', 0)",
+            [],
+        )
+        .unwrap();
+        // Pre-populate the metadata so `check_schema_version` and
+        // `check_engine_version` consider the database current and do
+        // not wipe the rows we just inserted.  The point of this test
+        // is the in-place `ALTER TABLE`; the version checks are a
+        // separate concern.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS nyx_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO nyx_metadata (key, value) VALUES ('schema_version', ?1)",
+            rusqlite::params![index::SCHEMA_VERSION],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO nyx_metadata (key, value) VALUES ('engine_version', ?1)",
+            rusqlite::params![index::ENGINE_VERSION],
+        )
+        .unwrap();
+    }
+
+    // Open via init — should non-destructively ALTER both tables to
+    // add `entry_kind`, leaving the seeded rows intact.
+    let pool = index::Indexer::init(&db).unwrap();
+
+    let conn = pool.get().unwrap();
+    let cols_for = |table: &str| {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let v: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        v
+    };
+    assert!(
+        cols_for("function_summaries").iter().any(|c| c == "entry_kind"),
+        "function_summaries.entry_kind missing after migration"
+    );
+    assert!(
+        cols_for("ssa_function_summaries")
+            .iter()
+            .any(|c| c == "entry_kind"),
+        "ssa_function_summaries.entry_kind missing after migration"
+    );
+
+    // Pre-existing rows survive the migration.
+    let func_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM function_summaries WHERE project = 'proj'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(func_rows, 1, "pre-existing function_summaries row was lost");
+    let ssa_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM ssa_function_summaries WHERE project = 'proj'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        ssa_rows, 1,
+        "pre-existing ssa_function_summaries row was lost"
+    );
+
+    // Existing rows have NULL entry_kind by default.
+    let entry_kind_value: Option<String> = conn
+        .query_row(
+            "SELECT entry_kind FROM function_summaries WHERE project = 'proj'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(entry_kind_value.is_none());
 }
 
 #[test]

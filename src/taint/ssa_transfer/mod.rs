@@ -204,6 +204,30 @@ pub struct SsaTaintTransfer<'a> {
     /// the matching cells.  Strict-additive: `None` reproduces today's
     /// pointer-unaware behaviour.
     pub pointer_facts: Option<&'a crate::pointer::PointsToFacts>,
+    /// Phase-09 cross-package import lookup: maps the caller-file's local
+    /// binding name (e.g. `escapeHtml`) to the canonical [`FuncKey`] of
+    /// the imported function in its own package's namespace.
+    ///
+    /// Populated by [`crate::taint::build_cross_package_func_keys`] from
+    /// each file's [`crate::cfg::FileCfg::resolved_imports`] before pass-2
+    /// taint analysis. Consumed by `resolve_callee_full` at step 0.7 to
+    /// look up the cross-package callee's SSA summary directly via
+    /// [`crate::summary::GlobalSummaries::get_ssa`].
+    ///
+    /// `None` (or empty map) when the file has no resolver-resolved
+    /// imports (non-JS/TS, no `ModuleGraph`, no resolved package boundary).
+    /// In that case step 0.7 is a no-op and resolution falls through to
+    /// the existing flat-name paths.
+    pub cross_package_imports: Option<&'a HashMap<String, FuncKey>>,
+    /// Phase-10 Next.js entry-point classification for the body
+    /// currently under analysis.  When `Some(_)`, every formal
+    /// [`SsaOp::Param`] in the entry block is seeded with
+    /// `Cap::all()` taint and a `TaintOrigin` whose
+    /// [`SourceKind`] is derived from the entry kind, mirroring an
+    /// HTTP request handler's adversary-controlled inputs.  `None`
+    /// preserves today's per-callsite seeding (`global_seed`,
+    /// `param_seed`, `auto_seed_handler_params`).
+    pub entry_kind: Option<crate::entry_points::EntryKind>,
 }
 
 /// Per-predecessor state tracking for path-sensitive phi evaluation.
@@ -256,6 +280,45 @@ fn run_ssa_taint_internal(
     let mut block_states: Vec<Option<SsaTaintState>> = vec![None; num_blocks];
     let mut block_exit_states: Vec<Option<SsaTaintState>> = vec![None; num_blocks];
     block_states[ssa.entry.0 as usize] = Some(SsaTaintState::initial());
+
+    // Phase 10 — entry-point parameter seeding.  When the body under
+    // analysis is a recognised Next.js entry (server action, App
+    // Router HTTP handler, or `<form action>` callback), seed every
+    // formal `Param` in the entry block with `Cap::all()` and a
+    // `TaintOrigin::UserInput` so the engine treats the formals as
+    // adversary-controlled without waiting for a caller-side flow.
+    if let (Some(entry_kind), Some(state)) = (
+        transfer.entry_kind.as_ref(),
+        block_states[ssa.entry.0 as usize].as_mut(),
+    ) {
+        let source_kind = match entry_kind {
+            crate::entry_points::EntryKind::AppRouteHandler { .. }
+            | crate::entry_points::EntryKind::UseServerDirective
+            | crate::entry_points::EntryKind::FormAction => SourceKind::UserInput,
+        };
+        let entry_block = &ssa.blocks[ssa.entry.0 as usize];
+        for inst in entry_block.phis.iter().chain(entry_block.body.iter()) {
+            if !matches!(&inst.op, SsaOp::Param { .. } | SsaOp::SelfParam) {
+                continue;
+            }
+            if ssa.synthetic_externals.contains(&inst.value) {
+                continue;
+            }
+            let origin = TaintOrigin {
+                node: inst.cfg_node,
+                source_kind,
+                source_span: None,
+            };
+            state.set(
+                inst.value,
+                VarTaint {
+                    caps: Cap::all(),
+                    origins: SmallVec::from_elem(origin, 1),
+                    uses_summary: false,
+                },
+            );
+        }
+    }
 
     // Seed entry block's PathEnv from optimization results
     if let Some(ref mut entry_state) = block_states[ssa.entry.0 as usize] {
@@ -2394,6 +2457,13 @@ fn inline_analyse_callee_with_seeds(
         // forward the caller's facts. `PointsToSummary` is the
         // cross-call substitute.
         pointer_facts: None,
+        // Cross-package imports are caller-file-keyed; the inlined
+        // callee body lives in another file with its own import view.
+        // Forwarding the caller's map would resolve the callee's local
+        // names against the wrong import set. None disables step 0.7
+        // for the inlined frame.
+        cross_package_imports: None,
+        entry_kind: None,
     };
 
     // Use the callee's own body graph for inline analysis (per-body CFGs
@@ -10391,6 +10461,68 @@ fn resolve_callee_full(
                 // None of the widened keys had SSA summaries, fall
                 // through to step 2 (FuncSummary path) which may have
                 // hierarchy-widened FuncSummary entries.
+            }
+        }
+    }
+
+    // 0.7) Cross-package import resolution (Phase 09).
+    //
+    // When the callee leaf name matches an import binding the resolver
+    // resolved to a concrete `(file, exported_name)` pair, look up the
+    // canonical [`FuncKey`] in [`GlobalSummaries::ssa_by_key`].  This
+    // closes the recall gap on `import { foo } from '@scope/pkg'` shapes
+    // where `foo` lives in another package's namespace and the same-name
+    // narrowing in step 0.5 can't reach it (the caller's namespace ≠ the
+    // callee's namespace).
+    //
+    // The pre-built map carries the target's `(lang, namespace, name)`
+    // triple but leaves arity / container / disambig / kind unset because
+    // the resolver doesn't inspect the export's signature.  We narrow
+    // candidates by those three fields plus the call-site arity hint when
+    // available; if exactly one survives, claim resolution.  On miss or
+    // ambiguity we fall through to the existing flat paths.
+    if let (Some(map), Some(gs)) = (transfer.cross_package_imports, transfer.global_summaries) {
+        if let Some(target) = map.get(normalized) {
+            // Direct exact-key probe first (resolver lookup happens to be
+            // fully precise, e.g. when the export is the only definition
+            // in its namespace and arity is unknown so the import key's
+            // `arity: None` matches a stored key whose arity is also
+            // None).  Today every persisted SSA summary key carries
+            // a concrete arity, so the exact probe almost always
+            // misses; the iteration scan below is the load-bearing path.
+            let mut hit: Option<&FuncKey> = None;
+            let mut ambiguous = false;
+            for k in gs.snapshot_ssa().keys() {
+                if k.lang != target.lang
+                    || k.namespace != target.namespace
+                    || k.name != target.name
+                    || !k.container.is_empty()
+                {
+                    continue;
+                }
+                if let Some(want) = arity_hint
+                    && k.arity != Some(want)
+                {
+                    continue;
+                }
+                if hit.replace(k).is_some() {
+                    ambiguous = true;
+                    break;
+                }
+            }
+            if !ambiguous && let Some(k) = hit {
+                if let Some(ssa_sum) = gs.get_ssa(k) {
+                    tracing::debug!(
+                        callee = %callee,
+                        target_namespace = %target.namespace,
+                        target_name = %target.name,
+                        "cross-package SSA summary hit (step 0.7)"
+                    );
+                    return Some(convert_ssa_to_resolved_for_caller(
+                        ssa_sum,
+                        Some(transfer.namespace),
+                    ));
+                }
             }
         }
     }

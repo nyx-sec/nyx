@@ -210,6 +210,14 @@ pub enum TypeKind {
     /// A MikroORM `EntityManager` produced by `orm.em.fork()` /
     /// `createEntityManager()`. `em.execute(sql)` is the raw-SQL sink.
     MikroOrmEm,
+    /// A Web-platform `Request` object passed as the first argument to a
+    /// Next.js App Router HTTP-method handler (`GET`, `POST`, ...).
+    /// Phase 10 seeds the formal at function entry so receiver-method
+    /// reads (`req.json()`, `req.formData()`, `req.text()`,
+    /// `req.headers.get(...)`, `req.url`) carry their parameter's
+    /// taint through `Request.<method>` label rewrites without
+    /// requiring a caller-side flow.
+    Request,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -260,6 +268,7 @@ impl TypeKind {
             Self::TypeOrmRepo => Some("TypeOrmRepo"),
             Self::TypeOrmManager => Some("TypeOrmManager"),
             Self::MikroOrmEm => Some("MikroOrmEm"),
+            Self::Request => Some("Request"),
             _ => None,
         }
     }

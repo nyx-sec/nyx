@@ -530,6 +530,7 @@ fn ssa_summary_serde_round_trip_identity() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -564,6 +565,7 @@ fn ssa_summary_serde_round_trip_strip_bits() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -595,6 +597,7 @@ fn ssa_summary_serde_round_trip_add_bits() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -633,6 +636,7 @@ fn ssa_summary_serde_round_trip_all_variants() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -673,6 +677,7 @@ fn global_summaries_insert_ssa_exact_key_replacement() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     gs.insert_ssa(key.clone(), v1.clone());
     assert_eq!(gs.get_ssa(&key), Some(&v1));
@@ -701,6 +706,7 @@ fn global_summaries_insert_ssa_exact_key_replacement() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     gs.insert_ssa(key.clone(), v2.clone());
     assert_eq!(gs.get_ssa(&key), Some(&v2));
@@ -749,6 +755,7 @@ fn global_summaries_merge_with_ssa_entries() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let sum_b = SsaFuncSummary {
         param_to_return: vec![],
@@ -773,6 +780,7 @@ fn global_summaries_merge_with_ssa_entries() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
 
     gs1.insert_ssa(key_a.clone(), sum_a.clone());
@@ -821,6 +829,7 @@ fn global_summaries_is_empty_considers_ssa() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     );
 
@@ -852,6 +861,7 @@ fn ssa_summary_serde_round_trip_param_to_sink_param() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -898,6 +908,7 @@ fn ssa_summary_serde_round_trip_container_fields() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -954,6 +965,7 @@ fn ssa_summary_serde_round_trip_return_abstract() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -1478,6 +1490,7 @@ fn global_summaries_resolve_body_requires_body_present() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     );
     // Don't insert body
@@ -3623,6 +3636,7 @@ fn cf4_return_path_transform_serde_round_trip() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();

@@ -1009,6 +1009,8 @@ mod goto_succ_propagation_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
         };
 
         // A non-bottom exit state, the test only cares that *every* succ
@@ -1101,6 +1103,8 @@ mod goto_succ_propagation_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
         };
         let exit_state = SsaTaintState::initial();
 
@@ -2056,6 +2060,8 @@ mod field_write_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(pf),
+            cross_package_imports: None,
+            entry_kind: None,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2140,6 +2146,8 @@ mod field_write_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
         };
         let mut state = SsaTaintState::initial();
         for inst in &body.blocks[0].body {
@@ -2208,6 +2216,8 @@ mod field_write_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(&pf),
+            cross_package_imports: None,
+            entry_kind: None,
         };
 
         // Pre-seed `validated_must` on `src` so the synth Assign
@@ -2354,6 +2364,8 @@ mod field_write_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(&pf),
+            cross_package_imports: None,
+            entry_kind: None,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2452,6 +2464,8 @@ mod container_elem_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(pf),
+            cross_package_imports: None,
+            entry_kind: None,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2731,6 +2745,8 @@ mod container_elem_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(&pf),
+            cross_package_imports: None,
+            entry_kind: None,
         };
 
         // Seed `src` as validated_must before the push fires.
@@ -2869,6 +2885,8 @@ mod container_elem_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
         };
         let mut state = SsaTaintState::initial();
         for inst in &body.blocks[0].body {
@@ -3425,6 +3443,8 @@ mod field_taint_origin_cap_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(&pf),
+            cross_package_imports: None,
+            entry_kind: None,
         };
         for inst in &body.blocks[0].body {
             transfer_inst(inst, &cfg, &body, &transfer, &mut state);
@@ -3713,6 +3733,8 @@ mod pointer_lattice_worklist_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(pf),
+            cross_package_imports: None,
+            entry_kind: None,
         }
     }
 

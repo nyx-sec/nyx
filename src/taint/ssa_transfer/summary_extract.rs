@@ -264,6 +264,8 @@ pub fn extract_ssa_func_summary_full(
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
         };
 
         let (events, block_states) = run_ssa_taint_full(ssa, cfg, &transfer);
@@ -812,6 +814,8 @@ pub fn extract_ssa_func_summary_full(
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
         };
         detect_source_to_callback_from_states(
             ssa,
@@ -867,6 +871,11 @@ pub fn extract_ssa_func_summary_full(
         // caller patches it in.
         typed_call_receivers: Vec::new(),
         validated_params_to_return,
+        // Phase-10 entry-point classification is attached post-extraction
+        // by `taint::lower_all_functions_from_bodies` (which has access
+        // to `FileCfg::entry_kinds`).  Empty here means the extractor
+        // itself does not carry the tag.
+        entry_kind: None,
     }
 }
 

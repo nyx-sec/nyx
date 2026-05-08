@@ -1192,6 +1192,7 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::TypeOrmRepo => "TypeOrmRepo".into(),
         TypeKind::TypeOrmManager => "TypeOrmManager".into(),
         TypeKind::MikroOrmEm => "MikroOrmEm".into(),
+        TypeKind::Request => "Request".into(),
     }
 }
 
@@ -1570,6 +1571,8 @@ pub fn analyse_function_taint(
         auto_seed_handler_params: matches!(lang, Lang::JavaScript | Lang::TypeScript),
         cross_file_bodies: global_summaries.and_then(|gs| gs.bodies_by_key()),
         pointer_facts: None,
+        cross_package_imports: None,
+        entry_kind: None,
     };
 
     crate::taint::ssa_transfer::run_ssa_taint_full_with_exits(ssa, cfg, &transfer)
@@ -1888,6 +1891,7 @@ function consume() {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
 

@@ -100,6 +100,7 @@ pub mod constraint;
 pub mod convergence_telemetry;
 pub mod database;
 pub mod engine_notes;
+pub mod entry_points;
 pub mod errors;
 pub mod evidence;
 pub mod fmt;

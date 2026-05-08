@@ -716,6 +716,12 @@ pub struct FileCfg {
     /// `Config`. Empty for non-JS/TS files, scans without a configured
     /// resolver, and unit tests that build a CFG directly.
     pub resolved_imports: Vec<crate::resolve::ImportBinding>,
+    /// Phase 10 — Next.js entry-point classification keyed by the
+    /// function definition's tree-sitter byte span. Populated for
+    /// JS/TS files, empty otherwise. The summary-extraction pipeline
+    /// matches against [`BodyMeta::span`] to attach the
+    /// [`crate::entry_points::EntryKind`] to the resulting summary.
+    pub entry_kinds: std::collections::HashMap<(usize, usize), crate::entry_points::EntryKind>,
     /// Per-file local import view: local-name → source-module specifier.
     /// Built once during JS/TS CFG construction (empty for other langs).
     /// Consumed by gated label rules and by the ORM TypeKind import gate
@@ -5845,6 +5851,17 @@ pub(crate) fn build_cfg<'a>(
     // `crate::callgraph::TypeHierarchyIndex` at call-graph build time.
     let hierarchy_edges = hierarchy::collect_hierarchy_edges(tree.root_node(), lang, code);
 
+    // Phase 10 — Next.js entry-point detection.  Empty for non-JS/TS
+    // languages; for JS/TS, keys each detected entry function by its
+    // tree-sitter byte span so the SSA pass can match against
+    // [`BodyMeta::span`] when seeding params.
+    let entry_kinds = crate::entry_points::detect_entries_in_file(
+        tree,
+        code,
+        std::path::Path::new(file_path),
+        lang,
+    );
+
     FileCfg {
         bodies,
         summaries,
@@ -5853,6 +5870,7 @@ pub(crate) fn build_cfg<'a>(
         hierarchy_edges,
         resolved_imports: Vec::new(),
         local_imports,
+        entry_kinds,
     }
 }
 
@@ -6040,6 +6058,11 @@ pub(crate) fn export_summaries(
             // graph-local `FuncSummaries`.  `ParsedFile::export_summaries_with_root`
             // attaches them after this transform returns.
             hierarchy_edges: Vec::new(),
+            // Phase-10 entry-point classification is attached after
+            // this transform returns by
+            // `ParsedFile::export_summaries_with_root` (which has
+            // access to `FileCfg::entry_kinds`).
+            entry_kind: None,
         })
         .collect()
 }

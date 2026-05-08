@@ -216,6 +216,10 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         | TypeKind::TypeOrmRepo
         | TypeKind::TypeOrmManager
         | TypeKind::MikroOrmEm => 3,
+        // Phase 10 — `Request` is a Web-platform receiver type used
+        // by the App Router entry-point seeding path; it shares the
+        // Object slot for the same reason the ORM TypeKinds do.
+        TypeKind::Request => 3,
     }
 }
 

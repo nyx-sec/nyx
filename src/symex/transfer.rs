@@ -1595,6 +1595,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         let ctx = make_summary_ctx(&gs);
@@ -1665,6 +1666,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         let ctx = make_summary_ctx(&gs);
@@ -1735,6 +1737,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         let ctx = make_summary_ctx(&gs);
@@ -1800,6 +1803,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         let ctx = make_summary_ctx(&gs);
@@ -1865,6 +1869,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         let ctx = make_summary_ctx(&gs);
@@ -2064,6 +2069,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
 
@@ -2144,6 +2150,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
 
@@ -2225,6 +2232,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         // Second "send", in ns B, also with same arity → ambiguous bare-name
@@ -2256,6 +2264,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         // Also register the type-qualified name so Attempt 1 can find it
@@ -2287,6 +2296,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
 
@@ -2367,6 +2377,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
 
@@ -2449,6 +2460,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         insert_java_summary(
@@ -2479,6 +2491,7 @@ mod tests {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
         // No "HttpClient.send" summary registered, disambiguation has 0 exact matches
