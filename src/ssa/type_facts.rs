@@ -130,12 +130,6 @@ pub enum TypeKind {
     /// A MikroORM `EntityManager` produced by `orm.em.fork()` /
     /// `createEntityManager()`. `em.execute(sql)` is the raw-SQL sink.
     MikroOrmEm,
-    /// A Drizzle `sql` template-tag builder imported from `drizzle-orm`.
-    /// `sqlBuilder.raw(x)` is a SQL_QUERY sink (raw escape hatch).  The
-    /// imported `sql` symbol receives this type via the file-level
-    /// import-aware tagging in [`infer_call_return_type_with_args`] so
-    /// type-qualified `DrizzleSqlBuilder.raw` resolution fires.
-    DrizzleSqlBuilder,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -186,7 +180,6 @@ impl TypeKind {
             Self::TypeOrmRepo => Some("TypeOrmRepo"),
             Self::TypeOrmManager => Some("TypeOrmManager"),
             Self::MikroOrmEm => Some("MikroOrmEm"),
-            Self::DrizzleSqlBuilder => Some("DrizzleSqlBuilder"),
             _ => None,
         }
     }

@@ -215,8 +215,7 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         TypeKind::Sequelize
         | TypeKind::TypeOrmRepo
         | TypeKind::TypeOrmManager
-        | TypeKind::MikroOrmEm
-        | TypeKind::DrizzleSqlBuilder => 3,
+        | TypeKind::MikroOrmEm => 3,
     }
 }
 

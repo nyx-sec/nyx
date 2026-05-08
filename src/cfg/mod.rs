@@ -5817,7 +5817,7 @@ fn apply_promisify_labels(
 fn apply_gated_label_rules(
     bodies: &mut [BodyCfg],
     lang: &str,
-    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+    _extra: Option<&[crate::labels::RuntimeLabelRule]>,
     local_imports: &std::collections::HashMap<String, String>,
 ) {
     let ctx = crate::labels::ClassificationContext {
@@ -5830,7 +5830,7 @@ fn apply_gated_label_rules(
                 continue;
             };
             let labels =
-                crate::labels::classify_all_ctx(lang, &callee, extra, Some(&ctx));
+                crate::labels::classify_gated_only(lang, &callee, Some(&ctx));
             if labels.is_empty() {
                 continue;
             }

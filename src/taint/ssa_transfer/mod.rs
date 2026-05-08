@@ -6358,6 +6358,10 @@ fn collect_block_events(
 
         // Type-qualified sink resolution: when normal sink resolution found nothing,
         // try using the receiver's inferred type to construct a qualified callee name.
+        // For known type-qualified ORM raw-SQL methods (`TypeOrmRepo.query` et al.),
+        // also capture the restricted payload-arg list so bind-array taint at arg 1+
+        // does not fire.
+        let mut tq_payload_args: Option<&'static [usize]> = None;
         if sink_caps.is_empty() {
             if let SsaOp::Call {
                 callee,
@@ -6366,7 +6370,7 @@ fn collect_block_events(
             } = &inst.op
             {
                 if transfer.type_facts.is_some() || state.path_env.is_some() {
-                    let tq_labels = resolve_type_qualified_labels(
+                    let (tq_labels, tq_args) = resolve_type_qualified_labels_with_args(
                         callee,
                         *rv,
                         transfer.type_facts,
@@ -6380,6 +6384,7 @@ fn collect_block_events(
                             sink_caps |= *bits;
                         }
                     }
+                    tq_payload_args = tq_args;
                 }
             }
         }
@@ -6964,7 +6969,7 @@ fn collect_block_events(
                 .map(|e| (sink_caps & e.caps, Some(e.idx.as_slice()), None))
                 .collect()
         } else {
-            smallvec::smallvec![(sink_caps, None, None)]
+            smallvec::smallvec![(sink_caps, tq_payload_args, None)]
         };
 
         for (filter_caps, positions_override, destination_override) in filter_iter {
@@ -8619,6 +8624,69 @@ fn resolve_type_qualified_labels(
     }
 
     SmallVec::new()
+}
+
+/// Sibling of [`resolve_type_qualified_labels`] used at sink-firing time.
+///
+/// Returns the resolved sink labels plus, when the matched qualified
+/// callee has a known restricted payload arg list (Phase 07 ORM raw-SQL
+/// receiver methods such as `TypeOrmRepo.query`), the static slice
+/// describing which positional args carry the SQL payload. The caller
+/// uses this slice to override `positions_override` so taint flowing
+/// only into the bind-array argument (arg 1+) does not fire.
+#[allow(clippy::too_many_arguments)]
+fn resolve_type_qualified_labels_with_args(
+    callee: &str,
+    receiver: SsaValue,
+    type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
+    path_env: Option<&constraint::PathEnv>,
+    lang: Lang,
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
+    ssa: Option<&SsaBody>,
+) -> (SmallVec<[DataLabel; 2]>, Option<&'static [usize]>) {
+    let method_candidates = method_candidates_from_chain(callee, lang);
+    let receiver_candidates = receiver_candidates_for_type_lookup(receiver, ssa, lang);
+
+    if let Some(tf) = type_facts {
+        for rv in &receiver_candidates {
+            if let Some(receiver_type) = tf.get_type(*rv) {
+                if let Some(prefix) = receiver_type.label_prefix() {
+                    for method in &method_candidates {
+                        let qualified = format!("{}.{}", prefix, method);
+                        let labels =
+                            crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
+                        if !labels.is_empty() {
+                            let payload =
+                                crate::labels::type_qualified_sink_payload_args(&qualified);
+                            return (labels, payload);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(env) = path_env {
+        for rv in &receiver_candidates {
+            let types = env.get(*rv).types;
+            if let Some(kind) = types.as_singleton() {
+                if let Some(prefix) = kind.label_prefix() {
+                    for method in &method_candidates {
+                        let qualified = format!("{}.{}", prefix, method);
+                        let labels =
+                            crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
+                        if !labels.is_empty() {
+                            let payload =
+                                crate::labels::type_qualified_sink_payload_args(&qualified);
+                            return (labels, payload);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (SmallVec::new(), None)
 }
 
 /// Walk back through `SsaOp::Call.receiver` and `SsaOp::FieldProj.receiver`

@@ -1325,7 +1325,7 @@ pub fn classify_all(
 /// matching runs first, then any per-language [`GatedLabelRule`] is
 /// evaluated against `ctx`. A `None` context (or a context with no
 /// `local_imports`) leaves only the synthetic receiver-type prefix
-/// (`FileSystemPromisesNs.`) able to satisfy the gate.
+/// (e.g. `FileSystemPromisesNs.`) able to satisfy the gate.
 pub fn classify_all_ctx(
     lang: &str,
     text: &str,
@@ -1333,22 +1333,47 @@ pub fn classify_all_ctx(
     ctx: Option<&ClassificationContext<'_>>,
 ) -> SmallVec<[DataLabel; 2]> {
     let mut out = classify_all(lang, text, extra);
+    classify_gated_into(lang, text, ctx, &mut out);
+    out
+}
 
+/// Run only the gated-rule pass — skip the flat [`classify_all`] scan.
+///
+/// Use when the caller has already classified `text` with the flat rules
+/// during initial CFG construction and only needs the gate-conditioned
+/// labels (which require a per-file [`ClassificationContext`] not
+/// available at the original classification site).
+pub fn classify_gated_only(
+    lang: &str,
+    text: &str,
+    ctx: Option<&ClassificationContext<'_>>,
+) -> SmallVec<[DataLabel; 2]> {
+    let mut out = SmallVec::new();
+    classify_gated_into(lang, text, ctx, &mut out);
+    out
+}
+
+fn classify_gated_into(
+    lang: &str,
+    text: &str,
+    ctx: Option<&ClassificationContext<'_>>,
+    out: &mut SmallVec<[DataLabel; 2]>,
+) {
     let gated = match GATED_LABEL_REGISTRY.get(lang).or_else(|| {
         let key = lang.to_ascii_lowercase();
         GATED_LABEL_REGISTRY.get(key.as_str())
     }) {
         Some(g) => *g,
-        None => return out,
+        None => return,
     };
     if gated.is_empty() {
-        return out;
+        return;
     }
 
     let head = text.split(['(', '<']).next().unwrap_or("");
     let trimmed = head.trim().as_bytes();
     if is_excluded(lang, trimmed) {
-        return out;
+        return;
     }
     let full_normalized = normalize_chained_call(text);
     let full_norm_bytes = full_normalized.as_bytes();
@@ -1370,7 +1395,7 @@ pub fn classify_all_ctx(
             let matches = match_suffix_cs(trimmed, m, rule.case_sensitive)
                 || match_suffix_cs(full_norm_bytes, m, rule.case_sensitive);
             if matches && gate_satisfied(&rule.gate, head, ctx) {
-                push_dedup(&mut out, rule.label);
+                push_dedup(out, rule.label);
             }
         }
     }
@@ -1383,19 +1408,59 @@ pub fn classify_all_ctx(
                     || starts_with_cs(full_norm_bytes, m, rule.case_sensitive))
                 && gate_satisfied(&rule.gate, head, ctx)
             {
-                push_dedup(&mut out, rule.label);
+                push_dedup(out, rule.label);
             }
         }
     }
+}
 
-    out
+/// Restricted payload-arg positions for known type-qualified sink callees.
+///
+/// Phase 07's ORM raw-SQL receiver methods (`TypeOrmRepo.query`,
+/// `TypeOrmManager.query`, `MikroOrmEm.execute`, etc.) take the SQL
+/// template at arg 0 and bind / parameter arrays at arg 1+. The flat
+/// label rule alone cannot encode this and would FP on
+/// `repo.query("SELECT $1", [tainted])`. When the type-qualified
+/// resolver synthesises one of these callees, this lookup returns the
+/// payload positions to which sink-taint checks must be restricted.
+///
+/// Sequelize.literal(sql) is single-arg, so &[0] is also correct
+/// (no precision loss vs the unconditional flat rule).
+pub fn type_qualified_sink_payload_args(qualified_callee: &str) -> Option<&'static [usize]> {
+    match qualified_callee {
+        "Sequelize.literal"
+        | "TypeOrmRepo.query"
+        | "TypeOrmRepo.createQueryBuilder"
+        | "TypeOrmManager.query"
+        | "TypeOrmManager.createQueryBuilder"
+        | "MikroOrmEm.execute" => Some(&[0]),
+        _ => None,
+    }
+}
+
+/// Receiver-type prefixes that count as a witness for a given module
+/// specifier on a [`LabelGate::ImportedFromModule`] gate.
+///
+/// When SSA receiver-type qualification synthesises a callee like
+/// `FileSystemPromisesNs.readFile(...)`, the leading identifier becomes
+/// the type prefix rather than an imported binding. Each gate module
+/// can declare which type prefixes legitimise the gate firing without
+/// a textual import witness. Returning an empty slice means the gate
+/// must fall back to the `local_imports` map alone.
+fn receiver_type_prefixes_for_module(module: &str) -> &'static [&'static str] {
+    if module.eq_ignore_ascii_case("node:fs/promises")
+        || module.eq_ignore_ascii_case("fs/promises")
+    {
+        &["FileSystemPromisesNs"]
+    } else {
+        &[]
+    }
 }
 
 /// Evaluate a [`LabelGate`] against the call's leading identifier and the
-/// caller-supplied context. Currently handles
-/// [`LabelGate::ImportedFromModule`]; receiver-type qualification satisfies
-/// the gate via the synthetic `FileSystemPromisesNs.` prefix produced by
-/// [`crate::ssa::type_facts::TypeKind::FileSystemPromisesNs::label_prefix`].
+/// caller-supplied context. Receiver-type qualification can satisfy
+/// [`LabelGate::ImportedFromModule`] via
+/// [`receiver_type_prefixes_for_module`].
 fn gate_satisfied(
     gate: &LabelGate,
     callee_head: &str,
@@ -1404,12 +1469,12 @@ fn gate_satisfied(
     match gate {
         LabelGate::ImportedFromModule(modules) => {
             let leading = leading_identifier(callee_head);
-            // Receiver-type qualification: synthesised callee text
-            // begins with the type's `label_prefix()`. Phase 05 only
-            // ships `FileSystemPromisesNs` for the fs/promises gate;
-            // expand the allowlist if more receiver-typed gates land.
-            if leading == "FileSystemPromisesNs" {
-                return true;
+            for m in modules.iter() {
+                for prefix in receiver_type_prefixes_for_module(m) {
+                    if leading == *prefix {
+                        return true;
+                    }
+                }
             }
             let Some(ctx) = ctx else {
                 return false;

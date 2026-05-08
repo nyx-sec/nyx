@@ -1104,6 +1104,7 @@ fn run_topo_batches(
                     .collect();
 
                 let mut ssa_count: usize = 0;
+                let mg = cfg.module_graph.as_deref();
                 for (path, diags, summaries, ssa_summaries, _ssa_bodies) in batch_results {
                     // Phase-B: replace (not append) this file's diags
                     // so the cache always reflects the latest
@@ -1112,7 +1113,7 @@ fn run_topo_batches(
                     diags_by_file.insert(path, diags);
 
                     for s in summaries {
-                        let key = s.func_key(root_str_ref);
+                        let key = s.func_key_with_resolver(root_str_ref, mg);
                         global_summaries.insert(key, s);
                     }
 
@@ -1395,12 +1396,13 @@ fn run_topo_batches(
             let mut refined_ssa: usize = 0;
             let mut refined_bodies: usize = 0;
             let mut refined_auth: usize = 0;
+            let mg = cfg.module_graph.as_deref();
             for (_path, diags, summaries, ssa_summaries, ssa_bodies, auth_summaries) in
                 batch_results
             {
                 batch_diags.extend(diags);
                 for s in summaries {
-                    let key = s.func_key(root_str_ref);
+                    let key = s.func_key_with_resolver(root_str_ref, mg);
                     global_summaries.insert(key, s);
                     refined_summaries += 1;
                 }
@@ -1732,6 +1734,7 @@ pub(crate) fn scan_filesystem_with_observer(
             show_progress,
         );
         let root_str = root.to_string_lossy();
+        let mg = cfg.module_graph.as_deref();
 
         let gs = all_paths
             .par_iter()
@@ -1748,7 +1751,7 @@ pub(crate) fn scan_filesystem_with_observer(
                             let first_lang = r.summaries.first().map(|s| s.lang.clone());
 
                             for s in r.summaries {
-                                let key = s.func_key(Some(&root_str));
+                                let key = s.func_key_with_resolver(Some(&root_str), mg);
                                 local_gs.insert(key, s);
                             }
 

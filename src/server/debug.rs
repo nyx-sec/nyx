@@ -1192,7 +1192,6 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::TypeOrmRepo => "TypeOrmRepo".into(),
         TypeKind::TypeOrmManager => "TypeOrmManager".into(),
         TypeKind::MikroOrmEm => "MikroOrmEm".into(),
-        TypeKind::DrizzleSqlBuilder => "DrizzleSqlBuilder".into(),
     }
 }
 

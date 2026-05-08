@@ -366,7 +366,6 @@ pub static RULES: &[LabelRule] = &[
             "TypeOrmManager.query",
             "TypeOrmManager.createQueryBuilder",
             "MikroOrmEm.execute",
-            "DrizzleSqlBuilder.raw",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
