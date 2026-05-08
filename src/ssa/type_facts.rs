@@ -1,5 +1,6 @@
 #![allow(clippy::if_same_then_else)]
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
 use super::const_prop::ConstLattice;
@@ -8,6 +9,85 @@ use crate::cfg::{BinOp, Cfg};
 use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+
+thread_local! {
+    /// Per-file local import view (local-name → source-module specifier),
+    /// set by [`with_file_imports`] around every per-body SSA pass that
+    /// needs to gate ORM TypeKind assignment in [`constructor_type`].
+    /// `None` (default) preserves prior un-gated behaviour for legacy /
+    /// test paths that build SSA without a surrounding file context.
+    static FILE_IMPORTS_TLS: RefCell<Option<HashMap<String, String>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with `imports` published to the per-thread file-imports view.
+/// Restores the prior value on drop so nested calls compose; pass `None`
+/// to suppress gating for callers that lack a file context.
+pub fn with_file_imports<R>(imports: Option<&HashMap<String, String>>, f: impl FnOnce() -> R) -> R {
+    let prev = FILE_IMPORTS_TLS.with(|cell| cell.borrow_mut().replace(imports.cloned().unwrap_or_default()));
+    let restore_to = if imports.is_some() { prev } else { None };
+    struct Guard(Option<HashMap<String, String>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            FILE_IMPORTS_TLS.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+    let _guard = Guard(restore_to);
+    f()
+}
+
+/// Returns true iff any local-import in the active file-imports view maps
+/// to a module specifier whose canonical form satisfies `pred`.  When the
+/// view has not been published (legacy / test paths) the predicate is
+/// considered satisfied so prior behaviour is preserved.
+fn file_imports_match(pred: impl Fn(&str) -> bool) -> bool {
+    FILE_IMPORTS_TLS.with(|cell| {
+        let borrowed = cell.borrow();
+        let Some(map) = borrowed.as_ref() else {
+            return true;
+        };
+        map.values().any(|spec| pred(spec.as_str()))
+    })
+}
+
+/// Strip a leading `node:` prefix from a module specifier so gates can
+/// match `import x from "fs"` and `import x from "node:fs"` uniformly.
+fn strip_node_prefix(spec: &str) -> &str {
+    spec.strip_prefix("node:").unwrap_or(spec)
+}
+
+/// Returns true iff the active file-imports view satisfies the
+/// import-gate for an ORM TypeKind.  When the TLS view is unset (legacy
+/// callers without file context) the gate is treated as satisfied so
+/// prior behaviour is preserved.
+fn orm_typekind_import_satisfied(tk: &TypeKind) -> bool {
+    let predicate: fn(&str) -> bool = match tk {
+        TypeKind::Sequelize => |spec| {
+            let s = strip_node_prefix(spec);
+            s == "sequelize" || s.starts_with("sequelize/")
+        },
+        TypeKind::TypeOrmRepo | TypeKind::TypeOrmManager => |spec| {
+            let s = strip_node_prefix(spec);
+            s == "typeorm" || s.starts_with("typeorm/")
+        },
+        TypeKind::MikroOrmEm => |spec| {
+            let s = strip_node_prefix(spec);
+            s.starts_with("@mikro-orm/")
+        },
+        _ => return true,
+    };
+    file_imports_match(predicate)
+}
+
+/// Small helper used inside [`constructor_type`] to fold the ORM import
+/// gate into the JS/TS arm without restructuring the surrounding
+/// `match`.  Returns `Some(tk)` only when the gate is satisfied.
+fn orm_gate(tk: TypeKind) -> Option<TypeKind> {
+    if orm_typekind_import_satisfied(&tk) {
+        Some(tk)
+    } else {
+        None
+    }
+}
 
 /// Inferred type kind for an SSA value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -526,13 +606,18 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // `getRepository(Entity)`        → TypeOrmRepo  (typeorm)
             // `getManager()`                 → TypeOrmManager (typeorm)
             // `createEntityManager()`        → MikroOrmEm (@mikro-orm/core)
-            // The leaf-suffix names are distinctive enough that user code
-            // is unlikely to collide; if a fixture surfaces a misfire,
-            // gate via `local_imports` (see deferred.md follow-up).
-            "Sequelize" => Some(TypeKind::Sequelize),
-            "getRepository" => Some(TypeKind::TypeOrmRepo),
-            "getManager" => Some(TypeKind::TypeOrmManager),
-            "createEntityManager" => Some(TypeKind::MikroOrmEm),
+            // Gated on the per-file local-import view published via
+            // [`with_file_imports`]: the suffix names are distinctive but
+            // not unique (an app-internal class named `Sequelize` with a
+            // `.literal()` helper, a custom `getRepository` method on a
+            // user-defined repository pattern, etc. would collide).
+            // When the TLS view is unset (test paths / non-file callers)
+            // the gate is treated as satisfied so prior behaviour is
+            // preserved.
+            "Sequelize" => orm_gate(TypeKind::Sequelize),
+            "getRepository" => orm_gate(TypeKind::TypeOrmRepo),
+            "getManager" => orm_gate(TypeKind::TypeOrmManager),
+            "createEntityManager" => orm_gate(TypeKind::MikroOrmEm),
             // JS built-in collection constructors. `new Map()` / `new Set()`
             // / `new WeakMap()` / `new WeakSet()` / `new Array()` produce
             // in-memory collections; downstream `m.get(k)` / `m.set(k, v)`

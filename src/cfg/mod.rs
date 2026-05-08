@@ -716,6 +716,12 @@ pub struct FileCfg {
     /// `Config`. Empty for non-JS/TS files, scans without a configured
     /// resolver, and unit tests that build a CFG directly.
     pub resolved_imports: Vec<crate::resolve::ImportBinding>,
+    /// Per-file local import view: local-name → source-module specifier.
+    /// Built once during JS/TS CFG construction (empty for other langs).
+    /// Consumed by gated label rules and by the ORM TypeKind import gate
+    /// in [`crate::ssa::type_facts::constructor_type`] (via the
+    /// `FILE_IMPORTS_TLS` thread-local set around per-body SSA passes).
+    pub local_imports: HashMap<String, String>,
 }
 
 impl FileCfg {
@@ -5812,12 +5818,15 @@ pub(crate) fn build_cfg<'a>(
     // per-file local-import view is available; classify_all_ctx looks up
     // each call's leading identifier in the view to decide whether the
     // ImportedFromModule gate fires.
-    if matches!(lang, "javascript" | "typescript" | "tsx") {
+    let local_imports = if matches!(lang, "javascript" | "typescript" | "tsx") {
         let local_imports = extract_local_import_view(tree, code);
         if !local_imports.is_empty() {
             apply_gated_label_rules(&mut bodies, lang, extra, &local_imports);
         }
-    }
+        local_imports
+    } else {
+        HashMap::new()
+    };
 
     // Clear the per-file DFS-index map so it does not leak to the next
     // file built on this thread.
@@ -5843,6 +5852,7 @@ pub(crate) fn build_cfg<'a>(
         promisify_aliases,
         hierarchy_edges,
         resolved_imports: Vec::new(),
+        local_imports,
     }
 }
 

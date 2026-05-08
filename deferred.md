@@ -84,17 +84,20 @@ implied or surfaced but did not finish.
       semantics but use entirely separate grammars.  Out of
       scope; revisit when a gap test arrives for one of those
       ecosystems.
-- [ ] Phase 07 audit — `ssa::type_facts::constructor_type` (TS/JS)
-      assigns the new ORM TypeKinds (`Sequelize`, `TypeOrmRepo`,
+- [x] Phase 07 audit — `ssa::type_facts::constructor_type` (TS/JS)
+      assigned the new ORM TypeKinds (`Sequelize`, `TypeOrmRepo`,
       `TypeOrmManager`, `MikroOrmEm`) by suffix-matching alone, with
-      no import-table gate. The phase 07 plan called for
-      "Use Phase 04's import table to only assign the TypeKind when
-      the symbol resolves to the real ORM package", but threading the
-      import map through `optimize_ssa` → `analyze_types_with_param_types`
-      → `constructor_type` is invasive (six call sites). The leaf-suffix
-      names are distinctive enough that misfires are unlikely on real
-      code; revisit when a fixture surfaces a false positive (e.g. an
-      app-internal class named `Sequelize` with a `.literal()` helper).
+      no import-table gate. **Resolved.** `FileCfg.local_imports` now
+      persists the per-file local-import view; `with_file_imports`
+      publishes it to a thread-local around every per-body SSA pass
+      that calls `optimize_ssa_with_param_types`. Inside
+      `constructor_type` the ORM arms call `orm_gate(tk)` which
+      consults the TLS view — `Sequelize` requires an import whose
+      module spec is `sequelize` or `sequelize/...`; `TypeOrmRepo` /
+      `TypeOrmManager` require `typeorm` / `typeorm/...`; `MikroOrmEm`
+      requires `@mikro-orm/...`. When the TLS view is unset (test /
+      legacy paths) the gate is treated as satisfied so prior
+      behaviour is preserved.
 - [ ] Phase 07 audit — `LabelGate::FileImportsModule(&["knex"])` for
       Knex `whereRaw` / `orderByRaw` / `havingRaw` fires whenever any
       file-local binding maps to `knex`, including peripheral imports

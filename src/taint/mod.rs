@@ -432,25 +432,27 @@ pub fn analyse_file(
     ssa_transfer::reset_all_validated_spans();
     // No locator: pass-2 intra-file summaries are transient (not persisted)
     // and behavior depends on SinkSite.cap only, which is always populated.
-    let (ssa_summaries, callee_bodies) = lower_all_functions_from_bodies(
-        file_cfg,
-        caller_lang,
-        caller_namespace,
-        local_summaries,
-        global_summaries,
-        None,
-    );
-    analyse_file_with_lowered(
-        file_cfg,
-        local_summaries,
-        global_summaries,
-        caller_lang,
-        caller_namespace,
-        interop_edges,
-        extra_labels,
-        &ssa_summaries,
-        &callee_bodies,
-    )
+    crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
+        let (ssa_summaries, callee_bodies) = lower_all_functions_from_bodies(
+            file_cfg,
+            caller_lang,
+            caller_namespace,
+            local_summaries,
+            global_summaries,
+            None,
+        );
+        analyse_file_with_lowered(
+            file_cfg,
+            local_summaries,
+            global_summaries,
+            caller_lang,
+            caller_namespace,
+            interop_edges,
+            extra_labels,
+            &ssa_summaries,
+            &callee_bodies,
+        )
+    })
 }
 
 /// Same as [`analyse_file`] but takes pre-lowered SSA summaries + callee
@@ -473,6 +475,41 @@ pub(crate) fn analyse_file_with_lowered(
 ) -> Vec<Finding> {
     let _span = tracing::debug_span!("taint_analyse_file").entered();
 
+    // Publish the per-file local-import view so the ORM TypeKind gate
+    // inside [`crate::ssa::type_facts::constructor_type`] can read it
+    // during downstream `optimize_ssa_with_param_types` passes.  The
+    // outer `analyse_file` already wraps this for its own
+    // `lower_all_functions_from_bodies` pre-pass; wrapping here too
+    // keeps direct callers (e.g. [`crate::ast::analyse_file_fused`])
+    // covered.  Idempotent under nesting — the inner guard restores
+    // the outer value on drop.
+    crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
+        analyse_file_with_lowered_inner(
+            file_cfg,
+            local_summaries,
+            global_summaries,
+            caller_lang,
+            caller_namespace,
+            interop_edges,
+            extra_labels,
+            ssa_summaries,
+            callee_bodies,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyse_file_with_lowered_inner(
+    file_cfg: &FileCfg,
+    local_summaries: &FuncSummaries,
+    global_summaries: Option<&GlobalSummaries>,
+    caller_lang: Lang,
+    caller_namespace: &str,
+    interop_edges: &[InteropEdge],
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
+    ssa_summaries: &std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
+    callee_bodies: &std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
+) -> Vec<Finding> {
     // NOTE: the path-safe-suppressed span set is reset by the caller, not
     // here.  Per-parameter probes inside the lowering phase
     // (`lower_all_functions_from_bodies`) can already publish spans via
@@ -1689,6 +1726,29 @@ pub(crate) fn extract_intra_file_ssa_summaries(
 /// name overloads with different arity, and anonymous bodies at distinct
 /// source spans all get distinct keys.
 pub(crate) fn lower_all_functions_from_bodies(
+    file_cfg: &FileCfg,
+    lang: Lang,
+    namespace: &str,
+    local_summaries: &FuncSummaries,
+    global_summaries: Option<&GlobalSummaries>,
+    locator: Option<&crate::summary::SinkSiteLocator<'_>>,
+) -> (
+    std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
+    std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
+) {
+    crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
+        lower_all_functions_from_bodies_inner(
+            file_cfg,
+            lang,
+            namespace,
+            local_summaries,
+            global_summaries,
+            locator,
+        )
+    })
+}
+
+fn lower_all_functions_from_bodies_inner(
     file_cfg: &FileCfg,
     lang: Lang,
     namespace: &str,
