@@ -220,6 +220,40 @@ fn fs_promises_node_import() {
     );
 }
 
+/// Phase 05 recall-gap: namespace-import shape — `import * as fsp from
+/// 'fs/promises'`.  `fsp.readFile(...)` must satisfy the gate via the
+/// receiver-name path of the local-import view.
+#[test]
+fn fs_promises_namespace_import() {
+    let findings = scan_fixture("fs_promises");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "path_traversal_fs_promises_namespace.ts",
+            sink_line: 11,
+            source_line: Some(10),
+        },
+    );
+}
+
+/// Phase 05 recall-gap: CommonJS require shape — `const { readFile } =
+/// require('fs/promises')`.  `extract_local_import_view` records the
+/// destructured binding so the bare-name call still satisfies the gate.
+#[test]
+fn fs_promises_require_form() {
+    let findings = scan_fixture("fs_promises");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "path_traversal_fs_promises_require.ts",
+            sink_line: 10,
+            source_line: Some(9),
+        },
+    );
+}
+
 /// Phase 05 negative: a user-defined `readFile` (no import) must not
 /// fire the gated FILE_IO sink.  The whole point of the import gate.
 #[test]
@@ -324,6 +358,7 @@ fn orm_builders() {
         ("sqli_sequelize_literal.ts", 14usize),
         ("sqli_typeorm_query.ts", 16usize),
         ("sqli_knex_where_raw.ts", 15usize),
+        ("sqli_mikroorm_execute.ts", 13usize),
     ];
     for (file, sink_line) in positives {
         assert_finding_with_cap(

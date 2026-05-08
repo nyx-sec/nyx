@@ -406,52 +406,91 @@ pub fn extract_resolved_imports(
     graph: &ModuleGraph,
     lang: &str,
 ) -> Vec<ImportBinding> {
-    let mut bindings = Vec::new();
     if !matches!(lang, "javascript" | "typescript" | "tsx") {
-        return bindings;
+        return Vec::new();
     }
+    let raws = walk_js_top_level_imports(tree, code);
+    let mut cache: HashMap<String, ResolvedModule> = HashMap::new();
+    let mut out = Vec::with_capacity(raws.len());
+    for raw in raws {
+        let resolved = cache.entry(raw.source_spec.clone()).or_insert_with(|| {
+            graph
+                .resolve_specifier(importer, &raw.source_spec)
+                .unwrap_or(ResolvedModule {
+                    file: None,
+                    package: None,
+                    is_builtin: false,
+                })
+        });
+        out.push(make_binding(
+            &raw.local,
+            &raw.exported,
+            &raw.source_spec,
+            resolved,
+        ));
+    }
+    out
+}
+
+/// One raw JS/TS import binding lifted from a top-level
+/// `import_statement` / `lexical_declaration` / `variable_declaration`,
+/// pre-resolution. Both [`extract_resolved_imports`] (which adds the
+/// resolver verdict) and [`crate::cfg::imports::extract_local_import_view`]
+/// (which only needs `local` → `source_spec`) consume this.
+///
+/// `local` is empty for side-effect-only `import 'mod'` shapes; consumers
+/// that need a local binding skip those entries.
+#[derive(Debug, Clone)]
+pub struct RawJsImport {
+    pub local: String,
+    /// `"default"` for default-import / `const x = require(...)` / shorthand
+    /// destructure; `"*"` for namespace-import; the pre-alias imported name
+    /// for named-import / `const { orig: alias } = require(...)`; `""` for
+    /// side-effect-only `import 'mod'`.
+    pub exported: String,
+    /// Source module specifier with surrounding quotes stripped.
+    pub source_spec: String,
+}
+
+/// Top-level walker for JS/TS `import_statement` and `require(...)`
+/// declarations. Returns raw bindings without consulting any
+/// [`ModuleGraph`], so it can run at CFG-build time before the resolver
+/// has populated its tables.
+pub fn walk_js_top_level_imports(
+    tree: &tree_sitter::Tree,
+    code: &[u8],
+) -> Vec<RawJsImport> {
+    let mut out = Vec::new();
     let root = tree.root_node();
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         match child.kind() {
-            "import_statement" => extract_import_statement(child, code, importer, graph, &mut bindings),
+            "import_statement" => walk_import_statement(child, code, &mut out),
             "lexical_declaration" | "variable_declaration" => {
-                extract_require_decl(child, code, importer, graph, &mut bindings)
+                walk_require_decl(child, code, &mut out)
             }
             _ => {}
         }
     }
-    bindings
+    out
 }
 
-fn extract_import_statement(
+fn walk_import_statement(
     node: tree_sitter::Node,
     code: &[u8],
-    importer: &Path,
-    graph: &ModuleGraph,
-    out: &mut Vec<ImportBinding>,
+    out: &mut Vec<RawJsImport>,
 ) {
-    let source = match node.child_by_field_name("source") {
-        Some(s) => s,
-        None => return,
+    let Some(source) = node.child_by_field_name("source") else {
+        return;
     };
-    let raw = match source.utf8_text(code) {
-        Ok(s) => s,
-        Err(_) => return,
+    let Ok(raw) = source.utf8_text(code) else {
+        return;
     };
     let spec = raw.trim_matches(|c| c == '\'' || c == '"' || c == '`');
     if spec.is_empty() {
         return;
     }
-    let resolved = graph
-        .resolve_specifier(importer, spec)
-        .unwrap_or(ResolvedModule {
-            file: None,
-            package: None,
-            is_builtin: false,
-        });
 
-    // Walk the import_clause for default / namespace / named bindings.
     let mut cursor = node.walk();
     let mut emitted_any = false;
     for clause_child in node.children(&mut cursor) {
@@ -463,7 +502,11 @@ fn extract_import_statement(
             match part.kind() {
                 "identifier" => {
                     if let Ok(name) = part.utf8_text(code) {
-                        out.push(make_binding(name, "default", spec, &resolved));
+                        out.push(RawJsImport {
+                            local: name.to_string(),
+                            exported: "default".to_string(),
+                            source_spec: spec.to_string(),
+                        });
                         emitted_any = true;
                     }
                 }
@@ -472,7 +515,11 @@ fn extract_import_statement(
                     for ns_child in part.children(&mut c3) {
                         if ns_child.kind() == "identifier" {
                             if let Ok(name) = ns_child.utf8_text(code) {
-                                out.push(make_binding(name, "*", spec, &resolved));
+                                out.push(RawJsImport {
+                                    local: name.to_string(),
+                                    exported: "*".to_string(),
+                                    source_spec: spec.to_string(),
+                                });
                                 emitted_any = true;
                             }
                         }
@@ -490,14 +537,19 @@ fn extract_import_statement(
                         let alias = spec_node
                             .child_by_field_name("alias")
                             .and_then(|n| n.utf8_text(code).ok());
-                        let (Some(orig), local) = (original, alias.unwrap_or(original.unwrap_or("")))
+                        let (Some(orig), local) =
+                            (original, alias.unwrap_or(original.unwrap_or("")))
                         else {
                             continue;
                         };
                         if local.is_empty() {
                             continue;
                         }
-                        out.push(make_binding(local, orig, spec, &resolved));
+                        out.push(RawJsImport {
+                            local: local.to_string(),
+                            exported: orig.to_string(),
+                            source_spec: spec.to_string(),
+                        });
                         emitted_any = true;
                     }
                 }
@@ -506,20 +558,21 @@ fn extract_import_statement(
         }
     }
 
-    // Side-effect-only `import "mod"` carries no bindings; record the
-    // module verdict under an empty local name so phase 09 still sees the
-    // dependency edge.
+    // Side-effect-only `import "mod"`: emit a marker so phase 09 still
+    // sees the dependency edge.
     if !emitted_any {
-        out.push(make_binding("", "", spec, &resolved));
+        out.push(RawJsImport {
+            local: String::new(),
+            exported: String::new(),
+            source_spec: spec.to_string(),
+        });
     }
 }
 
-fn extract_require_decl(
+fn walk_require_decl(
     node: tree_sitter::Node,
     code: &[u8],
-    importer: &Path,
-    graph: &ModuleGraph,
-    out: &mut Vec<ImportBinding>,
+    out: &mut Vec<RawJsImport>,
 ) {
     let mut cursor = node.walk();
     for decl in node.children(&mut cursor) {
@@ -535,17 +588,14 @@ fn extract_require_decl(
         let Some(spec) = require_spec_from_value(value, code) else {
             continue;
         };
-        let resolved = graph
-            .resolve_specifier(importer, &spec)
-            .unwrap_or(ResolvedModule {
-                file: None,
-                package: None,
-                is_builtin: false,
-            });
         match pattern.kind() {
             "identifier" => {
                 if let Ok(name) = pattern.utf8_text(code) {
-                    out.push(make_binding(name, "default", &spec, &resolved));
+                    out.push(RawJsImport {
+                        local: name.to_string(),
+                        exported: "default".to_string(),
+                        source_spec: spec.clone(),
+                    });
                 }
             }
             "object_pattern" => {
@@ -554,7 +604,11 @@ fn extract_require_decl(
                     match pair.kind() {
                         "shorthand_property_identifier_pattern" | "identifier" => {
                             if let Ok(name) = pair.utf8_text(code) {
-                                out.push(make_binding(name, name, &spec, &resolved));
+                                out.push(RawJsImport {
+                                    local: name.to_string(),
+                                    exported: name.to_string(),
+                                    source_spec: spec.clone(),
+                                });
                             }
                         }
                         "pair_pattern" => {
@@ -565,7 +619,11 @@ fn extract_require_decl(
                                 .child_by_field_name("value")
                                 .and_then(|n| n.utf8_text(code).ok());
                             if let (Some(orig), Some(local)) = (key, val) {
-                                out.push(make_binding(local, orig, &spec, &resolved));
+                                out.push(RawJsImport {
+                                    local: local.to_string(),
+                                    exported: orig.to_string(),
+                                    source_spec: spec.clone(),
+                                });
                             }
                         }
                         _ => {}

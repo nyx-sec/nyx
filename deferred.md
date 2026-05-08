@@ -76,13 +76,14 @@ implied or surfaced but did not finish.
       definitions. Park, real fixtures using `exports` haven't
       surfaced in the recall corpus yet; revisit when phase 09/10
       finds a recall gap traceable to this.
-- [ ] Phase 05 audit — `cfg::imports::extract_local_import_view`
-      duplicates ~80% of `resolve::extract_resolved_imports`. The
-      gated post-pass needs the local-name → source-module view at
-      `build_cfg` time, when the resolver-backed `ImportTable` is
-      not yet populated. A future cleanup could collapse them by
-      moving import-clause extraction into a shared, resolver-free
-      walker that both the resolver and the gated post-pass call.
+- [x] Phase 05 audit — `cfg::imports::extract_local_import_view` and
+      `resolve::extract_resolved_imports` now share a single walker
+      (`crate::resolve::walk_js_top_level_imports`, returning
+      `Vec<RawJsImport>`). The gated-post-pass view discards the
+      resolver verdict and side-effect-only markers; the resolver
+      consumer adds the `ModuleGraph::resolve_specifier` step on top.
+      Import-clause / require-declarator parsing now lives in one
+      place.
 - [ ] Phase 05 audit — `TypeKind::FileSystemPromisesNs` constructor
       mapping in `type_facts.rs::constructor_type` only matches the
       exact callee strings `fs.promises`, `require('fs').promises`,
@@ -110,13 +111,14 @@ implied or surfaced but did not finish.
       multiplies wall time on cold caches. Once a future phase
       teaches the harness to scan a single file (or splits the
       directory), trim the redundant scans.
-- [ ] Phase 05 audit — `extract_local_import_view` handles
-      `import * as fsp from 'fs/promises'` (namespace_import) and
-      `const { readFile } = require('fs/promises')` (object_pattern
-      destructuring), but no recall_gaps fixture exercises either
-      shape. The four shipped fixtures cover only the named-import
-      form. Add positive fixtures for the namespace-import and
-      require-form shapes before relying on those code paths.
+- [x] Phase 05 audit — namespace-import and CommonJS require-form
+      fixtures landed:
+      `tests/fixtures/realistic/fs_promises/path_traversal_fs_promises_namespace.ts`
+      and `path_traversal_fs_promises_require.ts`, with
+      `fs_promises_namespace_import` and `fs_promises_require_form`
+      tests in `tests/recall_gaps.rs` asserting the FILE_IO sink
+      fires through `extract_local_import_view`'s namespace_import
+      and object_pattern destructuring code paths.
 - [ ] Phase 06 audit — `Kind::JsxAttr` is a unit variant rather
       than the `JsxAttr { name: SmolStr }` variant the phase
       prompt requested.  Reason: `Kind` must remain `Copy` to fit
@@ -176,12 +178,11 @@ implied or surfaced but did not finish.
       (`const db = knex({...})`) but needs receiver-type tracking
       that constructor_type does not currently produce for the bare
       `knex` callee. Revisit when an FP surfaces.
-- [ ] Phase 07 audit — no positive MikroORM fixture ships in the
-      `orm_builders` directory. The `MikroOrmEm.execute` rule + the
-      `createEntityManager` constructor_type entry are wired but only
-      validated through the type system, not by a scan-time fixture.
-      Add `sqli_mikroorm_execute.ts` once a real fixture pattern is
-      identified, or drop the rule until then.
+- [x] Phase 07 audit — `tests/fixtures/realistic/orm_builders/sqli_mikroorm_execute.ts`
+      now ships and is asserted with `Cap::SQL_QUERY` at the
+      `em.execute(...)` line by the `orm_builders` recall test, giving
+      the `MikroOrmEm.execute` rule + `createEntityManager`
+      constructor_type entry scan-time coverage.
 - [ ] Phase 07 audit — `Sequelize` constructor maps to
       `TypeKind::Sequelize` purely from leaf-suffix matching on
       `new_expression`. The mapping fires on `new Sequelize(...)` but
