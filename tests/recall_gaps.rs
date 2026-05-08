@@ -682,6 +682,67 @@ fn nextjs_entrypoints() {
     }
 }
 
+/// Phase 13 recall-gap (cross-language path traversal).  Five
+/// languages, one positive + one sanitized fixture each, exercising the
+/// new `Path.read_text` (Python), `Files.readAllBytes` (Java),
+/// `tokio::fs::read` (Rust), `os.ReadFile` (Go), and `File.write`
+/// (Ruby) FILE_IO sinks added in Phase 13.  Sanitized fixtures
+/// canonicalise the path through the language-native sanitiser
+/// (`Path.resolve` / `Path.normalize` / `PathBuf::canonicalize` /
+/// `filepath.Clean` / `Pathname#cleanpath`) and demonstrate the safe
+/// pattern by structuring the call chain so no FILE_IO sink reaches the
+/// canonical value, keeping the fixture silent.
+#[test]
+fn path_traversal_xlang() {
+    let positives = [
+        // (file, sink_line, source_line)
+        ("path_traversal.py", 12usize, Some(11usize)),
+        ("PathTraversal.java", 16, Some(15)),
+        ("path_traversal.rs", 22, Some(21)),
+        ("path_traversal.go", 14, Some(13)),
+        ("path_traversal.rb", 7, Some(6)),
+    ];
+    for (file, sink_line, source_line) in positives {
+        let findings = scan_fixture(&format!("path_traversal/{file}"));
+        assert_finding_with_cap(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: file,
+                sink_line,
+                source_line,
+            },
+            Cap::FILE_IO.bits(),
+        );
+    }
+
+    let negatives = [
+        "path_traversal_safe.py",
+        "PathTraversalSafe.java",
+        "path_traversal_safe.rs",
+        "path_traversal_safe.go",
+        "path_traversal_safe.rb",
+    ];
+    for file in negatives {
+        let findings = scan_fixture(&format!("path_traversal/{file}"));
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && (f.id.starts_with("taint-unsanitised-flow")
+                    || f.id.starts_with("cfg-unguarded-sink"))
+        });
+        assert!(
+            !leak,
+            "path_traversal sanitized fixture {file} must stay silent; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+}
+
 /// Phase 11 acceptance: every per-target baseline JSON in
 /// `tests/recall_targets/` exists, parses via `serde_json`, and every
 /// finding entry carries a `verdict: "TP" | "FP" | "needs_review"`

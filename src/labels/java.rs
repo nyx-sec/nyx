@@ -125,6 +125,56 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::CODE_EXEC),
         case_sensitive: false,
     },
+    // Phase 13 — java.nio.file path-traversal sinks.  `Files.<verb>` is
+    // the modern stdlib API for read/write/copy/move/delete operations;
+    // each takes a `Path` (or `Path` + payload) as arg 0.  Default
+    // arg→return propagation smears taint through `Paths.get(...)`
+    // (forwarder) so the path arg of these calls inherits any taint
+    // present on the components.  `FileInputStream` / `FileOutputStream` /
+    // `RandomAccessFile` are constructor-style sinks: `new
+    // FileInputStream(path)` reaches the FILE_IO sink at the
+    // `object_creation_expression` level (mapped to `Kind::CallFn` in
+    // Java's KINDS).  Receiver-typing already maps these classes to
+    // `TypeKind::FileHandle` (see `class_name_to_type_kind`) so chained
+    // method calls on the resulting handle resolve via type-qualified
+    // labels, but the construction call itself is the canonical
+    // path-traversal vector.
+    LabelRule {
+        matchers: &[
+            "Files.readString",
+            "Files.readAllBytes",
+            "Files.readAllLines",
+            "Files.write",
+            "Files.writeString",
+            "Files.lines",
+            "Files.copy",
+            "Files.move",
+            "Files.delete",
+            "Files.deleteIfExists",
+            "Files.newInputStream",
+            "Files.newOutputStream",
+            "Files.newBufferedReader",
+            "Files.newBufferedWriter",
+            "FileInputStream",
+            "FileOutputStream",
+            "RandomAccessFile",
+        ],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+    },
+    // Phase 13 — `Path.normalize()` collapses `.` / `..` segments and
+    // is the canonical Java path-traversal sanitiser when paired with
+    // a `startsWith(base)` containment check (not modelled here; the
+    // sanitiser rule clears the FILE_IO cap on the call's return,
+    // which is sufficient for the cap-based gate to suppress the
+    // sink finding).  Case-sensitive: `Path.normalize` is unique to
+    // `java.nio.file.Path`; bare `normalize` would over-fire on
+    // `Locale.normalize`, `BigDecimal.normalize`, etc.
+    LabelRule {
+        matchers: &["Path.normalize"],
+        label: DataLabel::Sanitizer(Cap::FILE_IO),
+        case_sensitive: true,
+    },
     // HTTP response sinks, println/print are broad (also match System.out)
     // but necessary to catch response.getWriter().println() via suffix matching.
     LabelRule {

@@ -113,7 +113,25 @@ pub static RULES: &[LabelRule] = &[
     // in the resource-lifecycle acquire/release pair (cfg_analysis::RUBY_RESOURCES),
     // so this entry is additive, it does not disturb resource-leak detection.
     LabelRule {
-        matchers: &["File.open", "File.new", "File.read", "IO.read"],
+        matchers: &[
+            "File.open",
+            "File.new",
+            "File.read",
+            "IO.read",
+            // Phase 13 — write-side and directory-listing path-traversal
+            // sinks.  `Pathname.new(p)` is conservative: a Pathname
+            // construction with attacker-controlled `p` is the documented
+            // entry point for downstream Path / File operations and
+            // surfaces the path-traversal vector at the construction
+            // site.  `Dir.entries` / `Dir.glob` enumerate filesystem
+            // contents, so a tainted path argument is a directory
+            // disclosure / glob-injection vector.
+            "File.write",
+            "IO.write",
+            "Pathname.new",
+            "Dir.entries",
+            "Dir.glob",
+        ],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },

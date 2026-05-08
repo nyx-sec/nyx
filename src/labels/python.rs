@@ -97,6 +97,29 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
+    // Phase 13 — pathlib / aiofiles / shutil path-traversal sinks.
+    // Chained constructor + method shapes (`Path(p).read_text()`) reduce
+    // via paren-strip to the matcher text below; the path argument is
+    // the sink payload.  Receiver-bound shapes (`p = Path(...);
+    // p.read_text()`) are not covered here without a `pathlib.Path`
+    // TypeKind override and are left for a future phase.
+    LabelRule {
+        matchers: &[
+            "Path.open",
+            "Path.read_text",
+            "Path.write_text",
+            "Path.read_bytes",
+            "Path.write_bytes",
+            "aiofiles.open",
+            "shutil.copy",
+            "shutil.copy2",
+            "shutil.copyfile",
+            "shutil.move",
+            "shutil.rmtree",
+        ],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+    },
     LabelRule {
         matchers: &[
             "argparse.parse_args",
@@ -156,6 +179,22 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["os.path.abspath", "os.path.normpath"],
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: false,
+    },
+    // Phase 13 — `pathlib.Path.resolve(strict=True)` raises if the
+    // resolved path doesn't exist; the canonical / strict form is the
+    // documented path-traversal sanitiser.  Strict-mode argument
+    // inspection is not modeled (the rule fires for any `.resolve()`
+    // chained on a `Path(...)`); the false-clear risk on
+    // `Path(...).resolve()` (non-strict) is an accepted trade-off
+    // because the non-strict form still resolves symlinks and
+    // collapses `..` segments, which dominates the path-traversal
+    // attack surface.  Case-sensitive: `Path.resolve` is the literal
+    // pathlib method name; bare `resolve` is too broad (Django URL
+    // resolvers, Promise.resolve in JS-style libs).
+    LabelRule {
+        matchers: &["Path.resolve"],
+        label: DataLabel::Sanitizer(Cap::FILE_IO),
+        case_sensitive: true,
     },
     // ─────────── Sinks ─────────────
     // Flask sinks

@@ -407,6 +407,75 @@ implied or surfaced but did not finish.
       and re-walked).  Park the corpus-wide variant until a CI
       perf budget for ssa-equivalence-tests is established.
 
+- [ ] Phase 13 audit — Python pathlib FILE_IO sinks
+      (`Path.read_text`, `Path.write_text`, etc.) only fire on the
+      chained-construction shape `Path(name).read_text()` whose
+      paren-strip yields `Path.read_text`.  The receiver-bound shape
+      `p = Path(name); p.read_text()` evades the matcher (callee
+      text `p.read_text` doesn't suffix-match `Path.read_text`).
+      Bridging requires registering `Path` (or `pathlib.Path`) in
+      `src/ssa/type_facts.rs::constructor_type` for Python with a
+      `TypeKind::FileHandle` mapping plus `FileHandle.read_text` /
+      `FileHandle.write_text` etc. matchers in `src/labels/python.rs`.
+      Phase 13 deliberately scoped to chain-form-only to keep the
+      label rule list compact and avoid over-firing on unrelated
+      `*.read_text` / `*.write_text` methods.
+
+- [ ] Phase 13 audit — Java `Path.normalize` Sanitizer rule does
+      not fire on the canonical sanitiser chain `base.resolve(name)
+      .normalize()` (paren-strip yields `base.resolve.normalize`,
+      which suffix-matches neither `Path.normalize` nor `normalize`
+      bare).  The Phase 13 sanitized fixture relies on the
+      no-sink-reached pattern (`return candidate.toString()`) to
+      stay silent rather than the rule firing.  Bridging requires
+      either (a) registering `Paths.get` returning
+      `TypeKind::FileHandle` in `constructor_type` for Java + a
+      `FileHandle.normalize` matcher, or (b) adding a bare
+      `normalize` matcher (over-fires on `Locale.normalize`,
+      `BigDecimal.normalize`, etc.).  Park: the rule is registered
+      for documentation; the Phase 13 acceptance contract only
+      requires the sanitized fixture to stay silent.
+
+- [ ] Phase 13 audit — Python `Path.resolve` Sanitizer rule fires
+      on any `.resolve()` chained on `Path(...)`; the phase prompt
+      asked for `strict=True`-gated activation but the chain text
+      `Path.resolve` does not surface keyword-argument values to
+      the classify pass.  Adding a `GatedLabelRule` flavour with
+      `GateActivation::ValueMatch` on a `strict` kwarg is the
+      structural fix.  Park: the non-strict form still resolves
+      symlinks and collapses `..` segments, which dominates the
+      attack surface; the over-clear FP risk on bare `.resolve()`
+      is acceptable.
+
+- [ ] Phase 13 audit — Ruby `Pathname.new(p)` is registered as a
+      `Sink(FILE_IO)` per the phase prompt's explicit list.  The
+      matcher fires on the canonical-construction shape
+      (`Pathname.new(tainted)`) which is the documented
+      path-traversal entry point, but a benign program that
+      constructs a `Pathname` purely for path-string manipulation
+      (without downstream file ops) would surface a FILE_IO
+      finding.  No corpus regression observed in `cargo test`,
+      but the over-fire risk is real on application code that
+      threads `Pathname.new` through utility helpers.  Park:
+      monitor real-world recall targets for FP shapes and tighten
+      to `Pathname.new` + downstream `.read` / `.write` chain
+      detection if needed.
+
+- [ ] Phase 13 audit — Rust sanitized fixture
+      (`path_traversal_safe.rs`) takes a `req: Request` parameter
+      whose receiver chain `req.headers().get("X-Path").await`
+      classifies as `headers.get` (Source).  The `PathBuf::canonicalize`
+      / `starts_with(&base)` containment check is the canonical
+      Rust path-traversal sanitiser pattern, but the Phase 13
+      label rule set does not register a Rust-side sanitiser
+      (the phase explicitly listed Python / Java / Go only).
+      The fixture stays silent because no `tokio::fs::*` /
+      `std::fs::*` sink is reached; the canonicalise-and-validate
+      shape demonstrates the safe pattern for human readers
+      without needing a label rule.  Add a `Path.canonicalize`
+      Sanitizer(FILE_IO) rule in `src/labels/rust.rs` if a future
+      fixture lands a sink downstream of the canonical value.
+
 ## Deferred phases
 
 (none)

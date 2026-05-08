@@ -90,6 +90,21 @@ pub static RULES: &[LabelRule] = &[
             "fs::copy",
             "File::open",
             "File::create",
+            // Phase 13 — `tokio::fs` async path-traversal sinks.  The
+            // suffix matchers also catch the bare `tokio::fs::File::open`
+            // chain after paren-strip.  `tokio::fs::*` is the
+            // async-runtime-bound mirror of `std::fs::*`; same path
+            // arg-0 semantics.
+            "tokio::fs::read",
+            "tokio::fs::read_to_string",
+            "tokio::fs::write",
+            "tokio::fs::remove_file",
+            "tokio::fs::remove_dir",
+            "tokio::fs::remove_dir_all",
+            "tokio::fs::rename",
+            "tokio::fs::copy",
+            "tokio::fs::File::open",
+            "tokio::fs::File::create",
         ],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
