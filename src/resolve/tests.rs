@@ -156,6 +156,78 @@ fn project_namespace_prefixes_when_in_package() {
     assert!(!plain.contains("::"), "outside-package namespace must be plain: {plain}");
 }
 
+/// `"exports"."."` conditional map: `import` branch wins over `default`,
+/// and the legacy `main` field is shadowed when exports resolve.
+#[test]
+fn resolves_exports_root_conditional() {
+    let r = root();
+    let graph = build_module_graph(&[r.clone()]);
+    let importer = r.join("apps/web/src/index.ts");
+    let resolved = graph
+        .resolve_specifier(&importer, "@scope/exports-pkg")
+        .expect("@scope/exports-pkg must classify");
+    assert_eq!(resolved.package.as_deref(), Some("@scope/exports-pkg"));
+    let file = resolved.file.expect("@scope/exports-pkg must resolve");
+    assert!(
+        file.ends_with("exports-pkg/src/main.ts"),
+        "expected import-branch main.ts, got {}",
+        file.display()
+    );
+}
+
+/// Exact subpath key (`"./sub": "./src/sub.ts"`) resolves before any
+/// pattern fallback would fire.
+#[test]
+fn resolves_exports_exact_subpath() {
+    let r = root();
+    let graph = build_module_graph(&[r.clone()]);
+    let importer = r.join("apps/web/src/index.ts");
+    let resolved = graph
+        .resolve_specifier(&importer, "@scope/exports-pkg/sub")
+        .expect("subpath spec must classify");
+    let file = resolved.file.expect("./sub must resolve");
+    assert!(
+        file.ends_with("exports-pkg/src/sub.ts"),
+        "unexpected resolution: {}",
+        file.display()
+    );
+}
+
+/// Wildcard pattern (`"./feat/*": "./src/feat/*.ts"`) substitutes the
+/// matched tail into the target.
+#[test]
+fn resolves_exports_wildcard_subpath() {
+    let r = root();
+    let graph = build_module_graph(&[r.clone()]);
+    let importer = r.join("apps/web/src/index.ts");
+    let resolved = graph
+        .resolve_specifier(&importer, "@scope/exports-pkg/feat/widget")
+        .expect("wildcard subpath must classify");
+    let file = resolved.file.expect("./feat/widget must resolve");
+    assert!(
+        file.ends_with("exports-pkg/src/feat/widget.ts"),
+        "unexpected resolution: {}",
+        file.display()
+    );
+}
+
+/// `null` value blocks the subpath: resolver returns no file rather than
+/// falling back to a direct path join.
+#[test]
+fn exports_null_blocks_subpath() {
+    let r = root();
+    let graph = build_module_graph(&[r.clone()]);
+    let importer = r.join("apps/web/src/index.ts");
+    let resolved = graph
+        .resolve_specifier(&importer, "@scope/exports-pkg/blocked")
+        .expect("blocked spec must classify");
+    assert!(
+        resolved.file.is_none(),
+        "null exports value must not resolve, got {:?}",
+        resolved.file
+    );
+}
+
 #[test]
 fn module_graph_is_cheap() {
     use std::time::Instant;

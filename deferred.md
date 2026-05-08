@@ -23,8 +23,10 @@ implied or surfaced but did not finish.
       this for `promise_then_callback`, `promise_all_taint`, and
       `for_await_of_stream`; phase 06 did it for `jsx_dangerous_html`
       (sink_line = 8 on `page.tsx`, the `__html: input` value span);
-      `orm_builders`, `ssrf_url_builders`, `cross_package_ipa`, and
-      `nextjs_entrypoints` still own their own.
+      phase 07 did it for `orm_builders` (six positives + cap-aware
+      assertion on `sqli_typeorm_query.ts`);
+      `ssrf_url_builders`, `cross_package_ipa`, and `nextjs_entrypoints`
+      still own their own.
 - [ ] Chained-receiver Promise shape: `Promise.resolve(req.body).then(cb)`
       and `Promise.all([...]).then(cb)` collapse in CFG (the outer `.then`
       call's text is rewritten to the inner call_expression text), so the
@@ -68,33 +70,6 @@ implied or surfaced but did not finish.
       A unified `Imports` table covering every language would let
       cross-file taint use a single API; out of scope for the TS/JS
       foundation phase.
-- [ ] Phase 04 audit — `package_for` returns the deepest-root
-      package, but `package_entry_main` only honours the entry's
-      manifest `main`/`module`/`types` field. Workspaces that ship
-      `exports` maps (subpath exports, conditional exports) will
-      fall back to `index.{ext}` lookup and miss explicit subpath
-      definitions. Park, real fixtures using `exports` haven't
-      surfaced in the recall corpus yet; revisit when phase 09/10
-      finds a recall gap traceable to this.
-- [x] Phase 05 audit — `cfg::imports::extract_local_import_view` and
-      `resolve::extract_resolved_imports` now share a single walker
-      (`crate::resolve::walk_js_top_level_imports`, returning
-      `Vec<RawJsImport>`). The gated-post-pass view discards the
-      resolver verdict and side-effect-only markers; the resolver
-      consumer adds the `ModuleGraph::resolve_specifier` step on top.
-      Import-clause / require-declarator parsing now lives in one
-      place.
-- [ ] Phase 05 audit — `TypeKind::FileSystemPromisesNs` constructor
-      mapping in `type_facts.rs::constructor_type` only matches the
-      exact callee strings `fs.promises`, `require('fs').promises`,
-      and the double-quoted / `node:fs` permutations. The
-      receiver-type fallback path therefore fires only when an SSA
-      `Call` op carries that exact text. The destructured-assignment
-      shape `const fsp = fs.promises;` (a member-access RHS, not a
-      `Call`) is not yet covered. Wire FieldProj-driven narrowing
-      (when the receiver of `.promises` is `FileSystemNs`-typed,
-      project to `FileSystemPromisesNs`) when a real fixture
-      surfaces it.
 - [ ] Phase 05 audit — `JS_TS_HANDLER_PARAM_NAMES` auto-seeding in
       the SSA layer has no relation to the gated rule, but Phase 05
       fixtures revealed that `req.body.path` flows through `req`
@@ -104,21 +79,6 @@ implied or surfaced but did not finish.
       handler-param auto-seed and Phase 05 gate disagree on which
       identifier carries taint, audit `is_js_ts_handler_param_name`
       first.
-- [ ] Phase 05 fixture cleanup — the four fs/promises fixtures live
-      in a shared `tests/fixtures/realistic/fs_promises/` directory
-      because `scan_fixture()` accepts a directory, not a file.
-      Each `fs_promises_*` test re-scans the entire directory; this
-      multiplies wall time on cold caches. Once a future phase
-      teaches the harness to scan a single file (or splits the
-      directory), trim the redundant scans.
-- [x] Phase 05 audit — namespace-import and CommonJS require-form
-      fixtures landed:
-      `tests/fixtures/realistic/fs_promises/path_traversal_fs_promises_namespace.ts`
-      and `path_traversal_fs_promises_require.ts`, with
-      `fs_promises_namespace_import` and `fs_promises_require_form`
-      tests in `tests/recall_gaps.rs` asserting the FILE_IO sink
-      fires through `extract_local_import_view`'s namespace_import
-      and object_pattern destructuring code paths.
 - [ ] Phase 06 audit — `Kind::JsxAttr` is a unit variant rather
       than the `JsxAttr { name: SmolStr }` variant the phase
       prompt requested.  Reason: `Kind` must remain `Copy` to fit
@@ -178,11 +138,6 @@ implied or surfaced but did not finish.
       (`const db = knex({...})`) but needs receiver-type tracking
       that constructor_type does not currently produce for the bare
       `knex` callee. Revisit when an FP surfaces.
-- [x] Phase 07 audit — `tests/fixtures/realistic/orm_builders/sqli_mikroorm_execute.ts`
-      now ships and is asserted with `Cap::SQL_QUERY` at the
-      `em.execute(...)` line by the `orm_builders` recall test, giving
-      the `MikroOrmEm.execute` rule + `createEntityManager`
-      constructor_type entry scan-time coverage.
 - [ ] Phase 07 audit — `Sequelize` constructor maps to
       `TypeKind::Sequelize` purely from leaf-suffix matching on
       `new_expression`. The mapping fires on `new Sequelize(...)` but

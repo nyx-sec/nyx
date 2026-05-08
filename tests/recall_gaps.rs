@@ -174,7 +174,7 @@ fn promise_then_chain_reentrant() {
 /// `LabelGate::ImportedFromModule` gate.
 #[test]
 fn fs_promises_readfile() {
-    let findings = scan_fixture("fs_promises");
+    let findings = scan_fixture("fs_promises/path_traversal_fs_promises_readfile.ts");
     assert_finding(
         &findings,
         ExpectedFinding {
@@ -191,7 +191,7 @@ fn fs_promises_readfile() {
 /// `open` alongside `readFile`.
 #[test]
 fn fs_promises_open() {
-    let findings = scan_fixture("fs_promises");
+    let findings = scan_fixture("fs_promises/path_traversal_fs_promises_open.ts");
     assert_finding(
         &findings,
         ExpectedFinding {
@@ -208,7 +208,7 @@ fn fs_promises_open() {
 /// the gate.
 #[test]
 fn fs_promises_node_import() {
-    let findings = scan_fixture("fs_promises");
+    let findings = scan_fixture("fs_promises/path_traversal_node_fs_promises_import.ts");
     assert_finding(
         &findings,
         ExpectedFinding {
@@ -225,7 +225,7 @@ fn fs_promises_node_import() {
 /// receiver-name path of the local-import view.
 #[test]
 fn fs_promises_namespace_import() {
-    let findings = scan_fixture("fs_promises");
+    let findings = scan_fixture("fs_promises/path_traversal_fs_promises_namespace.ts");
     assert_finding(
         &findings,
         ExpectedFinding {
@@ -242,7 +242,7 @@ fn fs_promises_namespace_import() {
 /// destructured binding so the bare-name call still satisfies the gate.
 #[test]
 fn fs_promises_require_form() {
-    let findings = scan_fixture("fs_promises");
+    let findings = scan_fixture("fs_promises/path_traversal_fs_promises_require.ts");
     assert_finding(
         &findings,
         ExpectedFinding {
@@ -254,11 +254,48 @@ fn fs_promises_require_form() {
     );
 }
 
+/// Phase 05 recall-gap: namespace-of-namespace alias —
+/// `import * as fs from 'fs'; const fsp = fs.promises;`. The
+/// promises-alias extension on `extract_local_import_view` adds
+/// `fsp -> fs/promises` so `fsp.readFile(path)` satisfies the gate
+/// without an explicit `import ... from 'fs/promises'` line.
+#[test]
+fn fs_promises_alias_form() {
+    let findings = scan_fixture("fs_promises/path_traversal_fs_promises_alias.ts");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "path_traversal_fs_promises_alias.ts",
+            sink_line: 14,
+            source_line: Some(13),
+        },
+    );
+}
+
+/// Phase 05 recall-gap: CommonJS form of the alias shape —
+/// `const fsp = require('fs').promises;`. Same gate as the ESM-import
+/// alias above; promises-alias recognises the `.promises` projection on
+/// the bare `require('fs')` call.
+#[test]
+fn fs_promises_alias_require_form() {
+    let findings = scan_fixture("fs_promises/path_traversal_fs_promises_alias_require.ts");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "path_traversal_fs_promises_alias_require.ts",
+            sink_line: 12,
+            source_line: Some(11),
+        },
+    );
+}
+
 /// Phase 05 negative: a user-defined `readFile` (no import) must not
 /// fire the gated FILE_IO sink.  The whole point of the import gate.
 #[test]
 fn fs_promises_safe_userfn() {
-    let findings = scan_fixture("fs_promises");
+    let findings = scan_fixture("fs_promises/path_traversal_fs_promises_safe_userfn.ts");
     let leak = findings.iter().any(|f| {
         f.path
             .ends_with("path_traversal_fs_promises_safe_userfn.ts")

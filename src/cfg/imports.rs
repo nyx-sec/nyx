@@ -26,7 +26,116 @@ pub(super) fn extract_local_import_view(tree: &Tree, code: &[u8]) -> HashMap<Str
         }
         out.insert(raw.local, raw.source_spec);
     }
+    extend_with_promises_alias(tree, code, &mut out);
     out
+}
+
+/// Recognise top-level `const fsp = fs.promises;` /
+/// `const fsp = require('fs').promises;` aliasing and add the new local
+/// name to the import view as `fs/promises` (or `node:fs/promises`,
+/// whichever the source binding spelt).
+///
+/// The Phase 05 `LabelGate::ImportedFromModule(&["fs/promises", ...])`
+/// only consults `local_imports[leading_identifier(callee)]`. Without
+/// this extension, `fsp.readFile(x)` evades the gate because `fsp`
+/// itself is not an import binding — only the underlying `fs`
+/// namespace is.
+fn extend_with_promises_alias(tree: &Tree, code: &[u8], out: &mut HashMap<String, String>) {
+    let root = tree.root_node();
+    let mut top_cursor = root.walk();
+    for child in root.children(&mut top_cursor) {
+        if !matches!(
+            child.kind(),
+            "lexical_declaration" | "variable_declaration"
+        ) {
+            continue;
+        }
+        let mut decl_cursor = child.walk();
+        for decl in child.children(&mut decl_cursor) {
+            if decl.kind() != "variable_declarator" {
+                continue;
+            }
+            let (Some(name_node), Some(value_node)) = (
+                decl.child_by_field_name("name"),
+                decl.child_by_field_name("value"),
+            ) else {
+                continue;
+            };
+            if name_node.kind() != "identifier" {
+                continue;
+            }
+            let Some(local_name) = text_of(name_node, code) else {
+                continue;
+            };
+            if value_node.kind() != "member_expression" {
+                continue;
+            }
+            let property = value_node
+                .child_by_field_name("property")
+                .and_then(|p| text_of(p, code));
+            if property.as_deref() != Some("promises") {
+                continue;
+            }
+            let Some(obj) = value_node.child_by_field_name("object") else {
+                continue;
+            };
+            let Some(source) = promises_alias_source(obj, code, out) else {
+                continue;
+            };
+            // Don't override an existing import entry for the same name —
+            // an explicit import of `fsp` from `fs/promises` already says
+            // what we'd be inferring here.
+            out.entry(local_name).or_insert(source);
+        }
+    }
+}
+
+/// Resolve the object side of a `<lhs> = <obj>.promises` member-expression
+/// to a source-module string when `<obj>` is a known `fs` binding.
+///
+/// Recognised shapes:
+/// - identifier `X` where `local_imports[X]` is `fs` or `node:fs`
+/// - `require('fs')` / `require("node:fs")` call expression
+fn promises_alias_source(
+    obj: Node,
+    code: &[u8],
+    imports_so_far: &HashMap<String, String>,
+) -> Option<String> {
+    match obj.kind() {
+        "identifier" => {
+            let id = text_of(obj, code)?;
+            let module = imports_so_far.get(&id)?;
+            map_fs_module_to_promises(module)
+        }
+        "call_expression" => {
+            let func = obj.child_by_field_name("function")?;
+            if text_of(func, code).as_deref() != Some("require") {
+                return None;
+            }
+            let args = obj.child_by_field_name("arguments")?;
+            let mut cursor = args.walk();
+            for arg in args.children(&mut cursor) {
+                if !matches!(arg.kind(), "string" | "template_string") {
+                    continue;
+                }
+                let raw = text_of(arg, code)?;
+                let spec = raw.trim_matches(|c: char| c == '\'' || c == '"' || c == '`');
+                return map_fs_module_to_promises(spec);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn map_fs_module_to_promises(module: &str) -> Option<String> {
+    if module.eq_ignore_ascii_case("fs") {
+        Some("fs/promises".to_string())
+    } else if module.eq_ignore_ascii_case("node:fs") {
+        Some("node:fs/promises".to_string())
+    } else {
+        None
+    }
 }
 
 // -------------------------------------------------------------------------

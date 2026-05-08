@@ -41,10 +41,18 @@ mod tests;
 /// `name` is the value of the JSON `"name"` field (`"@scope/util"` or
 /// `"my-pkg"`). `root` is the directory containing the manifest, used as
 /// the package root for both bare and relative resolution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `manifest_main` carries the legacy `main` / `module` / `types` field
+/// (preserved verbatim, in spec-priority order). `exports` carries the
+/// raw `"exports"` JSON value when present, parsed lazily by
+/// [`resolve_exports_to_relpath`] each time a specifier asks for it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackageEntry {
     pub name: String,
     pub root: PathBuf,
+    #[serde(default)]
+    pub manifest_main: Option<String>,
+    #[serde(default)]
+    pub exports: Option<serde_json::Value>,
 }
 
 /// One match key from a `tsconfig.json` `paths` mapping.
@@ -371,13 +379,7 @@ impl ModuleGraph {
     fn resolve_bare_package(&self, spec: &str) -> Option<ResolvedModule> {
         let (pkg_name, sub) = split_package_specifier(spec)?;
         let entry = self.packages.iter().find(|p| p.name == pkg_name)?;
-        let resolved_file = if sub.is_empty() {
-            package_entry_main(entry)
-        } else {
-            let mut candidate = entry.root.clone();
-            candidate.push(sub);
-            resolve_file_or_index(&candidate)
-        };
+        let resolved_file = package_entry_resolve(entry, &sub);
         Some(ResolvedModule {
             file: resolved_file,
             package: Some(entry.name.clone()),
@@ -741,23 +743,130 @@ fn parse_package_json(path: &Path) -> Option<PackageEntry> {
     let json: serde_json::Value = parse_json_lenient(&bytes).ok()?;
     let name = json.get("name")?.as_str()?.to_string();
     let root = path.parent()?.to_path_buf();
-    Some(PackageEntry { name, root })
-}
-
-fn package_entry_main(entry: &PackageEntry) -> Option<PathBuf> {
-    let manifest = entry.root.join("package.json");
-    let bytes = std::fs::read(&manifest).ok()?;
-    let json: serde_json::Value = parse_json_lenient(&bytes).ok()?;
-    let main = json
+    let manifest_main = json
         .get("main")
         .and_then(|v| v.as_str())
         .or_else(|| json.get("module").and_then(|v| v.as_str()))
-        .or_else(|| json.get("types").and_then(|v| v.as_str()));
-    let candidate = match main {
-        Some(rel) => entry.root.join(rel),
-        None => entry.root.join("index"),
-    };
+        .or_else(|| json.get("types").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+    let exports = json.get("exports").cloned();
+    Some(PackageEntry {
+        name,
+        root,
+        manifest_main,
+        exports,
+    })
+}
+
+/// Resolve a specifier to a concrete file inside `entry`'s package root.
+///
+/// `sub` is the post-package portion of the import specifier:
+/// `""` for `@scope/util`, `"sub"` for `@scope/util/sub`, etc.
+///
+/// Resolution order:
+/// 1. `entry.exports` if present — handles string/object/conditional/wildcard
+///    shapes via [`resolve_exports_to_relpath`].
+/// 2. `entry.manifest_main` (`main`/`module`/`types`) for the root entry.
+/// 3. Direct path join under `entry.root` for sub-paths.
+fn package_entry_resolve(entry: &PackageEntry, sub: &str) -> Option<PathBuf> {
+    if let Some(exports) = entry.exports.as_ref() {
+        // When `exports` is defined, Node treats it as the closure for the
+        // package: legacy `main` and direct path joins under the package
+        // root no longer apply. A `null` value or a missing key both
+        // produce `None` here so downstream consumers see "blocked" rather
+        // than silently picking up a free file.
+        let rel = resolve_exports_to_relpath(exports, sub)?;
+        let stripped = rel.trim_start_matches("./");
+        let candidate = entry.root.join(stripped);
+        return resolve_file_or_index(&candidate);
+    }
+    if sub.is_empty() {
+        let candidate = match entry.manifest_main.as_deref() {
+            Some(rel) => entry.root.join(rel),
+            None => entry.root.join("index"),
+        };
+        return resolve_file_or_index(&candidate);
+    }
+    let candidate = entry.root.join(sub);
     resolve_file_or_index(&candidate)
+}
+
+/// Map `sub` against an `"exports"` JSON value to a relative path.
+///
+/// `sub` is the spec tail after the package name (`""`, `"sub"`,
+/// `"feat/x"`, …). The returned path is relative to the package root,
+/// kept verbatim from the manifest (typically `"./src/main.ts"` style).
+///
+/// Handles four spec-defined shapes:
+/// - String value (`"exports": "./index.js"`) — root-only.
+/// - Subpath map (`{ ".": "./index.js", "./sub": "./sub.js" }`).
+/// - Conditional values (`{ ".": { "import": "./esm.mjs", "default": "./fallback.js" } }`).
+/// - Subpath patterns (`{ "./feat/*": "./src/feat/*.js" }`).
+///
+/// Conditional preference order: `import` → `node` → `default` → `require`.
+/// `null` values block the resolution and return `None`. Returns `None`
+/// when no key matches; the caller falls back to the legacy `main` path.
+fn resolve_exports_to_relpath(exports: &serde_json::Value, sub: &str) -> Option<String> {
+    let key = if sub.is_empty() {
+        ".".to_string()
+    } else if sub.starts_with("./") {
+        sub.to_string()
+    } else {
+        format!("./{sub}")
+    };
+
+    match exports {
+        serde_json::Value::String(s) if key == "." => Some(s.clone()),
+        serde_json::Value::Object(map) => {
+            if let Some(val) = map.get(&key) {
+                if let Some(target) = pick_conditional(val) {
+                    return Some(target);
+                }
+            }
+            for (pat, val) in map.iter() {
+                if let Some(inner) = exports_pattern_match(pat, &key) {
+                    if let Some(target) = pick_conditional(val) {
+                        return Some(target.replace('*', &inner));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn pick_conditional(val: &serde_json::Value) -> Option<String> {
+    match val {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Object(map) => {
+            for cond in ["import", "node", "default", "require"] {
+                if let Some(v) = map.get(cond) {
+                    if let Some(s) = pick_conditional(v) {
+                        return Some(s);
+                    }
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(arr) => arr.iter().find_map(pick_conditional),
+        _ => None,
+    }
+}
+
+fn exports_pattern_match(pat: &str, key: &str) -> Option<String> {
+    let idx = pat.find('*')?;
+    let prefix = &pat[..idx];
+    let suffix = &pat[idx + 1..];
+    if !key.starts_with(prefix) || !key.ends_with(suffix) {
+        return None;
+    }
+    if key.len() < prefix.len() + suffix.len() {
+        return None;
+    }
+    let inner = &key[prefix.len()..key.len() - suffix.len()];
+    Some(inner.to_string())
 }
 
 fn parse_tsconfig(path: &Path) -> Option<TsConfigPaths> {

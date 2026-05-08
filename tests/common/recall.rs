@@ -15,6 +15,11 @@ use nyx_scanner::utils::config::Config;
 /// Copy `tests/fixtures/realistic/<rel_path>` into a fresh temp directory and
 /// run a two-pass filesystem scan against the copy. Isolating in tempdir
 /// prevents SQLite or `nyx.conf` artefacts from leaking between tests.
+///
+/// Accepts either a directory or a single file. When `rel_path` resolves
+/// to a regular file the harness copies just that file (preserving its
+/// basename) — useful for fixture areas where each test owns its own file
+/// and the directory-wide rescan would multiply wall time on cold caches.
 pub fn scan_fixture(rel_path: &str) -> Vec<Finding> {
     let src: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/realistic")
@@ -25,7 +30,14 @@ pub fn scan_fixture(rel_path: &str) -> Vec<Finding> {
         src.display()
     );
     let tmp = tempfile::tempdir().expect("tempdir for recall fixture");
-    copy_dir_recursive(&src, tmp.path()).expect("copy fixture into tempdir");
+    if src.is_file() {
+        let name = src
+            .file_name()
+            .unwrap_or_else(|| panic!("fixture has no filename: {}", src.display()));
+        fs::copy(&src, tmp.path().join(name)).expect("copy single fixture file into tempdir");
+    } else {
+        copy_dir_recursive(&src, tmp.path()).expect("copy fixture into tempdir");
+    }
 
     let cfg = Config::default();
     nyx_scanner::scan_no_index(tmp.path(), &cfg).expect("scan_no_index on recall fixture")
