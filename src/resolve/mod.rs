@@ -753,16 +753,25 @@ fn parse_json_lenient(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Err
 }
 
 /// Strip line/block comments and trailing commas. tsconfig files are JSONC.
+///
+/// Operates on raw bytes and writes raw bytes through to the output so
+/// non-ASCII UTF-8 sequences (multi-byte string contents, paths) survive
+/// verbatim. The earlier `out.push(b as char)` form re-encoded each
+/// continuation byte as its own char and corrupted multi-byte sequences.
+/// Comment / string / trailing-comma scanning only checks ASCII bytes
+/// (`/`, `*`, `\\`, `"`, `,`, `]`, `}`, `\n`), and UTF-8 continuation
+/// bytes are 0x80..=0xBF which never collide with ASCII, so byte-level
+/// scanning stays correct on UTF-8 input.
 fn strip_jsonc(input: &str) -> String {
     let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
+    let mut out: Vec<u8> = Vec::with_capacity(input.len());
     let mut i = 0;
     let mut in_string = false;
     let mut escape = false;
     while i < bytes.len() {
         let b = bytes[i];
         if in_string {
-            out.push(b as char);
+            out.push(b);
             if escape {
                 escape = false;
             } else if b == b'\\' {
@@ -775,7 +784,7 @@ fn strip_jsonc(input: &str) -> String {
         }
         if b == b'"' {
             in_string = true;
-            out.push('"');
+            out.push(b'"');
             i += 1;
             continue;
         }
@@ -807,10 +816,10 @@ fn strip_jsonc(input: &str) -> String {
                 continue;
             }
         }
-        out.push(b as char);
+        out.push(b);
         i += 1;
     }
-    out
+    String::from_utf8(out).unwrap_or_default()
 }
 
 fn split_package_specifier(spec: &str) -> Option<(String, String)> {

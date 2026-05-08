@@ -70,6 +70,48 @@ pub fn assert_finding(findings: &[Finding], expected: ExpectedFinding) {
     );
 }
 
+/// Like [`assert_finding`] but also requires that the matched finding's
+/// resolved sink capability bits include all of `cap_bits`. Use to defend
+/// against a coincidentally co-located finding at the same `sink_line`
+/// (e.g. an XSS sink on `res.json(rows)` happening to sit on the same
+/// line as the SQL_QUERY sink the test actually wants to assert) silently
+/// satisfying the assertion. Pass `Cap::FOO.bits().into()` from the
+/// caller.
+pub fn assert_finding_with_cap(findings: &[Finding], expected: ExpectedFinding, cap_bits: u32) {
+    let hit = findings.iter().any(|f| {
+        rule_id_prefix(&f.id) == expected.rule_id
+            && f.path.ends_with(expected.file_suffix)
+            && f.line == expected.sink_line
+            && match expected.source_line {
+                None => true,
+                Some(want) => parse_source_line(&f.id) == Some(want),
+            }
+            && f.evidence
+                .as_ref()
+                .map(|e| e.sink_caps & cap_bits == cap_bits)
+                .unwrap_or(false)
+    });
+    assert!(
+        hit,
+        "expected recall finding not produced: {expected:?} (cap_bits=0x{cap_bits:x})\nactual findings:\n{}",
+        findings
+            .iter()
+            .map(|f| {
+                let caps = f.evidence.as_ref().map(|e| e.sink_caps).unwrap_or(0);
+                format!(
+                    "  {} :: {}:{} [{}] caps=0x{:x}",
+                    f.id,
+                    f.path,
+                    f.line,
+                    f.severity.as_db_str(),
+                    caps,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
 fn rule_id_prefix(id: &str) -> &str {
     match id.find(" (source ") {
         Some(idx) => &id[..idx],

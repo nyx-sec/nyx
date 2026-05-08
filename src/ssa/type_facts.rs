@@ -97,11 +97,12 @@ pub enum TypeKind {
     /// `recv.open(...)`, ...) through the type-qualified rewrite to
     /// `FileSystemPromisesNs.<method>`, which the Phase 05 FILE_IO
     /// matcher list covers without an [`crate::labels::LabelGate`]
-    /// (the receiver type is itself the import witness). Populated by
-    /// [`constructor_type`] for `fs.promises` and
-    /// `require('fs').promises`; further refinement (FieldProj-driven
-    /// narrowing for `const fsp = fs.promises`) tracked in
-    /// `deferred.md`.
+    /// (the receiver type is itself the import witness). The TypeKind
+    /// is reached today via the gated-import path in
+    /// [`crate::cfg::apply_gated_label_rules`]; SSA-time tagging from
+    /// `constructor_type` is intentionally not wired (member-of-call
+    /// shapes like `fs.promises` decompose into Call + FieldProj ops,
+    /// so the full expression text never reaches the constructor table).
     FileSystemPromisesNs,
     /// An object created with `Object.create(null)` — has no prototype
     /// chain, so subscript-write keys cannot pollute `Object.prototype`.
@@ -518,20 +519,12 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => {
-            // Phase 05 — `const fsp = require('fs').promises;` and the
-            // bare `fs.promises` member-access form. Recognised here so
-            // `fsp.readFile(p)` resolves through receiver-type
-            // qualification to `FileSystemPromisesNs.readFile`. Match
-            // the full callee text (not just the `promises` suffix) so
-            // unrelated `.promises` accessors don't collide.
-            if callee == "fs.promises"
-                || callee == "require('fs').promises"
-                || callee == "require(\"fs\").promises"
-                || callee == "require('node:fs').promises"
-                || callee == "require(\"node:fs\").promises"
-            {
-                return Some(TypeKind::FileSystemPromisesNs);
-            }
+            // NB: `fs.promises` and `require('fs').promises` member-access
+            // shapes are NOT mapped here — SSA decomposes member-of-call
+            // into separate Call + FieldProj ops, so the full expression
+            // text never reaches `constructor_type` as a callee string.
+            // The `FileSystemPromisesNs` TypeKind is reached via the
+            // gated-import path in `cfg::apply_gated_label_rules` instead.
             match suffix {
             "URL" => Some(TypeKind::Url),
             "Request" | "XMLHttpRequest" => Some(TypeKind::HttpClient),

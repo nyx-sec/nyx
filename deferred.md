@@ -51,23 +51,26 @@ implied or surfaced but did not finish.
       reviewer reading the diagnostic lands at the dangerous line, not at
       the outer call. Park because this is a reporting-layer change that
       touches every callback-pattern emitter (not just promise callbacks).
-- [ ] Phase 03 audit — `tests/fixtures/realistic/async_await/handler.ts`
+- [x] Phase 03 audit — `tests/fixtures/realistic/async_await/handler.ts`
       was added (TS counterpart to phase 02's `handler.js`) but no
-      `recall_gaps` test asserts a finding against it; only the
-      pre-existing `async_await` test fires, and it pins to
-      `handler.js`. The .ts file is scanned implicitly via
-      `scan_fixture("async_await")` (smoke), but a positive assertion
-      exercising the TS `await_expression` KINDS-map entry is still
-      missing. Decide: add the assert or drop the fixture.
-- [ ] Phase 03 audit — `src/cfg/mod.rs` for_in_statement text rewrite
+      `recall_gaps` test asserted a finding against it; only the
+      pre-existing `async_await` test fired, and it pinned to
+      `handler.js`.  Decision: add the assert.  The `async_await`
+      test now asserts both the JS and TS findings (sink_line 5 on
+      `handler.ts`, source_line 3 — the typed-formal `req: { body:
+      string }` parameter — picked up by the typed-extractor
+      pipeline's parameter-as-source tagging).
+- [x] Phase 03 audit — `src/cfg/mod.rs` for_in_statement text rewrite
       applies to *all* JS/TS `for_in_statement` nodes (i.e. every
-      `for...of`, `for...in`, and `for await...of`), but the plan
-      called for narrowing to "for_in_statement with the `await` token
-      child". Broader application is plausibly desirable (plain
-      `for (const x of req.body)` benefits from the same iterator-text
-      classification), but the divergence from the plan was not
-      requested. Decide: keep the broader rewrite (and update the plan
-      retroactively in commentary) or narrow to the await-token case.
+      `for...of`, `for...in`, and `for await...of`).  Decision:
+      keep the broader rewrite.  The iterator-text-classification
+      semantics are uniform across `for...of`, `for...in`, and
+      `for await...of` — narrowing to the await-token case would
+      create an arbitrary distinction the source rules would have
+      to mirror, while keeping it broad lets plain
+      `for (const x of req.body)` and `for (const k in process.env)`
+      pick up the same source taint without bespoke handling.
+      Inline comment in `push_node` records the rationale.
 - [ ] Phase 04 audit — `FuncKey.namespace` package prefix is wired
       via a new helper `FuncSummary::func_key_with_resolver` but no
       call site uses it yet. The plan called this out explicitly
@@ -118,24 +121,31 @@ implied or surfaced but did not finish.
       pass 1 (drops the lock and restores the slice signature) or
       accept the divergence and update the plan signature
       retroactively.
-- [ ] Phase 04 audit — `strip_jsonc` in `src/resolve/mod.rs` is
+- [x] Phase 04 audit — `strip_jsonc` in `src/resolve/mod.rs` is
       byte-oriented (`out.push(b as char)`) and corrupts non-ASCII
       bytes inside JSON strings: a UTF-8 multi-byte sequence is
       re-encoded as two-byte UTF-8 per original byte before
       `serde_json` parses it, garbling the content. tsconfig /
       package.json files with non-ASCII names, paths, or comments
-      will misparse or silently drop characters. Fix: iterate by
-      `char` (or copy non-ASCII bytes through verbatim) so the
-      output stays valid UTF-8.
-- [ ] Phase 04 audit — no test exercises the JS/TS import
+      will misparse or silently drop characters. Fixed by switching
+      the accumulator to `Vec<u8>` and writing bytes through verbatim
+      (UTF-8 continuation bytes are 0x80..=0xBF and never collide
+      with the ASCII tokens the comment/string/trailing-comma
+      scanner inspects, so byte-level scanning stays correct).
+- [x] Phase 04 audit — no test exercises the JS/TS import
       extraction wired into `ParsedFile::from_source`. The new
       `src/resolve/tests.rs` only covers `resolve_specifier`;
       nothing parses `tests/fixtures/resolver/apps/web/src/index.ts`
       end-to-end and asserts that `ModuleGraph::imports_for` returns
       the expected `ImportBinding` rows for the relative, scoped,
-      alias, and `node:*` specifiers it imports. Add a parsed-file
-      integration test before phase 09/10 starts depending on the
-      file-level binding view.
+      alias, and `node:*` specifiers it imports. Added
+      `parses_imports_from_fixture_file` in `src/resolve/tests.rs`:
+      parses the fixture with tree-sitter-typescript, runs
+      `extract_resolved_imports` against it, and asserts on each of
+      the five binding shapes (relative `./foo`, parent-relative
+      `../bar/baz`, scoped package `@scope/util`, tsconfig alias
+      `@/lib/x`, `node:fs/promises` builtin including the
+      `promises as fs` alias preserving `fs` as the local name).
 - [ ] Phase 05 audit — `cfg::imports::extract_local_import_view`
       duplicates ~80% of `resolve::extract_resolved_imports`. The
       gated post-pass needs the local-name → source-module view at
@@ -178,26 +188,31 @@ implied or surfaced but did not finish.
       multiplies wall time on cold caches. Once a future phase
       teaches the harness to scan a single file (or splits the
       directory), trim the redundant scans.
-- [ ] Phase 05 audit — `tests/recall_gaps.rs` header table (lines
+- [x] Phase 05 audit — `tests/recall_gaps.rs` header table (lines
       35-44) is stale: claims phase 03 owns `fs_promises`, but the
       actual phase 03 (Promise callbacks) added `promise_then_*` /
       `promise_all_*` / `for_await_of_*` tests, and phase 05
       replaced `fs_promises` with `fs_promises_readfile` /
-      `_open` / `_node_import` / `_safe_userfn`. The phase 04
-      audit already flagged the `jsx_dangerous_html` row;
-      reconcile the whole table when a phase that touches it
-      lands so each row maps to the phase that actually un-ignored
-      its tests.
-- [ ] Phase 05 audit — `type_facts.rs::constructor_type` exact-string
+      `_open` / `_node_import` / `_safe_userfn`.  Verified the
+      table on 2026-05-07 — phase rows now reflect the actual
+      `fn` names: phase 02 `async_await`; phase 03 the four promise
+      tests (`promise_then_callback`, `promise_all_taint`,
+      `for_await_of_stream`, `promise_then_chain_reentrant`); phase
+      05 the four `fs_promises_*` tests; phase 06
+      `jsx_dangerous_html`; phase 07 `orm_builders`; TBD the three
+      remaining ignored tests.  No churn needed.
+- [x] Phase 05 audit — `type_facts.rs::constructor_type` exact-string
       arms `"require('fs').promises"`, `"require(\"fs\").promises"`,
       `"require('node:fs').promises"`, and `"require(\"node:fs\").promises"`
       are dead in practice: SSA decomposes member-of-call into
       separate Call + FieldProj ops, so the full expression text
       never reaches `constructor_type` as a callee string. The
       `"fs.promises"` arm has the same shape (member access, not a
-      call) and likely also never fires. Remove these arms or
-      back them with a real path (e.g. a SymbolicValue-driven
-      constructor pass that walks member-of-call shapes).
+      call) and likely also never fires. Removed the JS/TS branch's
+      five exact-string arms; `FileSystemPromisesNs` is reached via
+      `cfg::apply_gated_label_rules` instead. Comment on the
+      `TypeKind::FileSystemPromisesNs` doc updated to record the
+      decision.
 - [ ] Phase 05 audit — `extract_local_import_view` handles
       `import * as fsp from 'fs/promises'` (namespace_import) and
       `const { readFile } = require('fs/promises')` (object_pattern
@@ -213,18 +228,19 @@ implied or surfaced but did not finish.
       `classify_gated_only` helper so the post-pass skips the
       redundant flat-rule scan it has already done during initial
       classification.
-- [ ] Phase 06 audit — `utils::ext::lowercase_ext` collapses both
+- [x] Phase 06 audit — `utils::ext::lowercase_ext` collapses both
       `.ts` and `.tsx` to the slug `"ts"`, masking the JSX/TSX
       distinction.  Phase 06 worked around this in
       `ast::lang_for_path` with an early-return on the raw path
       extension that selects `LANGUAGE_TSX` for `.tsx` files, but
-      the original `Some("tsx") =>` arm in the match block (which
-      the workaround predates) is now dead code.  Cleanup: either
-      teach `lowercase_ext` to keep the `tsx`/`jsx` distinctions
-      and update every consumer, or remove the dead match arm and
-      keep the early-return as the canonical path.  Existing tests
-      that assert `lowercase_ext("file.tsx") == "ts"` would need to
-      be revised under the first option.
+      the original match block carried a dead arm (the `.tsx`
+      collapsed to `Some("ts")` and was caught by the early-return
+      before falling through; the parallel `Some("jsx") =>` arm
+      was unreachable because `lowercase_ext` has no `jsx` mapping
+      and the early-return on raw extension `Some("jsx")` already
+      consumed every JSX file).  Removed the dead `Some("jsx") =>`
+      arm; the early-return on raw `tsx`/`jsx` is now the canonical
+      path for JSX-aware grammar selection.
 - [ ] Phase 06 audit — `Kind::JsxAttr` is a unit variant rather
       than the `JsxAttr { name: SmolStr }` variant the phase
       prompt requested.  Reason: `Kind` must remain `Copy` to fit
@@ -321,27 +337,31 @@ implied or surfaced but did not finish.
       Literal value, not a Sequelize instance — typing that result as
       `Sequelize` would mis-shape. Skip until a fixture surfaces a
       gap.
-- [ ] Phase 07 audit — **`await` blocks receiver-type-qualified sink
+- [x] Phase 07 audit — **`await` blocks receiver-type-qualified sink
       resolution**. Reproduction: `await repo.query("SELECT … '" + name
-      + "'")` after `const repo = getRepository(User)` does NOT fire
+      + "'")` after `const repo = getRepository(User)` did NOT fire
       `TypeOrmRepo.query` SQL_QUERY; the same call without `await`
-      fires HIGH at the call site. The fixture
-      `sqli_typeorm_query.ts` test passes only by coincidence — the
-      `res.json(rows)` XSS finding lands on the expected sink_line
-      (17), masking that the actual TypeORM SQL_QUERY rule never
-      fires. Same shape will silently break future `TypeOrmManager.query`
-      / `MikroOrmEm.execute` / `Sequelize.literal` fixtures whenever
-      the realistic `await callee(...)` form is used. Likely cause:
-      await-expression SSA lowering interposes between the `repo`
-      receiver value and the inner `Call` op so
-      `resolve_type_qualified_labels`'s receiver lookup misses the
-      type fact. Fix probably touches `cfg/mod.rs` await
-      lowering + `taint::ssa_transfer::receiver_candidates_for_type_lookup`.
-      Two follow-ups required: (a) land the resolver/lowering fix;
-      (b) tighten `tests/recall_gaps.rs::orm_builders` to assert the
-      finding's capability (`SQL_QUERY`) — currently only `rule_id`
-      and `sink_line` are checked, which is why this regression went
-      green.
+      fired HIGH at the call site. Root cause: `cfg::literals::find_call_node`
+      only descended two levels of children, but the AST for
+      `const x = await foo(y)` is four levels deep
+      (`lexical_declaration > variable_declarator > await_expression
+      > call_expression`), so `call_ast = None`, receiver extraction
+      was skipped, and the SSA Call op was emitted with
+      `receiver: None`.  Without a receiver SSA value the type-fact
+      lookup in `resolve_type_qualified_labels` had nothing to anchor
+      on.  Fixed by teaching `find_call_node` to descend transparently
+      through `Kind::AwaitForward` wrappers (`await_expression`,
+      `yield_expression`).  The companion finding-attribution fix
+      lifts `effective_sink_caps` into the Diag's
+      `evidence.sink_caps` so receiver-qualified sinks (whose CFG
+      node carries no flat label) report the correct cap downstream
+      instead of `0`.  Test `sqli_typeorm_query.ts` retargeted to
+      sink_line 16 (the actual `repo.query(...)` line) and now uses
+      `assert_finding_with_cap` to require `Cap::SQL_QUERY`, so a
+      coincidental XSS finding on the adjacent `res.json(rows)` line
+      can no longer mask a missing TypeORM rule.  Same recall now
+      flows through to all other receiver-type-qualified sinks
+      (Sequelize, MikroORM, etc.) when wrapped in `await`.
 
 ## Deferred phases
 

@@ -1638,6 +1638,15 @@ pub(super) fn push_node<'a>(
     // inherits a Source taint when the iterator matches a Source rule.
     // Without this, the for_in_statement's text is the full multi-line
     // loop, which never matches any short suffix-style Source matcher.
+    //
+    // Phase 03 originally proposed narrowing this rewrite to the
+    // `for await` form alone (where the iterator text classification
+    // was the immediate motivation).  The rewrite is kept broader here
+    // because the same iterator-text classification benefits plain
+    // `for (const x of req.body)` and `for (const k in process.env)`
+    // identically — the loop-binding-inherits-iterator-taint semantics
+    // are uniform across all three forms, and narrowing would create
+    // an arbitrary distinction the source rules would have to mirror.
     if matches!(lang, "javascript" | "typescript" | "tsx")
         && ast.kind() == "for_in_statement"
         && let Some(right) = ast.child_by_field_name("right")

@@ -182,6 +182,90 @@ fn module_graph_is_cheap() {
     assert!(!graph.packages().is_empty(), "fixture tree must have packages");
 }
 
+/// Parse a TypeScript file with tree-sitter and run
+/// [`extract_resolved_imports`] against it.  Tests pull this through to
+/// keep the parsing setup in one place.
+fn extract_imports_for(file: &std::path::Path, graph: &ModuleGraph) -> Vec<ImportBinding> {
+    let bytes = std::fs::read(file).expect("read fixture file");
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter::Language::from(
+            tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        ))
+        .expect("load TS grammar");
+    let tree = parser.parse(&bytes, None).expect("parse fixture");
+    extract_resolved_imports(&tree, &bytes, file, graph, "typescript")
+}
+
+#[test]
+fn parses_imports_from_fixture_file() {
+    // Verify `extract_resolved_imports` lifts the same four binding shapes
+    // that `tests/fixtures/resolver/apps/web/src/index.ts` exercises:
+    // relative, parent-relative, scoped package, tsconfig path alias, plus
+    // the `node:fs/promises` builtin.  Phases 09/10 thread these bindings
+    // through cross-file taint, so the parsed-file integration path must
+    // produce the rows the resolver tests already cover via
+    // `resolve_specifier`.
+    let r = root();
+    let graph = build_module_graph(&[r.clone()]);
+    let importer = r.join("apps/web/src/index.ts");
+    let bindings = extract_imports_for(&importer, &graph);
+
+    let by_local: std::collections::HashMap<&str, &ImportBinding> = bindings
+        .iter()
+        .map(|b| (b.local_name.as_str(), b))
+        .collect();
+
+    // `import { foo } from "./foo"` — relative.
+    let foo = by_local.get("foo").expect("foo binding present");
+    assert_eq!(foo.source_module, "./foo");
+    assert_eq!(foo.exported_name.as_deref(), Some("foo"));
+    let foo_file = foo.resolved_file.as_ref().expect("./foo resolves");
+    assert!(
+        foo_file.ends_with("apps/web/src/foo.ts"),
+        "foo unexpected: {}",
+        foo_file.display()
+    );
+
+    // `import { baz } from "../bar/baz"` — parent-relative.
+    let baz = by_local.get("baz").expect("baz binding present");
+    assert_eq!(baz.source_module, "../bar/baz");
+    let baz_file = baz.resolved_file.as_ref().expect("../bar/baz resolves");
+    assert!(
+        baz_file.ends_with("apps/web/bar/baz.ts"),
+        "baz unexpected: {}",
+        baz_file.display()
+    );
+
+    // `import { util } from "@scope/util"` — scoped package.
+    let util = by_local.get("util").expect("util binding present");
+    assert_eq!(util.source_module, "@scope/util");
+    assert!(
+        util.resolved_file.is_some(),
+        "@scope/util must resolve to a file"
+    );
+
+    // `import { x } from "@/lib/x"` — tsconfig path alias.
+    let x = by_local.get("x").expect("x binding present");
+    assert_eq!(x.source_module, "@/lib/x");
+    let x_file = x.resolved_file.as_ref().expect("@/lib/x resolves");
+    assert!(
+        x_file.ends_with("apps/web/src/lib/x.ts"),
+        "x unexpected: {}",
+        x_file.display()
+    );
+
+    // `import { promises as fs } from "node:fs/promises"` — node builtin.
+    // Local-name binding must use the alias `fs`, not the original `promises`.
+    let fs = by_local.get("fs").expect("fs alias binding present");
+    assert_eq!(fs.source_module, "node:fs/promises");
+    assert_eq!(fs.exported_name.as_deref(), Some("promises"));
+    assert!(
+        fs.resolved_file.is_none(),
+        "node:* builtin must not carry a resolved file"
+    );
+}
+
 /// Best-effort RSS reader. Returns 0 on any failure, the test only uses
 /// the delta and treats "0 → 0" as "below ceiling".
 fn approximate_rss_kib() -> u64 {

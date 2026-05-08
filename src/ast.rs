@@ -377,15 +377,25 @@ fn build_taint_diag(
     // Resolved sink capability bits, used by deduplication to distinguish
     // sinks with different cap types on the same source line (e.g.
     // `sink_sql(x); sink_shell(x);`).
-    let sink_caps_bits: u32 = cfg_graph[finding.sink]
-        .taint
-        .labels
-        .iter()
-        .filter_map(|l| match l {
-            crate::labels::DataLabel::Sink(c) => Some(c.bits()),
-            _ => None,
-        })
-        .fold(0u32, |acc, b| acc | b);
+    //
+    // Prefer the per-finding `effective_sink_caps` (set by the SSA dispatch
+    // when receiver-type qualification, gated rules, or other late-binding
+    // resolvers contribute caps that the CFG node's static labels do not
+    // carry).  Fall back to the union of `Sink(cap)` labels on the CFG
+    // node when the SSA dispatch did not narrow.
+    let sink_caps_bits: u32 = if !finding.effective_sink_caps.is_empty() {
+        finding.effective_sink_caps.bits()
+    } else {
+        cfg_graph[finding.sink]
+            .taint
+            .labels
+            .iter()
+            .filter_map(|l| match l {
+                crate::labels::DataLabel::Sink(c) => Some(c.bits()),
+                _ => None,
+            })
+            .fold(0u32, |acc, b| acc | b)
+    };
 
     // Cap-specific rule-id routing.
     //
@@ -763,12 +773,6 @@ fn lang_for_path(path: &Path) -> Option<(Language, &'static str)> {
             "typescript",
         )),
         Some("js") => Some((
-            Language::from(tree_sitter_javascript::LANGUAGE),
-            "javascript",
-        )),
-        // JSX uses the same JavaScript grammar (tree-sitter-javascript handles
-        // JSX natively), slug "javascript" so all JS rules apply.
-        Some("jsx") => Some((
             Language::from(tree_sitter_javascript::LANGUAGE),
             "javascript",
         )),

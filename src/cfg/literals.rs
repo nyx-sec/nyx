@@ -8,15 +8,36 @@ use tree_sitter::Node;
 
 /// Find the inner CallFn/CallMethod/CallMacro node within an AST node.
 /// For direct call nodes, returns the node itself. For wrappers, searches
-/// up to two levels of children.
+/// up to two levels of children, transparently descending through
+/// `await_expression` / `yield_expression` (`Kind::AwaitForward`) wrappers
+/// so `const x = await foo(y)` reaches the inner `call_expression` at
+/// effective depth 3 (`lexical_declaration > variable_declarator >
+/// await_expression > call_expression`).
 pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
     match lookup(lang, n.kind()) {
         Kind::CallFn | Kind::CallMethod | Kind::CallMacro => Some(n),
+        Kind::AwaitForward => {
+            // Transparent wrapper: descend into the awaited expression.
+            let mut cursor = n.walk();
+            for c in n.children(&mut cursor) {
+                if let Some(found) = find_call_node(c, lang) {
+                    return Some(found);
+                }
+            }
+            None
+        }
         _ => {
             let mut cursor = n.walk();
             for c in n.children(&mut cursor) {
                 match lookup(lang, c.kind()) {
                     Kind::CallFn | Kind::CallMethod | Kind::CallMacro => return Some(c),
+                    // Skip past await/yield wrappers without consuming a
+                    // recursion level — the wrapper itself is transparent.
+                    Kind::AwaitForward => {
+                        if let Some(found) = find_call_node(c, lang) {
+                            return Some(found);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -25,11 +46,14 @@ pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
             for c in n.children(&mut cursor2) {
                 let mut cursor3 = c.walk();
                 for gc in c.children(&mut cursor3) {
-                    if matches!(
-                        lookup(lang, gc.kind()),
-                        Kind::CallFn | Kind::CallMethod | Kind::CallMacro
-                    ) {
-                        return Some(gc);
+                    match lookup(lang, gc.kind()) {
+                        Kind::CallFn | Kind::CallMethod | Kind::CallMacro => return Some(gc),
+                        Kind::AwaitForward => {
+                            if let Some(found) = find_call_node(gc, lang) {
+                                return Some(found);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

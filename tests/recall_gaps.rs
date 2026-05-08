@@ -53,12 +53,14 @@
 
 mod common;
 
-use common::recall::{assert_finding, scan_fixture, ExpectedFinding};
+use common::recall::{assert_finding, assert_finding_with_cap, scan_fixture, ExpectedFinding};
+use nyx_scanner::labels::Cap;
 use std::path::Path;
 
 #[test]
 fn async_await() {
     let findings = scan_fixture("async_await");
+    // JS form — exercises the JavaScript `await_expression` KINDS-map entry.
     assert_finding(
         &findings,
         ExpectedFinding {
@@ -66,6 +68,24 @@ fn async_await() {
             file_suffix: "handler.js",
             sink_line: 6,
             source_line: Some(4),
+        },
+    );
+    // TS form — same source/sink shape, exercises the TypeScript
+    // `await_expression` KINDS-map entry.  Without this assertion the
+    // `.ts` fixture was scanned implicitly via `scan_fixture("async_await")`
+    // (smoke only), with no positive guarantee that the TS grammar's
+    // await-forwarding lowered taint identically.  Source attributes to
+    // line 3 (the typed-extractor `req: { body: string }` parameter) —
+    // the typed-formal pipeline tags the parameter itself as the taint
+    // origin, which is the canonical handler-input shape rather than the
+    // intermediate `req.body` access on line 4.
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "handler.ts",
+            sink_line: 5,
+            source_line: Some(3),
         },
     );
 }
@@ -292,15 +312,21 @@ fn jsx_dangerous_html() {
 fn orm_builders() {
     let findings = scan_fixture("orm_builders");
 
+    // (file, sink_line) — sink_line points at the actual SQL builder call.
+    // `sqli_typeorm_query.ts` previously asserted line 17 (`res.json(rows)`)
+    // and was satisfied by a coincidental XSS finding; the real
+    // `repo.query(...)` sink lives on line 16, and the cap-aware assertion
+    // below pins the SQL_QUERY capability so an XSS regression cannot mask
+    // a missing receiver-type-qualified ORM rule.
     let positives = [
         ("sqli_drizzle_sql_raw.ts", 13usize),
         ("sqli_drizzle_tagged_template.ts", 14usize),
         ("sqli_sequelize_literal.ts", 14usize),
-        ("sqli_typeorm_query.ts", 17usize),
+        ("sqli_typeorm_query.ts", 16usize),
         ("sqli_knex_where_raw.ts", 15usize),
     ];
     for (file, sink_line) in positives {
-        assert_finding(
+        assert_finding_with_cap(
             &findings,
             ExpectedFinding {
                 rule_id: "taint-unsanitised-flow",
@@ -308,6 +334,7 @@ fn orm_builders() {
                 sink_line,
                 source_line: None,
             },
+            Cap::SQL_QUERY.bits(),
         );
     }
 
