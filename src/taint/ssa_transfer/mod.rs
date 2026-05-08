@@ -3704,6 +3704,82 @@ pub(super) fn transfer_inst(
                 return;
             }
 
+            // Phase 08 — `URL.searchParams.set/append`: writing a key/value
+            // pair on the searchParams view mutates the underlying URL.
+            // The receiver of the Call is the searchParams projection
+            // (TypeKind::Url alias via `is_url_identity_field`); walking
+            // back through the FieldProj chain reaches the original URL
+            // SSA value and any intermediate projections.  Union the
+            // arg-side taint into each of those values so a downstream
+            // `fetch(u)` / `axios.get(u)` sees the URL as tainted.
+            if let Some(rv) = *receiver {
+                let leaf = crate::callgraph::callee_leaf_name(callee);
+                if matches!(leaf, "set" | "append") {
+                    let receiver_kind = transfer
+                        .type_facts
+                        .and_then(|tf| tf.get_type(rv))
+                        .cloned()
+                        .or_else(|| {
+                            state
+                                .path_env
+                                .as_ref()
+                                .and_then(|env| env.get(rv).types.as_singleton())
+                        });
+                    if matches!(
+                        receiver_kind,
+                        Some(crate::ssa::type_facts::TypeKind::Url)
+                    ) {
+                        let mut arg_caps = Cap::empty();
+                        let mut arg_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+                        let mut arg_uses_summary = false;
+                        for arg_group in args.iter() {
+                            for &v in arg_group {
+                                if let Some(t) = state.get(v) {
+                                    arg_caps |= t.caps;
+                                    arg_uses_summary |= t.uses_summary;
+                                    for o in &t.origins {
+                                        push_origin_bounded(&mut arg_origins, *o);
+                                    }
+                                }
+                            }
+                        }
+                        if !arg_caps.is_empty() {
+                            // Walk the FieldProj receiver chain (and any
+                            // Rust-style nested call receivers) so every
+                            // SSA value that aliases the URL — `u`,
+                            // `u.searchParams`, etc. — picks up the new
+                            // taint, not just the immediate set receiver.
+                            let chain = receiver_candidates_for_type_lookup(
+                                rv,
+                                Some(ssa),
+                                transfer.lang,
+                            );
+                            for v in chain {
+                                let combined = match state.get(v) {
+                                    Some(prev) => {
+                                        let mut origins = prev.origins.clone();
+                                        for o in &arg_origins {
+                                            push_origin_bounded(&mut origins, *o);
+                                        }
+                                        VarTaint {
+                                            caps: prev.caps | arg_caps,
+                                            origins,
+                                            uses_summary: prev.uses_summary | arg_uses_summary,
+                                        }
+                                    }
+                                    None => VarTaint {
+                                        caps: arg_caps,
+                                        origins: arg_origins.clone(),
+                                        uses_summary: arg_uses_summary,
+                                    },
+                                };
+                                state.set(v, combined);
+                            }
+                        }
+                    }
+                }
+            }
+
             // Chain-wrapper sanitiser detection.  Computed up-front so
             // both the container-element-write hook and the outer-
             // callee taint suppression block below can consult it.
@@ -3908,6 +3984,50 @@ pub(super) fn transfer_inst(
             // Check for source labels first
             let mut return_bits = Cap::empty();
             let mut return_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+
+            // Phase 08 — `new URL(path[, base])` propagates the path
+            // argument's taint into the constructed URL value.  The CFG
+            // doesn't carry a label rule for this constructor and there is
+            // no summary, so without an explicit propagation pass the
+            // result SSA value would be untainted and downstream
+            // `fetch(u)` would silently miss the SSRF.  Origin-locked
+            // suppression (when the second arg is a string literal) lives
+            // in the abstract domain (`StringFact::from_url_with_base`)
+            // and runs in `is_string_safe_for_ssrf`, so propagating the
+            // taint here is safe: the prefix-lock fact still suppresses
+            // the sink for the two-arg form.
+            //
+            // The CFG-level text-rewrite for source-bearing assignments
+            // can replace the visible `callee` ("URL") with the source
+            // path (`req.body.path`); the original constructor identifier
+            // is preserved on `outer_callee`, so we consult both.
+            if matches!(transfer.lang, Lang::JavaScript | Lang::TypeScript)
+                && info.call.is_constructor
+                && {
+                    let direct = crate::ssa::type_facts::constructor_type(transfer.lang, callee)
+                        == Some(crate::ssa::type_facts::TypeKind::Url);
+                    let via_outer = info
+                        .call
+                        .outer_callee
+                        .as_deref()
+                        .is_some_and(|oc| {
+                            crate::ssa::type_facts::constructor_type(transfer.lang, oc)
+                                == Some(crate::ssa::type_facts::TypeKind::Url)
+                        });
+                    direct || via_outer
+                }
+            {
+                if let Some(first_group) = args.first() {
+                    for &v in first_group {
+                        if let Some(t) = state.get(v) {
+                            return_bits |= t.caps;
+                            for o in &t.origins {
+                                push_origin_bounded(&mut return_origins, *o);
+                            }
+                        }
+                    }
+                }
+            }
 
             // Network-fetch source suppression: a Call that carries BOTH
             // a Source label and a Sink(SSRF) label is a network-fetch
@@ -5924,6 +6044,60 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                     );
                 }
             }
+        }
+
+        // Phase 08 — `new URL(path, base)` origin lock.  The CFG-level
+        // text-rewrite for source-bearing assignments
+        // (`const u = new URL(req.body.path, …)` → `text` → `req.body.path`)
+        // strips the visible callee from the URL constructor, so we anchor
+        // on `is_constructor` plus a `TypeKind::Url` mapping for either the
+        // (rewritten) `callee` or `outer_callee` (which carries the
+        // original constructor identifier when the rewrite fires).
+        SsaOp::Call { callee, args, .. }
+            if matches!(lang, Some(Lang::JavaScript) | Some(Lang::TypeScript))
+                && info.call.is_constructor
+                && {
+                    let lang_u = lang.expect("matches guard ensures Some");
+                    let direct = crate::ssa::type_facts::constructor_type(lang_u, callee)
+                        == Some(crate::ssa::type_facts::TypeKind::Url);
+                    let via_outer = info
+                        .call
+                        .outer_callee
+                        .as_deref()
+                        .is_some_and(|oc| {
+                            crate::ssa::type_facts::constructor_type(lang_u, oc)
+                                == Some(crate::ssa::type_facts::TypeKind::Url)
+                        });
+                    direct || via_outer
+                }
+                && info
+                    .call
+                    .arg_string_literals
+                    .get(1)
+                    .and_then(|s| s.as_deref())
+                    .is_some() =>
+        {
+            let base = info
+                .call
+                .arg_string_literals
+                .get(1)
+                .and_then(|s| s.as_deref())
+                .map(|s| s.to_string())
+                .expect("guard ensures Some");
+            let path_string = args
+                .first()
+                .and_then(|g| g.first().copied())
+                .map(|pv| abs.get(pv).string)
+                .unwrap_or_else(StringFact::top);
+            abs.set(
+                inst.value,
+                AbstractValue {
+                    interval: IntervalFact::top(),
+                    string: StringFact::from_url_with_base(&base, &path_string),
+                    bits: BitFact::top(),
+                    path: PathFact::top(),
+                },
+            );
         }
 
         // Known integer-producing calls get a bounded interval so downstream

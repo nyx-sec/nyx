@@ -467,18 +467,66 @@ fn orm_builders() {
     }
 }
 
+/// Phase 08 recall-gap: SSRF URL-builder shapes.
+/// Coverage:
+///   - `new URL(taintedPath)` propagates the path arg's taint into the
+///     constructed URL value (no label rule, no summary — covered by the
+///     URL-constructor pass added in Phase 08).
+///   - `u.searchParams.set(k, taintedV)` / `.append(...)` taints the
+///     receiver URL via the searchParams alias rule.
+///   - `fetch({ url: taintedUrl, ... })` flows through the destination-
+///     aware filter on the SSRF gate.
+///   - `fetch(target)` where `target: URL` carries SSA-level
+///     TypeKind::Url and the constructor-propagated taint.
+/// Negative:
+///   - `new URL(req.body.path, "https://api.cal.com")` — the literal
+///     base anchors an origin-locked StringFact prefix that
+///     `is_string_safe_for_ssrf` honours, so the SSRF stays silent.
 #[test]
-#[ignore = "future phase: SSRF URL-builder shapes"]
 fn ssrf_url_builders() {
     let findings = scan_fixture("ssrf_url_builders");
-    assert_finding(
-        &findings,
-        ExpectedFinding {
-            rule_id: "taint-unsanitised-flow",
-            file_suffix: "client.ts",
-            sink_line: 0,
-            source_line: None,
-        },
+
+    let positives = [
+        ("ssrf_new_url.ts", 12usize),
+        ("ssrf_searchparams_set.ts", 13usize),
+        ("ssrf_searchparams_append.ts", 12usize),
+        ("ssrf_fetch_object_form.ts", 11usize),
+        ("ssrf_fetch_url_typed_arg.ts", 13usize),
+    ];
+    for (file, sink_line) in positives {
+        assert_finding_with_cap(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: file,
+                sink_line,
+                source_line: None,
+            },
+            Cap::SSRF.bits(),
+        );
+    }
+
+    // Negative: origin-locked `new URL(path, "https://api.cal.com")` must
+    // not fire SSRF — the abstract-string prefix-lock suppresses it.
+    let negative = "ssrf_url_origin_locked.ts";
+    let leak = findings.iter().any(|f| {
+        f.path.ends_with(negative)
+            && f.evidence
+                .as_ref()
+                .map(|e| (e.sink_caps & Cap::SSRF.bits()) != 0)
+                .unwrap_or(false)
+            && (f.id.starts_with("taint-unsanitised-flow")
+                || f.id.starts_with("cfg-unguarded-sink"))
+    });
+    assert!(
+        !leak,
+        "origin-locked URL must not fire SSRF; got:\n{}",
+        findings
+            .iter()
+            .filter(|f| f.path.ends_with(negative))
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
     );
 }
 

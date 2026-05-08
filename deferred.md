@@ -21,8 +21,9 @@ implied or surfaced but did not finish.
       (sink_line = 8 on `page.tsx`, the `__html: input` value span);
       phase 07 did it for `orm_builders` (six positives + cap-aware
       assertion on `sqli_typeorm_query.ts`);
-      `ssrf_url_builders`, `cross_package_ipa`, and `nextjs_entrypoints`
-      still own their own.
+      phase 08 did it for `ssrf_url_builders` (five positives +
+      cap-aware assertion + origin-locked negative);
+      `cross_package_ipa` and `nextjs_entrypoints` still own their own.
 - [ ] `Promise.all` per-element precision. Phase 03 conservatively unions
       all element taints into a scalar `VarTaint` on the result. Real
       shape is a tuple/array where each index has its own taint; the
@@ -94,6 +95,55 @@ implied or surfaced but did not finish.
       Literal value, not a Sequelize instance — typing that result as
       `Sequelize` would mis-shape. Skip until a fixture surfaces a
       gap.
+- [ ] Phase 08 audit — the URL-constructor recognition path in
+      `analyze_types`, `transfer_abstract`, and the URL-arg
+      taint-propagation rule in `transfer_inst` all consult
+      `info.call.outer_callee` because the CFG-level text rewrite
+      for source-bearing assignments
+      (`const u = new URL(req.body.path, …)` →
+      `info.call.callee == "req.body.path"`) drops the original
+      constructor identifier from the SSA-level `callee` field. Other
+      `constructor_type` consumers still rely on `callee` alone.
+      Sweep them and route every one through the same
+      `callee || outer_callee` fallback so this CFG-level rewrite
+      cannot silently disable type inference for any other
+      constructor (e.g. ORM constructors with member-source args).
+      Out of scope for Phase 08 because URL is the only
+      currently-modelled constructor where the rewrite is observable
+      against a Phase-08 fixture.
+- [ ] Phase 08 audit — `new URL(path, base)` abstract-string seeding
+      requires `base` to be a syntactic string literal (read from
+      `info.call.arg_string_literals`). A two-arg form whose base is
+      a constant identifier
+      (`const BASE = "https://api.cal.com"; new URL(req.body.path,
+      BASE);`) won't be recognised because the base value is an SSA
+      `Param`/`Const` reference rather than a literal-positioned arg.
+      Bridge through `abs.get(base_v).string` (singleton `domain`)
+      when that shape becomes load-bearing. Park because const-base
+      forms are uncommon in the realistic SSRF corpus.
+- [ ] Phase 08 audit — the `set`/`append` back-taint rule walks the
+      FieldProj receiver chain via
+      `receiver_candidates_for_type_lookup`, which only follows
+      `FieldProj.receiver` and (for Rust) nested `Call.receiver`
+      hops. A JS/TS chain that interposes a CallMethod (e.g.
+      `getUrl().searchParams.set(k, v)`) won't surface the original
+      URL value because the chain stops at the intermediate Call.
+      Add JS/TS-aware Call-receiver hops to the walker if a fixture
+      surfaces this pattern.
+- [ ] Phase 08 audit — the prompt prescribed extending
+      `src/taint/ssa_transfer/events.rs::collect_block_events` to
+      collect first-arg URL-typed taint and object-literal `url`
+      property taint for SSRF sinks (with a possible new
+      `NodeInfo.arg_object_props` field). The two relevant fixtures
+      (`ssrf_fetch_url_typed_arg.ts`, `ssrf_fetch_object_form.ts`)
+      already pass without that extension because (a) the URL-typed
+      first arg is fed by the new `transfer_inst` constructor-
+      propagation rule which paints the SSA value tainted before the
+      sink fires, and (b) the existing destination-aware sink filter
+      already handles `fetch({url: ...})`. Park the events.rs change
+      until a fixture surfaces a path the current routing misses
+      (e.g. an object-literal whose property is reached only via a
+      `Spread` or nested object).
 
 ## Deferred phases
 

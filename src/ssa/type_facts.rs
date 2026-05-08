@@ -503,6 +503,19 @@ fn receiver_is_criteria_builder(receiver_text: &str) -> bool {
         || receiver_text.contains(".cb.")
 }
 
+/// True when `field_name` reads off a WHATWG `URL` instance as a logical
+/// alias of the same URL value: `searchParams` is the mutable view (any
+/// `.set` / `.append` on it mutates the underlying URL), the others are
+/// pure-string projections of the same URL.  Used by the FieldProj
+/// type-aliasing rule so a `.set(k, v)` on the searchParams view dispatches
+/// to the URL receiver-type rule rather than as an opaque Object.
+pub(crate) fn is_url_identity_field(field_name: &str) -> bool {
+    matches!(
+        field_name,
+        "searchParams" | "host" | "hostname" | "pathname" | "href" | "origin"
+    )
+}
+
 /// Infer a type from a constructor, factory, or allocator call.
 ///
 /// Maps known constructor/factory/allocator patterns to security-relevant
@@ -1078,9 +1091,26 @@ pub fn analyze_types_with_param_types(
                         .node_weight(inst.cfg_node)
                         .map(|ni| ni.call.produces_null_proto)
                         .unwrap_or(false);
+                    // The CFG-level text-rewrite for source-bearing
+                    // assignments (`const u = new URL(req.body.path, …)`
+                    // → `callee` becomes `req.body.path`) strips the
+                    // visible constructor identifier, so when the direct
+                    // `callee` mapping fails fall back to
+                    // `info.call.outer_callee` which preserves the
+                    // original (e.g. `URL`) for type inference.
+                    let outer_callee = cfg
+                        .node_weight(inst.cfg_node)
+                        .and_then(|ni| ni.call.outer_callee.clone());
+                    let constructor_ty = lang.and_then(|l| {
+                        constructor_type(l, callee).or_else(|| {
+                            outer_callee
+                                .as_deref()
+                                .and_then(|oc| constructor_type(l, oc))
+                        })
+                    });
                     if null_proto {
                         TypeFact::from_kind(TypeKind::NullPrototypeObject)
-                    } else if let Some(ty) = lang.and_then(|l| constructor_type(l, callee)) {
+                    } else if let Some(ty) = constructor_ty {
                         TypeFact::from_kind(ty)
                     } else if let Some(ty) =
                         lang.and_then(|l| arg_aware_call_type(l, callee, args, consts))
@@ -1217,6 +1247,24 @@ pub fn analyze_types_with_param_types(
                     continue;
                 };
                 let field_name = body.field_name(*field).to_string();
+                // WHATWG URL alias: a `URL` instance's `searchParams`
+                // and identity-projection accessors (`host`, `hostname`,
+                // `pathname`, `href`, `origin`) read as the same logical
+                // URL for sink/sanitiser dispatch.  Mark the projection
+                // as `TypeKind::Url` so a downstream `.set(k, v)` /
+                // `.append(k, v)` on the searchParams view dispatches via
+                // the URL receiver-type rule rather than as an opaque
+                // Object.
+                if matches!(recv_fact.kind, TypeKind::Url)
+                    && is_url_identity_field(&field_name)
+                {
+                    let new_fact = TypeFact::from_kind(TypeKind::Url);
+                    if facts.get(&inst.value) != Some(&new_fact) {
+                        facts.insert(inst.value, new_fact);
+                        changed = true;
+                    }
+                    continue;
+                }
                 let Some(new_fact) = TypeFact::from_dto_field(&recv_fact.kind, &field_name) else {
                     continue;
                 };
