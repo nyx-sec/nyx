@@ -1,4 +1,4 @@
-# async_promise_chain_js — known gap
+# async_promise_chain_js — chained-receiver promise taint
 
 ## Intended flow
 A promise chain reads `process.env.PREFIX` inside the second `.then`
@@ -6,14 +6,15 @@ callback, concatenates it with fetched text, and sinks the result via
 `child_process.exec` from the third callback.  The intended finding is
 `taint-unsanitised-flow` from the env source to the exec sink.
 
-## Current engine behaviour
-The scanner produces **no** taint finding for this fixture.  Tracking
-taint across chained promise callbacks requires reasoning about the
-promise resolution value returned from each arrow, which the engine
-does not model today.
+## Engine behaviour
+The engine now closes this gap.  The chained-receiver promise shape
+(`fetch(...).then(..).then(..).then(..)`) keeps each `.then` call's
+identity at the CFG level so `try_apply_promise_callback` and the
+synthetic `source_to_callback` emission see the chain head's Source
+label and seed the callback's first parameter, propagating taint
+through the chain to the `exec` sink.
 
-## Why this expectation is codified as a `forbidden_findings` entry
-The fixture asserts current behaviour so a future improvement that
-closes the gap — e.g. promise resolution modelling or coarser
-callback return propagation — must update `expectations.json` and
-delete this README.
+## Expectation
+`required_findings` pins the taint flow finding so a future
+regression that re-collapses the chain (e.g. an inner-call rewrite
+that erases the outer `.then` identity) will fail this test.

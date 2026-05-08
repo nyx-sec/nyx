@@ -1798,6 +1798,33 @@ pub(super) fn push_node<'a>(
     // CVE-2023-38337, the Marshal/JSON/YAML-of-File.read pattern, etc.).
     let mut outer_callee: Option<String> = None;
     let mut inner_callee_span: Option<(usize, usize)> = None;
+    // JS/TS Promise callback methods (`.then`/`.catch`/`.finally`) on chained
+    // receivers (`Promise.resolve(req.body).then(cb)`).  Without this guard,
+    // `find_classifiable_inner_call` walks into the chain receiver and
+    // rewrites `text` from `.then` to `Promise.resolve` (which classifies as
+    // a Source), erasing the outer call's identity.  The SSA layer then
+    // never sees a `then` callee, so `try_apply_promise_callback` never
+    // fires and taint on the resolved value is dropped.  Detect the outer
+    // promise-callback method here and skip the rewrite — the outer call's
+    // identity is preserved, and the inner Promise.resolve's argument
+    // taint flows through `info.taint.uses` (implicit args) as the
+    // promise-callback handler already expects.
+    let outer_is_promise_callback = matches!(lang, "javascript" | "typescript" | "tsx")
+        && find_call_node(ast, lang)
+            .and_then(|cn| {
+                cn.child_by_field_name("function")
+                    .or_else(|| cn.child_by_field_name("method"))
+            })
+            .and_then(|fc| {
+                if matches!(fc.kind(), "member_expression" | "attribute") {
+                    fc.child_by_field_name("property")
+                        .or_else(|| fc.child_by_field_name("name"))
+                        .and_then(|p| text_of(p, code))
+                } else {
+                    None
+                }
+            })
+            .is_some_and(|leaf| crate::labels::is_promise_callback_method(lang, &leaf));
     if labels.is_empty()
         && matches!(
             lookup(lang, ast.kind()),
@@ -1812,9 +1839,11 @@ pub(super) fn push_node<'a>(
             find_classifiable_inner_call(ast, lang, code, extra)
     {
         labels.push(inner_label);
-        outer_callee = Some(text.clone());
-        text = inner_text;
-        inner_callee_span = Some(inner_span);
+        if !outer_is_promise_callback {
+            outer_callee = Some(text.clone());
+            text = inner_text;
+            inner_callee_span = Some(inner_span);
+        }
     }
 
     // For assignments like `element.innerHTML = value`, the inner-call heuristic
@@ -1908,11 +1937,20 @@ pub(super) fn push_node<'a>(
         // summary resolution can still find the wrapping function
         // (e.g. `storeInto(req.query.input, items)` → callee="req.query.input"
         // but outer_callee="storeInto").
-        if let Some(member_text) = first_member_text(ast, code) {
-            if outer_callee.is_none() && text != member_text {
-                outer_callee = Some(text.clone());
+        //
+        // Skip the text rewrite when the outer call is a JS/TS promise
+        // callback method (`.then`/`.catch`/`.finally`).  The `.then` call
+        // node must keep its `then` callee text so `try_apply_promise_callback`
+        // and the synthetic `source_to_callback` emission recognise it.
+        // The Source label still attaches, so the resolved-value taint
+        // flows from the inner `Promise.resolve(req.body)`.
+        if !outer_is_promise_callback {
+            if let Some(member_text) = first_member_text(ast, code) {
+                if outer_callee.is_none() && text != member_text {
+                    outer_callee = Some(text.clone());
+                }
+                text = member_text;
             }
-            text = member_text;
         }
     }
 

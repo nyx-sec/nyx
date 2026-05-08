@@ -1,10 +1,11 @@
 {
-  "required_findings": [],
-  "forbidden_findings": [
+  "required_findings": [
     {
-      "id_prefix": "taint-"
+      "id_prefix": "taint-unsanitised-flow",
+      "min_count": 1
     }
   ],
+  "forbidden_findings": [],
   "performance_expectations": {
     "max_ms_no_index": 1500,
     "max_ms_index_cold": 2000,

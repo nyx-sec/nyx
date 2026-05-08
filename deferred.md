@@ -23,16 +23,6 @@ implied or surfaced but did not finish.
       assertion on `sqli_typeorm_query.ts`);
       `ssrf_url_builders`, `cross_package_ipa`, and `nextjs_entrypoints`
       still own their own.
-- [ ] Chained-receiver Promise shape: `Promise.resolve(req.body).then(cb)`
-      and `Promise.all([...]).then(cb)` collapse in CFG (the outer `.then`
-      call's text is rewritten to the inner call_expression text), so the
-      SSA layer never sees a separate Call op for `.then`. Phase 03 ships
-      the named-promise form (`const p = Promise.resolve(x); p.then(cb);`)
-      via `try_apply_promise_callback`; the chained-receiver form needs a
-      CFG-level fix that emits the outer `.then` as its own node before
-      `try_apply_promise_callback` can fire on it. Out of scope for phase
-      03 because the CFG rewrite is a cross-cutting change with corpus
-      risk.
 - [ ] `Promise.all` per-element precision. Phase 03 conservatively unions
       all element taints into a scalar `VarTaint` on the result. Real
       shape is a tuple/array where each index has its own taint; the

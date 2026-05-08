@@ -3409,6 +3409,37 @@ fn try_apply_promise_callback(
             }
         }
     }
+    // Chained-receiver shape (`Promise.resolve(req.body).then(cb)`): the inner
+    // `Promise.resolve` collapses into the outer `.then` CFG node, so the
+    // resolved-value Source label rides on the `.then` node's labels rather
+    // than on a separate SSA op the receiver/args reach.  Union those Source
+    // caps so the chained shape seeds the callback's param[0] the same way
+    // the named-promise shape does.  Synthesise a minimal origin pointing
+    // at the `.then` node so the seed carries provenance.
+    let label_source_caps = info
+        .taint
+        .labels
+        .iter()
+        .filter_map(|l| match l {
+            DataLabel::Source(bits) => Some(*bits),
+            _ => None,
+        })
+        .fold(Cap::empty(), |acc, b| acc | b);
+    if !label_source_caps.is_empty() {
+        receiver_taint.caps |= label_source_caps;
+        let synthetic_origin = TaintOrigin {
+            node: inst.cfg_node,
+            source_kind: crate::labels::infer_source_kind(label_source_caps, callee),
+            source_span: None,
+        };
+        if !receiver_taint
+            .origins
+            .iter()
+            .any(|o| o.node == inst.cfg_node)
+        {
+            push_origin_bounded(&mut receiver_taint.origins, synthetic_origin);
+        }
+    }
     let receiver_taint: Option<VarTaint> = if receiver_taint.caps.is_empty() {
         None
     } else {
@@ -6467,7 +6498,10 @@ fn collect_block_events(
         // sink finding.
         let synthetic_promise_callback: Option<(usize, Cap)> = match &inst.op {
             SsaOp::Call {
-                callee, receiver, ..
+                callee,
+                receiver,
+                args,
+                ..
             } => {
                 let leaf = crate::callgraph::callee_leaf_name(callee);
                 if crate::labels::is_promise_callback_method(transfer.lang.as_str(), leaf)
@@ -6477,6 +6511,35 @@ fn collect_block_events(
                     if let Some(rv) = receiver {
                         if let Some(t) = state.get(*rv) {
                             recv_caps |= t.caps;
+                        }
+                    }
+                    // Chained-receiver shape (`Promise.resolve(req.body).then(cb)`):
+                    // the inner Promise.resolve call collapses into the outer
+                    // .then node so there is no separate Call op for it.  The
+                    // resolved-value taint instead surfaces in the implicit-uses
+                    // arg group emitted by `build_call_args`.  Union those caps
+                    // (skipping arg[0], which is the callback function itself,
+                    // not the resolved value) so the named-promise and chained
+                    // shapes share one source_to_callback synthesis path.
+                    for (idx, arg_group) in args.iter().enumerate() {
+                        if idx == 0 {
+                            continue;
+                        }
+                        for &v in arg_group {
+                            if let Some(t) = state.get(v) {
+                                recv_caps |= t.caps;
+                            }
+                        }
+                    }
+                    // Same chained shape: when the inner `Promise.resolve`
+                    // collapses into the `.then` node, its Source label is
+                    // attached directly to the `.then` node's labels rather
+                    // than to a separate SSA op whose value the receiver/args
+                    // would expose.  Union those Source caps so the callback
+                    // pattern fires uniformly across named and chained shapes.
+                    for lbl in &info.taint.labels {
+                        if let DataLabel::Source(bits) = lbl {
+                            recv_caps |= *bits;
                         }
                     }
                     if recv_caps.is_empty() {
