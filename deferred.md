@@ -12,10 +12,6 @@ implied or surfaced but did not finish.
       next to the harness). If a future phase needs the baseline mirrored
       back into `.pitboss/play/`, the runner — not an implementer — must
       copy it.
-- [ ] Capture a per-rule corpus snapshot (not just top-15) once phase 02
-      lands so phases 03–11 can prove rule-level non-regression rather than
-      aggregate-only. Out of scope for phase 01 because no engine code
-      changed and the aggregate suffices for skeleton non-regression.
 - [ ] Tighten `ExpectedFinding.sink_line` placeholders. Phase 01 wrote `0`
       for every gap-area test because the fixtures do not exist yet. The
       phase that un-ignores each test must update its `sink_line` (and,

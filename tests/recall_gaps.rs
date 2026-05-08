@@ -524,4 +524,24 @@ fn baseline_loads() {
         value.get("corpus_finding_lines").is_some(),
         "baseline must record `corpus_finding_lines`"
     );
+    let corpus = value.get("corpus_finding_lines").unwrap();
+    let rule_full = corpus.get("rule_id_full").unwrap_or_else(|| {
+        panic!(
+            "baseline must record `corpus_finding_lines.rule_id_full` (per-rule snapshot, not just top-15) so phases 03-11 can prove rule-level non-regression"
+        )
+    });
+    let map = rule_full
+        .as_object()
+        .expect("`rule_id_full` must be a JSON object mapping rule_id → count");
+    let distinct = corpus
+        .get("rule_id_distinct")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+    assert_eq!(
+        map.len(),
+        distinct,
+        "rule_id_full ({}) must cover every distinct rule_id ({})",
+        map.len(),
+        distinct
+    );
 }
