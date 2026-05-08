@@ -478,7 +478,10 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
         matchers: &["whereRaw", "orderByRaw", "havingRaw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
-        gate: LabelGate::FileImportsModule(&["knex"]),
+        gate: LabelGate::FileImportsModuleAsLocalName {
+            modules: &["knex"],
+            local_names: &["knex"],
+        },
     },
     // Phase 07 — Drizzle `sql` template-tag builder. See
     // `labels/javascript.rs::GATED_LABEL_RULES` for the two callee

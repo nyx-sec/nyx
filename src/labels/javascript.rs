@@ -620,13 +620,18 @@ pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
     // Phase 07 — Knex bare-name raw-SQL escape hatches. The receiver in
     // `db.whereRaw(sql)` shape is an arbitrary local binding (`db`, `qb`,
     // `users`, ...) so leading-identifier gating cannot witness the
-    // import; use a file-level gate that fires when *any* binding in the
-    // file resolves to `knex`.
+    // import. Phase 07 deferred-item 10 tightening: require the file to
+    // bind the conventional value-import name `knex` (lowercase) so that
+    // type-only shapes like `import { Knex } from 'knex'` (for
+    // `Knex.QueryBuilder` type annotations) do not over-fire the gate.
     GatedLabelRule {
         matchers: &["whereRaw", "orderByRaw", "havingRaw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
-        gate: LabelGate::FileImportsModule(&["knex"]),
+        gate: LabelGate::FileImportsModuleAsLocalName {
+            modules: &["knex"],
+            local_names: &["knex"],
+        },
     },
     // Phase 07 — Drizzle `sql` template-tag builder.  Two shapes:
     //   - `sql.raw(x)`              → callee text "sql.raw" (member call)

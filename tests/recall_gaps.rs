@@ -443,7 +443,11 @@ fn orm_builders() {
         );
     }
 
-    let negatives = ["sqli_typeorm_safe_parameterized.ts", "sqli_no_orm_import_safe.ts"];
+    let negatives = [
+        "sqli_typeorm_safe_parameterized.ts",
+        "sqli_no_orm_import_safe.ts",
+        "sqli_knex_type_only_safe.ts",
+    ];
     for file in negatives {
         let leak = findings.iter().any(|f| {
             f.path.ends_with(file)

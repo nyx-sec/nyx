@@ -57,6 +57,17 @@ pub enum LabelGate {
     /// instance whose binding name is arbitrary (`db`, `qb`, `users`, ...)
     /// and the import witness is the package itself.
     FileImportsModule(&'static [&'static str]),
+    /// Fires when the file's import view binds at least one of `local_names`
+    /// to one of `modules`. Tighter than [`Self::FileImportsModule`]: type-only
+    /// or peripheral named-import shapes (e.g. `import { Knex } from 'knex'`
+    /// for type-only use of `Knex.QueryBuilder`) do not satisfy the gate
+    /// unless the conventional value-binding name (`knex`, lowercase) is also
+    /// present. Used for Phase 07 deferred-item 10's tightening of the Knex
+    /// `whereRaw` / `orderByRaw` / `havingRaw` gate.
+    FileImportsModuleAsLocalName {
+        modules: &'static [&'static str],
+        local_names: &'static [&'static str],
+    },
 }
 
 /// A label rule that only fires when its [`LabelGate`] is satisfied at the
@@ -1500,6 +1511,24 @@ fn gate_satisfied(
                 modules
                     .iter()
                     .any(|m| source_module.eq_ignore_ascii_case(m))
+            })
+        }
+        LabelGate::FileImportsModuleAsLocalName {
+            modules,
+            local_names,
+        } => {
+            let Some(ctx) = ctx else {
+                return false;
+            };
+            let Some(map) = ctx.local_imports else {
+                return false;
+            };
+            local_names.iter().any(|name| {
+                map.get(*name).is_some_and(|source_module| {
+                    modules
+                        .iter()
+                        .any(|m| source_module.eq_ignore_ascii_case(m))
+                })
             })
         }
     }

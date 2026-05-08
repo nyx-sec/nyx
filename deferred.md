@@ -84,28 +84,6 @@ implied or surfaced but did not finish.
       semantics but use entirely separate grammars.  Out of
       scope; revisit when a gap test arrives for one of those
       ecosystems.
-- [x] Phase 07 audit — `ssa::type_facts::constructor_type` (TS/JS)
-      assigned the new ORM TypeKinds (`Sequelize`, `TypeOrmRepo`,
-      `TypeOrmManager`, `MikroOrmEm`) by suffix-matching alone, with
-      no import-table gate. **Resolved.** `FileCfg.local_imports` now
-      persists the per-file local-import view; `with_file_imports`
-      publishes it to a thread-local around every per-body SSA pass
-      that calls `optimize_ssa_with_param_types`. Inside
-      `constructor_type` the ORM arms call `orm_gate(tk)` which
-      consults the TLS view — `Sequelize` requires an import whose
-      module spec is `sequelize` or `sequelize/...`; `TypeOrmRepo` /
-      `TypeOrmManager` require `typeorm` / `typeorm/...`; `MikroOrmEm`
-      requires `@mikro-orm/...`. When the TLS view is unset (test /
-      legacy paths) the gate is treated as satisfied so prior
-      behaviour is preserved.
-- [ ] Phase 07 audit — `LabelGate::FileImportsModule(&["knex"])` for
-      Knex `whereRaw` / `orderByRaw` / `havingRaw` fires whenever any
-      file-local binding maps to `knex`, including peripheral imports
-      (e.g. `import { Knex } from 'knex'` for type-only use). A
-      tighter gate would witness only the query-builder factory call
-      (`const db = knex({...})`) but needs receiver-type tracking
-      that constructor_type does not currently produce for the bare
-      `knex` callee. Revisit when an FP surfaces.
 - [ ] Phase 07 audit — `Sequelize` constructor maps to
       `TypeKind::Sequelize` purely from leaf-suffix matching on
       `new_expression`. The mapping fires on `new Sequelize(...)` but
