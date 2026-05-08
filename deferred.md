@@ -289,6 +289,57 @@ implied or surfaced but did not finish.
       JS handler-param auto-seeder (`is_js_ts_handler_param_name`)
       already handles `(req, res)` shapes; the Phase 10 seeding
       path is additive on top.
+- [ ] Phase 11 audit — baseline relocation. Phase 11 deliverables
+      named `.pitboss/play/recall_targets/<target>.json` and
+      `.pitboss/play/recall_targets/perf_after.txt`, but pitboss hard
+      rule 2 forbids implementer agents from writing under
+      `.pitboss/`. Phase 11 relocated the artifacts to
+      `tests/recall_targets/` (next to `tests/recall_gaps.rs`,
+      mirroring the Phase 01 precedent for
+      `tests/recall_gaps_baseline.json`). If a future phase needs
+      these mirrored back into `.pitboss/play/`, the runner — not an
+      implementer — must copy them.
+- [ ] Phase 11 audit — three of four target baselines ship as
+      placeholders. Only `cal_com.json` was captured against a real
+      clone (`/Users/elipeter/oss/cal.com` @ `d278d6c9`, 662 findings).
+      `vercel_commerce.json`, `shadcn_examples.json`, and
+      `blitz_apps.json` exist with the correct schema but
+      `findings: []` and `pinned_commit: "unknown"`. Reason: only
+      cal.com was already cloned locally; pitboss implementer agents
+      run sandboxed without network egress, so the other three
+      checkouts could not be fetched. Resolution: clone each target
+      and run `scripts/validate_recall.sh <target> <clone> --capture`
+      to populate. The `validate_real_world_targets` schema test
+      passes against placeholders because `[]` is a valid
+      `findings` array.
+- [ ] Phase 11 audit — cal.com verdict triage is sparse.
+      `cal_com.json` carries 662 findings; only 4 are hand-labelled
+      `FP` (the `ts.crypto.math_random` hits inside
+      `apps/web/playwright/` test fixtures). The remaining 658 stay
+      `verdict: "needs_review"`, which is the placeholder verdict
+      `validate_recall.sh --capture` writes by default. Sweeping
+      these into `TP`/`FP` is bounded human work — read the source
+      flow at each `path_suffix:line` and mark accordingly. Future
+      precision work (FP-removal phases) needs the labelled set to
+      measure improvement, but the schema test does not require
+      every entry to be triaged.
+- [ ] Phase 11 audit — `validate_recall.sh` always re-builds and
+      re-runs nyx end-to-end (no cache reuse). On cal.com (340 MB)
+      the warm-cache scan is ~50 s, which is fine for hand
+      validation but expensive enough that future cross-lang
+      validation phases (16/17) will want a `--from-snapshot
+      <prior_run.json>` input mode that skips the scan and just
+      diffs two captured JSONs. Park; today the bottleneck is
+      acceptable on the listed four targets.
+- [ ] Phase 11 audit — perf baseline only records
+      `tests/fixtures/`-corpus throughput (1.55 s warm,
+      1143 findings on 2026-05-08). Phase 01's baseline did not
+      capture perf timings, so there is no apples-to-apples
+      Phase 01 → Phase 11 delta. The first cross-phase perf delta
+      will appear in Phase 17's `perf_after_xlang.txt` (which
+      compares against the Phase 11 number recorded here). Add a
+      retroactive Phase 01 perf line if a future replan asks for
+      one.
 
 ## Deferred phases
 

@@ -1,0 +1,69 @@
+Phase 11 perf snapshot
+=======================
+Captured 2026-05-08 against branch pitboss/run-20260507T064345Z.
+Host: Darwin 25.2.0 / arm64.
+Binary: target/release/nyx (cargo build --release).
+
+This file is the Phase 11 perf baseline. Future recall work compares
+against these numbers — Phase 01's baseline (tests/recall_gaps_baseline.json)
+recorded only finding counts, not timings, so there is no Phase-01
+perf number to diff against. Phase 11 acceptance: regression ≤ 15%
+on the corpus throughput line below.
+
+cargo test --release
+--------------------
+Outcome: all suites green. Sample of `test result:` lines (full run
+across the integration + lib + doc test binaries):
+
+    test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+    test result: ok. 102 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+    test result: ok. 119 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+    test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+    test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+    (… many more — every binary reports `ok. N passed; 0 failed`)
+
+Long-pole binary: tokio_join_perf at 304s (the SSA equivalence
+fixture sweep is the second-longest at ~17s).
+
+cargo bench --bench scan_bench -- --quick
+-----------------------------------------
+ast_only_scan                          time:   [9.5810 ms  9.7805 ms  9.8304 ms]
+full_scan                              time:   [22.939 ms  22.997 ms  23.226 ms]
+full_scan_with_state                   time:   [23.056 ms  23.111 ms  23.330 ms]
+single_file_parse_cfg                  time:   [281.94 µs  283.04 µs  287.42 µs]
+state_analysis_only                    time:   [2.5527 µs  2.5603 µs  2.5905 µs]
+classify_hit                           time:   [91.500 ns  91.507 ns  91.537 ns]
+classify_miss                          time:   [946.55 ns  948.45 ns  956.08 ns]
+analyse_file_fused_large_go            time:   [63.745 ms  63.792 ms  63.983 ms]
+extract_authorization_model_go         time:   [5.6586 ms  5.6688 ms  5.7096 ms]
+extract_authorization_model_shared_go  time:   [5.7796 ms  5.8364 ms  6.0638 ms]
+collect_top_level_units_go             time:   [3.9529 ms  3.9713 ms  4.0450 ms]
+const_propagate_large_go               time:   [172.46 µs  172.89 µs  174.63 µs]
+global_summaries_lookup_same_lang_go   time:   [12.217 µs  12.230 µs  12.233 µs]
+
+Corpus throughput (tests/fixtures/, real run)
+---------------------------------------------
+Command: target/release/nyx scan tests/fixtures --index off --format json
+Best of three (warm parser cache, --index off):
+    1.547 s wall   1143 findings emitted
+    1.548 s wall   1143 findings emitted
+    2.332 s wall   1143 findings emitted (first run, cold)
+
+Reference number for future recall work:
+    corpus_throughput_seconds_warm = 1.55
+    corpus_findings_total           = 1143
+
+Note: Phase 01's `tests/recall_gaps_baseline.json` recorded
+`findings_total: 1121` against master @ ea82ea98 (post phase 03/05/06/07).
+Phase 11's number (1143) is +22 findings against the same
+`tests/fixtures/` corpus, which reflects the recall lifts landed
+in phases 08, 09, 10 — not a regression. Future recall work
+must keep this number monotonic-up; if a phase needs to drop
+findings it must be a documented FP-removal.
+
+Cross-reference
+---------------
+Phase 01 baseline:  tests/recall_gaps_baseline.json
+Per-target sets:    tests/recall_targets/{cal_com,vercel_commerce,shadcn_examples,blitz_apps}.json
+Runner:             scripts/validate_recall.sh
+Schema test:        cargo test --release --test recall_gaps -- --ignored validate_real_world_targets

@@ -604,6 +604,58 @@ fn nextjs_entrypoints() {
     }
 }
 
+/// Phase 11 acceptance: every per-target baseline JSON in
+/// `tests/recall_targets/` exists, parses via `serde_json`, and every
+/// finding entry carries a `verdict: "TP" | "FP" | "needs_review"`
+/// label. Marked `#[ignore]` because `cargo test --release` should not
+/// require a populated baseline directory on a clean clone — the
+/// `validate_recall.sh` runbook is the authoritative way to refresh
+/// these. Run explicitly with `cargo test --release --test recall_gaps
+/// -- --ignored validate_real_world_targets`.
+#[test]
+#[ignore]
+fn validate_real_world_targets() {
+    let targets = ["cal_com", "vercel_commerce", "shadcn_examples", "blitz_apps"];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recall_targets");
+    for target in targets {
+        let path = root.join(format!("{target}.json"));
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read baseline {}: {e}", path.display()));
+        let value: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("parse baseline {}: {e}", path.display()));
+        let obj = value
+            .as_object()
+            .unwrap_or_else(|| panic!("baseline {} must be a JSON object", path.display()));
+        for key in ["target", "clone_url", "captured_against", "captured_on", "pinned_commit"] {
+            assert!(
+                obj.contains_key(key),
+                "baseline {} must record `{key}`",
+                path.display()
+            );
+        }
+        let findings = obj
+            .get("findings")
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("baseline {} must record `findings: []`", path.display()));
+        for (i, f) in findings.iter().enumerate() {
+            let verdict = f
+                .get("verdict")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "baseline {} finding {i} missing `verdict`",
+                        path.display()
+                    )
+                });
+            assert!(
+                matches!(verdict, "TP" | "FP" | "needs_review"),
+                "baseline {} finding {i} has invalid verdict {verdict:?} (must be TP|FP|needs_review)",
+                path.display()
+            );
+        }
+    }
+}
+
 #[test]
 fn baseline_loads() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recall_gaps_baseline.json");

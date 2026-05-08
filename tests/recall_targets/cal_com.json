@@ -1,0 +1,5312 @@
+{
+  "_doc": "Phase 11 recall-validation baseline for cal.com. Pinned commit + captured findings live in this file. Re-capture by running scripts/validate_recall.sh cal_com <clone_path> --capture against a fresh checkout. Baseline location is tests/recall_targets/ (relocated out of .pitboss/ per the Phase 01 precedent — pitboss implementer agents must not write under .pitboss/).",
+  "target": "cal_com",
+  "clone_url": "https://github.com/calcom/cal.com",
+  "exercises_recall_items": [
+    1,
+    5,
+    6,
+    7
+  ],
+  "captured_against": "real-scan @ d278d6c9bc535bf3f2c6ba0607654f78dd74d6ee",
+  "captured_on": "2026-05-08",
+  "pinned_commit": "d278d6c9bc535bf3f2c6ba0607654f78dd74d6ee",
+  "findings": [
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/embeds/embed-core/src/embed.ts",
+      "line": 1509,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/embeds/embed-core/src/embed.ts",
+      "line": 1509,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/trpc/server/routers/viewer/slots/util.ts",
+      "line": 208,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 317,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/bookings/lib/getBookingFields.ts",
+      "line": 52,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/tasker/tasks/crm/createCRMEvent.ts",
+      "line": 217,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/bookings/lib/handleCancelBooking.ts",
+      "line": 535,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/bookings/lib/getBookingFields.ts",
+      "line": 255,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/bookings/lib/getBookingFields.ts",
+      "line": 299,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-template-injection",
+      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
+      "line": 131,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/huddle01video/lib/VideoApiAdapter.ts",
+      "line": 130,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/flags/features.repository.ts",
+      "line": 148,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypesPublic.ts",
+      "line": 13,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/embeds/embed-core/playground/lib/playground.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/flags/repositories/PrismaUserFeatureRepository.ts",
+      "line": 168,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/flags/features.repository.ts",
+      "line": 185,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/flags/repositories/PrismaUserFeatureRepository.ts",
+      "line": 194,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/web/modules/onboarding/hooks/useSubmitOnboarding.ts",
+      "line": 105,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/giphy/api/search.ts",
+      "line": 36,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/flags/features.repository.ts",
+      "line": 238,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/flags/repositories/PrismaUserFeatureRepository.ts",
+      "line": 238,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/giphy/api/get.ts",
+      "line": 32,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/giphy/api/get.ts",
+      "line": 37,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/paypal/api/webhook.ts",
+      "line": 55,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/flags/repositories/PrismaUserFeatureRepository.ts",
+      "line": 267,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/flags/features.repository.ts",
+      "line": 274,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/zohocalendar/api/callback.ts",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/zohocalendar/api/callback.ts",
+      "line": 93,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypesPublic.ts",
+      "line": 33,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/bookings/lib/handleSeats/create/createNewSeat.ts",
+      "line": 47,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/web/pages/api/integrations/[...args].ts",
+      "line": 78,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store-cli/src/utils/execSync.ts",
+      "line": 10,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/_utils/oauth/refreshOAuthTokens.ts",
+      "line": 18,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/lib/domainManager/deploymentServices/vercel.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/web/components/apps/wipemycalother/confirmDialog.tsx",
+      "line": 33,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/lib/domainManager/deploymentServices/cloudflare.ts",
+      "line": 42,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store-cli/src/utils/execSync.ts",
+      "line": 9,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/lib/domainManager/deploymentServices/vercel.ts",
+      "line": 61,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/web/cron-tester.ts",
+      "line": 15,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/trpc/server/routers/viewer/slots/reserveSlot.handler.ts",
+      "line": 115,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 204,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/lib/server/defaultResponder.ts",
+      "line": 53,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/huddle01video/lib/VideoApiAdapter.ts",
+      "line": 63,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/huddle01video/lib/VideoApiAdapter.ts",
+      "line": 100,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-unauthed-access",
+      "path_suffix": "packages/app-store/giphy/api/get.ts",
+      "line": 32,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 220,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/auth/signup/utils/prefillAvatar.ts",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/url-shortener/providers/SinkClient.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/trpc/server/routers/viewer/admin/createSelfHostedLicenseKey.handler.ts",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "apps/api/v2/src/vercel-webhook.controller.ts",
+      "line": 75,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/embeds/embed-core/src/embed.ts",
+      "line": 1206,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/trpc/server/routers/viewer/slots/util.ts",
+      "line": 1369,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/web/cron-tester.ts",
+      "line": 9,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/app-store/pipedrive-crm/api/callback.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/app-store/zoomvideo/api/callback.ts",
+      "line": 19,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/features/auth/signup/utils/prefillAvatar.ts",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/lib/CloseCom.ts",
+      "line": 252,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/lib/domainManager/deploymentServices/cloudflare.ts",
+      "line": 186,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/lib/server/defaultResponder.ts",
+      "line": 52,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/app-store/huddle01video/lib/VideoApiAdapter.ts",
+      "line": 28,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/trpc/server/routers/viewer/admin/createCoupon.handler.ts",
+      "line": 65,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.code_exec.new_function",
+      "path_suffix": "apps/web/lib/pages/document/_applyThemeForDocument.test.ts",
+      "line": 15,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/(use-page-wrapper)/settings/(settings-layout)/developer/webhooks/[id]/page.tsx",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/(use-page-wrapper)/settings/(settings-layout)/developer/webhooks/[id]/page.tsx",
+      "line": 39,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/auth/reset-password/route.ts",
+      "line": 50,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/calcomSignupHandler.ts",
+      "line": 142,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/calcomSignupHandler.ts",
+      "line": 162,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/calcomSignupHandler.ts",
+      "line": 181,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/calcomSignupHandler.ts",
+      "line": 264,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/calcomSignupHandler.ts",
+      "line": 272,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/selfHostedHandler.ts",
+      "line": 74,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/selfHostedHandler.ts",
+      "line": 166,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/availability/calendar/route.ts",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/bookingReminder/route.ts",
+      "line": 83,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/bookingReminder/route.ts",
+      "line": 146,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/changeTimeZone/route.ts",
+      "line": 34,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/changeTimeZone/route.ts",
+      "line": 44,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/changeTimeZone/route.ts",
+      "line": 48,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/changeTimeZone/route.ts",
+      "line": 58,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/changeTimeZone/route.ts",
+      "line": 95,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/changeTimeZone/route.ts",
+      "line": 143,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/link/route.ts",
+      "line": 51,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/link/route.ts",
+      "line": 55,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/recorded-daily-video/route.ts",
+      "line": 106,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/verify-booking-token/route.ts",
+      "line": 129,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/video/guest-session/route.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/webhook/app-credential/route.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/webhook/app-credential/route.ts",
+      "line": 69,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/webhook/app-credential/route.ts",
+      "line": 80,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/webhook/app-credential/route.ts",
+      "line": 90,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/components/dialog/ReassignDialog.tsx",
+      "line": 147,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/apps/installation/[[...step]]/getServerSideProps.ts",
+      "line": 193,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/apps/installation/[[...step]]/getServerSideProps.ts",
+      "line": 227,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/apps/installation/[[...step]]/getServerSideProps.ts",
+      "line": 279,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/apps/installation/[[...step]]/getServerSideProps.ts",
+      "line": 289,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/booking.ts",
+      "line": 178,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/daily-webhook/getBooking.ts",
+      "line": 10,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/pages/auth/verify-email.ts",
+      "line": 47,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/pages/auth/verify-email.ts",
+      "line": 106,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/pages/auth/verify-email.ts",
+      "line": 118,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/pages/auth/verify-email.ts",
+      "line": 127,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/pages/auth/verify-email.ts",
+      "line": 146,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/reschedule/[uid]/getServerSideProps.ts",
+      "line": 166,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/video/[uid]/getServerSideProps.ts",
+      "line": 112,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/video/[uid]/getServerSideProps.ts",
+      "line": 125,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/video/[uid]/getServerSideProps.ts",
+      "line": 147,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/video/[uid]/getServerSideProps.ts",
+      "line": 171,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/video/meeting-ended/[uid]/getServerSideProps.ts",
+      "line": 11,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/lib/video/meeting-not-started/[uid]/getServerSideProps.ts",
+      "line": 9,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/bookings/components/BookEventForm/BookingFields.tsx",
+      "line": 142,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/bookings/hooks/useBookingCursor.ts",
+      "line": 15,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/bookings/views/bookings-single-view.getServerSideProps.tsx",
+      "line": 80,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/bookings/views/bookings-single-view.getServerSideProps.tsx",
+      "line": 192,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/bookings/views/bookings-single-view.tsx",
+      "line": 189,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/bookings/views/bookings-single-view.tsx",
+      "line": 190,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/bookings/views/bookings-single-view.tsx",
+      "line": 193,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/bookings/views/bookings-single-view.tsx",
+      "line": 196,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/data-table/hooks/useFilterValue.ts",
+      "line": 14,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/event-types/components/locations/HostLocations.tsx",
+      "line": 700,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/users/components/UserTable/UserListTable.tsx",
+      "line": 249,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/modules/users/components/UserTable/UserListTable.tsx",
+      "line": 603,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/pages/api/book/recurring-event.ts",
+      "line": 47,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/pages/api/integrations/[...args].ts",
+      "line": 31,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/booking-sheet-keyboard.e2e.ts",
+      "line": 52,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/filter-helpers.ts",
+      "line": 14,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/filter-helpers.ts",
+      "line": 18,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/filter-helpers.ts",
+      "line": 22,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/filter-helpers.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/filter-helpers.ts",
+      "line": 41,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/filter-helpers.ts",
+      "line": 47,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/filter-helpers.ts",
+      "line": 65,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/oauth/oauth-client-admin.e2e.ts",
+      "line": 29,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/oauth/oauth-client-admin.e2e.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/oauth/oauth-client-admin.e2e.ts",
+      "line": 49,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/oauth/oauth-client-helpers.ts",
+      "line": 78,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/oauth/oauth-client-owner-crud.e2e.ts",
+      "line": 747,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/server/lib/[user]/[type]/getServerSideProps.ts",
+      "line": 69,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_appRegistry.ts",
+      "line": 84,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/bulkUpdateEventsToDefaultLocation.ts",
+      "line": 32,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/bulkUpdateEventsToDefaultLocation.ts",
+      "line": 42,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/bulkUpdateEventsToDefaultLocation.ts",
+      "line": 64,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/bulkUpdateTeamEventsToDefaultLocation.ts",
+      "line": 16,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/bulkUpdateTeamEventsToDefaultLocation.ts",
+      "line": 43,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/getBulkEventTypes.ts",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/getBulkEventTypes.ts",
+      "line": 63,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/installation.ts",
+      "line": 43,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/invalidateCredential.ts",
+      "line": 5,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/invalidateCredential.ts",
+      "line": 12,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/oauth/createOAuthAppCredential.ts",
+      "line": 34,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/oauth/createOAuthAppCredential.ts",
+      "line": 44,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/oauth/updateProfilePhotoGoogle.ts",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/oauth/updateProfilePhotoGoogle.ts",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/oauth/updateTokenObject.ts",
+      "line": 21,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/oauth/updateTokenObject.ts",
+      "line": 65,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/oauth/updateTokenObject.ts",
+      "line": 76,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/oauth/updateTokenObject.ts",
+      "line": 86,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/paid-apps.ts",
+      "line": 25,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/payments/handlePaymentSuccess.ts",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/payments/handlePaymentSuccess.ts",
+      "line": 92,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/payments/handlePaymentSuccess.ts",
+      "line": 105,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/setDefaultConferencingApp.ts",
+      "line": 18,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/setDefaultConferencingApp.ts",
+      "line": 29,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/setDefaultConferencingApp.ts",
+      "line": 32,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/setDefaultConferencingApp.ts",
+      "line": 46,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/_utils/stripe.ts",
+      "line": 9,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/alby/api/webhook.ts",
+      "line": 50,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/alby/api/webhook.ts",
+      "line": 92,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/basecamp3/api/projectMutation.ts",
+      "line": 70,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/btcpayserver/api/webhook.ts",
+      "line": 62,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/btcpayserver/api/webhook.ts",
+      "line": 91,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/dailyvideo/lib/VideoApiAdapter.ts",
+      "line": 169,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/dailyvideo/lib/VideoApiAdapter.ts",
+      "line": 227,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/delegationCredential.ts",
+      "line": 113,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/delegationCredential.ts",
+      "line": 129,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/delegationCredential.ts",
+      "line": 158,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/delegationCredential.ts",
+      "line": 178,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/feishucalendar/api/callback.ts",
+      "line": 80,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/feishucalendar/api/callback.ts",
+      "line": 108,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/giphy/api/get.ts",
+      "line": 37,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/googlecalendar/api/callback.ts",
+      "line": 139,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/hitpay/api/callback.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/hitpay/api/callback.ts",
+      "line": 75,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/hitpay/api/webhook.ts",
+      "line": 57,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/hitpay/api/webhook.ts",
+      "line": 82,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/hitpay/api/webhook.ts",
+      "line": 114,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/huddle01video/utils/storage.ts",
+      "line": 10,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/huddle01video/utils/storage.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/huddle01video/utils/storage.ts",
+      "line": 26,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/huddle01video/utils/storage.ts",
+      "line": 38,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/intercom/api/callback.ts",
+      "line": 73,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/intercom/lib/configure/link.ts",
+      "line": 46,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/intercom/lib/configure/link.ts",
+      "line": 58,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/intercom/lib/configure/link.ts",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/intercom/lib/configure/link.ts",
+      "line": 75,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/larkcalendar/api/callback.ts",
+      "line": 80,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/larkcalendar/api/callback.ts",
+      "line": 108,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/make/api/subscriptions/me.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/office365calendar/api/callback.ts",
+      "line": 151,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/office365calendar/api/callback.ts",
+      "line": 172,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/paypal/api/capture.ts",
+      "line": 26,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/paypal/api/capture.ts",
+      "line": 59,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/paypal/api/capture.ts",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/paypal/api/webhook.ts",
+      "line": 27,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/paypal/api/webhook.ts",
+      "line": 39,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/paypal/api/webhook.ts",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/paypal/api/webhook.ts",
+      "line": 169,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/paypal/api/webhook.ts",
+      "line": 181,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/salesforce/api/user-sync.ts",
+      "line": 64,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/server.ts",
+      "line": 37,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/server.ts",
+      "line": 58,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
+      "line": 28,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
+      "line": 60,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
+      "line": 95,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/stripepayment/api/subscription.ts",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/stripepayment/lib/customer.ts",
+      "line": 9,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/stripepayment/lib/customer.ts",
+      "line": 88,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/stripepayment/lib/customer.ts",
+      "line": 101,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/vital/api/token.ts",
+      "line": 36,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/vital/api/token.ts",
+      "line": 45,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/vital/api/webhook.ts",
+      "line": 82,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/vital/api/webhook.ts",
+      "line": 113,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/vital/lib/reschedule.ts",
+      "line": 23,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/vital/lib/reschedule.ts",
+      "line": 70,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/vital/lib/reschedule.ts",
+      "line": 78,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/vital/lib/reschedule.ts",
+      "line": 150,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/webex/lib/VideoApiAdapter.ts",
+      "line": 279,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/webex/lib/VideoApiAdapter.ts",
+      "line": 286,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/wipemycalother/lib/reschedule.ts",
+      "line": 23,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/wipemycalother/lib/reschedule.ts",
+      "line": 72,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/wipemycalother/lib/reschedule.ts",
+      "line": 81,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/wipemycalother/lib/reschedule.ts",
+      "line": 153,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/zapier/api/subscriptions/me.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/zoho-bigin/api/add.ts",
+      "line": 19,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/zohocalendar/api/callback.ts",
+      "line": 122,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/zohocalendar/api/callback.ts",
+      "line": 143,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/embeds/embed-core/playwright/lib/testUtils.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/dub.ts",
+      "line": 12,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/getServerSession.ts",
+      "line": 71,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/getServerSession.ts",
+      "line": 128,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
+      "line": 71,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
+      "line": 81,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
+      "line": 97,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
+      "line": 109,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
+      "line": 122,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
+      "line": 153,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 484,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 493,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 582,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 602,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 630,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 651,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 666,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 707,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 871,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 895,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 914,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 959,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 1006,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 1042,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 1063,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 1081,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
+      "line": 1112,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/onboardingUtils.ts",
+      "line": 28,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/userFromSessionUtils.ts",
+      "line": 110,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/lib/verifyEmail.ts",
+      "line": 65,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/signup/utils/organization.ts",
+      "line": 15,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/signup/utils/organization.ts",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/auth/signup/utils/validateUsername.ts",
+      "line": 88,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/EventManager.ts",
+      "line": 92,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/EventManager.ts",
+      "line": 93,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/get-booking.ts",
+      "line": 168,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/get-booking.ts",
+      "line": 270,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/getAllCredentialsForUsersOnEvent/getAllCredentials.ts",
+      "line": 29,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/getAllCredentialsForUsersOnEvent/getAllCredentials.ts",
+      "line": 41,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/getAllCredentialsForUsersOnEvent/getAllCredentials.ts",
+      "line": 65,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/getUserBooking.ts",
+      "line": 4,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleConfirmation.ts",
+      "line": 180,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleConfirmation.ts",
+      "line": 245,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleInternalNote.ts",
+      "line": 23,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleInternalNote.ts",
+      "line": 38,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleInternalNote.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleInternalNote.ts",
+      "line": 63,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/findBookingQuery.ts",
+      "line": 6,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/getEventTypesFromDB.ts",
+      "line": 204,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/getSeatedBooking.ts",
+      "line": 7,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/loadAndValidateUsers.ts",
+      "line": 112,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/loadAndValidateUsers.ts",
+      "line": 138,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/loadAndValidateUsers.ts",
+      "line": 165,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/loadAndValidateUsers.ts",
+      "line": 220,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/logger.ts",
+      "line": 8,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/originalRescheduledBookingUtils.ts",
+      "line": 10,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handlePayment.ts",
+      "line": 179,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleSeats/cancel/cancelAttendeeSeat.ts",
+      "line": 55,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleSeats/cancel/cancelAttendeeSeat.ts",
+      "line": 62,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleSeats/cancel/cancelAttendeeSeat.ts",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleSeats/cancel/cancelAttendeeSeat.ts",
+      "line": 74,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleSeats/cancel/cancelAttendeeSeat.ts",
+      "line": 123,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleSeats/reschedule/owner/moveSeatedBookingToNewTimeSlot.ts",
+      "line": 26,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/payment/deletePayment.ts",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/payment/getBooking.ts",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/payment/getBooking.ts",
+      "line": 160,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/payment/handleNoShowFee.ts",
+      "line": 70,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/payment/processNoShowFeeOnCancellation.ts",
+      "line": 32,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/payment/processPaymentRefund.ts",
+      "line": 64,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/busyTimes/lib/getBusyTimesFromLimits.ts",
+      "line": 204,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/busyTimes/lib/getBusyTimesFromLimits.ts",
+      "line": 270,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/busyTimes/services/getBusyTimes.integration-test.ts",
+      "line": 33,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/busyTimes/services/getBusyTimes.integration-test.ts",
+      "line": 55,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/calendars/lib/CalendarManager.ts",
+      "line": 222,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/calendars/lib/CalendarManager.ts",
+      "line": 391,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/calendars/lib/CalendarManager.ts",
+      "line": 487,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/calendars/lib/CalendarManager.ts",
+      "line": 569,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/calendars/lib/getConnectedDestinationCalendars.ts",
+      "line": 231,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/calendars/lib/getConnectedDestinationCalendars.ts",
+      "line": 291,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/conferencing/lib/videoClient.ts",
+      "line": 159,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/conferencing/lib/videoClient.ts",
+      "line": 266,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/conferencing/lib/videoClient.ts",
+      "line": 316,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/conferencing/lib/videoClient.ts",
+      "line": 379,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 53,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 74,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 128,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 143,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 150,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 168,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 197,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 215,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 290,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 304,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 311,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 318,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 395,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 444,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 464,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/credentials/handleDeleteCredential.ts",
+      "line": 482,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/bookingFieldsManager.ts",
+      "line": 10,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/bookingFieldsManager.ts",
+      "line": 92,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/bookingFieldsManager.ts",
+      "line": 113,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/bookingFieldsManager.ts",
+      "line": 132,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 155,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 166,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 191,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 247,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 251,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 282,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 288,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getEventTypeById.ts",
+      "line": 296,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getPublicEvent.ts",
+      "line": 204,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getPublicEvent.ts",
+      "line": 496,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/eventtypes/lib/getPublicEvent.ts",
+      "line": 694,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/handleMarkNoShow.test.ts",
+      "line": 259,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/membership/repositories/MembershipRepository.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/membership/repositories/MembershipRepository.ts",
+      "line": 65,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/membership/repositories/MembershipRepository.ts",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/noShow/handleSendingAttendeeNoShowDataToApps.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/noShow/handleSendingAttendeeNoShowDataToApps.ts",
+      "line": 69,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/profile/lib/createAProfileForAnExistingUser.ts",
+      "line": 23,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/profile/lib/createAProfileForAnExistingUser.ts",
+      "line": 28,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/profile/lib/createAProfileForAnExistingUser.ts",
+      "line": 41,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/profile/lib/createAProfileForAnExistingUser.ts",
+      "line": 50,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/profile/lib/hideBranding.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/profile/lib/hideBranding.ts",
+      "line": 139,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/analytics/sendAnalyticsEvent.ts",
+      "line": 18,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/crm/createCRMEvent.ts",
+      "line": 51,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/crm/createCRMEvent.ts",
+      "line": 106,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/crm/createCRMEvent.ts",
+      "line": 158,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/crm/createCRMEvent.ts",
+      "line": 189,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/crm/lib/buildCalendarEvent.ts",
+      "line": 10,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/sendAwaitingPaymentEmail.ts",
+      "line": 31,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/sendAwaitingPaymentEmail.ts",
+      "line": 49,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/triggerNoShow/common.ts",
+      "line": 108,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/triggerNoShow/getBooking.ts",
+      "line": 9,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/tasker/tasks/triggerNoShow/triggerGuestNoShow.ts",
+      "line": 51,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/scheduleTrigger.ts",
+      "line": 51,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/scheduleTrigger.ts",
+      "line": 157,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/scheduleTrigger.ts",
+      "line": 299,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/scheduleTrigger.ts",
+      "line": 348,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/scheduleTrigger.ts",
+      "line": 356,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/scheduleTrigger.ts",
+      "line": 614,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/scheduleTrigger.ts",
+      "line": 626,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/scheduleTrigger.ts",
+      "line": 662,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/webhooks/lib/subscriberUrlReserved.ts",
+      "line": 27,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/lib/CloseComeUtils.ts",
+      "line": 37,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/lib/connectedCalendar.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/lib/formbricks.ts",
+      "line": 26,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/lib/formbricks.ts",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/lib/getOrgIdFromMemberOrTeamId.ts",
+      "line": 55,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/lib/getOrgIdFromMemberOrTeamId.ts",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/lib/getTeamIdFromEventType.ts",
+      "line": 18,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/lib/server/maybeGetBookingUidFromSeat.ts",
+      "line": 5,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/platform/atoms/booker/BookerPlatformWrapper.tsx",
+      "line": 479,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/platform/atoms/event-types/payments/StripePaymentForm.tsx",
+      "line": 60,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/platform/atoms/hooks/useCalendarsBusyTimes.ts",
+      "line": 26,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/platform/atoms/hooks/useOAuthFlow.ts",
+      "line": 75,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
+      "line": 433,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
+      "line": 447,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
+      "line": 457,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
+      "line": 464,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
+      "line": 473,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
+      "line": 2371,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
+      "line": 2413,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/loggedInViewer/addNotificationsSubscription.handler.ts",
+      "line": 51,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/loggedInViewer/connectAndJoin.handler.ts",
+      "line": 103,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/loggedInViewer/eventTypeOrder.handler.ts",
+      "line": 18,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/loggedInViewer/removeNotificationsSubscription.handler.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/loggedInViewer/stripeCustomer.handler.ts",
+      "line": 17,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/loggedInViewer/unlinkConnectedAccount.handler.ts",
+      "line": 36,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/publicViewer/event.handler.ts",
+      "line": 11,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/admin/watchlist/delete.handler.ts",
+      "line": 22,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/apps/appById.handler.ts",
+      "line": 22,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/apps/appCredentialsByType.handler.ts",
+      "line": 23,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/apps/toggle.handler.ts",
+      "line": 125,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/apps/updateAppCredentials.handler.ts",
+      "line": 43,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/apps/updateAppCredentials.handler.ts",
+      "line": 59,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/calendarOverlay.handler.ts",
+      "line": 33,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/calendarOverlay.handler.ts",
+      "line": 73,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/bulkUpdateDefaultAvailability.handler.ts",
+      "line": 29,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/create.handler.ts",
+      "line": 22,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/create.handler.ts",
+      "line": 66,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
+      "line": 50,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
+      "line": 52,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
+      "line": 61,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
+      "line": 64,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/duplicate.handler.ts",
+      "line": 22,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/get.handler.ts",
+      "line": 16,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/getAllSchedulesByUserId.handler.ts",
+      "line": 33,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/getAllSchedulesByUserId.handler.ts",
+      "line": 52,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/getScheduleByUserId.handler.ts",
+      "line": 18,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/team/listTeamAvailability.handler.ts",
+      "line": 36,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/addGuests.handler.ts",
+      "line": 97,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/addGuests.handler.ts",
+      "line": 134,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/confirm.handler.ts",
+      "line": 62,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/confirm.handler.ts",
+      "line": 187,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/confirm.handler.ts",
+      "line": 220,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/confirm.handler.ts",
+      "line": 307,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/confirm.handler.ts",
+      "line": 396,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/confirm.handler.ts",
+      "line": 422,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/editLocation.handler.ts",
+      "line": 111,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/editLocation.handler.ts",
+      "line": 152,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/find.handler.ts",
+      "line": 16,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/get.handler.ts",
+      "line": 120,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/get.handler.ts",
+      "line": 906,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/get.handler.ts",
+      "line": 934,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/get.handler.ts",
+      "line": 945,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/get.handler.ts",
+      "line": 985,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/getBookingAttendees.handler.ts",
+      "line": 11,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/getBookingDetails.handler.ts",
+      "line": 17,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/getBookingHistory.handler.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/reportBooking.handler.ts",
+      "line": 59,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/reportBooking.handler.ts",
+      "line": 106,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/requestReschedule.handler.ts",
+      "line": 80,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/requestReschedule.handler.ts",
+      "line": 188,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/requestReschedule.handler.ts",
+      "line": 220,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/updateWrongAssignmentReportStatus.handler.ts",
+      "line": 25,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/updateWrongAssignmentReportStatus.handler.ts",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/calendars/setDestinationCalendar.handler.ts",
+      "line": 84,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/calendars/setDestinationCalendar.handler.ts",
+      "line": 93,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/delete.handler.ts",
+      "line": 16,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getActiveOnOptions.handler.ts",
+      "line": 83,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getActiveOnOptions.handler.ts",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getActiveOnOptions.handler.ts",
+      "line": 214,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getActiveOnOptions.handler.ts",
+      "line": 223,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getChildrenForAssignment.handler.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getEventTypesFromGroup.handler.ts",
+      "line": 59,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getEventTypesFromGroup.handler.ts",
+      "line": 81,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getEventTypesFromGroup.handler.ts",
+      "line": 156,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getEventTypesFromGroup.handler.ts",
+      "line": 172,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getHashedLink.handler.ts",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getHashedLinks.handler.ts",
+      "line": 25,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getHostsForAssignment.handler.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getHostsForAvailability.handler.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getHostsWithLocationOptions.handler.ts",
+      "line": 106,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getUserEventGroups.handler.ts",
+      "line": 39,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/create.handler.ts",
+      "line": 132,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/create.handler.ts",
+      "line": 153,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/duplicate.handler.ts",
+      "line": 29,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/duplicate.handler.ts",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/duplicate.handler.ts",
+      "line": 148,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/duplicate.handler.ts",
+      "line": 197,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 323,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 361,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 404,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 424,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 435,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 443,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 614,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 631,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 653,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 667,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 682,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/update.handler.ts",
+      "line": 761,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/massApplyHostLocation.handler.ts",
+      "line": 46,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/massApplyHostLocation.handler.ts",
+      "line": 53,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/filterSegments/delete.handler.ts",
+      "line": 15,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/checkForInvalidAppCredentials.ts",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/get.handler.ts",
+      "line": 45,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/get.handler.ts",
+      "line": 58,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/get.handler.ts",
+      "line": 73,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/get.handler.ts",
+      "line": 111,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/platformMe.handler.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/platformMe.handler.ts",
+      "line": 21,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
+      "line": 92,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
+      "line": 201,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
+      "line": 204,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
+      "line": 300,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
+      "line": 313,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
+      "line": 346,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
+      "line": 358,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
+      "line": 377,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/deleteClient.handler.ts",
+      "line": 23,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/deleteClient.handler.ts",
+      "line": 34,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/getClientForAuthorization.handler.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/listUserClients.handler.ts",
+      "line": 18,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/updateClient.handler.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/updateClient.handler.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/updateClient.handler.ts",
+      "line": 66,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/updateClient.handler.ts",
+      "line": 75,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/updateClient.handler.ts",
+      "line": 78,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOffice.utils.ts",
+      "line": 13,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOffice.utils.ts",
+      "line": 23,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeCreateOrUpdate.handler.ts",
+      "line": 55,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeCreateOrUpdate.handler.ts",
+      "line": 75,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeCreateOrUpdate.handler.ts",
+      "line": 110,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeCreateOrUpdate.handler.ts",
+      "line": 142,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeCreateOrUpdate.handler.ts",
+      "line": 155,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeCreateOrUpdate.handler.ts",
+      "line": 216,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeCreateOrUpdate.handler.ts",
+      "line": 242,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeCreateOrUpdate.handler.ts",
+      "line": 325,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeEntriesList.handler.ts",
+      "line": 50,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeEntryDelete.handler.ts",
+      "line": 33,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/ooo/outOfOfficeEntryDelete.handler.ts",
+      "line": 43,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/payments/chargeCard.handler.ts",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/slots/isAvailable.handler.ts",
+      "line": 36,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/slots/isAvailable.handler.ts",
+      "line": 45,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/slots/reserveSlot.handler.ts",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/webhook/create.handler.ts",
+      "line": 47,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/webhook/delete.handler.ts",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/webhook/get.handler.ts",
+      "line": 14,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/trpc/server/routers/viewer/webhook/list.handler.ts",
+      "line": 16,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/ui/components/file-uploader/FileUploader.tsx",
+      "line": 178,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.token_override_without_validation",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/calcomSignupHandler.ts",
+      "line": 310,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.token_override_without_validation",
+      "path_suffix": "apps/web/app/api/auth/signup/handlers/selfHostedHandler.ts",
+      "line": 177,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "packages/app-store/stripepayment/api/subscription.ts",
+      "line": 87,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "packages/app-store/hitpay/api/callback.ts",
+      "line": 84,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "packages/app-store/hitpay/api/callback.ts",
+      "line": 98,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "packages/app-store/stripepayment/lib/services/user/UserBillingPortalService.ts",
+      "line": 30,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
+      "line": 90,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
+      "line": 141,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "apps/api/v2/src/modules/oauth-clients/controllers/oauth-flow/oauth-flow.controller.ts",
+      "line": 80,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
+      "line": 90,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
+      "line": 141,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/oauth2-user.ts",
+      "line": 38,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "apps/api/v2/src/middleware/app.redirects.middleware.ts",
+      "line": 8,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/web/test/lib/next-config.test.ts",
+      "line": 29,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/refresh.ts",
+      "line": 27,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/platform/examples/base/src/pages/_app.tsx",
+      "line": 68,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/oauth2-user.ts",
+      "line": 79,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 114,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 115,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 116,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 117,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 119,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 126,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 133,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 140,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/web/modules/apps/installation/[[...step]]/step-view.tsx",
+      "line": 166,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/features/calendar-subscription/adapters/Office365CalendarSubscription.adapter.ts",
+      "line": 139,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/dailyvideo/lib/scripts/deleteRecordings.ts",
+      "line": 83,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 109,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 151,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 176,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 199,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 222,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 247,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 22,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 272,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/managed-user.ts",
+      "line": 301,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/app-store/dailyvideo/lib/scripts/deleteRecordings.ts",
+      "line": 83,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/oauth2-user.ts",
+      "line": 79,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/oauth2-user.ts",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/refresh.ts",
+      "line": 57,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/app-store-cli/src/core.ts",
+      "line": 78,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/app-store-cli/src/core.ts",
+      "line": 79,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/app-store-cli/src/core.ts",
+      "line": 92,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/app-store-cli/src/core.ts",
+      "line": 151,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/features/bookings/repositories/BookingRepository.ts",
+      "line": 1434,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/features/bookings/repositories/BookingRepository.ts",
+      "line": 1435,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/features/bookings/repositories/BookingRepository.ts",
+      "line": 1445,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/features/flags/features.repository.ts",
+      "line": 441,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/features/flags/repositories/PrismaTeamFeatureRepository.ts",
+      "line": 214,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/features/users/repositories/UserRepository.ts",
+      "line": 295,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/features/webhooks/lib/repository/WebhookRepository.ts",
+      "line": 134,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/lib/apps/getInstallCountPerApp.ts",
+      "line": 7,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/lib/getBrandColours.tsx",
+      "line": 47,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/trpc/server/routers/viewer/availability/team/listTeamAvailability.handler.ts",
+      "line": 175,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/trpc/server/routers/viewer/bookings/get.handler.ts",
+      "line": 882,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/listWithTeam.handler.ts",
+      "line": 26,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/ui/components/editor/plugins/AutoLinkPlugin.tsx",
+      "line": 11,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/ui/components/editor/plugins/AutoLinkPlugin.tsx",
+      "line": 22,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.config.reject_unauthorized",
+      "path_suffix": "packages/app-store/exchangecalendar/lib/CalendarService.ts",
+      "line": 204,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.xss.location_assign",
+      "path_suffix": "packages/embeds/embed-core/playground/lib/playground.ts",
+      "line": 24,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.xss.location_assign",
+      "path_suffix": "packages/lib/navigateInTopWindow.ts",
+      "line": 4,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/selected-calendars/__tests__/cron.test.ts",
+      "line": 54,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/app/api/cron/selected-calendars/__tests__/cron.test.ts",
+      "line": 74,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/fixtures/users.ts",
+      "line": 91,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/web/playwright/fixtures/users.ts",
+      "line": 224,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/googlecalendar/lib/__tests__/utils.ts",
+      "line": 76,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
+      "line": 37,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
+      "line": 78,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
+      "line": 99,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
+      "line": 117,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
+      "line": 124,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 54,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 80,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 128,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 134,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 151,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 157,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 164,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 171,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 174,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
+      "line": 180,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/test/post-booking-handling.test.ts",
+      "line": 61,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/features/bookings/lib/handleNewBooking/test/spam-booking.integration-test.ts",
+      "line": 31,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/refresh.ts",
+      "line": 44,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/platform/examples/base/src/pages/api/refresh.ts",
+      "line": 79,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 110,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 175,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 261,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 275,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 317,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 332,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 347,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 382,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 400,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 418,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed-utils.ts",
+      "line": 431,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed.ts",
+      "line": 77,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "scripts/seed.ts",
+      "line": 92,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.fallback_secret",
+      "path_suffix": "packages/lib/videoTokens.ts",
+      "line": 5,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.fallback_secret",
+      "path_suffix": "packages/lib/videoTokens.ts",
+      "line": 20,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unreachable-source",
+      "path_suffix": "apps/web/app/api/defaultResponderForAppDir.ts",
+      "line": 76,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/api/v2/scripts/docker-start.ts",
+      "line": 5,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/web/test/lib/next-config.test.ts",
+      "line": 30,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.crypto.math_random",
+      "path_suffix": "packages/testing/performance/utils/config.js",
+      "line": 44,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/web/playwright/fixtures/bookings.ts",
+      "line": 45,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Math.random in playwright test fixtures — not a security context"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/web/playwright/fixtures/orgs.ts",
+      "line": 7,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Math.random in playwright test fixtures — not a security context"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/web/playwright/lib/next-server.ts",
+      "line": 21,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Math.random in playwright test fixtures — not a security context"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/web/playwright/signup.e2e.ts",
+      "line": 117,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Math.random in playwright test fixtures — not a security context"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "packages/app-store/office365calendar/lib/CalendarService.ts",
+      "line": 620,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "packages/embeds/embed-core/playground/lib/playground-init.ts",
+      "line": 15,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "packages/features/bookingReference/repositories/BookingReferenceRepository.integration-test.ts",
+      "line": 7,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "packages/features/bookings/lib/service/RegularBookingService.ts",
+      "line": 1499,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "packages/features/busyTimes/services/getBusyTimes.integration-test.ts",
+      "line": 20,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "packages/features/di/containers/FeatureRepository.integration-test.ts",
+      "line": 7,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.fallback_secret",
+      "path_suffix": "scripts/seed.ts",
+      "line": 1034,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-08-13/controllers/e2e/update-booking-location.e2e-spec.ts",
+      "line": 30,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/web/playwright/login.2fa.e2e.ts",
+      "line": 42,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/web/playwright/login.e2e.ts",
+      "line": 78,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/web/playwright/payment-apps.e2e.ts",
+      "line": 151,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "packages/app-store/basecamp3/lib/CalendarService.ts",
+      "line": 133,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
+}
