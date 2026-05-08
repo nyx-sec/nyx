@@ -154,10 +154,28 @@ pub static RULES: &[LabelRule] = &[
         matchers: &[
             "Net::HTTP.get",
             "Net::HTTP.post",
+            // Phase 14 — `Net::HTTP.start(host, port, ...)` is a session
+            // factory whose host argument is the SSRF vector when
+            // tainted.  `Net::HTTP.get_response(uri)` is a stdlib
+            // convenience wrapper around `start` + `request_get`.
+            "Net::HTTP.start",
+            "Net::HTTP.get_response",
             "URI.open",
             "OpenURI.open_uri",
             "HTTParty.get",
             "HTTParty.post",
+            // Phase 14 — Faraday::Connection verb methods on a typed
+            // receiver.  `Faraday.new(url: base)` produces an
+            // `HttpClient`-typed value (see `constructor_type`); the
+            // `client.get(path)` chain resolves through the
+            // type-qualified `HttpClient.get` rule below.  Bare
+            // `Faraday.get` / `.post` / etc. are the module-level
+            // shorthand the existing `Faraday.post` matcher already
+            // covers for DATA_EXFIL; SSRF needs the read-shaped
+            // verbs registered explicitly.
+            "Faraday.get",
+            "Faraday.head",
+            "Faraday.delete",
         ],
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,

@@ -145,6 +145,32 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
     },
+    // Phase 14 — `\GuzzleHttp\Client::request($method, $url, ...)` and the
+    // verb-shorthand methods `$client->get($url)` / `->head($url)` /
+    // `->options($url)`.  The read-shaped verbs carry the URL at arg 0
+    // and have no body argument, so a flat SSRF sink is FP-safe.  The
+    // body-bearing verbs (`post` / `put` / `patch`) live on the
+    // DATA_EXFIL list above; their URL-position SSRF is covered via
+    // `Client.request` (arg 1 is URL) below as a flat sink — Guzzle
+    // does not expose argument-role-aware metadata that would let the
+    // gate distinguish URL from body, but the source-sensitivity gate
+    // already silences plain `$_GET` / `$_POST` flows so the
+    // remaining FP surface is small.
+    LabelRule {
+        matchers: &[
+            "Client.get",
+            "Client.head",
+            "Client.options",
+            "Client.request",
+            "HttpClient.get",
+            "HttpClient.head",
+            "HttpClient.request",
+            "Http.get",
+            "Http.head",
+        ],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+    },
     // ── Cross-boundary data exfiltration ──────────────────────────────────
     //
     // Body-bearing outbound HTTP verb methods on the major PHP HTTP clients.
@@ -337,6 +363,26 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
         dangerous_prefixes: &[],
         label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // Phase 14 — `curl_setopt($ch, CURLOPT_URL, $url)` is the canonical
+    // pre-`curl_exec` URL bind. Tainted `$url` reaching this option is
+    // SSRF; the `curl_exec($ch)` flat sink above also fires on the
+    // tainted handle but only when the handle's taint propagates
+    // through opaque resource state, which the engine cannot follow
+    // across `curl_setopt` calls.  Activating the SSRF cap directly at
+    // the option-bind site catches the flow at the construction step
+    // independent of the handle-flow analysis.
+    SinkGate {
+        callee_matcher: "curl_setopt",
+        arg_index: 1,
+        dangerous_values: &["CURLOPT_URL"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: true,
         payload_args: &[2],
         keyword_name: None,

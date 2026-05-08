@@ -608,6 +608,98 @@ fn ssrf_url_builders() {
     );
 }
 
+/// Phase 14 recall-gap: cross-language SSRF + URL-builder coverage.
+///
+/// Mirrors `ssrf_url_builders` (JS/TS) for Python, Java, Rust, Go, Ruby,
+/// PHP. Each language carries:
+///
+///   * positive — a tainted source flowing into the language's
+///     canonical HTTP client sink, asserting `Cap::SSRF` fires.
+///   * origin-locked negative — a `(literal_base, tainted_path)` URL
+///     builder shape; the abstract-string prefix lock honoured by
+///     `is_string_safe_for_ssrf` suppresses the SSRF sink.
+///   * search-params positive — a tainted URL passed positionally to
+///     a Phase 14-added sink (`OkHttpClient.newCall`,
+///     `\GuzzleHttp\Client::request`, etc.) so the new label rules
+///     see real exercise alongside the existing flat sinks.
+#[test]
+fn ssrf_cross_language() {
+    let findings = scan_fixture("ssrf");
+
+    let positives = [
+        // Python — tainted full URL flowing into requests.get / request.
+        "ssrf_py_positive.py",
+        "ssrf_py_search_params.py",
+        // Java — HttpClient.send + OkHttpClient.newCall (Phase 14 sink).
+        "SsrfJavaPositive.java",
+        "SsrfJavaSearchParams.java",
+        // Rust — reqwest::get + Client::new.get (chained verb-on-instance).
+        "ssrf_rs_positive.rs",
+        "ssrf_rs_search_params.rs",
+        // Go — http.Get + http.NewRequest.
+        "ssrf_go_positive.go",
+        "ssrf_go_search_params.go",
+        // Ruby — Net::HTTP.get + Faraday.get (Phase 14 sink).
+        "ssrf_rb_positive.rb",
+        "ssrf_rb_search_params.rb",
+        // PHP — curl_exec via curl_setopt CURLOPT_URL gate (Phase 14)
+        // + Guzzle Client::request (Phase 14 sink).
+        "ssrf_php_positive.php",
+        "ssrf_php_search_params.php",
+    ];
+    for file in positives {
+        let hit = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && f.evidence
+                    .as_ref()
+                    .map(|e| (e.sink_caps & Cap::SSRF.bits()) != 0)
+                    .unwrap_or(false)
+                && (f.id.starts_with("taint-unsanitised-flow")
+                    || f.id.starts_with("cfg-unguarded-sink"))
+        });
+        assert!(
+            hit,
+            "SSRF expected to fire on {file}; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    let negatives = [
+        "ssrf_py_origin_locked.py",
+        "SsrfJavaOriginLocked.java",
+        "ssrf_rs_origin_locked.rs",
+        "ssrf_go_origin_locked.go",
+        "ssrf_rb_origin_locked.rb",
+        "ssrf_php_origin_locked.php",
+    ];
+    for file in negatives {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && f.evidence
+                    .as_ref()
+                    .map(|e| (e.sink_caps & Cap::SSRF.bits()) != 0)
+                    .unwrap_or(false)
+                && (f.id.starts_with("taint-unsanitised-flow")
+                    || f.id.starts_with("cfg-unguarded-sink"))
+        });
+        assert!(
+            !leak,
+            "origin-locked SSRF must stay silent on {file}; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+}
+
 /// Phase 09 recall-gap: cross-package IPA via FuncKey namespace
 /// resolution.  `unsafeHandler` calls `escapeHtmlNoop` (a passthrough
 /// imported from `@scope/util/sanitize`); the engine sees the imported

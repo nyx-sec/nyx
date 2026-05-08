@@ -4055,40 +4055,33 @@ pub(super) fn transfer_inst(
             let mut return_bits = Cap::empty();
             let mut return_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
 
-            // Phase 08 — `new URL(path[, base])` propagates the path
-            // argument's taint into the constructed URL value.  The CFG
-            // doesn't carry a label rule for this constructor and there is
-            // no summary, so without an explicit propagation pass the
-            // result SSA value would be untainted and downstream
-            // `fetch(u)` would silently miss the SSRF.  Origin-locked
-            // suppression (when the second arg is a string literal) lives
-            // in the abstract domain (`StringFact::from_url_with_base`)
-            // and runs in `is_string_safe_for_ssrf`, so propagating the
-            // taint here is safe: the prefix-lock fact still suppresses
-            // the sink for the two-arg form.
+            // Phase 08 / Phase 14 — URL-builder path-arg taint propagation.
+            // Per-language `(base, path)` URL builders that don't carry a
+            // label rule and have no summary: without an explicit
+            // propagation pass the constructed URL value would arrive
+            // untainted at the downstream HTTP sink and the SSRF would be
+            // missed.  The arg-position table lives in
+            // [`crate::ssa::type_facts::url_builder_arg_indices`] —
+            // generalised in Phase 14 from the JS/TS-only Phase-08
+            // constructor recognition to cover Python `urljoin`, Go
+            // `url.JoinPath`, Java `new URL(URL, spec)`, Ruby `URI.join`.
             //
-            // The CFG-level text-rewrite for source-bearing assignments
-            // can replace the visible `callee` ("URL") with the source
-            // path (`req.body.path`); the original constructor identifier
-            // is preserved on `outer_callee`, so we consult both.
-            if matches!(transfer.lang, Lang::JavaScript | Lang::TypeScript)
-                && info.call.is_constructor
-                && {
-                    let direct = crate::ssa::type_facts::constructor_type(transfer.lang, callee)
-                        == Some(crate::ssa::type_facts::TypeKind::Url);
-                    let via_outer = info
-                        .call
-                        .outer_callee
-                        .as_deref()
-                        .is_some_and(|oc| {
-                            crate::ssa::type_facts::constructor_type(transfer.lang, oc)
-                                == Some(crate::ssa::type_facts::TypeKind::Url)
-                        });
-                    direct || via_outer
-                }
+            // Origin-locked suppression (when the base arg is a literal)
+            // lives in the abstract domain
+            // (`StringFact::from_url_with_base`) and runs in
+            // `is_string_safe_for_ssrf`, so propagating the taint here is
+            // safe: the prefix-lock fact still suppresses the sink for
+            // the two-arg form.
+            if let Some((path_idx, _base_idx)) =
+                crate::ssa::type_facts::url_builder_arg_indices(
+                    transfer.lang,
+                    callee,
+                    info.call.outer_callee.as_deref(),
+                    info.call.is_constructor,
+                )
             {
-                if let Some(first_group) = args.first() {
-                    for &v in first_group {
+                if let Some(path_group) = args.get(path_idx) {
+                    for &v in path_group {
                         if let Some(t) = state.get(v) {
                             return_bits |= t.caps;
                             for o in &t.origins {
@@ -6116,46 +6109,53 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
             }
         }
 
-        // Phase 08 — `new URL(path, base)` origin lock.  The CFG-level
-        // text-rewrite for source-bearing assignments
-        // (`const u = new URL(req.body.path, …)` → `text` → `req.body.path`)
-        // strips the visible callee from the URL constructor, so we anchor
-        // on `is_constructor` plus a `TypeKind::Url` mapping for either the
-        // (rewritten) `callee` or `outer_callee` (which carries the
-        // original constructor identifier when the rewrite fires).
+        // Phase 08 / Phase 14 — `(base, path)` URL builder origin-lock.
+        // When the base arg is a literal (read off
+        // `info.call.arg_string_literals[base_idx]`), seed the result's
+        // [`StringFact`] with `from_url_with_base(base, path_string)` so
+        // the locked-host prefix survives even when the path component
+        // carries arbitrary taint.  `is_string_safe_for_ssrf` honours the
+        // prefix and suppresses the SSRF sink at the downstream HTTP
+        // call.  The arg-position table lives in
+        // [`crate::ssa::type_facts::url_builder_arg_indices`] — covers
+        // JS/TS `new URL(path, base)`, Python `urljoin(base, path)`,
+        // Go `url.JoinPath(base, ...)`, Java `new URL(URL, spec)`,
+        // Ruby `URI.join(base, path)`.
         SsaOp::Call { callee, args, .. }
-            if matches!(lang, Some(Lang::JavaScript) | Some(Lang::TypeScript))
-                && info.call.is_constructor
-                && {
-                    let lang_u = lang.expect("matches guard ensures Some");
-                    let direct = crate::ssa::type_facts::constructor_type(lang_u, callee)
-                        == Some(crate::ssa::type_facts::TypeKind::Url);
-                    let via_outer = info
-                        .call
-                        .outer_callee
-                        .as_deref()
-                        .is_some_and(|oc| {
-                            crate::ssa::type_facts::constructor_type(lang_u, oc)
-                                == Some(crate::ssa::type_facts::TypeKind::Url)
-                        });
-                    direct || via_outer
-                }
-                && info
-                    .call
-                    .arg_string_literals
-                    .get(1)
-                    .and_then(|s| s.as_deref())
-                    .is_some() =>
+            if lang
+                .and_then(|l| {
+                    crate::ssa::type_facts::url_builder_arg_indices(
+                        l,
+                        callee,
+                        info.call.outer_callee.as_deref(),
+                        info.call.is_constructor,
+                    )
+                })
+                .is_some_and(|(_p, base_idx)| {
+                    info.call
+                        .arg_string_literals
+                        .get(base_idx)
+                        .and_then(|s| s.as_deref())
+                        .is_some()
+                }) =>
         {
+            let lang_u = lang.expect("guard ensures lang.is_some()");
+            let (path_idx, base_idx) = crate::ssa::type_facts::url_builder_arg_indices(
+                lang_u,
+                callee,
+                info.call.outer_callee.as_deref(),
+                info.call.is_constructor,
+            )
+            .expect("guard ensures Some");
             let base = info
                 .call
                 .arg_string_literals
-                .get(1)
+                .get(base_idx)
                 .and_then(|s| s.as_deref())
                 .map(|s| s.to_string())
                 .expect("guard ensures Some");
             let path_string = args
-                .first()
+                .get(path_idx)
                 .and_then(|g| g.first().copied())
                 .map(|pv| abs.get(pv).string)
                 .unwrap_or_else(StringFact::top);
@@ -6168,6 +6168,64 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                     path: PathFact::top(),
                 },
             );
+        }
+
+        // Phase 14 — single-arg URL/URI constructor StringFact passthrough.
+        // `new URL(spec)` (Java/JS), `URI.create(spec)` (Java) — when the
+        // single argument's StringFact carries a locked-host prefix
+        // (typically from a literal+tainted concat), propagate it onto
+        // the constructed URL value so a downstream receiver sink like
+        // `u.openStream()` / `u.openConnection()` can consult the prefix
+        // through `is_abstract_safe_for_sink`.  Strictly additive: the
+        // 2-arg `(base, path)` shape is handled by the
+        // `url_builder_arg_indices` arm above; this single-arg arm only
+        // fires when that arm doesn't.
+        SsaOp::Call { callee, args, .. }
+            if lang.is_some_and(|l| {
+                let l_u = l;
+                let is_url_ctor = info.call.is_constructor
+                    && crate::ssa::type_facts::constructor_type(l_u, callee)
+                        == Some(crate::ssa::type_facts::TypeKind::Url);
+                let via_outer = info.call.outer_callee.as_deref().is_some_and(|oc| {
+                    crate::ssa::type_facts::constructor_type(l_u, oc)
+                        == Some(crate::ssa::type_facts::TypeKind::Url)
+                });
+                let is_uri_create = matches!(l_u, Lang::Java)
+                    && (callee == "URI.create" || callee.ends_with(".URI.create"));
+                (is_url_ctor || via_outer || is_uri_create)
+                    && crate::ssa::type_facts::url_builder_arg_indices(
+                        l_u,
+                        callee,
+                        info.call.outer_callee.as_deref(),
+                        info.call.is_constructor,
+                    )
+                    .is_none_or(|(_p, base_idx)| {
+                        // Skip when the 2-arg arm above would already
+                        // have fired (it consumed a literal base).
+                        info.call
+                            .arg_string_literals
+                            .get(base_idx)
+                            .and_then(|s| s.as_deref())
+                            .is_none()
+                    })
+            }) =>
+        {
+            let arg_string = args
+                .first()
+                .and_then(|g| g.first().copied())
+                .map(|pv| abs.get(pv).string)
+                .unwrap_or_else(StringFact::top);
+            if !arg_string.is_top() {
+                abs.set(
+                    inst.value,
+                    AbstractValue {
+                        interval: IntervalFact::top(),
+                        string: arg_string,
+                        bits: BitFact::top(),
+                        path: PathFact::top(),
+                    },
+                );
+            }
         }
 
         // Known integer-producing calls get a bounded interval so downstream

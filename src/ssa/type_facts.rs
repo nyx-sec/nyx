@@ -712,6 +712,16 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
         Lang::Php => match suffix {
             "PDO" | "mysqli" => Some(TypeKind::DatabaseConnection),
             "curl_init" => Some(TypeKind::HttpClient),
+            // Phase 14 — Guzzle / Symfony HTTP client constructors.
+            // `new \GuzzleHttp\Client(...)` and `new Client(...)` both
+            // tail-match `Client` here; the resulting `TypeKind::HttpClient`
+            // routes `$c->request($method, $url)` through the type-qualified
+            // `HttpClient.request` SSRF rule in `labels/php.rs`.  The
+            // `Client` leaf can collide with framework-internal classes
+            // also named `Client`, but the source-sensitivity gate
+            // already silences plain user-input flows so the FP surface
+            // is bounded.
+            "Client" => Some(TypeKind::HttpClient),
             "fopen" => Some(TypeKind::FileHandle),
             "SplFileObject" => Some(TypeKind::FileHandle),
             // DOMXPath: `$xp = new DOMXPath($doc)`.  `$xp->query($expr)` /
@@ -782,6 +792,15 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // Suffix alone is too generic (new, get, open); match on full callee.
             if callee.contains("Net::HTTP") || after_colons.starts_with("HTTParty") {
                 Some(TypeKind::HttpClient)
+            } else if callee == "Faraday.new"
+                || callee == "RestClient::Resource.new"
+                || (after_colons.starts_with("Typhoeus") && suffix == "new")
+            {
+                // Phase 14 — Faraday / Typhoeus / rest-client client
+                // instances.  `client = Faraday.new(url: base)` returns
+                // an HTTP client whose `client.get(path)` resolves via
+                // the type-qualified `HttpClient.get` SSRF rule.
+                Some(TypeKind::HttpClient)
             } else if after_colons.starts_with("URI") && matches!(suffix, "parse" | "URI") {
                 Some(TypeKind::Url)
             } else if after_colons == "PG.connect"
@@ -800,6 +819,104 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 None
             }
         }
+    }
+}
+
+/// Phase 14 — recognise per-language URL builders that take a `(base,
+/// path)`-shaped argument pair.  Returns `Some((path_arg_idx, base_arg_idx))`
+/// when the callee is known to construct / join a URL out of a literal
+/// base origin and a (possibly tainted) path component.  The caller then:
+///
+/// 1. Forwards taint from the path arg into the call's result SSA value
+///    (so downstream HTTP sinks see the propagated taint).
+/// 2. When the base arg is a syntactic string literal, seeds the abstract
+///    [`crate::abstract_interp::StringFact::from_url_with_base`] on the
+///    result so [`is_string_safe_for_ssrf`] can suppress the SSRF sink at
+///    a fully-formed `scheme://host/...` prefix.
+///
+/// Coverage matches the phase-14 origin-lock table: JS/TS `new URL(path,
+/// base)` (constructor), Python `urllib.parse.urljoin(base, path)`, Java
+/// `new URL(URL context, String spec)`, Go `url.JoinPath(base, paths...)`,
+/// Ruby `URI.join(base, path)`.  Rust is intentionally omitted: the
+/// idiomatic shape is `Url::parse(base).unwrap().join(path)` (a chain),
+/// not a single (base, path) call, so no per-call site fits the helper's
+/// shape.  The `Url::parse(literal_url)` single-arg case is covered by
+/// generic abstract-string seeding via [`SsaOp::Const`].
+pub(crate) fn url_builder_arg_indices(
+    lang: Lang,
+    callee: &str,
+    outer_callee: Option<&str>,
+    is_constructor: bool,
+) -> Option<(usize, usize)> {
+    // Normalise to leaf segment (last `::`/`.` token) for languages that
+    // attach module / receiver prefixes in front of the callee text.
+    let leaf = callee.rsplit("::").next().unwrap_or(callee);
+    let leaf = leaf.rsplit('.').next().unwrap_or(leaf);
+    match lang {
+        Lang::JavaScript | Lang::TypeScript => {
+            if !is_constructor {
+                return None;
+            }
+            // CFG-level rewrite of source-bearing assignments may replace
+            // the visible callee with the source path; the original
+            // constructor identifier is preserved on `outer_callee`.
+            let direct = constructor_type(lang, callee) == Some(TypeKind::Url);
+            let via_outer = outer_callee
+                .is_some_and(|oc| constructor_type(lang, oc) == Some(TypeKind::Url));
+            if direct || via_outer {
+                Some((0, 1))
+            } else {
+                None
+            }
+        }
+        Lang::Python => {
+            // `urllib.parse.urljoin(base, path)` and the bare-import
+            // `urljoin(base, path)` (`from urllib.parse import urljoin`).
+            if callee == "urllib.parse.urljoin" || leaf == "urljoin" {
+                Some((1, 0))
+            } else {
+                None
+            }
+        }
+        Lang::Go => {
+            // `url.JoinPath(base, paths...)` and the receiver form
+            // `(*URL).JoinPath(base, paths...)` — both expose `JoinPath`
+            // as the leaf segment.  `(*URL).Parse(ref)` (single-arg
+            // resolve against a base URL receiver) is not modelled here
+            // because the base lives on the receiver rather than at a
+            // positional arg.
+            if leaf == "JoinPath" {
+                Some((1, 0))
+            } else {
+                None
+            }
+        }
+        Lang::Java => {
+            // `new URL(URL context, String spec)` — context (base) at
+            // arg 0, spec (path) at arg 1.  Only the explicit
+            // (context, spec) two-arg constructor form is recognised;
+            // `new URL(String spec)` and `new URI(String spec)` carry a
+            // single string literal that the generic abstract-string
+            // path already handles via `SsaOp::Const` seeding.
+            if is_constructor && (leaf == "URL" || leaf == "URI") {
+                Some((1, 0))
+            } else {
+                None
+            }
+        }
+        Lang::Ruby => {
+            // `URI.join(base, *paths)` — base at arg 0, first path at arg 1.
+            if callee == "URI.join" || (leaf == "join" && callee.contains("URI")) {
+                Some((1, 0))
+            } else {
+                None
+            }
+        }
+        // PHP / Rust / C / C++: no first-class (base, path) URL builder
+        // function the engine recognises.  Single-arg shapes (e.g.
+        // `Url::parse("https://api/" . $tainted)`) flow through the
+        // generic abstract-string concat prefix path.
+        _ => None,
     }
 }
 

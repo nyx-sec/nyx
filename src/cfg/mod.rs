@@ -972,7 +972,19 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
         "variable_declarator" | "assignment_expression" | "assignment" => ast
             .child_by_field_name("value")
             .or_else(|| ast.child_by_field_name("right")),
-        "variable_declaration" | "lexical_declaration" => {
+        // Phase 14 — Java `local_variable_declaration`, Go
+        // `short_var_declaration` / `var_spec`, Rust `let_declaration`,
+        // Python `assignment` (already covered above), and PHP
+        // `assignment_expression` (covered above).  Added here so the
+        // `string_prefix` extractor can walk the RHS of a plain
+        // declaration in any supported language.
+        "variable_declaration"
+        | "lexical_declaration"
+        | "local_variable_declaration"
+        | "short_var_declaration"
+        | "var_spec"
+        | "var_declaration"
+        | "let_declaration" => {
             // Walk direct children for the first variable_declarator with a value.
             let mut w = ast.walk();
             ast.named_children(&mut w)
@@ -980,6 +992,17 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
                 .and_then(|d| {
                     d.child_by_field_name("value")
                         .or_else(|| d.child_by_field_name("right"))
+                })
+                .or_else(|| {
+                    // Go: short_var_declaration's value is on a
+                    // `expression_list` field "right".
+                    ast.child_by_field_name("right")
+                        .or_else(|| ast.child_by_field_name("value"))
+                })
+                .or_else(|| {
+                    // Rust let_declaration: value field directly on the
+                    // node (no wrapping declarator).
+                    ast.child_by_field_name("value")
                 })
         }
         "expression_statement" => {
@@ -1006,8 +1029,17 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
 /// when the prefix contains `scheme://host/`, the sink is suppressed because
 /// the attacker cannot reach a different host.
 fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String> {
-    // Only JS/TS expose `template_string` nodes; cheap early exit elsewhere.
-    if !matches!(lang, "javascript" | "typescript") {
+    // Phase 14 — extended beyond JS/TS so the SSRF prefix-lock fires
+    // across every supported language whose origin-locked URL shape
+    // is a literal+tainted string concatenation.  The grammar
+    // dispatch lives in [`prefix_of_expression`]; this function only
+    // walks the assignment-RHS / first-call-arg slots that consume
+    // the prefix.
+    let supported = matches!(
+        lang,
+        "javascript" | "typescript" | "java" | "go" | "php" | "ruby" | "python" | "rust"
+    );
+    if !supported {
         return None;
     }
 
@@ -1021,7 +1053,16 @@ fn extract_template_prefix(ast: Node, lang: &str, code: &[u8]) -> Option<String>
     // Call expression (including sink call nodes): inspect the first
     // positional argument. Covers `axios.get(\`https://host/…${x}\`)` shape
     // where the template literal is inline at the sink.
-    if matches!(ast.kind(), "call_expression" | "call" | "new_expression") {
+    if matches!(
+        ast.kind(),
+        "call_expression"
+            | "call"
+            | "new_expression"
+            | "object_creation_expression"
+            | "method_invocation"
+            | "macro_invocation"
+            | "function_call_expression"
+    ) {
         let args = ast
             .child_by_field_name("arguments")
             .or_else(|| ast.child_by_field_name("argument_list"));
@@ -1091,28 +1132,115 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
         return None;
     }
 
-    // Case 2: `"scheme://host/" + x`, LHS is a string literal.
-    if cur.kind() == "binary_expression" {
+    // Case 2: `"scheme://host/" + x` / PHP `"scheme://host/" . $x`,
+    // LHS is a string literal.  Phase 14: also accept `.` as the
+    // concat operator so PHP's `"prefix" . $tainted` shape locks the
+    // SSRF prefix the same way `+`-using languages do.
+    if matches!(
+        cur.kind(),
+        "binary_expression" | "binary_operator" | "binary"
+    ) {
         let mut w2 = cur.walk();
         let mut ops = cur.children(&mut w2).filter(|c| !c.is_named());
-        if !ops.any(|c| c.kind() == "+") {
+        if !ops.any(|c| matches!(c.kind(), "+" | ".")) {
             return None;
         }
         let left = cur.named_child(0)?;
-        if matches!(left.kind(), "string" | "string_fragment") {
-            let raw = text_of(left, code)?;
-            let trimmed = if (raw.starts_with('"') && raw.ends_with('"'))
-                || (raw.starts_with('\'') && raw.ends_with('\''))
-                || (raw.starts_with('`') && raw.ends_with('`'))
-            {
-                if raw.len() >= 2 {
-                    raw[1..raw.len() - 1].to_string()
-                } else {
-                    raw
-                }
+        if matches!(
+            left.kind(),
+            "string" | "string_fragment" | "string_literal" | "interpreted_string_literal" | "raw_string_literal" | "encapsed_string"
+        ) {
+            // For strings with embedded fragments (Java string_literal
+            // wraps a string_fragment child), recurse one level into
+            // the fragment to get the raw text without quote tokens.
+            let inner_text = if matches!(left.kind(), "string_literal" | "encapsed_string") {
+                let mut iw = left.walk();
+                left.named_children(&mut iw)
+                    .find(|c| c.kind() == "string_fragment")
+                    .and_then(|n| text_of(n, code))
             } else {
-                raw
+                None
             };
+            let raw = match inner_text {
+                Some(t) => t,
+                None => text_of(left, code)?,
+            };
+            let trimmed = strip_string_quotes_loose(&raw);
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+
+    // Case 3: Rust `format!("scheme://host/{}", x)` macro invocation.
+    // The first positional arg is the format string literal whose
+    // leading literal text (up to the first `{`) is the locked prefix.
+    if cur.kind() == "macro_invocation" {
+        let macro_name = cur
+            .child_by_field_name("macro")
+            .and_then(|n| text_of(n, code))
+            .unwrap_or_default();
+        if matches!(macro_name.as_str(), "format" | "write" | "writeln" | "println" | "eprintln" | "print" | "eprint") {
+            // tree-sitter-rust models macro args under a named
+            // `token_tree` child rather than via the `arguments` field.
+            // Walk every direct child looking for the first string
+            // literal — that's the format-string positional arg.
+            let mut iw = cur.walk();
+            let mut first_string: Option<Node> = None;
+            for child in cur.named_children(&mut iw) {
+                if matches!(child.kind(), "string_literal" | "raw_string_literal") {
+                    first_string = Some(child);
+                    break;
+                }
+                if child.kind() == "token_tree" {
+                    let mut ttw = child.walk();
+                    for inner in child.named_children(&mut ttw) {
+                        if matches!(inner.kind(), "string_literal" | "raw_string_literal") {
+                            first_string = Some(inner);
+                            break;
+                        }
+                    }
+                    if first_string.is_some() {
+                        break;
+                    }
+                }
+            }
+            if let Some(first) = first_string {
+                let mut iw = first.walk();
+                let frag_text = first
+                    .named_children(&mut iw)
+                    .find(|c| c.kind() == "string_content" || c.kind() == "string_fragment")
+                    .and_then(|n| text_of(n, code));
+                let raw = match frag_text {
+                    Some(t) => t,
+                    None => text_of(first, code)?,
+                };
+                let trimmed = strip_string_quotes_loose(&raw);
+                if let Some(idx) = trimmed.find('{') {
+                    let head = trimmed[..idx].to_string();
+                    if !head.is_empty() {
+                        return Some(head);
+                    }
+                } else if !trimmed.is_empty() {
+                    return Some(trimmed);
+                }
+            }
+        }
+    }
+
+    // Case 4: Python f-string interpolation — leading literal
+    // fragment of a `formatted_string` whose first child is a plain
+    // `string_content` token.  Restricted to `formatted_string` so
+    // JS / TS / Java plain string literals (kind `string`) do not
+    // accidentally seed a prefix when they appear unmodified at a
+    // call's first argument position (which would mis-fire as a
+    // hardcoded-URL prefix lock on every literal-URL call site).
+    if cur.kind() == "formatted_string" {
+        let mut w = cur.walk();
+        let first = cur.named_children(&mut w).next()?;
+        if matches!(first.kind(), "string_content" | "string_fragment") {
+            let raw = text_of(first, code)?;
+            let trimmed = strip_string_quotes_loose(&raw);
             if !trimmed.is_empty() {
                 return Some(trimmed);
             }
@@ -1120,6 +1248,19 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
     }
 
     None
+}
+
+/// Strip surrounding `"`/`'`/`` ` `` quotes if present.
+fn strip_string_quotes_loose(raw: &str) -> String {
+    if raw.len() >= 2
+        && ((raw.starts_with('"') && raw.ends_with('"'))
+            || (raw.starts_with('\'') && raw.ends_with('\''))
+            || (raw.starts_with('`') && raw.ends_with('`')))
+    {
+        raw[1..raw.len() - 1].to_string()
+    } else {
+        raw.to_string()
+    }
 }
 
 /// Extract the numeric literal operand from a binary expression.

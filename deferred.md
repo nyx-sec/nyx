@@ -476,6 +476,96 @@ implied or surfaced but did not finish.
       Sanitizer(FILE_IO) rule in `src/labels/rust.rs` if a future
       fixture lands a sink downstream of the canonical value.
 
+- [ ] Phase 14 audit — `extract_template_prefix` was extended beyond
+      JS/TS to seed `string_prefix` for cross-language SSRF prefix
+      locking (`Java`/`Go`/`Ruby`/`Python`/`Rust`/`PHP`).  Case 4
+      (Python f-string) is gated to `formatted_string` only — the
+      earlier draft also matched `string`, which fired on JS / Java
+      plain-string call args and broke
+      `cross_file_data_exfil_split` by setting a phantom prefix on
+      every literal-URL helper-call site.  If future fixtures need
+      to lock prefixes from a leading literal in a non-f-string
+      `string` node (e.g. Ruby string interpolation `"https://#{x}"`
+      whose first child is a `string_content`), gate the Case 4
+      shape on a per-language predicate (Ruby `string` with
+      interpolation child) rather than reverting to a bare `string`
+      match.
+- [ ] Phase 14 audit — the `url_builder_arg_indices` helper covers
+      JS/TS `new URL(path, base)`, Python `urljoin(base, path)`,
+      Go `url.JoinPath(base, paths...)`, Java `new URL(URL, spec)`,
+      and Ruby `URI.join(base, path)`.  Rust is intentionally
+      omitted: idiomatic `Url::parse(base).unwrap().join(path)` is
+      a chain receiver-bound shape, not a single `(base, path)`
+      call, so no per-call-site arg pair fits the helper's shape.
+      The single-arg constructor passthrough below covers the
+      simpler `Url::parse("https://api/" + tainted)` form via
+      abstract concat prefix.
+- [ ] Phase 14 audit — the single-arg URL/URI constructor StringFact
+      passthrough in `transfer_abstract` only fires for languages
+      whose `constructor_type` returns `TypeKind::Url`.  Java's
+      `URI.create(spec)` is recognised via an explicit textual check
+      (`callee == "URI.create"`).  When more single-arg URL
+      factories surface (e.g. `URL.of(spec)` in Java 23), extend
+      the explicit list or expose a per-lang helper that returns
+      `is_url_single_arg_factory` instead of duplicating the check.
+- [ ] Phase 14 audit — the `Net::HTTP.start` SSRF rule fires on the
+      first positional arg, which is the host string.  Ruby's
+      `Net::HTTP.start(host, port, opts)` overloads with optional
+      options that can include `:proxy_addr` / `:use_ssl` etc.
+      When the host is hardcoded but the proxy address is tainted,
+      the SSRF would still fire (correctly) on the host arg if
+      tainted, but a pure proxy-tainted shape lacks coverage.
+      Park: the proxy-tainted shape is uncommon and out of scope
+      for the current SSRF positives.
+- [ ] Phase 14 audit — `Faraday.new(url: base)` is registered as
+      `TypeKind::HttpClient` in `constructor_type` (Ruby).  The
+      kwarg-form `url:` argument carries the base URL receiver-side
+      and would itself be SSRF-relevant when tainted, but the type-
+      qualified label rules apply at the verb-method call site
+      (`client.get(path)`), not at construction.  When a fixture
+      surfaces a tainted base shape (`Faraday.new(url: req.params[:base])`),
+      add a Faraday-specific gate that also activates SSRF on the
+      `url:` kwarg at construction time.
+- [ ] Phase 14 audit — PHP `Client` constructor recognition in
+      `constructor_type` matches the bare leaf `Client`.  Real
+      project code commonly aliases the Guzzle `Client` to a local
+      class or has its own `Client` (e.g. an internal API client).
+      The source-sensitivity gate already silences plain `$_GET` /
+      `$_POST` flows so the FP surface is bounded, but a
+      per-namespace witness (`use GuzzleHttp\Client;` /
+      `use \GuzzleHttp\Client as ApiClient;`) would tighten the
+      gate.  Out of scope for Phase 14 because no PHP fixture in
+      the corpus exercises the false-collision shape.
+- [ ] Phase 14 audit — Rust's `format!` prefix extraction (Case 3
+      in `prefix_of_expression`) walks the macro `token_tree`
+      directly rather than via `cur.child_by_field_name("arguments")`
+      because tree-sitter-rust models macro args as a `token_tree`
+      (no `arguments` field).  The helper looks for the first
+      `string_literal` / `raw_string_literal` direct or nested
+      child.  Conservative against macros whose first arg is a
+      complex expression — those return `None` and the shape
+      falls back to the SSA-level concat path (which doesn't fire
+      for `format!` because the format args are not surfaced as
+      individual identifiers).  If a `format!` shape surfaces with
+      a non-literal first arg (e.g. `format!(URL_FMT, x)` where
+      `URL_FMT` is a `const`), bridge by consulting the SSA
+      const-prop facts on the format-string SSA value.
+- [ ] Phase 14 audit (spec deviation) — phase plan explicitly
+      requested new `TypeKind::{PyUrl, JavaUri, RustUrl, GoUrl}`
+      variants per receiver type that aliases a URL.  The
+      implementer reused the existing `TypeKind::Url` for all
+      languages instead, with the rationale that a single
+      generic `Url` variant is sufficient for the current
+      receiver-qualified label rules (the type-prefix mapping
+      via `TypeKind::label_prefix()` already routes per-method
+      sinks correctly).  All Phase 14 acceptance fixtures pass
+      under the unified variant.  Worth revisiting if a future
+      phase needs language-specific URL precision (e.g. Go
+      `*url.URL` method dispatch differs from Java `URI` /
+      Python `urllib.parse.ParseResult` in a way that the
+      receiver-qualified label rules can't disambiguate from
+      callee text alone).
+
 ## Deferred phases
 
 (none)

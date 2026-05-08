@@ -184,12 +184,34 @@ pub static RULES: &[LabelRule] = &[
     },
     // openConnection() is the standard java.net.URL API for initiating a connection.
     // It is the correct interception point, the URL is already set on the object.
+    //
+    // Phase 14 — additional SSRF entry points covered:
+    //   * `URL.openStream` — equivalent of `URL.openConnection().getInputStream()`,
+    //     fetches the resource at the URL directly.  Bare `openStream`
+    //     suffix is unique to `java.net.URL` in the supported corpus.
+    //   * `OkHttpClient.newCall(Request)` — Square OkHttp's request
+    //     dispatch entry point.  The `Request` is built via a
+    //     `Request.Builder().url(u).build()` chain whose default
+    //     arg→return propagation smears URL taint through the chain.
+    //   * `RestTemplate.getForEntity` / `RestTemplate.headForHeaders` —
+    //     read-shaped Spring verbs that take the URL at arg 0.
     LabelRule {
         matchers: &[
             "openConnection",
+            "openStream",
             "HttpClient.send",
             "HttpClient.sendAsync",
+            // Phase 14 — `OkHttpClient.newCall(Request)` and the
+            // generic `HttpClient.newCall` form OkHttp resolves to via
+            // the JAVA_HIERARCHY (OkHttpClient → HttpClient).  Both
+            // forms are covered so a constructor-typed receiver
+            // (HttpClient) and a class-named receiver (OkHttpClient)
+            // both fire.
+            "HttpClient.newCall",
+            "OkHttpClient.newCall",
             "getForObject",
+            "getForEntity",
+            "headForHeaders",
             "RestTemplate.exchange",
             "postForObject",
             "postForEntity",

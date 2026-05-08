@@ -120,6 +120,12 @@ pub static RULES: &[LabelRule] = &[
             "reqwest::Client.head",
             "reqwest::Client.patch",
             "reqwest::Client.request",
+            // Phase 14 — hyper Client `request(req)` dispatch entry. The
+            // `req` builder chain (covered by the type-qualified
+            // RequestBuilder.* / Request::builder.* rules below) smears
+            // URL taint into the request value via default propagation.
+            "hyper::Client.request",
+            "hyper::client::Client.request",
             // Chained constructor + verb form: `reqwest::Client::new()
             // .post(url)` reduces (via root-receiver collapse) to chain
             // text `Client::new.post`, so existing `Client.post` matchers
