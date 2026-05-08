@@ -257,6 +257,26 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
     },
+    // Phase 15 — receiver-typed ORM sinks. `SqlAlchemySession.execute`
+    // / `SqlAlchemySession.scalar` / `SqlAlchemySession.scalars` etc.
+    // are produced when the receiver carries `TypeKind::SqlAlchemySession`
+    // (set by `constructor_type` for `sessionmaker()` / `Session(engine)` /
+    // `engine.connect()`).  `DjangoQuerySet.raw` / `DjangoQuerySet.extra`
+    // fire on `Model.objects.raw(sql)` / `Model.objects.extra(...)` shapes
+    // when the receiver was tagged via the `Model.objects` access path.
+    // `ActiveRecordRelation` is registered in `labels/ruby.rs`.
+    LabelRule {
+        matchers: &[
+            "SqlAlchemySession.execute",
+            "SqlAlchemySession.scalar",
+            "SqlAlchemySession.scalars",
+            "SqlAlchemySession.exec_driver_sql",
+            "DjangoQuerySet.raw",
+            "DjangoQuerySet.extra",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+    },
     // SQL injection: sqlite3 / SQLAlchemy / generic DB connection execute.
     LabelRule {
         matchers: &[

@@ -250,10 +250,40 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     // SQL injection: ActiveRecord unsafe raw-query execution APIs.
+    // Phase 15 expands coverage with `exec_query` (the raw-SQL execution
+    // verb on the ActiveRecord connection adapter) and `select_value` /
+    // `select_values` / `select_rows` (driver-level select helpers that
+    // accept a literal SQL string).
     LabelRule {
-        matchers: &["find_by_sql", "connection.execute", "select_all"],
+        matchers: &[
+            "find_by_sql",
+            "connection.execute",
+            "select_all",
+            "exec_query",
+            "select_value",
+            "select_values",
+            "select_rows",
+            "select_one",
+        ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — receiver-typed ActiveRecord raw-SQL sinks.  The
+    // `ActiveRecordRelation` TypeKind is set by `constructor_type` on
+    // class-method scope chains (`User.where(...)` etc.); type-qualified
+    // resolution rewrites `relation.find_by_sql(sql)` →
+    // `ActiveRecordRelation.find_by_sql` so the chained shape is caught
+    // even when the receiver text has lost its model-class prefix.
+    LabelRule {
+        matchers: &[
+            "ActiveRecordRelation.find_by_sql",
+            "ActiveRecordRelation.exec_query",
+            "ActiveRecordRelation.select_all",
+            "ActiveRecordRelation.select_one",
+            "ActiveRecordRelation.select_value",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // SQL injection: ActiveRecord query methods that accept raw SQL strings.
     // `where` and `order` are the most common Rails SQLi vectors when called

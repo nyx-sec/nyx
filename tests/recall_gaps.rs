@@ -700,6 +700,81 @@ fn ssrf_cross_language() {
     }
 }
 
+/// Phase 15 recall-gap: cross-language ORM and raw-SQL coverage.
+///
+/// Mirrors `orm_builders` (JS/TS) for Python, Java, Ruby, Go, PHP.
+/// Each language carries:
+///
+///   * positive raw-string concat — tainted user input concatenated
+///     into the SQL string flowing into the language's canonical
+///     SQL_QUERY sink.
+///   * positive interpolation — same shape but using language-native
+///     interpolation (Python f-string inside `text(...)`, Java
+///     `String.format`, Ruby `"#{...}"`, Go `fmt.Sprintf`, PHP
+///     `"$var"`).
+///   * negative parameterised — the parameterised API form with
+///     literal SQL template + constant bind args, mirroring phase
+///     07's safe-parameterised approach.
+#[test]
+fn orm_xlang() {
+    let findings = scan_fixture("sqli_xlang");
+
+    let positives = [
+        // (file, sink_line)
+        ("sqli_py_psycopg2_concat.py", 16usize),
+        ("sqli_py_sqlalchemy_text_fstring.py", 18usize),
+        ("SqliJavaConcat.java", 18usize),
+        ("SqliJavaHibernateNative.java", 14usize),
+        ("sqli_rb_concat.rb", 8usize),
+        ("sqli_rb_where_interp.rb", 9usize),
+        ("sqli_go_concat.go", 14usize),
+        ("sqli_go_gorm_raw.go", 20usize),
+        ("sqli_php_pdo_concat.php", 9usize),
+        ("sqli_php_doctrine_interp.php", 10usize),
+    ];
+    for (file, sink_line) in positives {
+        assert_finding_with_cap(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: file,
+                sink_line,
+                source_line: None,
+            },
+            Cap::SQL_QUERY.bits(),
+        );
+    }
+
+    let negatives = [
+        "sqli_py_param_safe.py",
+        "SqliJavaParamSafe.java",
+        "sqli_rb_param_safe.rb",
+        "sqli_go_param_safe.go",
+        "sqli_php_param_safe.php",
+    ];
+    for file in negatives {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && f.evidence
+                    .as_ref()
+                    .map(|e| (e.sink_caps & Cap::SQL_QUERY.bits()) != 0)
+                    .unwrap_or(false)
+                && (f.id.starts_with("taint-unsanitised-flow")
+                    || f.id.starts_with("cfg-unguarded-sink"))
+        });
+        assert!(
+            !leak,
+            "parameterised SQLi negative {file} must stay silent on SQL_QUERY; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+}
+
 /// Phase 09 recall-gap: cross-package IPA via FuncKey namespace
 /// resolution.  `unsafeHandler` calls `escapeHtmlNoop` (a passthrough
 /// imported from `@scope/util/sanitize`); the engine sees the imported

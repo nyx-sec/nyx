@@ -1193,6 +1193,11 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::TypeOrmManager => "TypeOrmManager".into(),
         TypeKind::MikroOrmEm => "MikroOrmEm".into(),
         TypeKind::Request => "Request".into(),
+        TypeKind::SqlAlchemySession => "SqlAlchemySession".into(),
+        TypeKind::DjangoQuerySet => "DjangoQuerySet".into(),
+        TypeKind::ActiveRecordRelation => "ActiveRecordRelation".into(),
+        TypeKind::GormDb => "GormDb".into(),
+        TypeKind::SqlxDb => "SqlxDb".into(),
     }
 }
 

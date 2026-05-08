@@ -220,6 +220,16 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         // by the App Router entry-point seeding path; it shares the
         // Object slot for the same reason the ORM TypeKinds do.
         TypeKind::Request => 3,
+        // Phase 15 — cross-language ORM receiver TypeKinds. Same
+        // rationale as the Phase 07 ORM TypeKinds above; they
+        // participate only in the type-qualified callee resolver via
+        // `label_prefix()` and have no dedicated slot in the bitset
+        // domain.
+        TypeKind::SqlAlchemySession
+        | TypeKind::DjangoQuerySet
+        | TypeKind::ActiveRecordRelation
+        | TypeKind::GormDb
+        | TypeKind::SqlxDb => 3,
     }
 }
 

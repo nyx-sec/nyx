@@ -550,6 +550,57 @@ implied or surfaced but did not finish.
       a non-literal first arg (e.g. `format!(URL_FMT, x)` where
       `URL_FMT` is a `const`), bridge by consulting the SSA
       const-prop facts on the format-string SSA value.
+- [ ] Phase 15 audit — negative-parameterised fixtures use constant
+      bind args (mirroring phase 07's `[true]` shape), not tainted
+      bind args.  This proves the parameterised API form is
+      recognised but does not prove "tainted bind args stay silent
+      when the SQL string is constant".  Bridging requires
+      payload-arg gating (`SinkGate { payload_args: &[0] }`) on
+      `cursor.execute` / `db.QueryContext` / `entityManager
+      .createQuery` etc. so taint into args 1+ is ignored.  Park
+      because the engine-side gating change interacts with every
+      flat-sink call shape in scope and the constant-bind form is
+      sufficient to prove API recognition.
+- [ ] Phase 15 audit — Go GORM `db.Raw(sql)` is reached via the
+      flat `db.Raw` matcher (added alongside `db.Query` /
+      `db.Exec`) rather than via the type-qualified `GormDb.Raw`
+      rule the phase prompt prescribed.  Reason: tuple-return
+      destructuring (`db, _ := gorm.Open(...)`) does not propagate
+      the `TypeKind::GormDb` tag onto the SSA value bound to `db`
+      under the current Go pipeline, so the type-qualified
+      resolver never rewrites `db.Raw` → `GormDb.Raw`.  The flat
+      `db.Raw` matcher is FP-safe in the current corpus (`Raw` is
+      a GORM-specific verb on `*gorm.DB`; stdlib `*sql.DB` has no
+      such method), but a future tuple-aware Go SSA layer should
+      revisit and rely on the type-qualified rule for receivers
+      with non-`db` names (`gormDb`, `userDb`, etc.).
+- [ ] Phase 15 audit — `TypeKind::SqlAlchemySession` /
+      `TypeKind::DjangoQuerySet` / `TypeKind::ActiveRecordRelation`
+      / `TypeKind::SqlxDb` were added per the phase deliverable
+      list, but the matching receiver-typed sink rules
+      (`SqlAlchemySession.execute`, `DjangoQuerySet.raw`,
+      `ActiveRecordRelation.find_by_sql`, `SqlxDb.NamedExec`,
+      etc.) are not exercised by phase 15's test suite — the
+      flat `cursor.execute` / `objects.raw` / `find_by_sql` /
+      `db.QueryContext` matchers fire first on the canonical
+      idiomatic shapes covered by the new fixtures.  The
+      receiver-typed rules are registered as a fallback for
+      cases where the flat matcher's bare verb name would over-
+      fire or under-fire (e.g. an internal method also named
+      `execute` / `raw` / `where`).  Add a fixture exercising
+      one of these shapes when a real-world recall gap surfaces.
+- [ ] Phase 15 audit — realrepo memory baselines (phpmyadmin,
+      joomla, drupal, openmrs, nextcloud) were NOT re-run as part
+      of this implementation phase.  The pitboss implementer
+      sandbox does not have network egress to clone the upstream
+      repos, and the per-target snapshots live in
+      [project_realrepo_*.md] memory entries that are not
+      automated tests.  In-tree `cargo test` (debug) passes 0
+      failures across 27 recall_gaps tests (added: `orm_xlang`)
+      and the full suite, but cross-repo non-regression must be
+      verified out-of-band (re-run scripts/validate_recall.sh per
+      target after this branch lands and update memory entries
+      with deltas).
 - [ ] Phase 14 audit (spec deviation) — phase plan explicitly
       requested new `TypeKind::{PyUrl, JavaUri, RustUrl, GoUrl}`
       variants per receiver type that aliases a URL.  The

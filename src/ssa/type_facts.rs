@@ -218,6 +218,36 @@ pub enum TypeKind {
     /// taint through `Request.<method>` label rewrites without
     /// requiring a caller-side flow.
     Request,
+    /// A SQLAlchemy `Session` / `Connection` produced by
+    /// `sessionmaker()()`, `Session(engine)`, `engine.connect()`,
+    /// `scoped_session()()`.  Type-qualified resolution rewrites
+    /// `session.execute(sql)` → `SqlAlchemySession.execute` against
+    /// the flat SQL_QUERY rule so Python ORM raw-SQL passthrough is
+    /// caught even when the receiver name shadows another `execute`
+    /// method.
+    SqlAlchemySession,
+    /// A Django ORM `QuerySet` / `Manager` produced by
+    /// `Model.objects` access or `Model.objects.filter(...)`-shaped
+    /// chains.  Receiver type for `qs.raw(sql)` and `qs.extra(...)`
+    /// raw-SQL passthrough sinks.
+    DjangoQuerySet,
+    /// An ActiveRecord `Relation` produced by `Model.where(...)` /
+    /// `Model.all` / `Model.find_by_sql(...)`-shaped chains, or by
+    /// the model class itself when used as a class-method receiver.
+    /// Used so `relation.find_by_sql(sql)` and chained raw-SQL
+    /// methods resolve to receiver-typed sinks instead of bare verbs.
+    ActiveRecordRelation,
+    /// A GORM `*gorm.DB` produced by `gorm.Open(dialector, &gorm.Config{})`.
+    /// Receiver for `db.Raw(sql)` / `db.Exec(sql)` raw-SQL passthrough
+    /// sinks.  Distinct from `DatabaseConnection` so the Go
+    /// type-qualified rules fire only on GORM receivers and don't
+    /// collide with stdlib `*sql.DB` or `*sqlx.DB`.
+    GormDb,
+    /// A `*sqlx.DB` / `*sqlx.Tx` produced by `sqlx.Connect(driver, dsn)`
+    /// / `sqlx.Open(...)` / `sqlx.MustConnect(...)`.  Receiver for
+    /// `sqlxDb.NamedExec(sql, ...)` / `sqlxDb.NamedQuery(sql, ...)` /
+    /// `sqlxDb.Select(dest, sql, ...)` etc. raw-SQL passthrough sinks.
+    SqlxDb,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -269,6 +299,11 @@ impl TypeKind {
             Self::TypeOrmManager => Some("TypeOrmManager"),
             Self::MikroOrmEm => Some("MikroOrmEm"),
             Self::Request => Some("Request"),
+            Self::SqlAlchemySession => Some("SqlAlchemySession"),
+            Self::DjangoQuerySet => Some("DjangoQuerySet"),
+            Self::ActiveRecordRelation => Some("ActiveRecordRelation"),
+            Self::GormDb => Some("GormDb"),
+            Self::SqlxDb => Some("SqlxDb"),
             _ => None,
         }
     }
@@ -688,6 +723,32 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // LDAP-injection sinks.  ldap3: `Connection(server, ...)`
                 // returns a Connection with a `search()` method.
                 Some(TypeKind::LdapClient)
+            } else if callee == "sessionmaker"
+                || callee == "scoped_session"
+                || callee == "sqlalchemy.orm.sessionmaker"
+                || callee == "sqlalchemy.orm.scoped_session"
+                || callee == "Session"
+                || callee == "sqlalchemy.orm.Session"
+                || (suffix == "connect" && callee.contains("sqlalchemy"))
+                || (suffix == "begin" && callee.contains("engine"))
+            {
+                // Phase 15 — SQLAlchemy session / connection factories.
+                // `sessionmaker()` returns a callable, `sessionmaker()()`
+                // returns a Session; the inner-call collapse step in
+                // `cfg::push_node` flattens that to a single CallFn whose
+                // callee text suffix matches `sessionmaker`.  `Session(engine)`,
+                // `Session()`, and `engine.connect()` likewise produce a
+                // session-like object.  Tagging the resulting receiver as
+                // `SqlAlchemySession` lets the type-qualified resolver rewrite
+                // `session.execute(sql)` → `SqlAlchemySession.execute`.
+                Some(TypeKind::SqlAlchemySession)
+            } else if suffix == "objects" {
+                // Phase 15 — Django ORM `Model.objects` access surfaces as a
+                // FieldProj whose call form is `Model.objects` (read as a
+                // call by the chain-normalisation pass).  Tagging the
+                // resulting receiver as `DjangoQuerySet` lets `qs.raw(sql)` /
+                // `qs.extra(...)` rewrite to `DjangoQuerySet.<method>`.
+                Some(TypeKind::DjangoQuerySet)
             } else {
                 None
             }
@@ -705,6 +766,18 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // go-ldap (`github.com/go-ldap/ldap/v3`): `conn, _ := ldap.DialURL(url)`
                 // returns `*ldap.Conn` whose `Search(req)` is an LDAP-injection sink.
                 Some(TypeKind::LdapClient)
+            } else if callee.starts_with("gorm.") && matches!(suffix, "Open" | "Must") {
+                // Phase 15 — GORM: `gorm.Open(driver, &gorm.Config{})` returns
+                // `*gorm.DB`.  Tagging it as `GormDb` lets the type-qualified
+                // resolver rewrite `db.Raw(...)` → `GormDb.Raw` etc.
+                Some(TypeKind::GormDb)
+            } else if callee.starts_with("sqlx.")
+                && matches!(suffix, "Connect" | "MustConnect" | "Open" | "MustOpen")
+            {
+                // Phase 15 — sqlx: `sqlx.Connect("postgres", dsn)` returns
+                // `*sqlx.DB`; tagging it as `SqlxDb` lets `db.NamedExec(...)`
+                // / `db.NamedQuery(...)` rewrite to `SqlxDb.<method>`.
+                Some(TypeKind::SqlxDb)
             } else {
                 None
             }
@@ -815,6 +888,25 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // returns a connection whose `search(base:, filter:)` accepts
                 // an attacker-influenceable filter expression.
                 Some(TypeKind::LdapClient)
+            } else if matches!(
+                suffix,
+                "where" | "all" | "find_by_sql" | "find_by" | "joins" | "order"
+            ) && callee
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false)
+            {
+                // Phase 15 — ActiveRecord class-method scopes return a
+                // `Relation` (chainable query object).  Tagging the receiver
+                // as `ActiveRecordRelation` lets the type-qualified resolver
+                // rewrite chained calls (`User.where(...).find_by_sql(...)`)
+                // to `ActiveRecordRelation.<method>` when the original class
+                // name is preserved in the receiver text.  Conservative:
+                // only fires on receivers that start with an uppercase
+                // segment (Ruby class-name convention) so plain helpers are
+                // not collected.
+                Some(TypeKind::ActiveRecordRelation)
             } else {
                 None
             }

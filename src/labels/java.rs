@@ -94,6 +94,21 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SQL_QUERY),
         case_sensitive: false,
     },
+    // Phase 15 — JPA / Hibernate `Query.setParameter(name, value)` /
+    // `Query.setParameterList(...)` bind a positional / named parameter
+    // and return the same query object.  The bind step does NOT inject
+    // the value into the SQL string; the value is sent as a separate
+    // parameter through the JDBC layer at execution.  Treating
+    // `setParameter` / `setParameterList` as a SQL_QUERY sanitizer
+    // clears any taint inadvertently smeared onto the chain return so
+    // downstream `.getResultList()` / `.executeUpdate()` calls see a
+    // clean value.  Case-sensitive: these are JPA-specific verb names
+    // and the chain shape is canonical.
+    LabelRule {
+        matchers: &["setParameter", "setParameterList"],
+        label: DataLabel::Sanitizer(Cap::SQL_QUERY),
+        case_sensitive: true,
+    },
     // ─────────── Sinks ─────────────
     LabelRule {
         matchers: &["Runtime.exec", "ProcessBuilder"],
@@ -318,8 +333,22 @@ pub static RULES: &[LabelRule] = &[
         matchers: &[
             "entityManager.createNativeQuery",
             "entityManager.createQuery",
+            "em.createNativeQuery",
+            "em.createQuery",
             "session.createQuery",
             "session.createSQLQuery",
+            "session.createNativeQuery",
+            // Phase 15 — Spring Data JPA / Hibernate factory chains:
+            // `getEntityManager().createNativeQuery(...)` /
+            // `getSession().createQuery(...)` reduce to
+            // `getEntityManager.createNativeQuery` /
+            // `getSession.createQuery` after the chain-normalisation
+            // strips parens.
+            "getEntityManager.createNativeQuery",
+            "getEntityManager.createQuery",
+            "getSession.createQuery",
+            "getSession.createSQLQuery",
+            "getSession.createNativeQuery",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,

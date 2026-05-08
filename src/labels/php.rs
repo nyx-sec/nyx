@@ -54,6 +54,22 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SQL_QUERY),
         case_sensitive: false,
     },
+    // Phase 15 — `mysqli_real_escape_string($conn, $s)` and
+    // `pg_escape_string($s)` apply driver-side escaping for legacy
+    // string-concat shapes.  Treat as SQL_QUERY sanitizers so the
+    // value-replacement clears the cap on the call return.
+    // `addslashes` is intentionally excluded — it does NOT cover
+    // multibyte / charset-aware injection vectors.
+    LabelRule {
+        matchers: &[
+            "mysqli_real_escape_string",
+            "pg_escape_string",
+            "pg_escape_literal",
+            "pg_escape_identifier",
+        ],
+        label: DataLabel::Sanitizer(Cap::SQL_QUERY),
+        case_sensitive: false,
+    },
     // Type-check sanitizers
     LabelRule {
         matchers: &["intval", "floatval", "ctype_digit", "ctype_alpha"],
@@ -121,9 +137,38 @@ pub static RULES: &[LabelRule] = &[
             "pdo.query",
             "mysqli.real_query",
             "mysqli_real_query",
+            // Phase 15 — `PDOStatement::execute` (with no args) executes a
+            // prepared statement; when prepared from a tainted string the
+            // bind step does NOT prevent injection (the SQL was already
+            // built unsafely).  The receiver-text suffix is `stmt.execute`.
+            // Distinct from the bare `execute` matcher (already on the
+            // generic SQL_QUERY rule via `query` matcher) because the
+            // OOP `$stmt->execute()` shape skips the SQL-string arg.
+            "stmt.execute",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — Doctrine ORM raw-SQL passthrough APIs.  Doctrine's
+    // `EntityManager::createQuery($dql)` accepts a DQL string;
+    // `createNativeQuery($sql, $rsm)` accepts a native SQL string;
+    // `getConnection()->executeQuery($sql)` /
+    // `getConnection()->executeStatement($sql)` are the low-level
+    // Connection passthroughs that route to the underlying driver
+    // verbatim.  Suffix-matching covers both bound-receiver shapes
+    // (`$em->createQuery($dql)`) and the documentation-style
+    // class-qualified call form (`EntityManager.createQuery`).
+    LabelRule {
+        matchers: &[
+            "EntityManager.createQuery",
+            "EntityManager.createNativeQuery",
+            "createQuery",
+            "createNativeQuery",
+            "executeQuery",
+            "executeStatement",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // Laravel Eloquent: raw SQL methods.
     // DB::raw() → scoped_call_expression, callee text "DB.raw".
@@ -132,6 +177,22 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["DB.raw", "whereRaw", "selectRaw", "orderByRaw", "havingRaw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — Laravel raw-SQL execution facade methods.  `DB::select`,
+    // `DB::statement`, `DB::insert`, `DB::update`, `DB::delete`,
+    // `DB::unprepared` all accept a literal SQL string; the
+    // `unprepared` form is the explicit no-bind escape hatch.
+    LabelRule {
+        matchers: &[
+            "DB.select",
+            "DB.statement",
+            "DB.insert",
+            "DB.update",
+            "DB.delete",
+            "DB.unprepared",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // NOTE: `file_get_contents` and `fopen` can fetch URLs (SSRF vector) and
     // local files (LFI vector — `file://` scheme).  As a Sink(SSRF) they only

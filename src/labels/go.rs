@@ -73,6 +73,27 @@ pub static RULES: &[LabelRule] = &[
             "db.Exec",
             "db.QueryRow",
             "db.Prepare",
+            // Phase 15 — GORM `db.Raw(sql)` raw-SQL passthrough.  GORM's
+            // `*gorm.DB` is conventionally bound to a `db`-named receiver,
+            // so the suffix `db.Raw` carries the GORM semantic without
+            // colliding with stdlib `*sql.DB` (which has no `Raw` method).
+            // The `GormDb.Raw` type-qualified variant in the receiver-typed
+            // rule list below covers receivers tagged from `gorm.Open(...)`
+            // with non-`db` names.
+            "db.Raw",
+            // Phase 15 — `database/sql`-context variants.  `db.QueryContext`,
+            // `db.ExecContext`, `db.QueryRowContext`, `db.PrepareContext`
+            // accept the SQL string at arg 1 (after `ctx`).  Receivers
+            // typed as `*sql.DB` / `*sql.Tx` / `*sql.Stmt` resolve via
+            // suffix-matching on `db.<verb>`; calls on differently-named
+            // bound receivers (`tx.QueryContext(...)`) only suffix-match
+            // when the receiver text ends with `db` (covers `userDb`,
+            // `pgDb`, etc.).  More-precise receiver typing is in scope
+            // for `DatabaseConnection.<verb>` rules below.
+            "db.QueryContext",
+            "db.ExecContext",
+            "db.QueryRowContext",
+            "db.PrepareContext",
             // goqu raw SQL literal builders: `goqu.L(s)` and the alias
             // `goqu.Lit(s)` insert `s` verbatim into the generated SQL with no
             // parameterisation.  CVE-2026-41422 (daptin) loops a user-controlled
@@ -87,6 +108,36 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — receiver-typed Go ORM/raw-SQL sinks.  `*gorm.DB` (set by
+    // `constructor_type` for `gorm.Open(...)`) exposes `Raw(sql)` and
+    // `Exec(sql)` as raw-SQL passthrough; the type-qualified resolver
+    // rewrites `db.Raw(...)` → `GormDb.Raw`.  `*sqlx.DB` likewise gets
+    // `NamedExec` / `NamedQuery` / `Select` / `Get` rewriting via
+    // `SqlxDb.<verb>`.  `DatabaseConnection.<verb>` covers the stdlib
+    // `*sql.DB` / `*sql.Tx` receivers tagged by the existing
+    // `sql.Open` / `sql.OpenDB` constructor mapping — currently the
+    // chained QueryContext shape suffix-matches `db.QueryContext` above,
+    // so `DatabaseConnection.QueryContext` is here for receivers whose
+    // identifier text doesn't end in `db`.
+    LabelRule {
+        matchers: &[
+            "GormDb.Raw",
+            "GormDb.Exec",
+            "SqlxDb.NamedExec",
+            "SqlxDb.NamedQuery",
+            "SqlxDb.Select",
+            "SqlxDb.Get",
+            "SqlxDb.MustExec",
+            "DatabaseConnection.QueryContext",
+            "DatabaseConnection.ExecContext",
+            "DatabaseConnection.QueryRowContext",
+            "DatabaseConnection.Query",
+            "DatabaseConnection.Exec",
+            "DatabaseConnection.QueryRow",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // fmt.Printf/Sprintf write to stdout or build strings in memory, not
     // security sinks.  fmt.Fprintf writes to an io.Writer (often http.ResponseWriter)
