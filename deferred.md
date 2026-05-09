@@ -807,6 +807,65 @@ implied or surfaced but did not finish.
       `union_param_sink_sites`, the `summary_extract` path, and
       cross-file persistence.
 
+- [ ] Java header-injection FPs on chained `getClass().<accessor>()`
+      and `Map.of` allowlist lookup shapes. 2026-05-09 session 0003
+      closed two of four CVE-corpus patched-counterpart FPs by
+      adding `is_safe_string_producing_callee` in
+      `src/ssa/type_facts.rs` (recognises `Integer.toString` /
+      `Long.toString` / `Float.toString` / `Double.toString` /
+      `Short.toString` / `Byte.toString` / `Boolean.toString` /
+      `Character.toString` / `String.valueOf` / `Class.getName` /
+      `Class.getSimpleName` / `Class.getCanonicalName` / chain
+      shapes whose collapsed callee text contains `.getClass()`),
+      tagging the SSA result as `TypeKind::Int`, extending the
+      `is_type_safe_for_sink` suppressible mask to also cover
+      `HEADER_INJECTION` and `OPEN_REDIRECT`, and adding a
+      `apply_arg_type_safe_suppression` arg-level filter at Call
+      sinks in `src/taint/ssa_transfer/mod.rs` keyed off
+      `info.arg_callees`.  Closes:
+      `cve-java-2015-7501-patched` (Integer.toString) +
+      `cve-java-2022-42889-patched` (String.valueOf chain).
+      Remaining (parked):
+      * `cve-java-2022-1471-patched` (`loaded.getClass().getName()`).
+        The CFG/SSA pipeline's `call_ident_of` collapses chain text
+        into `<root_recv>.<leaf_method>` (e.g. `loaded.getName`),
+        dropping the intermediate `.getClass()` segment that the
+        predicate's chain-form check needs to disambiguate from
+        unrelated user-defined `getName()` methods.  Path forward:
+        either extend `extract_arg_callees` to format chained
+        method invocations with the inner method preserved (e.g.
+        `getClass.getName`) gated on lang=Java, or add a per-arg
+        `arg_is_class_name_accessor: Vec<bool>` to NodeInfo
+        populated by an AST walker.  Adding a new NodeInfo field
+        is invasive (70+ fields, serialisation roundtrip).
+      * `cve-java-2017-12629-patched`
+        (`TRANSFORMERS.get(tainted)` against `Map.of("identity",
+        "classpath:xslt/identity.xsl", "summary",
+        "classpath:xslt/summary.xsl")`).  The map is a literal-only
+        allowlist so `.get(tainted)` returns one of two fixed
+        strings, but the engine has no model for `Map.of` literal
+        tracking.  Real fix: lift `Map.of(k1, v1, k2, v2, ...)` into
+        an abstract-domain string-set facts and propagate through
+        `Map.get` to a `StringFact::any_of([v1, v2, ...])` that the
+        sink-suppression layer recognises as locked.
+
+- [ ] Symex pre-existing rule-FN for `cve-js-2025-64430-vulnerable`
+      (Parse Server SSRF). Engine fires
+      `taint-header-injection (source 52:30)` instead of the
+      ground-truth-expected `taint-unsanitised-flow`.  Pre-dates
+      session 0003 (verified by `git stash` + re-run).  No setHeader
+      / addHeader / addCookie call exists in the fixture, so the
+      label-rule attribution is structural noise from the body of
+      `addFileDataIfNeeded`'s file._data assignment, which a
+      member-assignment matcher promotes to HEADER_INJECTION.  The
+      real SSRF flow (`req.body` → `file._source.uri` →
+      `downloadFileFromURI` → `http.get(uri, ...)`) is not surfaced
+      because the inline-callee analysis does not trace
+      `addFileDataIfNeeded(file)` deep enough.  Park: requires
+      either disambiguating the HEADER_INJECTION matcher off
+      `_data`-shaped properties or fixing the cross-helper SSRF
+      attribution.
+
 ## Deferred phases
 
 (none)

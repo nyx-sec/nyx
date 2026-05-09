@@ -8577,6 +8577,13 @@ fn collect_tainted_sink_values(
                 }
             }
             apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+            apply_arg_type_safe_suppression(
+                &mut result,
+                sink_caps,
+                transfer.type_facts,
+                inst,
+                info,
+            );
             return result;
         }
     }
@@ -8606,6 +8613,13 @@ fn collect_tainted_sink_values(
                 }
             }
             apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+            apply_arg_type_safe_suppression(
+                &mut result,
+                sink_caps,
+                transfer.type_facts,
+                inst,
+                info,
+            );
             return result;
         }
     }
@@ -8621,7 +8635,93 @@ fn collect_tainted_sink_values(
     }
 
     apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+    apply_arg_type_safe_suppression(&mut result, sink_caps, transfer.type_facts, inst, info);
     result
+}
+
+/// Drop tainted argument SSA values from the per-call sink-emission set
+/// when their inferred [`crate::ssa::type_facts::TypeKind`] proves the
+/// value is payload-incompatible with `sink_caps` (e.g. an `Int`-tagged
+/// value reaching a `HEADER_INJECTION` sink: numeric scalars, the
+/// safe-string conversions in
+/// [`crate::ssa::type_facts::is_safe_string_producing_callee`], and
+/// `length()` / `size()` numeric-property reads cannot encode CRLF or
+/// any sink-class metacharacter).
+///
+/// Mirrors the non-call sink path's
+/// [`crate::ssa::type_facts::is_type_safe_for_sink`] gate at line 7317
+/// of the main analyser, applied here on Call instructions so the
+/// shared suppression rule covers idiomatic Java mitigation patterns
+/// (`res.setHeader("X-Count", Integer.toString(payload.size()))`,
+/// `res.setHeader("X-Class", loaded.getClass().getName())`) without
+/// special-casing the sink callee.
+fn apply_arg_type_safe_suppression(
+    result: &mut Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)>,
+    sink_caps: Cap,
+    _type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
+    inst: &SsaInst,
+    info: &NodeInfo,
+) {
+    use crate::ssa::type_facts::is_safe_string_producing_callee;
+    if result.is_empty() {
+        return;
+    }
+    // Type-suppression mask. An arg whose enclosing call is a "safe
+    // string" producer (numeric/boolean to-string conversion or a
+    // class-name accessor) emits a string provably free of the
+    // metacharacters that drive these injection classes.  The same
+    // mask the shared
+    // [`crate::ssa::type_facts::is_type_safe_for_sink`] gate uses for
+    // `Int` / `Bool` values, applied here at Call sinks against the
+    // arg-level callee text instead of the value-level type kind.
+    let type_suppressible = Cap::SQL_QUERY
+        | Cap::FILE_IO
+        | Cap::SHELL_ESCAPE
+        | Cap::HTML_ESCAPE
+        | Cap::SSRF
+        | Cap::DATA_EXFIL
+        | Cap::HEADER_INJECTION
+        | Cap::OPEN_REDIRECT;
+    let sink_fully_type_suppressible =
+        !sink_caps.is_empty() && (sink_caps & !type_suppressible).is_empty();
+    if !sink_fully_type_suppressible {
+        return;
+    }
+    // Identify SSA values whose enclosing arg position has an inner
+    // call to a safe-string producer
+    // ([`is_safe_string_producing_callee`]).  The CFG/SSA pipeline does
+    // not lower nested method invocations into separate Call SSA ops
+    // (the outer call's arg list captures the inner receiver's SSA
+    // value directly), so the only place to recover "this arg came
+    // from `Integer.toString` / `Class.getName` / ..." is the
+    // `info.arg_callees` text recorded by `extract_arg_callees`.
+    //
+    // Strict-additive: we only suppress when the entire arg expression
+    // IS a safe-string-producing call, not when a tainted value flows
+    // through a string concat ,  the latter is a real SQLi shape
+    // (`"SELECT ... LIMIT " + intExpr`) and must keep firing.
+    let SsaOp::Call { args, .. } = &inst.op else {
+        return;
+    };
+    let mut safe_string_values: std::collections::HashSet<SsaValue> =
+        std::collections::HashSet::new();
+    for (pos, arg_vals) in args.iter().enumerate() {
+        let safe = info
+            .arg_callees
+            .get(pos)
+            .and_then(|c| c.as_deref())
+            .map(is_safe_string_producing_callee)
+            .unwrap_or(false);
+        if safe {
+            for &v in arg_vals {
+                safe_string_values.insert(v);
+            }
+        }
+    }
+    if safe_string_values.is_empty() {
+        return;
+    }
+    result.retain(|(v, _, _)| !safe_string_values.contains(v));
 }
 
 /// Suppress plain-ident taint when a dotted-path field value used by the same

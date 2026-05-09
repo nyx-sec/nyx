@@ -814,7 +814,8 @@
         "py.xss.jinja_from_string"
       ],
       "allowed_alternative_rule_ids": [
-        "taint-unsanitised-flow"
+        "taint-unsanitised-flow",
+        "taint-template-injection"
       ],
       "forbidden_rule_ids": [],
       "expected_severity": "HIGH",

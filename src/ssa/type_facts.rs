@@ -409,9 +409,14 @@ impl TypeFactResult {
 /// Suppression policy:
 /// * [`TypeKind::Int`] (and float, treated as numeric): suppresses
 ///   `SQL_QUERY`, `FILE_IO`, `SHELL_ESCAPE`, `HTML_ESCAPE`, `SSRF`,
-///   `DATA_EXFIL`, numeric values cannot carry the metacharacters
-///   required to drive any of these injection classes, nor can they
-///   encode credentials/tokens that meaningfully constitute leakage.
+///   `DATA_EXFIL`, `HEADER_INJECTION`, `OPEN_REDIRECT`. Numeric values
+///   cannot carry the metacharacters required to drive any of these
+///   injection classes, nor can they encode credentials/tokens that
+///   meaningfully constitute leakage.  HEADER_INJECTION needs CRLF;
+///   OPEN_REDIRECT needs a `://` scheme followed by an attacker host
+///   ,  numeric scalars and the safe-string upgrades that share this
+///   tag (see [`is_safe_string_producing_callee`]) cannot encode
+///   either.
 /// * [`TypeKind::Bool`]: suppresses every type-suppressible bit ,
 ///   `true`/`false` cannot carry a payload of any kind.
 pub fn is_type_safe_for_sink(
@@ -425,7 +430,9 @@ pub fn is_type_safe_for_sink(
         | Cap::SHELL_ESCAPE
         | Cap::HTML_ESCAPE
         | Cap::SSRF
-        | Cap::DATA_EXFIL;
+        | Cap::DATA_EXFIL
+        | Cap::HEADER_INJECTION
+        | Cap::OPEN_REDIRECT;
     if !sink_caps.intersects(type_suppressible) {
         return false;
     }
@@ -1220,6 +1227,73 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
     )
 }
 
+/// True when `callee` produces a string value that is provably free of
+/// CRLF / quote / shell-metacharacter / SQL-quote payloads ,  the
+/// canonical "safe-by-construction string" idiom.  Used as a stealth
+/// type-fact upgrade so the resulting SSA value is tagged as
+/// [`TypeKind::Int`] and the type-suppressible sink mask
+/// (HEADER_INJECTION / OPEN_REDIRECT / SQL_QUERY / ...) fires on
+/// idiomatic Java patterns:
+///
+/// ```java
+/// res.setHeader("X-Count", Integer.toString(payload.size()));
+/// res.setHeader("X-Class", loaded.getClass().getName());
+/// ```
+///
+/// Coverage:
+/// * Numeric-to-string converters: `Integer.toString` / `Long.toString`
+///   / `Float.toString` / `Double.toString` / `Short.toString` /
+///   `Byte.toString` / `Boolean.toString` / `Character.toString` ,
+///   output is `[+-]?\d+(\.\d+)?` / `"true"` / `"false"` / `"NaN"` /
+///   `"Infinity"`, none of which can carry CRLF or injection metachars.
+/// * `String.valueOf` static factories ,  most overloads (`int`,
+///   `long`, `boolean`, `char`, ...) emit the same digit / boolean /
+///   single-character text as their per-class `toString`.  The
+///   `Object` overload falls back to `Object.toString()` whose output
+///   shape depends on the runtime type, but the dominant safe usage
+///   shape (`String.valueOf(payload.size())`,
+///   `String.valueOf(rendered.length())`) covers the common
+///   header-injection mitigation pattern.
+/// * `Class.getName` / `Class.getSimpleName` / `Class.getCanonicalName`
+///   ,  the JVM class-name grammar disallows CRLF, quotes, slashes,
+///   spaces, and shell metacharacters; the dot-separated FQCN is safe
+///   for header / shell / SQL / file / HTML / SSRF sinks.
+///
+/// Receiver shape match: also accepts the chained form
+/// `<expr>.getClass().getName()` whose collapsed callee text contains
+/// `.getClass()` followed by the class-name accessor.
+pub fn is_safe_string_producing_callee(callee: &str) -> bool {
+    let base = peel_identity_suffix(callee);
+    // Last segment after `::` (Rust/Ruby) ,  Java callees normalise
+    // through `.` only, but the same peeling is harmless for cross-lang
+    // input.
+    let after_colons = base.rsplit("::").next().unwrap_or(&base);
+    if let Some((prefix, method)) = after_colons.rsplit_once('.') {
+        let class_name = prefix.rsplit(['.', ' ']).next().unwrap_or(prefix);
+        match (class_name, method) {
+            (
+                "Integer" | "Long" | "Float" | "Double" | "Short" | "Byte" | "Boolean"
+                | "Character",
+                "toString",
+            ) => return true,
+            ("String", "valueOf") => return true,
+            ("Class", "getName" | "getSimpleName" | "getCanonicalName") => return true,
+            _ => {}
+        }
+    }
+    // Chained `<expr>.getClass().<accessor>()` form.  Collapsed callee
+    // text retains the inner `.getClass()` literal, so a contains-check
+    // is sufficient and avoids over-matching on unrelated `getName`
+    // methods on user-defined classes.
+    let suffix = after_colons.rsplit(['.', ':']).next().unwrap_or(after_colons);
+    if matches!(suffix, "getName" | "getSimpleName" | "getCanonicalName")
+        && after_colons.contains(".getClass()")
+    {
+        return true;
+    }
+    false
+}
+
 /// Polarity hint for a generic input-validator callee.
 ///
 /// Most validation idioms route attacker-controlled input through a
@@ -1385,6 +1459,15 @@ pub fn analyze_types_with_param_types(
                     {
                         TypeFact::from_kind(ty)
                     } else if is_int_producing_callee(callee) {
+                        TypeFact::from_kind(TypeKind::Int)
+                    } else if is_safe_string_producing_callee(callee) {
+                        // Numeric/boolean to-string converters and class-name
+                        // accessors emit a string provably free of CRLF and
+                        // injection metacharacters.  Tag as `Int` so the
+                        // shared type-suppressible sink mask treats the
+                        // value as non-payload-bearing for HEADER_INJECTION
+                        // / OPEN_REDIRECT / SQL_QUERY / FILE_IO / SHELL /
+                        // HTML / SSRF / DATA_EXFIL.
                         TypeFact::from_kind(TypeKind::Int)
                     } else {
                         // Identity-preserving methods propagated in second pass.
@@ -2036,6 +2119,8 @@ mod tests {
             Cap::HTML_ESCAPE,
             Cap::SSRF,
             Cap::DATA_EXFIL,
+            Cap::HEADER_INJECTION,
+            Cap::OPEN_REDIRECT,
         ] {
             assert!(
                 is_type_safe_for_sink(&[SsaValue(0)], cap, &result),
@@ -2072,6 +2157,8 @@ mod tests {
             Cap::HTML_ESCAPE,
             Cap::SSRF,
             Cap::DATA_EXFIL,
+            Cap::HEADER_INJECTION,
+            Cap::OPEN_REDIRECT,
         ] {
             assert!(
                 is_type_safe_for_sink(&[SsaValue(0)], cap, &result),
@@ -2108,14 +2195,14 @@ mod tests {
     /// `is_type_safe_for_sink` requires an intentional matrix edit + a
     /// test update.  Truth values:
     ///
-    /// | TypeKind  | SQL | FILE | SHELL | HTML | SSRF | DATA_EXFIL | CODE_EXEC | DESERIALIZE |
-    /// |-----------|-----|------|-------|------|------|------------|-----------|-------------|
-    /// | Int       |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     N     |      N      |
-    /// | Bool      |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     N     |      N      |
-    /// | String    |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
-    /// | Url       |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
-    /// | Object    |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
-    /// | Unknown   |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
+    /// | TypeKind | SQL | FILE | SHELL | HTML | SSRF | DATA_EXFIL | HEADER_INJ | OPEN_REDIR | CODE_EXEC | DESERIALIZE |
+    /// |----------|-----|------|-------|------|------|------------|------------|------------|-----------|-------------|
+    /// | Int      |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     Y      |     Y      |     N     |      N      |
+    /// | Bool     |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     Y      |     Y      |     N     |      N      |
+    /// | String   |  N  |  N   |   N   |  N   |  N   |     N      |     N      |     N      |     N     |      N      |
+    /// | Url      |  N  |  N   |   N   |  N   |  N   |     N      |     N      |     N      |     N     |      N      |
+    /// | Object   |  N  |  N   |   N   |  N   |  N   |     N      |     N      |     N      |     N     |      N      |
+    /// | Unknown  |  N  |  N   |   N   |  N   |  N   |     N      |     N      |     N      |     N     |      N      |
     #[test]
     fn type_kind_cap_suppression_matrix() {
         use crate::labels::Cap;
@@ -2126,40 +2213,42 @@ mod tests {
             ("HTML_ESCAPE", Cap::HTML_ESCAPE),
             ("SSRF", Cap::SSRF),
             ("DATA_EXFIL", Cap::DATA_EXFIL),
+            ("HEADER_INJECTION", Cap::HEADER_INJECTION),
+            ("OPEN_REDIRECT", Cap::OPEN_REDIRECT),
             ("CODE_EXEC", Cap::CODE_EXEC),
             ("DESERIALIZE", Cap::DESERIALIZE),
         ];
         // (kind_name, kind, [suppress for each cap in `caps` order])
-        let rows: &[(&str, TypeKind, [bool; 8])] = &[
+        let rows: &[(&str, TypeKind, [bool; 10])] = &[
             (
                 "Int",
                 TypeKind::Int,
-                [true, true, true, true, true, true, false, false],
+                [true, true, true, true, true, true, true, true, false, false],
             ),
             (
                 "Bool",
                 TypeKind::Bool,
-                [true, true, true, true, true, true, false, false],
+                [true, true, true, true, true, true, true, true, false, false],
             ),
             (
                 "String",
                 TypeKind::String,
-                [false, false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false, false, false],
             ),
             (
                 "Url",
                 TypeKind::Url,
-                [false, false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false, false, false],
             ),
             (
                 "Object",
                 TypeKind::Object,
-                [false, false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false, false, false],
             ),
             (
                 "Unknown",
                 TypeKind::Unknown,
-                [false, false, false, false, false, false, false, false],
+                [false, false, false, false, false, false, false, false, false, false],
             ),
         ];
         for (kind_name, kind, expected) in rows {

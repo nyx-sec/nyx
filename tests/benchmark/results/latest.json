@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-04T17:11:50Z",
+  "timestamp": "2026-05-09T22:19:23Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,7 +9,7 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:414494ab1b6881a9b78eca38e26561231f78767480399fda73a477e23a9fcbaa",
+  "ground_truth_hash": "sha256:71deecd25a3cb023775bc2465e171c5836a85d048b3a5a9652a49b4c59bf5f89",
   "corpus_size": 565,
   "cases_run": 562,
   "cases_skipped": 3,
@@ -1420,13 +1420,17 @@
       "language": "java",
       "vuln_class": "safe",
       "is_vulnerable": false,
-      "outcome_file_level": "TN",
-      "outcome_rule_level": "TN",
+      "outcome_file_level": "FP",
+      "outcome_rule_level": "FP",
       "outcome_location_level": null,
       "matched_rule_ids": [],
-      "unexpected_rule_ids": [],
-      "all_finding_ids": [],
-      "security_finding_count": 0,
+      "unexpected_rule_ids": [
+        "taint-header-injection (source 27:28)"
+      ],
+      "all_finding_ids": [
+        "taint-header-injection (source 27:28)"
+      ],
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -1456,13 +1460,17 @@
       "language": "java",
       "vuln_class": "safe",
       "is_vulnerable": false,
-      "outcome_file_level": "TN",
-      "outcome_rule_level": "TN",
+      "outcome_file_level": "FP",
+      "outcome_rule_level": "FP",
       "outcome_location_level": null,
       "matched_rule_ids": [],
-      "unexpected_rule_ids": [],
-      "all_finding_ids": [],
-      "security_finding_count": 0,
+      "unexpected_rule_ids": [
+        "taint-header-injection (source 29:23)"
+      ],
+      "all_finding_ids": [
+        "taint-header-injection (source 29:23)"
+      ],
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -1477,11 +1485,14 @@
       "matched_rule_ids": [
         "java.deser.snakeyaml_unsafe_constructor"
       ],
-      "unexpected_rule_ids": [],
-      "all_finding_ids": [
-        "java.deser.snakeyaml_unsafe_constructor"
+      "unexpected_rule_ids": [
+        "taint-header-injection (source 34:23)"
       ],
-      "security_finding_count": 1,
+      "all_finding_ids": [
+        "java.deser.snakeyaml_unsafe_constructor",
+        "taint-header-injection (source 34:23)"
+      ],
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -1644,14 +1655,14 @@
       "vuln_class": "ssrf",
       "is_vulnerable": true,
       "outcome_file_level": "TP",
-      "outcome_rule_level": "TP",
+      "outcome_rule_level": "FN",
       "outcome_location_level": null,
-      "matched_rule_ids": [
-        "taint-unsanitised-flow (source 52:30)"
+      "matched_rule_ids": [],
+      "unexpected_rule_ids": [
+        "taint-header-injection (source 52:30)"
       ],
-      "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "taint-unsanitised-flow (source 52:30)"
+        "taint-header-injection (source 52:30)"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -2477,12 +2488,12 @@
       "outcome_location_level": "TP",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 73:5)",
-        "taint-unsanitised-flow (source 72:20)"
+        "taint-unsanitised-flow (source 73:5)"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "taint-unsanitised-flow (source 73:5)",
-        "taint-unsanitised-flow (source 72:20)"
+        "taint-unsanitised-flow (source 73:5)"
       ],
       "security_finding_count": 2,
       "non_security_finding_count": 0
@@ -3748,13 +3759,15 @@
       "outcome_rule_level": "TP",
       "outcome_location_level": "TP",
       "matched_rule_ids": [
-        "state-resource-leak"
+        "state-resource-leak",
+        "taint-unsanitised-flow (source 6:23)"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "state-resource-leak"
+        "state-resource-leak",
+        "taint-unsanitised-flow (source 6:23)"
       ],
-      "security_finding_count": 1,
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -6846,6 +6859,7 @@
       "outcome_rule_level": "TP",
       "outcome_location_level": "TP",
       "matched_rule_ids": [
+        "taint-unsanitised-flow (source 17:11)",
         "taint-unsanitised-flow (source 17:11)"
       ],
       "unexpected_rule_ids": [
@@ -6853,11 +6867,12 @@
         "py.sqli.execute_format"
       ],
       "all_finding_ids": [
+        "taint-unsanitised-flow (source 17:11)",
         "state-resource-leak",
         "py.sqli.execute_format",
         "taint-unsanitised-flow (source 17:11)"
       ],
-      "security_finding_count": 3,
+      "security_finding_count": 4,
       "non_security_finding_count": 0
     },
     {
@@ -6892,11 +6907,11 @@
       "outcome_rule_level": "TP",
       "outcome_location_level": "TP",
       "matched_rule_ids": [
-        "taint-unsanitised-flow (source 5:12)"
+        "taint-template-injection (source 5:12)"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "taint-unsanitised-flow (source 5:12)"
+        "taint-template-injection (source 5:12)"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -9570,13 +9585,17 @@
       "language": "typescript",
       "vuln_class": "safe",
       "is_vulnerable": false,
-      "outcome_file_level": "TN",
-      "outcome_rule_level": "TN",
+      "outcome_file_level": "FP",
+      "outcome_rule_level": "FP",
       "outcome_location_level": null,
       "matched_rule_ids": [],
-      "unexpected_rule_ids": [],
-      "all_finding_ids": [],
-      "security_finding_count": 0,
+      "unexpected_rule_ids": [
+        "taint-unsanitised-flow (source 7:5)"
+      ],
+      "all_finding_ids": [
+        "taint-unsanitised-flow (source 7:5)"
+      ],
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -10033,33 +10052,35 @@
       "outcome_rule_level": "TP",
       "outcome_location_level": "TP",
       "matched_rule_ids": [
-        "taint-unsanitised-flow (source 7:5)"
+        "taint-unsanitised-flow (source 7:5)",
+        "taint-unsanitised-flow (source 6:17)"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "taint-unsanitised-flow (source 7:5)"
+        "taint-unsanitised-flow (source 7:5)",
+        "taint-unsanitised-flow (source 6:17)"
       ],
-      "security_finding_count": 1,
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     }
   ],
   "aggregate_file_level": {
     "tp": 275,
-    "fp": 0,
+    "fp": 3,
     "fn_": 0,
-    "tn": 287,
-    "precision": 1.0,
+    "tn": 284,
+    "precision": 0.9892086330935251,
     "recall": 1.0,
-    "f1": 1.0
+    "f1": 0.9945750452079565
   },
   "aggregate_rule_level": {
-    "tp": 275,
-    "fp": 0,
-    "fn_": 0,
-    "tn": 287,
-    "precision": 1.0,
-    "recall": 1.0,
-    "f1": 1.0
+    "tp": 274,
+    "fp": 3,
+    "fn_": 1,
+    "tn": 284,
+    "precision": 0.9891696750902527,
+    "recall": 0.9963636363636363,
+    "f1": 0.9927536231884057
   },
   "by_language": {
     "c": {
@@ -10091,21 +10112,21 @@
     },
     "java": {
       "tp": 23,
-      "fp": 0,
+      "fp": 2,
       "fn_": 0,
-      "tn": 23,
-      "precision": 1.0,
+      "tn": 21,
+      "precision": 0.92,
       "recall": 1.0,
-      "f1": 1.0
+      "f1": 0.9583333333333334
     },
     "javascript": {
-      "tp": 25,
+      "tp": 24,
       "fp": 0,
-      "fn_": 0,
+      "fn_": 1,
       "tn": 32,
       "precision": 1.0,
-      "recall": 1.0,
-      "f1": 1.0
+      "recall": 0.96,
+      "f1": 0.9795918367346939
     },
     "php": {
       "tp": 22,
@@ -10145,12 +10166,12 @@
     },
     "typescript": {
       "tp": 36,
-      "fp": 0,
+      "fp": 1,
       "fn_": 0,
-      "tn": 27,
-      "precision": 1.0,
+      "tn": 26,
+      "precision": 0.972972972972973,
       "recall": 1.0,
-      "f1": 1.0
+      "f1": 0.9863013698630138
     }
   },
   "by_vuln_class": {
@@ -10291,12 +10312,12 @@
     },
     "safe": {
       "tp": 0,
-      "fp": 0,
+      "fp": 3,
       "fn_": 0,
-      "tn": 284,
-      "precision": 1.0,
+      "tn": 281,
+      "precision": 0.0,
       "recall": 1.0,
-      "f1": 1.0
+      "f1": 0.0
     },
     "secrets": {
       "tp": 1,
@@ -10326,13 +10347,13 @@
       "f1": 1.0
     },
     "ssrf": {
-      "tp": 32,
+      "tp": 31,
       "fp": 0,
-      "fn_": 0,
+      "fn_": 1,
       "tn": 0,
       "precision": 1.0,
-      "recall": 1.0,
-      "f1": 1.0
+      "recall": 0.96875,
+      "f1": 0.9841269841269841
     },
     "xss": {
       "tp": 24,
@@ -10346,31 +10367,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 85,
-      "fp": 114,
-      "fn_": 190,
-      "tn": 173,
-      "precision": 0.4271356783919598,
-      "recall": 0.3090909090909091,
-      "f1": 0.3586497890295359
+      "tp": 84,
+      "fp": 115,
+      "fn_": 191,
+      "tn": 172,
+      "precision": 0.4221105527638191,
+      "recall": 0.3054545454545455,
+      "f1": 0.35443037974683544
     },
     ">=Low": {
-      "tp": 86,
-      "fp": 142,
-      "fn_": 189,
-      "tn": 145,
-      "precision": 0.37719298245614036,
-      "recall": 0.31272727272727274,
-      "f1": 0.341948310139165
+      "tp": 85,
+      "fp": 143,
+      "fn_": 190,
+      "tn": 144,
+      "precision": 0.37280701754385964,
+      "recall": 0.3090909090909091,
+      "f1": 0.33797216699801197
     },
     ">=Medium": {
-      "tp": 86,
-      "fp": 133,
-      "fn_": 189,
-      "tn": 154,
-      "precision": 0.3926940639269406,
-      "recall": 0.31272727272727274,
-      "f1": 0.3481781376518218
+      "tp": 85,
+      "fp": 134,
+      "fn_": 190,
+      "tn": 153,
+      "precision": 0.3881278538812785,
+      "recall": 0.3090909090909091,
+      "f1": 0.3441295546558704
     }
   }
 }
