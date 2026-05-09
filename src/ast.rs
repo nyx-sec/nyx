@@ -3738,15 +3738,18 @@ pub(crate) fn name_is_non_crypto(name: &str) -> bool {
         if prev_pos == 0 {
             return true;
         }
-        let prev_char_orig = bytes_orig[prev_pos - 1] as char;
-        // Word boundary: underscore, digit, etc.
-        if !prev_char_orig.is_ascii_alphabetic() {
+        // Word boundary: previous byte is ASCII non-letter (underscore,
+        // digit, etc.).  Treat non-ASCII (UTF-8 continuation / leading
+        // bytes) conservatively as part of an identifier letter — no
+        // boundary — to avoid mis-classifying `ëhash`-style names that
+        // have no real word break before the suffix.
+        let prev_byte = bytes_orig[prev_pos - 1];
+        if prev_byte.is_ascii() && !prev_byte.is_ascii_alphabetic() {
             return true;
         }
         // CamelCase boundary: suffix starts with an uppercase letter
         // in the original casing (`storageId`, `tableHash`, `sqlMd5`).
-        let suffix_first_orig = bytes_orig[prev_pos] as char;
-        if suffix_first_orig.is_ascii_uppercase() {
+        if bytes_orig[prev_pos].is_ascii_uppercase() {
             return true;
         }
         // Long stand-alone suffix (≥4 chars) — accept without boundary.
@@ -5196,6 +5199,17 @@ fn name_is_non_crypto_recognises_word_boundary_suffixes() {
     assert!(!name_is_non_crypto("result"));
     assert!(!name_is_non_crypto("output"));
     assert!(!name_is_non_crypto(""));
+
+    // Non-ASCII before a short suffix should NOT be treated as a word
+    // boundary (no false-positive classification on identifiers like
+    // `tëhash` whose previous char is a Unicode letter, not punctuation).
+    assert!(!name_is_non_crypto("tëid"));
+    // Non-ASCII before a long (≥4) suffix still classifies via the
+    // length fallback, matching the `columnnameshashes` shape.
+    assert!(name_is_non_crypto("tëhash"));
+    // Non-ASCII before a real underscore-prefixed suffix continues to
+    // classify via the underscore boundary.
+    assert!(name_is_non_crypto("tablë_id"));
 }
 
 #[test]

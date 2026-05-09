@@ -1202,7 +1202,7 @@ fn run_topo_batches(
                         batch = batch_idx,
                         dirty = dirty_files.len(),
                         "SCC converged by snapshot but dirty_files non-empty; \
-                         call graph disagrees with summary diff — accepting \
+                         call graph disagrees with summary diff, accepting \
                          snapshot as authoritative"
                     );
                     converged = true;
@@ -1250,7 +1250,7 @@ fn run_topo_batches(
                     cap = scc_cap,
                     cross_file = cross_file_scc,
                     reason = reason.tag(),
-                    "SCC batch did not converge within safety cap — results \
+                    "SCC batch did not converge within safety cap, results \
                      may be imprecise. This usually indicates a very large \
                      mutually-recursive region or a non-monotone summary \
                      refinement; please file a bug with a reproducer."

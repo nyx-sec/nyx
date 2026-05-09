@@ -19,15 +19,15 @@ Handlers registered through attribute macros (`#[get("/path")]`, `#[routes::path
 
 ## Caller-scope-entity exemption
 
-`<entity>.id` / `<entity>.pk` is not flagged when `<entity>` is a unit parameter named after a multi-tenant scope primitive: `organization` / `org`, `project`, `team`, `workspace`, `tenant`, `account`, `community`, `group`, `repository` / `repo`, `company`. The argument represents the caller's scope, not a user-controlled target, so internal helpers like `def get_environments(request, organization): Environment.objects.filter(organization_id=organization.id, …)` inherit the caller's authorization. Other field names (`.name`, `.slug`) still flag, and `user` / `member` / `actor` are deliberately excluded — those are handled by the actor-context recogniser.
+`<entity>.id` / `<entity>.pk` is not flagged when `<entity>` is a unit parameter named after a multi-tenant scope primitive: `organization` / `org`, `project`, `team`, `workspace`, `tenant`, `account`, `community`, `group`, `repository` / `repo`, `company`. The argument represents the caller's scope, not a user-controlled target, so internal helpers like `def get_environments(request, organization): Environment.objects.filter(organization_id=organization.id, …)` inherit the caller's authorization. Other field names (`.name`, `.slug`) still flag, and `user` / `member` / `actor` are deliberately excluded; those are handled by the actor-context recogniser.
 
 ## Project-level web-framework gate (Rust)
 
 In Rust, the `context_inputs` and param-name arms of the user-input heuristic are gated by a project-level web-framework signal. The signal is three-valued:
 
-- `Some(true)` — the project's `Cargo.toml` names `axum`, `actix-web`, or `rocket`, OR the file directly imports one (`axum::`, `actix_web::`, `rocket::`, `axum_extra::`). Heuristics stay on.
-- `Some(false)` — `Cargo.toml` was inspected and named no web framework, AND the file does not directly import one. Heuristics off; only `RouteHandler` classification (concrete route-registration evidence) survives.
-- `None` — no detection ran (single-file scan with no project root). Heuristics on; behavior unchanged.
+- `Some(true)`: the project's `Cargo.toml` names `axum`, `actix-web`, or `rocket`, OR the file directly imports one (`axum::`, `actix_web::`, `rocket::`, `axum_extra::`). Heuristics stay on.
+- `Some(false)`: `Cargo.toml` was inspected and named no web framework, AND the file does not directly import one. Heuristics off; only `RouteHandler` classification (concrete route-registration evidence) survives.
+- `None`: no detection ran (single-file scan with no project root). Heuristics on; behavior unchanged.
 
 This avoids a class of FPs in non-web Rust crates where a debug-session handle named `session` would trip on `session.update(cx, …)`-style desktop-app code. Other languages keep prior behavior; the gate is currently Rust-only.
 

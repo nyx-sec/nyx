@@ -97,7 +97,7 @@ asserts every finding carries a valid verdict label.
    `scripts/validate_recall.sh <target> ~/oss/<target>`.
 4. If the lift is intentional, recapture:
    `scripts/validate_recall.sh <target> ~/oss/<target> --capture`.
-5. Spot-check a handful of new findings — open the file at
+5. Spot-check a handful of new findings. Open the file at
    `path_suffix:line` and confirm the source-to-sink flow is real.
    Hand-label them `TP`/`FP`.
 6. Commit the updated `tests/recall_targets/<target>.json`.
@@ -107,17 +107,17 @@ asserts every finding carries a valid verdict label.
 | Target            | Pinned commit | Findings | TP | FP | needs_review |
 |-------------------|---------------|----------|----|----|--------------|
 | `cal_com`         | `d278d6c9`    | 662      | 0  | 4  | 658          |
-| `vercel_commerce` | unknown       | 0 (placeholder) | — | — | — |
-| `shadcn_examples` | unknown       | 0 (placeholder) | — | — | — |
-| `blitz_apps`      | unknown       | 0 (placeholder) | — | — | — |
+| `vercel_commerce` | unknown       | 0 (placeholder) |    |    |              |
+| `shadcn_examples` | unknown       | 0 (placeholder) |    |    |              |
+| `blitz_apps`      | unknown       | 0 (placeholder) |    |    |              |
 
 The `cal_com` capture used commit `d278d6c9bc535bf3f2c6ba0607654f78dd74d6ee`
 (`refactor: remove dead insights references (#29029)`). The 4 `FP`
 labels are `ts.crypto.math_random` hits inside `apps/web/playwright/`
 test fixtures, which are not a security context.
 
-The other three targets ship as placeholders (empty `findings`) —
-nobody has cloned them locally yet. Run `validate_recall.sh
+The other three targets ship as placeholders (empty `findings`).
+Nobody has cloned them locally yet. Run `validate_recall.sh
 <target> <clone> --capture` to populate. The schema test still passes
 because `[]` is a valid `findings` array with zero entries to check.
 
@@ -156,7 +156,7 @@ and the runner accepts a `--lang` flag to select the target set.
 | ruby   | rails        | https://github.com/rails/rails               | placeholder             | 0        | Capture against the `actionpack/` subtree once cloned. |
 
 Captures dated `2026-05-09` (UTC). Counts are deduplicated tuples
-`(rule_id, path_suffix, line)` — duplicate raw findings collapse on
+`(rule_id, path_suffix, line)`. Duplicate raw findings collapse on
 the diff key, so the schema-test count and diff-mode `unchanged_total`
 may differ from the `findings | length` total by a handful of
 duplicate sites. The diff key is what matters for regression
@@ -165,29 +165,29 @@ detection.
 ### Per-lang TP/FP splits
 
 Every captured finding ships with `verdict: "needs_review"` from
-`--capture`. Hand-triage is bounded but pending — none of the Phase 17
+`--capture`. Hand-triage is bounded but pending; none of the Phase 17
 captures are sweep-labelled yet. Use the per-lang dominant rule_id
 clusters above as the priority queue:
 
-- **PHP** — `cfg-unguarded-sink` and `taint-prototype-pollution` are
+- **PHP**: `cfg-unguarded-sink` and `taint-prototype-pollution` are
   the FP-dominant clusters across drupal / nextcloud / phpmyadmin
   (CMS routing + JS object construction). `php.deser.unserialize` is
-  the highest-value TP cluster on joomla (17) and drupal (83) — see
+  the highest-value TP cluster on joomla (17) and drupal (83). See
   `project_realrepo_joomla.md` 2026-05-03 for the magic-method
   passthrough fix that already filters one shape.
-- **Java** — `taint-unsanitised-flow` (61) and `state-resource-leak`
+- **Java**: `taint-unsanitised-flow` (61) and `state-resource-leak`
   (60) are openmrs's leading clusters. The JPA Criteria-API fix
-  already absorbed the `cfg-unguarded-sink` cluster (216 → 24);
+  already absorbed the `cfg-unguarded-sink` cluster (216 to 24);
   remaining Hibernate / Spring resource-management FPs are the next
   triage target.
-- **Python** — `cfg-unguarded-sink` (252) on airflow is dominated by
+- **Python**: `cfg-unguarded-sink` (252) on airflow is dominated by
   Airflow's scheduler / DB plumbing; `py.auth.token_override_*`
   (83) and `py.auth.missing_ownership_check` (61) are the auth-rule
   noise typical of an admin/operator codebase.
-- **Go** — gin's 20 findings are mostly test-corpus artifacts
+- **Go**: gin's 20 findings are mostly test-corpus artifacts
   (`gin_test.go`, `routes_test.go`); 4 of 4 `go.transport.insecure_skip_verify`
   hits are inside `gin*_test.go` and are legitimate test setup.
-- **Rust / Ruby** — placeholder; capture once a local clone exists.
+- **Rust / Ruby**: placeholder. Capture once a local clone exists.
 
 ### `--lang` runner usage
 
