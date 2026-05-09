@@ -5419,4 +5419,52 @@ mod tests {
             ));
         }
     }
+
+    #[test]
+    fn trpc_options_destructure_param_seeds_self_scoped_session_base() {
+        // Cal.com-shaped TRPC handler: parameter is a destructured
+        // options alias whose `ctx` field's nested type literal
+        // references `TrpcSessionUser`. `FileMeta::scan` adds
+        // `GetOptions` to `trpc_alias_names` (body-text marker hit);
+        // `collect_trpc_ctx_param` then fires on the
+        // `required_parameter` and seeds `ctx.user` into the unit's
+        // `self_scoped_session_bases`.
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+type TrpcSessionUser = { id: number };
+type GetOptions = {
+  ctx: { user: NonNullable<TrpcSessionUser> };
+  input: { id: number };
+};
+export const handleGet = async ({ ctx, input }: GetOptions) => {
+  return prisma.booking.findFirst({ where: { id: input.id, userId: ctx.user.id } });
+};
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let meta = super::FileMeta::scan(tree.root_node(), src);
+        assert!(
+            meta.trpc_alias_names.contains("GetOptions"),
+            "trpc_alias_names missing GetOptions: {:?}",
+            meta.trpc_alias_names
+        );
+
+        let rules = crate::auth_analysis::config::AuthAnalysisRules::disabled();
+        let mut model = crate::auth_analysis::model::AuthorizationModel::default();
+        super::collect_top_level_units(tree.root_node(), src, &rules, &mut model);
+        let unit = model
+            .units
+            .iter()
+            .find(|u| u.name.as_deref() == Some("handleGet"))
+            .expect("handleGet unit");
+        assert!(
+            unit.self_scoped_session_bases.contains("ctx.user"),
+            "self_scoped_session_bases missing ctx.user: {:?}",
+            unit.self_scoped_session_bases
+        );
+    }
 }

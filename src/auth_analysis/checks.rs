@@ -112,6 +112,40 @@ fn check_ownership_gaps(
                 if is_delegated_read_with_actor_context(unit, op, &relevant_subjects) {
                     continue;
                 }
+                // Owner-equality scoping: when the same call composes a
+                // foreign-id subject with an actor-context subject (e.g.
+                // `db.findFirst({where: {id: input.id, userId: ctx.user.id}})`
+                // in a TRPC handler), the actor pin tenant-scopes the
+                // query to the authenticated user.  The relevant_subjects
+                // filter has already excluded actor-context entries; if
+                // the unfiltered op.subjects still carries an
+                // actor-context subject, the missing co-binding is the
+                // owner-eq witness.
+                //
+                // `is_actor_context_subject` is constrained: it only
+                // accepts subjects whose base is in
+                // `is_self_scoped_session_base` (`req.user`,
+                // `ctx.session.user`, etc.) OR in the per-unit
+                // `self_scoped_session_bases` set populated by the
+                // typed-extractor pre-pass (TRPC alias matches,
+                // NextAuth callback formals).  Generic `user.id` /
+                // `me.id` does not qualify, so unrelated co-occurrences
+                // do not over-suppress.
+                //
+                // Trade-off: a privesc-via-`data` shape like
+                // `db.update({where: {id: input.id}, data: {ownerId: ctx.user.id}})`
+                // would also be suppressed because both subjects appear
+                // at the call site without arg-position info.  That
+                // pattern is rare and would need its own rule.  The
+                // owner-eq common case removes ~70 cal.com FPs and
+                // matches the canonical Express / TRPC scoping idiom.
+                let has_actor_co_subject = op
+                    .subjects
+                    .iter()
+                    .any(|s| is_actor_context_subject(s, unit));
+                if has_actor_co_subject {
+                    continue;
+                }
                 if !has_prior_subject_auth(unit, op, &relevant_subjects) {
                     findings.push(AuthFinding {
                         rule_id: rules.rule_id("missing_ownership_check"),

@@ -1064,6 +1064,22 @@ fn fp_guard_auth_nextauth_callback() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, cal.com-shaped TRPC handlers whose parameter is a
+/// destructured options alias (`{ ctx, input }: GetOptions`) where
+/// `GetOptions` is a local type alias whose `ctx.user` is typed
+/// `NonNullable<TrpcSessionUser>`. `collect_trpc_ctx_param` in
+/// `auth_analysis::extract::common` recognises three shapes:
+/// destructured shorthand, destructured rename (`ctx: c`), and plain
+/// identifier (`opts: GetOptions`). All three add the appropriate
+/// session-base entry to `self_scoped_session_bases` so `ctx.user.id`
+/// resolves as authenticated actor context, not foreign-id targeting.
+#[test]
+fn fp_guard_auth_trpc_handler_options() {
+    let dir = fixture_path("fp_guards/auth_trpc_handler_options");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, C/C++ buffer-overflow pattern rules
 /// (`c.memory.strcpy`, `strcat`, `sprintf`) over-fire when the source /
 /// format-string argument is a literal whose contributed length is

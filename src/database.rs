@@ -313,7 +313,17 @@ pub mod index {
             // workers on machines with more cores than that during the
             // parallel indexing pass.  Size the pool to comfortably hold
             // a connection per rayon thread plus a small slack.
-            let max_conns = (num_cpus::get() as u32 + 4).max(16);
+            //
+            // `NYX_INDEX_POOL_MAX` overrides the auto-sized default. Use it in
+            // fd-constrained environments (test sandboxes, containers with low
+            // ulimit) where many parallel indexed scans would otherwise exhaust
+            // EMFILE: each pooled SQLite WAL connection costs ~3 fds (db + -wal
+            // + -shm), so 30 parallel scans × 16 conns × 3 fds = 1440 fds.
+            let max_conns = std::env::var("NYX_INDEX_POOL_MAX")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|n| *n >= 1)
+                .unwrap_or_else(|| (num_cpus::get() as u32 + 4).max(16));
             let pool = Arc::new(Pool::builder().max_size(max_conns).build(manager)?);
 
             {

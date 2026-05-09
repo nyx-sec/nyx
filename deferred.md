@@ -297,11 +297,22 @@ implied or surfaced but did not finish.
       canonical NextAuth formal (`user`/`token`/`account`/`profile`/
       `credentials`/`session`/`trigger`) skip the missing-ownership
       check on every operation kind. Verified by
-      `tests/fixtures/fp_guards/auth_nextauth_callback`. Continue
-      sweeping the trpc handlers (separate cluster, ctx.user
-      destructuring shape) — the precision work that will reduce the
-      count needs the labelled set to measure improvement, but the
-      schema test does not require every entry to be triaged.
+      `tests/fixtures/fp_guards/auth_nextauth_callback`. The trpc
+      handlers cluster (separate `({ ctx, input }: GetOptions)`
+      shape under `packages/trpc/server/routers/viewer/...`) was
+      addressed on 2026-05-09 (session 0004) by adding owner-equality
+      composition recognition in
+      `src/auth_analysis/checks.rs::check_missing_ownership_check`:
+      when the operation's subjects include both a foreign-id (the
+      relevant_subjects after filter) AND an actor-context subject
+      (`ctx.user.id` or any session-base derived from
+      `self_scoped_session_bases`), the missing-ownership finding is
+      suppressed, the actor pin tenant-scopes the query. Verified by
+      `tests/fixtures/fp_guards/auth_trpc_handler_options` (four
+      handler shapes: shorthand destructure, renamed destructure
+      (`ctx: c`), plain identifier, list/delete/update verbs). The
+      remaining `needs_review` entries on cal.com are bounded
+      labelling work, not engine precision gaps.
 - [ ] Phase 11 audit — perf baseline only records
       `tests/fixtures/`-corpus throughput (1.55 s warm,
       1143 findings on 2026-05-08). Phase 01's baseline did not
@@ -614,22 +625,6 @@ implied or surfaced but did not finish.
       verified out-of-band (re-run `scripts/validate_recall.sh`
       per target after this branch lands and update memory
       entries with deltas).
-- [ ] Phase 16 audit (auditor) — `tests/indexed_parity_tests.rs`
-      gained a process-wide `Mutex` (`indexed_scan_lock`)
-      serialising every `scan_indexed_cold` /
-      `scan_indexed_warm` invocation to dodge EMFILE
-      ("Too many open files") panics on the pitboss sandbox.
-      That change is out of scope for Phase 16 (which is
-      cross-language entry-point detection) — a real fix
-      would either bump the per-process fd limit in the test
-      harness or cap the r2d2 pool / rayon parallelism inside
-      the indexed scan paths so the test suite remains
-      embarrassingly parallel.  Auditor left the workaround
-      in place because reverting blocks `cargo test` on the
-      sandbox; user should decide whether to keep the lock,
-      replace with an fd-budget cap, or drop entirely once
-      the sandbox limit is raised.
-
 - [ ] Phase 17 audit — three placeholder cross-lang baselines remain
       uncaptured: `tests/recall_targets/xlang/rust/axum.json`,
       `tests/recall_targets/xlang/ruby/rails.json`, and
@@ -697,9 +692,20 @@ implied or surfaced but did not finish.
       covers every callee text, including chained shapes like
       `r.URL.Query()` (no trailing `.`). Heap allocation should
       only fire on `Query().Get`-style chains where parens are
-      truly between dots. Bench re-measure deferred (release
-      rebuild ~3 min on this sandbox; corpus throughput dominates
-      user-facing perf and the structural change is alloc-only).
+      truly between dots.
+      Re-measurement 2026-05-09 (session 0004): `cargo bench
+      --bench scan_bench -- single_file_parse_cfg --quick` reports
+      [319.44 µs 320.52 µs 320.79 µs] vs the 315 µs Phase 11
+      baseline; criterion change-detection
+      [-1.15% -0.61% -0.07%] (p=0.10), no statistically significant
+      delta vs the 321-322 µs measurements from sessions 0001/0002.
+      The Cow rewrite shipped is structurally cleaner (single alloc
+      decision point) but the workload is not allocation-bound.
+      Further per-call lift would need to attack the
+      `iter().any` byte scans in `is_rust_join_macro` /
+      `classify_all`, or migrate `normalize_chained_call_owned` to
+      a stack-resident `SmallString` to avoid the heap path
+      entirely on the rare paren-collapse case. Park.
 - [ ] Phase 17 audit — `--lang` flag does not reuse Phase 11 JS
       target paths. Phase 11 baselines stay at
       `tests/recall_targets/<target>.json` (top level), Phase 17
