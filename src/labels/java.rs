@@ -186,7 +186,23 @@ pub static RULES: &[LabelRule] = &[
     // `java.nio.file.Path`; bare `normalize` would over-fire on
     // `Locale.normalize`, `BigDecimal.normalize`, etc.
     LabelRule {
-        matchers: &["Path.normalize"],
+        matchers: &[
+            "Path.normalize",
+            // Canonical Java path-traversal sanitiser idiom:
+            // `base.resolve(name).normalize()`.  CFG paren-strip yields
+            // callee text `<receiver>.resolve.normalize`; the bare 2-call
+            // `resolve.normalize` suffix is unique to `java.nio.file.Path`
+            // (no overload across the supported corpus produces the same
+            // chain text).  Case-sensitive on the leaf chain to avoid
+            // colliding with non-path `.resolve()`-then-`.normalize()`
+            // shapes in unrelated grammars.
+            "resolve.normalize",
+            // Receiver-bound shape `Paths.get(p).normalize()` — the
+            // `Paths.get` constructor mapping in `ssa/type_facts.rs` types
+            // the receiver as `FileHandle`, so the type-qualified resolver
+            // rewrites `<v>.normalize` → `FileHandle.normalize` here.
+            "FileHandle.normalize",
+        ],
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: true,
     },

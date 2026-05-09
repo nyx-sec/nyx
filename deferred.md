@@ -97,22 +97,6 @@ implied or surfaced but did not finish.
       Literal value, not a Sequelize instance — typing that result as
       `Sequelize` would mis-shape. Skip until a fixture surfaces a
       gap.
-- [ ] Phase 08 audit — the URL-constructor recognition path in
-      `analyze_types`, `transfer_abstract`, and the URL-arg
-      taint-propagation rule in `transfer_inst` all consult
-      `info.call.outer_callee` because the CFG-level text rewrite
-      for source-bearing assignments
-      (`const u = new URL(req.body.path, …)` →
-      `info.call.callee == "req.body.path"`) drops the original
-      constructor identifier from the SSA-level `callee` field. Other
-      `constructor_type` consumers still rely on `callee` alone.
-      Sweep them and route every one through the same
-      `callee || outer_callee` fallback so this CFG-level rewrite
-      cannot silently disable type inference for any other
-      constructor (e.g. ORM constructors with member-source args).
-      Out of scope for Phase 08 because URL is the only
-      currently-modelled constructor where the rewrite is observable
-      against a Phase-08 fixture.
 - [ ] Phase 08 audit — `new URL(path, base)` abstract-string seeding
       requires `base` to be a syntactic string literal (read from
       `info.call.arg_string_literals`). A two-arg form whose base is
@@ -407,35 +391,6 @@ implied or surfaced but did not finish.
       and re-walked).  Park the corpus-wide variant until a CI
       perf budget for ssa-equivalence-tests is established.
 
-- [ ] Phase 13 audit — Python pathlib FILE_IO sinks
-      (`Path.read_text`, `Path.write_text`, etc.) only fire on the
-      chained-construction shape `Path(name).read_text()` whose
-      paren-strip yields `Path.read_text`.  The receiver-bound shape
-      `p = Path(name); p.read_text()` evades the matcher (callee
-      text `p.read_text` doesn't suffix-match `Path.read_text`).
-      Bridging requires registering `Path` (or `pathlib.Path`) in
-      `src/ssa/type_facts.rs::constructor_type` for Python with a
-      `TypeKind::FileHandle` mapping plus `FileHandle.read_text` /
-      `FileHandle.write_text` etc. matchers in `src/labels/python.rs`.
-      Phase 13 deliberately scoped to chain-form-only to keep the
-      label rule list compact and avoid over-firing on unrelated
-      `*.read_text` / `*.write_text` methods.
-
-- [ ] Phase 13 audit — Java `Path.normalize` Sanitizer rule does
-      not fire on the canonical sanitiser chain `base.resolve(name)
-      .normalize()` (paren-strip yields `base.resolve.normalize`,
-      which suffix-matches neither `Path.normalize` nor `normalize`
-      bare).  The Phase 13 sanitized fixture relies on the
-      no-sink-reached pattern (`return candidate.toString()`) to
-      stay silent rather than the rule firing.  Bridging requires
-      either (a) registering `Paths.get` returning
-      `TypeKind::FileHandle` in `constructor_type` for Java + a
-      `FileHandle.normalize` matcher, or (b) adding a bare
-      `normalize` matcher (over-fires on `Locale.normalize`,
-      `BigDecimal.normalize`, etc.).  Park: the rule is registered
-      for documentation; the Phase 13 acceptance contract only
-      requires the sanitized fixture to stay silent.
-
 - [ ] Phase 13 audit — Python `Path.resolve` Sanitizer rule fires
       on any `.resolve()` chained on `Path(...)`; the phase prompt
       asked for `strict=True`-gated activation but the chain text
@@ -460,21 +415,6 @@ implied or surfaced but did not finish.
       monitor real-world recall targets for FP shapes and tighten
       to `Pathname.new` + downstream `.read` / `.write` chain
       detection if needed.
-
-- [ ] Phase 13 audit — Rust sanitized fixture
-      (`path_traversal_safe.rs`) takes a `req: Request` parameter
-      whose receiver chain `req.headers().get("X-Path").await`
-      classifies as `headers.get` (Source).  The `PathBuf::canonicalize`
-      / `starts_with(&base)` containment check is the canonical
-      Rust path-traversal sanitiser pattern, but the Phase 13
-      label rule set does not register a Rust-side sanitiser
-      (the phase explicitly listed Python / Java / Go only).
-      The fixture stays silent because no `tokio::fs::*` /
-      `std::fs::*` sink is reached; the canonicalise-and-validate
-      shape demonstrates the safe pattern for human readers
-      without needing a label rule.  Add a `Path.canonicalize`
-      Sanitizer(FILE_IO) rule in `src/labels/rust.rs` if a future
-      fixture lands a sink downstream of the canonical value.
 
 - [ ] Phase 14 audit — `extract_template_prefix` was extended beyond
       JS/TS to seed `string_prefix` for cross-language SSRF prefix
@@ -734,42 +674,6 @@ implied or surfaced but did not finish.
       sandbox; user should decide whether to keep the lock,
       replace with an fd-budget cap, or drop entirely once
       the sandbox limit is raised.
-- [ ] Phase 16 audit (auditor) — Express handler resolution
-      via `<receiver>.<verb>(...)` in
-      `src/entry_points/mod.rs::express_call_method` matches
-      any object whose method name is an HTTP verb, not just
-      Express `app` / `router` instances.  A non-Express call
-      like `someClient.post(handlerFn)` (e.g. an HTTP client
-      `.post(url, body)` that happens to take a callback as
-      its last named-argument shape) would map `handlerFn`
-      via `by_name`; if a function with that name later exists
-      in the same file it would be tagged
-      `EntryKind::ExpressRoute { method: POST }` and seeded as
-      adversary input.  Likely rare in practice (the seeding
-      policy for ExpressRoute already runs `seed_at_all=false`
-      so the FP surface is bounded), but a stricter recogniser
-      should require the receiver text to end in
-      `app` / `router` / `route` / `Router()` or follow an
-      `express()` / `Router()` constructor binding.
-- [ ] Phase 16 audit (auditor) — Spring `@RequestMapping(method
-      = RequestMethod.POST)` annotation always tags as
-      `EntryKind::SpringMapping { method: HttpMethod::GET }` —
-      `java_annotation_to_entry_kind` does not inspect
-      annotation arguments.  Same gap for
-      `@RequestMapping(value="/u", method=RequestMethod.PUT)`.
-      Verb-specific aliases (`@GetMapping` / `@PostMapping` /
-      etc.) work correctly.  Add an annotation-args parse
-      pass when a fixture surfaces a `@RequestMapping(method=…)`
-      controller relying on per-verb seeding.
-- [ ] Phase 16 audit (auditor) — Django `@api_view(['POST'])`
-      and `@require_http_methods(['POST'])` extract the first
-      method into a local but discard it (`let _ = method;`)
-      because `EntryKind::DjangoView` is a unit variant with
-      no `method` field, unlike its `FastApiRoute` /
-      `FlaskRoute` siblings.  When per-verb branching becomes
-      load-bearing for Django function-based views, promote
-      `DjangoView` to `DjangoView { method: HttpMethod }` and
-      stop discarding the parsed method.
 
 - [ ] Phase 17 audit — three placeholder cross-lang baselines remain
       uncaptured: `tests/recall_targets/xlang/rust/axum.json`,

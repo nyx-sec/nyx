@@ -110,6 +110,16 @@ pub static RULES: &[LabelRule] = &[
             "Path.write_text",
             "Path.read_bytes",
             "Path.write_bytes",
+            // Receiver-bound shapes (`p = Path(name); p.read_text()`)
+            // resolve via the `TypeKind::FileHandle` constructor mapping
+            // for `Path(...)` in `ssa/type_facts.rs`, which lets the
+            // type-qualified resolver rewrite `p.read_text` →
+            // `FileHandle.read_text` against the matchers below.
+            "FileHandle.open",
+            "FileHandle.read_text",
+            "FileHandle.write_text",
+            "FileHandle.read_bytes",
+            "FileHandle.write_bytes",
             "aiofiles.open",
             "shutil.copy",
             "shutil.copy2",
@@ -192,7 +202,7 @@ pub static RULES: &[LabelRule] = &[
     // pathlib method name; bare `resolve` is too broad (Django URL
     // resolvers, Promise.resolve in JS-style libs).
     LabelRule {
-        matchers: &["Path.resolve"],
+        matchers: &["Path.resolve", "FileHandle.resolve"],
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: true,
     },

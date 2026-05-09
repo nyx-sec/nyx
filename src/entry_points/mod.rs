@@ -85,7 +85,12 @@ pub enum EntryKind {
     /// the `HttpRequest`; for function-based the first param is the
     /// `HttpRequest`.  All formals are seeded as Source (the request
     /// object itself + any path-captured arguments).
-    DjangoView,
+    ///
+    /// `method` carries the HTTP verb derived from the function name
+    /// (CBV) or the first decorator argument (`@api_view(['POST'])` /
+    /// `@require_http_methods(['PUT'])`).  Defaults to `GET` when no
+    /// verb evidence is available.
+    DjangoView { method: HttpMethod },
     /// Python — FastAPI route registered via decorator `@app.get(...)`
     /// / `@router.post(...)`.  Formals are query / path / body
     /// extractors; every formal is seeded as Source.
@@ -545,10 +550,16 @@ fn walk_express_recursive(node: Node, bytes: &[u8], out: &mut ExpressHandlers) {
 
 /// Recognise an Express-style `app.METHOD(...)` / `router.METHOD(...)`
 /// call.  Returns the matching [`HttpMethod`] when the call shape is
-/// `<receiver>.<verb>(...)` with `<verb>` an HTTP method.  The
-/// receiver name is intentionally unconstrained: in practice any
-/// identifier ending in `app` / `router` / `route` carries the same
-/// meaning, but the verb name itself is the precise signal.
+/// `<receiver>.<verb>(...)` with `<verb>` an HTTP method AND the
+/// receiver text looks like an Express app / router / route binding.
+///
+/// The receiver allowlist (suffixes `app` / `router` / `route` and the
+/// constructor calls `express()` / `Router()`) keeps non-Express
+/// `<obj>.post(...)` shapes out of the entry-point set — e.g. an HTTP
+/// client `client.post(url, body, cb)` whose last positional argument
+/// happens to be a callback would otherwise be tagged as an
+/// `EntryKind::ExpressRoute` and propagate the seeding policy onto
+/// unrelated functions.
 fn express_call_method(call_node: Node, bytes: &[u8]) -> Option<HttpMethod> {
     let func = call_node.child_by_field_name("function")?;
     if func.kind() != "member_expression" {
@@ -556,7 +567,54 @@ fn express_call_method(call_node: Node, bytes: &[u8]) -> Option<HttpMethod> {
     }
     let prop = func.child_by_field_name("property")?;
     let name = prop.utf8_text(bytes).ok()?;
-    HttpMethod::from_ident(name)
+    let method = HttpMethod::from_ident(name)?;
+    let object = func.child_by_field_name("object")?;
+    if !express_receiver_text_matches(object, bytes) {
+        return None;
+    }
+    Some(method)
+}
+
+/// Returns `true` when `object` looks like an Express app / router /
+/// route binding.  Accepted shapes:
+///   * Identifier whose text is exactly `app` / `router` / `route` or
+///     ends with one of those (e.g. `apiRouter`, `userApp`).
+///   * Member expression whose property is `app` / `router` / `route`
+///     (e.g. `this.router`, `module.exports.app`).
+///   * Call expression whose callee is `express()` or `Router()`
+///     (e.g. `express().get(...)`, `Router().post(...)`).
+fn express_receiver_text_matches(object: Node, bytes: &[u8]) -> bool {
+    fn matches_suffix(text: &str) -> bool {
+        let lower = text.to_ascii_lowercase();
+        lower == "app"
+            || lower == "router"
+            || lower == "route"
+            || lower.ends_with("app")
+            || lower.ends_with("router")
+            || lower.ends_with("route")
+    }
+    match object.kind() {
+        "identifier" | "property_identifier" => object
+            .utf8_text(bytes)
+            .ok()
+            .is_some_and(matches_suffix),
+        "member_expression" => object
+            .child_by_field_name("property")
+            .and_then(|p| p.utf8_text(bytes).ok())
+            .is_some_and(matches_suffix),
+        "call_expression" => {
+            // `express()` / `Router()` constructor inline.
+            let Some(callee) = object.child_by_field_name("function") else {
+                return false;
+            };
+            let Ok(text) = callee.utf8_text(bytes) else {
+                return false;
+            };
+            let leaf = text.rsplit('.').next().unwrap_or(text).trim();
+            leaf == "express" || leaf == "Router" || leaf == "express.Router"
+        }
+        _ => false,
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -654,9 +712,7 @@ fn python_decorator_entry_kind(decorated: Node, bytes: &[u8]) -> Option<EntryKin
             let method = call_args
                 .and_then(|args| extract_first_method_in_list(args, bytes))
                 .unwrap_or(HttpMethod::GET);
-            // DRF / Django function-based view tagged as DjangoView.
-            let _ = method;
-            return Some(EntryKind::DjangoView);
+            return Some(EntryKind::DjangoView { method });
         }
     }
     None
@@ -703,7 +759,7 @@ fn python_django_method_kind(func_node: Node, bytes: &[u8]) -> Option<EntryKind>
     // `APIView` / `ViewSet`.
     let name_node = func_node.child_by_field_name("name")?;
     let name = name_node.utf8_text(bytes).ok()?;
-    HttpMethod::from_ident(name)?;
+    let method = HttpMethod::from_ident(name)?;
     let class = enclosing_python_class(func_node)?;
     let supers = class.child_by_field_name("superclasses")?;
     let mut cursor = supers.walk();
@@ -714,7 +770,7 @@ fn python_django_method_kind(func_node: Node, bytes: &[u8]) -> Option<EntryKind>
             || text.contains("ViewSet")
             || text.contains("TemplateView")
         {
-            return Some(EntryKind::DjangoView);
+            return Some(EntryKind::DjangoView { method });
         }
     }
     None
@@ -770,7 +826,7 @@ fn java_method_entry_kind(method: Node, bytes: &[u8]) -> Option<EntryKind> {
             "marker_annotation" | "annotation" => {
                 let name_node = ch.child_by_field_name("name")?;
                 let name = name_node.utf8_text(bytes).ok()?;
-                if let Some(kind) = java_annotation_to_entry_kind(name) {
+                if let Some(kind) = java_annotation_to_entry_kind(name, ch, bytes) {
                     return Some(kind);
                 }
             }
@@ -780,11 +836,21 @@ fn java_method_entry_kind(method: Node, bytes: &[u8]) -> Option<EntryKind> {
     None
 }
 
-fn java_annotation_to_entry_kind(name: &str) -> Option<EntryKind> {
+fn java_annotation_to_entry_kind(
+    name: &str,
+    annotation: Node,
+    bytes: &[u8],
+) -> Option<EntryKind> {
     match name {
-        "RequestMapping" => Some(EntryKind::SpringMapping {
-            method: HttpMethod::GET,
-        }),
+        "RequestMapping" => {
+            // `@RequestMapping(method = RequestMethod.POST)` carries the
+            // verb on the `method` element-value-pair; default to GET when
+            // absent (Spring itself defaults to "all verbs", but GET is
+            // the safest single-method approximation for seeding policy).
+            let method = extract_spring_request_mapping_method(annotation, bytes)
+                .unwrap_or(HttpMethod::GET);
+            Some(EntryKind::SpringMapping { method })
+        }
         "GetMapping" => Some(EntryKind::SpringMapping {
             method: HttpMethod::GET,
         }),
@@ -805,6 +871,45 @@ fn java_annotation_to_entry_kind(name: &str) -> Option<EntryKind> {
         }
         _ => None,
     }
+}
+
+/// Extract `method = RequestMethod.<VERB>` (or array form
+/// `method = {RequestMethod.POST, RequestMethod.PUT}`, taking the first
+/// entry) from a Java `@RequestMapping(...)` annotation node.
+fn extract_spring_request_mapping_method(annotation: Node, bytes: &[u8]) -> Option<HttpMethod> {
+    let args = annotation.child_by_field_name("arguments")?;
+    let mut cursor = args.walk();
+    for child in args.children(&mut cursor) {
+        if child.kind() != "element_value_pair" {
+            continue;
+        }
+        let key_node = child.child_by_field_name("key")?;
+        let key = key_node.utf8_text(bytes).ok()?;
+        if key != "method" {
+            continue;
+        }
+        let value = child.child_by_field_name("value")?;
+        if let Some(m) = http_method_from_request_method_text(value, bytes) {
+            return Some(m);
+        }
+    }
+    None
+}
+
+/// Parse `RequestMethod.POST` (or its bare leaf `POST`) from an
+/// `element_value` node.  Falls through to scan an array initialiser
+/// (`{RequestMethod.GET, RequestMethod.POST}`) and returns the first
+/// recognised verb.
+fn http_method_from_request_method_text(node: Node, bytes: &[u8]) -> Option<HttpMethod> {
+    let raw = node.utf8_text(bytes).ok()?;
+    let trimmed = raw.trim().trim_matches('{').trim_matches('}');
+    for token in trimmed.split(',') {
+        let leaf = token.trim().rsplit('.').next().unwrap_or("").trim();
+        if let Some(m) = HttpMethod::from_ident(leaf) {
+            return Some(m);
+        }
+    }
+    None
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1179,7 +1284,9 @@ class MyView(View):
 "#;
         let entries = detect_lang(src, "python", "views.py");
         assert!(
-            entries.values().any(|e| matches!(e, EntryKind::DjangoView)),
+            entries
+                .values()
+                .any(|e| matches!(e, EntryKind::DjangoView { .. })),
             "expected DjangoView; got {entries:?}"
         );
     }

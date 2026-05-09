@@ -597,6 +597,18 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "createStatement" | "prepareCall" => Some(TypeKind::DatabaseConnection),
             "FileInputStream" | "FileOutputStream" | "FileReader" | "FileWriter"
             | "BufferedReader" | "BufferedWriter" => Some(TypeKind::FileHandle),
+            // Phase 13 — `java.nio.file.Paths.get(...)` returns a `Path`,
+            // and `java.io.File(...)` is the legacy stdlib path handle.
+            // Tagging the receiver as `FileHandle` lets the type-qualified
+            // resolver rewrite chained ops like `.normalize()` /
+            // `.toAbsolutePath()` on the returned value via the new
+            // `FileHandle.*` matchers.  `get` matched on its own would
+            // over-fire (Map.get / List.get / etc.); the qualified
+            // `Paths.get` form is unambiguous.
+            "get" if callee == "Paths.get" || callee.ends_with(".Paths.get") => {
+                Some(TypeKind::FileHandle)
+            }
+            "File" => Some(TypeKind::FileHandle),
             "getWriter" | "getOutputStream" => Some(TypeKind::HttpResponse),
             // JPA / Hibernate Criteria API factory methods.  These are
             // unambiguous: `createCriteriaUpdate` / `createCriteriaDelete`
@@ -713,6 +725,25 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 Some(TypeKind::DatabaseConnection)
             } else if suffix == "open" && !callee.contains('.') {
                 // Bare `open()` is file I/O in Python
+                Some(TypeKind::FileHandle)
+            } else if callee == "Path"
+                || callee == "pathlib.Path"
+                || callee == "PurePath"
+                || callee == "pathlib.PurePath"
+                || callee == "PurePosixPath"
+                || callee == "pathlib.PurePosixPath"
+                || callee == "PureWindowsPath"
+                || callee == "pathlib.PureWindowsPath"
+                || callee == "PosixPath"
+                || callee == "WindowsPath"
+            {
+                // Phase 13 — `pathlib.Path(p)` and friends.  Tagging the
+                // receiver as `FileHandle` lets the type-qualified resolver
+                // rewrite `p.read_text()` / `p.write_text()` etc. against
+                // the new `FileHandle.*` matchers in `labels/python.rs`,
+                // covering the receiver-bound shape `p = Path(name);
+                // p.read_text()` that the chained `Path(name).read_text()`
+                // matcher already handles via paren-strip.
                 Some(TypeKind::FileHandle)
             } else if callee == "ldap.initialize"
                 || callee == "ldap3.Connection"

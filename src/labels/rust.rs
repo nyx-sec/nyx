@@ -60,6 +60,26 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SHELL_ESCAPE),
         case_sensitive: false,
     },
+    // Phase 13 — `Path::canonicalize` (and `tokio::fs::canonicalize`) is
+    // the canonical Rust path-traversal sanitiser when paired with a
+    // `starts_with(&base)` containment check.  Same convention as the
+    // Java / Python `.normalize()` / `.resolve()` sanitiser rules: the
+    // call clears the FILE_IO cap on its return so the cap-based gate
+    // suppresses the downstream `tokio::fs::*` / `std::fs::*` sink.
+    // Bare `canonicalize` would over-fire on unrelated APIs (e.g.
+    // `Url::canonicalize`); the qualified forms below are unique to
+    // path-handling.
+    LabelRule {
+        matchers: &[
+            "Path.canonicalize",
+            "PathBuf.canonicalize",
+            "fs::canonicalize",
+            "std::fs::canonicalize",
+            "tokio::fs::canonicalize",
+        ],
+        label: DataLabel::Sanitizer(Cap::FILE_IO),
+        case_sensitive: false,
+    },
     // ─────────── Sinks ─────────────
     LabelRule {
         matchers: &[

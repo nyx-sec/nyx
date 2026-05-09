@@ -1121,11 +1121,23 @@ fn infer_summary_return_type(
             continue;
         }
         // Only inspect the very last instruction in the returning block.
+        // Mirror the CFG-level `outer_callee` fallback (Phase 08 audit) so a
+        // CFG-rewritten callee (e.g. `req.body.path` displacing `URL` on
+        // `new URL(req.body.path, base)`) still resolves to the original
+        // constructor identifier preserved in `callee_text`.
         if let Some(inst) = block.body.last()
-            && let SsaOp::Call { callee, .. } = &inst.op
-            && let Some(ty) = crate::ssa::type_facts::constructor_type(lang, callee)
+            && let SsaOp::Call {
+                callee, callee_text, ..
+            } = &inst.op
         {
-            return Some(ty);
+            if let Some(ty) = crate::ssa::type_facts::constructor_type(lang, callee) {
+                return Some(ty);
+            }
+            if let Some(orig) = callee_text.as_deref()
+                && let Some(ty) = crate::ssa::type_facts::constructor_type(lang, orig)
+            {
+                return Some(ty);
+            }
         }
     }
     None

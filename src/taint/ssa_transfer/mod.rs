@@ -319,7 +319,7 @@ fn run_ssa_taint_internal(
             | EntryKind::GinRoute => (true, None, true),
             // Class-method shapes — `self` is the controller instance,
             // not adversary input.
-            EntryKind::DjangoView | EntryKind::RailsAction => (true, None, true),
+            EntryKind::DjangoView { .. } | EntryKind::RailsAction => (true, None, true),
             // Express handler `(req, res, next)` — `req.body` /
             // `req.query` / `req.params` / `req.headers` already classify
             // as Source via the JS label rules shipped before phase 16,
