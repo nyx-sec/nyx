@@ -616,6 +616,160 @@ implied or surfaced but did not finish.
       Python `urllib.parse.ParseResult` in a way that the
       receiver-qualified label rules can't disambiguate from
       callee text alone).
+- [ ] Phase 16 audit — `EntryKind::JaxRsResource` is a unit
+      variant (no `method` field) even though JAX-RS verb
+      annotations (`@GET`, `@POST`, `@PUT`, ...) carry HTTP
+      method information.  The phase plan listed `JaxRsResource`
+      as a unit variant explicitly, so this matches the spec.
+      The `java_annotation_to_entry_kind` mapper folds every
+      verb annotation (`Path` / `GET` / `POST` / ...) onto the
+      same `JaxRsResource` tag.  When a future fixture needs to
+      branch seeding policy or sink filtering on the JAX-RS verb
+      (e.g. only seeding `@PUT` / `@POST` body params), promote
+      to `JaxRsResource { method: HttpMethod }` and update the
+      `java_annotation_to_entry_kind` arms.
+- [ ] Phase 16 audit — Rust routing macro disambiguation between
+      actix-web and Rocket happens via a file-level witness
+      heuristic: `has_rocket_witness` (any `rocket::` /
+      `#[launch]` / `rocket::build` text) routes the routing
+      attribute to `EntryKind::RocketRoute`, otherwise it falls
+      back to `EntryKind::ActixHandler`.  A file that imports
+      both crates (rare in practice) would route to Rocket
+      regardless of which macro is in scope.  Bridge through
+      import-site evidence (`use actix_web::get;` /
+      `use rocket::get;` resolution via the per-file local
+      import view) when a fixture surfaces the dual-import
+      shape.
+- [ ] Phase 16 audit — Spring fixture composition with Phase 15
+      Hibernate sink fires as `cfg-unguarded-sink` rather than
+      `taint-unsanitised-flow`.  Reason: Java `String.format("…
+      %s …", name)` does not propagate taint through the
+      format-string interpolation in the current SSA model
+      (format-string args read out positionally would require a
+      Java-specific format-arg taint rule).  Phase 15's flat
+      `entityManager.createNativeQuery` matcher fires
+      `cfg-unguarded-sink` regardless, so cross-phase
+      composition is proven; the entry_points_xlang test allows
+      either rule id.  Tightening to taint-unsanitised-flow on
+      Spring `String.format` requires a Java format-arg
+      propagation rule and is out of scope here.
+- [ ] Phase 16 audit — anonymous arrows passed directly to
+      Express middleware (`app.use((req, res) => …)` and
+      similar) are detected by exact-span match on the arrow
+      node.  Named function references registered via
+      `app.get('/x', getUser)` resolve through `by_name`.  A
+      shape that registers a function defined in another file
+      (`app.get('/x', require('./handlers').getUser)`) won't
+      match either path because the express handler walker is
+      strictly local-file.  The pre-existing JS handler-param
+      auto-seeder in `is_js_ts_handler_param_name` covers most
+      `(req, res)`-shaped handlers regardless of registration
+      shape, so the gap is bounded.
+- [ ] Phase 16 audit — `EntryKind::GinRoute` is the umbrella
+      variant for gin / echo / fiber / iris (anything whose
+      param list contains `gin.Context` / `echo.Context` /
+      `fiber.Ctx` / `iris.Context`).  All four frameworks share
+      the same context-receiver shape; seeding policy is
+      identical.  When per-framework precision becomes
+      load-bearing (e.g. fiber-specific helpers that don't
+      apply to gin), split into `GinRoute` / `EchoRoute` /
+      `FiberRoute` and route the detector to each.
+- [ ] Phase 16 fixer — Express entry seeding skipped to avoid FP
+      regressions.  Pitboss fixer (2026-05-08) found that seeding
+      `req` itself with `Cap::all()` Source (the `EntryKind::ExpressRoute`
+      seeding policy added by the phase 16 implementer) re-fired
+      `req.session.destroy(...)` and `req.session.regenerate(...)` as
+      `taint-unsanitised-flow` sinks — the FPs guarded by
+      `tests/fixtures/real_world/javascript/taint/session_destroy_safe.js`
+      and `session_destroy_with_query.js`.  The implementer's
+      counter-fix (suppressing Sink/Sanitizer label propagation through
+      every nested `Kind::Function` descent in
+      `cfg::helpers::first_member_label`) blocked the FPs but also
+      blocked legitimate must_match findings on
+      `nested_callback_taint.js` (SSRF via `http.request` inside
+      Express callback) and `lambda_taint.py` (CMDi via IIFE
+      `(lambda cmd: os.system(cmd))(user_input)`).  Settled on the
+      narrowest fix: skip parameter seeding entirely for
+      `EntryKind::ExpressRoute` (`seed_at_all = false`).  The existing
+      JS label rules (`req.body`, `req.query`, `req.params`,
+      `req.headers`, ...) already classify request-bound member-access
+      paths as Source, so the Phase 16 Express acceptance fixture
+      (`tests/fixtures/realistic/entry_points_xlang/express_route.js`)
+      still fires its expected `req.body.name → db.query` flow
+      without flat-`req` seeding.  Revisit only if a future fixture
+      needs the `req` identifier (rather than its `req.<member>`
+      paths) tainted — that would require either narrowing the JS
+      EXCLUDES list to drop lifecycle methods (`req.session.destroy`,
+      `req.session.save`, etc.) from interfering with seeding, or
+      extending the seeding policy with a per-member-shape filter
+      that paints only `req.body`/`req.query`/etc.
+- [ ] Phase 16 audit — realrepo memory baselines (phpmyadmin,
+      joomla, drupal, openmrs, nextcloud, outline) were NOT
+      re-run as part of Phase 16.  Same rationale as Phase 15:
+      pitboss implementer sandbox lacks network egress to clone
+      the upstream repos; the per-target snapshots live in
+      `project_realrepo_*.md` memory entries that are not
+      automated tests.  Phase 16 only added new fixtures under
+      `tests/fixtures/realistic/entry_points_xlang/` and one
+      new entry-point seeding policy plus the
+      `EntryKind::ExpressRoute` variant.  In-tree
+      `cargo test` (debug) passes 0 failures across 28
+      `recall_gaps` tests (added: `entry_points_xlang`) and
+      2537 lib tests.  Cross-repo non-regression must be
+      verified out-of-band (re-run `scripts/validate_recall.sh`
+      per target after this branch lands and update memory
+      entries with deltas).
+- [ ] Phase 16 audit (auditor) — `tests/indexed_parity_tests.rs`
+      gained a process-wide `Mutex` (`indexed_scan_lock`)
+      serialising every `scan_indexed_cold` /
+      `scan_indexed_warm` invocation to dodge EMFILE
+      ("Too many open files") panics on the pitboss sandbox.
+      That change is out of scope for Phase 16 (which is
+      cross-language entry-point detection) — a real fix
+      would either bump the per-process fd limit in the test
+      harness or cap the r2d2 pool / rayon parallelism inside
+      the indexed scan paths so the test suite remains
+      embarrassingly parallel.  Auditor left the workaround
+      in place because reverting blocks `cargo test` on the
+      sandbox; user should decide whether to keep the lock,
+      replace with an fd-budget cap, or drop entirely once
+      the sandbox limit is raised.
+- [ ] Phase 16 audit (auditor) — Express handler resolution
+      via `<receiver>.<verb>(...)` in
+      `src/entry_points/mod.rs::express_call_method` matches
+      any object whose method name is an HTTP verb, not just
+      Express `app` / `router` instances.  A non-Express call
+      like `someClient.post(handlerFn)` (e.g. an HTTP client
+      `.post(url, body)` that happens to take a callback as
+      its last named-argument shape) would map `handlerFn`
+      via `by_name`; if a function with that name later exists
+      in the same file it would be tagged
+      `EntryKind::ExpressRoute { method: POST }` and seeded as
+      adversary input.  Likely rare in practice (the seeding
+      policy for ExpressRoute already runs `seed_at_all=false`
+      so the FP surface is bounded), but a stricter recogniser
+      should require the receiver text to end in
+      `app` / `router` / `route` / `Router()` or follow an
+      `express()` / `Router()` constructor binding.
+- [ ] Phase 16 audit (auditor) — Spring `@RequestMapping(method
+      = RequestMethod.POST)` annotation always tags as
+      `EntryKind::SpringMapping { method: HttpMethod::GET }` —
+      `java_annotation_to_entry_kind` does not inspect
+      annotation arguments.  Same gap for
+      `@RequestMapping(value="/u", method=RequestMethod.PUT)`.
+      Verb-specific aliases (`@GetMapping` / `@PostMapping` /
+      etc.) work correctly.  Add an annotation-args parse
+      pass when a fixture surfaces a `@RequestMapping(method=…)`
+      controller relying on per-verb seeding.
+- [ ] Phase 16 audit (auditor) — Django `@api_view(['POST'])`
+      and `@require_http_methods(['POST'])` extract the first
+      method into a local but discard it (`let _ = method;`)
+      because `EntryKind::DjangoView` is a unit variant with
+      no `method` field, unlike its `FastApiRoute` /
+      `FlaskRoute` siblings.  When per-verb branching becomes
+      load-bearing for Django function-based views, promote
+      `DjangoView` to `DjangoView { method: HttpMethod }` and
+      stop discarding the parsed method.
 
 ## Deferred phases
 

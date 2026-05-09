@@ -910,6 +910,50 @@ fn path_traversal_xlang() {
     }
 }
 
+/// Phase 16 recall-gap: cross-language framework entry-point detection.
+///
+/// One fixture per framework, each takes a request input (function-formal
+/// or path-captured kwarg) and pipes it to a language-native sink.  Every
+/// fixture must fire the expected sink with the request parameter as
+/// Source via the entry-kind seeding policy in `taint/ssa_transfer/mod.rs`.
+///
+/// The Spring fixture composes with phase 15 (Hibernate
+/// `entityManager.createNativeQuery`), proving cross-phase composition
+/// holds across languages.
+#[test]
+fn entry_points_xlang() {
+    let findings = scan_fixture("entry_points_xlang");
+
+    let positives = [
+        "django_view.py",
+        "fastapi_route.py",
+        "flask_route.py",
+        "spring_controller.java",
+        "rails_action.rb",
+        "axum_handler.rs",
+        "actix_handler.rs",
+        "gin_handler.go",
+        "express_route.js",
+    ];
+    for file in positives {
+        let hit = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && (f.id.starts_with("taint-unsanitised-flow")
+                    || f.id.starts_with("cfg-unguarded-sink"))
+        });
+        assert!(
+            hit,
+            "Phase 16 entry-point fixture {file} must fire a taint sink; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+}
+
 /// Phase 11 acceptance: every per-target baseline JSON in
 /// `tests/recall_targets/` exists, parses via `serde_json`, and every
 /// finding entry carries a `verdict: "TP" | "FP" | "needs_review"`

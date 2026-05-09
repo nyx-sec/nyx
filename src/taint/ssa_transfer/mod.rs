@@ -281,27 +281,83 @@ fn run_ssa_taint_internal(
     let mut block_exit_states: Vec<Option<SsaTaintState>> = vec![None; num_blocks];
     block_states[ssa.entry.0 as usize] = Some(SsaTaintState::initial());
 
-    // Phase 10 — entry-point parameter seeding.  When the body under
-    // analysis is a recognised Next.js entry (server action, App
-    // Router HTTP handler, or `<form action>` callback), seed every
-    // formal `Param` in the entry block with `Cap::all()` and a
-    // `TaintOrigin::UserInput` so the engine treats the formals as
-    // adversary-controlled without waiting for a caller-side flow.
+    // Phase 10 + Phase 16 — entry-point parameter seeding.  When the
+    // body under analysis is a recognised framework entry (Next.js,
+    // Express, Django, FastAPI, Flask, Spring, JAX-RS, Rails, Sinatra,
+    // axum, actix-web, rocket, net/http, gin, ...), seed the relevant
+    // formal `Param` operations in the entry block with `Cap::all()` and
+    // a `TaintOrigin::UserInput` so the engine treats request-bound
+    // inputs as adversary-controlled without waiting for a caller-side
+    // flow.  Per-variant policy below selects which formals to seed:
+    // most variants seed every named formal; Express seeds only the
+    // first (`req`); `net/http` seeds only the second (`r` after `w`);
+    // class-method shapes (Django CBV) skip implicit `self`.
     if let (Some(entry_kind), Some(state)) = (
         transfer.entry_kind.as_ref(),
         block_states[ssa.entry.0 as usize].as_mut(),
     ) {
-        let source_kind = match entry_kind {
-            crate::entry_points::EntryKind::AppRouteHandler { .. }
-            | crate::entry_points::EntryKind::UseServerDirective
-            | crate::entry_points::EntryKind::FormAction => SourceKind::UserInput,
+        use crate::entry_points::EntryKind;
+        let source_kind = SourceKind::UserInput;
+        // (skip_self_param, only_param_index, seed_at_all) —
+        // `only_param_index = Some(i)` restricts seeding to the `i`-th
+        // non-self formal Param op (counted in SSA insertion order).
+        // `None` seeds every Param.  `seed_at_all = false` skips seeding
+        // entirely; the engine relies on existing label rules instead.
+        let (skip_self, only_index, seed_at_all): (bool, Option<usize>, bool) = match entry_kind {
+            // Pure Param-only handlers, all named formals are request-bound.
+            EntryKind::AppRouteHandler { .. }
+            | EntryKind::UseServerDirective
+            | EntryKind::FormAction
+            | EntryKind::FastApiRoute { .. }
+            | EntryKind::FlaskRoute { .. }
+            | EntryKind::SpringMapping { .. }
+            | EntryKind::JaxRsResource
+            | EntryKind::SinatraRoute { .. }
+            | EntryKind::AxumHandler
+            | EntryKind::ActixHandler
+            | EntryKind::RocketRoute
+            | EntryKind::GinRoute => (true, None, true),
+            // Class-method shapes — `self` is the controller instance,
+            // not adversary input.
+            EntryKind::DjangoView | EntryKind::RailsAction => (true, None, true),
+            // Express handler `(req, res, next)` — `req.body` /
+            // `req.query` / `req.params` / `req.headers` already classify
+            // as Source via the JS label rules shipped before phase 16,
+            // so the SSA engine sees user input via member-access paths
+            // without needing a flat `req` seed.  Seeding `req` itself
+            // as `Source(Cap::all())` adds nothing for those flows but
+            // re-fires every excluded `req.session.*` / `req.app.*`
+            // lifecycle method as a structural sink (FP regression in
+            // `session_destroy_safe.js` /
+            // `session_destroy_with_query.js`).  Skip seeding for
+            // Express; the existing label rules carry the request.
+            EntryKind::ExpressRoute { .. } => (true, Some(0), false),
+            // net/http `(w http.ResponseWriter, r *http.Request)` —
+            // only `r` carries adversary bytes.
+            EntryKind::GoNetHttp => (true, Some(1), true),
         };
         let entry_block = &ssa.blocks[ssa.entry.0 as usize];
         for inst in entry_block.phis.iter().chain(entry_block.body.iter()) {
-            if !matches!(&inst.op, SsaOp::Param { .. } | SsaOp::SelfParam) {
+            if !seed_at_all {
+                continue;
+            }
+            let (is_self, param_index) = match &inst.op {
+                SsaOp::SelfParam => (true, None),
+                SsaOp::Param { index } => (false, Some(*index)),
+                _ => continue,
+            };
+            if skip_self && is_self {
                 continue;
             }
             if ssa.synthetic_externals.contains(&inst.value) {
+                continue;
+            }
+            let seed_this = match (only_index, param_index) {
+                (Some(want), Some(idx)) => idx == want,
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
+            if !seed_this {
                 continue;
             }
             let origin = TaintOrigin {
