@@ -972,10 +972,33 @@ fn analyse_body_with_seed(
     // so that `cmd -> Runtime.exec(cmd)` picks up `cmd` as a handler param.
     let is_java_lambda =
         lang == Lang::Java && body.meta.kind == crate::cfg::BodyKind::AnonymousFunction;
+    // Java methods tagged with a Spring/JaxRs entry-point annotation need
+    // scoped lowering so the formal parameters (`@RequestParam String name`,
+    // `@PathParam Long id`, ...) materialise as `SsaOp::Param` ops that
+    // the entry-point seeding pass paints as `Source(UserInput)`. Restricted
+    // to Java because (a) JS/TS already use scoped lowering above, (b) Go
+    // and Ruby handlers introduce request-OBJECT formals (`r *http.Request`,
+    // implicit `params`) whose Cap::all() seeding triggers FPs at sinks
+    // that take the bare object (e.g. `http.Redirect(w, r, safe, code)`
+    // where `r` is the request, not the URL), and (c) Python free-name
+    // captures (`request`, `b64decode`) bubble up as synthetic externals
+    // and shift source attribution. Java methods don't have those
+    // free-capture shapes (every reference is via explicit qualification),
+    // so the precision-vs-recall trade lands on the precision side.
+    let is_java_entry_method = lang == Lang::Java
+        && body.meta.kind == crate::cfg::BodyKind::NamedFunction
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries
+                .and_then(|m| m.get(&k))
+                .is_some_and(|s| s.entry_kind.is_some())
+        });
     let use_scoped_lowering = !is_toplevel
         && (matches!(lang, Lang::JavaScript | Lang::TypeScript)
             || has_nonempty_seed
-            || is_java_lambda);
+            || is_java_lambda
+            || is_java_entry_method);
     let ssa_result = if use_scoped_lowering {
         let func_name = body.meta.name.clone().unwrap_or_else(|| {
             body.meta

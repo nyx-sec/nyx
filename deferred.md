@@ -526,19 +526,40 @@ implied or surfaced but did not finish.
       `use rocket::get;` resolution via the per-file local
       import view) when a fixture surfaces the dual-import
       shape.
-- [ ] Phase 16 audit — Spring fixture composition with Phase 15
-      Hibernate sink fires as `cfg-unguarded-sink` rather than
-      `taint-unsanitised-flow`.  Reason: Java `String.format("…
-      %s …", name)` does not propagate taint through the
-      format-string interpolation in the current SSA model
-      (format-string args read out positionally would require a
-      Java-specific format-arg taint rule).  Phase 15's flat
-      `entityManager.createNativeQuery` matcher fires
-      `cfg-unguarded-sink` regardless, so cross-phase
-      composition is proven; the entry_points_xlang test allows
-      either rule id.  Tightening to taint-unsanitised-flow on
-      Spring `String.format` requires a Java format-arg
-      propagation rule and is out of scope here.
+- [ ] Entry-point seeding for Python/Ruby/Rust/Go handlers does
+      not actually paint formals as `Source(UserInput)` because
+      `analyse_body_with_seed` only enables scoped lowering
+      (which produces the `SsaOp::Param` ops the seeding pass
+      reads) for JS/TS, Java lambdas, Java entry methods, or
+      bodies whose parent passed a non-empty seed.
+      Python/Ruby/Rust/Go entry-method bodies fall through to
+      unscoped lowering, so `EntryKind::FlaskRoute` /
+      `EntryKind::DjangoView` / `EntryKind::AxumHandler` /
+      `EntryKind::GoNetHttp` / etc. seeding reads zero Param
+      ops and contributes nothing.  Naively extending scoped
+      lowering to those languages caused recall regressions on
+      the 2026-05-09 session 0012 attempt: Python's free-name
+      captures (`request`, `b64decode`, etc.) bubble up as
+      synthetic externals and shift source attribution; Go's
+      request-object formals (`r *http.Request`,
+      `c *gin.Context`) tainted with `Cap::all()` produce FPs
+      at sinks that take the bare object (e.g.
+      `http.Redirect(w, r, safe, code)` where `r` is the
+      request, not the URL); Ruby's implicit `params` becomes a
+      synthetic Param at the def line, drifting source
+      attribution.  Per-entry-kind seed_at_all=false for
+      object-formal kinds (GoNetHttp, GinRoute) plus a more
+      precise per-cap source policy is the right structural
+      lift; out of scope without a fixture-driven recall
+      campaign that distinguishes value-formal kinds (Spring,
+      JaxRs, FlaskRoute on path params, FastApiRoute typed
+      args, AxumHandler typed extractors) from
+      object-formal kinds (Express, GoNetHttp, GinRoute,
+      DjangoView, RailsAction).  The Java-only piece landed in
+      session 0012 because Java methods do not have free-name
+      captures (every reference is via explicit qualification),
+      so the precision/recall trade lands cleanly on the
+      precision side.
 - [ ] Phase 16 audit — anonymous arrows passed directly to
       Express middleware (`app.use((req, res) => …)` and
       similar) are detected by exact-span match on the arrow
