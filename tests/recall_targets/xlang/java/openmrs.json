@@ -1717,32 +1717,32 @@
       "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
       "line": 182,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "java.cmdi.runtime_exec",
       "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
       "line": 182,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "java.deser.readobject",
       "path_suffix": "api/src/test/java/org/openmrs/util/ThreadSafeCircularFifoQueueTest.java",
       "line": 384,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "java.deser.readobject",
       "path_suffix": "api/src/test/java/org/openmrs/util/ThreadSafeCircularFifoQueueTest.java",
       "line": 483,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "java.reflection.class_forname",
@@ -2045,96 +2045,96 @@
       "path_suffix": "api/src/test/java/org/openmrs/module/ModuleFileParserUnitTest.java",
       "line": 121,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/module/ModuleUtilTest.java",
       "line": 600,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
       "line": 107,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/test/jupiter/BaseContextSensitiveNonTransactionalTest.java",
       "line": 698,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/util/databasechange/Database1_9_7UpgradeIT.java",
       "line": 464,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/util/databasechange/DatabaseUpgradeTestUtil.java",
       "line": 106,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "web/src/test/java/org/openmrs/web/filter/update/GZIPFilterTest.java",
       "line": 76,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/test/TestUtil.java",
       "line": 86,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/util/DatabaseIT.java",
       "line": 121,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/util/HttpClientTest.java",
       "line": 40,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "api/src/test/java/org/openmrs/test/DbUtil.java",
       "line": 111,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "test-suite/performance/src/test/java/org/openmrs/StartupPerformanceIT.java",
       "line": 251,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",

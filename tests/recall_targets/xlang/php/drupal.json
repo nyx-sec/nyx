@@ -1645,8 +1645,8 @@
       "path_suffix": "core/modules/media/tests/modules/media_test_oembed/src/Controller/ResourceController.php",
       "line": 28,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -1757,8 +1757,8 @@
       "path_suffix": "core/tests/Drupal/Nightwatch/Commands/drupalInstall.js",
       "line": 38,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-open-redirect",
@@ -1813,120 +1813,120 @@
       "path_suffix": "core/modules/system/tests/src/Functional/System/ErrorHandlerTest.php",
       "line": 110,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/modules/filter/tests/src/Kernel/FilterKernelTest.php",
       "line": 1076,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Bootstrap/UncaughtExceptionTest.php",
       "line": 123,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Core/Recipe/RecipeTestTrait.php",
       "line": 132,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Test/FunctionalTestDebugHtmlOutputTest.php",
       "line": 185,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 200,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/Nightwatch/Commands/drupalUninstall.js",
       "line": 28,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Composer/Template/ComposerProjectTemplatesTest.php",
       "line": 219,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/Tests/Composer/Plugin/FixturesBase.php",
       "line": 241,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 248,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Bootstrap/UncaughtExceptionTest.php",
       "line": 282,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 292,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 315,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/ExistingDrupal8StyleDatabaseConnectionInSettingsPhpTest.php",
       "line": 58,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 337,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -1949,104 +1949,104 @@
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 363,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Composer/Template/ComposerProjectTemplatesTest.php",
       "line": 404,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/modules/package_manager/tests/src/Kernel/InstalledPackagesListTest.php",
       "line": 150,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Asset/UnversionedAssetTest.php",
       "line": 77,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 410,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Bootstrap/UncaughtExceptionTest.php",
       "line": 50,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Recipe/ConfigValidationTest.php",
       "line": 45,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/modules/package_manager/tests/modules/fixture_manipulator/src/FixtureManipulator.php",
       "line": 644,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/modules/system/tests/src/Functional/Theme/MaintenanceThemeUpdateRegistryTest.php",
       "line": 64,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Installer/InstallerConfigDirectoryTestBase.php",
       "line": 86,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/modules/package_manager/tests/modules/fixture_manipulator/src/FixtureManipulator.php",
       "line": 669,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 663,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
       "line": 755,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -2229,32 +2229,32 @@
       "path_suffix": "core/modules/media/tests/modules/media_test_oembed/src/Controller/ResourceController.php",
       "line": 34,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Recipe/ConfigValidationTest.php",
       "line": 51,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Installer/InstallerConfigDirectoryTestBase.php",
       "line": 104,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Installer/InstallerConfigDirectoryTestBase.php",
       "line": 124,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-prototype-pollution",
@@ -2661,8 +2661,8 @@
       "path_suffix": "core/modules/media/tests/src/Traits/OEmbedTestTrait.php",
       "line": 79,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unreachable-guard",
@@ -4309,8 +4309,8 @@
       "path_suffix": "core/modules/ckeditor5/tests/src/Nightwatch/Tests/drupalHtmlBuilderTest.js",
       "line": 13,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "js.code_exec.new_function",
@@ -4381,552 +4381,552 @@
       "path_suffix": "core/tests/Drupal/Tests/Composer/Plugin/Scaffold/Functional/ManageGitIgnoreTest.php",
       "line": 200,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.cmdi.system",
       "path_suffix": "core/tests/Drupal/Tests/Composer/Plugin/Scaffold/Functional/ManageGitIgnoreTest.php",
       "line": 219,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/jsonapi/tests/modules/jsonapi_response_validator/src/EventSubscriber/ResourceResponseValidator.php",
       "line": 74,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
       "line": 637,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
       "line": 1134,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
       "line": 3656,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
       "line": 3663,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/rest/tests/src/Functional/ResourceTestBase.php",
       "line": 116,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/rest/tests/src/Functional/ResourceTestBase.php",
       "line": 125,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/system/tests/modules/display_variant_test/src/Plugin/DisplayVariant/TestDisplayVariant.php",
       "line": 73,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/system/tests/modules/display_variant_test/src/Plugin/DisplayVariant/TestDisplayVariant.php",
       "line": 82,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/system/tests/modules/nightwatch_theme_install_utility/src/Controller/ThemeInstallController.php",
       "line": 74,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/system/tests/modules/session_test/src/Controller/SessionTestController.php",
       "line": 164,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/modules/system/tests/modules/session_test/src/Controller/SessionTestController.php",
       "line": 170,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.code_exec.assert_string",
       "path_suffix": "core/tests/Drupal/Tests/HttpKernelUiHelperTrait.php",
       "line": 135,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/big_pipe/tests/src/Functional/BigPipeTest.php",
       "line": 202,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/big_pipe/tests/src/Functional/BigPipeTest.php",
       "line": 204,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/big_pipe/tests/src/Functional/BigPipeTest.php",
       "line": 443,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/ckeditor5/tests/src/Traits/SynchronizeCsrfTokenSeedTrait.php",
       "line": 32,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/content_moderation/tests/src/Kernel/ModerationStateFieldItemListTest.php",
       "line": 297,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/field/tests/src/Kernel/EntityReference/EntityReferenceItemTest.php",
       "line": 329,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/field_ui/tests/src/Kernel/EntityDisplayTest.php",
       "line": 666,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/field_ui/tests/src/Kernel/EntityFormDisplayTest.php",
       "line": 309,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/help/tests/fixtures/uninstall-search.php",
       "line": 21,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
       "line": 1022,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/locale/tests/src/Kernel/LocaleTranslationTest.php",
       "line": 55,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/mysql/tests/src/Kernel/mysql/DbDumpTest.php",
       "line": 207,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/node/tests/src/Functional/NodeCreationTest.php",
       "line": 345,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/rest/tests/src/Functional/EntityResource/EntityResourceTestBase.php",
       "line": 616,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/fixtures/update/drupal-8.update-test-schema-enabled.php",
       "line": 46,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/fixtures/update/drupal-8.update-test-semver-update-n-enabled.php",
       "line": 30,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/fixtures/update/install-mysqli.php",
       "line": 21,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/EntityUpdateInitialTest.php",
       "line": 50,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/NoPreExistingSchemaUpdateTest.php",
       "line": 42,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/PreventDowngradeTest.php",
       "line": 78,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/UpdatePostUpdateExceptionTest.php",
       "line": 43,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/UpdatePostUpdateFailingTest.php",
       "line": 43,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/UpdatePostUpdateTest.php",
       "line": 44,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/UpdateRemovedPostUpdateTest.php",
       "line": 60,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/views/tests/src/Functional/ViewsConfigUpdaterTest.php",
       "line": 49,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/views/tests/src/Kernel/ViewExecutableTest.php",
       "line": 502,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/views/tests/src/Kernel/ViewExecutableTest.php",
       "line": 532,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/modules/views_ui/tests/src/Unit/ViewUIObjectTest.php",
       "line": 140,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/FunctionalTests/BrowserTestBaseTest.php",
       "line": 586,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Entity/RevisionDeleteFormTest.php",
       "line": 305,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Entity/RevisionRevertFormTest.php",
       "line": 238,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/FunctionalTests/Update/UpdatePathTestBase.php",
       "line": 288,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Action/EmailActionTest.php",
       "line": 67,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Config/Storage/DatabaseStorageTest.php",
       "line": 35,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Database/SerializeQueryTest.php",
       "line": 26,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Database/TransactionTest.php",
       "line": 1324,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Entity/EntityTranslationTest.php",
       "line": 533,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Entity/EntityTranslationTest.php",
       "line": 559,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Entity/EntityTypeTest.php",
       "line": 64,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/File/FileDeleteGadgetChainTest.php",
       "line": 29,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Plugin/ContextTypedDataTest.php",
       "line": 39,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Routing/MatcherDumperTest.php",
       "line": 145,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/User/AccountTakeoverGadgetChainTest.php",
       "line": 56,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Component/Diff/DiffOpOutputBuilderTest.php",
       "line": 112,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Component/Plugin/Attribute/AttributeClassDiscoveryCachedTest.php",
       "line": 77,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/Datetime/DrupalDateTimeTest.php",
       "line": 291,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/DependencyInjection/DependencySerializationTest.php",
       "line": 40,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/Extension/DependencyTest.php",
       "line": 65,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/Extension/ExtensionSerializationTest.php",
       "line": 56,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/Extension/ExtensionSerializationTest.php",
       "line": 63,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/Extension/ExtensionSerializationTest.php",
       "line": 82,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/Menu/MenuTreeParametersTest.php",
       "line": 157,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/StringTranslation/PluralTranslatableMarkupTest.php",
       "line": 33,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "core/tests/Drupal/Tests/Core/TempStore/SharedTempStoreTest.php",
       "line": 393,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-open-redirect",
@@ -4957,8 +4957,8 @@
       "path_suffix": "core/modules/ckeditor5/tests/src/FunctionalJavascript/AdminUiTest.php",
       "line": 118,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -4973,16 +4973,16 @@
       "path_suffix": "core/modules/package_manager/tests/src/Kernel/PackageManagerKernelTestBase.php",
       "line": 225,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "core/modules/package_manager/tests/src/Kernel/ComposerPatchesValidatorTest.php",
       "line": 275,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -5005,88 +5005,88 @@
       "path_suffix": "core/modules/media/tests/src/Kernel/OEmbedSourceTest.php",
       "line": 135,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "core/modules/page_cache/tests/src/Functional/PageCacheTest.php",
       "line": 644,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "core/modules/update/tests/src/Kernel/DevReleaseTest.php",
       "line": 69,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "core/modules/update/tests/src/Kernel/UpdateCalculateProjectDataTest.php",
       "line": 72,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/File/ReadOnlyStreamWrapperTest.php",
       "line": 55,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/File/StreamWrapperTest.php",
       "line": 21,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "core/tests/Drupal/Tests/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumperTest.php",
       "line": 612,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "core/tests/Drupal/Tests/DrupalTestBrowser.php",
       "line": 22,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/Config/ConfigCRUDTest.php",
       "line": 319,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "core/tests/Drupal/KernelTests/Core/TypedData/TypedDataTest.php",
       "line": 358,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "core/tests/Drupal/Tests/Core/Logger/LogMessageParserTest.php",
       "line": 45,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     }
   ]
 }

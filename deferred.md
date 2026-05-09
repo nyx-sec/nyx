@@ -278,16 +278,22 @@ implied or surfaced but did not finish.
       passes against placeholders because `[]` is a valid
       `findings` array.
 - [ ] Phase 11 audit — cal.com verdict triage is sparse.
-      `cal_com.json` carries 662 findings; only 4 are hand-labelled
-      `FP` (the `ts.crypto.math_random` hits inside
-      `apps/web/playwright/` test fixtures). The remaining 658 stay
-      `verdict: "needs_review"`, which is the placeholder verdict
-      `validate_recall.sh --capture` writes by default. Sweeping
-      these into `TP`/`FP` is bounded human work — read the source
-      flow at each `path_suffix:line` and mark accordingly. Future
-      precision work (FP-removal phases) needs the labelled set to
-      measure improvement, but the schema test does not require
-      every entry to be triaged.
+      `cal_com.json` carries 662 findings; 66 are now hand-labelled
+      `FP` (the original 4 `ts.crypto.math_random` plus 62 more swept
+      this session: every finding under `/playwright/`, `/__tests__/`,
+      `/__mocks__/`, `/test/`, `/tests/`, files matching
+      `*.test.ts`, `*.spec.ts`, `*.e2e.ts`, plus
+      `scripts/seed-utils.ts` and the `packages/testing/` fixture
+      package). The remaining 596 stay `verdict: "needs_review"`,
+      which is the placeholder verdict `validate_recall.sh --capture`
+      writes by default. The remaining queue is dominated by
+      `js.auth.missing_ownership_check` in `packages/features/auth/`
+      and `packages/trpc/server/routers/viewer/...` (NextAuth
+      callback contexts where `user.id` is the authenticated subject,
+      not a scoped target). Continue sweeping — the precision work
+      that will reduce the count needs the labelled set to measure
+      improvement, but the schema test does not require every entry
+      to be triaged.
 - [ ] Phase 11 audit — perf baseline only records
       `tests/fixtures/`-corpus throughput (1.55 s warm,
       1143 findings on 2026-05-08). Phase 01's baseline did not
@@ -628,13 +634,22 @@ implied or surfaced but did not finish.
       to populate. The `validate_real_world_targets` schema test
       passes against placeholders because `[]` is a valid `findings`
       array.
-- [ ] Phase 17 audit — captured cross-lang findings ship with
-      `verdict: "needs_review"`. None of the seven captured baselines
-      (phpmyadmin / joomla / drupal / nextcloud / openmrs / gin /
-      airflow) are TP/FP-triaged. The schema test does not require
-      every entry to be triaged, but future precision phases need the
-      labelled set to measure FP-removal lift. Bounded human work:
-      open each `path_suffix:line` and decide. Priority queues per
+- [ ] Phase 17 audit — captured cross-lang findings carry partial
+      TP/FP triage as of session 2 of run 20260509T074631Z-93f0:
+      every finding whose `path_suffix` matches a conventional test
+      directory (`/tests/`, `/__tests__/`, `/__mocks__/`, `/spec/`,
+      `/playwright/`, `/test_suites/`) or test filename suffix
+      (`_test.<ext>`, `*.spec.<ext>`, `*.e2e.<ext>`, `test_*.py`,
+      `conftest.py`, `_spec.rb`) was relabelled to `FP` with note
+      "Test fixture / helper. The flagged shape is in the test path,
+      not request-reachable production code." Counts after sweep:
+      gin 15/20 FP (5 production findings remain), openmrs 16/273,
+      drupal 119/635, joomla 12/83, nextcloud 82/262, phpmyadmin
+      4/119, airflow 186/892. Production-path findings remain
+      `needs_review` and require flow-level inspection before
+      labelling. The schema test does not require every entry to be
+      triaged, but future precision phases need the production-path
+      set labelled to measure FP-removal lift. Priority queues per
       lang are documented in `docs/recall-validation.md` (cross-lang
       runbook section, "Per-lang TP/FP splits" subsection).
 - [ ] Phase 17 audit — the captured airflow baseline (892 findings)
@@ -665,9 +680,19 @@ implied or surfaced but did not finish.
       `Cow<'_, str>` that borrows when the input has no `(`/`<` and
       only allocates for the chained-call case (`Query().Get`,
       etc.). Expected to claw back a fraction of the regression
-      without any rule-evaluation change. Re-measure with `cargo
-      bench --bench scan_bench -- single_file_parse_cfg` once the
-      sandbox has the bench harness compiled to confirm delta.
+      without any rule-evaluation change.
+      Re-measured 2026-05-09 (session 2): `cargo bench --bench
+      scan_bench -- single_file_parse_cfg --quick` reports
+      [321.02 µs 322.73 µs 323.16 µs] vs the captured 315.5 µs
+      baseline (within 2-3% noise band). The Cow path saves the
+      alloc on identifiers without parens but the per-call
+      `iter().any(...)` byte scan recovers most of the saved cost on
+      the Rust `sample.rs` fixture, which has many short callee
+      texts. Net wash on this fixture; remains worth profiling on a
+      JS/TS-heavy fixture (chained calls dominate). Real wins
+      probably need a structural rewrite of `normalize_chained_call`
+      to operate in-place on a stack `SmallString` rather than
+      heap-allocating a fresh `String`.
 - [ ] Phase 17 audit — `--lang` flag does not reuse Phase 11 JS
       target paths. Phase 11 baselines stay at
       `tests/recall_targets/<target>.json` (top level), Phase 17

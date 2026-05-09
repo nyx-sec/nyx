@@ -505,8 +505,8 @@
       "path_suffix": "apps/web/lib/pages/document/_applyThemeForDocument.test.ts",
       "line": 15,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
@@ -1001,104 +1001,104 @@
       "path_suffix": "apps/web/playwright/booking-sheet-keyboard.e2e.ts",
       "line": 52,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/filter-helpers.ts",
       "line": 14,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/filter-helpers.ts",
       "line": 18,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/filter-helpers.ts",
       "line": 22,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/filter-helpers.ts",
       "line": 40,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/filter-helpers.ts",
       "line": 41,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/filter-helpers.ts",
       "line": 47,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/filter-helpers.ts",
       "line": 65,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/oauth/oauth-client-admin.e2e.ts",
       "line": 29,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/oauth/oauth-client-admin.e2e.ts",
       "line": 40,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/oauth/oauth-client-admin.e2e.ts",
       "line": 49,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/oauth/oauth-client-helpers.ts",
       "line": 78,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/oauth/oauth-client-owner-crud.e2e.ts",
       "line": 747,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
@@ -1897,8 +1897,8 @@
       "path_suffix": "packages/embeds/embed-core/playwright/lib/testUtils.ts",
       "line": 20,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
@@ -2809,8 +2809,8 @@
       "path_suffix": "packages/features/handleMarkNoShow.test.ts",
       "line": 259,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
@@ -3161,56 +3161,56 @@
       "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
       "line": 433,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
       "line": 447,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
       "line": 457,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
       "line": 464,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
       "line": 473,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
       "line": 2371,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/testing/src/lib/bookingScenario/bookingScenario.ts",
       "line": 2413,
       "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
@@ -4449,8 +4449,8 @@
       "path_suffix": "apps/web/test/lib/next-config.test.ts",
       "line": 29,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -4841,176 +4841,176 @@
       "path_suffix": "apps/web/app/api/cron/selected-calendars/__tests__/cron.test.ts",
       "line": 54,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/app/api/cron/selected-calendars/__tests__/cron.test.ts",
       "line": 74,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/fixtures/users.ts",
       "line": 91,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/playwright/fixtures/users.ts",
       "line": 224,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/googlecalendar/lib/__tests__/utils.ts",
       "line": 76,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
       "line": 37,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
       "line": 78,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
       "line": 99,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
       "line": 117,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/googlecalendar/tests/testUtils.ts",
       "line": 124,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 54,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 80,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 128,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 134,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 151,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 157,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 164,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 171,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 174,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/booking-audit/lib/service/__tests__/integration-utils.ts",
       "line": 180,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/bookings/lib/handleNewBooking/test/post-booking-handling.test.ts",
       "line": 61,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/bookings/lib/handleNewBooking/test/spam-booking.integration-test.ts",
       "line": 31,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
@@ -5033,88 +5033,88 @@
       "path_suffix": "scripts/seed-utils.ts",
       "line": 110,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 175,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 261,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 275,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 317,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 332,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 347,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 382,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 400,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 418,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "scripts/seed-utils.ts",
       "line": 431,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
@@ -5169,16 +5169,16 @@
       "path_suffix": "apps/web/test/lib/next-config.test.ts",
       "line": 30,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "js.crypto.math_random",
       "path_suffix": "packages/testing/performance/utils/config.js",
       "line": 44,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
       "rule_id": "ts.crypto.math_random",
@@ -5186,7 +5186,7 @@
       "line": 45,
       "severity": "Low",
       "verdict": "FP",
-      "note": "Math.random in playwright test fixtures — not a security context"
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "ts.crypto.math_random",
@@ -5194,7 +5194,7 @@
       "line": 7,
       "severity": "Low",
       "verdict": "FP",
-      "note": "Math.random in playwright test fixtures — not a security context"
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "ts.crypto.math_random",
@@ -5202,7 +5202,7 @@
       "line": 21,
       "severity": "Low",
       "verdict": "FP",
-      "note": "Math.random in playwright test fixtures — not a security context"
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "ts.crypto.math_random",
@@ -5210,7 +5210,7 @@
       "line": 117,
       "severity": "Low",
       "verdict": "FP",
-      "note": "Math.random in playwright test fixtures — not a security context"
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "ts.crypto.math_random",
@@ -5281,24 +5281,24 @@
       "path_suffix": "apps/web/playwright/login.2fa.e2e.ts",
       "line": 42,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "ts.secrets.hardcoded_secret",
       "path_suffix": "apps/web/playwright/login.e2e.ts",
       "line": 78,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "ts.secrets.hardcoded_secret",
       "path_suffix": "apps/web/playwright/payment-apps.e2e.ts",
       "line": 151,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
     },
     {
       "rule_id": "ts.secrets.hardcoded_secret",

@@ -1461,8 +1461,8 @@
       "path_suffix": "providers/google/tests/system/google/cloud/gcs/resources/transform_script.py",
       "line": 25,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -1517,32 +1517,32 @@
       "path_suffix": "providers/google/tests/system/google/cloud/data_loss_prevention/example_dlp_inspect_template.py",
       "line": 85,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-template-injection",
       "path_suffix": "providers/google/tests/system/google/cloud/data_loss_prevention/example_dlp_deidentify_content.py",
       "line": 128,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-template-injection",
       "path_suffix": "providers/google/tests/system/google/cloud/data_loss_prevention/example_dlp_inspect_template.py",
       "line": 85,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-template-injection",
       "path_suffix": "providers/google/tests/system/google/cloud/data_loss_prevention/example_dlp_deidentify_content.py",
       "line": 128,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -1565,24 +1565,24 @@
       "path_suffix": "airflow-ctl/tests/airflow_ctl/api/test_client.py",
       "line": 141,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-ctl/tests/airflow_ctl/api/test_client.py",
       "line": 171,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-ctl/tests/airflow_ctl/api/test_client.py",
       "line": 192,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -1597,48 +1597,48 @@
       "path_suffix": "airflow-ctl/tests/airflow_ctl/api/test_client.py",
       "line": 246,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-ctl/tests/airflow_ctl/api/test_client.py",
       "line": 261,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-ctl/tests/airflow_ctl/api/test_client.py",
       "line": 276,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/google/tests/system/google/cloud/dataprep/example_dataprep.py",
       "line": 279,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "task-sdk-integration-tests/tests/task_sdk_tests/conftest.py",
       "line": 356,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/dags/test_on_failure_callback.py",
       "line": 39,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -1661,8 +1661,8 @@
       "path_suffix": "airflow-core/tests/integration/otel/test_otel.py",
       "line": 491,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -1733,496 +1733,496 @@
       "path_suffix": "providers/google/tests/system/google/gcp_api_client_helpers.py",
       "line": 104,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1210,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1246,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/google/tests/system/google/gcp_api_client_helpers.py",
       "line": 126,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/models/test_dag.py",
       "line": 1289,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1321,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1350,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1386,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1574,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1632,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1682,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1738,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/apache/cassandra/tests/integration/apache/cassandra/hooks/test_cassandra.py",
       "line": 180,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1769,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1797,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1804,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1856,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1883,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1909,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/apache/cassandra/tests/integration/apache/cassandra/hooks/test_cassandra.py",
       "line": 197,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 1972,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2077,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2090,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2101,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2113,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2125,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/apache/cassandra/tests/integration/apache/cassandra/hooks/test_cassandra.py",
       "line": 213,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2156,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2183,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2220,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2249,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/apache/cassandra/tests/integration/apache/cassandra/hooks/test_cassandra.py",
       "line": 229,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2278,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2311,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2348,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2372,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2388,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/apache/cassandra/tests/integration/apache/cassandra/hooks/test_cassandra.py",
       "line": 246,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2443,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/fab/tests/unit/fab/auth_manager/cli_commands/test_permissions_command.py",
       "line": 283,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2947,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 2980,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/fab/tests/unit/fab/auth_manager/cli_commands/test_permissions_command.py",
       "line": 322,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/models/test_dag.py",
       "line": 3255,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/models/test_renderedtifields.py",
       "line": 343,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/models/test_renderedtifields.py",
       "line": 362,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/utils/test_db_cleanup.py",
       "line": 408,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4022,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4067,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4134,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4135,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4193,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/common/test_exceptions.py",
       "line": 431,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4477,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4517,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4633,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4668,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/cli/commands/test_pool_command.py",
       "line": 51,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "providers/apache/cassandra/tests/integration/apache/cassandra/hooks/test_cassandra.py",
       "line": 70,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/utils/test_sqlalchemy.py",
       "line": 88,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "kubernetes-tests/tests/kubernetes_tests/test_base.py",
       "line": 100,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "airflow-core/tests/unit/models/test_dag.py",
       "line": 1012,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-template-injection",
@@ -2277,8 +2277,8 @@
       "path_suffix": "airflow-core/tests/unit/models/test_backfill.py",
       "line": 382,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-double-close",
@@ -2789,8 +2789,8 @@
       "path_suffix": "providers/edge3/src/airflow/providers/edge3/example_dags/win_test.py",
       "line": 226,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
@@ -3293,24 +3293,24 @@
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4217,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 4269,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "airflow-ctl-tests/tests/airflowctl_tests/conftest.py",
       "line": 76,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
@@ -3325,8 +3325,8 @@
       "path_suffix": "providers/google/tests/system/google/cloud/dataprep/example_dataprep.py",
       "line": 167,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-error-fallthrough",
@@ -5653,8 +5653,8 @@
       "path_suffix": "providers/edge3/src/airflow/providers/edge3/example_dags/win_test.py",
       "line": 226,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
@@ -5957,96 +5957,96 @@
       "path_suffix": "task-sdk/tests/task_sdk/bases/test_decorator.py",
       "line": 246,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "airflow-core/tests/unit/models/test_dag.py",
       "line": 1255,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "airflow-core/tests/unit/serialization/test_dag_serialization.py",
       "line": 2982,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "airflow-core/tests/unit/serialization/test_dag_serialization.py",
       "line": 3072,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "airflow-core/tests/unit/utils/test_sqlalchemy.py",
       "line": 245,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "airflow-core/tests/unit/utils/test_sqlalchemy.py",
       "line": 246,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "airflow-core/tests/unit/utils/test_sqlalchemy.py",
       "line": 279,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "providers/cncf/kubernetes/tests/unit/cncf/kubernetes/decorators/test_kubernetes.py",
       "line": 74,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "providers/cncf/kubernetes/tests/unit/cncf/kubernetes/decorators/test_kubernetes.py",
       "line": 125,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "providers/openlineage/tests/unit/openlineage/plugins/test_facets.py",
       "line": 120,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "providers/standard/tests/unit/standard/operators/test_python.py",
       "line": 393,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.pickle_loads",
       "path_suffix": "task-sdk/tests/task_sdk/api/test_client.py",
       "line": 168,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.deser.yaml_load",
@@ -6141,616 +6141,616 @@
       "path_suffix": "airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_dag_run.py",
       "line": 145,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_dag_run.py",
       "line": 167,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_dag_run.py",
       "line": 192,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_dag_run.py",
       "line": 206,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_dag_run.py",
       "line": 247,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_dag_run.py",
       "line": 248,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 8927,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 8999,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 9048,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 9107,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 9128,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/jobs/test_triggerer_job.py",
       "line": 679,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/models/test_dag.py",
       "line": 2881,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/models/test_dagrun.py",
       "line": 1909,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/models/test_dagrun.py",
       "line": 3172,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/models/test_dagrun.py",
       "line": 3175,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/models/test_dagrun.py",
       "line": 3193,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/models/test_mappedoperator.py",
       "line": 115,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/models/test_mappedoperator.py",
       "line": 179,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/models/test_mappedoperator.py",
       "line": 281,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "airflow-core/tests/unit/utils/test_state.py",
       "line": 46,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/amazon/tests/system/amazon/aws/tests/test_aws_auth_manager.py",
       "line": 90,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/databricks/tests/unit/databricks/operators/test_databricks_workflow.py",
       "line": 89,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/databricks/tests/unit/databricks/operators/test_databricks_workflow.py",
       "line": 153,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/edge3/tests/unit/edge3/executors/test_edge_executor.py",
       "line": 80,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/fab/tests/unit/fab/utils.py",
       "line": 107,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/system/google/cloud/composer/example_cloud_composer.py",
       "line": 158,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 538,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 552,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 561,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 576,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 586,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 732,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 748,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 757,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 772,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_dataprep.py",
       "line": 782,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_secret_manager.py",
       "line": 124,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_secret_manager.py",
       "line": 154,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/google/tests/unit/google/cloud/hooks/test_secret_manager.py",
       "line": 280,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/openlineage/tests/unit/openlineage/plugins/test_listener.py",
       "line": 123,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.missing_ownership_check",
       "path_suffix": "providers/openlineage/tests/unit/openlineage/plugins/test_listener.py",
       "line": 966,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/auth/managers/simple/services/test_login.py",
       "line": 69,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_dag_run.py",
       "line": 244,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/dag_processing/bundles/test_dag_bundle_manager.py",
       "line": 171,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 8639,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/jobs/test_scheduler_job.py",
       "line": 8927,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/jobs/test_triggerer_job.py",
       "line": 679,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_dag.py",
       "line": 2961,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_dagrun.py",
       "line": 1669,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_dagrun.py",
       "line": 1758,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_dagrun.py",
       "line": 2636,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_mappedoperator.py",
       "line": 147,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_mappedoperator.py",
       "line": 199,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_mappedoperator.py",
       "line": 312,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_taskinstance.py",
       "line": 3504,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/models/test_xcom.py",
       "line": 101,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/utils/test_db_cleanup.py",
       "line": 477,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "airflow-core/tests/unit/utils/test_log_handlers.py",
       "line": 328,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "dev/breeze/tests/test_release_validator.py",
       "line": 200,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/apache/hive/tests/unit/apache/hive/operators/test_hive_stats.py",
       "line": 152,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/apache/hive/tests/unit/apache/hive/operators/test_hive_stats.py",
       "line": 246,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/common/sql/tests/unit/common/sql/datafusion/test_object_storage_provider.py",
       "line": 66,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/edge3/tests/unit/edge3/executors/test_edge_executor.py",
       "line": 80,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/edge3/tests/unit/edge3/executors/test_edge_executor.py",
       "line": 195,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/fab/tests/unit/fab/auth_manager/test_security.py",
       "line": 372,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/google/tests/system/google/cloud/composer/example_cloud_composer.py",
       "line": 158,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/pinecone/tests/unit/pinecone/hooks/test_pinecone.py",
       "line": 68,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "providers/pinecone/tests/unit/pinecone/hooks/test_pinecone.py",
       "line": 75,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "task-sdk-integration-tests/tests/task_sdk_tests/conftest.py",
       "line": 635,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.auth.token_override_without_validation",
       "path_suffix": "task-sdk/tests/conftest.py",
       "line": 155,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.cmdi.subprocess_shell",
       "path_suffix": "providers/amazon/tests/system/amazon/aws/example_emr_eks.py",
       "line": 118,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.cmdi.subprocess_shell",
       "path_suffix": "providers/amazon/tests/system/amazon/aws/example_emr_eks.py",
       "line": 169,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.cmdi.subprocess_shell",
       "path_suffix": "providers/amazon/tests/system/amazon/aws/example_sagemaker.py",
       "line": 129,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.cmdi.subprocess_shell",
       "path_suffix": "providers/amazon/tests/system/amazon/aws/example_sagemaker.py",
       "line": 143,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.cmdi.subprocess_shell",
       "path_suffix": "providers/amazon/tests/system/amazon/aws/example_sagemaker.py",
       "line": 211,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.cmdi.subprocess_shell",
       "path_suffix": "providers/amazon/tests/system/amazon/aws/example_sagemaker.py",
       "line": 521,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "py.cmdi.subprocess_shell",
@@ -6989,80 +6989,80 @@
       "path_suffix": "airflow-core/tests/integration/otel/test_otel.py",
       "line": 167,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/always/test_project_structure.py",
       "line": 48,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/common/test_cursors.py",
       "line": 56,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/api_fastapi/core_api/routes/public/test_dag_sources.py",
       "line": 77,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/cli/commands/test_api_server_command.py",
       "line": 236,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/cli/commands/test_kerberos_command.py",
       "line": 79,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/listeners/file_write_listener.py",
       "line": 33,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/listeners/xcom_listener.py",
       "line": 29,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/utils/test_db_cleanup.py",
       "line": 678,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "airflow-core/tests/unit/utils/test_process_utils.py",
       "line": 128,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unreachable-source",
@@ -7117,8 +7117,8 @@
       "path_suffix": "airflow-core/tests/unit/cli/commands/test_standalone_command.py",
       "line": 227,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-resource-leak",
@@ -7133,16 +7133,16 @@
       "path_suffix": "providers/amazon/tests/system/amazon/aws/example_bedrock_retrieve_and_generate.py",
       "line": 314,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "providers/amazon/tests/system/amazon/aws/example_sagemaker.py",
       "line": 143,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     }
   ]
 }

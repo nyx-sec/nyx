@@ -261,8 +261,8 @@
       "path_suffix": "tests/Unit/Libraries/Cms/Installer/Adapter/ModuleAdapterTest.php",
       "line": 117,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "taint-unsanitised-flow",
@@ -501,40 +501,40 @@
       "path_suffix": "tests/Unit/Component/Finder/Administrator/Indexer/ResultTest.php",
       "line": 50,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.deser.unserialize",
       "path_suffix": "tests/Unit/Component/Finder/Administrator/Indexer/ResultTest.php",
       "line": 56,
       "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "tests/System/integration/administrator/components/com_users/Mfa.cy.js",
       "line": 6,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "tests/System/integration/site/components/com_users/Mfa.cy.js",
       "line": 6,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "tests/System/integration/site/components/com_users/Registration.cy.js",
       "line": 12,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak-possible",
@@ -597,48 +597,48 @@
       "path_suffix": "tests/System/integration/administrator/components/com_users/User.cy.js",
       "line": 39,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "js.secrets.hardcoded_secret",
       "path_suffix": "tests/System/integration/api/com_users/Users.cy.js",
       "line": 29,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "js.secrets.hardcoded_secret",
       "path_suffix": "tests/System/integration/site/components/com_users/Login.cy.js",
       "line": 3,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "js.secrets.hardcoded_secret",
       "path_suffix": "tests/System/integration/site/components/com_users/Profile.cy.js",
       "line": 4,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "js.secrets.hardcoded_secret",
       "path_suffix": "tests/System/integration/site/components/com_users/Profile_Edit.cy.js",
       "line": 22,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "js.secrets.hardcoded_secret",
       "path_suffix": "tests/System/integration/site/modules/mod_login/Default.cy.js",
       "line": 12,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "php.crypto.md5",

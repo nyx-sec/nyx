@@ -837,24 +837,24 @@
       "path_suffix": "tests/end-to-end/TestBase.php",
       "line": 1131,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "tests/unit/Dbal/DbiMysqliTest.php",
       "line": 29,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "tests/unit/Gis/GisVisualizationTest.php",
       "line": 437,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "state-resource-leak-possible",
@@ -909,8 +909,8 @@
       "path_suffix": "tests/unit/MessageTest.php",
       "line": 286,
       "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
     },
     {
       "rule_id": "ts.crypto.math_random",
