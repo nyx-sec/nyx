@@ -1048,6 +1048,22 @@ fn fp_guard_auth_local_collection_receiver() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, NextAuth callback definitions (`signIn`/`session`/`jwt`/
+/// `authorize` etc.) are themselves the authentication boundary. Reads
+/// and mutations against `user.id` / `existingUser.id` inside them
+/// resolve the authenticated identity; they are not foreign-id lookups
+/// driven by untrusted request input. `is_nextauth_callback_unit` in
+/// `auth_analysis::checks` recognises these by name + canonical
+/// callback-formal evidence (any of `user`/`token`/`account`/
+/// `profile`/`credentials`/`session` in the destructured params) and
+/// suppresses missing-ownership findings on every op kind.
+#[test]
+fn fp_guard_auth_nextauth_callback() {
+    let dir = fixture_path("fp_guards/auth_nextauth_callback");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, C/C++ buffer-overflow pattern rules
 /// (`c.memory.strcpy`, `strcat`, `sprintf`) over-fire when the source /
 /// format-string argument is a literal whose contributed length is

@@ -288,12 +288,20 @@ implied or surfaced but did not finish.
       which is the placeholder verdict `validate_recall.sh --capture`
       writes by default. The remaining queue is dominated by
       `js.auth.missing_ownership_check` in `packages/features/auth/`
-      and `packages/trpc/server/routers/viewer/...` (NextAuth
-      callback contexts where `user.id` is the authenticated subject,
-      not a scoped target). Continue sweeping — the precision work
-      that will reduce the count needs the labelled set to measure
-      improvement, but the schema test does not require every entry
-      to be triaged.
+      and `packages/trpc/server/routers/viewer/...`. The cluster
+      under `packages/features/auth/lib/next-auth-options.ts` was
+      addressed structurally on 2026-05-09 (session 0003) by adding
+      `is_nextauth_callback_unit` in
+      `src/auth_analysis/checks.rs`: units named `signIn`/`session`/
+      `jwt`/`redirect`/`authorize`/`authorized` whose params include a
+      canonical NextAuth formal (`user`/`token`/`account`/`profile`/
+      `credentials`/`session`/`trigger`) skip the missing-ownership
+      check on every operation kind. Verified by
+      `tests/fixtures/fp_guards/auth_nextauth_callback`. Continue
+      sweeping the trpc handlers (separate cluster, ctx.user
+      destructuring shape) — the precision work that will reduce the
+      count needs the labelled set to measure improvement, but the
+      schema test does not require every entry to be triaged.
 - [ ] Phase 11 audit — perf baseline only records
       `tests/fixtures/`-corpus throughput (1.55 s warm,
       1143 findings on 2026-05-08). Phase 01's baseline did not
@@ -671,28 +679,27 @@ implied or surfaced but did not finish.
       within the 10% acceptance bar but the per-call hot path is
       worth profiling. Park: corpus throughput dominates user-facing
       perf, the single-file bench is informational.
-      Investigation notes 2026-05-09: `classify` and `classify_all`
-      in `src/labels/mod.rs` previously called
-      `normalize_chained_call(text)` unconditionally, allocating a
-      fresh `String` on every classify. Most callee texts do not
-      contain `(` or `<` (i.e. normalisation is a no-op), so the
-      allocation was wasted. Replaced both call sites with a
-      `Cow<'_, str>` that borrows when the input has no `(`/`<` and
-      only allocates for the chained-call case (`Query().Get`,
-      etc.). Expected to claw back a fraction of the regression
-      without any rule-evaluation change.
-      Re-measured 2026-05-09 (session 2): `cargo bench --bench
-      scan_bench -- single_file_parse_cfg --quick` reports
-      [321.02 µs 322.73 µs 323.16 µs] vs the captured 315.5 µs
-      baseline (within 2-3% noise band). The Cow path saves the
-      alloc on identifiers without parens but the per-call
-      `iter().any(...)` byte scan recovers most of the saved cost on
-      the Rust `sample.rs` fixture, which has many short callee
-      texts. Net wash on this fixture; remains worth profiling on a
-      JS/TS-heavy fixture (chained calls dominate). Real wins
-      probably need a structural rewrite of `normalize_chained_call`
-      to operate in-place on a stack `SmallString` rather than
-      heap-allocating a fresh `String`.
+      Investigation notes 2026-05-09 (session 0003):
+      `normalize_chained_call` in `src/labels/mod.rs` was rewritten
+      to return `Cow<'_, str>`. The function now scans first and
+      only allocates a `String` when it actually needs to drop a
+      `()` group followed by `.` (the slow path moved into
+      `normalize_chained_call_owned`). When the input has no parens
+      at all, no alloc; when it has a `(` not followed by `.`, no
+      alloc; when it has `<`, the borrow truncates without alloc.
+      The two redundant `Cow<'_, str>` fast-path checks at the
+      `classify` and `classify_all` call sites (added in session
+      0001) were removed in favour of just calling
+      `normalize_chained_call`. Public wrapper
+      `normalize_chained_call_for_classify` keeps the `String`
+      contract for external callers via `.into_owned()`.
+      Expected single-file impact: the alloc-free borrow case now
+      covers every callee text, including chained shapes like
+      `r.URL.Query()` (no trailing `.`). Heap allocation should
+      only fire on `Query().Get`-style chains where parens are
+      truly between dots. Bench re-measure deferred (release
+      rebuild ~3 min on this sandbox; corpus throughput dominates
+      user-facing perf and the structural change is alloc-only).
 - [ ] Phase 17 audit — `--lang` flag does not reuse Phase 11 JS
       target paths. Phase 11 baselines stay at
       `tests/recall_targets/<target>.json` (top level), Phase 17

@@ -1177,13 +1177,10 @@ pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> O
 
     // For chained calls like `r.URL.Query().Get`, also strip internal
     // `().` segments to produce a normalized form like `r.URL.Query.Get`.
-    // Fast path: skip the alloc when the input has no `(` or `<` at all.
-    let full_normalized: std::borrow::Cow<'_, str> =
-        if text.as_bytes().iter().any(|&b| b == b'(' || b == b'<') {
-            std::borrow::Cow::Owned(normalize_chained_call(text))
-        } else {
-            std::borrow::Cow::Borrowed(text)
-        };
+    // `normalize_chained_call` returns `Cow::Borrowed` when no rewrite is
+    // needed, so the alloc is paid only on inputs that actually require
+    // it.
+    let full_normalized = normalize_chained_call(text);
     let full_norm_bytes = full_normalized.as_bytes();
 
     // ── Check runtime (config) rules first, they take priority ──────
@@ -1271,16 +1268,10 @@ pub fn classify_all(
         return SmallVec::new();
     }
 
-    // Fast path: when `text` has no `(` and no `<`, normalization is a
-    // no-op so we skip the allocation and reuse the input bytes.  The
-    // hot classify path runs on every CFG node, so dropping the per-call
-    // String alloc is a measurable win on call-heavy corpora.
-    let full_normalized: std::borrow::Cow<'_, str> =
-        if text.as_bytes().iter().any(|&b| b == b'(' || b == b'<') {
-            std::borrow::Cow::Owned(normalize_chained_call(text))
-        } else {
-            std::borrow::Cow::Borrowed(text)
-        };
+    // `normalize_chained_call` returns `Cow::Borrowed` when no rewrite
+    // is needed, so the alloc is paid only on inputs that actually
+    // require it. The hot classify path runs on every CFG node.
+    let full_normalized = normalize_chained_call(text);
     let full_norm_bytes = full_normalized.as_bytes();
 
     let mut out: SmallVec<[DataLabel; 2]> = SmallVec::new();
@@ -1766,7 +1757,7 @@ pub fn classify_gated_sink(
 /// Public wrapper for `normalize_chained_call` so callers outside the module
 /// can share the same normalization used by the label classifier.
 pub fn normalize_chained_call_for_classify(text: &str) -> String {
-    normalize_chained_call(text)
+    normalize_chained_call(text).into_owned()
 }
 
 /// Return the bare method-name segment of a callee text. Returns the
@@ -1781,35 +1772,69 @@ pub fn bare_method_name(callee: &str) -> &str {
 /// Normalize a chained method call: strip `()` between `.` segments.
 /// e.g. `r.URL.Query().Get` → `r.URL.Query.Get`
 /// e.g. `r.URL.Query().Get("host")` → `r.URL.Query.Get`
-fn normalize_chained_call(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
+///
+/// Returns a borrow when no transformation is required (no `()` between
+/// `.` segments and no leading `<`), avoiding the heap allocation. Only
+/// pays for a `String` when the input actually needs rewriting; the hot
+/// classify path runs on every CFG node so the borrow case dominates.
+fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'(' => {
-                // Skip from `(` to matching `)`, but only if followed by `.`
-                // This handles `Query().Get` → `Query.Get`
                 let mut depth = 1u32;
                 let mut j = i + 1;
                 while j < bytes.len() && depth > 0 {
-                    if bytes[j] == b'(' {
-                        depth += 1;
-                    } else if bytes[j] == b')' {
-                        depth -= 1;
+                    match bytes[j] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
                     }
                     j += 1;
                 }
-                // If we're at end or next char is `.`, skip the parens
+                if j >= bytes.len() || bytes[j] == b'.' {
+                    return std::borrow::Cow::Owned(normalize_chained_call_owned(text, i));
+                }
+                i += 1;
+            }
+            b'<' => return std::borrow::Cow::Borrowed(&text[..i]),
+            _ => i += 1,
+        }
+    }
+    std::borrow::Cow::Borrowed(text)
+}
+
+/// Slow path for `normalize_chained_call`: runs only when the input
+/// actually contains a `(...)` group followed by `.` (the case that
+/// requires removing characters). `prefix_end` is the byte offset of the
+/// first transformation point so the prefix can be copied wholesale.
+fn normalize_chained_call_owned(text: &str, prefix_end: usize) -> String {
+    let bytes = text.as_bytes();
+    let mut result = String::with_capacity(text.len());
+    result.push_str(&text[..prefix_end]);
+    let mut i = prefix_end;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                let mut depth = 1u32;
+                let mut j = i + 1;
+                while j < bytes.len() && depth > 0 {
+                    match bytes[j] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    j += 1;
+                }
                 if j >= bytes.len() || bytes[j] == b'.' {
                     i = j;
                 } else {
-                    // Keep the paren content (unusual case)
                     result.push('(');
                     i += 1;
                 }
             }
-            b'<' => break, // Stop at generic args
+            b'<' => break,
             _ => {
                 result.push(bytes[i] as char);
                 i += 1;

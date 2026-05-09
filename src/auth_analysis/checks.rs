@@ -90,6 +90,13 @@ fn check_ownership_gaps(
             if op.sink_class.is_some_and(|c| !c.is_auth_relevant()) {
                 continue;
             }
+            // NextAuth callbacks are themselves the authentication
+            // boundary, both reads and mutations inside them operate on
+            // identity context, so suppress regardless of op kind.
+            // Other auth helpers stay read-only-suppressed.
+            if is_nextauth_callback_unit(unit) {
+                continue;
+            }
             if op.kind == OperationKind::Read && unit_is_auth_helper(unit) {
                 continue;
             }
@@ -879,7 +886,7 @@ fn unit_is_auth_helper(unit: &AnalysisUnit) -> bool {
         .filter(|c| c.is_ascii_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    (normalized.starts_with("has")
+    if (normalized.starts_with("has")
         || normalized.starts_with("check")
         || normalized.starts_with("require")
         || normalized.starts_with("verify")
@@ -891,6 +898,44 @@ fn unit_is_auth_helper(unit: &AnalysisUnit) -> bool {
             || normalized.contains("access")
             || normalized.contains("permission")
             || normalized.contains("authoriz"))
+    {
+        return true;
+    }
+    is_nextauth_callback_unit(unit)
+}
+
+/// True when this unit looks like a NextAuth (next-auth) callback
+/// definition: `signIn` / `session` / `jwt` / `redirect` / `authorize` /
+/// `authorized`. NextAuth callbacks ARE the authentication boundary;
+/// operations on `user.id` / `existingUser.id` inside them resolve the
+/// authenticated identity, they do not look up a tenant-scoped resource
+/// based on untrusted input. The name alone is too common
+/// (`function authorize(...)` shows up in non-NextAuth code), so we also
+/// require at least one canonical callback parameter
+/// (`user` / `token` / `account` / `profile` / `credentials` / `session`)
+/// to be present in the destructured params list.
+fn is_nextauth_callback_unit(unit: &AnalysisUnit) -> bool {
+    let Some(name) = unit.name.as_deref() else {
+        return false;
+    };
+    if !matches!(
+        name,
+        "signIn" | "session" | "jwt" | "redirect" | "authorize" | "authorized"
+    ) {
+        return false;
+    }
+    const SIGNAL_PARAMS: &[&str] = &[
+        "user",
+        "token",
+        "account",
+        "profile",
+        "credentials",
+        "session",
+        "trigger",
+    ];
+    unit.params
+        .iter()
+        .any(|p| SIGNAL_PARAMS.contains(&p.as_str()))
 }
 
 fn is_delegated_read_with_actor_context(
