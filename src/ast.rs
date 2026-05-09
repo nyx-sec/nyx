@@ -2123,10 +2123,11 @@ pub fn extract_all_summaries_from_bytes(
         crate::symbol::FuncKey,
         auth_analysis::model::AuthCheckSummary,
     )>,
+    Option<(String, std::sync::Arc<HashMap<String, crate::symbol::FuncKey>>)>,
 )> {
     let _span = tracing::debug_span!("extract_all_summaries", file = %path.display()).entered();
     let Some(source) = ParsedSource::try_new(bytes, path)? else {
-        return Ok((vec![], vec![], vec![], vec![]));
+        return Ok((vec![], vec![], vec![], vec![], None));
     };
     let lang_slug = source.lang_slug;
     let parsed = ParsedFile::from_source(source, cfg);
@@ -2140,7 +2141,31 @@ pub fn extract_all_summaries_from_bytes(
         cfg,
         scan_root,
     );
-    Ok((func_summaries, ssa_summaries, ssa_bodies, auth_summaries))
+    let cross_package_imports = if parsed.file_cfg.resolved_imports.is_empty() {
+        None
+    } else {
+        let scan_root_str = scan_root.map(|p| p.to_string_lossy());
+        let ns = normalize_namespace(&parsed.source.file_path_str, scan_root_str.as_deref());
+        let caller_lang = Lang::from_slug(parsed.source.lang_slug).unwrap_or(Lang::Rust);
+        let map = crate::taint::build_cross_package_func_keys(
+            &parsed.file_cfg.resolved_imports,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+            caller_lang,
+        );
+        if map.is_empty() {
+            None
+        } else {
+            Some((ns, std::sync::Arc::new(map)))
+        }
+    };
+    Ok((
+        func_summaries,
+        ssa_summaries,
+        ssa_bodies,
+        auth_summaries,
+        cross_package_imports,
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4345,6 +4370,20 @@ pub struct FusedResult {
     /// `GlobalSummaries.router_facts_by_module`; pass 2 resolves them
     /// per-file via `GlobalSummaries::resolve_cross_file_router_deps`.
     pub router_facts: Option<(String, auth_analysis::router_facts::PerFileRouterFacts)>,
+    /// Per-file Phase-09 cross-package import map.  `None` when the
+    /// file's resolver produced no resolved bindings; otherwise
+    /// `Some((namespace, map))` where `namespace` is the file's
+    /// scan-root-relative path (matching `FuncKey::namespace`) and
+    /// `map` maps each local import binding name (e.g. `escapeHtml`)
+    /// to the canonical `FuncKey` of the imported function in its
+    /// own package.  Pass 1 collects these into
+    /// `GlobalSummaries.cross_package_imports_by_namespace`; pass 2's
+    /// `inline_analyse_callee` consults the index when an inlined
+    /// callee body's own `cross_package_imports` Arc is empty (the
+    /// indexed-mode case where bodies round-trip through SQLite and
+    /// the Arc field is `#[serde(skip)]`).
+    pub cross_package_imports:
+        Option<(String, std::sync::Arc<HashMap<String, crate::symbol::FuncKey>>)>,
 }
 
 /// Parse the file once, build the CFG once, and produce both function
@@ -4381,6 +4420,7 @@ pub fn analyse_file_fused(
             ssa_bodies: vec![],
             auth_summaries: vec![],
             router_facts: None,
+            cross_package_imports: None,
         });
     };
 
@@ -4528,6 +4568,25 @@ pub fn analyse_file_fused(
     }
     parsed.source.finalize_diags(&mut out, cfg);
 
+    let cross_package_imports_for_this_file = if parsed.file_cfg.resolved_imports.is_empty() {
+        None
+    } else {
+        let scan_root_str = scan_root.map(|p| p.to_string_lossy());
+        let ns = normalize_namespace(&parsed.source.file_path_str, scan_root_str.as_deref());
+        let caller_lang = Lang::from_slug(parsed.source.lang_slug).unwrap_or(Lang::Rust);
+        let map = crate::taint::build_cross_package_func_keys(
+            &parsed.file_cfg.resolved_imports,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+            caller_lang,
+        );
+        if map.is_empty() {
+            None
+        } else {
+            Some((ns, std::sync::Arc::new(map)))
+        }
+    };
+
     Ok(FusedResult {
         summaries,
         diags: out,
@@ -4536,6 +4595,7 @@ pub fn analyse_file_fused(
         ssa_bodies,
         auth_summaries,
         router_facts: router_facts_for_this_file,
+        cross_package_imports: cross_package_imports_for_this_file,
     })
 }
 

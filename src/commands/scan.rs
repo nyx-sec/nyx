@@ -1785,6 +1785,16 @@ pub(crate) fn scan_filesystem_with_observer(
                                 local_gs.insert_router_facts(module_id, facts);
                             }
 
+                            // Phase-09 indexed-mode parity: cache the
+                            // file's cross-package import map by namespace
+                            // so an inlined callee body loaded from SQLite
+                            // (where the body's own Arc is stripped by
+                            // `#[serde(skip)]`) can recover its package
+                            // boundary at step 0.7.
+                            if let Some((ns, map)) = r.cross_package_imports {
+                                local_gs.insert_cross_package_imports(ns, map);
+                            }
+
                             // Record language for progress
                             if let Some(p) = progress {
                                 if let Some(ref lang) = first_lang {
@@ -2176,7 +2186,7 @@ pub fn scan_with_index_parallel_observer(
                                 )
                             },
                         ) {
-                            Ok((func_sums, ssa_sums, ssa_bodies, auth_sums)) => {
+                            Ok((func_sums, ssa_sums, ssa_bodies, auth_sums, cross_pkg_imports)) => {
                                 if let Some(p) = &progress_ref {
                                     p.inc_parsed(1);
                                     if let Some(lang) = func_sums.first().map(|s| s.lang.as_str()) {
@@ -2230,8 +2240,12 @@ pub fn scan_with_index_parallel_observer(
                                     .collect();
                                 // Single transaction for all four caches:
                                 // one fsync per file instead of four.
+                                let cpi_arg = cross_pkg_imports
+                                    .as_ref()
+                                    .map(|(ns, map)| (ns.as_str(), map.as_ref()));
                                 if let Err(e) = idx.replace_all_for_file(
                                     path, &hash, &func_sums, &ssa_rows, &body_rows, &auth_rows,
+                                    cpi_arg,
                                 ) {
                                     record_persist_error(
                                         &persist_errors_ref,
@@ -2323,6 +2337,23 @@ pub fn scan_with_index_parallel_observer(
                     kind,
                 };
                 gs.insert_ssa(key, ssa_sum);
+            }
+        }
+
+        // Load Phase-09 cross-package import maps so an inlined callee
+        // body loaded from SQLite (where the body's own Arc is stripped
+        // by `#[serde(skip)]`) can recover its package boundary at
+        // step 0.7.  Indexed-mode parity with `scan_filesystem`.
+        match idx.load_all_cross_package_imports() {
+            Ok(rows) => {
+                for (_file_path, namespace, map) in rows {
+                    if !map.is_empty() {
+                        gs.insert_cross_package_imports(namespace, std::sync::Arc::new(map));
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to load cross_package_imports from DB: {e}");
             }
         }
 

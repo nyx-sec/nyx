@@ -116,6 +116,17 @@ pub mod index {
             UNIQUE(project, file_path, name, container, arity, disambig, kind)
         );
 
+        CREATE TABLE IF NOT EXISTS cross_package_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_hash BLOB NOT NULL,
+            namespace TEXT NOT NULL,
+            imports BLOB NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(project, file_path)
+        );
+
         CREATE TABLE IF NOT EXISTS scans (
             id TEXT PRIMARY KEY,
             status TEXT NOT NULL,
@@ -206,6 +217,8 @@ pub mod index {
             ON ssa_function_bodies(project, file_path);
         CREATE INDEX IF NOT EXISTS idx_auth_check_summaries_project_file
             ON auth_check_summaries(project, file_path);
+        CREATE INDEX IF NOT EXISTS idx_cross_package_imports_project_file
+            ON cross_package_imports(project, file_path);
     "#;
 
     /// Engine version used to detect stale caches across upgrades.
@@ -439,6 +452,26 @@ pub mod index {
                     conn.execute_batch(SCHEMA)?;
                 }
 
+                // Phase 09 indexed-mode parity: ensure the
+                // `cross_package_imports` table exists for DBs created
+                // before this column set was introduced.  `CREATE TABLE
+                // IF NOT EXISTS` in SCHEMA handles new DBs; this branch
+                // only fires when the table is missing entirely from a
+                // pre-existing DB.
+                let cpi_exists: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM sqlite_master
+                         WHERE type = 'table' AND name = 'cross_package_imports'",
+                        [],
+                        |_| Ok(true),
+                    )
+                    .optional()?
+                    .unwrap_or(false);
+                if !cpi_exists {
+                    tracing::info!("creating cross_package_imports table");
+                    conn.execute_batch(SCHEMA)?;
+                }
+
                 // Schema version check: invalidate cached summary tables
                 // when the on-disk artefact layout has changed in an
                 // incompatible way, independently of the engine version.
@@ -515,7 +548,8 @@ pub mod index {
                          DELETE FROM function_summaries;
                          DELETE FROM ssa_function_summaries;
                          DELETE FROM auth_check_summaries;
-                         DELETE FROM files;",
+                         DELETE FROM files;
+                         DROP TABLE IF EXISTS cross_package_imports;",
                     )?;
                     conn.execute_batch(SCHEMA)?;
                     conn.execute(
@@ -1455,6 +1489,10 @@ pub mod index {
                 crate::symbol::FuncKind,
                 crate::auth_analysis::model::AuthCheckSummary,
             )],
+            cross_package_imports: Option<(
+                &str,
+                &std::collections::HashMap<String, crate::symbol::FuncKey>,
+            )>,
         ) -> NyxResult<()> {
             let tx = self.conn.transaction()?;
             let path_str = file_path.to_string_lossy();
@@ -1615,6 +1653,26 @@ pub mod index {
                 }
             }
 
+            // cross_package_imports: replace this file's row, even with
+            // an empty input, so a file that lost its imports does not
+            // leave stale resolutions in the cache.
+            tx.execute(
+                "DELETE FROM cross_package_imports WHERE project = ?1 AND file_path = ?2",
+                params![self.project, path_str],
+            )?;
+            if let Some((namespace, map)) = cross_package_imports
+                && !map.is_empty()
+            {
+                let blob = rmp_serde::to_vec_named(map)
+                    .map_err(|e| NyxError::Msg(format!("cross_package_imports serialise: {e}")))?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO cross_package_imports
+                        (project, file_path, file_hash, namespace, imports, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![self.project, path_str, file_hash, namespace, blob, now],
+                )?;
+            }
+
             tx.commit()?;
             Ok(())
         }
@@ -1701,6 +1759,61 @@ pub mod index {
             Ok(out)
         }
 
+        /// Load every persisted per-file Phase-09 cross-package import map
+        /// for this project.
+        ///
+        /// Returns rows as `(file_path, namespace, imports_map)`.  Used by
+        /// pass 2 of indexed scans to populate
+        /// `GlobalSummaries::cross_package_imports_by_namespace`, recovering
+        /// the per-file import view that
+        /// [`crate::taint::ssa_transfer::CalleeSsaBody::cross_package_imports`]
+        /// loses across SQLite round-trip (`#[serde(skip)]`).
+        pub fn load_all_cross_package_imports(
+            &self,
+        ) -> NyxResult<
+            Vec<(
+                String,
+                String,
+                std::collections::HashMap<String, crate::symbol::FuncKey>,
+            )>,
+        > {
+            let mut stmt = self.c().prepare(
+                "SELECT file_path, namespace, imports
+                 FROM cross_package_imports WHERE project = ?1",
+            )?;
+
+            let rows: Vec<(String, String, Vec<u8>)> = stmt
+                .query_map([&self.project], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                })?
+                .filter_map(|r| match r {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!("failed to read cross_package_imports row: {e}");
+                        None
+                    }
+                })
+                .collect();
+
+            let mut out = Vec::with_capacity(rows.len());
+            for (fp, ns, blob) in rows {
+                match rmp_serde::from_slice::<
+                    std::collections::HashMap<String, crate::symbol::FuncKey>,
+                >(&blob)
+                {
+                    Ok(map) => out.push((fp, ns, map)),
+                    Err(e) => {
+                        tracing::warn!("failed to deserialize cross_package_imports blob: {e}");
+                    }
+                }
+            }
+            Ok(out)
+        }
+
         /// Remove a file and all derived persisted state for this project.
         ///
         /// This deletes the file row, issues, and all persisted summary rows so
@@ -1736,6 +1849,10 @@ pub mod index {
             )?;
             tx.execute(
                 "DELETE FROM auth_check_summaries WHERE project = ?1 AND file_path = ?2",
+                params![self.project, path_str.as_ref()],
+            )?;
+            tx.execute(
+                "DELETE FROM cross_package_imports WHERE project = ?1 AND file_path = ?2",
                 params![self.project, path_str.as_ref()],
             )?;
 
@@ -3007,6 +3124,61 @@ fn make_test_callee_body(
         body_graph: None,
         cross_package_imports: std::sync::Arc::new(std::collections::HashMap::new()),
     }
+}
+
+#[test]
+fn cross_package_imports_round_trip_via_replace_all_for_file() {
+    use crate::symbol::{FuncKey, FuncKind, Lang};
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+    let f = td.path().join("caller.ts");
+    std::fs::write(&f, "import { escape } from '@scope/util';").unwrap();
+
+    let pool = index::Indexer::init(&db).unwrap();
+    let mut idx = index::Indexer::from_pool("proj", &pool).unwrap();
+    let hash = index::Indexer::digest_bytes(b"caller content");
+
+    let mut imports: std::collections::HashMap<String, FuncKey> =
+        std::collections::HashMap::new();
+    imports.insert(
+        "escape".to_string(),
+        FuncKey {
+            lang: Lang::TypeScript,
+            namespace: "packages/util/src/escape.ts".to_string(),
+            container: String::new(),
+            name: "escape".to_string(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        },
+    );
+
+    idx.replace_all_for_file(
+        &f,
+        &hash,
+        &[],
+        &[],
+        &[],
+        &[],
+        Some(("caller.ts", &imports)),
+    )
+    .unwrap();
+
+    let loaded = idx.load_all_cross_package_imports().unwrap();
+    assert_eq!(loaded.len(), 1);
+    let (fp, ns, map) = &loaded[0];
+    assert_eq!(fp, &f.to_string_lossy().to_string());
+    assert_eq!(ns, "caller.ts");
+    assert_eq!(map.len(), 1);
+    let key = map.get("escape").expect("escape binding survives round-trip");
+    assert_eq!(key.namespace, "packages/util/src/escape.ts");
+    assert_eq!(key.name, "escape");
+    assert_eq!(key.lang, Lang::TypeScript);
+
+    // Empty input on rescan should drop the row.
+    idx.replace_all_for_file(&f, &hash, &[], &[], &[], &[], None)
+        .unwrap();
+    assert!(idx.load_all_cross_package_imports().unwrap().is_empty());
 }
 
 #[test]

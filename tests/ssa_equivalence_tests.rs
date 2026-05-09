@@ -438,12 +438,12 @@ fn summary_extraction_is_deterministic() {
         let Ok(bytes) = std::fs::read(&fixture.source_path) else {
             continue;
         };
-        let Ok((fn_a, ssa_a, _bodies_a, _auth_a)) =
+        let Ok((fn_a, ssa_a, _bodies_a, _auth_a, _cpi_a)) =
             extract_all_summaries_from_bytes(&bytes, &fixture.source_path, &cfg, None)
         else {
             continue;
         };
-        let Ok((fn_b, ssa_b, _bodies_b, _auth_b)) =
+        let Ok((fn_b, ssa_b, _bodies_b, _auth_b, _cpi_b)) =
             extract_all_summaries_from_bytes(&bytes, &fixture.source_path, &cfg, None)
         else {
             continue;

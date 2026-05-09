@@ -2521,13 +2521,20 @@ fn inline_analyse_callee_with_seeds(
         // [`crate::cfg::FileCfg::resolved_imports`], so we can forward
         // the *callee's* view here for transitive Phase 09 step 0.7
         // resolution. SQLite-cached bodies (loaded with `node_meta`
-        // populated and `body_graph: None`) carry an empty map and
-        // fall through to the legacy "skip step 0.7 inside the inlined
-        // frame" behaviour.
-        cross_package_imports: if callee_body.cross_package_imports.is_empty() {
-            None
-        } else {
+        // populated and `body_graph: None`) carry an empty map; we then
+        // recover the callee's import view from
+        // [`crate::summary::GlobalSummaries::get_cross_package_imports`]
+        // (populated in pass 1 from each file's resolved imports), so
+        // indexed-mode scans see the same step 0.7 hits as in-memory
+        // scans for transitive cross-package IPA inside the inlined
+        // frame.
+        cross_package_imports: if !callee_body.cross_package_imports.is_empty() {
             Some(callee_body.cross_package_imports.as_ref())
+        } else {
+            transfer
+                .global_summaries
+                .and_then(|gs| gs.get_cross_package_imports(&callee_key.namespace))
+                .map(|arc| arc.as_ref())
         },
         entry_kind: None,
     };

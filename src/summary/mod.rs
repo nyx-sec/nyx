@@ -623,6 +623,17 @@ pub struct GlobalSummaries {
     /// execution-API auth-recognition gap on routes attached to bare
     /// child routers.
     router_facts_by_module: HashMap<String, crate::auth_analysis::router_facts::PerFileRouterFacts>,
+    /// Per-file Phase-09 cross-package import maps, keyed by file
+    /// namespace (scan-root-relative path, the same form
+    /// [`FuncKey::namespace`] uses).  Populated in pass 1 from each
+    /// file's [`crate::cfg::FileCfg::resolved_imports`] and consumed by
+    /// `inline_analyse_callee` when the inlined callee body's own
+    /// `cross_package_imports` Arc is empty (i.e. the body was loaded
+    /// from SQLite, where the field is `#[serde(skip)]`).  Closes the
+    /// indexed-mode parity gap on transitive cross-package IPA inside
+    /// inlined frames.
+    cross_package_imports_by_namespace:
+        HashMap<String, std::sync::Arc<HashMap<String, FuncKey>>>,
     /// Type hierarchy index for runtime virtual-dispatch fan-out.
     ///
     /// Installed by [`Self::install_hierarchy`] after pass 1 from the
@@ -939,6 +950,10 @@ impl GlobalSummaries {
         for (module_id, facts) in other.router_facts_by_module {
             self.router_facts_by_module.insert(module_id, facts);
         }
+        // Cross-package imports: last-writer-wins per namespace.
+        for (ns, map) in other.cross_package_imports_by_namespace {
+            self.cross_package_imports_by_namespace.insert(ns, map);
+        }
         // Hierarchy index: invalidate after a merge so the next consumer
         // sees a freshly-built view that includes `other`'s edges.  The
         // alternative, point-merging two indexes, is racy when the
@@ -1180,6 +1195,38 @@ impl GlobalSummaries {
         self.router_facts_by_module.len()
     }
 
+    /// Insert a per-file Phase-09 cross-package import map.  Last-writer-wins
+    /// per namespace key — re-analysing a file produces a fresh snapshot
+    /// of its `(local_name → FuncKey)` resolutions.
+    pub fn insert_cross_package_imports(
+        &mut self,
+        namespace: String,
+        map: std::sync::Arc<HashMap<String, FuncKey>>,
+    ) {
+        if map.is_empty() {
+            return;
+        }
+        self.cross_package_imports_by_namespace
+            .insert(namespace, map);
+    }
+
+    /// Look up a per-file cross-package import map by file namespace.
+    /// Used by [`crate::taint::ssa_transfer`]'s inline-analysis frame to
+    /// recover the callee body's own import view when the body was loaded
+    /// from SQLite (where the Arc on `CalleeSsaBody` is stripped by
+    /// `#[serde(skip)]`).
+    pub fn get_cross_package_imports(
+        &self,
+        namespace: &str,
+    ) -> Option<&std::sync::Arc<HashMap<String, FuncKey>>> {
+        self.cross_package_imports_by_namespace.get(namespace)
+    }
+
+    /// Count of files that contributed cross-package import maps.
+    pub fn cross_package_imports_len(&self) -> usize {
+        self.cross_package_imports_by_namespace.len()
+    }
+
     /// Insert a cross-file callee body.
     ///
     /// See [`insert_ssa`](Self::insert_ssa) for the identity-safety rule.
@@ -1244,6 +1291,7 @@ impl GlobalSummaries {
             && self.ssa_by_lang_ns_name.is_empty()
             && self.auth_by_key.is_empty()
             && self.router_facts_by_module.is_empty()
+            && self.cross_package_imports_by_namespace.is_empty()
     }
 
     /// Iterate over all (key, summary) pairs.
@@ -1776,6 +1824,10 @@ impl std::fmt::Debug for GlobalSummaries {
             .field("bodies_len", &self.bodies_by_key.len())
             .field("auth_len", &self.auth_by_key.len())
             .field("router_facts_len", &self.router_facts_by_module.len())
+            .field(
+                "cross_package_imports_len",
+                &self.cross_package_imports_by_namespace.len(),
+            )
             .finish()
     }
 }

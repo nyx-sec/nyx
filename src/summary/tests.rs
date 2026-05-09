@@ -4474,3 +4474,98 @@ mod hierarchy_widened_tests {
         assert!(post_merge_reinstalled.contains(&k_sub));
     }
 }
+
+#[test]
+fn cross_package_imports_round_trip_via_global_summaries() {
+    use crate::symbol::{FuncKey, FuncKind, Lang};
+    let mut gs = GlobalSummaries::new();
+    let mut map: std::collections::HashMap<String, FuncKey> =
+        std::collections::HashMap::new();
+    map.insert(
+        "escape".to_string(),
+        FuncKey {
+            lang: Lang::TypeScript,
+            namespace: "packages/util/src/escape.ts".to_string(),
+            container: String::new(),
+            name: "escape".to_string(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        },
+    );
+    let arc = std::sync::Arc::new(map);
+    gs.insert_cross_package_imports("apps/api/handler.ts".to_string(), arc.clone());
+
+    assert_eq!(gs.cross_package_imports_len(), 1);
+    let looked_up = gs
+        .get_cross_package_imports("apps/api/handler.ts")
+        .expect("namespace lookup must hit");
+    assert_eq!(looked_up.len(), 1);
+    assert!(looked_up.contains_key("escape"));
+    assert!(gs.get_cross_package_imports("missing").is_none());
+
+    // Inserting an empty map is a no-op so the index does not get
+    // polluted with bookkeeping rows when a file's resolver produces
+    // no resolved bindings.
+    gs.insert_cross_package_imports(
+        "apps/api/no_imports.ts".to_string(),
+        std::sync::Arc::new(std::collections::HashMap::new()),
+    );
+    assert_eq!(gs.cross_package_imports_len(), 1);
+}
+
+#[test]
+fn cross_package_imports_merged_across_thread_local_summaries() {
+    use crate::symbol::{FuncKey, FuncKind, Lang};
+
+    let mut gs_a = GlobalSummaries::new();
+    let mut map_a: std::collections::HashMap<String, FuncKey> =
+        std::collections::HashMap::new();
+    map_a.insert(
+        "escape".to_string(),
+        FuncKey {
+            lang: Lang::TypeScript,
+            namespace: "packages/util/src/escape.ts".to_string(),
+            container: String::new(),
+            name: "escape".to_string(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        },
+    );
+    gs_a.insert_cross_package_imports(
+        "apps/api/handler_a.ts".to_string(),
+        std::sync::Arc::new(map_a),
+    );
+
+    let mut gs_b = GlobalSummaries::new();
+    let mut map_b: std::collections::HashMap<String, FuncKey> =
+        std::collections::HashMap::new();
+    map_b.insert(
+        "format".to_string(),
+        FuncKey {
+            lang: Lang::TypeScript,
+            namespace: "packages/util/src/format.ts".to_string(),
+            container: String::new(),
+            name: "format".to_string(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        },
+    );
+    gs_b.insert_cross_package_imports(
+        "apps/api/handler_b.ts".to_string(),
+        std::sync::Arc::new(map_b),
+    );
+
+    gs_a.merge(gs_b);
+    assert_eq!(gs_a.cross_package_imports_len(), 2);
+    assert!(
+        gs_a.get_cross_package_imports("apps/api/handler_a.ts")
+            .is_some()
+    );
+    assert!(
+        gs_a.get_cross_package_imports("apps/api/handler_b.ts")
+            .is_some()
+    );
+}
