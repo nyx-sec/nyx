@@ -2513,12 +2513,22 @@ fn inline_analyse_callee_with_seeds(
         // forward the caller's facts. `PointsToSummary` is the
         // cross-call substitute.
         pointer_facts: None,
-        // Cross-package imports are caller-file-keyed; the inlined
-        // callee body lives in another file with its own import view.
-        // Forwarding the caller's map would resolve the callee's local
-        // names against the wrong import set. None disables step 0.7
-        // for the inlined frame.
-        cross_package_imports: None,
+        // The inlined callee body lives in another file with its own
+        // import view; the caller's `cross_package_imports` would
+        // resolve the callee's local names against the wrong package
+        // boundary. Each `CalleeSsaBody` carries its own map populated
+        // at lowering time from the source file's
+        // [`crate::cfg::FileCfg::resolved_imports`], so we can forward
+        // the *callee's* view here for transitive Phase 09 step 0.7
+        // resolution. SQLite-cached bodies (loaded with `node_meta`
+        // populated and `body_graph: None`) carry an empty map and
+        // fall through to the legacy "skip step 0.7 inside the inlined
+        // frame" behaviour.
+        cross_package_imports: if callee_body.cross_package_imports.is_empty() {
+            None
+        } else {
+            Some(callee_body.cross_package_imports.as_ref())
+        },
         entry_kind: None,
     };
 

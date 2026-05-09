@@ -1438,6 +1438,7 @@ impl<'a> ParsedFile<'a> {
             self.local_summaries(),
             global_summaries,
             Some(&locator),
+            scan_root_str.as_deref(),
         );
 
         (summaries.into_iter().collect(), bodies)
@@ -1496,6 +1497,7 @@ impl<'a> ParsedFile<'a> {
             self.local_summaries(),
             global_summaries,
             None,
+            scan_root_str.as_deref(),
         )
     }
 

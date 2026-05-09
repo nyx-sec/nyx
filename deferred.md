@@ -166,19 +166,30 @@ implied or surfaced but did not finish.
       from informational to load-bearing, which interacts with every
       replace-sanitizer FP-prone shape. Park; today `encodeURIComponent`
       gives the safe path a real summary-carried sanitize transform.
-- [ ] Phase 09 audit — `SsaTaintTransfer::cross_package_imports` is
-      forwarded as `None` on the inline-analysis `child_transfer`
-      (see `src/taint/ssa_transfer/mod.rs::inline_analyse_callee`)
-      because the inlined callee body lives in another file with its
-      own import view, not the caller's. Forwarding the caller's map
-      would resolve the callee's local names against the wrong
-      package boundary. The right fix is to fetch the callee file's
-      own `cross_package_imports` (likely keyed by the callee's
-      file path on `GlobalSummaries` or via a new `bodies_by_key`
-      sibling), but doing so requires the per-file map to be
-      addressable across files. Park; today the inlined frame
-      simply skips step 0.7 inside, which only loses cross-package
-      IPA *transitive through* an inlined callee.
+- [ ] Phase 09 audit — `SsaTaintTransfer::cross_package_imports`
+      forwarding inside `inline_analyse_callee` is fixed for the
+      in-memory scan path (`scan_filesystem`) on 2026-05-09 (session
+      0005). `CalleeSsaBody` now carries its own `cross_package_imports:
+      Arc<HashMap<String, FuncKey>>` populated at lowering time from
+      the body's source `FileCfg::resolved_imports`. The inline frame
+      forwards the *callee's* map to the child transfer, so step 0.7
+      fires inside the inlined frame against the callee's package
+      boundary instead of being skipped. Bodies that arrive empty
+      (SQLite-deserialized; `#[serde(skip)]` on the field) fall through
+      to legacy "skip step 0.7 inside the inlined frame" behaviour.
+      Remaining work for indexed mode (`scan_with_index_parallel`):
+      bodies round-trip through SQLite where the field is stripped,
+      so transitive cross-package IPA inside an inlined frame still
+      under-recalls in indexed mode. Two options for closing it:
+      (a) persist `cross_package_imports` per-namespace on
+      `GlobalSummaries` as a separate index (analogous to
+      `router_facts_by_module`), populated in pass 1 during DB
+      replace_all_for_file and loaded in pass 2 alongside SSA bodies;
+      (b) serialize the field on `CalleeSsaBody` (DB bloat ~10KB per
+      body, multiplied by total body count). Park: the in-memory path
+      now closes the original gap; indexed-mode parity is bounded
+      under-recall on a corner case (transitive-through-inlined),
+      tracking it here for a focused follow-up.
 - [ ] Phase 09 audit — the recall_gaps test asserts the unsafe
       finding fires at `handler.ts:7` (source 5) and that the safe
       finding stays silent at `handler.ts:13`, but does NOT assert
@@ -239,12 +250,14 @@ implied or surfaced but did not finish.
       both layers.  Park; today the duplication is ~12 lines and
       keeps the override visible at each consumption point.
 - [ ] Phase 10 audit — `SsaTaintTransfer::cross_package_imports`
-      is forwarded as `None` on the inline-analysis `child_transfer`
-      (carried over from Phase 09).  An entry-point body that
-      transitively inlines a callee whose body is in a different
-      package will not benefit from step 0.7 inside the inlined
-      frame.  Same root cause as the Phase 09 audit; the Phase 10
-      seeding pass does not change that.
+      inside the inline-analysis `child_transfer` is fixed for the
+      in-memory scan path on 2026-05-09 (session 0005); see the
+      Phase 09 audit entry for the shared mechanism. Indexed-mode
+      remains under-recalling on transitive-through-inlined cross-
+      package IPA until the persistence option in the Phase 09 entry
+      lands. Phase 10's entry-point seeding pass is independent of
+      the inline forwarding; this carry-over note now mirrors the
+      Phase 09 status.
 - [ ] Phase 10 audit — entry-point seeding fires only on functions
       whose `entry_kind` is set on the `SsaFuncSummary` reachable
       via `(name, container, disambig)` lookup against the

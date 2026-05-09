@@ -5489,6 +5489,7 @@ class Worker {
         &file_cfg.summaries,
         None,
         None,
+        None,
     );
 
     // Collect containers of every key named "process".
@@ -5559,6 +5560,7 @@ function helper(x) {
         Lang::JavaScript,
         "test.js",
         &file_cfg.summaries,
+        None,
         None,
         None,
     );
@@ -5784,6 +5786,7 @@ class Reader {
         &file_cfg.summaries,
         None,
         None,
+        None,
     );
 
     let read_sum = summaries
@@ -5827,6 +5830,7 @@ class Maker {
         Lang::Java,
         "Maker.java",
         &file_cfg.summaries,
+        None,
         None,
         None,
     );
@@ -6845,6 +6849,54 @@ function handler(req, res) {
 /// traversal flow alive end-to-end.  Pins the precision claim — the
 /// strip is element-of-array-after-filter scoped, not a wholesale
 /// kill on any `<arr>.filter` call regardless of callback identity.
+#[test]
+fn callee_body_carries_file_cross_package_imports() {
+    // Phase 09: every `CalleeSsaBody` produced from a file's lowering
+    // pipeline should carry the file-level cross-package import map
+    // so the inline-analysis frame can resolve the callee's local
+    // names against the callee's own package boundary (step 0.7
+    // inside an inlined frame).
+    let src = b"export function passthrough(s) { return s; }\n";
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let mut file_cfg = parse_lang(src, "javascript", lang);
+
+    // Inject a synthetic resolved import binding the way the Phase 04
+    // resolver would for `import { helper } from "@scope/util/helper";`.
+    file_cfg
+        .resolved_imports
+        .push(crate::resolve::ImportBinding {
+            local_name: "helper".to_string(),
+            source_module: "@scope/util/helper".to_string(),
+            resolved_file: Some(std::path::PathBuf::from("/scope/util/src/helper.ts")),
+            exported_name: Some("helper".to_string()),
+        });
+
+    let (_summaries, bodies) = super::extract_ssa_artifacts_from_file_cfg(
+        &file_cfg,
+        Lang::JavaScript,
+        "test.js",
+        &file_cfg.summaries,
+        None,
+        None,
+        None,
+    );
+
+    assert!(
+        !bodies.is_empty(),
+        "expected at least one eligible body for `passthrough`",
+    );
+    for (_key, body) in &bodies {
+        assert!(
+            !body.cross_package_imports.is_empty(),
+            "every body in a file with resolved imports should carry the file's cross-package import map; got an empty map",
+        );
+        assert!(
+            body.cross_package_imports.contains_key("helper"),
+            "expected the synthetic `helper` binding to surface in the body's cross-package import map",
+        );
+    }
+}
+
 #[test]
 fn cve_2026_42353_filter_without_validator_callback_preserves_taint() {
     let src = br#"

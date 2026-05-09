@@ -511,6 +511,7 @@ pub fn analyse_file(
             local_summaries,
             global_summaries,
             None,
+            None,
         );
         analyse_file_with_lowered(
             file_cfg,
@@ -1850,6 +1851,7 @@ pub(crate) fn lower_all_functions_from_bodies(
     local_summaries: &FuncSummaries,
     global_summaries: Option<&GlobalSummaries>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
+    scan_root: Option<&str>,
 ) -> (
     std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
     std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
@@ -1862,6 +1864,7 @@ pub(crate) fn lower_all_functions_from_bodies(
             local_summaries,
             global_summaries,
             locator,
+            scan_root,
         )
     })
 }
@@ -1873,12 +1876,26 @@ fn lower_all_functions_from_bodies_inner(
     local_summaries: &FuncSummaries,
     global_summaries: Option<&GlobalSummaries>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
+    scan_root: Option<&str>,
 ) -> (
     std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
     std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
 ) {
     let mut summaries = std::collections::HashMap::new();
     let mut bodies = std::collections::HashMap::new();
+
+    // Build the file's cross-package import map once and share it
+    // across every body produced from this file. The map mirrors what
+    // `analyse_file_with_lowered` builds at pass-2 entry, but storing
+    // it on each `CalleeSsaBody` lets the inline-analysis frame inside
+    // another file resolve the callee's local import names against
+    // the callee's own package boundary (Phase 09 step 0.7) instead of
+    // skipping the lookup entirely.
+    let cross_package_imports_arc = {
+        let map =
+            build_cross_package_func_keys(&file_cfg.resolved_imports, scan_root, None, lang);
+        std::sync::Arc::new(map)
+    };
 
     for body in file_cfg.function_bodies() {
         let _t_misc = std::time::Instant::now();
@@ -2075,6 +2092,7 @@ fn lower_all_functions_from_bodies_inner(
                 param_count,
                 node_meta: std::collections::HashMap::new(),
                 body_graph: Some(body.graph.clone()),
+                cross_package_imports: std::sync::Arc::clone(&cross_package_imports_arc),
             },
         );
         perf_lower_record(6, _t_misc2.elapsed().as_micros());
@@ -2677,6 +2695,7 @@ pub(crate) fn extract_ssa_artifacts_from_file_cfg(
     local_summaries: &FuncSummaries,
     global_summaries: Option<&GlobalSummaries>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
+    scan_root: Option<&str>,
 ) -> (SsaArtifactSummaries, EligibleCalleeBodies) {
     let (summaries, bodies) = lower_all_functions_from_bodies(
         file_cfg,
@@ -2685,6 +2704,7 @@ pub(crate) fn extract_ssa_artifacts_from_file_cfg(
         local_summaries,
         global_summaries,
         locator,
+        scan_root,
     );
     let eligible_bodies = build_eligible_bodies(file_cfg, bodies);
     (summaries, eligible_bodies)

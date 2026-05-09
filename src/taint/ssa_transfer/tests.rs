@@ -105,6 +105,7 @@ mod cross_file_tests {
             param_count: 0,
             node_meta: std::collections::HashMap::new(),
             body_graph: None,
+            cross_package_imports: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 

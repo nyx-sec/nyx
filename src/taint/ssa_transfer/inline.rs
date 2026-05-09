@@ -142,6 +142,27 @@ pub struct CalleeSsaBody {
     /// bodies.
     #[serde(skip)]
     pub body_graph: Option<crate::cfg::Cfg>,
+    /// The callee body's own file-level cross-package import map (Phase 09
+    /// step 0.7 keyset).
+    ///
+    /// Populated when the body is freshly lowered with the file's
+    /// [`crate::cfg::FileCfg::resolved_imports`] in scope.  Forwarded into
+    /// the inline-analysis child transfer so transitive cross-package
+    /// resolution inside an inlined frame can land in
+    /// [`crate::summary::GlobalSummaries::ssa_by_key`] using the callee's
+    /// own import view rather than the caller's (which would mis-resolve
+    /// names against the caller's package boundary).
+    ///
+    /// Wrapped in `Arc` so every body in a file shares one heap
+    /// allocation; per-file bodies typically count in the tens to
+    /// hundreds, and import maps are append-only after construction.
+    /// `#[serde(skip)]` because the map is reproducible from the file's
+    /// `resolved_imports` and bears no identity on its own; an indexed
+    /// scan that loads a body from SQLite simply skips step 0.7 inside
+    /// the inlined frame (same conservative behaviour as before this
+    /// field existed).
+    #[serde(skip)]
+    pub cross_package_imports: std::sync::Arc<std::collections::HashMap<String, FuncKey>>,
 }
 
 /// Populate `node_meta` from the original CFG for cross-file persistence.
