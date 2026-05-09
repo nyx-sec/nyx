@@ -547,6 +547,25 @@ fn receiver_is_criteria_builder(receiver_text: &str) -> bool {
         || receiver_text.contains(".cb.")
 }
 
+/// True when `callee` is a single-argument URL/URI factory whose first
+/// argument carries the resulting URL's full spec (so a leading literal
+/// prefix on that arg locks the constructed URL's host).  Used by the
+/// abstract-string transfer in
+/// `taint::ssa_transfer::transfer_abstract` to gate the single-arg URL
+/// constructor StringFact passthrough alongside the
+/// `constructor_type(...) == TypeKind::Url` check.  Currently covers
+/// Java's static `URI.create(spec)` and `URL.of(spec)` factories
+/// (`URL.of` introduced in Java 23, returns a `URL` from a single
+/// string spec).  Bare-leaf forms (`URI.create`, `URL.of`) and
+/// fully-qualified prefixes (`java.net.URI.create`) are both accepted.
+pub(crate) fn is_url_single_arg_factory(lang: Lang, callee: &str) -> bool {
+    matches!(lang, Lang::Java)
+        && (callee == "URI.create"
+            || callee.ends_with(".URI.create")
+            || callee == "URL.of"
+            || callee.ends_with(".URL.of"))
+}
+
 /// True when `field_name` reads off a WHATWG `URL` instance as a logical
 /// alias of the same URL value: `searchParams` is the mutable view (any
 /// `.set` / `.append` on it mutates the underlying URL), the others are

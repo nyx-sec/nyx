@@ -188,7 +188,7 @@ implied or surfaced but did not finish.
       addressable across files. Park; today the inlined frame
       simply skips step 0.7 inside, which only loses cross-package
       IPA *transitive through* an inlined callee.
-- [ ] Phase 09 audit — step 0.7 currently scans
+- [x] Phase 09 audit — step 0.7 currently scans
       `GlobalSummaries::snapshot_ssa()` keys linearly for each
       cross-package callee that does not hit the existing flat
       paths. The cost is `O(|ssa_by_key| × cross-package-call-sites)`
@@ -196,8 +196,22 @@ implied or surfaced but did not finish.
       cross-package calls per file) but a project-scale scan with
       thousands of cross-package call sites and tens of thousands of
       stored SSA summaries would benefit from a `(lang, namespace,
-      name)`-indexed sibling map on `GlobalSummaries`. Park until
-      a profile run flags step 0.7 as a hot path.
+      name)`-indexed sibling map on `GlobalSummaries`.
+      Resolved 2026-05-09: added `GlobalSummaries::ssa_by_lang_ns_name`,
+      a `(Lang, namespace, name) -> Vec<FuncKey>` sibling index
+      maintained in lockstep with `ssa_by_key` (every `insert_ssa`
+      and `merge` push the key via `index_ssa_key`).  `GlobalSummaries::ssa_keys_by_qualified(lang, ns, name)`
+      exposes the candidate slice. Step 0.7 in
+      `taint::ssa_transfer::resolve_callee` now narrows to the
+      bucket before applying the existing
+      `container.is_empty()` / arity / disambig filters, dropping
+      the per-call cost from `O(|ssa_by_key|)` to
+      `O(|same-name candidates|)`. SSA summaries are
+      append-only on `GlobalSummaries`, and synthetic-disambig
+      probing in `reconcile_ssa_summary_key` only mutates the
+      `disambig` field, so the `(lang, namespace, name)` index
+      never needs invalidation. All 2537 lib tests + the
+      `cross_package_ipa` recall test pass.
 - [ ] Phase 09 audit — the recall_gaps test asserts the unsafe
       finding fires at `handler.ts:7` (source 5) and that the safe
       finding stays silent at `handler.ts:13`, but does NOT assert
@@ -307,14 +321,20 @@ implied or surfaced but did not finish.
       precision work (FP-removal phases) needs the labelled set to
       measure improvement, but the schema test does not require
       every entry to be triaged.
-- [ ] Phase 11 audit — `validate_recall.sh` always re-builds and
+- [x] Phase 11 audit — `validate_recall.sh` always re-builds and
       re-runs nyx end-to-end (no cache reuse). On cal.com (340 MB)
       the warm-cache scan is ~50 s, which is fine for hand
       validation but expensive enough that future cross-lang
       validation phases (16/17) will want a `--from-snapshot
       <prior_run.json>` input mode that skips the scan and just
-      diffs two captured JSONs. Park; today the bottleneck is
-      acceptable on the listed four targets.
+      diffs two captured JSONs.
+      Resolved 2026-05-08: `--from-snapshot <path>` flag added to
+      `scripts/validate_recall.sh`. Reads `<path>.findings`
+      verbatim as CURRENT, skips the scan + nyx-binary lookup,
+      and feeds straight into the existing diff path. Mutually
+      exclusive with `--capture`. Smoke-tested by diffing
+      `tests/recall_targets/cal_com.json` against itself
+      (added=0 / removed=0 / unchanged=659).
 - [ ] Phase 11 audit — perf baseline only records
       `tests/fixtures/`-corpus throughput (1.55 s warm,
       1143 findings on 2026-05-08). Phase 01's baseline did not
@@ -440,7 +460,7 @@ implied or surfaced but did not finish.
       The single-arg constructor passthrough below covers the
       simpler `Url::parse("https://api/" + tainted)` form via
       abstract concat prefix.
-- [ ] Phase 14 audit — the single-arg URL/URI constructor StringFact
+- [x] Phase 14 audit — the single-arg URL/URI constructor StringFact
       passthrough in `transfer_abstract` only fires for languages
       whose `constructor_type` returns `TypeKind::Url`.  Java's
       `URI.create(spec)` is recognised via an explicit textual check
@@ -448,6 +468,14 @@ implied or surfaced but did not finish.
       factories surface (e.g. `URL.of(spec)` in Java 23), extend
       the explicit list or expose a per-lang helper that returns
       `is_url_single_arg_factory` instead of duplicating the check.
+      Resolved 2026-05-08: factored the inline `URI.create` test
+      into `crate::ssa::type_facts::is_url_single_arg_factory`
+      (Java; covers `URI.create` and `URL.of` plus their
+      fully-qualified prefixes). The single-arg passthrough in
+      `taint::ssa_transfer::transfer_abstract` now consults the
+      helper directly. Adding the next factory is a one-arm
+      change in `is_url_single_arg_factory` rather than a textual
+      tweak at the call site.
 - [ ] Phase 14 audit — the `Net::HTTP.start` SSRF rule fires on the
       first positional arg, which is the host string.  Ruby's
       `Net::HTTP.start(host, port, opts)` overloads with optional
@@ -707,7 +735,7 @@ implied or surfaced but did not finish.
       252 entries) plus phases 12-16 cross-lang lifts; it is not a
       regression vs the 2026-05-02 number but a re-baselining at a
       newer engine snapshot.
-- [ ] Phase 17 audit — `validate_recall.sh --lang` validates a
+- [x] Phase 17 audit — `validate_recall.sh --lang` validates a
       hard-coded allowlist of six languages (php / java / python /
       rust / go / ruby). Adding a new language target requires
       editing both the script's `case "$LANG_FLAG"` arm AND the
@@ -716,6 +744,12 @@ implied or surfaced but did not finish.
       list from filesystem inspection of
       `tests/recall_targets/xlang/` at test time) when an additional
       language target lands.
+      Resolved 2026-05-08: both sides now derive the lang/target
+      list from `tests/recall_targets/xlang/`. The script accepts
+      any `--lang <L>` for which `xlang/<L>/` exists (with a list
+      of available langs in the error message when not). The test
+      walks `xlang/<lang>/*.json` instead of an inline table.
+      Adding a new lang target is now a single drop-the-JSON op.
 - [ ] Phase 17 audit — single-file `single_file_parse_cfg` micro-bench
       regressed +11.5% vs the Phase 11 baseline (283 µs → 315 µs).
       Driver: phases 12-16 added per-lang KINDS map entries and

@@ -582,6 +582,26 @@ pub struct GlobalSummaries {
     /// Precise SSA-derived per-parameter summaries, keyed by `FuncKey`.
     /// These take precedence over `FuncSummary` during callee resolution.
     ssa_by_key: HashMap<FuncKey, SsaFuncSummary>,
+    /// Sibling index over [`Self::ssa_by_key`] keyed by
+    /// `(lang, namespace, name)`.  Populated in lockstep with `ssa_by_key`
+    /// (every `insert_ssa` / `merge` adds the key).  Used by the
+    /// cross-package SSA resolution path (step 0.7 in
+    /// `taint::ssa_transfer::resolve_callee`) to avoid an
+    /// `O(|ssa_by_key|)` linear scan per cross-package call site:
+    /// the resolver looks up the candidate `Vec<FuncKey>` and narrows
+    /// to a single hit by container / arity / disambig.  Strictly
+    /// additive: when the index is empty (e.g. tests that never insert
+    /// SSA summaries) the resolver falls back to its existing flat
+    /// paths.
+    ///
+    /// Note: SSA summaries are append-only on `GlobalSummaries` (no
+    /// remove/clear methods), so the index never needs invalidation.
+    /// Synthetic-disambig probing in
+    /// [`Self::reconcile_ssa_summary_key`] only mutates the inserted
+    /// key's `disambig` field, never the `(lang, namespace, name)`
+    /// triple, so the index value still points at every relevant
+    /// `FuncKey` after reconciliation.
+    ssa_by_lang_ns_name: HashMap<(Lang, String, String), Vec<FuncKey>>,
     /// Cross-file callee bodies for interprocedural symbolic execution.
     /// Keyed by `FuncKey` (same identity model as SSA summaries).
     bodies_by_key: HashMap<FuncKey, crate::taint::ssa_transfer::CalleeSsaBody>,
@@ -903,6 +923,7 @@ impl GlobalSummaries {
         }
         // SSA summaries: last-writer-wins (exact-key replacement, no unioning)
         for (key, ssa_sum) in other.ssa_by_key {
+            self.index_ssa_key(&key);
             self.ssa_by_key.insert(key, ssa_sum);
         }
         // Cross-file bodies: last-writer-wins
@@ -1005,7 +1026,39 @@ impl GlobalSummaries {
         } else {
             self.reconcile_ssa_summary_key(key, &summary)
         };
+        self.index_ssa_key(&key);
         self.ssa_by_key.insert(key, summary);
+    }
+
+    /// Push `key` onto the secondary `(lang, namespace, name)` index.
+    /// Idempotent: a re-insert at the same triple does not duplicate
+    /// the key in the candidate vector.
+    fn index_ssa_key(&mut self, key: &FuncKey) {
+        let triple = (key.lang, key.namespace.clone(), key.name.clone());
+        let bucket = self.ssa_by_lang_ns_name.entry(triple).or_default();
+        if !bucket.contains(key) {
+            bucket.push(key.clone());
+        }
+    }
+
+    /// Look up SSA summary `FuncKey`s by `(lang, namespace, name)`.
+    /// Returns `&[]` when no SSA summary at that triple has been
+    /// stored.  Used by the cross-package resolution path so the
+    /// step-0.7 narrowing can iterate only the candidate set rather
+    /// than every persisted SSA key.
+    pub fn ssa_keys_by_qualified(&self, lang: Lang, namespace: &str, name: &str) -> &[FuncKey] {
+        // Borrow against (Lang, &str, &str) avoiding allocation by
+        // looking up with a tuple of owned Strings only when present.
+        // HashMap requires equivalent hash; (Lang, String, String)
+        // hashes the same as the equivalent tuple of equivalent
+        // values, so we construct a small owned key for the probe.
+        // Profile-light: this runs once per cross-package callee and
+        // both string clones are short (namespace path + leaf name).
+        let probe = (lang, namespace.to_string(), name.to_string());
+        self.ssa_by_lang_ns_name
+            .get(&probe)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Exact lookup of an SSA summary by fully-qualified key.
@@ -1188,6 +1241,7 @@ impl GlobalSummaries {
     pub fn is_empty(&self) -> bool {
         self.by_key.is_empty()
             && self.ssa_by_key.is_empty()
+            && self.ssa_by_lang_ns_name.is_empty()
             && self.auth_by_key.is_empty()
             && self.router_facts_by_module.is_empty()
     }

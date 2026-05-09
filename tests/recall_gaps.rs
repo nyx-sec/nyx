@@ -975,18 +975,23 @@ fn validate_real_world_targets() {
         js_targets.iter().map(|t| root.join(format!("{t}.json"))).collect();
 
     // Phase 17 cross-lang targets — under `xlang/<lang>/<target>.json`.
+    // Derived from filesystem inspection so adding a new lang/target only
+    // requires dropping the JSON file under `tests/recall_targets/xlang/`.
     let xlang_root = root.join("xlang");
-    let xlang_specs: &[(&str, &[&str])] = &[
-        ("php", &["phpmyadmin", "joomla", "drupal", "nextcloud"]),
-        ("java", &["openmrs"]),
-        ("python", &["airflow", "flask"]),
-        ("rust", &["axum"]),
-        ("go", &["gin"]),
-        ("ruby", &["rails"]),
-    ];
-    for (lang, targets) in xlang_specs {
-        for t in *targets {
-            paths.push(xlang_root.join(lang).join(format!("{t}.json")));
+    if let Ok(entries) = std::fs::read_dir(&xlang_root) {
+        let mut lang_dirs: Vec<std::path::PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+        lang_dirs.sort();
+        for lang_dir in lang_dirs {
+            let mut json_paths: Vec<std::path::PathBuf> = std::fs::read_dir(&lang_dir)
+                .unwrap_or_else(|e| panic!("read xlang dir {}: {e}", lang_dir.display()))
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+                .collect();
+            json_paths.sort();
+            paths.extend(json_paths);
         }
     }
 

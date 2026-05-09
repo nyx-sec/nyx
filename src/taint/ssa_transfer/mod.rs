@@ -6227,7 +6227,8 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         }
 
         // Phase 14 — single-arg URL/URI constructor StringFact passthrough.
-        // `new URL(spec)` (Java/JS), `URI.create(spec)` (Java) — when the
+        // `new URL(spec)` (Java/JS), plus the static factory list in
+        // [`crate::ssa::type_facts::is_url_single_arg_factory`] — when the
         // single argument's StringFact carries a locked-host prefix
         // (typically from a literal+tainted concat), propagate it onto
         // the constructed URL value so a downstream receiver sink like
@@ -6246,9 +6247,9 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                     crate::ssa::type_facts::constructor_type(l_u, oc)
                         == Some(crate::ssa::type_facts::TypeKind::Url)
                 });
-                let is_uri_create = matches!(l_u, Lang::Java)
-                    && (callee == "URI.create" || callee.ends_with(".URI.create"));
-                (is_url_ctor || via_outer || is_uri_create)
+                let is_static_factory =
+                    crate::ssa::type_facts::is_url_single_arg_factory(l_u, callee);
+                (is_url_ctor || via_outer || is_static_factory)
                     && crate::ssa::type_facts::url_builder_arg_indices(
                         l_u,
                         callee,
@@ -10597,21 +10598,18 @@ fn resolve_callee_full(
     // ambiguity we fall through to the existing flat paths.
     if let (Some(map), Some(gs)) = (transfer.cross_package_imports, transfer.global_summaries) {
         if let Some(target) = map.get(normalized) {
-            // Direct exact-key probe first (resolver lookup happens to be
-            // fully precise, e.g. when the export is the only definition
-            // in its namespace and arity is unknown so the import key's
-            // `arity: None` matches a stored key whose arity is also
-            // None).  Today every persisted SSA summary key carries
-            // a concrete arity, so the exact probe almost always
-            // misses; the iteration scan below is the load-bearing path.
+            // Indexed candidate lookup: the
+            // `(lang, namespace, name)` triple narrows to the small
+            // set of SSA keys that share the import target's leaf
+            // name.  Replaces the prior `O(|ssa_by_key|)` scan over
+            // every persisted SSA key with a single hash probe plus
+            // an iteration over only the matching bucket.
+            let candidates =
+                gs.ssa_keys_by_qualified(target.lang, &target.namespace, &target.name);
             let mut hit: Option<&FuncKey> = None;
             let mut ambiguous = false;
-            for k in gs.snapshot_ssa().keys() {
-                if k.lang != target.lang
-                    || k.namespace != target.namespace
-                    || k.name != target.name
-                    || !k.container.is_empty()
-                {
+            for k in candidates {
+                if !k.container.is_empty() {
                     continue;
                 }
                 if let Some(want) = arity_hint
