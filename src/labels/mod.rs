@@ -1809,6 +1809,10 @@ fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
 /// actually contains a `(...)` group followed by `.` (the case that
 /// requires removing characters). `prefix_end` is the byte offset of the
 /// first transformation point so the prefix can be copied wholesale.
+///
+/// `(`, `)`, `<`, and `.` are all ASCII, so byte-level scanning is safe
+/// for control characters. Non-ASCII identifier bytes are copied as
+/// contiguous slices to keep multi-byte UTF-8 sequences intact.
 fn normalize_chained_call_owned(text: &str, prefix_end: usize) -> String {
     let bytes = text.as_bytes();
     let mut result = String::with_capacity(text.len());
@@ -1836,8 +1840,11 @@ fn normalize_chained_call_owned(text: &str, prefix_end: usize) -> String {
             }
             b'<' => break,
             _ => {
-                result.push(bytes[i] as char);
-                i += 1;
+                let start = i;
+                while i < bytes.len() && !matches!(bytes[i], b'(' | b'<') {
+                    i += 1;
+                }
+                result.push_str(&text[start..i]);
             }
         }
     }
@@ -2389,6 +2396,58 @@ mod tests {
         // Unrelated callees return None.
         assert_eq!(lookup_receiver_validator("python", "resolve"), None);
         assert_eq!(lookup_receiver_validator("python", "joinpath"), None);
+    }
+
+    #[test]
+    fn normalize_chained_call_borrows_when_no_change() {
+        // No parens, no `<` → no rewrite, borrow returned.
+        let r = normalize_chained_call("plain");
+        assert!(matches!(r, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(r.as_ref(), "plain");
+
+        // `(` mid-token but not at end of any `.` chain → still owned
+        // because the function's policy collapses any `(` followed by
+        // EOL or `.`. Use a callee with a non-collapsing shape: bare
+        // dotted text.
+        let r = normalize_chained_call("a.b.c");
+        assert!(matches!(r, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(r.as_ref(), "a.b.c");
+
+        // Truncate at `<` (generics) is a borrow with shorter slice.
+        let r = normalize_chained_call("Vec<T>");
+        assert!(matches!(r, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(r.as_ref(), "Vec");
+    }
+
+    #[test]
+    fn normalize_chained_call_collapses_paren_dot_chain() {
+        let r = normalize_chained_call("r.URL.Query().Get");
+        assert_eq!(r.as_ref(), "r.URL.Query.Get");
+
+        let r = normalize_chained_call("a.b().c().d");
+        assert_eq!(r.as_ref(), "a.b.c.d");
+
+        // Last paren-call before EOL is also collapsed (j >= bytes.len()).
+        let r = normalize_chained_call("a.b()");
+        assert_eq!(r.as_ref(), "a.b");
+    }
+
+    #[test]
+    fn normalize_chained_call_preserves_utf8_after_collapse() {
+        // Greek lowercase letters are 2-byte UTF-8 sequences.  The slow
+        // path must not split them when copying tail bytes after a
+        // collapsed `(...)` group.
+        let r = normalize_chained_call("obj.func().αβγ");
+        assert_eq!(r.as_ref(), "obj.func.αβγ");
+
+        // CJK ideographs are 3-byte sequences.  Same invariant.
+        let r = normalize_chained_call("a.b().名前");
+        assert_eq!(r.as_ref(), "a.b.名前");
+
+        // Emoji (4-byte sequence) inside an identifier.  Engines never
+        // see this in practice but the byte loop must not corrupt it.
+        let r = normalize_chained_call("x.y().🦀_id");
+        assert_eq!(r.as_ref(), "x.y.🦀_id");
     }
 
     #[test]
