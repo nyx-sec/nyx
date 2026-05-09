@@ -1314,6 +1314,214 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &["data"],
         },
     },
+    // ── SQL execute payload-arg gating (Phase 15 deferred fix) ────────────
+    //
+    // The flat label rules above already classify these callees as
+    // `Sink(SQL_QUERY)` on every argument.  The DB-API convention is that
+    // arg 0 is the SQL string and arg 1+ are parameterised bind values
+    // (`cursor.execute("SELECT * FROM t WHERE id = %s", (user_id,))`).  Tainted
+    // bind values are SAFE because the driver escapes them; tainted SQL is
+    // the SQLi vector.  These Destination-activation gates carry the same
+    // `Sink(SQL_QUERY)` label so they dedupe against the flat rule, but
+    // their `payload_args: &[0]` propagates into `sink_payload_args`,
+    // narrowing the SSA sink scan to arg 0 only.
+    SinkGate {
+        callee_matcher: "cursor.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "cursor.executemany",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "conn.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "connection.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "session.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "engine.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "objects.raw",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Receiver-typed forms; same payload shape (sql at arg 0).
+    SinkGate {
+        callee_matcher: "SqlAlchemySession.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlAlchemySession.scalar",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlAlchemySession.scalars",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlAlchemySession.exec_driver_sql",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DjangoQuerySet.raw",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DjangoQuerySet.extra",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
 ];
 
 /// Prototype-pollution-style gates for Python.  Opt-in via the

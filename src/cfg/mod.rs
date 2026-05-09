@@ -60,7 +60,10 @@ pub(crate) use helpers::{
     collect_idents, collect_idents_with_paths, find_constructor_type_child, first_call_ident,
     has_call_descendant, member_expr_text, root_receiver_text, text_of,
 };
-use imports::{extract_import_bindings, extract_local_import_view, extract_promisify_aliases};
+use imports::{
+    extract_import_bindings, extract_local_import_view, extract_promisify_aliases,
+    rust_bare_join_crate_prefix,
+};
 #[cfg(test)]
 use literals::has_sql_placeholders;
 use literals::{
@@ -928,6 +931,31 @@ pub(super) fn detect_negation<'a>(
 /// a single binary expression as its immediate RHS. Returns `None` for
 /// nested binary expressions, compound assignments (`+=`), boolean
 /// operators (`&&`, `||`), and any ambiguous cases.
+/// Phase 12 deferred fix: when the file imports `tokio::join` / `futures::join`
+/// (or `_::try_join`) via `use`, rewrite a bare `join` / `try_join` macro
+/// callee to its qualified form so the SSA-level promise-combinator
+/// recogniser fires. Returns `None` for every non-Rust input and for
+/// macro callees that already carry a `::` prefix.
+fn rewrite_rust_bare_join_macro(
+    raw: &str,
+    ast: Node,
+    lang: &str,
+    code: &[u8],
+) -> Option<String> {
+    if lang != "rust" || raw.contains("::") {
+        return None;
+    }
+    if !matches!(raw, "join" | "try_join") {
+        return None;
+    }
+    let mut root = ast;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let prefix = rust_bare_join_crate_prefix(root, code, raw)?;
+    Some(format!("{prefix}::{raw}"))
+}
+
 fn extract_bin_op(ast: Node, lang: &str) -> Option<BinOp> {
     // Find the binary expression node: either ast itself or immediate child.
     let bin_expr = find_single_binary_expr(ast, lang)?;
@@ -1747,6 +1775,7 @@ pub(super) fn push_node<'a>(
         Kind::CallMacro => ast
             .child_by_field_name("macro")
             .and_then(|n| text_of(n, code))
+            .map(|raw| rewrite_rust_bare_join_macro(&raw, ast, lang, code).unwrap_or(raw))
             .unwrap_or_default(),
 
         // Function definitions: use just the function name, not the full

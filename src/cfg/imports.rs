@@ -495,6 +495,140 @@ fn extract_require_module(node: Node, code: &[u8]) -> Option<String> {
     None
 }
 
+/// Per-file Rust scan: did the file `use` a join-style macro from `tokio` or
+/// `futures`? Returns the crate prefix to use when the file calls a bare
+/// `join!` / `try_join!` macro.
+///
+/// Rationale: tree-sitter records `tokio::join!(...)` with a fully qualified
+/// `macro` field text, but `use tokio::join; ... join!(a, b)` records the
+/// bare leaf. Without this lookup, the SSA-level promise-combinator
+/// recogniser (`crate::labels::is_promise_combinator`) misses the bare form
+/// and the macro's argument taint is dropped. Conservative: returns `None`
+/// when both `tokio::<name>` and `futures::<name>` are imported (ambiguous)
+/// or when neither is, leaving the bare `join` callee alone.
+pub(super) fn rust_bare_join_crate_prefix(root: Node, code: &[u8], leaf: &str) -> Option<&'static str> {
+    if !matches!(leaf, "join" | "try_join") {
+        return None;
+    }
+    let mut cursor = root.walk();
+    let mut tokio_seen = false;
+    let mut futures_seen = false;
+    for child in root.children(&mut cursor) {
+        if child.kind() != "use_declaration" {
+            continue;
+        }
+        if rust_use_decl_imports_leaf(child, code, "tokio", leaf) {
+            tokio_seen = true;
+        }
+        if rust_use_decl_imports_leaf(child, code, "futures", leaf) {
+            futures_seen = true;
+        }
+    }
+    match (tokio_seen, futures_seen) {
+        (true, false) => Some("tokio"),
+        (false, true) => Some("futures"),
+        _ => None,
+    }
+}
+
+/// True when `use_decl` brings `<crate_prefix>::<leaf>` into scope.
+///
+/// Recognises the common shapes:
+/// * `use tokio::join;`                          → leaf at the path tail
+/// * `use tokio::{join, select};`                → leaf inside a use_list
+/// * `use tokio::join as my_join;`               → aliased; we detect the
+///   original path even though the aliased name is unused (the macro is
+///   typically invoked under its alias, but if the alias and the bare form
+///   collide the rewrite is still safe).
+/// * `use tokio::*;` is NOT recognised — wildcard imports are too permissive
+///   for the bare-leaf rewrite to stay precise.
+fn rust_use_decl_imports_leaf(
+    use_decl: Node,
+    code: &[u8],
+    crate_prefix: &str,
+    leaf: &str,
+) -> bool {
+    let mut stack = vec![use_decl];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            // `use tokio::join;` — argument is a `scoped_identifier`.
+            "scoped_identifier" => {
+                if scoped_identifier_matches(node, code, crate_prefix, leaf) {
+                    return true;
+                }
+            }
+            // `use tokio::{join, select};` — the `path` field is `tokio`,
+            // and a `use_list` enumerates leaves.
+            "scoped_use_list" => {
+                let path_ok = node
+                    .child_by_field_name("path")
+                    .and_then(|p| text_of(p, code))
+                    .as_deref()
+                    == Some(crate_prefix);
+                if path_ok
+                    && let Some(list) = node.child_by_field_name("list")
+                {
+                    let mut lc = list.walk();
+                    for entry in list.named_children(&mut lc) {
+                        match entry.kind() {
+                            "identifier" => {
+                                if text_of(entry, code).as_deref() == Some(leaf) {
+                                    return true;
+                                }
+                            }
+                            "use_as_clause" => {
+                                if entry
+                                    .child_by_field_name("path")
+                                    .and_then(|p| text_of(p, code))
+                                    .as_deref()
+                                    == Some(leaf)
+                                {
+                                    return true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // `use tokio::join as my_join;` — aliased clause sits directly
+            // under the use_declaration; check the path side.
+            "use_as_clause" => {
+                if let Some(p) = node.child_by_field_name("path")
+                    && p.kind() == "scoped_identifier"
+                    && scoped_identifier_matches(p, code, crate_prefix, leaf)
+                {
+                    return true;
+                }
+            }
+            _ => {
+                // Walk children for nested groups (`use a::{b::{c, d}}`).
+                let mut c = node.walk();
+                for ch in node.children(&mut c) {
+                    stack.push(ch);
+                }
+            }
+        }
+    }
+    false
+}
+
+fn scoped_identifier_matches(
+    node: Node,
+    code: &[u8],
+    crate_prefix: &str,
+    leaf: &str,
+) -> bool {
+    let path_text = node
+        .child_by_field_name("path")
+        .and_then(|p| text_of(p, code));
+    let leaf_text = node
+        .child_by_field_name("name")
+        .and_then(|n| text_of(n, code));
+    matches!((path_text.as_deref(), leaf_text.as_deref()),
+        (Some(p), Some(l)) if p == crate_prefix && l == leaf)
+}
+
 // -------------------------------------------------------------------------
 //  === PUBLIC ENTRY POINT =================================================
 // -------------------------------------------------------------------------

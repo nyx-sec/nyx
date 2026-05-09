@@ -168,6 +168,25 @@ fn async_await_rs_join() {
     );
 }
 
+/// Phase 12 deferred-fix (Rust combinator, bare macro form).
+/// `use tokio::join;` brings the macro into scope and the call site uses
+/// `join!(...)`.  `cfg::push_node` rewrites the bare macro callee text to
+/// `tokio::join` when an import witness is present, so the existing
+/// combinator transfer fires the same way as for the qualified form.
+#[test]
+fn async_await_rs_join_bare() {
+    let findings = scan_fixture("async_await/tokio_join_bare.rs");
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "tokio_join_bare.rs",
+            sink_line: 13,
+            source_line: None,
+        },
+    );
+}
+
 /// Phase 03 recall-gap: `.then(cb)` propagates the receiver Promise's
 /// resolved value into the callback's first parameter.  The taint trace
 /// surfaces at the `.then(cb)` call site via the engine's callback-pattern
@@ -747,6 +766,11 @@ fn orm_xlang() {
 
     let negatives = [
         "sqli_py_param_safe.py",
+        // Phase 15 deferred-fix: tainted bind args at arg 1 of
+        // `cursor.execute("SELECT ... WHERE x = %s", (tainted,))` must
+        // stay silent on SQL_QUERY because `payload_args = &[0]` on the
+        // Destination gate restricts the sink scan to arg 0.
+        "sqli_py_param_tainted_binds.py",
         "SqliJavaParamSafe.java",
         "sqli_rb_param_safe.rb",
         "sqli_go_param_safe.go",

@@ -9146,11 +9146,21 @@ fn receiver_candidates_for_type_lookup(
                         SsaOp::FieldProj { receiver, .. } => {
                             next_receiver = Some(*receiver);
                         }
-                        // Rust-only: chain through nested Call receivers
-                        // (`conn.execute(x).unwrap()` parsed as one outer call).
+                        // Chain through nested Call receivers.  Rust:
+                        // `conn.execute(x).unwrap()` parsed as one outer
+                        // call.  JS/TS: `getUrl().searchParams.set(k, v)`,
+                        // where the FieldProj walks `searchParams →
+                        // <call result>` and we want to keep walking
+                        // through the `getUrl()` call to surface the
+                        // original URL receiver value (Phase 09 deferred
+                        // fix).
                         SsaOp::Call {
                             receiver: Some(rv), ..
-                        } if matches!(lang, Lang::Rust) => {
+                        } if matches!(
+                            lang,
+                            Lang::Rust | Lang::JavaScript | Lang::TypeScript
+                        ) =>
+                        {
                             next_receiver = Some(*rv);
                         }
                         _ => {}

@@ -107,15 +107,21 @@ implied or surfaced but did not finish.
       Bridge through `abs.get(base_v).string` (singleton `domain`)
       when that shape becomes load-bearing. Park because const-base
       forms are uncommon in the realistic SSRF corpus.
-- [ ] Phase 08 audit — the `set`/`append` back-taint rule walks the
+- [x] Phase 08 audit — the `set`/`append` back-taint rule walks the
       FieldProj receiver chain via
       `receiver_candidates_for_type_lookup`, which only follows
       `FieldProj.receiver` and (for Rust) nested `Call.receiver`
       hops. A JS/TS chain that interposes a CallMethod (e.g.
       `getUrl().searchParams.set(k, v)`) won't surface the original
       URL value because the chain stops at the intermediate Call.
-      Add JS/TS-aware Call-receiver hops to the walker if a fixture
-      surfaces this pattern.
+      Resolved 2026-05-09: extended the Call-receiver hop arm in
+      `taint::ssa_transfer::receiver_candidates_for_type_lookup` to
+      also fire under `Lang::JavaScript` / `Lang::TypeScript` (was
+      Rust-only). The walker now traverses
+      `getUrl().searchParams.set(k, v)` through both the FieldProj on
+      `searchParams` and the inner `getUrl()` Call's receiver, so
+      back-taint reaches the URL value. All 5 receiver-candidate unit
+      tests + 28 recall_gaps tests pass.
 - [ ] Phase 08 audit — the prompt prescribed extending
       `src/taint/ssa_transfer/events.rs::collect_block_events` to
       collect first-arg URL-typed taint and object-literal `url`
@@ -354,18 +360,24 @@ implied or surfaced but did not finish.
       shape exercised end-to-end, add a `Source` rule for
       `Body.data` / `Body.collect` and reshape the fixture.
 
-- [ ] Phase 12 audit — `is_promise_combinator("rust", ...)` recognises
+- [x] Phase 12 audit — `is_promise_combinator("rust", ...)` recognises
       the qualified macro paths (`tokio::join`, `futures::join`, plus
       `try_*`) but not the bare `join!` / `try_join!` form that fires
-      after `use tokio::join;`.  `extract_arg_uses` accepts the bare
-      names so a future combinator-recognition extension can light them
-      up, but the conservative posture today is to not match bare
-      `join` (the leaf is too generic; collisions with non-macro user
-      callees of the same name would surface as combinators).  Add bare
-      recognition behind a per-file import-aware check
-      (`use tokio::join;` rebind detection in
-      `cfg::imports::extract_local_import_view`) when a real-world
-      fixture surfaces the bare-import shape.
+      after `use tokio::join;`.
+      Resolved 2026-05-09: `cfg::imports::rust_bare_join_crate_prefix`
+      walks top-level `use_declaration` nodes (recognising
+      `use tokio::join;`, `use tokio::{join, ...};`, and
+      `use tokio::join as alias;` shapes) and returns the crate prefix
+      when exactly one of `tokio` or `futures` is in scope. A new
+      `rewrite_rust_bare_join_macro` helper in `cfg/mod.rs` consults the
+      prefix at `Kind::CallMacro` text-init time and rewrites bare
+      `join` / `try_join` callees to their qualified form, so the
+      existing `is_promise_combinator` logic fires unchanged. Conservative
+      against ambiguity: when both crates' join macros are imported the
+      rewrite is skipped. New fixture
+      `tests/fixtures/realistic/async_await/tokio_join_bare.rs` plus
+      recall test `async_await_rs_join_bare` cover the import-witness
+      path; all 28 recall_gaps tests pass.
 
 - [ ] Phase 12 audit — Python `async for x in stream:` and sync
       `for x in stream:` share the same `for_statement` AST node
@@ -518,17 +530,28 @@ implied or surfaced but did not finish.
       a non-literal first arg (e.g. `format!(URL_FMT, x)` where
       `URL_FMT` is a `const`), bridge by consulting the SSA
       const-prop facts on the format-string SSA value.
-- [ ] Phase 15 audit — negative-parameterised fixtures use constant
+- [x] Phase 15 audit — negative-parameterised fixtures use constant
       bind args (mirroring phase 07's `[true]` shape), not tainted
       bind args.  This proves the parameterised API form is
       recognised but does not prove "tainted bind args stay silent
       when the SQL string is constant".  Bridging requires
-      payload-arg gating (`SinkGate { payload_args: &[0] }`) on
-      `cursor.execute` / `db.QueryContext` / `entityManager
-      .createQuery` etc. so taint into args 1+ is ignored.  Park
-      because the engine-side gating change interacts with every
-      flat-sink call shape in scope and the constant-bind form is
-      sufficient to prove API recognition.
+      payload-arg gating (`SinkGate { payload_args: &[0] }`).
+      Resolved 2026-05-09 (Python): added 13 Destination-activation
+      `SinkGate` entries to `labels::python::GATED_SINKS` covering
+      `cursor.execute`, `cursor.executemany`, `conn.execute`,
+      `connection.execute`, `session.execute`, `engine.execute`,
+      `db.execute`, `objects.raw`, plus the receiver-typed
+      `SqlAlchemySession.{execute, scalar, scalars, exec_driver_sql}`
+      and `DjangoQuerySet.{raw, extra}` shapes. Each gate carries the
+      same `Sink(SQL_QUERY)` label as the pre-existing flat rule (so
+      cap dedupes against the flat label) but propagates
+      `payload_args: &[0]` into `sink_payload_args`, narrowing the SSA
+      sink scan to arg 0. New fixture
+      `tests/fixtures/realistic/sqli_xlang/sqli_py_param_tainted_binds.py`
+      exercises the tainted-bind-args negative; the existing concat
+      positive (`sqli_py_psycopg2_concat.py`) still fires SQLi at arg 0.
+      Java `entityManager.createQuery` / Go `db.QueryContext` would
+      take the same shape; left for a future pass.
 - [ ] Phase 15 audit — Go GORM `db.Raw(sql)` is reached via the
       flat `db.Raw` matcher (added alongside `db.Query` /
       `db.Exec`) rather than via the type-qualified `GormDb.Raw`
