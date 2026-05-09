@@ -521,10 +521,21 @@ pub(super) fn build_switch<'a>(
 ) -> Vec<NodeIndex> {
     // Locate the case container. Most grammars expose it as field "body"
     // (JS/TS, Java, C, C++); Go puts cases as direct children of the switch.
+    //
+    // Per-language gotcha: Go's `expression_case` / `default_case` /
+    // `type_case` / `communication_case` map to `Kind::Block` (so the case
+    // body is iterated by the Block handler), so a naive "first Block
+    // child" fallback latches onto the FIRST case as the container, then
+    // walks the case's interior looking for case-like children, finds none,
+    // and falls through to the empty-cases early return (CFG dead-end:
+    // dispatch If has no False edge, every post-switch statement becomes
+    // unreachable).  Skip case-kind nodes when picking the container so
+    // Go's flat "cases-as-direct-children" shape uses `ast` itself.
     let body = ast.child_by_field_name("body").or_else(|| {
         let mut c = ast.walk();
-        ast.children(&mut c)
-            .find(|n| matches!(lookup(lang, n.kind()), Kind::Block))
+        ast.children(&mut c).find(|n| {
+            matches!(lookup(lang, n.kind()), Kind::Block) && !is_switch_case_kind(n.kind())
+        })
     });
     let container = body.unwrap_or(ast);
 

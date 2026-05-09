@@ -1,5 +1,5 @@
 {
-  "_doc": "Phase 17 cross-lang recall-validation baseline for gin-gonic/gin (Go). Re-capture by running scripts/validate_recall.sh --lang go gin <clone_path> --capture.",
+  "_doc": "Phase 17 cross-lang recall-validation baseline for gin-gonic/gin (Go). Re-capture by running scripts/validate_recall.sh --lang go gin <clone_path> --capture. Updated 2026-05-09 after fmt.Fprintf safe-writer suppression and Go switch container fallback fix removed two FPs.",
   "target": "gin",
   "lang": "go",
   "clone_url": "https://github.com/gin-gonic/gin",
@@ -55,14 +55,6 @@
       "severity": "High",
       "verdict": "FP",
       "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
-    },
-    {
-      "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "gin.go",
-      "line": 541,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "go.transport.insecure_skip_verify",
@@ -127,14 +119,6 @@
       "severity": "Medium",
       "verdict": "FP",
       "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
-    },
-    {
-      "rule_id": "cfg-unreachable-sanitizer",
-      "path_suffix": "binding/form_mapping.go",
-      "line": 469,
-      "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "cfg-error-fallthrough",

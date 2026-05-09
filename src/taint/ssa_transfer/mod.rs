@@ -7217,7 +7217,7 @@ fn collect_block_events(
 
         // Suppress known non-sink callees (e.g., System.out.println in Java)
         if let SsaOp::Call { callee, .. } = &inst.op {
-            sink_caps = suppress_known_safe_callees(sink_caps, callee, transfer.lang);
+            sink_caps = suppress_known_safe_callees(sink_caps, callee, transfer.lang, info);
             if sink_caps.is_empty() {
                 continue;
             }
@@ -9236,7 +9236,12 @@ fn method_candidates_from_chain(callee: &str, lang: Lang) -> SmallVec<[String; 4
 ///
 /// These are callees whose suffix matches a broad sink rule but whose
 /// receiver is known to be safe (console output, not HTTP response).
-fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang) -> Cap {
+fn suppress_known_safe_callees(
+    sink_caps: Cap,
+    callee: &str,
+    lang: Lang,
+    info: &NodeInfo,
+) -> Cap {
     match lang {
         Lang::Java => {
             if callee.starts_with("System.out.") || callee.starts_with("System.err.") {
@@ -9245,8 +9250,55 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang) -> Cap 
                 sink_caps
             }
         }
+        // Go `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln` carry an HTML_ESCAPE
+        // sink label because they CAN write to an `http.ResponseWriter`.  When
+        // the writer (positional arg 0) is a known non-response stream
+        // (stderr/stdout/discard/gin's package-level debug writers), the call
+        // is a logging side effect, not a response-rendering sink, and the
+        // HTML_ESCAPE bit should be stripped.  Without this strip, gin's own
+        // `defer func() { debugPrintError(err) }()` shape lights up as
+        // `taint-unsanitised-flow` because `debugPrintError` summarises as
+        // param 0 → `fmt.Fprintf` HTML_ESCAPE through the IPA path.
+        Lang::Go => {
+            if !sink_caps.intersects(Cap::HTML_ESCAPE) {
+                return sink_caps;
+            }
+            let is_fprintf = matches!(callee, "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln");
+            if !is_fprintf {
+                return sink_caps;
+            }
+            let Some(first_arg) = info.call.arg_uses.first() else {
+                return sink_caps;
+            };
+            if first_arg.iter().any(|s| is_go_non_response_writer(s.as_str())) {
+                sink_caps & !Cap::HTML_ESCAPE
+            } else {
+                sink_caps
+            }
+        }
         _ => sink_caps,
     }
+}
+
+/// Recognise Go writer identifiers that are categorically not
+/// `http.ResponseWriter` and therefore should not host an XSS sink for
+/// `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln`.  The set covers the
+/// stdlib stdout/stderr/discard streams plus gin's package-level
+/// `DefaultWriter` / `DefaultErrorWriter` (both are `io.Writer` aliases for
+/// `os.Stdout` / `os.Stderr`).  Both qualified (`gin.DefaultErrorWriter`)
+/// and bare (`DefaultErrorWriter`, intra-package) shapes match.
+fn is_go_non_response_writer(text: &str) -> bool {
+    matches!(
+        text,
+        "os.Stderr"
+            | "os.Stdout"
+            | "io.Discard"
+            | "ioutil.Discard"
+            | "DefaultErrorWriter"
+            | "DefaultWriter"
+            | "gin.DefaultErrorWriter"
+            | "gin.DefaultWriter"
+    )
 }
 
 /// Check if a sink is type-safe (e.g., SQL injection or path traversal with int-typed argument).

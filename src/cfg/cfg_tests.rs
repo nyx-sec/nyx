@@ -3217,3 +3217,51 @@ fn js_ternary_branch_subscript_source_classified() {
         "expected ternary subscript branch defining `x` to carry a Source label"
     );
 }
+
+/// Regression: Go's `switch` with no `default` arm and an only-case body
+/// that returns must keep post-switch statements reachable from entry.
+///
+/// `expression_case` / `default_case` / `type_case` / `communication_case`
+/// all map to `Kind::Block` so the case body is iterated by the Block
+/// handler, but `build_switch`'s container fallback ("first Block child")
+/// would latch onto the FIRST case as the container.  Walking the case's
+/// interior for case-like children finds nothing, the empty-cases early
+/// return fires, and the dispatch If has no False edge: every post-switch
+/// statement becomes unreachable, lighting up `cfg-unreachable-sanitizer`
+/// on real code (gin's `binding/form_mapping.go::setTimeField`, line 469
+/// `if isUTC, _ := strconv.ParseBool(...); isUTC` after a no-default
+/// `switch tf := strings.ToLower(timeFormat); tf` on the unix epoch
+/// formats).
+#[test]
+fn go_switch_no_default_keeps_post_switch_reachable() {
+    use std::collections::HashSet;
+    use petgraph::visit::Bfs;
+    let src = br#"package p
+func f(x string) bool {
+    switch tf := x; tf {
+    case "unix":
+        return false
+    }
+    after()
+    return true
+}
+"#;
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, entry) = parse_and_build(src, "go", ts_lang);
+
+    let mut reachable: HashSet<NodeIndex> = HashSet::new();
+    let mut bfs = Bfs::new(&cfg, entry);
+    while let Some(n) = bfs.next(&cfg) {
+        reachable.insert(n);
+    }
+
+    let after = cfg
+        .node_indices()
+        .find(|&n| cfg[n].call.callee.as_deref() == Some("after"))
+        .expect("expected after() Call node");
+    assert!(
+        reachable.contains(&after),
+        "post-switch `after()` must be reachable from entry; got reachable={:?}",
+        reachable
+    );
+}

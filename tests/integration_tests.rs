@@ -1080,6 +1080,23 @@ fn fp_guard_auth_trpc_handler_options() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Go `fmt.Fprintf` flagged as an HTML_ESCAPE sink even when
+/// the writer is a known non-response stream (`os.Stderr`, `os.Stdout`,
+/// `io.Discard`, gin's package-level `DefaultErrorWriter` /
+/// `DefaultWriter`).  Without the writer-aware suppression in
+/// `suppress_known_safe_callees`, gin's own `defer func() {
+/// debugPrintError(err) }()` shape lights up because `debugPrintError`
+/// summarises through the IPA path as param 0 → `fmt.Fprintf`
+/// HTML_ESCAPE.  The fixture also asserts the canonical
+/// `fmt.Fprintf(w http.ResponseWriter, ...)` XSS path still fires so the
+/// suppression does not over-clear.
+#[test]
+fn fp_guard_go_fmt_fprintf_safe_writer() {
+    let dir = fixture_path("fp_guards/go_fmt_fprintf_safe_writer");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, C/C++ buffer-overflow pattern rules
 /// (`c.memory.strcpy`, `strcat`, `sprintf`) over-fire when the source /
 /// format-string argument is a literal whose contributed length is

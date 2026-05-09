@@ -626,15 +626,30 @@ implied or surfaced but did not finish.
       `conftest.py`, `_spec.rb`) was relabelled to `FP` with note
       "Test fixture / helper. The flagged shape is in the test path,
       not request-reachable production code." Counts after sweep:
-      gin 15/20 FP (5 production findings remain), openmrs 16/273,
-      drupal 119/635, joomla 12/83, nextcloud 82/262, phpmyadmin
-      4/119, airflow 186/892. Production-path findings remain
-      `needs_review` and require flow-level inspection before
-      labelling. The schema test does not require every entry to be
-      triaged, but future precision phases need the production-path
-      set labelled to measure FP-removal lift. Priority queues per
-      lang are documented in `docs/recall-validation.md` (cross-lang
-      runbook section, "Per-lang TP/FP splits" subsection).
+      gin 15/20 FP (now 15/18 FP after session 0009: 2 FPs eliminated
+      structurally — fmt.Fprintf safe-writer suppression closes the
+      `gin.go:541 taint-unsanitised-flow` cluster on
+      `defer func(){ debugPrintError(err) }()` shapes via the IPA
+      summary path, and the Go switch container fallback fix in
+      `build_switch` closes the `binding/form_mapping.go:469
+      cfg-unreachable-sanitizer` finding on `if init; cond {}` after
+      a no-default switch with all-returning cases; 3 production
+      findings remain at `gin.go:728 taint-open-redirect` —
+      `redirectTrailingSlash(c)` whose internal `http.Redirect`
+      target is the same request's `URL.String()` with path-only
+      tweaks, addressing this requires a "request-mirror URL lock"
+      flag in the abstract-string domain so OPEN_REDIRECT is
+      suppressed when the destination URL provably echoes the
+      inbound request URL with only path edits, multi-day domain
+      change, parked).  openmrs 16/273, drupal 119/635, joomla
+      12/83, nextcloud 82/262, phpmyadmin 4/119, airflow 186/892.
+      Production-path findings remain `needs_review` and require
+      flow-level inspection before labelling. The schema test does
+      not require every entry to be triaged, but future precision
+      phases need the production-path set labelled to measure
+      FP-removal lift. Priority queues per lang are documented in
+      `docs/recall-validation.md` (cross-lang runbook section,
+      "Per-lang TP/FP splits" subsection).
 - [ ] Phase 17 audit — the captured airflow baseline (892 findings)
       pre-dates the 2026-04-29 saleor/airflow/sentry FastAPI
       route-level dependency-injection auth fix and the 2026-05-02
