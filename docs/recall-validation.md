@@ -1,10 +1,9 @@
 # Recall validation runbook
 
-Phase 11 of the JS/TS recall-gap engine plan freezes a finding-shape
-baseline against four real-world OSS targets so future recall work
-can prove "actually lifts recall on real code", not just "tests pass".
-This runbook covers re-running the validation against a fresh OSS
-release.
+The recall-validation harness freezes a finding-shape baseline against
+real-world OSS targets so future engine work can prove "actually lifts
+recall on real code", not just "tests pass". This runbook covers
+re-running the validation against a fresh OSS release.
 
 ## Targets
 
@@ -24,11 +23,11 @@ Item numbering is from `.pitboss/RECALL_GAPS.md`.
 | `scripts/validate_recall.sh`                  | runner (capture + diff modes)           |
 | `tests/recall_targets/<target>.json`          | per-target baseline                     |
 | `tests/recall_gaps.rs::validate_real_world_targets` | schema-validity test (`#[ignore]`)|
-| `tests/recall_gaps_baseline.json`             | corpus regression baseline (Phase 01)   |
+| `tests/recall_gaps_baseline.json`             | corpus regression baseline              |
 
-Baselines were relocated out of `.pitboss/` per the Phase 01
-precedent: pitboss implementer agents are forbidden to write under
-`.pitboss/`, so the baseline files live next to the harness instead.
+Baselines live next to the harness rather than under `.pitboss/`:
+pitboss implementer agents are forbidden to write under `.pitboss/`,
+so the baseline files were placed beside the test that consumes them.
 
 ## Baseline schema
 
@@ -123,22 +122,23 @@ because `[]` is a valid `findings` array with zero entries to check.
 
 ## Perf baseline
 
-Phase 11 records the post-phase-11 scanner perf in
+The frozen JS-target perf snapshot lives in
 `tests/recall_targets/perf_after.txt`. Compare against the
 `captured_against` snapshot in `tests/recall_gaps_baseline.json`
 (`corpus_finding_lines.findings_total` = 1121, captured at master
-`ea82ea98`). Phase 11's acceptance bar: scanner throughput on the
-existing `tests/fixtures/` corpus must regress by ≤ 15%. Future
-recall work uses the same corpus + the same record file to measure
+`ea82ea98`). The acceptance bar: scanner throughput on the existing
+`tests/fixtures/` corpus must regress by no more than 15%. Future
+recall work uses the same corpus and the same record file to measure
 its own perf delta.
 
-## Cross-language runbook (Phase 17)
+## Cross-language runbook
 
-Phase 11 covered JS-only targets. Phase 17 mirrors that work against
-real-world non-JS targets so the cross-language phases (12–16) prove
-"actually lifts recall on real code", not just "tests pass". Per-lang
-baselines live under `tests/recall_targets/xlang/<lang>/<target>.json`
-and the runner accepts a `--lang` flag to select the target set.
+The JS-target baselines above only cover JS/TS. Cross-language
+baselines mirror that work against real-world non-JS targets so
+multi-language engine changes can be measured against actual code,
+not just synthetic fixtures. Per-lang baselines live under
+`tests/recall_targets/xlang/<lang>/<target>.json` and the runner
+accepts a `--lang` flag to select the target set.
 
 ### Cross-language targets
 
@@ -165,9 +165,9 @@ detection.
 ### Per-lang TP/FP splits
 
 Every captured finding ships with `verdict: "needs_review"` from
-`--capture`. Hand-triage is bounded but pending; none of the Phase 17
-captures are sweep-labelled yet. Use the per-lang dominant rule_id
-clusters above as the priority queue:
+`--capture`. Hand-triage is bounded but pending; none of the cross-
+language captures are sweep-labelled yet. Use the per-lang dominant
+rule_id clusters above as the priority queue:
 
 - **PHP**: `cfg-unguarded-sink` and `taint-prototype-pollution` are
   the FP-dominant clusters across drupal / nextcloud / phpmyadmin
@@ -217,19 +217,21 @@ as the JS-target diff. The diff key is `(rule_id, path_suffix, line)`.
 
 Pitboss implementer agents run sandboxed without network egress, so
 target repos that are not already present under `~/oss/` ship as
-placeholders (`pinned_commit: "unknown"`, `findings: []`). Phase 17
-shipped captures for php/java/python/go (every target whose repo was
-already cloned locally) and placeholders for `rust/axum`, `ruby/rails`,
-and `python/flask`. The schema test in `validate_real_world_targets`
-passes against placeholders because `[]` is a valid `findings` array.
+placeholders (`pinned_commit: "unknown"`, `findings: []`). The
+current cross-language baselines cover php / java / python / go
+(every target whose repo was already cloned locally) and ship
+placeholders for `rust/axum`, `ruby/rails`, and `python/flask`. The
+schema test in `validate_real_world_targets` passes against
+placeholders because `[]` is a valid `findings` array.
 
 ## What lives where (quick reference)
 
-- Targets list and recall-item mapping → this file.
-- Per-target JS findings → `tests/recall_targets/<target>.json`.
-- Per-target cross-lang findings → `tests/recall_targets/xlang/<lang>/<target>.json`.
-- Diff/capture runner → `scripts/validate_recall.sh` (accepts `--lang`).
-- Schema-validity test → `tests/recall_gaps.rs::validate_real_world_targets`.
-- Corpus regression baseline → `tests/recall_gaps_baseline.json`.
-- Perf records → `tests/recall_targets/perf_after.txt` (Phase 11) and
-  `tests/recall_targets/perf_after_xlang.txt` (Phase 17 delta).
+- Targets list and recall-item mapping in this file.
+- Per-target JS findings under `tests/recall_targets/<target>.json`.
+- Per-target cross-lang findings under `tests/recall_targets/xlang/<lang>/<target>.json`.
+- Diff/capture runner at `scripts/validate_recall.sh` (accepts `--lang`).
+- Schema-validity test at `tests/recall_gaps.rs::validate_real_world_targets`.
+- Corpus regression baseline at `tests/recall_gaps_baseline.json`.
+- Perf records at `tests/recall_targets/perf_after.txt` (JS-target
+  snapshot) and `tests/recall_targets/perf_after_xlang.txt`
+  (cross-language delta).

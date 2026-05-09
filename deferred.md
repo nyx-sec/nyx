@@ -770,6 +770,42 @@ implied or surfaced but did not finish.
       populated — preserves cross-file deepest-sink attribution
       across multi-hop summaries (defensive; does not affect
       single-file `locator: None` path).
+      2026-05-09 session 0002 follow-up: tried enabling locator on
+      `lower_ssa_for_fused` (passing `Some(&SinkSiteLocator{...})`).
+      Net trade: 2 benchmark cases gain location-level TP, but 5
+      `real_world_tests` fixtures hard-fail because their
+      `expect.json` files explicitly assert TWO `taint-unsanitised-flow`
+      findings (inner sink + outer call-site re-report):
+      `javascript/taint/closure_captured_var`,
+      `javascript/taint/closure_member_assignment`,
+      `javascript/taint/symex_interproc_callee_internal_sink`,
+      `go/taint/func_literal_capture`,
+      `python/taint/lambda_closure`. With locator enabled the outer
+      call-site finding gets re-attributed to the deep line via
+      `primary_location`, then `deduplicate_taint_flows` collapses it
+      with the inner intraprocedural finding (same path, same line,
+      same severity, same sink_caps). The fixture authors deliberately
+      chose two-finding semantics so reviewers see both the deep sink
+      coordinates AND the call-site that surfaces it (the second
+      `must_match` block notes "re-reports the flow via inline callee
+      analysis"). Reverted in this session because:
+      (a) updating 5 fixtures + auditing the 474-fixture
+      `real_world_tests` corpus for other re-report patterns is
+      genuinely larger than the 2-test gain;
+      (b) the structural ambiguity (when to surface as one finding
+      at the deep line vs two findings at deep+callsite) needs a
+      design decision the deferred note left open.
+      Next session pickup: either (1) decide the surface-shape policy
+      (one finding at deep line vs two findings) and update fixtures
+      to match, or (2) introduce a `from_chain` flag on `SinkSite`
+      that distinguishes "this site is the callee's own sink span"
+      (don't promote → keeps current call-site emission for
+      single-frame helpers) from "this site was promoted from a
+      deeper callee" (promote → surfaces deep line for multi-hop
+      chains). Option (2) preserves both shapes but requires
+      threading a new field through `SinkSite`, `union_sink_sites`,
+      `union_param_sink_sites`, the `summary_extract` path, and
+      cross-file persistence.
 
 ## Deferred phases
 
