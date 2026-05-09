@@ -5951,6 +5951,37 @@ pub(super) fn transfer_inst(
     }
 }
 
+/// Resolve a URL builder's `(base)` arg to a concrete origin string when
+/// either (a) the call site recorded a syntactic string literal at
+/// `base_idx`, or (b) the SSA value at that arg position carries an
+/// abstract-string singleton domain (typical for
+/// `const BASE = "https://..."; new URL(path, BASE)`).
+///
+/// Returning `Some(s)` means the prefix-lock arm can seed the result's
+/// [`StringFact`] via [`StringFact::from_url_with_base`].
+fn url_builder_concrete_base(
+    info: &NodeInfo,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+    base_idx: usize,
+) -> Option<String> {
+    if let Some(s) = info
+        .call
+        .arg_string_literals
+        .get(base_idx)
+        .and_then(|s| s.as_deref())
+    {
+        return Some(s.to_string());
+    }
+    let bv = args.get(base_idx).and_then(|g| g.first().copied())?;
+    let dom = abs.get(bv).string.domain?;
+    if dom.len() == 1 {
+        Some(dom.into_iter().next().expect("len==1 guards index"))
+    } else {
+        None
+    }
+}
+
 /// Compute abstract values for an SSA instruction.
 ///
 /// Propagates interval and string domain facts forward through constants,
@@ -6184,12 +6215,15 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
 
         // Phase 08 / Phase 14 — `(base, path)` URL builder origin-lock.
         // When the base arg is a literal (read off
-        // `info.call.arg_string_literals[base_idx]`), seed the result's
-        // [`StringFact`] with `from_url_with_base(base, path_string)` so
-        // the locked-host prefix survives even when the path component
-        // carries arbitrary taint.  `is_string_safe_for_ssrf` honours the
-        // prefix and suppresses the SSRF sink at the downstream HTTP
-        // call.  The arg-position table lives in
+        // `info.call.arg_string_literals[base_idx]`) or a const-bound
+        // identifier whose abstract `StringFact.domain` is a singleton
+        // (e.g. `const BASE = "https://api.cal.com"; new URL(path, BASE)`),
+        // seed the result's [`StringFact`] with
+        // `from_url_with_base(base, path_string)` so the locked-host
+        // prefix survives even when the path component carries arbitrary
+        // taint. `is_string_safe_for_ssrf` honours the prefix and
+        // suppresses the SSRF sink at the downstream HTTP call. The
+        // arg-position table lives in
         // [`crate::ssa::type_facts::url_builder_arg_indices`] — covers
         // JS/TS `new URL(path, base)`, Python `urljoin(base, path)`,
         // Go `url.JoinPath(base, ...)`, Java `new URL(URL, spec)`,
@@ -6205,11 +6239,7 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                     )
                 })
                 .is_some_and(|(_p, base_idx)| {
-                    info.call
-                        .arg_string_literals
-                        .get(base_idx)
-                        .and_then(|s| s.as_deref())
-                        .is_some()
+                    url_builder_concrete_base(info, args, abs, base_idx).is_some()
                 }) =>
         {
             let lang_u = lang.expect("guard ensures lang.is_some()");
@@ -6220,12 +6250,7 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                 info.call.is_constructor,
             )
             .expect("guard ensures Some");
-            let base = info
-                .call
-                .arg_string_literals
-                .get(base_idx)
-                .and_then(|s| s.as_deref())
-                .map(|s| s.to_string())
+            let base = url_builder_concrete_base(info, args, abs, base_idx)
                 .expect("guard ensures Some");
             let path_string = args
                 .get(path_idx)
@@ -6275,12 +6300,9 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                     )
                     .is_none_or(|(_p, base_idx)| {
                         // Skip when the 2-arg arm above would already
-                        // have fired (it consumed a literal base).
-                        info.call
-                            .arg_string_literals
-                            .get(base_idx)
-                            .and_then(|s| s.as_deref())
-                            .is_none()
+                        // have fired (it consumed a literal or
+                        // const-bound singleton base).
+                        url_builder_concrete_base(info, args, abs, base_idx).is_none()
                     })
             }) =>
         {

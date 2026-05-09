@@ -1116,6 +1116,19 @@ fn fp_guard_go_http_redirect_self_request() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, `new URL(req.body.path, BASE)` where `BASE` is a `const`
+/// identifier bound to a literal origin must NOT fire SSRF — the
+/// abstract-string singleton domain proves the origin is locked even
+/// though the base arg is not a syntactic literal at the call site.
+/// Negative control under `handler.ts` (base read from request body)
+/// MUST still surface `taint-ssrf`.
+#[test]
+fn fp_guard_url_builder_const_base() {
+    let dir = fixture_path("fp_guards/url_builder_const_base");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, third-party bundled / minified assets must be skipped before
 /// parsing so vendored libraries (jQuery, htmx, Sortable, lodash) do not
 /// surface findings the codebase author cannot remediate.  `is_vendored_asset_path`

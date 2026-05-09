@@ -747,11 +747,23 @@ pub fn extract_ssa_func_summary_full(
             if event.sink_caps.is_empty() {
                 continue;
             }
-            let site = match locator {
-                Some(loc) => {
-                    loc.site_for_span(cfg[event.sink_node].classification_span(), event.sink_caps)
-                }
-                None => SinkSite::cap_only(event.sink_caps),
+            // Preserve the deepest sink attribution across multi-hop summaries.
+            // When `event.primary_sink_site` is populated, the upstream
+            // resolver already pierced through a callee summary to the
+            // dangerous instruction's coordinates; promoting it here means a
+            // grandparent caller of this function sees `line N` of the
+            // innermost helper rather than `line M` of *this* function's
+            // call site to its child. Falls back to locator-based call-site
+            // attribution when the event is intra-procedural.
+            let site = match event.primary_sink_site.as_ref() {
+                Some(s) => s.clone(),
+                None => match locator {
+                    Some(loc) => loc.site_for_span(
+                        cfg[event.sink_node].classification_span(),
+                        event.sink_caps,
+                    ),
+                    None => SinkSite::cap_only(event.sink_caps),
+                },
             };
             let key = site.dedup_key();
             if !param_sites.iter().any(|s| s.dedup_key() == key) {

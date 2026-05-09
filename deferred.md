@@ -97,16 +97,6 @@ implied or surfaced but did not finish.
       Literal value, not a Sequelize instance — typing that result as
       `Sequelize` would mis-shape. Skip until a fixture surfaces a
       gap.
-- [ ] Phase 08 audit — `new URL(path, base)` abstract-string seeding
-      requires `base` to be a syntactic string literal (read from
-      `info.call.arg_string_literals`). A two-arg form whose base is
-      a constant identifier
-      (`const BASE = "https://api.cal.com"; new URL(req.body.path,
-      BASE);`) won't be recognised because the base value is an SSA
-      `Param`/`Const` reference rather than a literal-positioned arg.
-      Bridge through `abs.get(base_v).string` (singleton `domain`)
-      when that shape becomes load-bearing. Park because const-base
-      forms are uncommon in the realistic SSRF corpus.
 - [ ] Phase 08 audit — the prompt prescribed extending
       `src/taint/ssa_transfer/events.rs::collect_block_events` to
       collect first-arg URL-typed taint and object-literal `url`
@@ -747,6 +737,39 @@ implied or surfaced but did not finish.
       Park: the dual layout is documented in
       `docs/recall-validation.md`; unify only when a JS-specific
       precision phase needs a re-capture anyway.
+
+- [ ] Multi-hop intra-file sink attribution gap. The benchmark cases
+      `java-sqli-stmt-execute-002` and
+      `cve-java-ghsa-h8cj-hpmg-636v-vulnerable` surface as
+      `outcome_location_level: FN` (file-level + rule-level still TP).
+      Engine emits `taint-unsanitised-flow` at the outer call site
+      (e.g. `dropTable(tableName)` line 26) instead of the actual
+      sink line (`statement.execute(query)` line 36) several frames
+      down. Root cause: `parsed.lower_ssa_for_fused` in `src/ast.rs`
+      passes `locator: None` to `lower_all_functions_from_bodies`
+      so intra-file SSA summaries record `SinkSite::cap_only`
+      (line: 0). At pass-2 emission, `pick_primary_sink_sites`
+      filters all line==0 sites out, so `Finding.primary_location`
+      stays `None` and the diag falls back to the call-site point.
+      The behavior is intentional per the doc comment on
+      `lower_ssa_for_fused`: closure-capture / lambda /
+      helper-with-internal-sink fixtures expect call-site emission
+      (the intraprocedural finding fires at the deep line in those
+      shapes). Multi-hop helper *chains* (drop→dropTable→executeDbQuery
+      where each frame only has param-typed input) do NOT have a
+      separate intraprocedural finding at the deep line — so the
+      attribution simply disappears. Long-term fix: enable locator
+      in `lower_ssa_for_fused`, then add a same-(file,line) dedup at
+      diag emission so closure / lambda fixtures don't double-fire.
+      Ad-hoc bandaid (only enable when chain depth > 1) is brittle
+      because chain depth isn't visible at extraction time. Park
+      until the dedup change is scoped and corpus regressions
+      validated. 2026-05-09 session 0001 partial fix landed in
+      `src/taint/ssa_transfer/summary_extract.rs` to prefer
+      `event.primary_sink_site` over locator-based span when
+      populated — preserves cross-file deepest-sink attribution
+      across multi-hop summaries (defensive; does not affect
+      single-file `locator: None` path).
 
 ## Deferred phases
 
