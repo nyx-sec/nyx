@@ -1097,6 +1097,25 @@ fn fp_guard_go_fmt_fprintf_safe_writer() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Go `http.Redirect(w, r, urlExpr, code)` whose URL string is
+/// derived from the same request's `*url.URL` (e.g. `r.URL.String()`,
+/// `r.URL.Path`, `r.URL.RequestURI()`, `r.URL.EscapedPath()`).  Such a
+/// redirect echoes the inbound request's URL with at most path-only edits
+/// — scheme/host are same-origin by construction — so OPEN_REDIRECT is
+/// inapplicable.  Without this gate, gin's `redirectTrailingSlash` /
+/// `redirectFixedPath` / `redirectRequest` helpers record `param_to_sink`
+/// for OPEN_REDIRECT through the inner `http.Redirect` and then surface
+/// `taint-open-redirect` at every call site that reaches them with a
+/// tainted `c.Request.URL`.  The fixture also asserts that the canonical
+/// attacker-controlled `r.FormValue → http.Redirect` shape still fires so
+/// the gate does not over-clear.
+#[test]
+fn fp_guard_go_http_redirect_self_request() {
+    let dir = fixture_path("fp_guards/go_http_redirect_self_request");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, C/C++ buffer-overflow pattern rules
 /// (`c.memory.strcpy`, `strcat`, `sprintf`) over-fire when the source /
 /// format-string argument is a literal whose contributed length is

@@ -626,22 +626,22 @@ implied or surfaced but did not finish.
       `conftest.py`, `_spec.rb`) was relabelled to `FP` with note
       "Test fixture / helper. The flagged shape is in the test path,
       not request-reachable production code." Counts after sweep:
-      gin 15/20 FP (now 15/18 FP after session 0009: 2 FPs eliminated
-      structurally — fmt.Fprintf safe-writer suppression closes the
-      `gin.go:541 taint-unsanitised-flow` cluster on
-      `defer func(){ debugPrintError(err) }()` shapes via the IPA
-      summary path, and the Go switch container fallback fix in
-      `build_switch` closes the `binding/form_mapping.go:469
-      cfg-unreachable-sanitizer` finding on `if init; cond {}` after
-      a no-default switch with all-returning cases; 3 production
-      findings remain at `gin.go:728 taint-open-redirect` —
-      `redirectTrailingSlash(c)` whose internal `http.Redirect`
-      target is the same request's `URL.String()` with path-only
-      tweaks, addressing this requires a "request-mirror URL lock"
-      flag in the abstract-string domain so OPEN_REDIRECT is
-      suppressed when the destination URL provably echoes the
-      inbound request URL with only path edits, multi-day domain
-      change, parked).  openmrs 16/273, drupal 119/635, joomla
+      gin 15/20 FP (now 15/15 FP after session 0010: 5 FPs eliminated
+      structurally — session 0009's fmt.Fprintf safe-writer suppression
+      closed the `gin.go:541 taint-unsanitised-flow` cluster (2 FPs)
+      on `defer func(){ debugPrintError(err) }()` shapes via the IPA
+      summary path; session 0009's Go switch container fallback fix in
+      `build_switch` closed the `binding/form_mapping.go:469
+      cfg-unreachable-sanitizer` finding (1 FP); session 0010's same-
+      request self-redirect suppression in
+      `is_go_request_self_redirect` closes the `gin.go:728
+      taint-open-redirect` cluster (3 FPs) on `redirectTrailingSlash(c)`
+      whose internal `http.Redirect` target is the same request's
+      `URL.String()` with path-only edits.  Recognises both decomposed
+      shape (FieldProj of `URL` + Call accessor) and flat-callee shape
+      (`r.URL.<accessor>` text).  Verified on /Users/elipeter/oss/gin
+      with `cargo test fp_guard_go_http_redirect_self_request`).
+      openmrs 16/273, drupal 119/635, joomla
       12/83, nextcloud 82/262, phpmyadmin 4/119, airflow 186/892.
       Production-path findings remain `needs_review` and require
       flow-level inspection before labelling. The schema test does

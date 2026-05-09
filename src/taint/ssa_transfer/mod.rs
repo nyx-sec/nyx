@@ -7191,6 +7191,29 @@ fn collect_block_events(
             continue;
         }
 
+        // Go same-request self-redirect suppression.
+        //
+        // `http.Redirect(w, r, url, code)` whose URL string arg is derived
+        // from the same request's `*url.URL` is a same-origin redirect by
+        // construction: scheme/host echo the inbound request, only the path
+        // can be edited.  gin's `redirectTrailingSlash` /
+        // `redirectFixedPath` / `redirectRequest` helpers all bottom out in
+        // this shape (`req := c.Request; rURL := req.URL.String();
+        // http.Redirect(w, req, rURL, code)`).  Without this suppression,
+        // the inner `http.Redirect` records `param_to_sink` for OPEN_REDIRECT
+        // and the IPA path then surfaces `taint-open-redirect` at every
+        // call site that reaches `redirectTrailingSlash(c)` with a
+        // tainted `c.Request.URL`.
+        if transfer.lang == Lang::Go
+            && sink_caps.intersects(Cap::OPEN_REDIRECT)
+            && is_go_request_self_redirect(inst, info, ssa)
+        {
+            sink_caps &= !Cap::OPEN_REDIRECT;
+        }
+        if sink_caps.is_empty() {
+            continue;
+        }
+
         // Same-node Sanitizer subtraction.  When the CFG node carries both
         // Sink and Sanitizer labels for overlapping caps, the shape-based
         // synthesis pattern used by Ruby AR safe-arg-0 detection
@@ -8781,6 +8804,201 @@ fn inst_use_values(inst: &SsaInst) -> Vec<SsaValue> {
         | SsaOp::Nop
         | SsaOp::Undef => Vec::new(),
     }
+}
+
+// ── Go same-request self-redirect detection ────────────────────────────
+
+/// Detect Go `http.Redirect(w, r, urlExpr, code)` whose URL string arg is
+/// derived from the same `*http.Request`'s `URL` (e.g. `r.URL.String()`,
+/// `r.URL.RequestURI()`, `r.URL.EscapedPath()`).  Such a redirect echoes
+/// the inbound request's URL with at most path-only edits, so scheme/host
+/// are same-origin by construction and `Cap::OPEN_REDIRECT` cannot fire.
+///
+/// Recognition is purely syntactic over the SSA call's args:
+///   * arg 1 (the `*Request`) and arg 2 (the URL string) are correlated
+///     through the FieldProj `URL` accessor on a shared receiver chain.
+///   * arg 2's defining op is a Call to a `*url.URL` accessor whose
+///     return is a string derived from the URL.
+///
+/// gin's `redirectTrailingSlash` / `redirectFixedPath` / `redirectRequest`
+/// helpers are the canonical shape; the same gate applies to any
+/// hand-written `http.Redirect(w, r, r.URL.String(), code)` form.
+fn is_go_request_self_redirect(inst: &SsaInst, info: &NodeInfo, ssa: &SsaBody) -> bool {
+    let callee = match info.call.callee.as_deref() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !callee.eq_ignore_ascii_case("http.Redirect") {
+        return false;
+    }
+    let SsaOp::Call { ref args, .. } = inst.op else {
+        return false;
+    };
+    // `http.Redirect(w, r, url, code)` is the canonical 4-arg shape, but
+    // SSA construction sometimes folds the package-qualifier into an extra
+    // arg-0 phantom group (5-arg shape); both keep `r`/`url` at indices
+    // 1/2.  Accept either.
+    let req_arg_idx = 1usize;
+    let url_arg_idx = 2usize;
+    if args.len() <= url_arg_idx {
+        return false;
+    }
+    let url_v = match args[url_arg_idx].first() {
+        Some(&v) => v,
+        None => return false,
+    };
+    // Resolve the request's canonical name.  Prefer the SSA-level value
+    // when args[1] is populated; fall back to the CFG's `arg_uses` row,
+    // which records the syntactic identifier list for arg position 1
+    // even when SSA didn't lift the reference into a tracked value.
+    let (req_v_opt, req_name) = match args[req_arg_idx].first() {
+        Some(&v) => (Some(v), ssa_canonical_var_name(v, ssa)),
+        None => (
+            None,
+            info.call
+                .arg_uses
+                .get(req_arg_idx)
+                .and_then(|row| row.first())
+                .cloned(),
+        ),
+    };
+    is_request_url_method_value(url_v, req_v_opt, req_name.as_deref(), ssa)
+}
+
+/// Walk through `Assign` hops to find the canonical "name" of an SSA
+/// value: prefer the leading use's `var_name` when the def is an Assign
+/// chain; otherwise fall back to the value's own `var_name`.
+fn ssa_canonical_var_name(v: SsaValue, ssa: &SsaBody) -> Option<String> {
+    let mut cur = v;
+    for _ in 0..8 {
+        let def = ssa.def_of(cur);
+        if let Some(name) = def.var_name.as_deref() {
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+        let def_inst = find_inst_for_value(cur, ssa)?;
+        if let SsaOp::Assign(uses) = &def_inst.op {
+            if let Some(&first) = uses.first() {
+                if first == cur {
+                    return None;
+                }
+                cur = first;
+                continue;
+            }
+        }
+        return None;
+    }
+    None
+}
+
+/// Return true when `url_v` traces (through up to a few Assign hops) to
+/// either of two equivalent SSA shapes that read a `*url.URL` accessor on
+/// the same request:
+///   1. Decomposed chain — `Call("String"|"RequestURI"|...)` whose
+///      receiver is `FieldProj(req, "URL")` (chained-method shape, kicks
+///      in for `r.URL.String()`-style method calls).
+///   2. Flat chain — `Call("<req>.URL.<accessor>", rcv=None)` (no
+///      decomposition), used by SSA lowering for plain field reads
+///      (`r.URL.Path`) and short method chains alike.
+///
+/// Match success means: arg 1 (the `*Request`) and arg 2 (the URL string)
+/// are correlated through the same request's `URL` field, so the redirect
+/// destination is same-origin by construction.
+fn is_request_url_method_value(
+    url_v: SsaValue,
+    req_v: Option<SsaValue>,
+    req_name: Option<&str>,
+    ssa: &SsaBody,
+) -> bool {
+    let mut cur = url_v;
+    for _ in 0..8 {
+        let Some(def_inst) = find_inst_for_value(cur, ssa) else {
+            return false;
+        };
+        match &def_inst.op {
+            SsaOp::Assign(uses) if uses.len() == 1 => {
+                cur = uses[0];
+            }
+            SsaOp::Call {
+                callee,
+                receiver: Some(rcv),
+                ..
+            } => {
+                if !is_url_accessor_method(callee) {
+                    return false;
+                }
+                let Some(rcv_def) = find_inst_for_value(*rcv, ssa) else {
+                    return false;
+                };
+                let SsaOp::FieldProj {
+                    receiver: inner_recv,
+                    field,
+                    ..
+                } = rcv_def.op
+                else {
+                    return false;
+                };
+                if ssa.field_interner.resolve(field) != "URL" {
+                    return false;
+                }
+                if Some(inner_recv) == req_v {
+                    return true;
+                }
+                let inner_name = ssa_canonical_var_name(inner_recv, ssa);
+                return match (inner_name.as_deref(), req_name) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                };
+            }
+            SsaOp::Call {
+                callee,
+                receiver: None,
+                ..
+            } => {
+                // Flat chain shape: callee text is `<root>.URL.<accessor>`.
+                let req_name = match req_name {
+                    Some(n) => n,
+                    None => return false,
+                };
+                let prefix = format!("{req_name}.URL.");
+                if !callee.starts_with(&prefix) {
+                    return false;
+                }
+                let suffix = &callee[prefix.len()..];
+                // Reject deeper chains (e.g. `<root>.URL.X.Y`) so the
+                // gate stays scoped to direct URL accessors.
+                if suffix.contains('.') {
+                    return false;
+                }
+                return is_url_accessor_method(suffix);
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Bare-method names on `*url.URL` whose return is a string derived from
+/// the URL value.  Recognised for the same-request self-redirect gate.
+fn is_url_accessor_method(callee: &str) -> bool {
+    matches!(
+        callee,
+        "String" | "RequestURI" | "EscapedPath" | "Path" | "RawPath" | "RawQuery"
+    )
+}
+
+/// Locate the [`SsaInst`] that defines `v` within its declared block.
+/// Returns `None` only when the SSA body is malformed (the instruction
+/// table and `value_defs` table disagree on which block defines `v`).
+fn find_inst_for_value(v: SsaValue, ssa: &SsaBody) -> Option<&SsaInst> {
+    let def = ssa.def_of(v);
+    let block = ssa.block(def.block);
+    block
+        .phis
+        .iter()
+        .chain(block.body.iter())
+        .find(|inst| inst.value == v)
 }
 
 // ── Alias-Aware Sanitization ────────────────────────────────────────────
