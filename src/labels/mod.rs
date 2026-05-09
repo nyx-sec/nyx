@@ -1177,7 +1177,13 @@ pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> O
 
     // For chained calls like `r.URL.Query().Get`, also strip internal
     // `().` segments to produce a normalized form like `r.URL.Query.Get`.
-    let full_normalized = normalize_chained_call(text);
+    // Fast path: skip the alloc when the input has no `(` or `<` at all.
+    let full_normalized: std::borrow::Cow<'_, str> =
+        if text.as_bytes().iter().any(|&b| b == b'(' || b == b'<') {
+            std::borrow::Cow::Owned(normalize_chained_call(text))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        };
     let full_norm_bytes = full_normalized.as_bytes();
 
     // ── Check runtime (config) rules first, they take priority ──────
@@ -1265,7 +1271,16 @@ pub fn classify_all(
         return SmallVec::new();
     }
 
-    let full_normalized = normalize_chained_call(text);
+    // Fast path: when `text` has no `(` and no `<`, normalization is a
+    // no-op so we skip the allocation and reuse the input bytes.  The
+    // hot classify path runs on every CFG node, so dropping the per-call
+    // String alloc is a measurable win on call-heavy corpora.
+    let full_normalized: std::borrow::Cow<'_, str> =
+        if text.as_bytes().iter().any(|&b| b == b'(' || b == b'<') {
+            std::borrow::Cow::Owned(normalize_chained_call(text))
+        } else {
+            std::borrow::Cow::Borrowed(text)
+        };
     let full_norm_bytes = full_normalized.as_bytes();
 
     let mut out: SmallVec<[DataLabel; 2]> = SmallVec::new();

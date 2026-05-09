@@ -515,15 +515,15 @@ fn walk_import_statement(
                 "namespace_import" => {
                     let mut c3 = part.walk();
                     for ns_child in part.children(&mut c3) {
-                        if ns_child.kind() == "identifier" {
-                            if let Ok(name) = ns_child.utf8_text(code) {
-                                out.push(RawJsImport {
-                                    local: name.to_string(),
-                                    exported: "*".to_string(),
-                                    source_spec: spec.to_string(),
-                                });
-                                emitted_any = true;
-                            }
+                        if ns_child.kind() == "identifier"
+                            && let Ok(name) = ns_child.utf8_text(code)
+                        {
+                            out.push(RawJsImport {
+                                local: name.to_string(),
+                                exported: "*".to_string(),
+                                source_spec: spec.to_string(),
+                            });
+                            emitted_any = true;
                         }
                     }
                 }
@@ -818,16 +818,16 @@ fn resolve_exports_to_relpath(exports: &serde_json::Value, sub: &str) -> Option<
     match exports {
         serde_json::Value::String(s) if key == "." => Some(s.clone()),
         serde_json::Value::Object(map) => {
-            if let Some(val) = map.get(&key) {
-                if let Some(target) = pick_conditional(val) {
-                    return Some(target);
-                }
+            if let Some(val) = map.get(&key)
+                && let Some(target) = pick_conditional(val)
+            {
+                return Some(target);
             }
             for (pat, val) in map.iter() {
-                if let Some(inner) = exports_pattern_match(pat, &key) {
-                    if let Some(target) = pick_conditional(val) {
-                        return Some(target.replace('*', &inner));
-                    }
+                if let Some(inner) = exports_pattern_match(pat, &key)
+                    && let Some(target) = pick_conditional(val)
+                {
+                    return Some(target.replace('*', &inner));
                 }
             }
             None
@@ -842,10 +842,10 @@ fn pick_conditional(val: &serde_json::Value) -> Option<String> {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Object(map) => {
             for cond in ["import", "node", "default", "require"] {
-                if let Some(v) = map.get(cond) {
-                    if let Some(s) = pick_conditional(v) {
-                        return Some(s);
-                    }
+                if let Some(v) = map.get(cond)
+                    && let Some(s) = pick_conditional(v)
+                {
+                    return Some(s);
                 }
             }
             None

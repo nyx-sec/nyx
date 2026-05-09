@@ -224,13 +224,13 @@ fn detect_js_ts(
             return;
         }
 
-        if let (Some(map), Some(name)) = (&route_methods, name) {
-            if let Some(method) = map.get(name).copied() {
-                entries
-                    .entry(span)
-                    .or_insert(EntryKind::AppRouteHandler { method });
-                return;
-            }
+        if let (Some(map), Some(name)) = (&route_methods, name)
+            && let Some(method) = map.get(name).copied()
+        {
+            entries
+                .entry(span)
+                .or_insert(EntryKind::AppRouteHandler { method });
+            return;
         }
 
         // Express handler resolution: matches by name (named function
@@ -325,7 +325,7 @@ fn walk_functions_js<F: FnMut(Node, Option<&str>)>(
 fn visit_recursive_js<F: FnMut(Node, Option<&str>)>(
     node: Node,
     bytes: &[u8],
-    cursor: &mut tree_sitter::TreeCursor,
+    _cursor: &mut tree_sitter::TreeCursor,
     visit: &mut F,
 ) {
     match node.kind() {
@@ -352,7 +352,7 @@ fn visit_recursive_js<F: FnMut(Node, Option<&str>)>(
     }
     let mut walker = node.walk();
     for child in node.children(&mut walker) {
-        visit_recursive_js(child, bytes, cursor, visit);
+        visit_recursive_js(child, bytes, _cursor, visit);
     }
 }
 
@@ -385,12 +385,7 @@ fn function_body_js<'a>(func_node: Node<'a>) -> Option<Node<'a>> {
 /// Extract the first `string` child of an `expression_statement`.
 fn first_string_child<'a>(node: Node<'a>) -> Option<Node<'a>> {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "string" {
-            return Some(child);
-        }
-    }
-    None
+    node.children(&mut cursor).find(|child| child.kind() == "string")
 }
 
 /// Compare the textual content of a `string` node (quotes stripped)
@@ -514,31 +509,27 @@ fn collect_express_handlers(root: Node, bytes: &[u8]) -> ExpressHandlers {
 }
 
 fn walk_express_recursive(node: Node, bytes: &[u8], out: &mut ExpressHandlers) {
-    if node.kind() == "call_expression" {
-        if let Some(method) = express_call_method(node, bytes) {
-            // Last argument is the handler.
-            if let Some(args) = node.child_by_field_name("arguments") {
-                let mut last_handler: Option<Node> = None;
-                let mut cursor = args.walk();
-                for arg in args.named_children(&mut cursor) {
-                    last_handler = Some(arg);
-                }
-                if let Some(handler) = last_handler {
-                    match handler.kind() {
-                        "identifier" => {
-                            if let Ok(name) = handler.utf8_text(bytes) {
-                                out.by_name.insert(name.to_string(), method);
-                            }
-                        }
-                        "arrow_function"
-                        | "function_expression"
-                        | "function_declaration" => {
-                            out.by_span
-                                .insert((handler.start_byte(), handler.end_byte()), method);
-                        }
-                        _ => {}
+    if node.kind() == "call_expression"
+        && let Some(method) = express_call_method(node, bytes)
+        && let Some(args) = node.child_by_field_name("arguments")
+    {
+        let mut last_handler: Option<Node> = None;
+        let mut cursor = args.walk();
+        for arg in args.named_children(&mut cursor) {
+            last_handler = Some(arg);
+        }
+        if let Some(handler) = last_handler {
+            match handler.kind() {
+                "identifier" => {
+                    if let Ok(name) = handler.utf8_text(bytes) {
+                        out.by_name.insert(name.to_string(), method);
                     }
                 }
+                "arrow_function" | "function_expression" | "function_declaration" => {
+                    out.by_span
+                        .insert((handler.start_byte(), handler.end_byte()), method);
+                }
+                _ => {}
             }
         }
     }
@@ -628,11 +619,11 @@ fn detect_python(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind>
 
         // FastAPI / Flask take the decorator as a `@app.<method>(...)`
         // call expression on the `decorated_definition` node.
-        if let Some(dec) = decorated_node {
-            if let Some(kind) = python_decorator_entry_kind(dec, bytes) {
-                entries.entry(span).or_insert(kind);
-                return;
-            }
+        if let Some(dec) = decorated_node
+            && let Some(kind) = python_decorator_entry_kind(dec, bytes)
+        {
+            entries.entry(span).or_insert(kind);
+            return;
         }
 
         // Django class-based views: a method named `get`/`post`/... on
@@ -644,7 +635,7 @@ fn detect_python(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind>
     entries
 }
 
-fn walk_python<'a, F>(node: Node<'a>, bytes: &'a [u8], visit: &mut F)
+fn walk_python<'a, F>(node: Node<'a>, _bytes: &'a [u8], visit: &mut F)
 where
     F: FnMut(Node<'a>, Option<Node<'a>>),
 {
@@ -656,7 +647,7 @@ where
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_python(child, bytes, visit);
+        walk_python(child, _bytes, visit);
     }
 }
 
@@ -802,7 +793,7 @@ fn detect_java(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     entries
 }
 
-fn walk_java<'a, F>(node: Node<'a>, bytes: &'a [u8], visit: &mut F)
+fn walk_java<'a, F>(node: Node<'a>, _bytes: &'a [u8], visit: &mut F)
 where
     F: FnMut(Node<'a>),
 {
@@ -811,7 +802,7 @@ where
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_java(child, bytes, visit);
+        walk_java(child, _bytes, visit);
     }
 }
 
@@ -934,7 +925,7 @@ fn detect_ruby(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     entries
 }
 
-fn walk_ruby_methods<'a, F>(node: Node<'a>, bytes: &'a [u8], visit: &mut F)
+fn walk_ruby_methods<'a, F>(node: Node<'a>, _bytes: &'a [u8], visit: &mut F)
 where
     F: FnMut(Node<'a>),
 {
@@ -943,7 +934,7 @@ where
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_ruby_methods(child, bytes, visit);
+        walk_ruby_methods(child, _bytes, visit);
     }
 }
 
@@ -981,19 +972,18 @@ where
         // `get '/x' do ... end` parses as a `call` whose `method` field is
         // `get` and whose argument is the path.  The `do` block is a
         // sibling `do_block` child.
-        if let Some(method_node) = node.child_by_field_name("method") {
-            if let Ok(method_text) = method_node.utf8_text(bytes) {
-                if let Some(method) = HttpMethod::from_ident(method_text) {
-                    if let Some(block) = node.child_by_field_name("block") {
-                        visit(block, method);
-                    } else {
-                        // Look for a sibling do_block child
-                        let mut w = node.walk();
-                        for ch in node.children(&mut w) {
-                            if ch.kind() == "do_block" || ch.kind() == "block" {
-                                visit(ch, method);
-                            }
-                        }
+        if let Some(method_node) = node.child_by_field_name("method")
+            && let Ok(method_text) = method_node.utf8_text(bytes)
+            && let Some(method) = HttpMethod::from_ident(method_text)
+        {
+            if let Some(block) = node.child_by_field_name("block") {
+                visit(block, method);
+            } else {
+                // Look for a sibling do_block child
+                let mut w = node.walk();
+                for ch in node.children(&mut w) {
+                    if ch.kind() == "do_block" || ch.kind() == "block" {
+                        visit(ch, method);
                     }
                 }
             }
@@ -1030,7 +1020,7 @@ fn detect_rust(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     entries
 }
 
-fn walk_rust<'a, F>(node: Node<'a>, bytes: &'a [u8], visit: &mut F)
+fn walk_rust<'a, F>(node: Node<'a>, _bytes: &'a [u8], visit: &mut F)
 where
     F: FnMut(Node<'a>),
 {
@@ -1039,7 +1029,7 @@ where
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_rust(child, bytes, visit);
+        walk_rust(child, _bytes, visit);
     }
 }
 
@@ -1164,7 +1154,7 @@ fn detect_go(root: Node, bytes: &[u8]) -> HashMap<(usize, usize), EntryKind> {
     entries
 }
 
-fn walk_go<'a, F>(node: Node<'a>, bytes: &'a [u8], visit: &mut F)
+fn walk_go<'a, F>(node: Node<'a>, _bytes: &'a [u8], visit: &mut F)
 where
     F: FnMut(Node<'a>),
 {
@@ -1176,7 +1166,7 @@ where
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_go(child, bytes, visit);
+        walk_go(child, _bytes, visit);
     }
 }
 

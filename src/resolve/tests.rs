@@ -28,7 +28,7 @@ fn root() -> PathBuf {
 #[test]
 fn resolves_relative_specifier() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "./foo")
@@ -45,7 +45,7 @@ fn resolves_relative_specifier() {
 #[test]
 fn resolves_parent_relative_specifier() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "../bar/baz")
@@ -61,7 +61,7 @@ fn resolves_parent_relative_specifier() {
 #[test]
 fn resolves_scoped_package_import() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "@scope/util")
@@ -79,7 +79,7 @@ fn resolves_scoped_package_import() {
 #[test]
 fn resolves_tsconfig_path_alias() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "@/lib/x")
@@ -95,7 +95,7 @@ fn resolves_tsconfig_path_alias() {
 #[test]
 fn classifies_node_builtin_specifier() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "node:fs/promises")
@@ -113,7 +113,7 @@ fn classifies_node_builtin_specifier() {
 #[test]
 fn missing_module_returns_none_resolved_file() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "no-such-package")
@@ -126,7 +126,7 @@ fn missing_module_returns_none_resolved_file() {
 #[test]
 fn package_for_returns_innermost_match() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let inner = r.join("packages/util/src/index.ts");
     let outer_pkg = graph
         .package_for(&inner)
@@ -143,7 +143,7 @@ fn package_for_returns_innermost_match() {
 #[test]
 fn project_namespace_prefixes_when_in_package() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let in_pkg = r.join("packages/util/src/index.ts");
     let ns = graph.project_namespace_for(&in_pkg, &r);
     assert!(
@@ -161,7 +161,7 @@ fn project_namespace_prefixes_when_in_package() {
 #[test]
 fn resolves_exports_root_conditional() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "@scope/exports-pkg")
@@ -180,7 +180,7 @@ fn resolves_exports_root_conditional() {
 #[test]
 fn resolves_exports_exact_subpath() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "@scope/exports-pkg/sub")
@@ -198,7 +198,7 @@ fn resolves_exports_exact_subpath() {
 #[test]
 fn resolves_exports_wildcard_subpath() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "@scope/exports-pkg/feat/widget")
@@ -216,7 +216,7 @@ fn resolves_exports_wildcard_subpath() {
 #[test]
 fn exports_null_blocks_subpath() {
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let resolved = graph
         .resolve_specifier(&importer, "@scope/exports-pkg/blocked")
@@ -235,7 +235,7 @@ fn module_graph_is_cheap() {
     let r = root();
     let bytes_before = approximate_rss_kib();
     let start = Instant::now();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let elapsed = start.elapsed();
     let bytes_after = approximate_rss_kib();
 
@@ -279,7 +279,7 @@ fn parses_imports_from_fixture_file() {
     // produce the rows the resolver tests already cover via
     // `resolve_specifier`.
     let r = root();
-    let graph = build_module_graph(&[r.clone()]);
+    let graph = build_module_graph(std::slice::from_ref(&r));
     let importer = r.join("apps/web/src/index.ts");
     let bindings = extract_imports_for(&importer, &graph);
 

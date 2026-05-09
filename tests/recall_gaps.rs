@@ -497,6 +497,7 @@ fn jsx_dangerous_html() {
 }
 
 /// Phase 07 recall-gap: ORM query-builder raw-SQL escape hatches.
+///
 /// Coverage:
 ///   - Drizzle `sql.raw(x)` and tagged-template `sql\`...\`` shapes
 ///     (leading-id `ImportedFromModule(&["drizzle-orm"])` gate)
@@ -506,6 +507,7 @@ fn jsx_dangerous_html() {
 ///     (`TypeKind::TypeOrmRepo` → `TypeOrmRepo.query`)
 ///   - Knex `db.whereRaw(...)` via the new file-level
 ///     `FileImportsModule(&["knex"])` gate
+///
 /// Negatives:
 ///   - parameterised TypeORM `repo.query("...", [const])` stays silent
 ///   - bare `whereRaw` / `literal` calls in a file without ORM imports
@@ -565,6 +567,7 @@ fn orm_builders() {
 }
 
 /// Phase 08 recall-gap: SSRF URL-builder shapes.
+///
 /// Coverage:
 ///   - `new URL(taintedPath)` propagates the path arg's taint into the
 ///     constructed URL value (no label rule, no summary — covered by the
@@ -575,6 +578,7 @@ fn orm_builders() {
 ///     aware filter on the SSRF gate.
 ///   - `fetch(target)` where `target: URL` carries SSA-level
 ///     TypeKind::Url and the constructor-propagated taint.
+///
 /// Negative:
 ///   - `new URL(req.body.path, "https://api.cal.com")` — the literal
 ///     base anchors an origin-locked StringFact prefix that
@@ -772,8 +776,20 @@ fn orm_xlang() {
         // Destination gate restricts the sink scan to arg 0.
         "sqli_py_param_tainted_binds.py",
         "SqliJavaParamSafe.java",
+        // Phase 15 deferred-fix (Java): tainted `setParameter` bind
+        // value on a constant `entityManager.createQuery(...)` template
+        // must stay silent on SQL_QUERY.  Mirrors the Python tainted-
+        // binds shape; the Java Destination gate on the createQuery
+        // family carries `payload_args = &[0]`.
+        "SqliJavaParamTaintedBinds.java",
         "sqli_rb_param_safe.rb",
         "sqli_go_param_safe.go",
+        // Phase 15 deferred-fix (Go): tainted bind value at arg 2 of
+        // `db.QueryContext(ctx, sql, tainted)` must stay silent.  The
+        // Destination gate on `db.QueryContext` carries
+        // `payload_args = &[1]`, restricting the sink scan to the SQL
+        // string at arg 1.
+        "sqli_go_param_tainted_binds.go",
         "sqli_php_param_safe.php",
     ];
     for file in negatives {

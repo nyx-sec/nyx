@@ -3383,6 +3383,7 @@ fn try_lower_spring_redirect_return(
 /// whose callee classifies as a `Sanitizer`, the synthetic sink is still
 /// emitted but its argument list is empty so no taint flows into it.
 /// JS/TS only — JSX has no counterpart in the other supported languages.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn try_lower_jsx_dangerous_html(
     stmt_ast: Node,
     preds: &[NodeIndex],
