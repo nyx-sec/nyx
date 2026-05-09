@@ -1,0 +1,5092 @@
+{
+  "_doc": "Phase 17 cross-lang recall-validation baseline for drupal (PHP). Re-capture by running scripts/validate_recall.sh --lang php drupal <clone_path> --capture.",
+  "target": "drupal",
+  "lang": "php",
+  "clone_url": "https://github.com/drupal/drupal",
+  "exercises_recall_items": [],
+  "captured_against": "real-scan @ 92aa759e3e39c5d77540e04877f8a7de0ea604ef",
+  "captured_on": "2026-05-09",
+  "pinned_commit": "92aa759e3e39c5d77540e04877f8a7de0ea604ef",
+  "findings": [
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/modules/views/js/ajax_view.js",
+      "line": 165,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/modules/views/js/ajax_view.js",
+      "line": 208,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/modules/views/js/ajax_view.js",
+      "line": 216,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/modules/views/js/ajax_view.js",
+      "line": 142,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 1308,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/ckeditor5/js/ckeditor5.js",
+      "line": 328,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/ckeditor5/js/ckeditor5.js",
+      "line": 385,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/drupal.js",
+      "line": 410,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/ckeditor5/js/ckeditor5.js",
+      "line": 360,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/lib/Drupal/Core/Command/GenerateTheme.php",
+      "line": 213,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "core/lib/Drupal/Core/Test/TestKernel.php",
+      "line": 20,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "core/assets/scaffold/files/ht.router.php",
+      "line": 29,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/lib/Drupal/Core/Test/PerformanceTestRecorder.php",
+      "line": 115,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "composer/Generator/ComponentGenerator.php",
+      "line": 129,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "composer/Plugin/Scaffold/ManageGitIgnore.php",
+      "line": 124,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/lib/Drupal/Core/Command/GenerateTheme.php",
+      "line": 188,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "composer/Composer.php",
+      "line": 66,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/htmx/htmx-assets.js",
+      "line": 128,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 269,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 337,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 709,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/vertical-tabs.js",
+      "line": 162,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 1891,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/drupal.js",
+      "line": 288,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/jquery.form.js",
+      "line": 393,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 419,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/jquery.form.js",
+      "line": 465,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 76,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 801,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Test/FunctionalTestSetupTrait.php",
+      "line": 226,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/misc/jquery.form.js",
+      "line": 172,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "composer/Composer.php",
+      "line": 86,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "core/lib/Drupal/Core/Command/ServerCommand.php",
+      "line": 245,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "composer/Plugin/RecipeUnpack/RootComposer.php",
+      "line": 142,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Component/Utility/Html.php",
+      "line": 465,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Component/Utility/Html.php",
+      "line": 466,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Component/Utility/Html.php",
+      "line": 467,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Ajax/AjaxResponseAttachmentsProcessor.php",
+      "line": 69,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Asset/LibraryDependencyResolver.php",
+      "line": 82,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Asset/LibraryDiscoveryParser.php",
+      "line": 197,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Asset/LibraryDiscoveryParser.php",
+      "line": 198,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Cache/ApcuBackend.php",
+      "line": 186,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Cache/Cache.php",
+      "line": 53,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Cache/CacheCollector.php",
+      "line": 114,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Cache/CacheTagsInvalidator.php",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Cache/DatabaseBackend.php",
+      "line": 261,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Cache/MemoryBackend.php",
+      "line": 115,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Cache/MemoryCache/MemoryCache.php",
+      "line": 51,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Cache/PhpBackend.php",
+      "line": 159,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Config/Action/ConfigActionManager.php",
+      "line": 92,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Config/Action/Plugin/ConfigAction/EntityCreate.php",
+      "line": 44,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Config/Action/Plugin/ConfigAction/EntityMethod.php",
+      "line": 78,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Config/Schema/Element.php",
+      "line": 53,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Database/Connection.php",
+      "line": 181,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Database/Connection.php",
+      "line": 434,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Database/Connection.php",
+      "line": 435,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Database/Connection.php",
+      "line": 652,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Database/Connection.php",
+      "line": 653,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Database/Connection.php",
+      "line": 654,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Database/StatementPrefetchIterator.php",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Database/StatementWrapperIterator.php",
+      "line": 66,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Menu/StaticMenuLinkOverrides.php",
+      "line": 74,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Plugin/Context/LazyContextRepository.php",
+      "line": 61,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Plugin/DefaultPluginManager.php",
+      "line": 193,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Plugin/DefaultPluginManager.php",
+      "line": 296,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Recipe/InstallConfigurator.php",
+      "line": 47,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Recipe/RecipeMissingExtensionsException.php",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Render/Placeholder/ChainedPlaceholderStrategy.php",
+      "line": 43,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Render/Placeholder/ChainedPlaceholderStrategy.php",
+      "line": 59,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Render/Placeholder/ChainedPlaceholderStrategy.php",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Render/Renderer.php",
+      "line": 363,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Render/Renderer.php",
+      "line": 364,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Render/Renderer.php",
+      "line": 365,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Render/Renderer.php",
+      "line": 644,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Template/TwigExtension.php",
+      "line": 257,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Template/TwigExtension.php",
+      "line": 258,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Template/TwigExtension.php",
+      "line": 373,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/lib/Drupal/Core/Template/TwigExtension.php",
+      "line": 694,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/filter/src/Entity/FilterFormat.php",
+      "line": 228,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/Access/EntityAccessChecker.php",
+      "line": 126,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/Access/EntityAccessChecker.php",
+      "line": 158,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/Access/TemporaryQueryGuard.php",
+      "line": 173,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/Access/TemporaryQueryGuard.php",
+      "line": 485,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/Context/FieldResolver.php",
+      "line": 617,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/Context/FieldResolver.php",
+      "line": 752,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/Data.php",
+      "line": 62,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/Data.php",
+      "line": 63,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/Link.php",
+      "line": 168,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/LinkCollection.php",
+      "line": 71,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/LinkCollection.php",
+      "line": 137,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/ResourceType/ResourceTypeRepository.php",
+      "line": 140,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/ResourceType/ResourceTypeRepository.php",
+      "line": 182,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/ResourceType/ResourceTypeRepository.php",
+      "line": 312,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/ResourceType/ResourceTypeRepository.php",
+      "line": 328,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/Revisions/VersionNegotiator.php",
+      "line": 46,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/src/Routing/ReadOnlyModeMethodFilter.php",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/layout_builder/src/Controller/LayoutBuilderController.php",
+      "line": 29,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/package_manager/src/InstalledPackage.php",
+      "line": 46,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Connection.php",
+      "line": 424,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Connection.php",
+      "line": 425,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Statement.php",
+      "line": 90,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/user/src/Hook/UserHooks.php",
+      "line": 253,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/views/src/Plugin/views/PluginBase.php",
+      "line": 377,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/views/src/Plugin/views/PluginBase.php",
+      "line": 383,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/views/src/Plugin/views/PluginBase.php",
+      "line": 387,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/workspaces/src/WorkspaceRepository.php",
+      "line": 66,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.preg_replace_e",
+      "path_suffix": "core/modules/system/src/PathProcessor/PathProcessorFiles.php",
+      "line": 21,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Component/Annotation/Plugin/Discovery/AnnotatedClassDiscovery.php",
+      "line": 128,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Component/DependencyInjection/Container.php",
+      "line": 166,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Component/Plugin/Discovery/AttributeClassDiscovery.php",
+      "line": 103,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Component/Plugin/Discovery/AttributeClassDiscovery.php",
+      "line": 105,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Component/Serialization/PhpSerialize.php",
+      "line": 21,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Batch/BatchStorage.php",
+      "line": 60,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Cache/MemoryBackend.php",
+      "line": 99,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/DefaultContent/Exporter.php",
+      "line": 260,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Entity/Sql/SqlContentEntityStorage.php",
+      "line": 2042,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Menu/MenuTreeStorage.php",
+      "line": 658,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Menu/MenuTreeStorage.php",
+      "line": 777,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Queue/Batch.php",
+      "line": 31,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Queue/Batch.php",
+      "line": 61,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Queue/DatabaseQueue.php",
+      "line": 150,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Routing/RouteProvider.php",
+      "line": 269,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Routing/RouteProvider.php",
+      "line": 398,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Routing/RouteProvider.php",
+      "line": 427,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/lib/Drupal/Core/Test/HttpClientMiddleware/TestHttpClientMiddleware.php",
+      "line": 45,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/dblog/src/Controller/DbLogController.php",
+      "line": 358,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/dblog/src/Plugin/views/field/DblogMessage.php",
+      "line": 62,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/layout_builder/src/Plugin/Block/InlineBlock.php",
+      "line": 218,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/layout_builder/src/Plugin/Block/InlineBlock.php",
+      "line": 262,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/serialization/src/Normalizer/PrimitiveDataNormalizer.php",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/user/src/UserData.php",
+      "line": 47,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/user/src/UserData.php",
+      "line": 55,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/user/src/UserData.php",
+      "line": 62,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/user/src/UserData.php",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/views/src/Plugin/views/field/Serialized.php",
+      "line": 73,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/views/src/Plugin/views/field/Serialized.php",
+      "line": 76,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "core/lib/Drupal/Component/Transliteration/PhpTransliteration.php",
+      "line": 292,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "core/lib/Drupal/Component/Transliteration/PhpTransliteration.php",
+      "line": 318,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "core/lib/Drupal/Core/Cache/PhpBackend.php",
+      "line": 86,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "core/lib/Drupal/Core/Render/Element/MachineName.php",
+      "line": 304,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "core/modules/package_manager/src/Validator/MultisiteValidator.php",
+      "line": 58,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "core/modules/ckeditor5/js/ckeditor5.js",
+      "line": 689,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 1401,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 1644,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 1677,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 2128,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 2196,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 2353,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 290,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 917,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 3543,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 3841,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 3948,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 5506,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 5960,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6134,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 7155,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 7493,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 7597,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8203,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 2927,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 3159,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 3379,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 5185,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 5211,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 5786,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6702,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6715,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6716,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6720,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6810,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 7747,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8023,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8039,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8287,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8398,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8423,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8917,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 9130,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 9143,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 9481,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 1769,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 1840,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 1847,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 2085,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4996,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 2596,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 5595,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6257,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 7963,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 2640,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/media/tests/modules/media_test_oembed/src/Controller/ResourceController.php",
+      "line": 28,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 2722,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 2740,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4157,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4512,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4507,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4782,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 5720,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 5982,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6258,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6297,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6852,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 938,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 956,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/Nightwatch/Commands/drupalInstall.js",
+      "line": 38,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "core/lib/Drupal/Core/Test/TestKernel.php",
+      "line": 20,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "core/assets/scaffold/files/ht.router.php",
+      "line": 29,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 261,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 310,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 563,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 895,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/system/tests/src/Functional/System/ErrorHandlerTest.php",
+      "line": 110,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/filter/tests/src/Kernel/FilterKernelTest.php",
+      "line": 1076,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Bootstrap/UncaughtExceptionTest.php",
+      "line": 123,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Core/Recipe/RecipeTestTrait.php",
+      "line": 132,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Test/FunctionalTestDebugHtmlOutputTest.php",
+      "line": 185,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 200,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/Nightwatch/Commands/drupalUninstall.js",
+      "line": 28,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Composer/Template/ComposerProjectTemplatesTest.php",
+      "line": 219,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/Tests/Composer/Plugin/FixturesBase.php",
+      "line": 241,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 248,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Bootstrap/UncaughtExceptionTest.php",
+      "line": 282,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 292,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 315,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/ExistingDrupal8StyleDatabaseConnectionInSettingsPhpTest.php",
+      "line": 58,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 337,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 1694,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 1811,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 363,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Composer/Template/ComposerProjectTemplatesTest.php",
+      "line": 404,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/package_manager/tests/src/Kernel/InstalledPackagesListTest.php",
+      "line": 150,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Asset/UnversionedAssetTest.php",
+      "line": 77,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 410,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Bootstrap/UncaughtExceptionTest.php",
+      "line": 50,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Recipe/ConfigValidationTest.php",
+      "line": 45,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/package_manager/tests/modules/fixture_manipulator/src/FixtureManipulator.php",
+      "line": 644,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/system/tests/src/Functional/Theme/MaintenanceThemeUpdateRegistryTest.php",
+      "line": 64,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Installer/InstallerConfigDirectoryTestBase.php",
+      "line": 86,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/package_manager/tests/modules/fixture_manipulator/src/FixtureManipulator.php",
+      "line": 669,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 663,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/BuildTests/Command/GenerateThemeTest.php",
+      "line": 755,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6847,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8447,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/sortable/Sortable.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/sortable/Sortable.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/sortable/Sortable.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 3955,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/underscore/underscore-min.js",
+      "line": 6,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/underscore/underscore-min.js",
+      "line": 6,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/underscore/underscore-min.js",
+      "line": 6,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/underscore/underscore-min.js",
+      "line": 6,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 152,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 1571,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/media/tests/modules/media_test_oembed/src/Controller/ResourceController.php",
+      "line": 34,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Recipe/ConfigValidationTest.php",
+      "line": 51,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Installer/InstallerConfigDirectoryTestBase.php",
+      "line": 104,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Installer/InstallerConfigDirectoryTestBase.php",
+      "line": 124,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery.ui/ui/widgets/resizable.js",
+      "line": 122,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/sortable/Sortable.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/sortable/Sortable.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/sortable/Sortable.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/sortable/Sortable.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 3960,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 3985,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 3995,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 4004,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 4320,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 4874,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/underscore/underscore-min.js",
+      "line": 6,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery.ui/ui/widgets/resizable.js",
+      "line": 823,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery.ui/ui/widgets/resizable.js",
+      "line": 831,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/jquery.form.js",
+      "line": 333,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/jquery.form.js",
+      "line": 162,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/media_library/src/MediaLibraryUiBuilder.php",
+      "line": 185,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/media_library/src/MediaLibraryUiBuilder.php",
+      "line": 188,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/jquery.form.js",
+      "line": 329,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/drupal.js",
+      "line": 429,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 276,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 280,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4272,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4722,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6603,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6659,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6679,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 6888,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8480,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4416,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4425,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 4703,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.js",
+      "line": 8336,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/lib/Drupal/Component/Gettext/PoStreamReader.php",
+      "line": 154,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/lib/Drupal/Component/Gettext/PoStreamWriter.php",
+      "line": 83,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/migrate/src/Plugin/migrate/process/Download.php",
+      "line": 62,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/package_manager/src/FileProcessOutputCallback.php",
+      "line": 31,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Insert.php",
+      "line": 39,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Update.php",
+      "line": 54,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Upsert.php",
+      "line": 34,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/media/tests/src/Traits/OEmbedTestTrait.php",
+      "line": 79,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unreachable-guard",
+      "path_suffix": "core/lib/Drupal/Core/TypedData/Validation/RecursiveContextualValidator.php",
+      "line": 277,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unreachable-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Schema/Mapping.php",
+      "line": 162,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unreachable-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/CKEditor5PluginDefinition.php",
+      "line": 157,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 4438,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/jquery.form.js",
+      "line": 707,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/misc/jquery.form.js",
+      "line": 791,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "composer/Composer.php",
+      "line": 86,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Cache/DatabaseCacheTagsChecksum.php",
+      "line": 60,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Cache/MemoryBackend.php",
+      "line": 99,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Command/DbDumpCommand.php",
+      "line": 307,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Action/ConfigActionManager.php",
+      "line": 162,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Action/Plugin/ConfigAction/CreateForEachBundle.php",
+      "line": 90,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Action/Plugin/ConfigAction/EntityClone.php",
+      "line": 68,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Action/Plugin/ConfigAction/SetProperties.php",
+      "line": 46,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Checkpoint/CheckpointStorage.php",
+      "line": 445,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/DatabaseStorage.php",
+      "line": 89,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/DatabaseStorage.php",
+      "line": 117,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/DatabaseStorage.php",
+      "line": 341,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Entity/Query/QueryFactory.php",
+      "line": 73,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Plugin/Validation/Constraint/LangcodeRequiredIfTranslatableValuesConstraintValidator.php",
+      "line": 24,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/Plugin/Validation/Constraint/LangcodeRequiredIfTranslatableValuesConstraintValidator.php",
+      "line": 33,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Config/TypedConfigManager.php",
+      "line": 356,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/Query/Select.php",
+      "line": 528,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/Schema.php",
+      "line": 137,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/Schema.php",
+      "line": 204,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/Schema.php",
+      "line": 284,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/StatementPrefetchIterator.php",
+      "line": 58,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/StatementWrapperIterator.php",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/Transaction/TransactionManagerBase.php",
+      "line": 131,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/Transaction/TransactionManagerBase.php",
+      "line": 569,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/Transaction/TransactionManagerBase.php",
+      "line": 586,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Database/Transaction/TransactionManagerBase.php",
+      "line": 603,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/DefaultContent/Importer.php",
+      "line": 93,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/DefaultContent/Importer.php",
+      "line": 94,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/DefaultContent/PreExportEvent.php",
+      "line": 59,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Entity/BundleEntityFormBase.php",
+      "line": 25,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Entity/Controller/VersionHistoryController.php",
+      "line": 211,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Entity/EntityStorageBase.php",
+      "line": 266,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Entity/KeyValueStore/Query/QueryFactory.php",
+      "line": 41,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Entity/Query/Null/QueryFactory.php",
+      "line": 35,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Entity/Query/Null/QueryFactory.php",
+      "line": 42,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Extension/Plugin/Validation/Constraint/ExtensionAvailableConstraintValidator.php",
+      "line": 172,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Field/FieldTypePluginManager.php",
+      "line": 183,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Hook/HookCollectorKeyValueWritePass.php",
+      "line": 34,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Hook/HookCollectorPass.php",
+      "line": 245,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Hook/HookCollectorPass.php",
+      "line": 246,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Hook/HookCollectorPass.php",
+      "line": 247,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Hook/HookCollectorPass.php",
+      "line": 248,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Hook/ImplementationList.php",
+      "line": 29,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Hook/ImplementationList.php",
+      "line": 31,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Hook/ImplementationList.php",
+      "line": 32,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/KeyValueStore/DatabaseStorage.php",
+      "line": 66,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/KeyValueStore/DatabaseStorageExpirable.php",
+      "line": 46,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/KeyValueStore/DatabaseStorageExpirable.php",
+      "line": 63,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/KeyValueStore/DatabaseStorageExpirable.php",
+      "line": 87,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Menu/MenuTreeParameters.php",
+      "line": 222,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Menu/MenuTreeStorage.php",
+      "line": 658,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Plugin/Context/ContextDefinition.php",
+      "line": 119,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Queue/Batch.php",
+      "line": 31,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Queue/Batch.php",
+      "line": 61,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Queue/DatabaseQueue.php",
+      "line": 104,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Recipe/Recipe.php",
+      "line": 420,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Recipe/RecipeMissingExtensionsException.php",
+      "line": 30,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Routing/RouteProvider.php",
+      "line": 246,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Template/ComponentsTwigExtension.php",
+      "line": 106,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Template/TwigExtension.php",
+      "line": 208,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Template/TwigExtension.php",
+      "line": 231,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Theme/ComponentPluginManager.php",
+      "line": 268,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/lib/Drupal/Core/Validation/Plugin/Validation/Constraint/ValidKeysConstraint.php",
+      "line": 71,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/misc/tableresponsive.js",
+      "line": 97,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/misc/tableresponsive.js",
+      "line": 175,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/HTMLRestrictions.php",
+      "line": 618,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/HTMLRestrictions.php",
+      "line": 1034,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/HTMLRestrictions.php",
+      "line": 1035,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/HTMLRestrictions.php",
+      "line": 1291,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/HTMLRestrictions.php",
+      "line": 1312,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Hook/Ckeditor5Hooks.php",
+      "line": 420,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/CKEditor5Plugin/SourceEditing.php",
+      "line": 46,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/CKEditor5PluginManager.php",
+      "line": 453,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/CKEditor5PluginManager.php",
+      "line": 495,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/ConfigAction/AddItemToToolbar.php",
+      "line": 50,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Editor/CKEditor5.php",
+      "line": 268,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Editor/CKEditor5.php",
+      "line": 270,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Editor/CKEditor5.php",
+      "line": 722,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Editor/CKEditor5.php",
+      "line": 855,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Editor/CKEditor5.php",
+      "line": 865,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Validation/Constraint/FundamentalCompatibilityConstraintValidator.php",
+      "line": 211,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Validation/Constraint/FundamentalCompatibilityConstraintValidator.php",
+      "line": 213,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Validation/Constraint/PrecedingConstraintAwareValidatorTrait.php",
+      "line": 28,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Validation/Constraint/PrecedingConstraintAwareValidatorTrait.php",
+      "line": 49,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Validation/Constraint/SourceEditingRedundantTagsConstraintValidator.php",
+      "line": 168,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/ckeditor5/src/Plugin/Validation/Constraint/StyleSensibleElementConstraintValidator.php",
+      "line": 201,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/comment/src/CommentStatistics.php",
+      "line": 173,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/comment/src/Plugin/views/argument/UserUid.php",
+      "line": 54,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/content_moderation/src/Plugin/ConfigAction/AddModeration.php",
+      "line": 53,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/dblog/src/Plugin/views/field/DblogMessage.php",
+      "line": 62,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/editor/src/Hook/EditorHooks.php",
+      "line": 375,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/field/src/Plugin/ConfigAction/AddToAllBundles.php",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/field_ui/src/Form/FieldConfigEditForm.php",
+      "line": 274,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/file/src/Entity/FileLinkTarget.php",
+      "line": 31,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/file/src/Plugin/Field/FieldFormatter/UrlPlainFormatter.php",
+      "line": 29,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/filter/src/Plugin/Filter/FilterImageLazyLoad.php",
+      "line": 55,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/help/src/HelpTwigExtension.php",
+      "line": 72,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Access/RelationshipRouteAccessCheck.php",
+      "line": 65,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Access/RelationshipRouteAccessCheck.php",
+      "line": 68,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Access/TemporaryQueryGuard.php",
+      "line": 90,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Access/TemporaryQueryGuard.php",
+      "line": 91,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Context/FieldResolver.php",
+      "line": 612,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/EventSubscriber/ResourceObjectNormalizationCacher.php",
+      "line": 123,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/EventSubscriber/ResourceObjectNormalizationCacher.php",
+      "line": 135,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/ErrorCollection.php",
+      "line": 40,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/Link.php",
+      "line": 77,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/LinkCollection.php",
+      "line": 53,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/LinkCollection.php",
+      "line": 71,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/LinkCollection.php",
+      "line": 137,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/ResourceIdentifier.php",
+      "line": 142,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/ResourceIdentifier.php",
+      "line": 250,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/ResourceIdentifier.php",
+      "line": 288,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/ResourceIdentifier.php",
+      "line": 418,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/ResourceIdentifier.php",
+      "line": 420,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/ResourceIdentifier.php",
+      "line": 422,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/JsonApiResource/ResourceIdentifier.php",
+      "line": 426,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Normalizer/FieldNormalizer.php",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Normalizer/FieldNormalizer.php",
+      "line": 58,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Normalizer/FieldNormalizer.php",
+      "line": 119,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/Normalizer/RelationshipNormalizer.php",
+      "line": 66,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/jsonapi/src/ResourceType/ResourceType.php",
+      "line": 383,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/layout_builder/src/EventSubscriber/DefaultContentSubscriber.php",
+      "line": 45,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/layout_builder/src/Plugin/ConfigAction/AddComponent.php",
+      "line": 121,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/layout_builder/src/Plugin/ConfigAction/AddComponent.php",
+      "line": 122,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/locale/src/StringDatabaseStorage.php",
+      "line": 542,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/media/src/Plugin/media/Source/File.php",
+      "line": 85,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/menu_link_content/src/Entity/MenuLinkContent.php",
+      "line": 107,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/migrate/migrate.api.php",
+      "line": 159,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/migrate/migrate.api.php",
+      "line": 182,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/migrate/src/Exception/EntityValidationException.php",
+      "line": 70,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Connection.php",
+      "line": 192,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Connection.php",
+      "line": 221,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Connection.php",
+      "line": 231,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Connection.php",
+      "line": 239,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Connection.php",
+      "line": 321,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Connection.php",
+      "line": 322,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Schema.php",
+      "line": 507,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Schema.php",
+      "line": 544,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Schema.php",
+      "line": 617,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Schema.php",
+      "line": 654,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Schema.php",
+      "line": 695,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysql/src/Driver/Database/mysql/Schema.php",
+      "line": 700,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysqli/src/Driver/Database/mysqli/Connection.php",
+      "line": 97,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysqli/src/Driver/Database/mysqli/Connection.php",
+      "line": 126,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysqli/src/Driver/Database/mysqli/Connection.php",
+      "line": 155,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysqli/src/Driver/Database/mysqli/Connection.php",
+      "line": 156,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysqli/src/Driver/Database/mysqli/Result.php",
+      "line": 81,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysqli/src/Driver/Database/mysqli/Statement.php",
+      "line": 62,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/mysqli/src/Driver/Database/mysqli/TransactionManager.php",
+      "line": 37,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/node/src/NodeGrantDatabaseStorage.php",
+      "line": 306,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/node/src/NodeStorage.php",
+      "line": 22,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/node/src/NodeStorage.php",
+      "line": 33,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/node/src/NodeStorage.php",
+      "line": 44,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/node/src/Plugin/Search/NodeSearch.php",
+      "line": 487,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/node/src/Plugin/Search/NodeSearch.php",
+      "line": 488,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/package_manager/src/InstalledPackage.php",
+      "line": 46,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/package_manager/src/Validator/ComposerPluginsValidator.php",
+      "line": 161,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/package_manager/src/Validator/PhpTufValidator.php",
+      "line": 59,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Connection.php",
+      "line": 119,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Connection.php",
+      "line": 270,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Connection.php",
+      "line": 278,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 275,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 530,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 589,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 630,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 741,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 762,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 831,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 909,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 1095,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 1101,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 1139,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/pgsql/src/Driver/Database/pgsql/Schema.php",
+      "line": 1156,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/responsive_image/src/ResponsiveImageBuilder.php",
+      "line": 284,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/search/src/SearchIndex.php",
+      "line": 268,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Connection.php",
+      "line": 158,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Connection.php",
+      "line": 177,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Connection.php",
+      "line": 185,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Connection.php",
+      "line": 209,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Connection.php",
+      "line": 364,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Connection.php",
+      "line": 373,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Schema.php",
+      "line": 35,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/sqlite/src/Driver/Database/sqlite/Schema.php",
+      "line": 704,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/system/src/Entity/Action.php",
+      "line": 98,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/taxonomy/src/Plugin/Validation/Constraint/TaxonomyTermHierarchyConstraintValidator.php",
+      "line": 48,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/user/src/Authentication/Provider/Cookie.php",
+      "line": 98,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/user/src/Authentication/Provider/Cookie.php",
+      "line": 105,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/user/src/UserData.php",
+      "line": 47,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/views/src/Entity/Render/EntityFieldRenderer.php",
+      "line": 124,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/views/src/Plugin/views/field/Serialized.php",
+      "line": 73,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/views/src/Plugin/views/field/Serialized.php",
+      "line": 76,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/views/src/Plugin/views/query/MysqlDateSql.php",
+      "line": 84,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/views/src/Plugin/views/query/PostgresqlDateSql.php",
+      "line": 93,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/views/src/Plugin/views/style/StylePluginBase.php",
+      "line": 835,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/workspaces/src/Provider/WorkspaceProviderBase.php",
+      "line": 227,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/modules/workspaces_ui/src/WorkspaceListBuilder.php",
+      "line": 220,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.eval",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 869,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.eval",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.eval",
+      "path_suffix": "core/modules/ckeditor5/tests/src/Nightwatch/Tests/drupalHtmlBuilderTest.js",
+      "line": 13,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.new_function",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 2905,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.new_function",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.new_function",
+      "path_suffix": "core/assets/vendor/underscore/underscore-min.js",
+      "line": 6,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.xss.insert_adjacent_html",
+      "path_suffix": "core/modules/navigation/js/tooltip.js",
+      "line": 49,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.xss.insert_adjacent_html",
+      "path_suffix": "core/modules/user/js/user.permissions.js",
+      "line": 55,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.xss.location_assign",
+      "path_suffix": "core/misc/ajax.js",
+      "line": 1514,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.xss.location_assign",
+      "path_suffix": "core/misc/batch.js",
+      "line": 22,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.xss.location_assign",
+      "path_suffix": "core/modules/big_pipe/js/big_pipe.commands.js",
+      "line": 94,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "core/tests/Drupal/Tests/Composer/Plugin/Scaffold/Functional/ManageGitIgnoreTest.php",
+      "line": 200,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "core/tests/Drupal/Tests/Composer/Plugin/Scaffold/Functional/ManageGitIgnoreTest.php",
+      "line": 219,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/tests/modules/jsonapi_response_validator/src/EventSubscriber/ResourceResponseValidator.php",
+      "line": 74,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
+      "line": 637,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
+      "line": 1134,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
+      "line": 3656,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
+      "line": 3663,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/rest/tests/src/Functional/ResourceTestBase.php",
+      "line": 116,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/rest/tests/src/Functional/ResourceTestBase.php",
+      "line": 125,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/system/tests/modules/display_variant_test/src/Plugin/DisplayVariant/TestDisplayVariant.php",
+      "line": 73,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/system/tests/modules/display_variant_test/src/Plugin/DisplayVariant/TestDisplayVariant.php",
+      "line": 82,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/system/tests/modules/nightwatch_theme_install_utility/src/Controller/ThemeInstallController.php",
+      "line": 74,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/system/tests/modules/session_test/src/Controller/SessionTestController.php",
+      "line": 164,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/modules/system/tests/modules/session_test/src/Controller/SessionTestController.php",
+      "line": 170,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "core/tests/Drupal/Tests/HttpKernelUiHelperTrait.php",
+      "line": 135,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/big_pipe/tests/src/Functional/BigPipeTest.php",
+      "line": 202,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/big_pipe/tests/src/Functional/BigPipeTest.php",
+      "line": 204,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/big_pipe/tests/src/Functional/BigPipeTest.php",
+      "line": 443,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/ckeditor5/tests/src/Traits/SynchronizeCsrfTokenSeedTrait.php",
+      "line": 32,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/content_moderation/tests/src/Kernel/ModerationStateFieldItemListTest.php",
+      "line": 297,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/field/tests/src/Kernel/EntityReference/EntityReferenceItemTest.php",
+      "line": 329,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/field_ui/tests/src/Kernel/EntityDisplayTest.php",
+      "line": 666,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/field_ui/tests/src/Kernel/EntityFormDisplayTest.php",
+      "line": 309,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/help/tests/fixtures/uninstall-search.php",
+      "line": 21,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/jsonapi/tests/src/Functional/ResourceTestBase.php",
+      "line": 1022,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/locale/tests/src/Kernel/LocaleTranslationTest.php",
+      "line": 55,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/mysql/tests/src/Kernel/mysql/DbDumpTest.php",
+      "line": 207,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/node/tests/src/Functional/NodeCreationTest.php",
+      "line": 345,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/rest/tests/src/Functional/EntityResource/EntityResourceTestBase.php",
+      "line": 616,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/fixtures/update/drupal-8.update-test-schema-enabled.php",
+      "line": 46,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/fixtures/update/drupal-8.update-test-semver-update-n-enabled.php",
+      "line": 30,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/fixtures/update/install-mysqli.php",
+      "line": 21,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/EntityUpdateInitialTest.php",
+      "line": 50,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/NoPreExistingSchemaUpdateTest.php",
+      "line": 42,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/PreventDowngradeTest.php",
+      "line": 78,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/UpdatePostUpdateExceptionTest.php",
+      "line": 43,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/UpdatePostUpdateFailingTest.php",
+      "line": 43,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/UpdatePostUpdateTest.php",
+      "line": 44,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/system/tests/src/Functional/UpdateSystem/UpdateRemovedPostUpdateTest.php",
+      "line": 60,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/views/tests/src/Functional/ViewsConfigUpdaterTest.php",
+      "line": 49,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/views/tests/src/Kernel/ViewExecutableTest.php",
+      "line": 502,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/views/tests/src/Kernel/ViewExecutableTest.php",
+      "line": 532,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/modules/views_ui/tests/src/Unit/ViewUIObjectTest.php",
+      "line": 140,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/BrowserTestBaseTest.php",
+      "line": 586,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Entity/RevisionDeleteFormTest.php",
+      "line": 305,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Entity/RevisionRevertFormTest.php",
+      "line": 238,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/FunctionalTests/Update/UpdatePathTestBase.php",
+      "line": 288,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Action/EmailActionTest.php",
+      "line": 67,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Config/Storage/DatabaseStorageTest.php",
+      "line": 35,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Database/SerializeQueryTest.php",
+      "line": 26,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Database/TransactionTest.php",
+      "line": 1324,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Entity/EntityTranslationTest.php",
+      "line": 533,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Entity/EntityTranslationTest.php",
+      "line": 559,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Entity/EntityTypeTest.php",
+      "line": 64,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/File/FileDeleteGadgetChainTest.php",
+      "line": 29,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Plugin/ContextTypedDataTest.php",
+      "line": 39,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Routing/MatcherDumperTest.php",
+      "line": 145,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/User/AccountTakeoverGadgetChainTest.php",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Component/Diff/DiffOpOutputBuilderTest.php",
+      "line": 112,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Component/Plugin/Attribute/AttributeClassDiscoveryCachedTest.php",
+      "line": 77,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/Datetime/DrupalDateTimeTest.php",
+      "line": 291,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/DependencyInjection/DependencySerializationTest.php",
+      "line": 40,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/Extension/DependencyTest.php",
+      "line": 65,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/Extension/ExtensionSerializationTest.php",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/Extension/ExtensionSerializationTest.php",
+      "line": 63,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/Extension/ExtensionSerializationTest.php",
+      "line": 82,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/Menu/MenuTreeParametersTest.php",
+      "line": 157,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/StringTranslation/PluralTranslatableMarkupTest.php",
+      "line": 33,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "core/tests/Drupal/Tests/Core/TempStore/SharedTempStoreTest.php",
+      "line": 393,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "core/assets/vendor/backbone/backbone.js",
+      "line": 2086,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/htmx/htmx.min.js",
+      "line": 1,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "core/assets/vendor/backbone/backbone-min.js",
+      "line": 1,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/ckeditor5/tests/src/FunctionalJavascript/AdminUiTest.php",
+      "line": 118,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/transliteration/bundle.umd.min.js",
+      "line": 1,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/package_manager/tests/src/Kernel/PackageManagerKernelTestBase.php",
+      "line": 225,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/modules/package_manager/tests/src/Kernel/ComposerPatchesValidatorTest.php",
+      "line": 275,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/jquery/jquery.min.js",
+      "line": 2,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/assets/vendor/htmx/htmx.js",
+      "line": 3270,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/media/tests/src/Kernel/OEmbedSourceTest.php",
+      "line": 135,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/page_cache/tests/src/Functional/PageCacheTest.php",
+      "line": 644,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/update/tests/src/Kernel/DevReleaseTest.php",
+      "line": 69,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/modules/update/tests/src/Kernel/UpdateCalculateProjectDataTest.php",
+      "line": 72,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/File/ReadOnlyStreamWrapperTest.php",
+      "line": 55,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/File/StreamWrapperTest.php",
+      "line": 21,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/tests/Drupal/Tests/Component/DependencyInjection/Dumper/OptimizedPhpArrayDumperTest.php",
+      "line": 612,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/tests/Drupal/Tests/DrupalTestBrowser.php",
+      "line": 22,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/Config/ConfigCRUDTest.php",
+      "line": 319,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "core/tests/Drupal/KernelTests/Core/TypedData/TypedDataTest.php",
+      "line": 358,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "core/tests/Drupal/Tests/Core/Logger/LogMessageParserTest.php",
+      "line": 45,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
+}

@@ -954,22 +954,44 @@ fn entry_points_xlang() {
     }
 }
 
-/// Phase 11 acceptance: every per-target baseline JSON in
-/// `tests/recall_targets/` exists, parses via `serde_json`, and every
-/// finding entry carries a `verdict: "TP" | "FP" | "needs_review"`
-/// label. Marked `#[ignore]` because `cargo test --release` should not
-/// require a populated baseline directory on a clean clone — the
-/// `validate_recall.sh` runbook is the authoritative way to refresh
-/// these. Run explicitly with `cargo test --release --test recall_gaps
-/// -- --ignored validate_real_world_targets`.
+/// Phase 11 + 17 acceptance: every per-target baseline JSON in
+/// `tests/recall_targets/` (Phase 11 JS targets) and
+/// `tests/recall_targets/xlang/<lang>/` (Phase 17 cross-lang targets)
+/// exists, parses via `serde_json`, and every finding entry carries
+/// a `verdict: "TP" | "FP" | "needs_review"` label. Marked `#[ignore]`
+/// because `cargo test --release` should not require a populated
+/// baseline directory on a clean clone — the `validate_recall.sh`
+/// runbook is the authoritative way to refresh these. Run explicitly
+/// with `cargo test --release --test recall_gaps --
+/// --ignored validate_real_world_targets`.
 #[test]
 #[ignore]
 fn validate_real_world_targets() {
-    let targets = ["cal_com", "vercel_commerce", "shadcn_examples", "blitz_apps"];
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recall_targets");
-    for target in targets {
-        let path = root.join(format!("{target}.json"));
-        let raw = std::fs::read_to_string(&path)
+
+    // Phase 11 JS targets — ship at the top level.
+    let js_targets = ["cal_com", "vercel_commerce", "shadcn_examples", "blitz_apps"];
+    let mut paths: Vec<std::path::PathBuf> =
+        js_targets.iter().map(|t| root.join(format!("{t}.json"))).collect();
+
+    // Phase 17 cross-lang targets — under `xlang/<lang>/<target>.json`.
+    let xlang_root = root.join("xlang");
+    let xlang_specs: &[(&str, &[&str])] = &[
+        ("php", &["phpmyadmin", "joomla", "drupal", "nextcloud"]),
+        ("java", &["openmrs"]),
+        ("python", &["airflow", "flask"]),
+        ("rust", &["axum"]),
+        ("go", &["gin"]),
+        ("ruby", &["rails"]),
+    ];
+    for (lang, targets) in xlang_specs {
+        for t in *targets {
+            paths.push(xlang_root.join(lang).join(format!("{t}.json")));
+        }
+    }
+
+    for path in &paths {
+        let raw = std::fs::read_to_string(path)
             .unwrap_or_else(|e| panic!("read baseline {}: {e}", path.display()));
         let value: serde_json::Value = serde_json::from_str(&raw)
             .unwrap_or_else(|e| panic!("parse baseline {}: {e}", path.display()));

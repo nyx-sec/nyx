@@ -2,16 +2,27 @@
 # validate_recall.sh — run `nyx scan --format json` against a real OSS
 # checkout and diff the result against a frozen baseline.
 #
-# Phase 11 of the JS/TS recall-gap engine plan owns this script. The
-# baselines live in `tests/recall_targets/<target>.json` (relocated out
-# of `.pitboss/` per the Phase 01 precedent — pitboss implementer
-# agents must not write under `.pitboss/`).
+# Phase 11 of the JS/TS recall-gap engine plan owns the JS targets.
+# Phase 17 adds cross-language targets (php/java/python/rust/go/ruby)
+# under `tests/recall_targets/xlang/<lang>/<target>.json`. JS-era
+# baselines stay at `tests/recall_targets/<target>.json` for backwards
+# compatibility.
+#
+# Baseline files were relocated out of `.pitboss/` per the Phase 01
+# precedent — pitboss implementer agents must not write under
+# `.pitboss/`.
 #
 # Usage:
 #   scripts/validate_recall.sh <target> <clone_path> [--capture]
+#   scripts/validate_recall.sh --lang <lang> <target> <clone_path> [--capture]
 #
-#   <target>      one of: cal_com | vercel_commerce | shadcn_examples |
-#                 blitz_apps
+#   <lang>        php | java | python | rust | go | ruby
+#                 Selects the per-language target set under
+#                 `tests/recall_targets/xlang/<lang>/`.
+#   <target>      Without --lang: cal_com | vercel_commerce |
+#                 shadcn_examples | blitz_apps (Phase 11 JS targets).
+#                 With --lang: any baseline shipped under
+#                 `tests/recall_targets/xlang/<lang>/<target>.json`.
 #   <clone_path>  path to a local clone of the OSS repo
 #   --capture     overwrite the baseline with the current scan output
 #                 (every finding marked `needs_review`); use this when
@@ -31,34 +42,75 @@ set -euo pipefail
 usage() {
     cat >&2 <<EOF
 usage: $(basename "$0") <target> <clone_path> [--capture]
+       $(basename "$0") --lang <lang> <target> <clone_path> [--capture]
 
-  target      cal_com | vercel_commerce | shadcn_examples | blitz_apps
+  lang        php | java | python | rust | go | ruby
+  target      JS targets: cal_com | vercel_commerce | shadcn_examples |
+              blitz_apps. With --lang: any name shipped under
+              tests/recall_targets/xlang/<lang>/.
   clone_path  path to local checkout of the target repo
   --capture   overwrite the baseline JSON with the current scan output
 EOF
     exit 2
 }
 
-if [ $# -lt 2 ]; then
-    usage
-fi
-
-TARGET="$1"
-CLONE_PATH="$2"
-shift 2
+LANG_FLAG=""
+POSITIONAL=()
 CAPTURE=0
-for arg in "$@"; do
-    case "$arg" in
-        --capture) CAPTURE=1 ;;
-        -h|--help) usage ;;
-        *) echo "unknown arg: $arg" >&2; usage ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --lang)
+            if [ $# -lt 2 ]; then
+                echo "--lang requires an argument" >&2
+                usage
+            fi
+            LANG_FLAG="$2"
+            shift 2
+            ;;
+        --lang=*)
+            LANG_FLAG="${1#--lang=}"
+            shift
+            ;;
+        --capture)
+            CAPTURE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        --*)
+            echo "unknown flag: $1" >&2
+            usage
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
     esac
 done
 
-case "$TARGET" in
-    cal_com|vercel_commerce|shadcn_examples|blitz_apps) ;;
-    *) echo "unknown target: $TARGET" >&2; usage ;;
-esac
+if [ ${#POSITIONAL[@]} -lt 2 ]; then
+    usage
+fi
+
+TARGET="${POSITIONAL[0]}"
+CLONE_PATH="${POSITIONAL[1]}"
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [ -n "$LANG_FLAG" ]; then
+    case "$LANG_FLAG" in
+        php|java|python|rust|go|ruby) ;;
+        *) echo "unknown lang: $LANG_FLAG" >&2; usage ;;
+    esac
+    BASELINE="$REPO_ROOT/tests/recall_targets/xlang/${LANG_FLAG}/${TARGET}.json"
+else
+    case "$TARGET" in
+        cal_com|vercel_commerce|shadcn_examples|blitz_apps) ;;
+        *) echo "unknown target: $TARGET (use --lang for cross-lang targets)" >&2; usage ;;
+    esac
+    BASELINE="$REPO_ROOT/tests/recall_targets/${TARGET}.json"
+fi
 
 if [ ! -d "$CLONE_PATH" ]; then
     echo "clone path is not a directory: $CLONE_PATH" >&2
@@ -69,9 +121,6 @@ if ! command -v jq >/dev/null 2>&1; then
     echo "jq is required but not installed" >&2
     exit 1
 fi
-
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BASELINE="$REPO_ROOT/tests/recall_targets/${TARGET}.json"
 
 if [ ! -f "$BASELINE" ]; then
     echo "baseline not found: $BASELINE" >&2
@@ -96,8 +145,12 @@ CLONE_ABS="$(cd "$CLONE_PATH" && pwd)"
 TMP_OUT="$(mktemp -t nyx_recall_${TARGET}.XXXXXX.json)"
 trap 'rm -f "$TMP_OUT"' EXIT
 
-echo "[validate_recall] target=$TARGET clone=$CLONE_ABS" >&2
-echo "[validate_recall] nyx=$NYX" >&2
+if [ -n "$LANG_FLAG" ]; then
+    echo "[validate_recall] lang=$LANG_FLAG target=$TARGET clone=$CLONE_ABS" >&2
+else
+    echo "[validate_recall] target=$TARGET clone=$CLONE_ABS" >&2
+fi
+echo "[validate_recall] nyx=$NYX baseline=$BASELINE" >&2
 echo "[validate_recall] scanning..." >&2
 
 "$NYX" scan "$CLONE_ABS" --format json --index off >"$TMP_OUT"

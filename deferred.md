@@ -771,6 +771,67 @@ implied or surfaced but did not finish.
       `DjangoView` to `DjangoView { method: HttpMethod }` and
       stop discarding the parsed method.
 
+- [ ] Phase 17 audit — three placeholder cross-lang baselines remain
+      uncaptured: `tests/recall_targets/xlang/rust/axum.json`,
+      `tests/recall_targets/xlang/ruby/rails.json`, and
+      `tests/recall_targets/xlang/python/flask.json`. Reason: pitboss
+      implementer agents run sandboxed without network egress;
+      `~/oss/` had clones for php/java/python/go targets but not for
+      tokio-rs/axum, rails/rails, or pallets/flask at capture time
+      (2026-05-09). Resolution: clone each repo and run
+      `scripts/validate_recall.sh --lang <lang> <target> <clone> --capture`
+      to populate. The `validate_real_world_targets` schema test
+      passes against placeholders because `[]` is a valid `findings`
+      array.
+- [ ] Phase 17 audit — captured cross-lang findings ship with
+      `verdict: "needs_review"`. None of the seven captured baselines
+      (phpmyadmin / joomla / drupal / nextcloud / openmrs / gin /
+      airflow) are TP/FP-triaged. The schema test does not require
+      every entry to be triaged, but future precision phases need the
+      labelled set to measure FP-removal lift. Bounded human work:
+      open each `path_suffix:line` and decide. Priority queues per
+      lang are documented in `docs/recall-validation.md` (cross-lang
+      runbook section, "Per-lang TP/FP splits" subsection).
+- [ ] Phase 17 audit — the captured airflow baseline (892 findings)
+      pre-dates the 2026-04-29 saleor/airflow/sentry FastAPI
+      route-level dependency-injection auth fix and the 2026-05-02
+      caller-scope-entity / ORM kwarg-key / mock.patch precision
+      sweep recorded in `project_realrepo_airflow.md` and
+      `project_realrepo_sentry.md`. Those memory entries record
+      airflow 1500 → 990 → 1310 → 892 (current). The 892-finding
+      baseline reflects the post-cfg-unguarded-sink rule split (now
+      252 entries) plus phases 12-16 cross-lang lifts; it is not a
+      regression vs the 2026-05-02 number but a re-baselining at a
+      newer engine snapshot.
+- [ ] Phase 17 audit — `validate_recall.sh --lang` validates a
+      hard-coded allowlist of six languages (php / java / python /
+      rust / go / ruby). Adding a new language target requires
+      editing both the script's `case "$LANG_FLAG"` arm AND the
+      `validate_real_world_targets` test's `xlang_specs` table.
+      Bridge through a single source of truth (e.g. derive the lang
+      list from filesystem inspection of
+      `tests/recall_targets/xlang/` at test time) when an additional
+      language target lands.
+- [ ] Phase 17 audit — single-file `single_file_parse_cfg` micro-bench
+      regressed +11.5% vs the Phase 11 baseline (283 µs → 315 µs).
+      Driver: phases 12-16 added per-lang KINDS map entries and
+      gated-sink dispatch; the new label-rule lookups fire on every
+      classify() call. The 7.1% corpus-throughput regression is
+      within the 10% acceptance bar but the per-call hot path is
+      worth profiling. Park: corpus throughput dominates user-facing
+      perf, the single-file bench is informational.
+- [ ] Phase 17 audit — `--lang` flag does not reuse Phase 11 JS
+      target paths. Phase 11 baselines stay at
+      `tests/recall_targets/<target>.json` (top level), Phase 17
+      baselines live under `tests/recall_targets/xlang/<lang>/<target>.json`.
+      Migrating Phase 11 JS targets under `xlang/javascript/` and
+      `xlang/typescript/` would unify the layout, but it would
+      invalidate the four Phase 11 baselines (cal_com.json contains
+      658 hand-tagged findings against pinned commit d278d6c9).
+      Park: the dual layout is documented in
+      `docs/recall-validation.md`; unify only when a JS-specific
+      precision phase needs a re-capture anyway.
+
 ## Deferred phases
 
 (none)

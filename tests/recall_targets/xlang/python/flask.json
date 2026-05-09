@@ -1,0 +1,11 @@
+{
+  "_doc": "Phase 17 cross-lang recall-validation baseline for pallets/flask (Python). Re-capture by running scripts/validate_recall.sh --lang python flask <clone_path> --capture. Phase 17 ships airflow as the captured Python target; flask remains a placeholder for future cross-validation against a smaller-surface Python framework codebase.",
+  "target": "flask",
+  "lang": "python",
+  "clone_url": "https://github.com/pallets/flask",
+  "exercises_recall_items": [],
+  "captured_against": "placeholder",
+  "captured_on": "2026-05-08",
+  "pinned_commit": "unknown",
+  "findings": []
+}

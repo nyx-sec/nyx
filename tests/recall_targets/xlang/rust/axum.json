@@ -1,0 +1,11 @@
+{
+  "_doc": "Phase 17 cross-lang recall-validation baseline for tokio-rs/axum (Rust). Re-capture by running scripts/validate_recall.sh --lang rust axum <clone_path> --capture. Placeholder: pitboss implementer agents run sandboxed without network egress; this clone was not available locally during phase 17 capture.",
+  "target": "axum",
+  "lang": "rust",
+  "clone_url": "https://github.com/tokio-rs/axum",
+  "exercises_recall_items": [],
+  "captured_against": "placeholder",
+  "captured_on": "2026-05-08",
+  "pinned_commit": "unknown",
+  "findings": []
+}

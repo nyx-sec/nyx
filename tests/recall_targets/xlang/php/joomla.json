@@ -1,0 +1,676 @@
+{
+  "_doc": "Phase 17 cross-lang recall-validation baseline for joomla (PHP). Re-capture by running scripts/validate_recall.sh --lang php joomla <clone_path> --capture.",
+  "target": "joomla",
+  "lang": "php",
+  "clone_url": "https://github.com/joomla/joomla-cms",
+  "exercises_recall_items": [],
+  "captured_against": "real-scan @ 7e8527d02d152d789f2fdf04f057eec5d006c40b",
+  "captured_on": "2026-05-09",
+  "pinned_commit": "7e8527d02d152d789f2fdf04f057eec5d006c40b",
+  "findings": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "libraries/src/Cache/Controller/PageController.php",
+      "line": 100,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "administrator/components/com_templates/src/Model/TemplateModel.php",
+      "line": 851,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-xxe",
+      "path_suffix": "administrator/components/com_joomlaupdate/src/Model/UpdateModel.php",
+      "line": 2308,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "libraries/src/Language/Language.php",
+      "line": 128,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "libraries/src/Application/DaemonApplication.php",
+      "line": 458,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "libraries/src/Application/DaemonApplication.php",
+      "line": 724,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.preg_replace_e",
+      "path_suffix": "administrator/components/com_admin/src/Model/SysinfoModel.php",
+      "line": 419,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "administrator/components/com_finder/src/Model/SearchesModel.php",
+      "line": 144,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "administrator/components/com_finder/src/Model/SearchesModel.php",
+      "line": 146,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "components/com_finder/src/Model/SearchModel.php",
+      "line": 119,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "components/com_finder/src/Model/SearchModel.php",
+      "line": 121,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "libraries/src/Cache/Controller/CallbackController.php",
+      "line": 77,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "libraries/src/Cache/Controller/OutputController.php",
+      "line": 71,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "libraries/src/Cache/Controller/PageController.php",
+      "line": 100,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "libraries/src/Cache/Controller/ViewController.php",
+      "line": 68,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "libraries/src/Session/Storage/JoomlaStorage.php",
+      "line": 317,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "plugins/multifactorauth/webauthn/src/Extension/Webauthn.php",
+      "line": 326,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "plugins/multifactorauth/webauthn/src/Helper/Credentials.php",
+      "line": 107,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "plugins/multifactorauth/webauthn/src/Helper/Credentials.php",
+      "line": 206,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "plugins/system/webauthn/src/Authentication.php",
+      "line": 253,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "plugins/system/webauthn/src/Authentication.php",
+      "line": 310,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "plugins/system/webauthn/src/Authentication.php",
+      "line": 504,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "administrator/components/com_fields/src/Plugin/FieldsPlugin.php",
+      "line": 227,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "libraries/src/Layout/FileLayout.php",
+      "line": 128,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "plugins/content/pagebreak/src/Extension/PageBreak.php",
+      "line": 337,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "plugins/content/pagebreak/src/Extension/PageBreak.php",
+      "line": 373,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "plugins/content/pagenavigation/src/Extension/PageNavigation.php",
+      "line": 254,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "plugins/content/vote/src/Extension/Vote.php",
+      "line": 132,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "plugins/content/vote/src/Extension/Vote.php",
+      "line": 141,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "plugins/multifactorauth/webauthn/src/Extension/Webauthn.php",
+      "line": 147,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "plugins/multifactorauth/webauthn/src/Extension/Webauthn.php",
+      "line": 345,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-xxe",
+      "path_suffix": "tests/Unit/Libraries/Cms/Installer/Adapter/ModuleAdapterTest.php",
+      "line": 117,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "administrator/components/com_joomlaupdate/extract.php",
+      "line": 1458,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "libraries/src/Application/DaemonApplication.php",
+      "line": 724,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "libraries/src/Client/FtpClient.php",
+      "line": 958,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "installation/src/Application/InstallationApplication.php",
+      "line": 255,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "administrator/components/com_joomlaupdate/src/Controller/UpdateController.php",
+      "line": 566,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "administrator/components/com_joomlaupdate/src/Controller/UpdateController.php",
+      "line": 685,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "administrator/components/com_joomlaupdate/extract.php",
+      "line": 495,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "administrator/components/com_joomlaupdate/extract.php",
+      "line": 1249,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "administrator/components/com_joomlaupdate/extract.php",
+      "line": 1634,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "libraries/src/Cache/Storage/FileStorage.php",
+      "line": 28,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "libraries/src/Client/FtpClient.php",
+      "line": 302,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "libraries/src/Client/FtpClient.php",
+      "line": 1708,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "libraries/src/Filesystem/Stream.php",
+      "line": 264,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "libraries/src/Http/Transport/CurlTransport.php",
+      "line": 51,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "administrator/templates/atum/error_full.php",
+      "line": 171,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "installation/template/js/remove.js",
+      "line": 129,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "layouts/plugins/system/webauthn/manage.php",
+      "line": 76,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "plugins/filesystem/local/src/Adapter/LocalAdapter.php",
+      "line": 212,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "administrator/components/com_finder/src/Indexer/Result.php",
+      "line": 490,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "components/com_finder/src/Model/SearchModel.php",
+      "line": 119,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "components/com_finder/src/Model/SearchModel.php",
+      "line": 121,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "libraries/src/Application/DaemonApplication.php",
+      "line": 458,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "modules/mod_finder/src/Helper/FinderHelper.php",
+      "line": 87,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "plugins/authentication/ldap/src/Extension/Ldap.php",
+      "line": 307,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "plugins/multifactorauth/webauthn/src/Extension/Webauthn.php",
+      "line": 326,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "plugins/system/webauthn/src/Authentication.php",
+      "line": 253,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "plugins/system/webauthn/src/Authentication.php",
+      "line": 504,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.settimeout_string",
+      "path_suffix": "installation/template/js/template.js",
+      "line": 166,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.xss.location_assign",
+      "path_suffix": "installation/template/js/template.js",
+      "line": 41,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "tests/Unit/Component/Finder/Administrator/Indexer/ResultTest.php",
+      "line": 50,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "tests/Unit/Component/Finder/Administrator/Indexer/ResultTest.php",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "tests/System/integration/administrator/components/com_users/Mfa.cy.js",
+      "line": 6,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "tests/System/integration/site/components/com_users/Mfa.cy.js",
+      "line": 6,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "tests/System/integration/site/components/com_users/Registration.cy.js",
+      "line": 12,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "administrator/components/com_joomlaupdate/extract.php",
+      "line": 1412,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "administrator/components/com_joomlaupdate/src/Model/UpdateModel.php",
+      "line": 893,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "libraries/src/Cache/Storage/FileStorage.php",
+      "line": 118,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "libraries/src/Client/FtpClient.php",
+      "line": 933,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "libraries/src/Filter/InputFilter.php",
+      "line": 298,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "libraries/src/Http/Transport/StreamTransport.php",
+      "line": 159,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.crypto.math_random",
+      "path_suffix": "installation/template/js/template.js",
+      "line": 125,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.secrets.hardcoded_secret",
+      "path_suffix": "tests/System/integration/administrator/components/com_users/User.cy.js",
+      "line": 39,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.secrets.hardcoded_secret",
+      "path_suffix": "tests/System/integration/api/com_users/Users.cy.js",
+      "line": 29,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.secrets.hardcoded_secret",
+      "path_suffix": "tests/System/integration/site/components/com_users/Login.cy.js",
+      "line": 3,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.secrets.hardcoded_secret",
+      "path_suffix": "tests/System/integration/site/components/com_users/Profile.cy.js",
+      "line": 4,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.secrets.hardcoded_secret",
+      "path_suffix": "tests/System/integration/site/components/com_users/Profile_Edit.cy.js",
+      "line": 22,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.secrets.hardcoded_secret",
+      "path_suffix": "tests/System/integration/site/modules/mod_login/Default.cy.js",
+      "line": 12,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.crypto.md5",
+      "path_suffix": "administrator/components/com_categories/src/Model/CategoryModel.php",
+      "line": 662,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.crypto.md5",
+      "path_suffix": "administrator/components/com_fields/src/Model/FieldModel.php",
+      "line": 746,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.crypto.md5",
+      "path_suffix": "administrator/components/com_finder/src/Indexer/Indexer.php",
+      "line": 812,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.crypto.md5",
+      "path_suffix": "administrator/components/com_finder/src/Table/MapTable.php",
+      "line": 75,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
+}

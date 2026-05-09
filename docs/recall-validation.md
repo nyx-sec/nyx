@@ -132,11 +132,104 @@ existing `tests/fixtures/` corpus must regress by ≤ 15%. Future
 recall work uses the same corpus + the same record file to measure
 its own perf delta.
 
+## Cross-language runbook (Phase 17)
+
+Phase 11 covered JS-only targets. Phase 17 mirrors that work against
+real-world non-JS targets so the cross-language phases (12–16) prove
+"actually lifts recall on real code", not just "tests pass". Per-lang
+baselines live under `tests/recall_targets/xlang/<lang>/<target>.json`
+and the runner accepts a `--lang` flag to select the target set.
+
+### Cross-language targets
+
+| Lang   | Target       | Clone URL                                    | Pinned commit (capture) | Findings | Notes |
+|--------|--------------|----------------------------------------------|-------------------------|----------|-------|
+| php    | phpmyadmin   | https://github.com/phpmyadmin/phpmyadmin     | `ddf4e993`              | 119      | DBA UI; XSS / `php.deser` / `cfg-unguarded-sink` heavy. |
+| php    | joomla       | https://github.com/joomla/joomla-cms         | `7e8527d0`              | 83       | CMS; `php.deser.unserialize` and `php.path.include_variable` clusters. |
+| php    | drupal       | https://github.com/drupal/drupal             | `92aa759e`              | 635      | CMS / DI container; `cfg-unguarded-sink` (198) and `taint-prototype-pollution` (121) dominant. |
+| php    | nextcloud    | https://github.com/nextcloud/server          | `5c0fe4c3`              | 262      | File-sync platform; `cfg-resource-leak` / `state-resource-leak` heavy. |
+| java   | openmrs      | https://github.com/openmrs/openmrs-core      | `f9c76db2`              | 273      | Hibernate-heavy; JPA Criteria fix from `project_realrepo_openmrs.md` already applied. |
+| python | airflow      | https://github.com/apache/airflow            | `3d42610a`              | 892      | Scheduler / DAG runner; `cfg-unguarded-sink` (252) and `taint-unsanitised-flow` (179) lead. |
+| python | flask        | https://github.com/pallets/flask             | placeholder             | 0        | Smaller-surface Python framework; capture deferred. |
+| go     | gin          | https://github.com/gin-gonic/gin             | `d3ffc998`              | 20       | HTTP framework test corpus; `taint-header-injection` and TLS skip-verify in tests. |
+| rust   | axum         | https://github.com/tokio-rs/axum             | placeholder             | 0        | Not cloned in pitboss sandbox at capture time; populate locally. |
+| ruby   | rails        | https://github.com/rails/rails               | placeholder             | 0        | Capture against the `actionpack/` subtree once cloned. |
+
+Captures dated `2026-05-09` (UTC). Counts are deduplicated tuples
+`(rule_id, path_suffix, line)` — duplicate raw findings collapse on
+the diff key, so the schema-test count and diff-mode `unchanged_total`
+may differ from the `findings | length` total by a handful of
+duplicate sites. The diff key is what matters for regression
+detection.
+
+### Per-lang TP/FP splits
+
+Every captured finding ships with `verdict: "needs_review"` from
+`--capture`. Hand-triage is bounded but pending — none of the Phase 17
+captures are sweep-labelled yet. Use the per-lang dominant rule_id
+clusters above as the priority queue:
+
+- **PHP** — `cfg-unguarded-sink` and `taint-prototype-pollution` are
+  the FP-dominant clusters across drupal / nextcloud / phpmyadmin
+  (CMS routing + JS object construction). `php.deser.unserialize` is
+  the highest-value TP cluster on joomla (17) and drupal (83) — see
+  `project_realrepo_joomla.md` 2026-05-03 for the magic-method
+  passthrough fix that already filters one shape.
+- **Java** — `taint-unsanitised-flow` (61) and `state-resource-leak`
+  (60) are openmrs's leading clusters. The JPA Criteria-API fix
+  already absorbed the `cfg-unguarded-sink` cluster (216 → 24);
+  remaining Hibernate / Spring resource-management FPs are the next
+  triage target.
+- **Python** — `cfg-unguarded-sink` (252) on airflow is dominated by
+  Airflow's scheduler / DB plumbing; `py.auth.token_override_*`
+  (83) and `py.auth.missing_ownership_check` (61) are the auth-rule
+  noise typical of an admin/operator codebase.
+- **Go** — gin's 20 findings are mostly test-corpus artifacts
+  (`gin_test.go`, `routes_test.go`); 4 of 4 `go.transport.insecure_skip_verify`
+  hits are inside `gin*_test.go` and are legitimate test setup.
+- **Rust / Ruby** — placeholder; capture once a local clone exists.
+
+### `--lang` runner usage
+
+```bash
+# diff mode (default)
+scripts/validate_recall.sh --lang php drupal /Users/me/oss/drupal
+scripts/validate_recall.sh --lang java openmrs /Users/me/oss/openmrs
+
+# capture / refresh
+scripts/validate_recall.sh --lang go gin /Users/me/oss/gin --capture
+```
+
+Output is the same `{ added, removed, unchanged, *_total }` JSON shape
+as the JS-target diff. The diff key is `(rule_id, path_suffix, line)`.
+
+### Cross-language refresh procedure
+
+1. Clone or update the target into `~/oss/<target>` (or wherever).
+2. Build nyx: `cargo build --release`.
+3. Diff vs the frozen baseline:
+   `scripts/validate_recall.sh --lang <lang> <target> ~/oss/<target>`.
+4. If the lift is intentional, recapture with `--capture`.
+5. Spot-check new findings; hand-label `TP`/`FP`.
+6. Commit the updated `tests/recall_targets/xlang/<lang>/<target>.json`.
+
+### Sandbox-capture caveat
+
+Pitboss implementer agents run sandboxed without network egress, so
+target repos that are not already present under `~/oss/` ship as
+placeholders (`pinned_commit: "unknown"`, `findings: []`). Phase 17
+shipped captures for php/java/python/go (every target whose repo was
+already cloned locally) and placeholders for `rust/axum`, `ruby/rails`,
+and `python/flask`. The schema test in `validate_real_world_targets`
+passes against placeholders because `[]` is a valid `findings` array.
+
 ## What lives where (quick reference)
 
 - Targets list and recall-item mapping → this file.
-- Per-target findings → `tests/recall_targets/<target>.json`.
-- Diff/capture runner → `scripts/validate_recall.sh`.
-- Schema-validity test → `tests/recall_gaps.rs`.
+- Per-target JS findings → `tests/recall_targets/<target>.json`.
+- Per-target cross-lang findings → `tests/recall_targets/xlang/<lang>/<target>.json`.
+- Diff/capture runner → `scripts/validate_recall.sh` (accepts `--lang`).
+- Schema-validity test → `tests/recall_gaps.rs::validate_real_world_targets`.
 - Corpus regression baseline → `tests/recall_gaps_baseline.json`.
-- Perf record → `tests/recall_targets/perf_after.txt`.
+- Perf records → `tests/recall_targets/perf_after.txt` (Phase 11) and
+  `tests/recall_targets/perf_after_xlang.txt` (Phase 17 delta).

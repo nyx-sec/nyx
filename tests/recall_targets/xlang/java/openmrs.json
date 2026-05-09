@@ -1,0 +1,2196 @@
+{
+  "_doc": "Phase 17 cross-lang recall-validation baseline for openmrs (Java/Hibernate). Re-capture by running scripts/validate_recall.sh --lang java openmrs <clone_path> --capture. Heavy JPA-Criteria-API consumer — see project_realrepo_openmrs.md for context.",
+  "target": "openmrs",
+  "lang": "java",
+  "clone_url": "https://github.com/openmrs/openmrs-core",
+  "exercises_recall_items": [],
+  "captured_against": "real-scan @ f9c76db207c37f2c728ca3b601ae720b654ab401",
+  "captured_on": "2026-05-09",
+  "pinned_commit": "f9c76db207c37f2c728ca3b601ae720b654ab401",
+  "findings": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/StartupFilter.java",
+      "line": 311,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/InitializationFilter.java",
+      "line": 824,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-xxe",
+      "path_suffix": "api/src/main/java/org/openmrs/module/ModuleFileParser.java",
+      "line": 248,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/AddConceptMapTypesChangeset.java",
+      "line": 201,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
+      "line": 283,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 736,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/GenerateUuid.java",
+      "line": 114,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 69,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 83,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 103,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 120,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 136,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-use-after-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 155,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.cmdi.runtime_exec",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/SourceMySqldiffFile.java",
+      "line": 210,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.cmdi.runtime_exec",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/SourceMySqldiffFile.java",
+      "line": 211,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.cmdi.runtime_exec",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/TestInstallUtil.java",
+      "line": 83,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui-timepicker-addon.js",
+      "line": 141,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui-timepicker-addon.js",
+      "line": 88,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui-timepicker-addon.js",
+      "line": 139,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 25,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 726,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 818,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 105,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 126,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 128,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 149,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 154,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 155,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 21,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 175,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 179,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 181,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 178,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 183,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 185,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 194,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 195,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 211,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 212,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 275,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 321,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 40,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 41,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 403,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 404,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 414,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 415,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 416,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 417,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 418,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 419,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 422,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 430,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 501,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 578,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 584,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 571,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 726,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui-timepicker-addon.js",
+      "line": 145,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 26,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 30,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 3,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 3,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 3,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 4,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 4,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 726,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 818,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 152,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 202,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 27,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 454,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 476,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 657,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 77,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 983,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 983,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 983,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 242,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 534,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 726,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-double-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/GenerateUuid.java",
+      "line": 115,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-double-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/GenerateUuid.java",
+      "line": 122,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-double-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/GenerateUuid.java",
+      "line": 175,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-double-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 76,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-double-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 84,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-double-close",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 164,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jsTree/jquery.tree.min.js",
+      "line": 157,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 173,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jsTree/jquery.tree.min.js",
+      "line": 1,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui-timepicker-addon.js",
+      "line": 91,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jsTree/jquery.tree.min.js",
+      "line": 4,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 4,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 548,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 549,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 633,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 633,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 667,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 826,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 827,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 426,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 502,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 506,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 507,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 564,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 573,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 584,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 613,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/module/ModuleUtil.java",
+      "line": 110,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/module/ModuleUtil.java",
+      "line": 680,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/module/ModuleUtil.java",
+      "line": 1259,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/scheduler/tasks/CheckInternetConnectivityTask.java",
+      "line": 44,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUpdater.java",
+      "line": 288,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 170,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/HttpClient.java",
+      "line": 53,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/UpgradeUtil.java",
+      "line": 113,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/UpgradeUtil.java",
+      "line": 138,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
+      "line": 71,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/CheckDrugOrderUnitAndFrequencyTextNotMappedToConcepts.java",
+      "line": 35,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 78,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 444,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 505,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 524,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 579,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/CreateCodedOrderFrequencyForDrugOrderFrequencyChangeset.java",
+      "line": 36,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/CreateDiscontinueOrders.java",
+      "line": 36,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/CreateDiscontinueOrders.java",
+      "line": 118,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DisableTriggersChangeSet.java",
+      "line": 33,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DuplicateEncounterRoleNameChangeSet.java",
+      "line": 75,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DuplicateEncounterRoleNameChangeSet.java",
+      "line": 121,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DuplicateEncounterTypeNameChangeSet.java",
+      "line": 74,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DuplicateEncounterTypeNameChangeSet.java",
+      "line": 120,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DuplicateLocationAttributeTypeNameChangeSet.java",
+      "line": 75,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DuplicateLocationAttributeTypeNameChangeSet.java",
+      "line": 114,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/EnableTriggersChangeSet.java",
+      "line": 33,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/EncryptSecretAnswersChangeSet.java",
+      "line": 42,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/EncryptSecretAnswersChangeSet.java",
+      "line": 48,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/GenerateUuid.java",
+      "line": 100,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/GenerateUuid.java",
+      "line": 150,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateAllergiesChangeSet.java",
+      "line": 63,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateAllergiesChangeSet.java",
+      "line": 161,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateConceptReferenceTermChangeSet.java",
+      "line": 51,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateDrugOrderFrequencyToCodedOrderFrequencyChangeset.java",
+      "line": 34,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MigrateDrugOrderUnitsToCodedDoseUnitsChangeset.java",
+      "line": 36,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MoveDeletedHL7sChangeSet.java",
+      "line": 38,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/MoveDeletedHL7sChangeSet.java",
+      "line": 60,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/SourceMySqldiffFile.java",
+      "line": 89,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/UpdateCohortMemberIdsChangeset.java",
+      "line": 41,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/UpdateCohortMemberIdsChangeset.java",
+      "line": 47,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/UpdateLayoutAddressFormatChangeSet.java",
+      "line": 41,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/UpdateLayoutAddressFormatChangeSet.java",
+      "line": 47,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/module/web/ModuleResourcesServlet.java",
+      "line": 68,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/StartupFilter.java",
+      "line": 169,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/StartupFilter.java",
+      "line": 311,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/DatabaseDetective.java",
+      "line": 48,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/TestInstallUtil.java",
+      "line": 143,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/TestInstallUtil.java",
+      "line": 226,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/update/UpdateFilter.java",
+      "line": 439,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/util/FilterUtil.java",
+      "line": 134,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/util/FilterUtil.java",
+      "line": 244,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 104,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 116,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 117,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 119,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 233,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 226,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 239,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 265,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 297,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jsTree/jquery.tree.min.js",
+      "line": 173,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jsTree/jquery.tree.min.js",
+      "line": 177,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jsTree/jquery.tree.min.js",
+      "line": 4,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jsTree/jquery.tree.min.js",
+      "line": 66,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 651,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/module/ModuleUtil.java",
+      "line": 736,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUpdater.java",
+      "line": 491,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/HttpClient.java",
+      "line": 78,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/HttpUrl.java",
+      "line": 36,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/UpgradeUtil.java",
+      "line": 127,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
+      "line": 146,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
+      "line": 159,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
+      "line": 167,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
+      "line": 210,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DisableTriggersChangeSet.java",
+      "line": 42,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/EnableTriggersChangeSet.java",
+      "line": 42,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/InitializationFilter.java",
+      "line": 1976,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/TestInstallUtil.java",
+      "line": 270,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/update/UpdateFilter.java",
+      "line": 372,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/util/FilterUtil.java",
+      "line": 200,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/api/db/hibernate/HibernatePatientDAO.java",
+      "line": 966,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/api/db/hibernate/type/StringEnumType.java",
+      "line": 49,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/api/impl/PatientServiceImpl.java",
+      "line": 1238,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/module/ModuleFileParser.java",
+      "line": 587,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/serialization/SimpleXStreamSerializer.java",
+      "line": 104,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUpdater.java",
+      "line": 490,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 86,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 89,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 92,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 95,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 98,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 101,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 104,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 107,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/AddConceptMapTypesChangeset.java",
+      "line": 198,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
+      "line": 279,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 505,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 524,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 733,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/InitializationFilter.java",
+      "line": 1218,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/TestInstallUtil.java",
+      "line": 83,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
+      "line": 111,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.cmdi.runtime_exec",
+      "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
+      "line": 182,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.cmdi.runtime_exec",
+      "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
+      "line": 182,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.deser.readobject",
+      "path_suffix": "api/src/test/java/org/openmrs/util/ThreadSafeCircularFifoQueueTest.java",
+      "line": 384,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.deser.readobject",
+      "path_suffix": "api/src/test/java/org/openmrs/util/ThreadSafeCircularFifoQueueTest.java",
+      "line": 483,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/api/context/ServiceContext.java",
+      "line": 779,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/api/db/hibernate/type/StringEnumType.java",
+      "line": 49,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/api/impl/PatientServiceImpl.java",
+      "line": 1238,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/module/ModuleFileParser.java",
+      "line": 587,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/serialization/SimpleXStreamSerializer.java",
+      "line": 104,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUpdater.java",
+      "line": 490,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 82,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 86,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 89,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 92,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 95,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 98,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 101,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 104,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 107,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/InitializationFilter.java",
+      "line": 1191,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/InitializationFilter.java",
+      "line": 1193,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.class_forname",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/InitializationFilter.java",
+      "line": 1195,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.method_invoke",
+      "path_suffix": "api/src/main/java/org/openmrs/PatientIdentifier.java",
+      "line": 146,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.method_invoke",
+      "path_suffix": "api/src/main/java/org/openmrs/PatientIdentifier.java",
+      "line": 147,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.method_invoke",
+      "path_suffix": "api/src/main/java/org/openmrs/PersonAttribute.java",
+      "line": 172,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.method_invoke",
+      "path_suffix": "api/src/main/java/org/openmrs/PersonAttribute.java",
+      "line": 173,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.method_invoke",
+      "path_suffix": "api/src/main/java/org/openmrs/aop/RequiredDataAdvice.java",
+      "line": 361,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.method_invoke",
+      "path_suffix": "api/src/main/java/org/openmrs/api/impl/DomainServiceImpl.java",
+      "line": 179,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.reflection.method_invoke",
+      "path_suffix": "api/src/main/java/org/openmrs/util/OpenmrsUtil.java",
+      "line": 1374,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.xss.getwriter_print",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/update/UpdateFilter.java",
+      "line": 278,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.eval",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui-timepicker-addon.js",
+      "line": 139,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.eval",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 726,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.eval",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 363,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.eval",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/dataTables/js/jquery.dataTables.min.js",
+      "line": 501,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.code_exec.new_function",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 2,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConvertOrderersToProviders.java",
+      "line": 37,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.sqli.execute_concat",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 505,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.sqli.execute_concat",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConceptValidatorChangeSet.java",
+      "line": 524,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.sqli.execute_concat",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/DuplicateLocationAttributeTypeNameChangeSet.java",
+      "line": 86,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery/jquery.min.js",
+      "line": 2,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "java.sqli.execute_concat",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/ConvertOrderersToProviders.java",
+      "line": 86,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/module/ModuleFileParserUnitTest.java",
+      "line": 121,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/module/ModuleUtilTest.java",
+      "line": 600,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
+      "line": 107,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/test/jupiter/BaseContextSensitiveNonTransactionalTest.java",
+      "line": 698,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/util/databasechange/Database1_9_7UpgradeIT.java",
+      "line": 464,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/util/databasechange/DatabaseUpgradeTestUtil.java",
+      "line": 106,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "web/src/test/java/org/openmrs/web/filter/update/GZIPFilterTest.java",
+      "line": 76,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/test/TestUtil.java",
+      "line": 86,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/util/DatabaseIT.java",
+      "line": 121,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/util/HttpClientTest.java",
+      "line": 40,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/test/java/org/openmrs/test/DbUtil.java",
+      "line": 111,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "test-suite/performance/src/test/java/org/openmrs/StartupPerformanceIT.java",
+      "line": 251,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui.custom.min.js",
+      "line": 768,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUpdater.java",
+      "line": 429,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
+      "line": 163,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "api/src/main/java/org/openmrs/util/OpenmrsUtil.java",
+      "line": 243,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "api/src/main/java/org/openmrs/util/UpgradeUtil.java",
+      "line": 83,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/AddConceptMapTypesChangeset.java",
+      "line": 90,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
+      "line": 133,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
+}

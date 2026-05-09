@@ -1,0 +1,11 @@
+{
+  "_doc": "Phase 17 cross-lang recall-validation baseline for rails/rails (Ruby — actionpack subtree is the canonical entry-point surface). Re-capture by running scripts/validate_recall.sh --lang ruby rails <clone_path> --capture (point clone_path at the rails monorepo or its actionpack/ subdirectory). Placeholder: pitboss implementer agents run sandboxed without network egress; this clone was not available locally during phase 17 capture.",
+  "target": "rails",
+  "lang": "ruby",
+  "clone_url": "https://github.com/rails/rails",
+  "exercises_recall_items": [],
+  "captured_against": "placeholder",
+  "captured_on": "2026-05-08",
+  "pinned_commit": "unknown",
+  "findings": []
+}
