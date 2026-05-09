@@ -1116,6 +1116,21 @@ fn fp_guard_go_http_redirect_self_request() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, third-party bundled / minified assets must be skipped before
+/// parsing so vendored libraries (jQuery, htmx, Sortable, lodash) do not
+/// surface findings the codebase author cannot remediate.  `is_vendored_asset_path`
+/// matches `*.min.js` / `*.bundle.js` / `*.umd.js` / `*.umd.min.js` / `*.iife.js`
+/// suffixes plus `bower_components/` and (for front-end extensions only)
+/// `vendor/` path components.  Recall stays intact for genuine production
+/// `.js` files; the negative control under `src/handler.js` MUST still
+/// surface a `js.crypto.math_random` finding.
+#[test]
+fn fp_guard_vendored_assets_skip() {
+    let dir = fixture_path("fp_guards/vendored_assets_skip");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, C/C++ buffer-overflow pattern rules
 /// (`c.memory.strcpy`, `strcat`, `sprintf`) over-fire when the source /
 /// format-string argument is a literal whose contributed length is

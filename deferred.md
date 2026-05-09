@@ -641,8 +641,22 @@ implied or surfaced but did not finish.
       shape (FieldProj of `URL` + Call accessor) and flat-callee shape
       (`r.URL.<accessor>` text).  Verified on /Users/elipeter/oss/gin
       with `cargo test fp_guard_go_http_redirect_self_request`).
-      openmrs 16/273, drupal 119/635, joomla
+      openmrs 16/179, drupal 119/483, joomla
       12/83, nextcloud 82/262, phpmyadmin 4/119, airflow 186/892.
+      Session 0011 (2026-05-09): vendored-asset skip in
+      `is_vendored_asset_path` (src/ast.rs) closes 246 noise findings
+      across openmrs (-94: jquery / jquery-ui / jsTree / dataTables
+      minified bundles under `webapp/.../scripts/`) and drupal
+      (-152: `core/assets/vendor/jquery/jquery.js` plus
+      htmx / sortable / transliteration `.min.js` bundles under
+      `core/assets/vendor/`).  Match: filename suffix
+      `.min.js` / `.min.css` / `.bundle.js` / `.umd.js` /
+      `.umd.min.js` / `.iife.js`, OR path component
+      `bower_components/`, OR path component `vendor/` with a
+      front-end asset extension.  Verified by
+      `tests/fixtures/fp_guards/vendored_assets_skip` +
+      `fp_guard_vendored_assets_skip`.  Skipped at parse time so the
+      saved CPU compounds across passes.
       Production-path findings remain `needs_review` and require
       flow-level inspection before labelling. The schema test does
       not require every entry to be triaged, but future precision

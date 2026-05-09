@@ -823,6 +823,71 @@ fn is_test_file(path: &Path) -> bool {
     false
 }
 
+/// Detect bundled or minified third-party assets that the engine should not
+/// analyse.  These files are produced by build tooling, ship verbatim from
+/// upstream packages, and can never be remediated by the codebase author, so
+/// any finding raised against them is signal-less noise.
+///
+/// Triggers (any one is sufficient):
+///   * Filename ends in `.min.js`, `.min.css`, `.bundle.js`, `.umd.js`,
+///     `.umd.min.js`, `.iife.js`, `.iife.min.js`, or `.bundled.js`.
+///   * Path component `bower_components` (legacy front-end package dir).
+///   * Path component `vendor` AND filename has a front-end asset extension
+///     (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, `.css`).  Restricted to
+///     web assets so Go module vendoring (`vendor/<pkg>/*.go`) is not
+///     suppressed.
+///
+/// The check is conservative: it skips files only when the evidence is
+/// unambiguous.  Hand-authored vendored plugins that lack a `.min` suffix and
+/// live outside `vendor/` (e.g. `webapp/.../scripts/jquery-ui-plugin.js`) are
+/// still parsed; their findings flow through `is_nonprod_path` for severity
+/// downgrade instead.
+pub(crate) fn is_vendored_asset_path(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let lower: String = name.to_ascii_lowercase();
+        const SUFFIXES: &[&str] = &[
+            ".min.js",
+            ".min.css",
+            ".bundle.js",
+            ".bundled.js",
+            ".umd.js",
+            ".umd.min.js",
+            ".iife.js",
+            ".iife.min.js",
+        ];
+        if SUFFIXES.iter().any(|s| lower.ends_with(s)) {
+            return true;
+        }
+    }
+
+    let mut has_vendor_component = false;
+    for component in path.components() {
+        if let std::path::Component::Normal(c) = component
+            && let Some(s) = c.to_str()
+        {
+            if s.eq_ignore_ascii_case("bower_components") {
+                return true;
+            }
+            if s.eq_ignore_ascii_case("vendor") || s.eq_ignore_ascii_case("vendors") {
+                has_vendor_component = true;
+            }
+        }
+    }
+
+    if has_vendor_component
+        && let Some(ext) = path.extension().and_then(|e| e.to_str())
+    {
+        let ext_lower: String = ext.to_ascii_lowercase();
+        const FRONT_END_EXTS: &[&str] =
+            &["js", "mjs", "cjs", "jsx", "ts", "tsx", "css", "scss", "less"];
+        if FRONT_END_EXTS.iter().any(|e| *e == ext_lower) {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Pattern IDs that are noise-prone in test files (fixture credentials,
 /// non-crypto randomness, plain HTTP in test harnesses).
 fn is_test_suppressible_pattern(id: &str) -> bool {
@@ -925,6 +990,9 @@ impl<'a> ParsedSource<'a> {
         // this thread that the caller did not consume.  Ensures the slot
         // always reflects "this parse" by the time we return.
         LAST_PARSE_TIMEOUT_MS.with(|c| c.set(None));
+        if is_vendored_asset_path(path) {
+            return Ok(None);
+        }
         if is_binary(bytes) {
             return Ok(None);
         }
@@ -4664,6 +4732,56 @@ fn nonprod_path_detection() {
     assert!(!is_nonprod_path(Path::new("src/main.rs")));
     assert!(!is_nonprod_path(Path::new("lib/handler.py")));
     assert!(!is_nonprod_path(Path::new("app/views.py")));
+}
+
+#[test]
+fn vendored_asset_path_detection() {
+    // Minified bundle filename markers always trigger.
+    assert!(is_vendored_asset_path(Path::new(
+        "src/main/webapp/scripts/jquery-ui.custom.min.js"
+    )));
+    assert!(is_vendored_asset_path(Path::new(
+        "core/assets/htmx.min.js"
+    )));
+    assert!(is_vendored_asset_path(Path::new(
+        "public/app.bundle.js"
+    )));
+    assert!(is_vendored_asset_path(Path::new(
+        "dist/transliteration.umd.min.js"
+    )));
+    assert!(is_vendored_asset_path(Path::new("dist/lib.iife.js")));
+    assert!(is_vendored_asset_path(Path::new("css/site.min.css")));
+
+    // Path-component triggers: bower_components is unambiguous.
+    assert!(is_vendored_asset_path(Path::new(
+        "bower_components/lodash/lodash.js"
+    )));
+
+    // `vendor/` triggers only for front-end asset extensions, so Go module
+    // vendoring under `vendor/` keeps being scanned.
+    assert!(is_vendored_asset_path(Path::new(
+        "core/assets/vendor/jquery/jquery.js"
+    )));
+    assert!(is_vendored_asset_path(Path::new(
+        "src/vendors/foo/lib.css"
+    )));
+    assert!(!is_vendored_asset_path(Path::new(
+        "vendor/github.com/foo/bar/lib.go"
+    )));
+    assert!(!is_vendored_asset_path(Path::new(
+        "vendor/github.com/foo/bar/lib.rs"
+    )));
+
+    // Hand-authored production paths must NOT match.
+    assert!(!is_vendored_asset_path(Path::new("src/main.js")));
+    assert!(!is_vendored_asset_path(Path::new("app/components/Button.tsx")));
+    assert!(!is_vendored_asset_path(Path::new("lib/handler.py")));
+    // Plain `.js` outside vendor/bower with no `.min` suffix stays in scope
+    // even when the directory hints at third-party origin; the engine's
+    // existing `is_nonprod_path` downgrade still fires for those.
+    assert!(!is_vendored_asset_path(Path::new(
+        "webapp/WEB-INF/view/scripts/jquery-ui/jquery-ui-timepicker-addon.js"
+    )));
 }
 
 #[test]
