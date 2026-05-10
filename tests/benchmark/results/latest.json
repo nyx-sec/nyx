@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-10T13:28:24Z",
+  "timestamp": "2026-05-10T14:15:00Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -1538,7 +1538,7 @@
       "is_vulnerable": true,
       "outcome_file_level": "TP",
       "outcome_rule_level": "TP",
-      "outcome_location_level": "FN",
+      "outcome_location_level": "TP",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 43:28)"
       ],
@@ -2172,7 +2172,7 @@
       "is_vulnerable": true,
       "outcome_file_level": "TP",
       "outcome_rule_level": "TP",
-      "outcome_location_level": "TP",
+      "outcome_location_level": "FN",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 54:5)"
       ],
@@ -4135,7 +4135,7 @@
       "is_vulnerable": true,
       "outcome_file_level": "TP",
       "outcome_rule_level": "TP",
-      "outcome_location_level": "FN",
+      "outcome_location_level": "TP",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 25:28)"
       ],
@@ -6241,16 +6241,16 @@
       "outcome_rule_level": "TP",
       "outcome_location_level": "TP",
       "matched_rule_ids": [
-        "taint-unsanitised-flow (source 6:5)",
-        "py.cmdi.os_system"
+        "py.cmdi.os_system",
+        "taint-unsanitised-flow (source 6:5)"
       ],
       "unexpected_rule_ids": [
         "cfg-unguarded-sink"
       ],
       "all_finding_ids": [
-        "taint-unsanitised-flow (source 6:5)",
         "cfg-unguarded-sink",
-        "py.cmdi.os_system"
+        "py.cmdi.os_system",
+        "taint-unsanitised-flow (source 6:5)"
       ],
       "security_finding_count": 3,
       "non_security_finding_count": 0

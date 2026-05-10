@@ -1578,6 +1578,7 @@ pub fn analyse_function_taint(
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        recording_summary: false,
     };
 
     crate::taint::ssa_transfer::run_ssa_taint_full_with_exits(ssa, cfg, &transfer)

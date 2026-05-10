@@ -228,6 +228,18 @@ pub struct SsaTaintTransfer<'a> {
     /// preserves today's per-callsite seeding (`global_seed`,
     /// `param_seed`, `auto_seed_handler_params`).
     pub entry_kind: Option<crate::entry_points::EntryKind>,
+    /// True when the transfer is driving a per-parameter probe inside
+    /// [`crate::taint::ssa_transfer::summary_extract::extract_ssa_func_summary`]
+    /// rather than the pass-2 emission path.  The probes record chain-hop
+    /// sites onto the function's [`crate::summary::ssa_summary::SsaFuncSummary`];
+    /// pass-2 emission gates the same sites against the
+    /// `from_chain || file_rel != caller_namespace` predicate so single-hop
+    /// intra-file helpers keep call-site emission.  Probes set this flag
+    /// so [`pick_primary_sink_sites`] always promotes a deeper-callee site
+    /// into `event.primary_sink_site`, regardless of file boundary, so
+    /// [`crate::taint::ssa_transfer::summary_extract`] can flip
+    /// `from_chain=true` and persist the chain hop.  Default: false.
+    pub recording_summary: bool,
 }
 
 /// Per-predecessor state tracking for path-sensitive phi evaluation.
@@ -2537,6 +2549,7 @@ fn inline_analyse_callee_with_seeds(
                 .map(|arc| arc.as_ref())
         },
         entry_kind: None,
+        recording_summary: transfer.recording_summary,
     };
 
     // Use the callee's own body graph for inline analysis (per-body CFGs
@@ -7078,6 +7091,8 @@ fn collect_block_events(
                                 let cb_sites = pick_primary_sink_sites_from_resolved(
                                     matching_sink_caps,
                                     &cb_param_to_sink_sites,
+                                    transfer.namespace,
+                                    transfer.recording_summary,
                                 );
                                 emit_ssa_taint_events(
                                     events,
@@ -7529,6 +7544,8 @@ fn collect_block_events(
                 &tainted,
                 filter_caps,
                 &sink_info.param_to_sink_sites,
+                transfer.namespace,
+                transfer.recording_summary,
             );
             emit_ssa_taint_events(
                 events,
@@ -7546,6 +7563,26 @@ fn collect_block_events(
 
 // ── Primary sink-site attribution ───────────────────────────────────────
 
+/// Decide whether a [`SinkSite`] should be promoted into a caller-side
+/// `Finding.primary_location`.
+///
+/// Same-file single-hop helpers keep call-site emission, the existing
+/// intra-procedural finding already lights up the deep sink line and the
+/// flow finding then fires at the call site to give reviewers two
+/// coordinates (deep + call-site).  Promoting the deep coordinate onto
+/// the flow finding would collapse the pair via `deduplicate_taint_flows`
+/// and matches benchmark fixtures that expect the call-site shape.
+///
+/// Multi-hop chains and cross-file callees promote: a chain hop has no
+/// per-frame intermediate finding to dedup with, and a cross-file callee's
+/// body is not visible to the caller's intra-file taint pass.
+///
+/// Returns `true` when the site is `from_chain` (chain-hop marker) or its
+/// `file_rel` differs from the caller's namespace (cross-file).
+fn should_promote_sink_site(site: &SinkSite, caller_namespace: &str) -> bool {
+    site.from_chain || (!site.file_rel.is_empty() && site.file_rel != caller_namespace)
+}
+
 /// Pick primary [`SinkSite`]s for a summary-based sink event in the main
 /// sink-detection path.
 ///
@@ -7555,7 +7592,11 @@ fn collect_block_events(
 ///    carried the tainted flow), AND
 /// 2. [`SinkSite`] carries resolved coordinates (`line != 0`, cap-only
 ///    sites are ignored), AND
-/// 3. [`SinkSite::cap`] intersects `sink_caps` (the propagated cap mask).
+/// 3. [`SinkSite::cap`] intersects `sink_caps` (the propagated cap mask),
+///    AND
+/// 4. [`should_promote_sink_site`] returns `true` (chain-hop marker or
+///    cross-file callee), so same-file single-hop helpers keep their
+///    call-site emission.
 ///
 /// Returns the deduped list of matching sites (`dedup_key` identity).
 /// Empty ⇒ no primary attribution, caller emits a single event with
@@ -7565,6 +7606,8 @@ fn pick_primary_sink_sites(
     tainted: &[(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)],
     sink_caps: Cap,
     param_to_sink_sites: &[(usize, SmallVec<[SinkSite; 1]>)],
+    caller_namespace: &str,
+    recording_summary: bool,
 ) -> Vec<SinkSite> {
     if param_to_sink_sites.is_empty() || tainted.is_empty() {
         return Vec::new();
@@ -7591,6 +7634,9 @@ fn pick_primary_sink_sites(
             if (site.cap & sink_caps).is_empty() {
                 continue;
             }
+            if !recording_summary && !should_promote_sink_site(site, caller_namespace) {
+                continue;
+            }
             let key = (site.file_rel.clone(), site.line, site.col, site.cap.bits());
             if seen.insert(key) {
                 out.push(site.clone());
@@ -7603,10 +7649,13 @@ fn pick_primary_sink_sites(
 /// Pick primary [`SinkSite`]s for the callback-pattern path, where the
 /// tainted-arg positional mapping is not directly available (the callback
 /// callee is resolved separately from the outer call's `args`).  Matches
-/// solely on cap intersection and coordinate resolution.
+/// on cap intersection, coordinate resolution, and the same chain-hop /
+/// cross-file gate used by [`pick_primary_sink_sites`].
 fn pick_primary_sink_sites_from_resolved(
     sink_caps: Cap,
     param_to_sink_sites: &[(usize, SmallVec<[SinkSite; 1]>)],
+    caller_namespace: &str,
+    recording_summary: bool,
 ) -> Vec<SinkSite> {
     if param_to_sink_sites.is_empty() {
         return Vec::new();
@@ -7619,6 +7668,9 @@ fn pick_primary_sink_sites_from_resolved(
                 continue;
             }
             if (site.cap & sink_caps).is_empty() {
+                continue;
+            }
+            if !recording_summary && !should_promote_sink_site(site, caller_namespace) {
                 continue;
             }
             let key = (site.file_rel.clone(), site.line, site.col, site.cap.bits());
@@ -11388,14 +11440,16 @@ fn convert_ssa_to_resolved_for_caller(
     // extraction time) remain in the list but contribute no primary
     // location, the emission site filters by `SinkSite::line != 0`.
     //
-    // Strip same-file sites when `caller_namespace` is supplied: the
-    // caller's own taint analysis already produces a finding at the
-    // callee's internal sink (e.g. closure body's `eval(q)` finding at
-    // pass-1 lexical containment), so promoting `primary_location` at
-    // the call site to the same line collides with that finding under
-    // [`crate::commands::scan::deduplicate_taint_flows`] and silently
-    // drops the call-site finding.  Cross-file sites are preserved
-    // (the other file's analysis can't be deduped against this one).
+    // Strip same-file, non-chain sites when `caller_namespace` is
+    // supplied: a single-hop intra-file helper's own sink coordinates
+    // collide with the caller's pass-2 intraprocedural finding under
+    // [`crate::commands::scan::deduplicate_taint_flows`], silently
+    // dropping the call-site flow finding.  Sites with `from_chain=true`
+    // are chain-hop markers from a deeper callee and have no matching
+    // intermediate finding to dedup with — keep them so multi-hop
+    // chains surface the deepest sink line.  Cross-file sites are
+    // preserved (the other file's analysis can't be deduped against
+    // this one).  Mirrors the gate in [`should_promote_sink_site`].
     let param_to_sink_sites = if let Some(caller_ns) = caller_namespace {
         ssa_sum
             .param_to_sink
@@ -11403,7 +11457,9 @@ fn convert_ssa_to_resolved_for_caller(
             .map(|(idx, sites)| {
                 let filtered: SmallVec<[crate::summary::SinkSite; 1]> = sites
                     .iter()
-                    .filter(|s| s.file_rel.is_empty() || s.file_rel != caller_ns)
+                    .filter(|s| {
+                        s.from_chain || s.file_rel.is_empty() || s.file_rel != caller_ns
+                    })
                     .cloned()
                     .collect();
                 (*idx, filtered)

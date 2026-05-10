@@ -1168,6 +1168,7 @@ fn analyse_body_with_seed(
                 // Phase 10 — Next.js entry-point seeding (looked up
                 // above when overriding `param_types`).
                 entry_kind: body_entry_kind,
+                recording_summary: false,
             };
             let (events, block_states) =
                 ssa_transfer::run_ssa_taint_full(&ssa_body, cfg, &transfer);
@@ -2534,6 +2535,7 @@ fn augment_summaries_with_child_sinks(
                 pointer_facts: None,
                 cross_package_imports: None,
                 entry_kind: None,
+                recording_summary: false,
             };
 
             let (_parent_events, parent_block_states) =
@@ -2600,6 +2602,7 @@ fn augment_summaries_with_child_sinks(
                     pointer_facts: None,
                     cross_package_imports: None,
                     entry_kind: None,
+                    recording_summary: false,
                 };
 
                 let (child_events, _child_block_states) =

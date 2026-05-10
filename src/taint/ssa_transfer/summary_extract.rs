@@ -266,6 +266,7 @@ pub fn extract_ssa_func_summary_full(
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: true,
         };
 
         let (events, block_states) = run_ssa_taint_full(ssa, cfg, &transfer);
@@ -753,10 +754,18 @@ pub fn extract_ssa_func_summary_full(
             // dangerous instruction's coordinates; promoting it here means a
             // grandparent caller of this function sees `line N` of the
             // innermost helper rather than `line M` of *this* function's
-            // call site to its child. Falls back to locator-based call-site
-            // attribution when the event is intra-procedural.
+            // call site to its child.  Mark `from_chain = true` so pass-2
+            // emission can distinguish multi-hop chain markers (always
+            // promote into `Finding.primary_location`) from this body's own
+            // locator-resolved sink (only promote across file boundaries).
+            // Falls back to locator-based call-site attribution when the
+            // event is intra-procedural.
             let site = match event.primary_sink_site.as_ref() {
-                Some(s) => s.clone(),
+                Some(s) => {
+                    let mut s = s.clone();
+                    s.from_chain = true;
+                    s
+                }
                 None => match locator {
                     Some(loc) => loc.site_for_span(
                         cfg[event.sink_node].classification_span(),
@@ -766,7 +775,11 @@ pub fn extract_ssa_func_summary_full(
                 },
             };
             let key = site.dedup_key();
-            if !param_sites.iter().any(|s| s.dedup_key() == key) {
+            if let Some(existing) = param_sites.iter_mut().find(|s| s.dedup_key() == key) {
+                if site.from_chain && !existing.from_chain {
+                    existing.from_chain = true;
+                }
+            } else {
                 param_sites.push(site);
             }
         }
@@ -828,6 +841,7 @@ pub fn extract_ssa_func_summary_full(
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: true,
         };
         detect_source_to_callback_from_states(
             ssa,

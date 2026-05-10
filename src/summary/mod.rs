@@ -33,6 +33,20 @@ use std::hash::{Hash, Hasher};
 /// Pairs a [`Cap`] with the source location of the consuming
 /// instruction so cross-file findings can attribute to the callee
 /// rather than the caller call-site.
+///
+/// `from_chain` distinguishes two flavours of recorded site:
+/// * `false`, the site was resolved via the body-local locator span,
+///   i.e. it points at a sink instruction in the function's own body.
+/// * `true`, the site was promoted from a deeper callee through
+///   `event.primary_sink_site`, i.e. this function's summary carries
+///   a chain-hop marker for a sink several frames down.
+///
+/// Pass-2 emission gates promotion of a site into `Finding.primary_location`
+/// on `from_chain || file_rel != caller_file_rel`: same-file single-hop
+/// helpers keep call-site emission (matching benchmark and real-world
+/// fixture calibration), multi-hop chains and cross-file callees surface
+/// the deep sink line.  See "Multi-hop intra-file sink attribution gap"
+/// in deferred.md for the design tradeoff.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SinkSite {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -44,11 +58,18 @@ pub struct SinkSite {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub snippet: String,
     pub cap: Cap,
+    /// True when this site was promoted from a deeper callee's summary
+    /// (`event.primary_sink_site` chain-hop), false when recorded from
+    /// the function's own locator span.  See struct docs.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub from_chain: bool,
 }
 
 impl SinkSite {
     /// Dedup key: two sites with the same `(file_rel, line, col, cap)`
-    /// describe the same consumption and collapse on merge.
+    /// describe the same consumption and collapse on merge.  `from_chain`
+    /// is intentionally excluded, the upgrade rule in [`union_sink_sites`]
+    /// takes over when two sites with different `from_chain` collide.
     pub(crate) fn dedup_key(&self) -> (&str, u32, u32, u32) {
         (self.file_rel.as_str(), self.line, self.col, self.cap.bits())
     }
@@ -62,8 +83,13 @@ impl SinkSite {
             col: 0,
             snippet: String::new(),
             cap,
+            from_chain: false,
         }
     }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Tree/bytes context for resolving a CFG span to a [`SinkSite`].
@@ -93,6 +119,7 @@ impl<'a> SinkSiteLocator<'a> {
             col: (point.column + 1) as u32,
             snippet,
             cap,
+            from_chain: false,
         }
     }
 }
@@ -101,11 +128,17 @@ pub(crate) use crate::utils::snippet::line_snippet;
 
 /// Union two `SmallVec<[SinkSite; 1]>` lists with `(file_rel, line, col,
 /// cap)` dedup.  Preserves insertion order of `existing` then appends any
-/// new sites from `incoming` not already present.
+/// new sites from `incoming` not already present.  When two sites with the
+/// same dedup key collide, `from_chain=true` wins, so a chain-hop marker is
+/// never lost when a same-file locator span happens to share coordinates.
 pub(crate) fn union_sink_sites(existing: &mut SmallVec<[SinkSite; 1]>, incoming: &[SinkSite]) {
     for site in incoming {
         let key = site.dedup_key();
-        if !existing.iter().any(|s| s.dedup_key() == key) {
+        if let Some(ex) = existing.iter_mut().find(|s| s.dedup_key() == key) {
+            if site.from_chain && !ex.from_chain {
+                ex.from_chain = true;
+            }
+        } else {
             existing.push(site.clone());
         }
     }

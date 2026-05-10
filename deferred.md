@@ -693,99 +693,24 @@ implied or surfaced but did not finish.
       `docs/recall-validation.md`; unify only when a JS-specific
       precision phase needs a re-capture anyway.
 
-- [ ] Multi-hop intra-file sink attribution gap. The benchmark cases
-      `java-sqli-stmt-execute-002` and
-      `cve-java-ghsa-h8cj-hpmg-636v-vulnerable` surface as
-      `outcome_location_level: FN` (file-level + rule-level still TP).
-      Engine emits `taint-unsanitised-flow` at the outer call site
-      (e.g. `dropTable(tableName)` line 26) instead of the actual
-      sink line (`statement.execute(query)` line 36) several frames
-      down. Root cause: `parsed.lower_ssa_for_fused` in `src/ast.rs`
-      passes `locator: None` to `lower_all_functions_from_bodies`
-      so intra-file SSA summaries record `SinkSite::cap_only`
-      (line: 0). At pass-2 emission, `pick_primary_sink_sites`
-      filters all line==0 sites out, so `Finding.primary_location`
-      stays `None` and the diag falls back to the call-site point.
-      The behavior is intentional per the doc comment on
-      `lower_ssa_for_fused`: closure-capture / lambda /
-      helper-with-internal-sink fixtures expect call-site emission
-      (the intraprocedural finding fires at the deep line in those
-      shapes). Multi-hop helper *chains* (drop→dropTable→executeDbQuery
-      where each frame only has param-typed input) do NOT have a
-      separate intraprocedural finding at the deep line — so the
-      attribution simply disappears. Long-term fix: enable locator
-      in `lower_ssa_for_fused`, then add a same-(file,line) dedup at
-      diag emission so closure / lambda fixtures don't double-fire.
-      Ad-hoc bandaid (only enable when chain depth > 1) is brittle
-      because chain depth isn't visible at extraction time. Park
-      until the dedup change is scoped and corpus regressions
-      validated. 2026-05-09 session 0001 partial fix landed in
-      `src/taint/ssa_transfer/summary_extract.rs` to prefer
-      `event.primary_sink_site` over locator-based span when
-      populated — preserves cross-file deepest-sink attribution
-      across multi-hop summaries (defensive; does not affect
-      single-file `locator: None` path).
-      2026-05-09 session 0002 follow-up: tried enabling locator on
-      `lower_ssa_for_fused` (passing `Some(&SinkSiteLocator{...})`).
-      Net trade: 2 benchmark cases gain location-level TP, but 5
-      `real_world_tests` fixtures hard-fail because their
-      `expect.json` files explicitly assert TWO `taint-unsanitised-flow`
-      findings (inner sink + outer call-site re-report):
-      `javascript/taint/closure_captured_var`,
-      `javascript/taint/closure_member_assignment`,
-      `javascript/taint/symex_interproc_callee_internal_sink`,
-      `go/taint/func_literal_capture`,
-      `python/taint/lambda_closure`. With locator enabled the outer
-      call-site finding gets re-attributed to the deep line via
-      `primary_location`, then `deduplicate_taint_flows` collapses it
-      with the inner intraprocedural finding (same path, same line,
-      same severity, same sink_caps). The fixture authors deliberately
-      chose two-finding semantics so reviewers see both the deep sink
-      coordinates AND the call-site that surfaces it (the second
-      `must_match` block notes "re-reports the flow via inline callee
-      analysis"). Reverted in this session because:
-      (a) updating 5 fixtures + auditing the 474-fixture
-      `real_world_tests` corpus for other re-report patterns is
-      genuinely larger than the 2-test gain;
-      (b) the structural ambiguity (when to surface as one finding
-      at the deep line vs two findings at deep+callsite) needs a
-      design decision the deferred note left open.
-      Next session pickup: either (1) decide the surface-shape policy
-      (one finding at deep line vs two findings) and update fixtures
-      to match, or (2) introduce a `from_chain` flag on `SinkSite`
-      that distinguishes "this site is the callee's own sink span"
-      (don't promote → keeps current call-site emission for
-      single-frame helpers) from "this site was promoted from a
-      deeper callee" (promote → surfaces deep line for multi-hop
-      chains). Option (2) preserves both shapes but requires
-      threading a new field through `SinkSite`, `union_sink_sites`,
-      `union_param_sink_sites`, the `summary_extract` path, and
-      cross-file persistence.
-      2026-05-10 session 0007 investigation: re-tested option (1) by
-      enabling locator on `lower_ssa_for_fused`. Real_world test
-      delta: 5 hard fixture failures (the documented set: 3 JS, 1
-      Go, 1 Python closure/lambda fixtures), 2 unexpected EXTRA
-      findings vanish (better attribution), proto_pollution.js
-      attribution improves (line 17→6). Benchmark delta is
-      net-negative: 2 originally-FN multi-hop cases gain location-
-      level TPs (cve-java-ghsa-h8cj-hpmg-636v-vulnerable, java-sqli-
-      stmt-execute-002), but 7 single-hop helper-with-internal-sink
-      ground-truth cases REGRESS to location-level FN because their
-      `expected_sink_lines` are calibrated to the call site, not the
-      callee's internal sink (rs-cmdi-003, rs-cmdi-009, rs-ssrf-002,
-      cve-go-2023-3188-vulnerable, cve-rb-2021-21288-vulnerable, cve-
-      rb-2023-38337-vulnerable, cve-ts-ghsa-4x48-cgf9-q33f-vulnerable).
-      Net: +2 / -7 = -5 location-level TPs. The ground truth on
-      rs-cmdi-003 explicitly notes: "Engine attributes intra-file
-      helper sinks at the call site (line 10), not the inner
-      Command::new (line 5); see locator-policy comment in
-      src/ast.rs." Option (1) is dead — would need ground-truth
-      retagging of 7+ benchmark cases (each conscious of the call-
-      site policy) AND fixture audit. Option (2) (from_chain flag)
-      remains the only structurally-clean path: it preserves call-
-      site emission for single-hop intra-file helpers (matching the
-      benchmark calibration) while promoting only multi-hop chains
-      (which have no per-frame intermediate finding to dedup with).
+- [ ] Multi-hop sink attribution — `cve-rb-2023-38337-vulnerable`
+      ground-truth recalibration.  2026-05-10 session 0008 landed
+      option (2) (`from_chain` flag on `SinkSite`).  Multi-hop java
+      benchmark cases now gain location-level TPs, but
+      `cve-rb-2023-38337-vulnerable` regressed: ground truth expects
+      the engine to attribute at line 58 (call site of `parse_file`),
+      whereas the engine now correctly attributes at line 76 (the
+      `File.read` inside `load_yaml`, several frames down).  The
+      deeper attribution is structurally more accurate (line 76 is
+      where the path-traversal sink actually lives), so the engine
+      change is the long-term-correct shape.  Net benchmark delta:
+      from 2 FN to 1 FN at location level (+1 TP).  Resolution
+      paths: (a) update the ruby fixture's `expected_sink_lines` to
+      `[[76, 80]]` covering both `load_yaml`/`load_json` arms, or
+      (b) accept the regression as the cost of more accurate
+      multi-hop attribution.  Park until a design call on whether
+      benchmark calibration should track engine attribution
+      improvements automatically or be hand-curated.
 
 - [ ] PHP foreach-key string interpolation FP. Shape:
       `foreach ($variables as $var => $val) {

@@ -1561,33 +1561,25 @@ impl<'a> ParsedFile<'a> {
     ///
     /// # Locator policy
     ///
-    /// Lowering does **not** attach a [`crate::summary::SinkSiteLocator`].
-    /// Per the same-file rationale documented on [`crate::taint::analyse_file`]:
-    /// pass-2 intra-file summaries are transient and behavior depends on
-    /// `SinkSite.cap` only, which is always populated.  Attaching a locator
-    /// here populates `param_to_sink` with concrete coordinates that the
-    /// emission path then promotes into `Finding.primary_location`,
-    /// causing the same-file summary-resolved sink to be reported at the
-    /// callee-internal sink line instead of the call site, which both
-    /// duplicates the intraprocedural finding the taint engine already
-    /// emits at that exact line and re-attributes the flow finding away
-    /// from the user-visible call site.  Closure-capture, lambda, and
-    /// helper-with-internal-sink fixtures all expect call-site emission;
-    /// the standalone [`crate::taint::analyse_file`] entry point already
-    /// passes `None` here for the same reason.
+    /// Attaches a [`crate::summary::SinkSiteLocator`] so intra-file
+    /// summaries record concrete sink coordinates and a `from_chain` flag
+    /// distinguishing chain-hop markers from this body's own locator span.
+    /// Pass-2 emission then gates promotion into `Finding.primary_location`
+    /// on `from_chain || file_rel != caller_namespace`, see
+    /// [`crate::taint::ssa_transfer::should_promote_sink_site`].
     ///
-    /// 2026-05-10 measurement: enabling the locator here gains 2 multi-hop
-    /// benchmark cases at location level but regresses 7 single-hop
-    /// helper cases whose `expected_sink_lines` are calibrated to the
-    /// call site.  The fix that preserves both is option (2) in the
-    /// "Multi-hop intra-file sink attribution gap" entry of deferred.md
-    /// (a `from_chain` flag on `SinkSite`); option (1) — locator-only —
-    /// is dead per that measurement.
-    ///
-    /// Cross-file primary attribution is unaffected: the artifact-extraction
-    /// path that persists summaries to SQLite for cross-file consumption
-    /// runs through [`crate::taint::extract_ssa_artifacts_from_file_cfg`]
-    /// which threads its own locator-equipped lowering separately.
+    /// Same-file single-hop helpers continue to surface the flow finding
+    /// at the call site (their site is `from_chain=false` and lives in the
+    /// caller's namespace, gate fails).  Multi-hop chains promote because
+    /// `summary_extract` flips `from_chain=true` on every site that came
+    /// via `event.primary_sink_site`, the callee already pierced through
+    /// at least one summary boundary to record the deepest coordinates.
+    /// Cross-file callees promote because `file_rel` differs.  This
+    /// preserves the closure-capture / lambda / helper-with-internal-sink
+    /// fixture shape (two findings: deep + call-site) while gaining
+    /// deep-line attribution on multi-hop chains that have no per-frame
+    /// intermediate finding to dedup with.  See "Multi-hop intra-file
+    /// sink attribution gap" in deferred.md for the design tradeoff.
     fn lower_ssa_for_fused(
         &self,
         global_summaries: Option<&GlobalSummaries>,
@@ -1605,13 +1597,18 @@ impl<'a> ParsedFile<'a> {
         let caller_lang = Lang::from_slug(self.source.lang_slug).unwrap_or(Lang::Rust);
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
         let namespace = normalize_namespace(&self.source.file_path_str, scan_root_str.as_deref());
+        let locator = crate::summary::SinkSiteLocator {
+            tree: &self.source.tree,
+            bytes: self.source.bytes,
+            file_rel: &namespace,
+        };
         crate::taint::lower_all_functions_from_bodies(
             &self.file_cfg,
             caller_lang,
             &namespace,
             self.local_summaries(),
             global_summaries,
-            None,
+            Some(&locator),
             scan_root_str.as_deref(),
         )
     }

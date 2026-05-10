@@ -863,6 +863,7 @@ mod primary_sink_location_tests {
             col: 10,
             snippet: "Command::new(cmd).status()".into(),
             cap: Cap::SHELL_ESCAPE,
+            from_chain: false,
         };
         let summary = SsaFuncSummary {
             param_to_sink: vec![(0usize, smallvec![site.clone()])],
@@ -887,6 +888,8 @@ mod primary_sink_location_tests {
             &tainted,
             Cap::SHELL_ESCAPE,
             &summary.param_to_sink,
+            "caller.rs",
+            false,
         );
         assert_eq!(
             primary_sites.len(),
@@ -1012,6 +1015,7 @@ mod goto_succ_propagation_tests {
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
 
         // A non-bottom exit state, the test only cares that *every* succ
@@ -1106,6 +1110,7 @@ mod goto_succ_propagation_tests {
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
         let exit_state = SsaTaintState::initial();
 
@@ -1744,6 +1749,7 @@ mod fanout_merge_tests {
             col: 5,
             snippet: "exec(q)".into(),
             cap: Cap::from_bits(0b0001).unwrap(),
+            from_chain: false,
         };
         let unique_a = SinkSite {
             file_rel: "src/a.rs".into(),
@@ -1751,6 +1757,7 @@ mod fanout_merge_tests {
             col: 3,
             snippet: "do_a(q)".into(),
             cap: Cap::from_bits(0b0001).unwrap(),
+            from_chain: false,
         };
         let unique_b = SinkSite {
             file_rel: "src/b.rs".into(),
@@ -1758,6 +1765,7 @@ mod fanout_merge_tests {
             col: 7,
             snippet: "do_b(q)".into(),
             cap: Cap::from_bits(0b0001).unwrap(),
+            from_chain: false,
         };
         let mut a = empty();
         a.param_to_sink_sites = vec![(0, smallvec![shared.clone(), unique_a.clone()])];
@@ -2063,6 +2071,7 @@ mod field_write_tests {
             pointer_facts: Some(pf),
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2149,6 +2158,7 @@ mod field_write_tests {
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
         let mut state = SsaTaintState::initial();
         for inst in &body.blocks[0].body {
@@ -2219,6 +2229,7 @@ mod field_write_tests {
             pointer_facts: Some(&pf),
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
 
         // Pre-seed `validated_must` on `src` so the synth Assign
@@ -2367,6 +2378,7 @@ mod field_write_tests {
             pointer_facts: Some(&pf),
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2467,6 +2479,7 @@ mod container_elem_tests {
             pointer_facts: Some(pf),
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2748,6 +2761,7 @@ mod container_elem_tests {
             pointer_facts: Some(&pf),
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
 
         // Seed `src` as validated_must before the push fires.
@@ -2888,6 +2902,7 @@ mod container_elem_tests {
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
         let mut state = SsaTaintState::initial();
         for inst in &body.blocks[0].body {
@@ -3446,6 +3461,7 @@ mod field_taint_origin_cap_tests {
             pointer_facts: Some(&pf),
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         };
         for inst in &body.blocks[0].body {
             transfer_inst(inst, &cfg, &body, &transfer, &mut state);
@@ -3736,6 +3752,7 @@ mod pointer_lattice_worklist_tests {
             pointer_facts: Some(pf),
             cross_package_imports: None,
             entry_kind: None,
+            recording_summary: false,
         }
     }
 

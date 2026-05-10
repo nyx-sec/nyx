@@ -3429,6 +3429,7 @@ fn sink_site_serde_round_trip_solo() {
         col: 9,
         snippet: "Command::new(\"sh\").arg(cmd).status()".into(),
         cap: Cap::CODE_EXEC | Cap::SHELL_ESCAPE,
+        from_chain: false,
     };
     let json = serde_json::to_string(&site).unwrap();
     let back: SinkSite = serde_json::from_str(&json).unwrap();
@@ -3460,6 +3461,7 @@ fn ssa_summary_serde_round_trip_with_sink_sites() {
         col: 4,
         snippet: "cursor.execute(sql)".into(),
         cap: Cap::SQL_QUERY,
+        from_chain: false,
     };
     let site_b = SinkSite {
         file_rel: "exec.py".into(),
@@ -3467,6 +3469,7 @@ fn ssa_summary_serde_round_trip_with_sink_sites() {
         col: 12,
         snippet: "subprocess.call(cmd, shell=True)".into(),
         cap: Cap::CODE_EXEC | Cap::SHELL_ESCAPE,
+        from_chain: false,
     };
     let summary = SsaFuncSummary {
         param_to_return: vec![(0, TaintTransform::Identity)],
@@ -3540,6 +3543,7 @@ fn merge_unions_sink_sites_with_dedup() {
         col: 1,
         snippet: "execute(sql)".into(),
         cap: Cap::SQL_QUERY,
+        from_chain: false,
     };
     let site_b = SinkSite {
         file_rel: "svc.py".into(),
@@ -3547,6 +3551,7 @@ fn merge_unions_sink_sites_with_dedup() {
         col: 4,
         snippet: "os.system(cmd)".into(),
         cap: Cap::CODE_EXEC,
+        from_chain: false,
     };
 
     let mut left = FuncSummary {

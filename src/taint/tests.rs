@@ -65,6 +65,7 @@ fn ssa_analyse_rust(src: &[u8]) -> Vec<Finding> {
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, cfg, &transfer);
     let mut findings = ssa_transfer::ssa_events_to_findings(&events, &ssa, cfg);
@@ -665,6 +666,7 @@ fn cross_file_sink_finding_carries_primary_location() {
         col: 5,
         snippet: "Command::new(\"sh\").arg(cmd).status().unwrap();".into(),
         cap: Cap::SHELL_ESCAPE,
+        from_chain: false,
     };
     global.insert(
         key,
@@ -3792,6 +3794,7 @@ fn assert_ssa_integration(src: &[u8]) {
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);
     let mut ssa_findings = ssa_transfer::ssa_events_to_findings(&events, &ssa, the_cfg);
@@ -3932,6 +3935,7 @@ fn integ_php_echo_simple_var() {
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);
     let mut ssa_findings = ssa_transfer::ssa_events_to_findings(&events, &ssa, the_cfg);
@@ -4004,6 +4008,7 @@ fn integ_c_curl_handle_ssrf() {
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);
     let mut ssa_findings = ssa_transfer::ssa_events_to_findings(&events, &ssa, the_cfg);
