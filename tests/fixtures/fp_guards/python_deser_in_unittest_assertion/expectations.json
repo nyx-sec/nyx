@@ -1,0 +1,18 @@
+{
+  "required_findings": [],
+  "forbidden_findings": [
+    { "id_prefix": "py.deser.pickle_loads" },
+    { "id_prefix": "py.deser.yaml_load" },
+    { "id_prefix": "py.deser.shelve_open" }
+  ],
+  "noise_budget": {
+    "max_total_findings": 2,
+    "max_high_findings": 0
+  },
+  "performance_expectations": {
+    "max_ms_no_index": 1000,
+    "max_ms_index_cold": 1500,
+    "max_ms_index_warm": 500,
+    "ci_mode": "lenient"
+  }
+}

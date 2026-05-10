@@ -1038,6 +1038,20 @@ fn fp_guard_php_unserialize_in_phpunit_assertion() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Python `unittest.TestCase` round-trip tests that wrap a
+/// `pickle.loads` / `yaml.load` / `shelve.open` call in an assertion
+/// whose other argument is a literal expected value.  The same shape
+/// that drives the PHP recogniser above:  a poisoned blob would fail
+/// the assertion rather than leak object-injection side effects out
+/// of the test boundary.  Suppresses both the `py.deser.*` AST-rule
+/// finding AND the `cfg-unguarded-sink` mirror.
+#[test]
+fn fp_guard_python_deser_in_unittest_assertion() {
+    let dir = fixture_path("fp_guards/python_deser_in_unittest_assertion");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Drupal Database Query subclasses use
 /// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
 /// statement object then bind values out of band via

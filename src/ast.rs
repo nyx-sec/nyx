@@ -1139,6 +1139,28 @@ impl<'a> ParsedSource<'a> {
                     {
                         continue;
                     }
+                    // Layer C4: Python `pickle.loads` / `yaml.load` /
+                    // `shelve.open` / kindred deserialization sinks
+                    // wrapped in a `unittest.TestCase` assertion whose
+                    // other argument is a literal expected value (or
+                    // whose verb itself constrains the result, e.g.
+                    // `assertIsNone(pickle.loads(blob))`).  The
+                    // assertion bounds the deser result so attacker-
+                    // controlled blobs would fail loudly rather than
+                    // leak side effects out of the test boundary.
+                    // Mirrors the PHP Layer C3 recogniser; deferred
+                    // note in `project_realrepo_*.md` flagged the same
+                    // FP shape on Python test trees.
+                    if matches!(
+                        cq.meta.id,
+                        "py.deser.pickle_loads"
+                            | "py.deser.yaml_load"
+                            | "py.deser.shelve_open"
+                    ) && self.lang_slug == "python"
+                        && is_python_deser_inside_unittest_assertion(cap.node, self.bytes)
+                    {
+                        continue;
+                    }
                     // Layer D: C/C++ buffer-overflow pattern rules
                     // (`{c,cpp}.memory.strcpy`, `strcat`, `sprintf`) fire
                     // syntactically on every call regardless of argument
@@ -1756,6 +1778,24 @@ impl<'a> ParsedFile<'a> {
                 ),
             };
             for cf in cfg_analysis::run_all(&cfg_ctx) {
+                // Layer C4 mirror at the CFG-emission point: Python
+                // `pickle.loads` / `yaml.load` / `shelve.open` calls
+                // wrapped inside a `unittest.TestCase` literal-bound
+                // assertion fire `cfg-unguarded-sink` because the
+                // structural rule has no taint context.  Apply the
+                // same recogniser used by the AST-pattern layer so
+                // both sides agree on what counts as test-bound deser.
+                if cf.rule_id == "cfg-unguarded-sink"
+                    && self.source.lang_slug == "python"
+                    && let Some(node) = self
+                        .source
+                        .tree
+                        .root_node()
+                        .descendant_for_byte_range(cf.span.0, cf.span.1)
+                    && is_python_deser_inside_unittest_assertion(node, self.source.bytes)
+                {
+                    continue;
+                }
                 let point = byte_offset_to_point(&self.source.tree, cf.span.0);
                 let cfg_confidence = Some(match cf.confidence {
                     cfg_analysis::Confidence::High => crate::evidence::Confidence::High,
@@ -3082,6 +3122,386 @@ fn is_php_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> b
         }
         _ => false,
     }
+}
+
+/// Python-only Layer C4: returns `true` when a deserialization call
+/// (`pickle.loads`, `yaml.load`, `shelve.open`, etc.) sits directly
+/// inside a `unittest.TestCase` assertion whose other argument is a
+/// statically literal expected value, OR the assertion verb itself
+/// constrains the result (`assertIsNone`, `assertTrue`, ...).
+///
+/// **Why this is a non-actionable site:** unittest's `assertEqual`
+/// family bounds the deser result to the literal expected; if the
+/// blob argument were attacker-controlled and produced a different
+/// shape, the assertion would fail loudly rather than permit any
+/// object-injection side effect to escape the test boundary.  Python
+/// projects ship round-trip tests for every pickled / YAML-loaded
+/// data class, and every firing on those test bodies is noise.
+///
+/// Conservative recognition:
+/// - the deser call must be a direct child of the assertion's
+///   `argument_list` (no wrapping expression like ternary / binary
+///   / boolean op / parenthesized — those break literal bounding)
+/// - the enclosing call's function must be either `attribute`
+///   (`self.assertEqual`) or `identifier` (`assertEqual` from
+///   `from unittest import ...`) with a name starting with `assert`
+///   or `fail` (case-sensitive — Python is case-sensitive)
+/// - single-arg assertions: verb must be in a curated bounding set
+///   (`assertIsNone`, `assertTrue`, `assertFalse`, ...).
+/// - multi-arg comparison assertions: any non-deser positional arg
+///   must be a literal expression.
+/// - multi-arg `assertIsInstance` / `assertNotIsInstance`: the type
+///   argument bounds the deser result, suppress regardless of the
+///   value position.
+fn is_python_deser_inside_unittest_assertion(
+    cap_node: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    // Two entry shapes:
+    //   (a) AST-pattern: `cap_node` is the `pickle` / `yaml` / `shelve`
+    //       identifier under the deser call's `function.object` path.
+    //       Walk up to the deser call, then up two more levels
+    //       (argument_list, assertion call).
+    //   (b) CFG-emission: `cap_node` is somewhere inside the OUTER
+    //       assertion call (`self.assertEqual(...)`).  Look for a
+    //       deser sub-call inside its argument_list.
+    let enclosing_call = find_enclosing_call(cap_node);
+    let Some(enclosing_call) = enclosing_call else {
+        return false;
+    };
+
+    // Try (a): enclosing call IS the deser.
+    if is_python_deser_call(enclosing_call, bytes) {
+        let Some(arg_list) = enclosing_call.parent() else {
+            return false;
+        };
+        if arg_list.kind() != "argument_list" {
+            return false;
+        }
+        let Some(assertion_call) = arg_list.parent() else {
+            return false;
+        };
+        if assertion_call.kind() != "call" {
+            return false;
+        }
+        return python_assertion_bounds_deser(assertion_call, enclosing_call, bytes);
+    }
+
+    // Try (b): enclosing call IS an assertion that wraps a deser arg.
+    if let Some(deser_call) = python_find_direct_deser_arg(enclosing_call, bytes) {
+        return python_assertion_bounds_deser(enclosing_call, deser_call, bytes);
+    }
+
+    false
+}
+
+/// Search the assertion call's argument_list for a direct child that
+/// is a recognised deserialization call.  Direct child only — wrapped
+/// expressions (binary, conditional, parenthesized) break the literal
+/// bound and must keep firing.
+fn python_find_direct_deser_arg<'tree>(
+    assertion_call: tree_sitter::Node<'tree>,
+    bytes: &[u8],
+) -> Option<tree_sitter::Node<'tree>> {
+    let arg_list = assertion_call.child_by_field_name("arguments")?;
+    if arg_list.kind() != "argument_list" {
+        return None;
+    }
+    for i in 0..arg_list.named_child_count() as u32 {
+        let Some(c) = arg_list.named_child(i) else {
+            continue;
+        };
+        if c.kind() == "call" && is_python_deser_call(c, bytes) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Core bounding check: given an assertion `call` node and the
+/// deser sub-call inside its arg list, decide whether the assertion
+/// bounds the deser result so the call is non-actionable.
+fn python_assertion_bounds_deser(
+    assertion_call: tree_sitter::Node,
+    deser_call: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    let Some(func) = assertion_call.child_by_field_name("function") else {
+        return false;
+    };
+    let name_node = match func.kind() {
+        "attribute" => func
+            .child_by_field_name("attribute")
+            .or_else(|| find_named_child_of_kind(func, "identifier")),
+        "identifier" => Some(func),
+        _ => return false,
+    };
+    let Some(name_node) = name_node else {
+        return false;
+    };
+    let Ok(verb) = std::str::from_utf8(&bytes[name_node.byte_range()]) else {
+        return false;
+    };
+    let lowered = verb.to_ascii_lowercase();
+    if !(lowered.starts_with("assert") || lowered.starts_with("fail")) {
+        return false;
+    }
+
+    let Some(arg_list) = assertion_call.child_by_field_name("arguments") else {
+        return false;
+    };
+    if arg_list.kind() != "argument_list" {
+        return false;
+    }
+    let mut pos_args: Vec<tree_sitter::Node> = Vec::new();
+    let mut deser_pos: Option<usize> = None;
+    for i in 0..arg_list.named_child_count() as u32 {
+        let Some(c) = arg_list.named_child(i) else {
+            continue;
+        };
+        if c.kind() == "keyword_argument" {
+            continue;
+        }
+        if c.id() == deser_call.id() {
+            deser_pos = Some(pos_args.len());
+        }
+        pos_args.push(c);
+    }
+    let Some(deser_pos) = deser_pos else {
+        return false;
+    };
+    if pos_args.is_empty() {
+        return false;
+    }
+
+    if pos_args.len() == 1 {
+        return is_python_unittest_single_arg_bounding_verb(verb);
+    }
+
+    if matches!(verb, "assertIsInstance" | "assertNotIsInstance") {
+        let type_pos = if deser_pos == 0 { 1 } else { 0 };
+        if let Some(type_arg) = pos_args.get(type_pos)
+            && is_python_type_reference(*type_arg)
+        {
+            return true;
+        }
+    }
+
+    if !is_python_unittest_multi_arg_bounding_verb(verb) {
+        return false;
+    }
+    for (i, arg) in pos_args.iter().enumerate() {
+        if i == deser_pos {
+            continue;
+        }
+        if is_python_assertion_literal_expected(*arg, bytes) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns `true` when `call_node` is a Python `call` whose callee
+/// is a recognised deserialization function (`pickle.loads` /
+/// `pickle.load` / `yaml.load` / `shelve.open` / `marshal.loads` /
+/// `marshal.load`).  Plain identifier callees (`loads(blob)` after
+/// `from pickle import loads`) are also recognised by leaf name to
+/// match the import-shape ambiguity.
+fn is_python_deser_call(call_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Some(func) = call_node.child_by_field_name("function") else {
+        return false;
+    };
+    match func.kind() {
+        "attribute" => {
+            let Some(obj) = func.child_by_field_name("object") else {
+                return false;
+            };
+            let Some(attr) = func.child_by_field_name("attribute") else {
+                return false;
+            };
+            let Ok(obj_text) = std::str::from_utf8(&bytes[obj.byte_range()]) else {
+                return false;
+            };
+            let Ok(attr_text) = std::str::from_utf8(&bytes[attr.byte_range()]) else {
+                return false;
+            };
+            matches!(
+                (obj_text, attr_text),
+                ("pickle", "loads")
+                    | ("pickle", "load")
+                    | ("cPickle", "loads")
+                    | ("cPickle", "load")
+                    | ("yaml", "load")
+                    | ("yaml", "unsafe_load")
+                    | ("shelve", "open")
+                    | ("marshal", "loads")
+                    | ("marshal", "load")
+            )
+        }
+        "identifier" => {
+            let Ok(name) = std::str::from_utf8(&bytes[func.byte_range()]) else {
+                return false;
+            };
+            matches!(name, "loads" | "load" | "unsafe_load")
+        }
+        _ => false,
+    }
+}
+
+/// Single-arg `unittest.TestCase` assertion verbs whose name itself
+/// constrains the inspected value.  When the deser call is the sole
+/// positional argument to one of these, a failed assertion aborts
+/// the test rather than letting an object-injection side effect
+/// escape.
+fn is_python_unittest_single_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "assertIsNone"
+            | "assertIsNotNone"
+            | "assertTrue"
+            | "assertFalse"
+            | "assertNotNone"
+            | "assertNone"
+            | "failIf"
+            | "failUnless"
+            | "assert_"
+    )
+}
+
+/// Multi-arg `unittest.TestCase` assertion verbs that perform a
+/// literal-comparable bound on every value position (equality,
+/// ordering, membership, regex match, type-equality).
+fn is_python_unittest_multi_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "assertEqual"
+            | "assertEquals"
+            | "assertNotEqual"
+            | "assertNotEquals"
+            | "assert_equal"
+            | "assert_not_equal"
+            | "assertIs"
+            | "assertIsNot"
+            | "assertAlmostEqual"
+            | "assertNotAlmostEqual"
+            | "assertGreater"
+            | "assertGreaterEqual"
+            | "assertLess"
+            | "assertLessEqual"
+            | "assertListEqual"
+            | "assertTupleEqual"
+            | "assertDictEqual"
+            | "assertSetEqual"
+            | "assertSequenceEqual"
+            | "assertMultiLineEqual"
+            | "assertCountEqual"
+            | "assertItemsEqual"
+            | "assertIn"
+            | "assertNotIn"
+            | "assertRegex"
+            | "assertNotRegex"
+            | "assertRegexpMatches"
+            | "assertNotRegexpMatches"
+            | "failUnlessEqual"
+            | "failIfEqual"
+    )
+}
+
+/// Recognise a Python type reference suitable as the second arg to
+/// `assertIsInstance(value, type)`.  Accepts builtin/user-class
+/// identifiers, dotted attribute access (`module.Type`), generic
+/// subscripts (`list[int]`), and tuples-of-types.
+fn is_python_type_reference(node: tree_sitter::Node) -> bool {
+    match node.kind() {
+        "identifier" | "attribute" | "subscript" => true,
+        "tuple" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_python_type_reference(c) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Python literal expression suitable as the "expected" argument of
+/// a `unittest.TestCase.assertEqual`-family assertion.  Recursive:
+/// list / tuple / set / dict elements and unary signs on numerics
+/// must themselves be literal.  Identifier references and attribute
+/// access do NOT count (those could resolve to dynamic values).
+fn is_python_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    match node.kind() {
+        "string" => !has_python_string_interpolation(node),
+        "concatenated_string" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_python_assertion_literal_expected(c, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        "integer" | "float" | "true" | "false" | "none" | "ellipsis" => true,
+        "unary_operator" => node
+            .named_child(0)
+            .is_some_and(|c| is_python_assertion_literal_expected(c, bytes)),
+        "list" | "tuple" | "set" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_python_assertion_literal_expected(c, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        "dictionary" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if c.kind() != "pair" {
+                    return false;
+                }
+                let Some(key) = c.child_by_field_name("key") else {
+                    return false;
+                };
+                let Some(value) = c.child_by_field_name("value") else {
+                    return false;
+                };
+                if !is_python_assertion_literal_expected(key, bytes) {
+                    return false;
+                }
+                if !is_python_assertion_literal_expected(value, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Python f-strings are `string` nodes with `interpolation` children.
+/// Treat them as non-literal because the interpolated value is
+/// dynamic.
+fn has_python_string_interpolation(node: tree_sitter::Node) -> bool {
+    for i in 0..node.named_child_count() as u32 {
+        if let Some(c) = node.named_child(i)
+            && c.kind() == "interpolation"
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// C/C++-only Layer D: structural suppression of buffer-overflow pattern
@@ -5153,6 +5573,29 @@ fn constant_arg_suppression_works() {
     }
 }
 
+/// Helper that runs a tree-sitter query against Python source and
+/// returns the first capture-0 node, panicking if no match is found.
+/// Used by the Python suppression tests below.
+#[cfg(test)]
+fn first_python_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    query_str: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    let query = tree_sitter::Query::new(&lang, query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    let cap = m
+        .captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0");
+    cap.node
+}
+
 /// Helper that runs a tree-sitter query against PHP source and returns the
 /// first capture-0 node, panicking if no match is found.  Used by the PHP
 /// suppression tests below.
@@ -5512,6 +5955,164 @@ fn php_unserialize_inside_phpunit_assertion_recognises_roundtrip_shapes() {
     assert!(
         !is_php_unserialize_inside_phpunit_assertion(cap, code),
         "single-arg `assertSame(unserialize($x))` should NOT be suppressed (no expected)"
+    );
+}
+
+#[test]
+fn python_deser_inside_unittest_assertion_recognises_roundtrip_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+    // Pickle pattern equivalent: capture the `pickle` identifier under
+    // the deser call's `function.object` path.
+    let q = r#"(call function: (attribute object: (identifier) @pkg (#eq? @pkg "pickle") attribute: (identifier) @fn (#match? @fn "^loads?$"))) @vuln"#;
+
+    // Canonical assertEqual with dict literal expected.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEqual({'a': 1}, pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEqual(dict literal, pickle.loads(b)) should be suppressed"
+    );
+
+    // assertEquals with list literal expected.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEquals([1, 2, 3], pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEquals(list literal, pickle.loads(b)) should be suppressed"
+    );
+
+    // pytest-style ordering: deser first, literal second.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEqual(pickle.loads(b), {'k': 'v'})\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEqual(pickle.loads(b), dict literal) should be suppressed"
+    );
+
+    // Unary negative literal.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEqual(-7, pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEqual(unary-negative literal, pickle.loads(b)) should be suppressed"
+    );
+
+    // Single-arg verb: assertIsNone.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertIsNone(pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertIsNone(pickle.loads(b)) should be suppressed (verb bounds)"
+    );
+
+    // Single-arg verb: assertTrue.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertTrue(pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertTrue(pickle.loads(b)) should be suppressed (verb bounds)"
+    );
+
+    // assertIsInstance(value, type).
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertIsInstance(pickle.loads(b), dict)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertIsInstance(pickle.loads(b), dict) should be suppressed (type bounds)"
+    );
+
+    // msg=... kwarg: keep firing? actually no, msg is just informational; bound is satisfied.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEqual([1], pickle.loads(b), msg='preserve')\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "msg= kwarg should not break the literal-positional bound"
+    );
+
+    // Free function shape (`from pickle import loads`) covered via leaf-
+    // name match.  Use a different query that captures the identifier
+    // call shape.
+    let code_ff = b"from pickle import loads\nclass T:\n    def t(self, b):\n        self.assertEqual([1], loads(b))\n";
+    let tree = parser.parse(code_ff, None).unwrap();
+    // For free-function calls, use a query matching the bare identifier callee.
+    let q2 = r#"(call function: (identifier) @fn (#match? @fn "^loads?$")) @vuln"#;
+    let cap = first_python_capture(&tree, code_ff, q2);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code_ff),
+        "assertEqual(literal, loads(b)) for `from pickle import loads` should be suppressed"
+    );
+
+    // Production call (no assertion wrap) keeps firing.
+    let code = b"import pickle\ndef handler(blob):\n    return pickle.loads(blob)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "production pickle.loads should NOT be suppressed"
+    );
+
+    // Non-literal expected ($computed) keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b, expected):\n        self.assertEqual(expected, pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEqual(non-literal, pickle.loads(b)) should NOT be suppressed"
+    );
+
+    // Non-assert verb keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.checkEqual([1], pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "checkEqual (non-assert verb) should NOT be suppressed"
+    );
+
+    // Wrapped in ternary: bound is broken.
+    let code = b"import pickle\nclass T:\n    def t(self, b, c):\n        self.assertEqual([1], pickle.loads(b) if c else [])\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "ternary wrapping pickle.loads should NOT be suppressed"
+    );
+
+    // assertCustom (unrecognised single-arg verb) keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertCustomCheck(pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assertCustomCheck single-arg should NOT be suppressed (verb not in bounding set)"
+    );
+
+    // assertEqual where both args are non-literal keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b, e):\n        self.assertEqual(e, pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "two non-literal positional args should NOT be suppressed"
+    );
+
+    // f-string expected (interpolation) keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b, x):\n        self.assertEqual(f'pre-{x}', pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "f-string expected (interpolation) should NOT be suppressed"
     );
 }
 
