@@ -2277,6 +2277,10 @@ pub(super) fn push_node<'a>(
             let has_source_label = labels
                 .iter()
                 .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
+            // Clippy flags one branch's clone as redundant because it cannot
+            // see that `text` is read after this `let` (further down in this
+            // function); silence the false positive without restructuring.
+            #[allow(clippy::redundant_clone)]
             let gate_callee_text = if let Some(ff) = function_field_text.as_deref()
                 && has_source_label
                 && ff != text.as_str()

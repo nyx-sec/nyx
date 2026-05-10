@@ -925,6 +925,34 @@ fn inject_external_type_facts(
     }
 }
 
+/// Apply entry-kind-derived overrides to a body's `param_types` vector.
+///
+/// Today only `EntryKind::AppRouteHandler` triggers an override: the first
+/// formal of a Next.js App Router handler always carries a Web `Request`,
+/// regardless of the user's TypeScript annotation. Returns `Some(vec)` when
+/// the override changes the vector, `None` otherwise. Folding the rule into
+/// one helper keeps the two consumers (`analyse_body_with_seed` and
+/// `lower_all_functions_from_bodies_inner`) in lockstep.
+fn entry_kind_param_type_override(
+    entry_kind: Option<&crate::entry_points::EntryKind>,
+    param_types: &[Option<crate::ssa::type_facts::TypeKind>],
+) -> Option<Vec<Option<crate::ssa::type_facts::TypeKind>>> {
+    if matches!(
+        entry_kind,
+        Some(crate::entry_points::EntryKind::AppRouteHandler { .. })
+    ) {
+        let mut pt = param_types.to_vec();
+        if pt.is_empty() {
+            pt.push(Some(crate::ssa::type_facts::TypeKind::Request));
+        } else {
+            pt[0] = Some(crate::ssa::type_facts::TypeKind::Request);
+        }
+        Some(pt)
+    } else {
+        None
+    }
+}
+
 /// Analyse a single body with an optional parent seed.
 ///
 /// Shared logic extracted from `analyse_multi_body` to avoid deep nesting.
@@ -1030,11 +1058,11 @@ fn analyse_body_with_seed(
 
     match ssa_result {
         Ok(mut ssa_body) => {
-            // Phase 10 — App Router handlers carry a Web `Request` as
-            // their first formal.  Override `param_types[0]` so the
-            // type-fact pass tags the formal as `TypeKind::Request`
-            // and receiver-method reads (`req.json()`, ...) rewrite to
-            // `Request.<method>` for type-qualified label resolution.
+            // App Router handlers carry a Web `Request` as their first
+            // formal.  Override `param_types[0]` so the type-fact pass tags
+            // the formal as `TypeKind::Request` and receiver-method reads
+            // (`req.json()`, ...) rewrite to `Request.<method>` for
+            // type-qualified label resolution.
             let body_entry_kind = body.meta.func_key.as_ref().and_then(|k| {
                 let mut k = k.clone();
                 k.namespace = namespace.to_string();
@@ -1042,21 +1070,10 @@ fn analyse_body_with_seed(
                     .and_then(|m| m.get(&k))
                     .and_then(|s| s.entry_kind.clone())
             });
-            let mut overridden_param_types: Option<
-                Vec<Option<crate::ssa::type_facts::TypeKind>>,
-            > = None;
-            if matches!(
-                body_entry_kind,
-                Some(crate::entry_points::EntryKind::AppRouteHandler { .. })
-            ) {
-                let mut pt = body.meta.param_types.clone();
-                if pt.is_empty() {
-                    pt.push(Some(crate::ssa::type_facts::TypeKind::Request));
-                } else {
-                    pt[0] = Some(crate::ssa::type_facts::TypeKind::Request);
-                }
-                overridden_param_types = Some(pt);
-            }
+            let overridden_param_types = entry_kind_param_type_override(
+                body_entry_kind.as_ref(),
+                &body.meta.param_types,
+            );
             let param_types_ref = overridden_param_types
                 .as_deref()
                 .unwrap_or(body.meta.param_types.as_slice());
@@ -2059,28 +2076,13 @@ fn lower_all_functions_from_bodies_inner(
         }
 
         let _t_opt = std::time::Instant::now();
-        // Phase 10 — App Router handlers receive a Web `Request` as
-        // their first argument.  Override `param_types[0]` so the
-        // type-fact pass tags the formal as `TypeKind::Request`,
-        // letting receiver-method reads (`req.json()`,
-        // `req.headers.get(...)`) rewrite to `Request.<method>` for
-        // type-qualified label resolution.  Other entry kinds keep
-        // the ambient param-type vector unchanged.
+        // Override `param_types[0]` for entry-kind-tagged formals (e.g. App
+        // Router handlers receive a Web `Request`).  Other entry kinds keep
+        // the ambient param-type vector unchanged.  See
+        // `entry_kind_param_type_override` for the full rule set.
         let entry_kind_for_body = file_cfg.entry_kinds.get(&body.meta.span);
-        let mut overridden_param_types: Option<Vec<Option<crate::ssa::type_facts::TypeKind>>> =
-            None;
-        if matches!(
-            entry_kind_for_body,
-            Some(crate::entry_points::EntryKind::AppRouteHandler { .. })
-        ) {
-            let mut pt = body.meta.param_types.clone();
-            if pt.is_empty() {
-                pt.push(Some(crate::ssa::type_facts::TypeKind::Request));
-            } else {
-                pt[0] = Some(crate::ssa::type_facts::TypeKind::Request);
-            }
-            overridden_param_types = Some(pt);
-        }
+        let overridden_param_types =
+            entry_kind_param_type_override(entry_kind_for_body, &body.meta.param_types);
         let param_types_ref = overridden_param_types
             .as_deref()
             .unwrap_or(body.meta.param_types.as_slice());

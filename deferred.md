@@ -188,19 +188,6 @@ implied or surfaced but did not finish.
       that must survive `req.json()` verbatim, swap the Source
       labels for receiver-forwarding rules in
       `taint/ssa_transfer/mod.rs::transfer_inst`.
-- [ ] Phase 10 audit — the App Router `TypeKind::Request` override
-      on `param_types[0]` happens in two places:
-      `taint::lower_all_functions_from_bodies_inner` (the cached
-      pass-1 lowering) and `taint::analyse_body_with_seed` (the
-      per-body pass-2 analysis).  Reason: the param-types vector
-      flows through `optimize_ssa_with_param_types` separately on
-      each path and there is no shared upstream point where the
-      override could be applied once.  A single override site would
-      require migrating `BodyMeta::param_types` from
-      `Vec<Option<TypeKind>>` to a thicker carrier that records
-      "entry-kind-derived overrides" so the type-fact pass can read
-      both layers.  Park; today the duplication is ~12 lines and
-      keeps the override visible at each consumption point.
 - [ ] Phase 10 audit — entry-point seeding fires only on functions
       whose `entry_kind` is set on the `SsaFuncSummary` reachable
       via `(name, container, disambig)` lookup against the
