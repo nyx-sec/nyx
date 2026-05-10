@@ -832,14 +832,13 @@ fn collect_unit_state(
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
             collect_call(node, bytes, rules, state)
         }
-        "if_statement" | "elif_clause" | "while_statement" | "do_statement" | "if" | "unless"
-        | "if_modifier" | "unless_modifier" | "while_modifier" | "until_modifier"
-        | "while_expression" => {
+        "while_statement" | "do_statement" | "while_modifier" | "until_modifier"
+        | "while_expression" | "unless" | "unless_modifier" => {
             if let Some(condition) = node.child_by_field_name("condition") {
                 collect_condition(condition, bytes, rules, state);
             }
         }
-        "if_expression" => {
+        "if_statement" | "elif_clause" | "if_expression" | "if" | "if_modifier" => {
             if let Some(condition) = node.child_by_field_name("condition") {
                 collect_condition(condition, bytes, rules, state);
             }
@@ -868,6 +867,12 @@ fn collect_unit_state(
             collect_self_actor_binding(node, bytes, rules, state);
             collect_self_actor_id_binding(node, bytes, state);
             collect_const_string_binding(node, bytes, state);
+            // JS/TS row-fetch declarators (`const webhook = await
+            // repo.findById(id)`) need row-population recognition so
+            // the post-fetch ownership-equality detector can attribute
+            // back to the row's let line. `collect_row_population`
+            // accepts the `name` field used by `variable_declarator`.
+            collect_row_population(node, bytes, state);
         }
         // Go `id := "id"` / Python `id = "id"` / Java `String id = "id";` /
         // Ruby `id = "id"`, language-specific binding nodes that the
@@ -1336,11 +1341,13 @@ fn collect_member_alias_binding(node: Node<'_>, bytes: &[u8], state: &mut UnitSt
 /// flagged despite a textual auth check on the resulting row.
 fn collect_row_population(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
     // Most languages expose `pattern`/`value` on let / const / var
-    // declarations.  Ruby `assignment` uses `left`/`right` instead, so
-    // accept either.  When both fields are missing, the node isn't an
-    // RHS-bound binding and we skip.
+    // declarations.  Ruby `assignment` uses `left`/`right` instead.
+    // JS/TS `variable_declarator` uses `name`/`value`.  Accept any of
+    // them; when none is present the node isn't an RHS-bound binding
+    // and we skip.
     let Some(pattern) = node
         .child_by_field_name("pattern")
+        .or_else(|| node.child_by_field_name("name"))
         .or_else(|| node.child_by_field_name("left"))
     else {
         return;
@@ -2784,8 +2791,8 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
     let Some(operator) = binary_operator_text(condition, bytes) else {
         return;
     };
-    let is_ne = matches!(operator.as_str(), "!=" | "ne");
-    let is_eq = matches!(operator.as_str(), "==" | "eq");
+    let is_ne = matches!(operator.as_str(), "!=" | "!==" | "ne");
+    let is_eq = matches!(operator.as_str(), "==" | "===" | "eq");
     if !is_ne && !is_eq {
         return;
     }
@@ -2801,7 +2808,7 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
         return;
     };
 
-    if !branch_has_early_exit(fail_branch) {
+    if !branch_has_early_exit(fail_branch, bytes) {
         return;
     }
 
@@ -2925,16 +2932,61 @@ fn resolve_else_block(alt: Node<'_>) -> Node<'_> {
     alt
 }
 
-fn branch_has_early_exit(branch: Node<'_>) -> bool {
-    named_children(branch).into_iter().any(node_is_early_exit)
+fn branch_has_early_exit(branch: Node<'_>, bytes: &[u8]) -> bool {
+    named_children(branch)
+        .into_iter()
+        .any(|n| node_is_early_exit(n, bytes))
 }
 
-fn node_is_early_exit(node: Node<'_>) -> bool {
+fn node_is_early_exit(node: Node<'_>, bytes: &[u8]) -> bool {
     match node.kind() {
         "return_expression" | "return_statement" => true,
-        "expression_statement" => named_children(node).into_iter().any(node_is_early_exit),
+        // Throwing aborts execution flow.  Common in JS/TS / Java
+        // (`throw new ForbiddenException()`), Python (`raise ...`),
+        // Ruby (`raise ...`).
+        "throw_statement" | "throw_expression" | "raise_statement" => true,
+        // A call whose callee name is in the framework denial set
+        // (`notFound()` / `redirect()` / `abort()` / `forbidden()` /
+        // `unauthorized()` / etc.) terminates the request.  These
+        // helpers either throw under the hood (Next.js, Flask) or
+        // exit the process (`process.exit`, `sys.exit`).
+        "call_expression" | "call" | "method_invocation" => is_denial_call(node, bytes),
+        "expression_statement" => named_children(node)
+            .into_iter()
+            .any(|n| node_is_early_exit(n, bytes)),
         _ => false,
     }
+}
+
+/// Recognise calls that act as request-terminating denial helpers.
+///
+/// The callee name is matched against a curated set of framework
+/// idioms.  This is read in `node_is_early_exit` from inside the
+/// row-ownership-equality detector, where the ambient context already
+/// requires an `owner.field` vs. `self.id` binary comparison; the
+/// denial-call match is only the early-exit witness, not the auth
+/// signal itself.
+fn is_denial_call(call_node: Node<'_>, bytes: &[u8]) -> bool {
+    let Some(callee_node) = call_node
+        .child_by_field_name("function")
+        .or_else(|| call_node.child_by_field_name("name"))
+    else {
+        return false;
+    };
+    let callee_text = text(callee_node, bytes);
+    let trimmed = callee_text.trim();
+    let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed);
+    let leaf = leaf.rsplit("::").next().unwrap_or(leaf);
+    matches!(
+        leaf,
+        "notFound"
+            | "redirect"
+            | "permanentRedirect"
+            | "unauthorized"
+            | "forbidden"
+            | "abort"
+            | "halt"
+    )
 }
 
 pub(super) fn is_owner_field_subject(subject: &ValueRef) -> bool {
@@ -5465,6 +5517,76 @@ export const handleGet = async ({ ctx, input }: GetOptions) => {
             unit.self_scoped_session_bases.contains("ctx.user"),
             "self_scoped_session_bases missing ctx.user: {:?}",
             unit.self_scoped_session_bases
+        );
+    }
+
+    /// Pin the JS/TS post-fetch ownership-equality recogniser added in
+    /// session 0011.  The `if_statement` arm of `collect_unit_state`
+    /// must dispatch to `detect_ownership_equality_check` (previously
+    /// only `if_expression` did), the strict `!==` operator must be
+    /// recognised as inequality, the framework denial helper
+    /// `notFound()` must count as an early-exit witness, and the JS/TS
+    /// `variable_declarator` arm must populate `row_population_data`
+    /// so the synthetic `Ownership` AuthCheck attributes back to the
+    /// row's let line.
+    #[test]
+    fn detect_post_fetch_ownership_jsts_with_strict_neq_and_denial_call() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+declare class Repo { findById(id: string): Promise<{ userId: number }>; }
+declare function getServerSession(): Promise<{ user?: { id: number } } | null>;
+declare function notFound(): never;
+export async function handleGet({ id }: { id: string }) {
+  const session = await getServerSession();
+  if (!session?.user?.id) return null;
+  const repo: Repo = new Repo();
+  const webhook = await repo.findById(id);
+  if (webhook.userId !== session.user.id) {
+    notFound();
+  }
+  return webhook;
+}
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let rules = crate::auth_analysis::config::AuthAnalysisRules::disabled();
+        let mut model = crate::auth_analysis::model::AuthorizationModel::default();
+        super::collect_top_level_units(tree.root_node(), src, &rules, &mut model);
+        let unit = model
+            .units
+            .iter()
+            .find(|u| u.name.as_deref() == Some("handleGet"))
+            .expect("handleGet unit");
+
+        let webhook_pop = unit
+            .row_population_data
+            .get("webhook")
+            .expect("collect_row_population must populate `webhook` from variable_declarator");
+        // The `let webhook = await repo.findById(id)` line should
+        // anchor at the call site, not the let line.  In this fixture
+        // both are on the same line so the back-dating is invisible
+        // here, the assertion is that the entry exists.
+        assert!(webhook_pop.0 > 0);
+
+        let owner_check = unit
+            .auth_checks
+            .iter()
+            .find(|c| matches!(c.kind, super::AuthCheckKind::Ownership))
+            .expect("ownership-equality detector must emit an Ownership AuthCheck");
+        let owner_subject = owner_check
+            .subjects
+            .iter()
+            .find(|s| s.field.as_deref() == Some("userId"))
+            .expect("Ownership AuthCheck must carry the owner field subject");
+        assert_eq!(
+            owner_subject.base.as_deref(),
+            Some("webhook"),
+            "owner subject base must be the row var: {:?}",
+            owner_subject
         );
     }
 }

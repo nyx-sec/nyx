@@ -1428,6 +1428,25 @@ fn fp_guard_auth_rust_param_typed_local_collection() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, JS/TS post-fetch ownership equality check.  The cal.com
+/// shape `const x = await repo.findById(id); if (x.userId !== session.
+/// user.id) { notFound(); }` is the canonical post-fetch authorisation
+/// idiom across Next.js codebases.  Pre-fix the engine missed this
+/// because `detect_ownership_equality_check` only ran on rust-style
+/// `if_expression`, the strict-inequality operators `!==` / `===` were
+/// not in the recognised set, framework denial calls
+/// (`notFound`, `redirect`, `unauthorized`, `forbidden`) were not
+/// recognised as early-exit terminators, and `collect_row_population`
+/// missed JS/TS `variable_declarator` declarations because it only
+/// read the `pattern` / `left` field.  Each shape in the fixture
+/// exercises one column of that matrix.
+#[test]
+fn fp_guard_auth_post_fetch_ownership_jsts() {
+    let dir = fixture_path("fp_guards/auth_post_fetch_ownership_jsts");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// Panic guard, CFG condition-text truncation (and symex display
 /// truncation) must round byte cuts down to the nearest UTF-8 char
 /// boundary.  Reproduces the gogs scan crash where

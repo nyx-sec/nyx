@@ -1,5 +1,5 @@
 {
-  "_doc": "Phase 11 recall-validation baseline for cal.com. Pinned commit + captured findings live in this file. Re-capture by running scripts/validate_recall.sh cal_com <clone_path> --capture against a fresh checkout. Baseline location is tests/recall_targets/ (relocated out of .pitboss/ per the Phase 01 precedent — pitboss implementer agents must not write under .pitboss/).",
+  "_doc": "Phase 11 recall-validation baseline for cal.com. Pinned commit + captured findings live in this file. Re-capture by running scripts/validate_recall.sh cal_com <clone_path> --capture against a fresh checkout. Baseline location is tests/recall_targets/ (relocated out of .pitboss/ per the Phase 01 precedent \u2014 pitboss implementer agents must not write under .pitboss/).",
   "target": "cal_com",
   "clone_url": "https://github.com/calcom/cal.com",
   "exercises_recall_items": [
@@ -507,14 +507,6 @@
       "severity": "High",
       "verdict": "FP",
       "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "apps/web/app/(use-page-wrapper)/settings/(settings-layout)/developer/webhooks/[id]/page.tsx",
-      "line": 35,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "js.auth.missing_ownership_check",

@@ -254,7 +254,24 @@ implied or surfaced but did not finish.
       `tests/fixtures/fp_guards/auth_trpc_handler_options` (four
       handler shapes: shorthand destructure, renamed destructure
       (`ctx: c`), plain identifier, list/delete/update verbs). The
-      remaining `needs_review` entries on cal.com are bounded
+      cal.com Next.js page-handler post-fetch ownership-equality
+      shape (`const x = await repo.findById(id); if (x.userId !==
+      session.user.id) { notFound(); }`) was addressed on
+      2026-05-10 (session 0011) by extending
+      `detect_ownership_equality_check` in
+      `src/auth_analysis/extract/common.rs`: the recogniser now
+      runs on `if_statement` (JS/TS/Java/Python/Go/PHP) in addition
+      to Rust's `if_expression`, accepts JS/TS strict
+      `!==` / `===` operators, treats framework denial helper
+      calls (`notFound` / `redirect` / `permanentRedirect` /
+      `unauthorized` / `forbidden` / `abort` / `halt`) and
+      `throw_statement` as early-exit terminators, and populates
+      `row_population_data` for JS/TS `variable_declarator`
+      bindings (previously only `pattern` / `left` field shapes
+      were recognised). Verified by
+      `tests/fixtures/fp_guards/auth_post_fetch_ownership_jsts`
+      (six shape columns).
+      The remaining `needs_review` entries on cal.com are bounded
       labelling work, not engine precision gaps.
 - [ ] Phase 11 audit — perf baseline only records
       `tests/fixtures/`-corpus throughput (1.55 s warm,
