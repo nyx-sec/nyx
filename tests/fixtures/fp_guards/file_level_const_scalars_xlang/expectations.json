@@ -1,0 +1,18 @@
+{
+  "required_findings": [],
+  "forbidden_findings": [
+    { "id_prefix": "cfg-unguarded-sink" },
+    { "id_prefix": "py.cmdi" },
+    { "id_prefix": "py.sqli" }
+  ],
+  "noise_budget": {
+    "max_total_findings": 4,
+    "max_high_findings": 0
+  },
+  "performance_expectations": {
+    "max_ms_no_index": 2000,
+    "max_ms_index_cold": 2500,
+    "max_ms_index_warm": 1000,
+    "ci_mode": "lenient"
+  }
+}

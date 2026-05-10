@@ -1145,7 +1145,7 @@ impl<'a> ParsedSource<'a> {
                 if let Some(cap) = m.captures.iter().find(|c| c.index == 0) {
                     // Layer A: suppress Security findings on calls with all-literal args
                     if cq.meta.category.finding_category() == FindingCategory::Security
-                        && is_call_all_args_literal(cap.node, self.bytes)
+                        && is_call_all_args_literal(cap.node, self.bytes, self.lang_slug)
                     {
                         continue;
                     }
@@ -2419,12 +2419,15 @@ pub fn extract_all_summaries_from_bytes(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns `true` when the captured call node has only literal arguments
-/// (string, number, boolean, null/nil/none).  Used to suppress AST pattern
-/// findings on provably-constant calls like `os.system("echo health-ok")`.
+/// (string, number, boolean, null/nil/none), or identifier arguments that
+/// resolve to a file-level scalar constant (`const NAME = "x"` at module
+/// scope and equivalent in Java / Go / Python / Rust).  Used to suppress
+/// AST pattern findings on provably-constant calls like
+/// `os.system(DEFAULT_CMD)` where `DEFAULT_CMD = "ls -la"`.
 ///
 /// Conservative: returns `false` whenever the tree structure is unclear or
 /// any argument is non-literal (including interpolated strings).
-fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8]) -> bool {
+fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8], lang_slug: &str) -> bool {
     // Walk upwards from the captured node to find the closest call_expression
     // (or similar) ancestor, then locate its argument list child.
     let call_node = find_enclosing_call(node);
@@ -2440,6 +2443,11 @@ fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8]) -> bool {
         None => return false,
     };
 
+    // Build the file-level scalar binding set lazily: only resolve once per
+    // call, never if every arg is a syntactic literal.  Cheap: walks the
+    // file root's direct children for const / module-level assignment forms.
+    let scalars = file_level_scalar_bindings(node, bytes, lang_slug);
+
     let mut has_any_arg = false;
     for i in 0..arg_list.named_child_count() as u32 {
         let child = match arg_list.named_child(i) {
@@ -2447,7 +2455,7 @@ fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8]) -> bool {
             None => continue,
         };
         has_any_arg = true;
-        if !is_literal_node(child, bytes) {
+        if !is_literal_or_named_scalar(child, bytes, &scalars) {
             return false;
         }
     }
@@ -2455,6 +2463,63 @@ fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8]) -> bool {
     // If the argument list is empty (no args), we conservatively do NOT
     // suppress, the danger may come from side effects, not arguments.
     has_any_arg
+}
+
+/// Walk up from `node` to the file root and collect every file-level scalar
+/// binding name reachable on this language.  Empty set for languages without
+/// a recognised binding form (JS/TS, Ruby, PHP, C/C++).
+fn file_level_scalar_bindings(
+    node: tree_sitter::Node,
+    bytes: &[u8],
+    lang_slug: &str,
+) -> std::collections::HashSet<String> {
+    let mut root = node;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    crate::cfg::safe_fields::collect_class_constant_scalars(root, lang_slug, bytes)
+        .into_keys()
+        .collect()
+}
+
+/// Like [`is_literal_node`] but also accepts identifiers that resolve to a
+/// file-level scalar binding (constant string / number / bool).
+fn is_literal_or_named_scalar(
+    node: tree_sitter::Node,
+    bytes: &[u8],
+    scalars: &std::collections::HashSet<String>,
+) -> bool {
+    if is_literal_node(node, bytes) {
+        return true;
+    }
+    let kind = node.kind();
+    // Identifier forms vary across grammars.  PHP / Ruby use `variable_name`;
+    // every other supported language uses bare `identifier`.  An `argument`
+    // wrapper (PHP / Go) lifts a single child — unwrap and recurse.
+    match kind {
+        "identifier" | "variable_name" => {
+            let Ok(text) = std::str::from_utf8(&bytes[node.byte_range()]) else {
+                return false;
+            };
+            scalars.contains(text)
+        }
+        "argument" => node
+            .named_child(0)
+            .is_some_and(|c| is_literal_or_named_scalar(c, bytes, scalars)),
+        // Unary / binary forms over a scalar binding remain a literal-valued
+        // expression at compile time.
+        "unary_expression" | "unary_op" => node
+            .named_child(0)
+            .is_some_and(|c| is_literal_or_named_scalar(c, bytes, scalars)),
+        "binary_expression" | "concatenated_string" => {
+            node.named_child_count() >= 2
+                && (0..node.named_child_count() as u32).all(|i| {
+                    node.named_child(i)
+                        .is_some_and(|c| is_literal_or_named_scalar(c, bytes, scalars))
+                })
+        }
+        _ => false,
+    }
 }
 
 /// Walk up to find a call-expression-like ancestor of the captured node.
@@ -6261,7 +6326,7 @@ fn constant_arg_suppression_works() {
         let m = matches.next().expect("query should match");
         let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
         assert!(
-            is_call_all_args_literal(cap.node, code),
+            is_call_all_args_literal(cap.node, code, "php"),
             "PHP system(\"echo health-ok\") should have all-literal args"
         );
     }
@@ -6284,7 +6349,7 @@ fn constant_arg_suppression_works() {
         let m = matches.next().expect("query should match");
         let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
         assert!(
-            is_call_all_args_literal(cap.node, code),
+            is_call_all_args_literal(cap.node, code, "python"),
             "Python os.system(\"echo health-ok\") should have all-literal args"
         );
     }
@@ -6307,8 +6372,55 @@ fn constant_arg_suppression_works() {
         let m = matches.next().expect("query should match");
         let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
         assert!(
-            !is_call_all_args_literal(cap.node, code),
+            !is_call_all_args_literal(cap.node, code, "python"),
             "Python os.system(cmd) should NOT have all-literal args"
+        );
+    }
+
+    // Python: os.system(DEFAULT_CMD) with module-level `DEFAULT_CMD = "ls -la"`
+    // should be suppressed via the file-level scalar binding map.
+    {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+        parser.set_language(&lang).unwrap();
+        let code = b"import os\nDEFAULT_CMD = \"ls -la\"\nos.system(DEFAULT_CMD)\n";
+        let tree = parser.parse(code, None).unwrap();
+        let query_str = r#"(call
+            function: (attribute
+                object: (identifier) @pkg (#eq? @pkg "os")
+                attribute: (identifier) @fn (#eq? @fn "system")))
+            @vuln"#;
+        let query = tree_sitter::Query::new(&lang, query_str).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), code.as_slice());
+        let m = matches.next().expect("query should match");
+        let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
+        assert!(
+            is_call_all_args_literal(cap.node, code, "python"),
+            "os.system(DEFAULT_CMD) with module-level scalar should be suppressed"
+        );
+    }
+
+    // Go: db.Exec(DriverName) with package-level `const DriverName = "postgres"`
+    // should be suppressed via the file-level scalar binding map.
+    {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = tree_sitter::Language::from(tree_sitter_go::LANGUAGE);
+        parser.set_language(&lang).unwrap();
+        let code = b"package main\nconst DriverName = \"postgres\"\nfunc f(db Db) { db.Exec(DriverName) }\n";
+        let tree = parser.parse(code, None).unwrap();
+        let query_str = r#"(call_expression
+            function: (selector_expression
+                field: (field_identifier) @m (#eq? @m "Exec")))
+            @vuln"#;
+        let query = tree_sitter::Query::new(&lang, query_str).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), code.as_slice());
+        let m = matches.next().expect("query should match");
+        let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
+        assert!(
+            is_call_all_args_literal(cap.node, code, "go"),
+            "db.Exec(DriverName) with package-level const should be suppressed"
         );
     }
 }

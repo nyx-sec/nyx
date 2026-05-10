@@ -79,26 +79,38 @@ pub fn collect_safe_lookup_fields(
     out
 }
 
-/// Per-file class-level constant scalar map: field name → literal value text.
+/// Per-file file-level constant scalar map: name → literal value text.
 ///
-/// Recognises Java fields declared `static final TYPE NAME = LITERAL;` where
-/// `LITERAL` is one of the primitive scalar literal kinds (string, integer
-/// of any base, floating-point, character, boolean, null).  Used by
-/// `cfg_analysis::guards` to suppress `cfg-unguarded-sink` when a sink's
-/// argument is one of these class-level constants (the per-function SSA
-/// const-prop sees a free identifier and would otherwise treat it as a
-/// runtime-dynamic value).
+/// Recognises declarations that bind a name to a primitive scalar literal at
+/// file or class scope, where the per-function SSA const-prop has no view of
+/// the binding (the name is a free identifier from inside any function body):
 ///
-/// Empty for non-Java files.  Scalar means single-value, not container; the
-/// `Map.of(...)` form is captured by [`collect_safe_lookup_fields`].
+/// - Java: `static final TYPE NAME = LITERAL;` fields (any class depth).
+/// - Python: `NAME = LITERAL` at module scope.
+/// - Go: `const NAME = LITERAL` and `const NAME TYPE = LITERAL` at package scope.
+/// - Rust: `const NAME: TYPE = LITERAL;` and `static NAME: TYPE = LITERAL;` at
+///   crate or module scope.
+///
+/// Used by `cfg_analysis::guards` to suppress `cfg-unguarded-sink` when a
+/// sink's argument is one of these bindings.  `LITERAL` covers strings (no
+/// interpolation), integers in any supported base, floats, booleans, null /
+/// nil / None, and unary negation / not over those.
+///
+/// Empty for unsupported languages.  Scalar means single-value, not
+/// container; the `Map.of(...)` form is captured by
+/// [`collect_safe_lookup_fields`].
 pub fn collect_class_constant_scalars(
     root: Node<'_>,
     lang: &str,
     code: &[u8],
 ) -> HashMap<String, String> {
     let mut out: HashMap<String, String> = HashMap::new();
-    if lang == "java" {
-        collect_java_constant_scalars(root, code, &mut out);
+    match lang {
+        "java" => collect_java_constant_scalars(root, code, &mut out),
+        "python" => collect_python_constant_scalars(root, code, &mut out),
+        "go" => collect_go_constant_scalars(root, code, &mut out),
+        "rust" => collect_rust_constant_scalars(root, code, &mut out),
+        _ => {}
     }
     out
 }
@@ -138,6 +150,143 @@ fn collect_java_constant_scalars(
     });
 }
 
+/// Python: module-level `NAME = LITERAL` assignments.  Only top-level
+/// expression statements are considered; assignments inside function bodies,
+/// class bodies, or other blocks are out of scope (a per-function SSA pass
+/// already sees those).
+fn collect_python_constant_scalars(
+    root: Node<'_>,
+    code: &[u8],
+    out: &mut HashMap<String, String>,
+) {
+    if root.kind() != "module" {
+        return;
+    }
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() != "expression_statement" {
+            continue;
+        }
+        let Some(assign) = child.named_child(0) else {
+            continue;
+        };
+        if assign.kind() != "assignment" {
+            continue;
+        }
+        let Some(target) = assign.child_by_field_name("left") else {
+            continue;
+        };
+        if target.kind() != "identifier" {
+            continue;
+        }
+        let Some(name) = text_of(target, code) else {
+            continue;
+        };
+        let Some(value) = assign.child_by_field_name("right") else {
+            continue;
+        };
+        let Some(literal) = python_scalar_literal_text(value, code) else {
+            continue;
+        };
+        out.insert(name, literal);
+    }
+}
+
+/// Go: package-level `const NAME = LITERAL` and `const NAME TYPE = LITERAL`,
+/// including the grouped `const (...)` form.  Iterates direct
+/// `const_declaration` children of the source file, then per-`const_spec`
+/// reads the `name` list and `value` expression list, binding by position.
+fn collect_go_constant_scalars(
+    root: Node<'_>,
+    code: &[u8],
+    out: &mut HashMap<String, String>,
+) {
+    if root.kind() != "source_file" {
+        return;
+    }
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() != "const_declaration" {
+            continue;
+        }
+        let mut spec_cursor = child.walk();
+        for spec in child.named_children(&mut spec_cursor) {
+            if spec.kind() != "const_spec" {
+                continue;
+            }
+            collect_go_const_spec(spec, code, out);
+        }
+    }
+}
+
+fn collect_go_const_spec(spec: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
+    // tree-sitter-go `const_spec`:
+    //   name: <identifier> (repeated)  — one or more identifiers
+    //   value: <expression_list>       — list of value expressions
+    // For a multi-target spec `const A, B = 1, 2`, identifiers and values pair
+    // up positionally.  The simpler single-target form parses the same way
+    // with one entry per side.
+    let mut name_cursor = spec.walk();
+    let names: Vec<Node<'_>> = spec
+        .children_by_field_name("name", &mut name_cursor)
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let Some(value_list) = spec.child_by_field_name("value") else {
+        return;
+    };
+    let mut value_cursor = value_list.walk();
+    let values: Vec<Node<'_>> = value_list.named_children(&mut value_cursor).collect();
+    if values.len() != names.len() {
+        return;
+    }
+    for (name_node, value_node) in names.iter().zip(values.iter()) {
+        if name_node.kind() != "identifier" {
+            continue;
+        }
+        let Some(name) = text_of(*name_node, code) else {
+            continue;
+        };
+        let Some(literal) = go_scalar_literal_text(*value_node, code) else {
+            continue;
+        };
+        out.insert(name, literal);
+    }
+}
+
+/// Rust: module-level `const NAME: TYPE = LITERAL;` and `static NAME: TYPE =
+/// LITERAL;`.  Only direct children of `source_file` participate so a `const`
+/// defined inside a function body does not bleed across scopes.
+fn collect_rust_constant_scalars(
+    root: Node<'_>,
+    code: &[u8],
+    out: &mut HashMap<String, String>,
+) {
+    if root.kind() != "source_file" {
+        return;
+    }
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if !matches!(child.kind(), "const_item" | "static_item") {
+            continue;
+        }
+        let Some(name_node) = child.child_by_field_name("name") else {
+            continue;
+        };
+        let Some(name) = text_of(name_node, code) else {
+            continue;
+        };
+        let Some(value_node) = child.child_by_field_name("value") else {
+            continue;
+        };
+        let Some(literal) = rust_scalar_literal_text(value_node, code) else {
+            continue;
+        };
+        out.insert(name, literal);
+    }
+}
+
 /// `true` when `field_declaration` carries a `static` modifier.
 fn has_static_modifier(field_decl: Node<'_>) -> bool {
     let mut cursor = field_decl.walk();
@@ -156,11 +305,9 @@ fn has_static_modifier(field_decl: Node<'_>) -> bool {
 }
 
 /// Return the source text when `value` is a primitive scalar literal node.
-/// Returns `None` for compound expressions, identifier references, method
-/// invocations, and other non-literal initializers.  String literals
-/// containing `escape_sequence` children are accepted: the suppression
-/// consumer only needs to know the binding is constant, not what the
-/// decoded payload would be.
+/// Covers the Java grammar's literal kinds.  Returns `None` for compound
+/// expressions, identifier references, method invocations, and other
+/// non-literal initializers.
 fn scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
     match value.kind() {
         "string_literal"
@@ -179,6 +326,82 @@ fn scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
         "unary_expression" => {
             let operand = value.child_by_field_name("operand")?;
             scalar_literal_text(operand, code)
+        }
+        _ => None,
+    }
+}
+
+/// Python scalar literal classifier.  Rejects f-strings with interpolation
+/// (`f"x{var}"` parses as `string` with an `interpolation` child); returns
+/// the source text otherwise.
+fn python_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
+    match value.kind() {
+        "string" => {
+            if python_string_has_interpolation(value) {
+                None
+            } else {
+                text_of(value, code)
+            }
+        }
+        "integer" | "float" | "true" | "false" | "none" => text_of(value, code),
+        "unary_operator" => {
+            let operand = value.child_by_field_name("argument")?;
+            python_scalar_literal_text(operand, code)
+        }
+        _ => None,
+    }
+}
+
+fn python_string_has_interpolation(node: Node<'_>) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "interpolation" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Go scalar literal classifier.  `interpreted_string_literal` and
+/// `raw_string_literal` cover both `"x"` and `` `x` `` forms.
+fn go_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
+    match value.kind() {
+        "interpreted_string_literal"
+        | "raw_string_literal"
+        | "int_literal"
+        | "float_literal"
+        | "imaginary_literal"
+        | "rune_literal"
+        | "true"
+        | "false"
+        | "nil" => text_of(value, code),
+        "unary_expression" => {
+            let operand = value.child_by_field_name("operand")?;
+            go_scalar_literal_text(operand, code)
+        }
+        _ => None,
+    }
+}
+
+/// Rust scalar literal classifier.  Accepts `string_literal`, `raw_string_literal`
+/// (both unwrappable to a single text run), integer / float / boolean / char.
+fn rust_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
+    match value.kind() {
+        "string_literal"
+        | "raw_string_literal"
+        | "integer_literal"
+        | "float_literal"
+        | "char_literal"
+        | "boolean_literal" => text_of(value, code),
+        // `true` / `false` are leaf identifier-ish nodes in some grammars but
+        // tree-sitter-rust gives them the `boolean_literal` kind; defensively
+        // accept the leaf form too in case the grammar is upgraded.
+        "true" | "false" => text_of(value, code),
+        "unary_expression" => {
+            let mut cursor = value.walk();
+            value
+                .named_children(&mut cursor)
+                .find_map(|c| rust_scalar_literal_text(c, code))
         }
         _ => None,
     }
@@ -548,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn class_constants_ignore_non_java_lang() {
+    fn class_constants_ignore_non_supported_lang() {
         let src = "const x = 1;";
         let mut p = Parser::new();
         p.set_language(&tree_sitter_javascript::LANGUAGE.into())
@@ -556,5 +779,116 @@ mod tests {
         let tree = p.parse(src, None).unwrap();
         let out = collect_class_constant_scalars(tree.root_node(), "javascript", src.as_bytes());
         assert!(out.is_empty());
+    }
+
+    fn collect_consts_lang(src: &str, lang: &str) -> HashMap<String, String> {
+        let mut p = Parser::new();
+        match lang {
+            "python" => p.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap(),
+            "go" => p.set_language(&tree_sitter_go::LANGUAGE.into()).unwrap(),
+            "rust" => p.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap(),
+            _ => unreachable!("unsupported lang in test helper: {lang}"),
+        };
+        let tree = p.parse(src, None).unwrap();
+        collect_class_constant_scalars(tree.root_node(), lang, src.as_bytes())
+    }
+
+    #[test]
+    fn python_module_constants_capture_scalars() {
+        let src = "DRIVER = \"sqlite3\"\nLIMIT = 100\nDEBUG = False\nNAME = None\n";
+        let out = collect_consts_lang(src, "python");
+        assert_eq!(out.get("DRIVER"), Some(&"\"sqlite3\"".to_string()));
+        assert_eq!(out.get("LIMIT"), Some(&"100".to_string()));
+        assert_eq!(out.get("DEBUG"), Some(&"False".to_string()));
+        assert_eq!(out.get("NAME"), Some(&"None".to_string()));
+    }
+
+    #[test]
+    fn python_module_constants_capture_unary_negation() {
+        // The recogniser recurses into the operand and returns its text, so
+        // `OFFSET = -1` stores `"1"`.  The downstream suppression consumer
+        // only cares about name binding, not the decoded numeric value.
+        let src = "OFFSET = -1\n";
+        let out = collect_consts_lang(src, "python");
+        assert_eq!(out.get("OFFSET"), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn python_module_constants_reject_fstring_with_interpolation() {
+        let src = "import os\nVAR = f\"hi {os.getcwd()}\"\n";
+        let out = collect_consts_lang(src, "python");
+        assert!(!out.contains_key("VAR"));
+    }
+
+    #[test]
+    fn python_module_constants_reject_call_value() {
+        let src = "from os import getcwd\nPATH = getcwd()\n";
+        let out = collect_consts_lang(src, "python");
+        assert!(!out.contains_key("PATH"));
+    }
+
+    #[test]
+    fn python_module_constants_skip_inside_function_body() {
+        // An assignment inside a function body is per-function SSA's job.
+        // Only top-level module assignments should land in the map.
+        let src = "def f():\n    INNER = \"x\"\n    return INNER\n";
+        let out = collect_consts_lang(src, "python");
+        assert!(!out.contains_key("INNER"));
+    }
+
+    #[test]
+    fn go_package_constants_capture_scalars() {
+        let src = "package main\nconst DRIVER = \"postgres\"\nconst LIMIT = 100\nconst FLAG = true\n";
+        let out = collect_consts_lang(src, "go");
+        assert_eq!(out.get("DRIVER"), Some(&"\"postgres\"".to_string()));
+        assert_eq!(out.get("LIMIT"), Some(&"100".to_string()));
+        assert_eq!(out.get("FLAG"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn go_package_constants_capture_grouped_const_block() {
+        let src = "package main\nconst (\n    A = \"x\"\n    B int = 42\n    C = false\n)\n";
+        let out = collect_consts_lang(src, "go");
+        assert_eq!(out.get("A"), Some(&"\"x\"".to_string()));
+        assert_eq!(out.get("B"), Some(&"42".to_string()));
+        assert_eq!(out.get("C"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn go_package_constants_reject_non_literal() {
+        let src = "package main\nconst OTHER = foo()\n";
+        let out = collect_consts_lang(src, "go");
+        assert!(!out.contains_key("OTHER"));
+    }
+
+    #[test]
+    fn go_package_constants_skip_inside_function_body() {
+        // `const` inside a function body is per-function SSA's territory.
+        let src = "package main\nfunc f() string { const INNER = \"x\"; return INNER }\n";
+        let out = collect_consts_lang(src, "go");
+        assert!(!out.contains_key("INNER"));
+    }
+
+    #[test]
+    fn rust_module_consts_capture_scalars() {
+        let src = "const DRIVER: &str = \"sqlite\";\nconst LIMIT: i32 = 100;\nstatic FLAG: bool = false;\n";
+        let out = collect_consts_lang(src, "rust");
+        assert_eq!(out.get("DRIVER"), Some(&"\"sqlite\"".to_string()));
+        assert_eq!(out.get("LIMIT"), Some(&"100".to_string()));
+        assert_eq!(out.get("FLAG"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn rust_module_consts_reject_non_literal() {
+        let src = "const VAL: i32 = some_func();\n";
+        let out = collect_consts_lang(src, "rust");
+        assert!(!out.contains_key("VAL"));
+    }
+
+    #[test]
+    fn rust_module_consts_skip_inside_function_body() {
+        let src = "fn f() -> &'static str { const INNER: &str = \"x\"; INNER }\n";
+        let out = collect_consts_lang(src, "rust");
+        assert!(!out.contains_key("INNER"));
     }
 }

@@ -1114,6 +1114,22 @@ fn fp_guard_cfg_unguarded_class_constant_java() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, file-level constant scalars across Python / Go / Rust.  The
+/// same gap the Java fixture closes also exists in other languages: a
+/// module-level `NAME = LITERAL` (Python), package-level `const NAME =
+/// LITERAL` (Go), and crate-level `const NAME: TYPE = LITERAL` (Rust)
+/// resolve as free identifiers inside any function body, so neither the
+/// CFG one-hop trace nor per-function SSA const-prop sees them as
+/// constant.  The same file-scalars map drives suppression of both the
+/// structural `cfg-unguarded-sink` rule and the AST-pattern rules like
+/// `py.cmdi.os_system` that gate on all-literal arguments.
+#[test]
+fn fp_guard_file_level_const_scalars_xlang() {
+    let dir = fixture_path("fp_guards/file_level_const_scalars_xlang");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Drupal Database Query subclasses use
 /// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
 /// statement object then bind values out of band via
