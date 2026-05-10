@@ -2436,12 +2436,239 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         }
     }
 
+    // Strict parameter set scoped to the sink's enclosing function only.
+    // Used for the local-trace fallback below to prevent over-suppression
+    // when sibling functions in the same file happen to share param names
+    // with the current scope (e.g. a constructor's `dbConn` param leaking
+    // into the `param_names` view of an unrelated `logAuditEvent` body).
+    // The existing broad `param_names` view is preserved for the direct
+    // in-list check above so legacy suppression behaviour is unchanged.
+    let strict_param_names: SmallVec<[&str; 8]> = ctx
+        .func_summaries
+        .iter()
+        .filter(|(key, _)| sink_func.is_some_and(|name| key.name.as_str() == name))
+        .flat_map(|(_, s)| s.param_names.iter().map(|p| p.as_str()))
+        .collect();
     sink_uses.iter().all(|u| {
         if callee_fragments.contains(&u.as_str()) || u == callee_desc {
             return true;
         }
-        param_names.contains(&u.as_str())
+        if param_names.contains(&u.as_str()) {
+            return true;
+        }
+        // One-hop transitive local trace: when a sink use names a body
+        // local whose every definition resolves to parameter-derived
+        // data (e.g. `Statement stmt = connection.createStatement();
+        // stmt.executeQuery(sql);` where `connection` is a param), the
+        // local is wrapper plumbing.  Receiver-variable shapes whose
+        // definitions reach a free (non-param, non-local) identifier or
+        // a Source label fail the trace and keep the structural finding.
+        if strict_param_names.is_empty() {
+            return false;
+        }
+        let mut seen: SmallVec<[&str; 4]> = SmallVec::new();
+        local_is_param_derived(
+            ctx,
+            sink_func,
+            &strict_param_names,
+            &callee_fragments,
+            u.as_str(),
+            3,
+            &mut seen,
+        )
     })
+}
+
+/// Recursive trace, return true iff every definition of `name` inside
+/// `sink_func` has its right-hand-side fully resolvable to parameter
+/// names, callee fragments, or other already-cleared body locals.  Bounded
+/// by `depth` to prevent runaway on pathological CFGs and uses `seen` to
+/// short-circuit cycles (a local whose definition mentions itself does
+/// not clear).  Called from `sink_arg_is_parameter_only` once the simple
+/// param / callee-fragment / source-text check has failed.
+fn local_is_param_derived<'a>(
+    ctx: &'a AnalysisContext,
+    sink_func: Option<&str>,
+    param_names: &[&'a str],
+    callee_fragments: &[&'a str],
+    name: &'a str,
+    depth: u8,
+    seen: &mut SmallVec<[&'a str; 4]>,
+) -> bool {
+    if depth == 0 || seen.contains(&name) {
+        return false;
+    }
+    seen.push(name);
+    let mut found_def = false;
+    let mut all_def_clear = true;
+    for idx in ctx.cfg.node_indices() {
+        let info = &ctx.cfg[idx];
+        if info.ast.enclosing_func.as_deref() != sink_func {
+            continue;
+        }
+        if info.taint.defines.as_deref() != Some(name) {
+            continue;
+        }
+        found_def = true;
+        if info
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_)))
+        {
+            all_def_clear = false;
+            break;
+        }
+        // Compute the defining node's own callee fragments so method-name
+        // segments (e.g. `createStatement` in `statement =
+        // connection.createStatement();`) are recognised as pseudo-uses
+        // alongside the receiver variable.  Without this, the trace
+        // wrongly rejects every chained method initialisation.  The
+        // source-text scan below also lifts intermediate method calls
+        // (`unwrap` in `connection.unwrap().createStatement`) that the
+        // collapsed `info.call.callee` drops.
+        let def_fragments = chain_callee_fragments_with_text(
+            info.call.callee.as_deref().unwrap_or(""),
+            info.call.outer_callee.as_deref().unwrap_or(""),
+            ctx.source_bytes,
+            info.classification_span(),
+        );
+        let clear = info.taint.uses.iter().all(|u| {
+            param_names.contains(&u.as_str())
+                || callee_fragments.contains(&u.as_str())
+                || def_fragments.contains(&u.as_str())
+                || local_is_param_derived(
+                    ctx,
+                    sink_func,
+                    param_names,
+                    callee_fragments,
+                    u.as_str(),
+                    depth - 1,
+                    seen,
+                )
+        });
+        if !clear {
+            all_def_clear = false;
+            break;
+        }
+    }
+    seen.pop();
+    found_def && all_def_clear
+}
+
+/// Split a callee chain like `getSession().createQuery` or
+/// `connection.createStatement` into method-name segments treated as
+/// pseudo-uses.  Also walks `source_bytes[span]` up to the outermost
+/// args-opener and lifts every `IDENT(` pattern, recovering intermediate
+/// method-call segments that the collapsed `info.call.callee` text drops
+/// (e.g. `unwrap` in `connection.unwrap().createStatement()`).  Mirrors
+/// the in-place chain split inside `sink_arg_is_parameter_only` so trace
+/// nodes get the same recognition as the sink itself.  Self-rooted
+/// chains (`this->...`, `self.foo`) surface every segment; other chains
+/// surface only the terminal method name plus any inner method-call
+/// segments.
+fn chain_callee_fragments_with_text<'a>(
+    callee: &'a str,
+    outer: &'a str,
+    source_bytes: &'a [u8],
+    span: (usize, usize),
+) -> SmallVec<[&'a str; 8]> {
+    fn split_chain<'b>(s: &'b str) -> SmallVec<[(&'b str, bool); 8]> {
+        let mut out: SmallVec<[(&'b str, bool); 8]> = SmallVec::new();
+        for piece in s.split(['.', ':', '>', '-']) {
+            let stripped = piece.trim_start_matches('$').trim();
+            if stripped.is_empty() {
+                continue;
+            }
+            let (name, is_call) = match stripped.find('(') {
+                Some(idx) => (stripped[..idx].trim(), true),
+                None => (stripped, false),
+            };
+            if !name.is_empty() {
+                out.push((name, is_call));
+            }
+        }
+        out
+    }
+    fn is_self_root(seg: &str) -> bool {
+        matches!(seg, "this" | "self" | "static" | "parent" | "cls")
+    }
+    let mut frags: SmallVec<[&str; 8]> = SmallVec::new();
+    for src in [callee, outer] {
+        let segs = split_chain(src);
+        let Some(&(first_name, _)) = segs.first() else {
+            continue;
+        };
+        let last_idx = segs.len() - 1;
+        if is_self_root(first_name) {
+            for &(name, _) in &segs {
+                if !frags.contains(&name) {
+                    frags.push(name);
+                }
+            }
+        } else {
+            for (i, &(name, is_call)) in segs.iter().enumerate() {
+                if (is_call || i == last_idx) && !frags.contains(&name) {
+                    frags.push(name);
+                }
+            }
+        }
+    }
+    let (start, end) = span;
+    if start < source_bytes.len() && end <= source_bytes.len() && start < end {
+        let span_bytes = &source_bytes[start..end];
+        if let Ok(span_text) = std::str::from_utf8(span_bytes) {
+            let bytes = span_text.as_bytes();
+            let mut depth: i32 = 0;
+            let mut last_open_at_zero: Option<usize> = None;
+            for (i, &b) in bytes.iter().enumerate() {
+                match b {
+                    b'(' => {
+                        if depth == 0 {
+                            last_open_at_zero = Some(i);
+                        }
+                        depth += 1;
+                    }
+                    b')' => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+            let chain_end = last_open_at_zero.unwrap_or(bytes.len());
+            let mut i = 0;
+            while i < chain_end {
+                let b = bytes[i];
+                let is_ident_start = b.is_ascii_alphabetic() || b == b'_';
+                if !is_ident_start {
+                    i += 1;
+                    continue;
+                }
+                let id_start = i;
+                while i < chain_end {
+                    let c = bytes[i];
+                    if c.is_ascii_alphanumeric() || c == b'_' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if i < chain_end && bytes[i] == b'(' {
+                    let name = &span_text[id_start..i];
+                    let abs_start = start + id_start;
+                    let abs_end = start + i;
+                    if abs_start < source_bytes.len() && abs_end <= source_bytes.len() {
+                        let name_slice =
+                            std::str::from_utf8(&source_bytes[abs_start..abs_end]).unwrap_or(name);
+                        if !frags.contains(&name_slice) {
+                            frags.push(name_slice);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    frags
 }
 
 /// Check if the source bytes at a given span contain a redirect call whose
@@ -2777,5 +3004,67 @@ impl CfgAnalysis for UnguardedSink {
         }
 
         findings
+    }
+}
+
+#[cfg(test)]
+mod chain_fragments_tests {
+    use super::chain_callee_fragments_with_text;
+
+    fn frags(callee: &str, outer: &str, source: &str) -> Vec<String> {
+        chain_callee_fragments_with_text(callee, outer, source.as_bytes(), (0, source.len()))
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn java_chained_init_lifts_inner_call() {
+        // `Statement stmt = connection.unwrap().createStatement();`
+        // The collapsed `info.call.callee` drops the inner method call,
+        // so the source-text scan has to recover `unwrap` on top of the
+        // structural split's `createStatement`.
+        let src = "Statement stmt = connection.unwrap().createStatement()";
+        let got = frags("connection.createStatement", "", src);
+        assert!(got.contains(&"createStatement".to_string()));
+        assert!(got.contains(&"unwrap".to_string()));
+        assert!(!got.contains(&"connection".to_string()));
+        assert!(!got.contains(&"stmt".to_string()));
+    }
+
+    #[test]
+    fn flat_method_invocation_terminal_only() {
+        // `connection.createStatement()` — receiver `connection` stays a
+        // real local-variable use, only the terminal method counts as a
+        // pseudo-use.
+        let src = "connection.createStatement()";
+        let got = frags("connection.createStatement", "", src);
+        assert!(got.contains(&"createStatement".to_string()));
+        assert!(!got.contains(&"connection".to_string()));
+    }
+
+    #[test]
+    fn self_rooted_chain_lifts_every_segment() {
+        // `$this->inner->execute($sql)` — every chain segment belongs to
+        // the callee path because the chain is rooted at a self
+        // pseudo-receiver.
+        let src = "$this->inner->execute($sql)";
+        let got = frags("this->inner->execute", "", src);
+        assert!(got.contains(&"this".to_string()));
+        assert!(got.contains(&"inner".to_string()));
+        assert!(got.contains(&"execute".to_string()));
+    }
+
+    #[test]
+    fn source_scan_skips_inside_args() {
+        // The scan stops at the outermost args opener, so identifiers
+        // nested inside the arguments are NOT lifted as pseudo-uses.
+        // `db.exec(transform(raw))` still treats `transform` as a real
+        // local reference, not a chain segment.
+        let src = "db.exec(transform(raw))";
+        let got = frags("db.exec", "", src);
+        assert!(got.contains(&"exec".to_string()));
+        assert!(!got.contains(&"transform".to_string()));
+        assert!(!got.contains(&"raw".to_string()));
     }
 }

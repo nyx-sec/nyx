@@ -1098,6 +1098,24 @@ fn fp_guard_cfg_unguarded_dao_passthrough_java() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Liquibase changeset wrappers like
+/// `Statement stmt = connection.createStatement(); stmt.executeQuery(sql);`.
+/// Both `stmt` and `sql` show up in the sink's `taint.uses`. `sql` is a
+/// formal parameter; `stmt` is a body-local whose every assignment is
+/// derived from the `connection` parameter (`connection.createStatement()`
+/// or `connection.unwrap().createStatement()`). The function is a thin
+/// wrapper around its params, so `cfg-unguarded-sink` should not fire,
+/// the structural backup adds no signal here. Receiver-variable shapes
+/// without a parameter-derived definition (`cursor.execute(name)` where
+/// `cursor` comes from module scope) still emit because their one-hop
+/// trace fails.
+#[test]
+fn fp_guard_cfg_unguarded_liquibase_changeset_java() {
+    let dir = fixture_path("fp_guards/cfg_unguarded_liquibase_changeset_java");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Java `Class.forName(STATIC_FINAL_CONSTANT)` and similar
 /// sink calls whose argument is a class-level `static final TYPE NAME =
 /// LITERAL;` field reference.  The field lives outside any function
