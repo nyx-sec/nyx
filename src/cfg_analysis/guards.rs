@@ -15,6 +15,7 @@ use crate::ssa::type_facts::TypeFactResult;
 use crate::ssa::{SsaOp, SsaValue};
 use crate::taint::path_state::{PredicateKind, classify_condition};
 use petgraph::graph::NodeIndex;
+use smallvec::SmallVec;
 use std::collections::HashSet;
 
 pub struct UnguardedSink;
@@ -1258,6 +1259,7 @@ fn find_word(text: &[u8], word: &[u8]) -> Option<usize> {
 /// string literal (alphanumeric, `_`, `-`, `.`, space).  Recognises:
 ///   * `$<iter_var> = ['LIT' => 'LIT', ...];` (key-arrow array literal)
 ///   * `$<iter_var>['LIT'] = 'LIT';` (subscript-set with literal key)
+///
 /// Conservative: any other assignment shape, missing literals, or empty
 /// array set returns false.  When `used_as_key` is true, the literal keys
 /// must be safe; when `used_as_val` is true, the literal values must be
@@ -2282,33 +2284,64 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     }
 
     // The sink's `taint.uses` includes pseudo-uses for callee-chain segments
-    // (`this`, `self`, the inner method name, intermediate receivers).  These
-    // are not real argument values — they are the dotted callee path that
-    // tree-sitter records as identifier children of the call expression.
-    // `is_all_args_constant` already filters them out the same way; mirror
-    // that filter here so a thin method wrapper like
-    // `function wrap($sql) { return $this->inner->execute($sql); }` is
-    // recognised as parameter-only despite `this` / `inner` / `execute`
-    // showing up in `taint.uses`.
+    // when the chain is rooted at a self-pseudo-receiver (`this`, `self`,
+    // `static`, `parent`).  In that case every segment of the chain is part
+    // of the dotted callee path that tree-sitter records as identifier
+    // children of the call expression, not a real argument.  This shape
+    // covers thin method wrappers like
+    // `function wrap($sql) { return $this->inner->execute($sql); }` so the
+    // sink is recognised as parameter-only despite `this` / `inner` /
+    // `execute` showing up in `taint.uses`.
     //
-    // PHP variable receivers carry a leading `$` (`$this->inner.executeQuery`)
-    // and use `->` between the receiver and member, so the simple `.`/`:`
-    // split misses fragments like `$this->inner`.  Tokenize on the full set
-    // of separators (`.`, `::`, `->`) and strip a leading `$` so identifier-
-    // shaped fragments line up with bare identifier names in `taint.uses`.
+    // For other callee chains (e.g. Python `cursor.execute(name)` where
+    // `cursor` is a local variable from `connection.cursor()`), only the
+    // method name itself (`execute`) is filtered.  `cursor` is a real
+    // identifier value — a non-param local — and must not be filtered,
+    // otherwise wrappers around external receivers get suppressed
+    // incorrectly.
+    //
+    // PHP variable receivers carry a leading `$` (`$this->inner->execute`)
+    // and use `->` between the receiver and member, so split on the full
+    // set of separators and strip a leading `$` so identifier-shaped
+    // fragments line up with bare identifier names in `taint.uses`.
     let callee_desc = sink_info.call.callee.as_deref().unwrap_or("");
     let outer_callee = sink_info.call.outer_callee.as_deref().unwrap_or("");
-    let mut callee_fragments: Vec<&str> = Vec::new();
-    for src in [callee_desc, outer_callee] {
-        for piece in src.split(['.', ':', '>', '-']) {
-            let segment = piece
+    fn split_chain(s: &str) -> impl Iterator<Item = &str> {
+        s.split(['.', ':', '>', '-']).filter_map(|piece| {
+            let seg = piece
                 .split('(')
                 .next()
                 .unwrap_or(piece)
                 .trim_start_matches('$')
                 .trim();
-            if !segment.is_empty() && !callee_fragments.contains(&segment) {
-                callee_fragments.push(segment);
+            (!seg.is_empty()).then_some(seg)
+        })
+    }
+    fn is_self_root(seg: &str) -> bool {
+        matches!(seg, "this" | "self" | "static" | "parent" | "cls")
+    }
+    let mut callee_fragments: SmallVec<[&str; 8]> = SmallVec::new();
+    for src in [callee_desc, outer_callee] {
+        let mut segs = split_chain(src);
+        let Some(first) = segs.next() else { continue };
+        if is_self_root(first) {
+            // Whole chain is callee path: `$this->inner->execute` →
+            // every segment is a pseudo-use.
+            for seg in std::iter::once(first).chain(segs) {
+                if !callee_fragments.contains(&seg) {
+                    callee_fragments.push(seg);
+                }
+            }
+        } else {
+            // Only the method name (last segment) is a pseudo-use.  Receiver
+            // segments like `cursor` in `cursor.execute(name)` are real
+            // local-variable values.
+            let mut last = first;
+            for seg in segs {
+                last = seg;
+            }
+            if !callee_fragments.contains(&last) {
+                callee_fragments.push(last);
             }
         }
     }

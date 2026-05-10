@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-10T06:41:45Z",
+  "timestamp": "2026-05-10T09:08:09Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -6244,12 +6244,15 @@
         "taint-unsanitised-flow (source 6:5)",
         "py.cmdi.os_system"
       ],
-      "unexpected_rule_ids": [],
+      "unexpected_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
       "all_finding_ids": [
         "taint-unsanitised-flow (source 6:5)",
+        "cfg-unguarded-sink",
         "py.cmdi.os_system"
       ],
-      "security_finding_count": 2,
+      "security_finding_count": 3,
       "non_security_finding_count": 0
     },
     {
