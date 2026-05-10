@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-10T18:57:39Z",
+  "timestamp": "2026-05-10T19:36:09Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -4084,17 +4084,13 @@
       "language": "java",
       "vuln_class": "sqli",
       "is_vulnerable": true,
-      "outcome_file_level": "TP",
-      "outcome_rule_level": "TP",
-      "outcome_location_level": "TP",
-      "matched_rule_ids": [
-        "cfg-unguarded-sink"
-      ],
+      "outcome_file_level": "FN",
+      "outcome_rule_level": "FN",
+      "outcome_location_level": "FN",
+      "matched_rule_ids": [],
       "unexpected_rule_ids": [],
-      "all_finding_ids": [
-        "cfg-unguarded-sink"
-      ],
-      "security_finding_count": 1,
+      "all_finding_ids": [],
+      "security_finding_count": 0,
       "non_security_finding_count": 0
     },
     {
@@ -10039,22 +10035,22 @@
     }
   ],
   "aggregate_file_level": {
-    "tp": 275,
+    "tp": 274,
     "fp": 0,
-    "fn_": 0,
+    "fn_": 1,
     "tn": 287,
     "precision": 1.0,
-    "recall": 1.0,
-    "f1": 1.0
+    "recall": 0.9963636363636363,
+    "f1": 0.9981785063752276
   },
   "aggregate_rule_level": {
-    "tp": 275,
+    "tp": 274,
     "fp": 0,
-    "fn_": 0,
+    "fn_": 1,
     "tn": 287,
     "precision": 1.0,
-    "recall": 1.0,
-    "f1": 1.0
+    "recall": 0.9963636363636363,
+    "f1": 0.9981785063752276
   },
   "by_language": {
     "c": {
@@ -10085,13 +10081,13 @@
       "f1": 1.0
     },
     "java": {
-      "tp": 23,
+      "tp": 22,
       "fp": 0,
-      "fn_": 0,
+      "fn_": 1,
       "tn": 23,
       "precision": 1.0,
-      "recall": 1.0,
-      "f1": 1.0
+      "recall": 0.9565217391304348,
+      "f1": 0.9777777777777777
     },
     "javascript": {
       "tp": 25,
@@ -10312,13 +10308,13 @@
       "f1": 1.0
     },
     "sqli": {
-      "tp": 37,
+      "tp": 36,
       "fp": 0,
-      "fn_": 0,
+      "fn_": 1,
       "tn": 0,
       "precision": 1.0,
-      "recall": 1.0,
-      "f1": 1.0
+      "recall": 0.972972972972973,
+      "f1": 0.9863013698630138
     },
     "ssrf": {
       "tp": 32,

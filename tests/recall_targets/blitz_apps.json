@@ -2,9 +2,998 @@
   "_doc": "Phase 11 recall-validation baseline for blitz-js/blitz example apps. Pinned commit + captured findings live in this file. Re-capture by running scripts/validate_recall.sh blitz_apps <clone_path> --capture against a fresh checkout. Baseline location is tests/recall_targets/ (relocated out of .pitboss/ per the Phase 01 precedent — pitboss implementer agents must not write under .pitboss/).",
   "target": "blitz_apps",
   "clone_url": "https://github.com/blitz-js/blitz",
-  "exercises_recall_items": [1, 3, 6],
-  "captured_against": "placeholder — needs --capture run against a real clone",
-  "captured_on": "2026-05-08",
-  "pinned_commit": "unknown",
-  "findings": []
+  "exercises_recall_items": [
+    1,
+    3,
+    6
+  ],
+  "captured_against": "real-scan @ b18f81873e641934043f791fec06e22f5fe5a86e",
+  "captured_on": "2026-05-10",
+  "pinned_commit": "b18f81873e641934043f791fec06e22f5fe5a86e",
+  "findings": [
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1285,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/adapter.ts",
+      "line": 167,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/adapter.ts",
+      "line": 168,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/internals/utils/web.ts",
+      "line": 106,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/adapter.ts",
+      "line": 209,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/adapter.ts",
+      "line": 210,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/internals/utils/web.ts",
+      "line": 106,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-rpc/src/index-server.ts",
+      "line": 313,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "integration-tests/auth-with-rpc/src/custom-plugin/plugin.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/adapter.ts",
+      "line": 123,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/adapter.ts",
+      "line": 123,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 726,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1071,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1072,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1080,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 726,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-next/src/index-browser.tsx",
+      "line": 49,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz/src/cli/utils/routes-manifest.ts",
+      "line": 299,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 726,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 964,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 965,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 966,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 968,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1020,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1022,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1023,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1025,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1082,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1132,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1212,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1297,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1335,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/blitz/src/cli/utils/next-console.ts",
+      "line": 214,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/blitz-rpc/src/index-server.ts",
+      "line": 314,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/blitz-rpc/src/client/rpc.ts",
+      "line": 84,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 547,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 575,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 580,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 590,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 630,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 699,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 726,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 757,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 847,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 864,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 949,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/passport/adapter.ts",
+      "line": 114,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/passport/adapter.ts",
+      "line": 108,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz/src/cli/utils/routes-manifest.ts",
+      "line": 299,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-next/src/index-server.ts",
+      "line": 268,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz/src/utils/env.ts",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz/src/utils/env.ts",
+      "line": 30,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz/src/utils/env.ts",
+      "line": 105,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "integration-tests/utils/browsers/playwright.ts",
+      "line": 146,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "integration-tests/utils/browsers/playwright.ts",
+      "line": 156,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/blitz/src/cli/utils/routes-manifest.ts",
+      "line": 160,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/generator/src/utils/log.ts",
+      "line": 34,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1285,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/passport/adapter.ts",
+      "line": 108,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/adapter.ts",
+      "line": 123,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 726,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/blitz/src/cli/utils/next-console.ts",
+      "line": 143,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/blitz-auth/src/client/index.tsx",
+      "line": 359,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/blitz-auth/src/client/index.tsx",
+      "line": 374,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/blitz/src/utils/env.ts",
+      "line": 54,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.code_exec.eval",
+      "path_suffix": "packages/blitz/src/utils/server.ts",
+      "line": 9,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/next13/src/auth/mutations/resetPassword.ts",
+      "line": 27,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/next13/src/auth/mutations/resetPassword.ts",
+      "line": 36,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/next13/src/auth/mutations/resetPassword.ts",
+      "line": 44,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/next13/src/auth/mutations/signup.ts",
+      "line": 12,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/next13/src/users/queries/getCurrentUser.ts",
+      "line": 6,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app-passportjs/src/auth/mutations/resetPassword.ts",
+      "line": 28,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app-passportjs/src/auth/mutations/resetPassword.ts",
+      "line": 37,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app-passportjs/src/auth/mutations/resetPassword.ts",
+      "line": 43,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app-passportjs/src/auth/mutations/signup.ts",
+      "line": 15,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app-passportjs/src/users/queries/getCurrentUser.ts",
+      "line": 7,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app/src/auth/mutations/resetPassword.ts",
+      "line": 28,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app/src/auth/mutations/resetPassword.ts",
+      "line": 37,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app/src/auth/mutations/resetPassword.ts",
+      "line": 43,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app/src/auth/mutations/signup.ts",
+      "line": 15,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/toolkit-app/src/users/queries/getCurrentUser.ts",
+      "line": 7,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "integration-tests/auth-with-rpc/src/mutations/login.ts",
+      "line": 8,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1010,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1096,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1110,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1141,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 1229,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/generator/templates/app/src/app/auth/mutations/signup.ts",
+      "line": 12,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/generator/templates/app/src/app/users/queries/getCurrentUser.ts",
+      "line": 6,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/generator/templates/pages/src/users/queries/getCurrentUser.ts",
+      "line": 7,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1340,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1216,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1244,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 223,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 317,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/secure-password.ts",
+      "line": 23,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/secure-password.ts",
+      "line": 26,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 360,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 363,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 444,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 447,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 478,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 481,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 501,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 504,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 524,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 527,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 954,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/codemod/src/upgrade-legacy.ts",
+      "line": 1014,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/passport/adapter.ts",
+      "line": 133,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/blitz/src/cli/index.ts",
+      "line": 161,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/blitz/src/utils/server.ts",
+      "line": 9,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/codemod/src/index.ts",
+      "line": 25,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.fallback_secret",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/next-auth/adapter.ts",
+      "line": 68,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.fallback_secret",
+      "path_suffix": "packages/blitz-auth/src/server/adapters/passport/adapter.ts",
+      "line": 39,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.fallback_secret",
+      "path_suffix": "packages/blitz-auth/src/server/auth-sessions.ts",
+      "line": 626,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/toolkit-app-passportjs/src/auth/mutations/signup.ts",
+      "line": 9,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/toolkit-app/src/auth/mutations/signup.ts",
+      "line": 9,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/web/src/pages/api/signup.ts",
+      "line": 11,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "integration-tests/auth-with-rpc/src/mutations/login.ts",
+      "line": 4,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "packages/blitz-rpc/test/blitz-test-utils.ts",
+      "line": 9,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "packages/generator/templates/app/src/app/auth/mutations/signup.ts",
+      "line": 7,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.xss.cookie_write",
+      "path_suffix": "packages/blitz/src/utils/index.ts",
+      "line": 73,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
 }

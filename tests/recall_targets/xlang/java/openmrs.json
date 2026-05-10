@@ -1,13 +1,21 @@
 {
-  "_doc": "Phase 17 cross-lang recall-validation baseline for openmrs (Java/Hibernate). Re-capture by running scripts/validate_recall.sh --lang java openmrs <clone_path> --capture. Heavy JPA-Criteria-API consumer \u2014 see project_realrepo_openmrs.md for context. 2026-05-09 session 0011: 94 vendored-asset findings removed (jquery / jquery-ui / jsTree / dataTables minified bundles under WEB-INF/.../scripts/) after engine-level skip in is_vendored_asset_path; the engine no longer parses .min.js / vendor/ / bower_components/ web assets.",
+  "_doc": "Phase 17 cross-lang recall-validation baseline for openmrs (Java/Hibernate). Re-capture by running scripts/validate_recall.sh --lang java openmrs <clone_path> --capture. Heavy JPA-Criteria-API consumer — see project_realrepo_openmrs.md for context. 2026-05-09 session 0011: 94 vendored-asset findings removed (jquery / jquery-ui / jsTree / dataTables minified bundles under WEB-INF/.../scripts/) after engine-level skip in is_vendored_asset_path; the engine no longer parses .min.js / vendor/ / bower_components/ web assets.",
   "target": "openmrs",
   "lang": "java",
   "clone_url": "https://github.com/openmrs/openmrs-core",
   "exercises_recall_items": [],
   "captured_against": "real-scan @ f9c76db207c37f2c728ca3b601ae720b654ab401",
-  "captured_on": "2026-05-09",
+  "captured_on": "2026-05-10",
   "pinned_commit": "f9c76db207c37f2c728ca3b601ae720b654ab401",
   "findings": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/StartupFilter.java",
+      "line": 169,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "web/src/main/java/org/openmrs/web/filter/StartupFilter.java",
@@ -18,8 +26,8 @@
     },
     {
       "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/InitializationFilter.java",
-      "line": 824,
+      "path_suffix": "web/src/main/java/org/openmrs/web/filter/initialization/TestInstallUtil.java",
+      "line": 252,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -113,6 +121,14 @@
       "note": "captured by validate_recall.sh --capture"
     },
     {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "api/src/main/java/org/openmrs/util/OpenmrsUtil.java",
+      "line": 1955,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
       "rule_id": "java.cmdi.runtime_exec",
       "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/SourceMySqldiffFile.java",
       "line": 210,
@@ -156,6 +172,14 @@
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "webapp/src/main/webapp/WEB-INF/view/scripts/jquery-ui/js/jquery-ui-timepicker-addon.js",
       "line": 139,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "api/src/test/java/org/openmrs/test/TestUtil.java",
+      "line": 76,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -259,31 +283,15 @@
     {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
-      "line": 564,
+      "line": 426,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
     },
     {
-      "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
-      "line": 573,
-      "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
-      "line": 584,
-      "severity": "Medium",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
-      "line": 613,
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/hl7/impl/HL7ServiceImpl.java",
+      "line": 1133,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -330,6 +338,14 @@
     },
     {
       "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUpdater.java",
+      "line": 772,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
       "path_suffix": "api/src/main/java/org/openmrs/util/DatabaseUtil.java",
       "line": 170,
       "severity": "Medium",
@@ -340,6 +356,14 @@
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/main/java/org/openmrs/util/HttpClient.java",
       "line": 53,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/OpenmrsUtil.java",
+      "line": 1646,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -705,9 +729,17 @@
       "note": "captured by validate_recall.sh --capture"
     },
     {
-      "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "webapp/src/main/webapp/WEB-INF/csrfguard.js",
-      "line": 651,
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/test/java/org/openmrs/test/TestUtil.java",
+      "line": 86,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/test/java/org/openmrs/test/TestUtil.java",
+      "line": 94,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -740,6 +772,14 @@
       "rule_id": "cfg-resource-leak",
       "path_suffix": "api/src/main/java/org/openmrs/util/HttpUrl.java",
       "line": 36,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/main/java/org/openmrs/util/OpenmrsUtil.java",
+      "line": 914,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -828,6 +868,38 @@
       "rule_id": "cfg-resource-leak",
       "path_suffix": "web/src/main/java/org/openmrs/web/filter/util/FilterUtil.java",
       "line": 200,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/api/db/hibernate/DbSession.java",
+      "line": 112,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/api/db/hibernate/DbSession.java",
+      "line": 122,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/api/db/hibernate/DbSession.java",
+      "line": 176,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "api/src/main/java/org/openmrs/api/db/hibernate/HibernateOrderDAO.java",
+      "line": 390,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -1013,32 +1085,32 @@
       "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
       "line": 182,
       "severity": "Medium",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "java.cmdi.runtime_exec",
       "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
       "line": 182,
       "severity": "Medium",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "java.deser.readobject",
       "path_suffix": "api/src/test/java/org/openmrs/util/ThreadSafeCircularFifoQueueTest.java",
       "line": 384,
       "severity": "Medium",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "java.deser.readobject",
       "path_suffix": "api/src/test/java/org/openmrs/util/ThreadSafeCircularFifoQueueTest.java",
       "line": 483,
       "severity": "Medium",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "java.reflection.class_forname",
@@ -1301,96 +1373,120 @@
       "path_suffix": "api/src/test/java/org/openmrs/module/ModuleFileParserUnitTest.java",
       "line": 121,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/module/ModuleUtilTest.java",
       "line": 600,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/test/MigrateDataSet.java",
       "line": 107,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/test/jupiter/BaseContextSensitiveNonTransactionalTest.java",
       "line": 698,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/util/databasechange/Database1_9_7UpgradeIT.java",
       "line": 464,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/util/databasechange/DatabaseUpgradeTestUtil.java",
       "line": 106,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "state-resource-leak",
       "path_suffix": "web/src/test/java/org/openmrs/web/filter/update/GZIPFilterTest.java",
       "line": 76,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/module/ModuleFileParserTest.java",
+      "line": 165,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/test/CreateConceptDictionaryDataSet.java",
+      "line": 50,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "api/src/test/java/org/openmrs/test/CreateInitialDataSet.java",
+      "line": 101,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/test/TestUtil.java",
       "line": 86,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/util/DatabaseIT.java",
       "line": 121,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "cfg-resource-leak",
       "path_suffix": "api/src/test/java/org/openmrs/util/HttpClientTest.java",
       "line": 40,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "api/src/test/java/org/openmrs/test/DbUtil.java",
       "line": 111,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "test-suite/performance/src/test/java/org/openmrs/StartupPerformanceIT.java",
       "line": 251,
       "severity": "Low",
-      "verdict": "FP",
-      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "state-resource-leak-possible",
@@ -1428,14 +1524,6 @@
       "rule_id": "state-resource-leak-possible",
       "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/AddConceptMapTypesChangeset.java",
       "line": 90,
-      "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "state-resource-leak-possible",
-      "path_suffix": "api/src/main/java/org/openmrs/util/databasechange/BooleanConceptChangeSet.java",
-      "line": 133,
       "severity": "Low",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"

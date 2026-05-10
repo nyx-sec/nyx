@@ -4,8 +4,233 @@
   "lang": "python",
   "clone_url": "https://github.com/pallets/flask",
   "exercises_recall_items": [],
-  "captured_against": "placeholder",
-  "captured_on": "2026-05-08",
-  "pinned_commit": "unknown",
-  "findings": []
+  "captured_against": "real-scan @ 7374c85ddefc3f4b177a698ab9f0cbb6a5c0b392",
+  "captured_on": "2026-05-10",
+  "pinned_commit": "7374c85ddefc3f4b177a698ab9f0cbb6a5c0b392",
+  "findings": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "src/flask/cli.py",
+      "line": 1022,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "src/flask/cli.py",
+      "line": 1023,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "py.code_exec.eval",
+      "path_suffix": "src/flask/cli.py",
+      "line": 1023,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "py.code_exec.exec",
+      "path_suffix": "src/flask/config.py",
+      "line": 209,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "examples/tutorial/flaskr/auth.py",
+      "line": 92,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/test_templating.py",
+      "line": 58,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "src/flask/app.py",
+      "line": 443,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "src/flask/app.py",
+      "line": 445,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "src/flask/app.py",
+      "line": 465,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "src/flask/app.py",
+      "line": 467,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "src/flask/blueprints.py",
+      "line": 126,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "src/flask/blueprints.py",
+      "line": 128,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "src/flask/testing.py",
+      "line": 235,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "src/flask/config.py",
+      "line": 209,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "py.code_exec.compile",
+      "path_suffix": "src/flask/cli.py",
+      "line": 1023,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "py.code_exec.compile",
+      "path_suffix": "src/flask/config.py",
+      "line": 209,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "py.xss.jinja_from_string",
+      "path_suffix": "src/flask/templating.py",
+      "line": 159,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "py.xss.jinja_from_string",
+      "path_suffix": "src/flask/templating.py",
+      "line": 211,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "tests/test_basic.py",
+      "line": 37,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "tests/test_testing.py",
+      "line": 80,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "tests/test_views.py",
+      "line": 14,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "examples/tutorial/flaskr/db.py",
+      "line": 15,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "tests/test_signals.py",
+      "line": 14,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "examples/tutorial/flaskr/blog.py",
+      "line": 20,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "tests/test_appctx.py",
+      "line": 169,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "tests/test_json.py",
+      "line": 213,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "tests/test_templating.py",
+      "line": 27,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "py.crypto.sha1",
+      "path_suffix": "src/flask/sessions.py",
+      "line": 281,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
 }

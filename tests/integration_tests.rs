@@ -1052,6 +1052,24 @@ fn fp_guard_python_deser_in_unittest_assertion() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Hibernate / JPA DAO passthrough wrappers whose body is a
+/// single chain `getSession().createQuery(formal)` (or a longer chain
+/// like `getSession().getCriteriaBuilder().createQuery(formal)`).  The
+/// helper itself contributes no signal; whether each call site is
+/// parameterised is a caller-side concern.  The param-only filter must
+/// recognise method-call chain segments as pseudo-uses so the wrapper
+/// does not surface a structural `cfg-unguarded-sink` finding when
+/// taint analysis found nothing actionable.  Receiver-variable shapes
+/// (`cursor.execute(name)`, `stmt.executeUpdate(name)`) keep the
+/// finding because the receiver carries data the wrapper itself
+/// cannot reason about without taint.
+#[test]
+fn fp_guard_cfg_unguarded_dao_passthrough_java() {
+    let dir = fixture_path("fp_guards/cfg_unguarded_dao_passthrough_java");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Drupal Database Query subclasses use
 /// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
 /// statement object then bind values out of band via

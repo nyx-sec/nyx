@@ -2304,44 +2304,123 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     // and use `->` between the receiver and member, so split on the full
     // set of separators and strip a leading `$` so identifier-shaped
     // fragments line up with bare identifier names in `taint.uses`.
+    //
+    // Each segment carries an `is_call` flag so chain pieces that are
+    // themselves method invocations (`getSession()` in
+    // `getSession().createQuery(qs)`) can be recognised as pseudo-uses
+    // alongside the terminal method name.  Variable-receiver chains like
+    // `cursor.execute(name)` keep `cursor` as a real identifier and stay
+    // out of the param-only filter.
     let callee_desc = sink_info.call.callee.as_deref().unwrap_or("");
     let outer_callee = sink_info.call.outer_callee.as_deref().unwrap_or("");
-    fn split_chain(s: &str) -> impl Iterator<Item = &str> {
-        s.split(['.', ':', '>', '-']).filter_map(|piece| {
-            let seg = piece
-                .split('(')
-                .next()
-                .unwrap_or(piece)
-                .trim_start_matches('$')
-                .trim();
-            (!seg.is_empty()).then_some(seg)
-        })
+    fn split_chain_with_flags(s: &str) -> SmallVec<[(&str, bool); 8]> {
+        let mut out: SmallVec<[(&str, bool); 8]> = SmallVec::new();
+        for piece in s.split(['.', ':', '>', '-']) {
+            let stripped = piece.trim_start_matches('$').trim();
+            if stripped.is_empty() {
+                continue;
+            }
+            let (name, is_call) = match stripped.find('(') {
+                Some(idx) => (stripped[..idx].trim(), true),
+                None => (stripped, false),
+            };
+            if !name.is_empty() {
+                out.push((name, is_call));
+            }
+        }
+        out
     }
     fn is_self_root(seg: &str) -> bool {
         matches!(seg, "this" | "self" | "static" | "parent" | "cls")
     }
     let mut callee_fragments: SmallVec<[&str; 8]> = SmallVec::new();
     for src in [callee_desc, outer_callee] {
-        let mut segs = split_chain(src);
-        let Some(first) = segs.next() else { continue };
-        if is_self_root(first) {
+        let segs = split_chain_with_flags(src);
+        let Some(&(first_name, _)) = segs.first() else {
+            continue;
+        };
+        let last_idx = segs.len() - 1;
+        if is_self_root(first_name) {
             // Whole chain is callee path: `$this->inner->execute` →
             // every segment is a pseudo-use.
-            for seg in std::iter::once(first).chain(segs) {
-                if !callee_fragments.contains(&seg) {
-                    callee_fragments.push(seg);
+            for &(name, _) in &segs {
+                if !callee_fragments.contains(&name) {
+                    callee_fragments.push(name);
                 }
             }
         } else {
-            // Only the method name (last segment) is a pseudo-use.  Receiver
-            // segments like `cursor` in `cursor.execute(name)` are real
+            // The terminal method name is a pseudo-use.  Any non-last
+            // segment that is itself a method call (`getSession()` in
+            // `getSession().createQuery(qs)`) is also a pseudo-use, since
+            // the segment text in the chain refers to a method name, not
+            // a local variable.  Bare-identifier receivers like `cursor`
+            // in `cursor.execute(name)` carry no `(` and stay as real
             // local-variable values.
-            let mut last = first;
-            for seg in segs {
-                last = seg;
+            for (i, &(name, is_call)) in segs.iter().enumerate() {
+                if (is_call || i == last_idx) && !callee_fragments.contains(&name) {
+                    callee_fragments.push(name);
+                }
             }
-            if !callee_fragments.contains(&last) {
-                callee_fragments.push(last);
+        }
+    }
+
+    // Source-text scan: `callee_desc` collapses chains via `root_receiver_text`,
+    // so `getSession().getCriteriaBuilder().createQuery(qs)` reduces to
+    // `"getSession().createQuery"` and the intermediate `getCriteriaBuilder`
+    // is missing.  Walk the sink's source bytes up to the outermost args
+    // opener and lift every `IDENT(` pattern as a method-call pseudo-use.
+    // Identifiers nested inside earlier `()` groups (which open at depth 0
+    // for sibling method calls in a chain) are picked up too, so every
+    // chain hop contributes its method name.
+    let span = sink_info.classification_span();
+    let (start, end) = span;
+    if start < ctx.source_bytes.len() && end <= ctx.source_bytes.len() && start < end {
+        let span_bytes = &ctx.source_bytes[start..end];
+        if let Ok(span_text) = std::str::from_utf8(span_bytes) {
+            let bytes = span_text.as_bytes();
+            // Find the outermost args-opener: the last `(` at depth 0.
+            let mut depth: i32 = 0;
+            let mut last_open_at_zero: Option<usize> = None;
+            for (i, &b) in bytes.iter().enumerate() {
+                match b {
+                    b'(' => {
+                        if depth == 0 {
+                            last_open_at_zero = Some(i);
+                        }
+                        depth += 1;
+                    }
+                    b')' => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+            let chain_end = last_open_at_zero.unwrap_or(bytes.len());
+            // Walk the chain prefix and lift every identifier directly followed
+            // by `(` as a method-call pseudo-use.
+            let mut i = 0;
+            while i < chain_end {
+                let b = bytes[i];
+                let is_ident_start = b.is_ascii_alphabetic() || b == b'_';
+                if !is_ident_start {
+                    i += 1;
+                    continue;
+                }
+                let id_start = i;
+                while i < chain_end {
+                    let c = bytes[i];
+                    if c.is_ascii_alphanumeric() || c == b'_' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if i < chain_end && bytes[i] == b'(' {
+                    let name = &span_text[id_start..i];
+                    if !callee_fragments.contains(&name) {
+                        callee_fragments.push(name);
+                    }
+                }
             }
         }
     }

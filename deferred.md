@@ -207,19 +207,19 @@ implied or surfaced but did not finish.
       `tests/recall_gaps_baseline.json`). If a future phase needs
       these mirrored back into `.pitboss/play/`, the runner — not an
       implementer — must copy them.
-- [ ] Phase 11 audit — three of four target baselines ship as
-      placeholders. Only `cal_com.json` was captured against a real
-      clone (`/Users/elipeter/oss/cal.com` @ `d278d6c9`, 662 findings).
-      `vercel_commerce.json`, `shadcn_examples.json`, and
-      `blitz_apps.json` exist with the correct schema but
-      `findings: []` and `pinned_commit: "unknown"`. Reason: only
-      cal.com was already cloned locally; pitboss implementer agents
-      run sandboxed without network egress, so the other three
-      checkouts could not be fetched. Resolution: clone each target
-      and run `scripts/validate_recall.sh <target> <clone> --capture`
-      to populate. The `validate_real_world_targets` schema test
-      passes against placeholders because `[]` is a valid
-      `findings` array.
+- [ ] Phase 11 audit — two of four target baselines ship as
+      placeholders. `cal_com.json` was captured against a real
+      clone (`/Users/elipeter/oss/cal.com` @ `d278d6c9`, 662 findings)
+      and `blitz_apps.json` was captured 2026-05-10 (session 0013) at
+      `b18f8187`, 123 findings.  `vercel_commerce.json` and
+      `shadcn_examples.json` exist with the correct schema but
+      `findings: []` and `pinned_commit: "unknown"`. Reason: pitboss
+      implementer agents run sandboxed without network egress, so
+      those two checkouts could not be fetched. Resolution: clone
+      each target and run
+      `scripts/validate_recall.sh <target> <clone> --capture` to
+      populate. The `validate_real_world_targets` schema test passes
+      against placeholders because `[]` is a valid `findings` array.
 - [ ] Phase 11 audit — cal.com verdict triage is sparse.
       `cal_com.json` carries 662 findings; 66 are now hand-labelled
       `FP` (the original 4 `ts.crypto.math_random` plus 62 more swept
@@ -546,18 +546,6 @@ implied or surfaced but did not finish.
       `req.session.save`, etc.) from interfering with seeding, or
       extending the seeding policy with a per-member-shape filter
       that paints only `req.body`/`req.query`/etc.
-- [ ] Phase 17 audit — three placeholder cross-lang baselines remain
-      uncaptured: `tests/recall_targets/xlang/rust/axum.json`,
-      `tests/recall_targets/xlang/ruby/rails.json`, and
-      `tests/recall_targets/xlang/python/flask.json`. Reason: pitboss
-      implementer agents run sandboxed without network egress;
-      `~/oss/` had clones for php/java/python/go targets but not for
-      tokio-rs/axum, rails/rails, or pallets/flask at capture time
-      (2026-05-09). Resolution: clone each repo and run
-      `scripts/validate_recall.sh --lang <lang> <target> <clone> --capture`
-      to populate. The `validate_real_world_targets` schema test
-      passes against placeholders because `[]` is a valid `findings`
-      array.
 - [ ] Phase 17 audit — captured cross-lang findings carry partial
       TP/FP triage as of session 2 of run 20260509T074631Z-93f0:
       every finding whose `path_suffix` matches a conventional test

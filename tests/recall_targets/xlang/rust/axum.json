@@ -4,8 +4,73 @@
   "lang": "rust",
   "clone_url": "https://github.com/tokio-rs/axum",
   "exercises_recall_items": [],
-  "captured_against": "placeholder",
-  "captured_on": "2026-05-08",
-  "pinned_commit": "unknown",
-  "findings": []
+  "captured_against": "real-scan @ c853e44ffce77b771069b6df6bd5adc1b78f1b2f",
+  "captured_on": "2026-05-10",
+  "pinned_commit": "c853e44ffce77b771069b6df6bd5adc1b78f1b2f",
+  "findings": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "examples/form/src/main.rs",
+      "line": 71,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "examples/stream-to-file/src/main.rs",
+      "line": 96,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "path_suffix": "examples/dependency-injection/src/main.rs",
+      "line": 114,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "path_suffix": "examples/dependency-injection/src/main.rs",
+      "line": 144,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "path_suffix": "examples/mongodb/src/main.rs",
+      "line": 84,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "path_suffix": "examples/mongodb/src/main.rs",
+      "line": 110,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "examples/websockets-http2/assets/script.js",
+      "line": 1,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "examples/sqlx-postgres/src/main.rs",
+      "line": 67,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
 }
