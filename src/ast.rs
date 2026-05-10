@@ -1120,6 +1120,25 @@ impl<'a> ParsedSource<'a> {
                     {
                         continue;
                     }
+                    // Layer C3: PHP `unserialize($x)` inside a PHPUnit
+                    // assertion of the form
+                    // `$this->assertSame(LITERAL, unserialize($x))`
+                    // (or `assertEquals` / `assertNull` / static / self
+                    // / parent dispatch variants).  The literal expected
+                    // value bounds the unserialize result so the
+                    // call-site cannot release attacker-controlled
+                    // object graphs into the test process — failed
+                    // assertions abort the test rather than leak side
+                    // effects.  Drupal / Joomla / Nextcloud each carry
+                    // tens of these `Serializable` round-trip
+                    // assertions in their test trees and every firing
+                    // is noise.
+                    if cq.meta.id == "php.deser.unserialize"
+                        && self.lang_slug == "php"
+                        && is_php_unserialize_inside_phpunit_assertion(cap.node, self.bytes)
+                    {
+                        continue;
+                    }
                     // Layer D: C/C++ buffer-overflow pattern rules
                     // (`{c,cpp}.memory.strcpy`, `strcat`, `sprintf`) fire
                     // syntactically on every call regardless of argument
@@ -2827,6 +2846,242 @@ fn is_php_unserialize_magic_method_passthrough(cap_node: tree_sitter::Node, byte
         return false;
     };
     arg_name == param_name
+}
+
+/// PHP-only Layer C3: returns `true` when an `unserialize($x)` call
+/// site is the second (or later) argument of a PHPUnit assertion call
+/// whose first (expected) argument is a literal expression
+/// (scalar, array literal, class constant access, or unary on a
+/// literal).
+///
+/// **Why this is a non-actionable site for `php.deser.unserialize`:**
+/// PHPUnit's `assertSame($expected, $actual)` /
+/// `assertEquals(...)` / `assertNull(...)` family bound the
+/// `unserialize` result to the literal expected value: if the
+/// `$blob` argument were attacker-controlled and produced a
+/// different shape, the assertion would fail loudly rather than
+/// permit any object-injection side effect to escape the test
+/// boundary.  Drupal, Joomla, and Nextcloud each carry tens of
+/// these `Serializable` / cache / session round-trip tests and
+/// every firing is noise; the actionable signal lives at the
+/// production call sites that thread real input through
+/// `unserialize` without an assertion sandwich.
+///
+/// Conservative recognition:
+/// - the `unserialize(...)` call must be wrapped in an `argument`
+///   node whose parent is `arguments`
+/// - the enclosing call must be a `member_call_expression`,
+///   `nullsafe_member_call_expression`, `scoped_call_expression`,
+///   or `function_call_expression` with a method/function name
+///   starting with `assert` (case-insensitive) — covers the entire
+///   PHPUnit assertion family
+/// - the assertion must have at least two argument slots (an
+///   expected/actual pair)
+/// - the first argument's inner expression must be a literal: a
+///   string / number / boolean / null literal, an
+///   `array_creation_expression` whose elements are recursively
+///   literal, a `class_constant_access_expression`, or a unary
+///   sign on one of the above
+///
+/// Genuine production sites (`unserialize($_GET[...])`, helpers
+/// reading from session/cache and handing the value to caller
+/// code) keep firing because they are not wrapped in a PHPUnit
+/// assertion.  Single-argument assertions (`assertNotNull($x)`)
+/// and assertions whose expected value is itself dynamic
+/// (`assertEquals($computed, unserialize($blob))`) keep firing
+/// because the bound is not statically verifiable.
+fn is_php_unserialize_inside_phpunit_assertion(
+    cap_node: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    // The pattern captures `@n` (the function name); locate the enclosing
+    // function_call_expression.  Mirrors the magic-method recogniser.
+    let call_node = if cap_node.kind() == "function_call_expression" {
+        cap_node
+    } else {
+        let mut cur = cap_node;
+        let mut found = None;
+        for _ in 0..4 {
+            if cur.kind() == "function_call_expression" {
+                found = Some(cur);
+                break;
+            }
+            match cur.parent() {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        match found {
+            Some(c) => c,
+            None => return false,
+        }
+    };
+
+    // The unserialize call must sit directly inside an `argument` wrapper
+    // that is itself inside an `arguments` list.  Reject any wrapping
+    // expression (binary, conditional, etc.) — those break the literal
+    // bounding the assertion provides.
+    let Some(arg_wrapper) = call_node.parent() else {
+        return false;
+    };
+    if arg_wrapper.kind() != "argument" {
+        return false;
+    }
+    let Some(arguments) = arg_wrapper.parent() else {
+        return false;
+    };
+    if arguments.kind() != "arguments" {
+        return false;
+    }
+    let Some(assertion_call) = arguments.parent() else {
+        return false;
+    };
+    if !matches!(
+        assertion_call.kind(),
+        "member_call_expression"
+            | "nullsafe_member_call_expression"
+            | "scoped_call_expression"
+            | "function_call_expression"
+    ) {
+        return false;
+    }
+
+    // Method/function name must start with `assert` (case-insensitive).
+    let name_node = assertion_call
+        .child_by_field_name("name")
+        .or_else(|| find_named_child_of_kind(assertion_call, "name"));
+    let Some(name_node) = name_node else {
+        return false;
+    };
+    let Ok(method_name) = std::str::from_utf8(&bytes[name_node.byte_range()]) else {
+        return false;
+    };
+    if !method_name
+        .chars()
+        .take(6)
+        .collect::<String>()
+        .eq_ignore_ascii_case("assert")
+    {
+        return false;
+    }
+
+    // Collect the assertion's argument wrappers.
+    let mut args: Vec<tree_sitter::Node> = Vec::new();
+    for i in 0..arguments.named_child_count() as u32 {
+        if let Some(c) = arguments.named_child(i)
+            && c.kind() == "argument"
+        {
+            args.push(c);
+        }
+    }
+    if args.is_empty() {
+        return false;
+    }
+
+    // Single-arg assertions: the verb itself bounds the result
+    // (`assertNull`, `assertIsArray`, `assertTrue`, ...).  Restrict to
+    // a curated set so generic `assertSomething(unserialize($x))`
+    // helpers without a documented bound don't qualify.
+    if args.len() == 1 {
+        return is_phpunit_single_arg_bounding_verb(method_name);
+    }
+
+    // Multi-arg assertions: the first argument is the expected /
+    // literal-pinned value (PHPUnit's documented `$expected, $actual`
+    // order).  The expected must be a static literal expression.
+    let Some(first_inner) = args[0].named_child(0) else {
+        return false;
+    };
+    is_php_assertion_literal_expected(first_inner, bytes)
+}
+
+/// PHPUnit single-arg assertion verbs whose name itself constrains
+/// the inspected value to a known type or constant.  When
+/// `unserialize($x)` is the sole argument to one of these, a failed
+/// assertion aborts the test rather than letting an object-injection
+/// side effect escape.
+fn is_phpunit_single_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "assertnull"
+            | "assertnotnull"
+            | "assertempty"
+            | "assertnotempty"
+            | "asserttrue"
+            | "assertfalse"
+            | "assertnan"
+            | "assertfinite"
+            | "assertinfinite"
+            | "assertisarray"
+            | "assertisnotarray"
+            | "assertisbool"
+            | "assertisnotbool"
+            | "assertiscallable"
+            | "assertisnotcallable"
+            | "assertisfloat"
+            | "assertisnotfloat"
+            | "assertisint"
+            | "assertisnotint"
+            | "assertisiterable"
+            | "assertisnotiterable"
+            | "assertisnumeric"
+            | "assertisnotnumeric"
+            | "assertisobject"
+            | "assertisnotobject"
+            | "assertisresource"
+            | "assertisnotresource"
+            | "assertisclosedresource"
+            | "assertisnotclosedresource"
+            | "assertisstring"
+            | "assertisnotstring"
+            | "assertisscalar"
+            | "assertisnotscalar"
+    )
+}
+
+/// PHP-only helper: returns `true` if `node` is a statically literal
+/// expression suitable as the "expected" argument of a PHPUnit
+/// assertion.  Recursive: array elements must themselves be literal.
+/// Class constants (`Foo::BAR`) count as literal — they resolve to
+/// build-time values and PHPUnit treats them as expected pinning.
+fn is_php_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    match node.kind() {
+        "string"
+        | "integer"
+        | "float"
+        | "boolean"
+        | "null"
+        | "true"
+        | "false"
+        | "class_constant_access_expression"
+        | "scoped_property_access_expression" => true,
+        "encapsed_string" => !has_interpolation(node),
+        "unary_op_expression" => node
+            .named_child(0)
+            .is_some_and(|c| is_php_assertion_literal_expected(c, bytes)),
+        "array_creation_expression" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(child) = node.named_child(i) else {
+                    return false;
+                };
+                if child.kind() != "array_element_initializer" {
+                    return false;
+                }
+                // array_element_initializer can have one (value) or
+                // two (key, value) named children; both must be literal.
+                for j in 0..child.named_child_count() as u32 {
+                    let Some(grand) = child.named_child(j) else {
+                        return false;
+                    };
+                    if !is_php_assertion_literal_expected(grand, bytes) {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 /// C/C++-only Layer D: structural suppression of buffer-overflow pattern
@@ -5128,6 +5383,135 @@ fn php_unserialize_magic_method_passthrough_recognises_serializable_contract() {
     assert!(
         !is_php_unserialize_magic_method_passthrough(cap, code),
         "closure should NOT be suppressed"
+    );
+}
+
+#[test]
+fn php_unserialize_inside_phpunit_assertion_recognises_roundtrip_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(function_call_expression function: (name) @n (#eq? @n "unserialize")) @vuln"#;
+
+    // Canonical assertSame with array literal expected.
+    let code = b"<?php\nclass T { public function t() { $this->assertSame(['a' => 1], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertSame(literal array, unserialize($x)) should be suppressed"
+    );
+
+    // assertEquals with scalar string expected.
+    let code =
+        b"<?php\nclass T { public function t() { $this->assertEquals('hello', unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertEquals(literal string, unserialize($x)) should be suppressed"
+    );
+
+    // Static dispatch: static::assertSame(...).
+    let code = b"<?php\nclass T { public function t() { static::assertSame(['x'], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "static::assertSame should be suppressed"
+    );
+
+    // Self dispatch: self::assertEquals(...).
+    let code = b"<?php\nclass T { public function t() { self::assertEquals(['y'], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "self::assertEquals should be suppressed"
+    );
+
+    // Single-arg verb: assertNull(unserialize($x)).  The verb itself
+    // bounds the result.
+    let code = b"<?php\nclass T { public function t() { $this->assertNull(unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertNull(unserialize($x)) should be suppressed (verb bounds the result)"
+    );
+
+    // Single-arg verb: assertIsArray(unserialize($x)).
+    let code = b"<?php\nclass T { public function t() { $this->assertIsArray(unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertIsArray(unserialize($x)) should be suppressed"
+    );
+
+    // Case-insensitive method name (PHP semantics).
+    let code = b"<?php\nclass T { public function t() { $this->AssertSame(['z'], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "method name should match case-insensitively"
+    );
+
+    // Free function `unserialize` outside any assertion: keep firing.
+    let code = b"<?php\n$x = unserialize($_GET['blob']);\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "unserialize outside any assertion should NOT be suppressed"
+    );
+
+    // assertEquals with a NON-literal first arg ($computed) keeps firing —
+    // the result is not statically pinned.
+    let code = b"<?php\nclass T { public function t($e) { $this->assertEquals($e, unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertEquals($computed, unserialize($x)) should NOT be suppressed"
+    );
+
+    // Single-arg unrecognised assertion verb keeps firing.
+    let code = b"<?php\nclass T { public function t() { $this->assertSomethingCustom(unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "1-arg unknown assertion verb should NOT be suppressed"
+    );
+
+    // Wrapping in another expression (binary, ternary) breaks the
+    // bound — unserialize is no longer the direct argument.  Conservative.
+    let code = b"<?php\nclass T { public function t() { $this->assertSame(['x'], unserialize($b) ?: []); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "wrapped (ternary) unserialize argument should NOT be suppressed"
+    );
+
+    // Method call whose name does NOT start with `assert` keeps firing.
+    let code = b"<?php\nclass T { public function t() { $this->log(['x'], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "non-assert method should NOT be suppressed"
+    );
+
+    // First arg is a literal but it's a single-arg call (no actual) — defensive.
+    let code = b"<?php\nclass T { public function t() { $this->assertSame(unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "single-arg `assertSame(unserialize($x))` should NOT be suppressed (no expected)"
     );
 }
 

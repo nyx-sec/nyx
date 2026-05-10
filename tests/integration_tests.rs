@@ -1022,6 +1022,22 @@ fn fp_guard_php_unserialize_allowed_classes() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, `php.deser.unserialize` inside a PHPUnit assertion call
+/// of the shape `$this->assertSame(LITERAL, unserialize($blob))` (and
+/// the `assertEquals` / `assertNull` / `assertIsArray` family,
+/// including `static::` / `self::` / `parent::` dispatch).  Drupal,
+/// Joomla, and Nextcloud each carry tens of these `Serializable` /
+/// cache / session round-trip tests in their test trees; the literal
+/// expected value bounds the `unserialize` result so a poisoned blob
+/// would abort the test rather than escape an object-injection side
+/// effect.
+#[test]
+fn fp_guard_php_unserialize_in_phpunit_assertion() {
+    let dir = fixture_path("fp_guards/php_unserialize_in_phpunit_assertion");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Drupal Database Query subclasses use
 /// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
 /// statement object then bind values out of band via
