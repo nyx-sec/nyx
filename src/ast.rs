@@ -792,7 +792,7 @@ fn is_binary(bytes: &[u8]) -> bool {
 /// intentionally excluded because they are too broad when scanning
 /// absolute paths.  Severity-downgrade for those directories lives in
 /// [`is_nonprod_path`].
-fn is_test_file(path: &Path) -> bool {
+pub(crate) fn is_test_file(path: &Path) -> bool {
     // Filename-suffix conventions that are unambiguous markers of a test
     // module.  Each entry must end with a `.<ext>` suffix so PHP
     // `*Test.php` does not match a class file named `MyContestTest.php`

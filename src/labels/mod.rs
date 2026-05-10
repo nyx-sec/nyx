@@ -1102,6 +1102,17 @@ fn ends_with_cs(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> bool {
     }
 }
 
+/// Allocation-free ASCII-case-insensitive prefix check on `&str` inputs.
+/// Used by the gated-sink dispatch hot path where the previous
+/// `value.to_ascii_lowercase().starts_with(&p.to_ascii_lowercase())` pair
+/// allocated two `String` values per check.
+#[inline]
+fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    h.len() >= n.len() && h[..n.len()].eq_ignore_ascii_case(n)
+}
+
 /// Prefix check with configurable case sensitivity.  The `=` exact-match
 /// sigil is meaningless for prefix matchers (which by definition match many
 /// suffixes); it is stripped if present so a malformed matcher like
@@ -1667,8 +1678,7 @@ pub fn classify_gated_sink(
                 }
                 match const_keyword_arg(name) {
                     Some(v) => {
-                        let lower = v.to_ascii_lowercase();
-                        if values.iter().any(|dv| lower == dv.to_ascii_lowercase()) {
+                        if values.iter().any(|dv| v.eq_ignore_ascii_case(dv)) {
                             any_dangerous = true;
                             break;
                         }
@@ -1710,15 +1720,14 @@ pub fn classify_gated_sink(
 
         match activation_value {
             Some(value) => {
-                let lower = value.to_ascii_lowercase();
                 let is_dangerous = gate
                     .dangerous_values
                     .iter()
-                    .any(|v| lower == v.to_ascii_lowercase())
+                    .any(|v| value.eq_ignore_ascii_case(v))
                     || gate
                         .dangerous_prefixes
                         .iter()
-                        .any(|p| lower.starts_with(&p.to_ascii_lowercase()));
+                        .any(|p| starts_with_ignore_ascii_case(&value, p));
                 if is_dangerous {
                     out.push(GateMatch {
                         label: gate.label,
@@ -3208,6 +3217,20 @@ mod tests {
         let result = classify_all("javascript", "innerHTML", None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], DataLabel::Sink(Cap::HTML_ESCAPE));
+    }
+
+    #[test]
+    fn starts_with_ignore_ascii_case_matches_canonical_shapes() {
+        assert!(starts_with_ignore_ascii_case("FILE://etc/passwd", "file://"));
+        assert!(starts_with_ignore_ascii_case("file://etc/passwd", "FILE://"));
+        assert!(starts_with_ignore_ascii_case("http://", "http://"));
+        assert!(starts_with_ignore_ascii_case("http://", ""));
+        assert!(!starts_with_ignore_ascii_case("http", "https"));
+        assert!(!starts_with_ignore_ascii_case("", "x"));
+        // Multibyte UTF-8: the helper is intentionally ASCII-only; non-ASCII
+        // bytes compare byte-for-byte (no Unicode case folding).
+        assert!(starts_with_ignore_ascii_case("café", "café"));
+        assert!(!starts_with_ignore_ascii_case("café", "CAFÉ"));
     }
 
     #[test]

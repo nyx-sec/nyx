@@ -423,18 +423,6 @@ implied or surfaced but did not finish.
       fire or under-fire (e.g. an internal method also named
       `execute` / `raw` / `where`).  Add a fixture exercising
       one of these shapes when a real-world recall gap surfaces.
-- [ ] Phase 15 audit — realrepo memory baselines (phpmyadmin,
-      joomla, drupal, openmrs, nextcloud) were NOT re-run as part
-      of this implementation phase.  The pitboss implementer
-      sandbox does not have network egress to clone the upstream
-      repos, and the per-target snapshots live in
-      [project_realrepo_*.md] memory entries that are not
-      automated tests.  In-tree `cargo test` (debug) passes 0
-      failures across 27 recall_gaps tests (added: `orm_xlang`)
-      and the full suite, but cross-repo non-regression must be
-      verified out-of-band (re-run scripts/validate_recall.sh per
-      target after this branch lands and update memory entries
-      with deltas).
 - [ ] Phase 14 audit (spec deviation) — phase plan explicitly
       requested new `TypeKind::{PyUrl, JavaUri, RustUrl, GoUrl}`
       variants per receiver type that aliases a URL.  The
@@ -558,22 +546,6 @@ implied or surfaced but did not finish.
       `req.session.save`, etc.) from interfering with seeding, or
       extending the seeding policy with a per-member-shape filter
       that paints only `req.body`/`req.query`/etc.
-- [ ] Phase 16 audit — realrepo memory baselines (phpmyadmin,
-      joomla, drupal, openmrs, nextcloud, outline) were NOT
-      re-run as part of Phase 16.  Same rationale as Phase 15:
-      pitboss implementer sandbox lacks network egress to clone
-      the upstream repos; the per-target snapshots live in
-      `project_realrepo_*.md` memory entries that are not
-      automated tests.  Phase 16 only added new fixtures under
-      `tests/fixtures/realistic/entry_points_xlang/` and one
-      new entry-point seeding policy plus the
-      `EntryKind::ExpressRoute` variant.  In-tree
-      `cargo test` (debug) passes 0 failures across 28
-      `recall_gaps` tests (added: `entry_points_xlang`) and
-      2537 lib tests.  Cross-repo non-regression must be
-      verified out-of-band (re-run `scripts/validate_recall.sh`
-      per target after this branch lands and update memory
-      entries with deltas).
 - [ ] Phase 17 audit — three placeholder cross-lang baselines remain
       uncaptured: `tests/recall_targets/xlang/rust/axum.json`,
       `tests/recall_targets/xlang/ruby/rails.json`, and

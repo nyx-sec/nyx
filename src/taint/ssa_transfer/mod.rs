@@ -304,10 +304,21 @@ fn run_ssa_taint_internal(
     // most variants seed every named formal; Express seeds only the
     // first (`req`); `net/http` seeds only the second (`r` after `w`);
     // class-method shapes (Django CBV) skip implicit `self`.
-    if let (Some(entry_kind), Some(state)) = (
-        transfer.entry_kind.as_ref(),
-        block_states[ssa.entry.0 as usize].as_mut(),
-    ) {
+    // Entry-kind seeding paints framework handler formals as
+    // adversary-controlled.  Suppress entirely when the body lives in a
+    // test file: closures with the right shape (`func(c *gin.Context)`,
+    // `func(req, res)`, etc.) appear in unit tests as scaffolding, not
+    // as request-reachable production routes.  Painting their formals
+    // as Source surfaces every internal sink the test exercises as a
+    // finding whose "attacker" is the test author.
+    let body_in_test_file = !transfer.namespace.is_empty()
+        && crate::ast::is_test_file(std::path::Path::new(transfer.namespace));
+    if !body_in_test_file
+        && let (Some(entry_kind), Some(state)) = (
+            transfer.entry_kind.as_ref(),
+            block_states[ssa.entry.0 as usize].as_mut(),
+        )
+    {
         use crate::entry_points::EntryKind;
         let source_kind = SourceKind::UserInput;
         // (skip_self_param, only_param_index, seed_at_all) —
