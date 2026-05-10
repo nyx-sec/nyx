@@ -693,25 +693,6 @@ implied or surfaced but did not finish.
       `docs/recall-validation.md`; unify only when a JS-specific
       precision phase needs a re-capture anyway.
 
-- [ ] Multi-hop sink attribution — `cve-rb-2023-38337-vulnerable`
-      ground-truth recalibration.  2026-05-10 session 0008 landed
-      option (2) (`from_chain` flag on `SinkSite`).  Multi-hop java
-      benchmark cases now gain location-level TPs, but
-      `cve-rb-2023-38337-vulnerable` regressed: ground truth expects
-      the engine to attribute at line 58 (call site of `parse_file`),
-      whereas the engine now correctly attributes at line 76 (the
-      `File.read` inside `load_yaml`, several frames down).  The
-      deeper attribution is structurally more accurate (line 76 is
-      where the path-traversal sink actually lives), so the engine
-      change is the long-term-correct shape.  Net benchmark delta:
-      from 2 FN to 1 FN at location level (+1 TP).  Resolution
-      paths: (a) update the ruby fixture's `expected_sink_lines` to
-      `[[76, 80]]` covering both `load_yaml`/`load_json` arms, or
-      (b) accept the regression as the cost of more accurate
-      multi-hop attribution.  Park until a design call on whether
-      benchmark calibration should track engine attribution
-      improvements automatically or be hand-curated.
-
 - [ ] PHP foreach-key string interpolation FP. Shape:
       `foreach ($variables as $var => $val) {
          $connection->executeQuery("SHOW VARIABLES LIKE '$var'");

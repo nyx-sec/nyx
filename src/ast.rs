@@ -785,20 +785,71 @@ fn is_binary(bytes: &[u8]) -> bool {
 }
 
 /// Check if a file path indicates a test file. Matches filename-based
-/// conventions (`.test.js`, `.spec.ts`) and the `__tests__` directory
-/// convention.  Directory-only checks (`test/`, `tests/`, `fixtures/`)
-/// are intentionally excluded because they're too broad when scanning
-/// absolute paths.
+/// conventions across the languages the engine supports, plus the
+/// `__tests__` directory convention used by JS/TS tooling.
+///
+/// Directory-only checks (`test/`, `tests/`, `fixtures/`) are
+/// intentionally excluded because they are too broad when scanning
+/// absolute paths.  Severity-downgrade for those directories lives in
+/// [`is_nonprod_path`].
 fn is_test_file(path: &Path) -> bool {
+    // Filename-suffix conventions that are unambiguous markers of a test
+    // module.  Each entry must end with a `.<ext>` suffix so PHP
+    // `*Test.php` does not match a class file named `MyContestTest.php`
+    // — the engine's recogniser matches on the filename, not class
+    // declarations.
     static TEST_SUFFIXES: &[&str] = &[
+        // JS / TS
         ".test.js",
         ".test.ts",
         ".test.jsx",
         ".test.tsx",
+        ".test.mjs",
+        ".test.cjs",
         ".spec.js",
         ".spec.ts",
         ".spec.jsx",
         ".spec.tsx",
+        ".spec.mjs",
+        ".spec.cjs",
+        // Python (`pytest` and `unittest` conventions)
+        "_test.py",
+        "_tests.py",
+        // Java (JUnit / TestNG)
+        "Test.java",
+        "Tests.java",
+        "IT.java",
+        // PHP (PHPUnit)
+        "Test.php",
+        // Ruby (RSpec / Minitest)
+        "_spec.rb",
+        "_test.rb",
+        // Go
+        "_test.go",
+        // Rust (uncommon but used by some crates)
+        "_test.rs",
+        "_tests.rs",
+        // C / C++ (varies; cover the common shapes)
+        "_test.c",
+        "_test.cc",
+        "_test.cpp",
+        "_test.cxx",
+        "_test.h",
+        "_test.hpp",
+    ];
+
+    // Filename-prefix conventions for languages whose convention puts
+    // the `test_` marker at the start instead of the end.
+    static TEST_PREFIXES: &[&str] = &[
+        // Python (`pytest`)
+        "test_",
+        // C / C++ test runners
+    ];
+
+    // Exact filenames that are always test infrastructure.
+    static TEST_EXACT: &[&str] = &[
+        // Pytest fixture entry point (always a test helper, never prod)
+        "conftest.py",
     ];
 
     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -807,9 +858,28 @@ fn is_test_file(path: &Path) -> bool {
                 return true;
             }
         }
+        for prefix in TEST_PREFIXES {
+            if name.starts_with(prefix)
+                && (name.ends_with(".py")
+                    || name.ends_with(".c")
+                    || name.ends_with(".cc")
+                    || name.ends_with(".cpp")
+                    || name.ends_with(".cxx"))
+            {
+                return true;
+            }
+        }
+        if TEST_EXACT.contains(&name) {
+            return true;
+        }
     }
 
-    // __tests__ is specific enough (React/Jest convention) to match on directory
+    // `__tests__` is specific enough (React/Jest convention) to match on
+    // directory.  Other test directories (`tests/`, `test/`, `spec/`)
+    // overlap with production paths in some real codebases (e.g.
+    // django apps that ship a `tests` submodule alongside production
+    // code under the same package), so the broad directory check stays
+    // in [`is_nonprod_path`] for severity downgrade only.
     for component in path.components() {
         if let std::path::Component::Normal(c) = component
             && c == "__tests__"
@@ -889,9 +959,19 @@ pub(crate) fn is_vendored_asset_path(path: &Path) -> bool {
 /// Pattern IDs that are noise-prone in test files (fixture credentials,
 /// non-crypto randomness, plain HTTP in test harnesses).
 fn is_test_suppressible_pattern(id: &str) -> bool {
-    // Suffix-match to handle both js. and ts. prefixes
+    // Suffix-match so a single rule covers the per-language prefixes
+    // (`js.`, `ts.`, `go.`, `php.`, `py.`, `rb.`, `java.`).  Each entry
+    // is a class of finding that is informational at best in a test
+    // module: hardcoded test API tokens, weak hashes used for fast
+    // deterministic test data, insecure RNG used for fixture seeding.
     id.ends_with(".secrets.hardcoded_secret")
+        || id.ends_with(".secrets.hardcoded_key")
         || id.ends_with(".crypto.math_random")
+        || id.ends_with(".crypto.insecure_random")
+        || id.ends_with(".crypto.weak_digest")
+        || id.ends_with(".crypto.md5")
+        || id.ends_with(".crypto.sha1")
+        || id.ends_with(".crypto.rand")
         || id.ends_with(".transport.fetch_http")
 }
 
@@ -5410,6 +5490,89 @@ fn nonprod_path_detection() {
     assert!(!is_nonprod_path(Path::new("src/main.rs")));
     assert!(!is_nonprod_path(Path::new("lib/handler.py")));
     assert!(!is_nonprod_path(Path::new("app/views.py")));
+}
+
+#[test]
+fn test_file_detection_covers_all_supported_languages() {
+    // JS / TS — the existing surface, kept as a regression guard.
+    assert!(is_test_file(Path::new("src/foo.test.js")));
+    assert!(is_test_file(Path::new("src/foo.test.ts")));
+    assert!(is_test_file(Path::new("src/foo.spec.tsx")));
+    assert!(is_test_file(Path::new("src/foo.test.mjs")));
+    assert!(is_test_file(Path::new("src/__tests__/Component.jsx")));
+
+    // Python.
+    assert!(is_test_file(Path::new("tests/test_login.py")));
+    assert!(is_test_file(Path::new("project/views_test.py")));
+    assert!(is_test_file(Path::new("project/tests/conftest.py")));
+    assert!(is_test_file(Path::new("project/foo_tests.py")));
+
+    // Java (JUnit / TestNG).
+    assert!(is_test_file(Path::new("src/UserTest.java")));
+    assert!(is_test_file(Path::new("src/UserTests.java")));
+    assert!(is_test_file(Path::new("src/UserIT.java")));
+
+    // PHP (PHPUnit).
+    assert!(is_test_file(Path::new(
+        "tests/unit/Gis/GisVisualizationTest.php"
+    )));
+
+    // Ruby (RSpec / Minitest).
+    assert!(is_test_file(Path::new("spec/widget_spec.rb")));
+    assert!(is_test_file(Path::new("test/widget_test.rb")));
+
+    // Go.
+    assert!(is_test_file(Path::new("pkg/auth/login_test.go")));
+
+    // Rust (uncommon but valid).
+    assert!(is_test_file(Path::new("src/parser_test.rs")));
+
+    // C / C++.
+    assert!(is_test_file(Path::new("src/auth_test.c")));
+    assert!(is_test_file(Path::new("src/auth_test.cpp")));
+    assert!(is_test_file(Path::new("tests/test_main.cc")));
+
+    // Production paths must NOT match.
+    assert!(!is_test_file(Path::new("src/main.rs")));
+    assert!(!is_test_file(Path::new("src/UserController.java")));
+    assert!(!is_test_file(Path::new("app/views.py")));
+    assert!(!is_test_file(Path::new("pkg/auth/login.go")));
+    assert!(!is_test_file(Path::new("src/handler.go")));
+    assert!(!is_test_file(Path::new("src/Foo.php")));
+    assert!(!is_test_file(Path::new("src/Controllers/Operations.php")));
+}
+
+#[test]
+fn test_suppressible_pattern_covers_cross_language_noise() {
+    // JS / TS — pre-existing surface, kept as a regression guard.
+    assert!(is_test_suppressible_pattern("js.crypto.math_random"));
+    assert!(is_test_suppressible_pattern("ts.crypto.math_random"));
+    assert!(is_test_suppressible_pattern("js.secrets.hardcoded_secret"));
+    assert!(is_test_suppressible_pattern("ts.transport.fetch_http"));
+
+    // Cross-language extensions added so weak crypto / hardcoded test
+    // tokens / insecure RNG used as fixture seeds do not surface as
+    // findings inside test modules.
+    assert!(is_test_suppressible_pattern("php.crypto.md5"));
+    assert!(is_test_suppressible_pattern("php.crypto.sha1"));
+    assert!(is_test_suppressible_pattern("php.crypto.rand"));
+    assert!(is_test_suppressible_pattern("py.crypto.md5"));
+    assert!(is_test_suppressible_pattern("py.crypto.sha1"));
+    assert!(is_test_suppressible_pattern("rb.crypto.md5"));
+    assert!(is_test_suppressible_pattern("go.crypto.md5"));
+    assert!(is_test_suppressible_pattern("go.crypto.sha1"));
+    assert!(is_test_suppressible_pattern("go.secrets.hardcoded_key"));
+    assert!(is_test_suppressible_pattern("java.crypto.weak_digest"));
+    assert!(is_test_suppressible_pattern("java.crypto.insecure_random"));
+
+    // Other security-relevant patterns must NOT be suppressed in tests:
+    // they capture real attack surface that test fixtures themselves can
+    // demonstrate (deserialization, command injection, taint flows).
+    assert!(!is_test_suppressible_pattern("php.deser.unserialize"));
+    assert!(!is_test_suppressible_pattern("py.deser.pickle_loads"));
+    assert!(!is_test_suppressible_pattern("php.cmdi.system"));
+    assert!(!is_test_suppressible_pattern("taint-unsanitised-flow"));
+    assert!(!is_test_suppressible_pattern("cfg-unguarded-sink"));
 }
 
 #[test]

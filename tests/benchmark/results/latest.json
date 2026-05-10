@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-10T14:15:00Z",
+  "timestamp": "2026-05-10T16:31:51Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9,7 +9,7 @@
     "state_analysis_enabled": true,
     "worker_threads": 1
   },
-  "ground_truth_hash": "sha256:71deecd25a3cb023775bc2465e171c5836a85d048b3a5a9652a49b4c59bf5f89",
+  "ground_truth_hash": "sha256:00a4629e50841ab26c7ba947adfdab43b909d72d7a0885d604e702cc56552eb4",
   "corpus_size": 565,
   "cases_run": 562,
   "cases_skipped": 3,
@@ -2172,7 +2172,7 @@
       "is_vulnerable": true,
       "outcome_file_level": "TP",
       "outcome_rule_level": "TP",
-      "outcome_location_level": "FN",
+      "outcome_location_level": "TP",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 54:5)"
       ],
