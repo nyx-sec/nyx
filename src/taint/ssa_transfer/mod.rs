@@ -8118,7 +8118,21 @@ fn try_container_propagation(
         ContainerOp::Load { index_arg } => {
             let container_val = match resolve_container(receiver) {
                 Some(v) => v,
-                None => return false,
+                None => {
+                    // Java safe-lookup field fallback: when the receiver is a
+                    // free identifier (no SSA value to look up) and the
+                    // callee text is `<NAME>.get`, check whether `<NAME>`
+                    // is a class field whose initializer is a recognised
+                    // safe map (`final ... = Map.of(literal, literal,
+                    // ...)`).  In that case the lookup result is bounded
+                    // to the literal value set, so a tainted key cannot
+                    // taint the result; leave `inst.value` untainted and
+                    // claim the call as handled.
+                    if lang == Lang::Java && try_java_safe_field_lookup_load(callee) {
+                        return true;
+                    }
+                    return false;
+                }
             };
 
             // Resolve index argument to HeapSlot.
@@ -10214,6 +10228,31 @@ fn is_stringify_callee(callee: &str) -> bool {
 /// Returns `false` when `static_map` is `None`, when any value is missing,
 /// or when any value's bounded set contains a shell metacharacter, the
 /// predicate is conservative, so a missing entry never suppresses.
+/// Java-only suppression for the free-identifier `<FIELD>.get(key)` shape.
+///
+/// When a class field is initialized with `Map.of(literal, literal, ...)`
+/// and the consumer references it via the bare field name (no `this.` /
+/// no SSA-resolved receiver) the receiver lookup in `try_container_
+/// propagation` fails, leaving the engine to fall back to default
+/// arg-to-result propagation.  This walks the callee text — required to
+/// be a single-segment `<FIELD>.get` — and consults the per-file
+/// safe-lookup map populated by the build_cfg pre-pass.  Returns `true`
+/// when the lookup is safe to suppress.
+fn try_java_safe_field_lookup_load(callee: &str) -> bool {
+    let Some(dot_pos) = callee.rfind('.') else {
+        return false;
+    };
+    let receiver_name = &callee[..dot_pos];
+    let method = &callee[dot_pos + 1..];
+    if method != "get" {
+        return false;
+    }
+    if receiver_name.is_empty() || receiver_name.contains('.') || receiver_name.contains('(') {
+        return false;
+    }
+    crate::cfg::safe_fields::safe_lookup_field_values(receiver_name).is_some()
+}
+
 fn is_static_map_shell_safe(
     values: &[SsaValue],
     static_map: Option<&crate::ssa::static_map::StaticMapResult>,

@@ -1143,6 +1143,25 @@ fn fp_guard_url_builder_const_base() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Java `final ... = Map.of(literal, literal, ...)` allowlist
+/// fields suppress the free-identifier `<FIELD>.get(taintedKey)` lookup so
+/// downstream sinks (here, `res.setHeader`) do NOT surface
+/// `taint-header-injection`.  Mirrors the CVE-2017-12629 patched
+/// counterpart shape: the engine had no model for unresolved-receiver
+/// container loads, so default arg-to-result propagation tainted the
+/// lookup result even though every value in the map is a literal.
+/// `safe_fields::collect_safe_lookup_fields` extracts the literal value
+/// set during CFG construction; the SSA taint engine consults the per-
+/// file view from `try_container_propagation`'s Load fallback and leaves
+/// the result untainted.  Recall control under `UnsafeBypass.java` MUST
+/// still surface a `taint-header-injection`.
+#[test]
+fn fp_guard_java_safe_map_field_lookup() {
+    let dir = fixture_path("fp_guards/java_safe_map_field_lookup");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, third-party bundled / minified assets must be skipped before
 /// parsing so vendored libraries (jQuery, htmx, Sortable, lodash) do not
 /// surface findings the codebase author cannot remediate.  `is_vendored_asset_path`

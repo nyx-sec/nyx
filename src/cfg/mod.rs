@@ -42,6 +42,7 @@ mod hierarchy;
 mod imports;
 mod literals;
 mod params;
+pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try};
 use helpers::{
     collect_nested_function_nodes, derive_anon_fn_name_from_context, find_classifiable_inner_call,
@@ -731,6 +732,15 @@ pub struct FileCfg {
     /// in [`crate::ssa::type_facts::constructor_type`] (via the
     /// `FILE_IMPORTS_TLS` thread-local set around per-body SSA passes).
     pub local_imports: HashMap<String, String>,
+    /// Class fields whose `.get(...)` lookups are bounded to a finite
+    /// set of literal string values.  Populated for Java
+    /// `final ... = Map.of(literal, literal, ...)` declarations; empty
+    /// for other languages and shapes.  Consumed by the SSA taint
+    /// engine's container-Load fallback (via the
+    /// `JAVA_SAFE_FIELDS_TLS` thread-local) so a tainted lookup key
+    /// does not light up downstream sinks when the receiver is a
+    /// known-safe map field.
+    pub safe_lookup_fields: HashMap<String, Vec<String>>,
 }
 
 impl FileCfg {
@@ -6105,6 +6115,11 @@ pub(crate) fn build_cfg<'a>(
         lang,
     );
 
+    // Java safe-lookup field map: `final ... = Map.of(literal, literal, ...)`
+    // declarations whose `.get(...)` results are bounded to the literal
+    // set.  Empty for other languages.
+    let safe_lookup_fields = safe_fields::collect_safe_lookup_fields(tree.root_node(), lang, code);
+
     FileCfg {
         bodies,
         summaries,
@@ -6114,6 +6129,7 @@ pub(crate) fn build_cfg<'a>(
         resolved_imports: Vec::new(),
         local_imports,
         entry_kinds,
+        safe_lookup_fields,
     }
 }
 

@@ -807,42 +807,6 @@ implied or surfaced but did not finish.
       `union_param_sink_sites`, the `summary_extract` path, and
       cross-file persistence.
 
-- [ ] Java header-injection FP on Map.of allowlist lookup. 2026-05-09
-      session 0003 closed two of four CVE-corpus patched-counterpart FPs
-      by adding `is_safe_string_producing_callee` in
-      `src/ssa/type_facts.rs` (recognises `Integer.toString` /
-      `Long.toString` / `Float.toString` / `Double.toString` /
-      `Short.toString` / `Byte.toString` / `Boolean.toString` /
-      `Character.toString` / `String.valueOf` / `Class.getName` /
-      `Class.getSimpleName` / `Class.getCanonicalName` / chain
-      shapes whose collapsed callee text contains `.getClass()`),
-      tagging the SSA result as `TypeKind::Int`, extending the
-      `is_type_safe_for_sink` suppressible mask to also cover
-      `HEADER_INJECTION` and `OPEN_REDIRECT`, and adding a
-      `apply_arg_type_safe_suppression` arg-level filter at Call
-      sinks in `src/taint/ssa_transfer/mod.rs` keyed off
-      `info.arg_callees`.  Closed: `cve-java-2015-7501-patched`
-      (Integer.toString) + `cve-java-2022-42889-patched` (String.valueOf
-      chain).  2026-05-09 session 0004 closed
-      `cve-java-2022-1471-patched` by extending
-      `call_ident_of`'s `Kind::CallMethod` arm in
-      `src/cfg/literals.rs` to preserve the `.getClass` segment when the
-      receiver is itself a `Kind::CallMethod` whose method name is
-      `getClass` (Java only).  Now `loaded.getClass().getName()`
-      collapses to `loaded.getClass.getName` and the predicate's
-      chain-form check matches reliably.
-      Remaining (parked):
-      * `cve-java-2017-12629-patched`
-        (`TRANSFORMERS.get(tainted)` against `Map.of("identity",
-        "classpath:xslt/identity.xsl", "summary",
-        "classpath:xslt/summary.xsl")`).  The map is a literal-only
-        allowlist so `.get(tainted)` returns one of two fixed
-        strings, but the engine has no model for `Map.of` literal
-        tracking.  Real fix: lift `Map.of(k1, v1, k2, v2, ...)` into
-        an abstract-domain string-set facts and propagate through
-        `Map.get` to a `StringFact::any_of([v1, v2, ...])` that the
-        sink-suppression layer recognises as locked.
-
 ## Deferred phases
 
 (none)
