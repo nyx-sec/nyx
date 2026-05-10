@@ -587,7 +587,7 @@ fn sink_is_zero_arg_query_builder(ctx: &AnalysisContext, sink: NodeIndex, sink_c
         _ => return false,
     };
     let receiver_lower = root_receiver.to_ascii_lowercase();
-    let is_builder_receiver = receiver_lower == "qb"
+    let is_builder_receiver_by_name = receiver_lower == "qb"
         || receiver_lower == "q"
         || receiver_lower == "query"
         || receiver_lower == "querybuilder"
@@ -602,24 +602,142 @@ fn sink_is_zero_arg_query_builder(ctx: &AnalysisContext, sink: NodeIndex, sink_c
         || receiver_lower.ends_with("qb")
         || receiver_lower.ends_with("query")
         || receiver_lower.ends_with("builder");
-    if !is_builder_receiver {
+    let is_builder_receiver_by_def =
+        receiver_defined_by_builder_factory(ctx, sink, root_receiver);
+    if !is_builder_receiver_by_name && !is_builder_receiver_by_def {
         return false;
     }
-    // The CFG node may represent an outer call with the inner classifiable
-    // call's text overridden onto `info.call.callee` (e.g.
-    // `$this->atomic(function () use (...) { $qb->...->executeStatement(); })`
-    // surfaces as `outer_callee = this.atomic` + `callee = qb.executeStatement`),
-    // so `arg_uses` on this node reflects the outer call, not the inner.
-    // Use `callee_span` when present to bound-check the inner call's text:
-    // the trailing characters in that span must be a close-paren preceded
-    // by an open-paren (with optional whitespace), no positional payload.
+    // Once the receiver is proven to be a builder via def-call lookup, the
+    // call is the builder-variant of `executeQuery` / `executeStatement`
+    // regardless of argument count (Doctrine DBAL `QueryBuilder::executeQuery`
+    // accepts only an optional `?Connection`, never a SQL string).  When the
+    // receiver was identified solely by its NAME, fall back to the byte-level
+    // zero-arg check that guards the closure-captured shape so an unfamiliar
+    // verb-named local (`$insert = "DROP TABLE..."`-bound mistake) doesn't
+    // unconditionally suppress.
+    if !is_builder_receiver_by_def && !callee_span_has_zero_args(info, ctx.source_bytes) {
+        return false;
+    }
+    true
+}
+
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the sink call's first
+/// positional argument is the result of a Doctrine DBAL safe-SQL accessor —
+/// either `<builder>.getSQL()` (parameterised SQL from a QueryBuilder chain)
+/// or a `Platform::get*SQL(...)` factory (`getTruncateTableSQL`,
+/// `getCreateTableSQL`, etc., which return DDL with no user-controlled bytes).
+///
+/// Two paths:
+///  1. Direct arg: `arg_callees[0]` names a recognised accessor.  Catches
+///     `$conn->executeStatement($builder->getSQL(), ...)` and
+///     `$conn->executeStatement($platform->getTruncateTableSQL('t', false))`.
+///  2. Indirect via local var: the arg is a bare identifier `$sql` whose
+///     most-recent same-function defining Call has a recognised accessor as
+///     its callee.  Catches the migration shape
+///     `$sql = $this->dbc->getDatabasePlatform()->getTruncateTableSQL(...);
+///      $this->dbc->executeStatement($sql);`
+///
+/// PHP-only: other languages have their own builder conventions (Java JPA's
+/// `CriteriaQuery` is already covered by `sink_args_jpa_criteria_query_safe`).
+fn sink_first_arg_is_builder_get_sql(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    if !sink_caps.intersects(Cap::SQL_QUERY) {
+        return false;
+    }
+    if sink_caps != Cap::SQL_QUERY {
+        return false;
+    }
+    if ctx.lang != Lang::Php {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+
+    // Path 1: direct method-call arg.
+    if let Some(Some(arg_callee)) = info.arg_callees.first() {
+        let suffix = arg_callee.rsplit('.').next().unwrap_or(arg_callee);
+        if is_dbal_safe_sql_accessor(suffix) {
+            return true;
+        }
+    }
+
+    // Path 2: bare-identifier arg defined earlier by a recognised accessor.
+    // Use `arg_uses[0]` (the first positional argument's identifier set) to
+    // pick the candidate variable name.  When `arg_uses` is empty (e.g. the
+    // arg is a literal, an arithmetic expression, or a complex chain), no
+    // back-walk is performed.
+    let first_arg_use = info
+        .call
+        .arg_uses
+        .first()
+        .and_then(|grp| grp.first())
+        .map(|s| s.as_str());
+    let var_name = match first_arg_use {
+        Some(n) if !n.is_empty() => n,
+        _ => return false,
+    };
+    let sink_func = info.ast.enclosing_func.as_deref();
+    let sink_span_start = info.ast.span.0;
+    let mut best: Option<(usize, String)> = None;
+    for nidx in ctx.cfg.node_indices() {
+        let n = &ctx.cfg[nidx];
+        if n.kind != crate::cfg::StmtKind::Call {
+            continue;
+        }
+        if n.taint.defines.as_deref() != Some(var_name) {
+            continue;
+        }
+        if n.ast.enclosing_func.as_deref() != sink_func {
+            continue;
+        }
+        let span_start = n.ast.span.0;
+        if span_start >= sink_span_start {
+            continue;
+        }
+        let Some(callee) = n.call.callee.as_deref() else {
+            continue;
+        };
+        match best {
+            Some((s, _)) if s >= span_start => {}
+            _ => best = Some((span_start, callee.to_string())),
+        }
+    }
+    if let Some((_, callee)) = best {
+        let suffix = callee.rsplit('.').next().unwrap_or(&callee);
+        if is_dbal_safe_sql_accessor(suffix) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recognise method names that Doctrine DBAL exposes as safe-SQL accessors.
+/// `getSQL` is the QueryBuilder accessor; `get*SQL` (case-sensitive `SQL`
+/// suffix) is the Platform-specific DDL builder convention used across the
+/// `Doctrine\DBAL\Platforms\*` hierarchy (`getTruncateTableSQL`,
+/// `getCreateTableSQL`, `getDropTableSQL`, etc.).  All such methods receive
+/// schema identifiers and emit DBMS-specific DDL, never weaving user payload.
+fn is_dbal_safe_sql_accessor(name: &str) -> bool {
+    if name == "getSQL" {
+        return true;
+    }
+    name.starts_with("get")
+        && name.len() > 5
+        && name.ends_with("SQL")
+}
+
+/// Check whether the source bytes inside the sink's `callee_span` end with a
+/// zero-argument call form: trailing `)` preceded by `(` with only whitespace
+/// in between.  Used to identify `qb.executeQuery()` / `qb.executeStatement()`
+/// where the SQL was bound earlier on the receiver chain.
+fn callee_span_has_zero_args(info: &crate::cfg::NodeInfo, bytes: &[u8]) -> bool {
     let span = info.call.callee_span.unwrap_or(info.ast.span);
-    let bytes = ctx.source_bytes;
     if span.0 >= span.1 || span.1 > bytes.len() {
         return false;
     }
     let slice = &bytes[span.0..span.1];
-    // Skip trailing whitespace.
     let mut end = slice.len();
     while end > 0 && matches!(slice[end - 1], b' ' | b'\t' | b'\n' | b'\r') {
         end -= 1;
@@ -632,6 +750,149 @@ fn sink_is_zero_arg_query_builder(ctx: &AnalysisContext, sink: NodeIndex, sink_c
         end -= 1;
     }
     end > 0 && slice[end - 1] == b'('
+}
+
+/// Detect that `receiver_name` was bound earlier in the same function by a
+/// query-builder factory call.  Two paths:
+///  1. CFG def-call: a same-function Call node defines `receiver_name` with a
+///     callee ending in `getQueryBuilder` / `createQueryBuilder`.
+///  2. Source-text scan: between the enclosing function's first byte and the
+///     sink's byte offset, the source contains
+///     `$<receiver_name> = ... ->getQueryBuilder(...)` (or `createQueryBuilder`).
+///     Picks up assignment nodes whose CFG kind/callee text doesn't surface a
+///     leaf factory name (multi-line chains, `for`/`try` block nesting,
+///     unusual lowering paths).
+fn receiver_defined_by_builder_factory(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    receiver_name: &str,
+) -> bool {
+    if receiver_name.is_empty() {
+        return false;
+    }
+    let sink_info = &ctx.cfg[sink];
+    let sink_func = sink_info.ast.enclosing_func.as_deref();
+    let sink_span_start = sink_info.ast.span.0;
+
+    // Path 1: CFG-level def lookup.
+    let mut best: Option<(usize, String)> = None;
+    for nidx in ctx.cfg.node_indices() {
+        let n = &ctx.cfg[nidx];
+        if n.kind != crate::cfg::StmtKind::Call {
+            continue;
+        }
+        if n.taint.defines.as_deref() != Some(receiver_name) {
+            continue;
+        }
+        if n.ast.enclosing_func.as_deref() != sink_func {
+            continue;
+        }
+        let span_start = n.ast.span.0;
+        if span_start >= sink_span_start {
+            continue;
+        }
+        let Some(callee) = n.call.callee.as_deref() else {
+            continue;
+        };
+        match best {
+            Some((s, _)) if s >= span_start => {}
+            _ => best = Some((span_start, callee.to_string())),
+        }
+    }
+    if let Some((_, callee)) = best {
+        let suffix = callee.rsplit('.').next().unwrap_or(&callee);
+        let suffix_lower = suffix.to_ascii_lowercase();
+        if matches!(
+            suffix_lower.as_str(),
+            "getquerybuilder" | "createquerybuilder" | "getqb" | "createqb"
+        ) || suffix_lower.ends_with("querybuilder")
+        {
+            return true;
+        }
+    }
+
+    // Path 2: source-text scan over the enclosing function's body.  Some
+    // builder assignments (multi-line chains, deeply nested in `try`/`for`
+    // bodies) bind `defines` to a synthesised name that doesn't match
+    // `receiver_name` exactly.  A direct byte scan for an assignment shape
+    // catches these without depending on CFG synthesis details.
+    let func_start = ctx
+        .cfg
+        .node_indices()
+        .filter_map(|i| {
+            let n = &ctx.cfg[i];
+            if n.ast.enclosing_func.as_deref() == sink_func {
+                Some(n.ast.span.0)
+            } else {
+                None
+            }
+        })
+        .min()
+        .unwrap_or(0);
+    let bytes = ctx.source_bytes;
+    let lo = func_start.min(bytes.len());
+    let hi = sink_span_start.min(bytes.len());
+    if lo >= hi {
+        return false;
+    }
+    let scope = &bytes[lo..hi];
+    text_contains_builder_factory_assignment(scope, receiver_name)
+}
+
+/// Search `scope` for `$<name> = ... <factory>(...)` where `<factory>` ends
+/// with `getQueryBuilder` / `createQueryBuilder` (case-insensitive).  Used as a
+/// byte-level fallback for CFG def-lookup that misses multi-line chained
+/// assignments inside nested `try` / `for` bodies.
+fn text_contains_builder_factory_assignment(scope: &[u8], name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let needle: Vec<u8> = std::iter::once(b'$')
+        .chain(name.bytes())
+        .collect();
+    let mut start = 0usize;
+    while start + needle.len() <= scope.len() {
+        let Some(rel) = find_subslice(&scope[start..], &needle) else {
+            return false;
+        };
+        let mut cursor = start + rel + needle.len();
+        // Require an immediate `=` (allow whitespace before).
+        while cursor < scope.len() && matches!(scope[cursor], b' ' | b'\t' | b'\n' | b'\r') {
+            cursor += 1;
+        }
+        if cursor < scope.len() && scope[cursor] == b'=' && (cursor + 1 == scope.len() || scope[cursor + 1] != b'=') {
+            // Find the next `;` (statement terminator) without crossing a
+            // closing brace boundary, the assignment expression spans up to it.
+            let mut end = cursor + 1;
+            while end < scope.len() {
+                let b = scope[end];
+                if b == b';' || b == b'\n' && end + 1 < scope.len() && scope[end + 1] == b'\n' {
+                    break;
+                }
+                end += 1;
+            }
+            let rhs_lower: Vec<u8> = scope[cursor + 1..end]
+                .iter()
+                .map(|b| b.to_ascii_lowercase())
+                .collect();
+            if find_subslice(&rhs_lower, b"getquerybuilder").is_some()
+                || find_subslice(&rhs_lower, b"createquerybuilder").is_some()
+            {
+                return true;
+            }
+        }
+        start = start + rel + 1;
+    }
+    false
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|w| w == needle)
 }
 
 /// Walk the sink's Call SSA arguments and check whether every real argument
@@ -1189,8 +1450,44 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         return false; // can't determine params
     }
 
-    // Check if ALL sink uses are parameters
-    sink_uses.iter().all(|u| param_names.contains(&u.as_str()))
+    // The sink's `taint.uses` includes pseudo-uses for callee-chain segments
+    // (`this`, `self`, the inner method name, intermediate receivers).  These
+    // are not real argument values — they are the dotted callee path that
+    // tree-sitter records as identifier children of the call expression.
+    // `is_all_args_constant` already filters them out the same way; mirror
+    // that filter here so a thin method wrapper like
+    // `function wrap($sql) { return $this->inner->execute($sql); }` is
+    // recognised as parameter-only despite `this` / `inner` / `execute`
+    // showing up in `taint.uses`.
+    //
+    // PHP variable receivers carry a leading `$` (`$this->inner.executeQuery`)
+    // and use `->` between the receiver and member, so the simple `.`/`:`
+    // split misses fragments like `$this->inner`.  Tokenize on the full set
+    // of separators (`.`, `::`, `->`) and strip a leading `$` so identifier-
+    // shaped fragments line up with bare identifier names in `taint.uses`.
+    let callee_desc = sink_info.call.callee.as_deref().unwrap_or("");
+    let outer_callee = sink_info.call.outer_callee.as_deref().unwrap_or("");
+    let mut callee_fragments: Vec<&str> = Vec::new();
+    for src in [callee_desc, outer_callee] {
+        for piece in src.split(['.', ':', '>', '-']) {
+            let segment = piece
+                .split('(')
+                .next()
+                .unwrap_or(piece)
+                .trim_start_matches('$')
+                .trim();
+            if !segment.is_empty() && !callee_fragments.contains(&segment) {
+                callee_fragments.push(segment);
+            }
+        }
+    }
+
+    sink_uses.iter().all(|u| {
+        if callee_fragments.contains(&u.as_str()) || u == callee_desc {
+            return true;
+        }
+        param_names.contains(&u.as_str())
+    })
 }
 
 /// Check if the source bytes at a given span contain a redirect call whose
@@ -1401,6 +1698,15 @@ impl CfgAnalysis for UnguardedSink {
             // `$qb->executeStatement()` after `select`/`from`/`where`/
             // `setParameter` chains).
             if !has_taint && sink_is_zero_arg_query_builder(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // Builder.getSQL() arg suppression: the dangerous flat shape is
+            // `$conn->executeStatement($sql)` where `$sql` is user-controlled
+            // SQL.  When `$sql` is itself the return of `<builder>.getSQL()`,
+            // the SQL is parameterised by construction (Doctrine DBAL),
+            // independent of which receiver fires the terminal verb.
+            if !has_taint && sink_first_arg_is_builder_get_sql(ctx, *sink, sink_caps) {
                 continue;
             }
 

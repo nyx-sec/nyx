@@ -1055,6 +1055,76 @@ fn fp_guard_php_doctrine_querybuilder() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, thin PHP method wrappers that forward typed parameters to
+/// an inner sink call on `$this`.  `cfg-unguarded-sink` is a structural
+/// rule with zero signal at the wrapper site (every arg is the wrapper's
+/// own parameter); the real signal is at callers, which the taint engine
+/// handles.  The earlier `param_only && !in_entrypoint` suppression
+/// missed PHP method wrappers because `taint.uses` carries pseudo-uses
+/// for the chain receiver (`this`, `inner`) that aren't param names.
+/// Filtering callee-fragment uses out of the param-only check before
+/// comparing against the function's params closes the wrapper FP cluster
+/// across nextcloud `Connection::executeUpdate`,
+/// `ConnectionAdapter::executeQuery`, `ExtendedQueryBuilder::executeQuery`,
+/// drupal validators / containers, and similar shapes.
+#[test]
+fn fp_guard_php_thin_method_wrapper() {
+    let dir = fixture_path("fp_guards/php_thin_method_wrapper");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL `QueryBuilder::executeQuery` /
+/// `executeStatement` overloads that pass `$this->getSQL()` /
+/// `$this->getParameters()` to a connection's flat `executeQuery` /
+/// `executeStatement` overload.  `getSQL()` is the canonical accessor
+/// for the parameterised SQL string the builder constructed; the
+/// receiver of the terminal verb is the connection (not a builder), so
+/// the receiver-name suppression does not fire.  The first-arg
+/// accessor recognition closes the FP without depending on the
+/// receiver shape.  Distilled from nextcloud
+/// `lib/private/DB/QueryBuilder/QueryBuilder.php`.
+#[test]
+fn fp_guard_php_dbal_builder_get_sql() {
+    let dir = fixture_path("fp_guards/php_dbal_builder_get_sql");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL `Platform::get*SQL(...)` family of safe DDL
+/// builders.  Methods like `getTruncateTableSQL`, `getCreateTableSQL`,
+/// `getDropTableSQL` accept schema identifiers and emit DBMS-specific
+/// DDL with no user payload.  Migration code commonly binds the result
+/// to a local then passes it to `$this->dbc->executeStatement($sql)`.
+/// The first-arg accessor recognition walks back to the local's
+/// defining Call to identify the safe accessor before deciding the
+/// finding is structural noise.  Distilled from nextcloud
+/// `apps/user_ldap/lib/Migration/Version*.php` and `core/Migrations/
+/// Version*.php`.
+#[test]
+fn fp_guard_php_dbal_platform_ddl_builder() {
+    let dir = fixture_path("fp_guards/php_dbal_platform_ddl_builder");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL builder chain whose local variable is named
+/// after a verb (`forUpdate`) rather than a canonical builder name
+/// (`qb` / `query` / `builder`).  The receiver-name allowlist of the
+/// zero-arg query-builder suppression doesn't match, but the local was
+/// bound earlier in the body via `$this->connection->getQueryBuilder()`.
+/// The receiver-defined-by-builder-factory back-walk recognises it via
+/// the def-call's callee name (or via a source-text scan when the CFG
+/// def-lookup misses a multi-line chained assignment nested inside
+/// `try` / `for` blocks).  Distilled from nextcloud
+/// `lib/private/Files/Cache/Propagator.php`.
+#[test]
+fn fp_guard_php_dbal_builder_via_factory_def() {
+    let dir = fixture_path("fp_guards/php_dbal_builder_via_factory_def");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, PHP `md5()` / `sha1()` weak-hash pattern rule firing
 /// syntactically on every callsite.  Real-world PHP uses these
 /// functions pervasively for non-cryptographic purposes (ETag

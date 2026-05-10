@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-10T04:39:43Z",
+  "timestamp": "2026-05-10T06:41:45Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -739,14 +739,11 @@
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 25:19)"
       ],
-      "unexpected_rule_ids": [
-        "cfg-unguarded-sink"
-      ],
+      "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "cfg-unguarded-sink",
         "taint-unsanitised-flow (source 25:19)"
       ],
-      "security_finding_count": 2,
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -1934,14 +1931,11 @@
       "matched_rule_ids": [
         "py.code_exec.eval"
       ],
-      "unexpected_rule_ids": [
-        "cfg-unguarded-sink"
-      ],
+      "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "cfg-unguarded-sink",
         "py.code_exec.eval"
       ],
-      "security_finding_count": 2,
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -2687,16 +2681,14 @@
       "outcome_location_level": "TP",
       "matched_rule_ids": [
         "cfg-error-fallthrough",
-        "cfg-unguarded-sink",
         "go.sqli.query_concat"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "cfg-error-fallthrough",
-        "cfg-unguarded-sink",
         "go.sqli.query_concat"
       ],
-      "security_finding_count": 3,
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -6252,15 +6244,12 @@
         "taint-unsanitised-flow (source 6:5)",
         "py.cmdi.os_system"
       ],
-      "unexpected_rule_ids": [
-        "cfg-unguarded-sink"
-      ],
+      "unexpected_rule_ids": [],
       "all_finding_ids": [
         "taint-unsanitised-flow (source 6:5)",
-        "cfg-unguarded-sink",
         "py.cmdi.os_system"
       ],
-      "security_finding_count": 3,
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -9919,14 +9908,11 @@
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 18:5)"
       ],
-      "unexpected_rule_ids": [
-        "cfg-unguarded-sink"
-      ],
+      "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "cfg-unguarded-sink",
         "taint-unsanitised-flow (source 18:5)"
       ],
-      "security_finding_count": 2,
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -10361,22 +10347,22 @@
       "f1": 0.3586497890295359
     },
     ">=Low": {
-      "tp": 86,
+      "tp": 85,
       "fp": 142,
-      "fn_": 189,
+      "fn_": 190,
       "tn": 145,
-      "precision": 0.37719298245614036,
-      "recall": 0.31272727272727274,
-      "f1": 0.341948310139165
+      "precision": 0.3744493392070485,
+      "recall": 0.3090909090909091,
+      "f1": 0.33864541832669326
     },
     ">=Medium": {
-      "tp": 86,
+      "tp": 85,
       "fp": 133,
-      "fn_": 189,
+      "fn_": 190,
       "tn": 154,
-      "precision": 0.3926940639269406,
-      "recall": 0.31272727272727274,
-      "f1": 0.3481781376518218
+      "precision": 0.38990825688073394,
+      "recall": 0.3090909090909091,
+      "f1": 0.3448275862068966
     }
   }
 }
