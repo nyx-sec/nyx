@@ -1052,6 +1052,34 @@ fn fp_guard_python_deser_in_unittest_assertion() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, pytest plain-`assert` round-trip tests.  The assertion
+/// reaches the deser through allowed wrappers (comparison vs literal,
+/// `is None` / `is not None`, `in [LIT, ...]`, truthy bare assert,
+/// `not deser`, `isinstance(deser, TYPE)`, `bool` / `len` single-arg
+/// wrap).  Same bounding semantics as the unittest variant: a
+/// poisoned blob produces a different shape, the assertion fails, no
+/// side effect escapes the test boundary.
+#[test]
+fn fp_guard_python_deser_in_pytest_assert() {
+    let dir = fixture_path("fp_guards/python_deser_in_pytest_assert");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Ruby `Marshal.load` / `YAML.load` round-trip patterns
+/// inside Minitest assertion verbs (`assert_equal LIT, deser`,
+/// `assert_nil deser`, `assert deser`, `assert_kind_of TYPE, deser`,
+/// `refute_*` mirrors, `assert_includes LIT, deser`) and RSpec matcher
+/// chains (`expect(deser).to eq(LIT)`, `be_nil`, `be_a(TYPE)`,
+/// `be_truthy`, `match_array(LIT)`, `to`/`not_to`/`to_not`).  Mirror
+/// of the Python and PHP recognisers for Ruby test trees.
+#[test]
+fn fp_guard_ruby_deser_in_test_assertion() {
+    let dir = fixture_path("fp_guards/ruby_deser_in_test_assertion");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Hibernate / JPA DAO passthrough wrappers whose body is a
 /// single chain `getSession().createQuery(formal)` (or a longer chain
 /// like `getSession().getCriteriaBuilder().createQuery(formal)`).  The

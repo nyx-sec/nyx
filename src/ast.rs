@@ -1241,6 +1241,24 @@ impl<'a> ParsedSource<'a> {
                     {
                         continue;
                     }
+                    // Layer C5: Ruby `Marshal.load` / `YAML.load` /
+                    // `Psych.load` wrapped in a Minitest assertion
+                    // (`assert_equal LIT, deser`, `assert_nil deser`,
+                    // `assert deser`, `refute_equal LIT, deser`, ...) or
+                    // an RSpec matcher chain (`expect(deser).to eq(LIT)`,
+                    // `expect(deser).to be_nil`, `be_a(TYPE)`, ...).
+                    // Same bounding semantics as the PHP / Python paths:
+                    // a poisoned blob fails the assertion loudly rather
+                    // than leak object-injection side effects out of
+                    // the test boundary.
+                    if matches!(
+                        cq.meta.id,
+                        "rb.deser.marshal_load" | "rb.deser.yaml_load"
+                    ) && self.lang_slug == "ruby"
+                        && is_ruby_deser_inside_test_assertion(cap.node, self.bytes)
+                    {
+                        continue;
+                    }
                     // Layer D: C/C++ buffer-overflow pattern rules
                     // (`{c,cpp}.memory.strcpy`, `strcat`, `sprintf`) fire
                     // syntactically on every call regardless of argument
@@ -1878,6 +1896,23 @@ impl<'a> ParsedFile<'a> {
                         .root_node()
                         .descendant_for_byte_range(cf.span.0, cf.span.1)
                     && is_python_deser_inside_unittest_assertion(node, self.source.bytes)
+                {
+                    continue;
+                }
+                // Layer C5 mirror: Ruby `Marshal.load` / `YAML.load` /
+                // `Psych.load` inside Minitest / RSpec assertions also
+                // fire `cfg-unguarded-sink` from the structural rule
+                // (which has no taint context).  Apply the same
+                // recogniser used by the AST-pattern layer so both
+                // sides agree on what counts as test-bound deser.
+                if cf.rule_id == "cfg-unguarded-sink"
+                    && self.source.lang_slug == "ruby"
+                    && let Some(node) = self
+                        .source
+                        .tree
+                        .root_node()
+                        .descendant_for_byte_range(cf.span.0, cf.span.1)
+                    && is_ruby_deser_inside_test_assertion(node, self.source.bytes)
                 {
                     continue;
                 }
@@ -3210,69 +3245,76 @@ fn is_php_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> b
 }
 
 /// Python-only Layer C4: returns `true` when a deserialization call
-/// (`pickle.loads`, `yaml.load`, `shelve.open`, etc.) sits directly
-/// inside a `unittest.TestCase` assertion whose other argument is a
-/// statically literal expected value, OR the assertion verb itself
-/// constrains the result (`assertIsNone`, `assertTrue`, ...).
+/// (`pickle.loads`, `yaml.load`, `shelve.open`, etc.) sits inside a
+/// test assertion that bounds the result to a literal-expected shape.
 ///
-/// **Why this is a non-actionable site:** unittest's `assertEqual`
-/// family bounds the deser result to the literal expected; if the
-/// blob argument were attacker-controlled and produced a different
-/// shape, the assertion would fail loudly rather than permit any
-/// object-injection side effect to escape the test boundary.  Python
-/// projects ship round-trip tests for every pickled / YAML-loaded
-/// data class, and every firing on those test bodies is noise.
+/// Two assertion idioms are recognised:
+/// 1. `unittest.TestCase` style — `self.assertEqual(LITERAL, pickle.loads(b))`,
+///    `self.assertIsNone(pickle.loads(b))`, etc.
+/// 2. pytest plain `assert` — `assert pickle.loads(b) == LITERAL`,
+///    `assert pickle.loads(b) is None`, `assert isinstance(pickle.loads(b),
+///    dict)`, `assert pickle.loads(b)` (truthy), `assert not
+///    pickle.loads(b)` (falsy).
+///
+/// **Why this is a non-actionable site:** the assertion bounds the
+/// deser result to a literal expected; if the blob argument were
+/// attacker-controlled and produced a different shape, the assertion
+/// would fail loudly rather than permit any object-injection side
+/// effect to escape the test boundary.  Python projects ship
+/// round-trip tests for every pickled / YAML-loaded data class, and
+/// every firing on those test bodies is noise.
 ///
 /// Conservative recognition:
-/// - the deser call must be a direct child of the assertion's
-///   `argument_list` (no wrapping expression like ternary / binary
-///   / boolean op / parenthesized — those break literal bounding)
-/// - the enclosing call's function must be either `attribute`
-///   (`self.assertEqual`) or `identifier` (`assertEqual` from
-///   `from unittest import ...`) with a name starting with `assert`
-///   or `fail` (case-sensitive — Python is case-sensitive)
-/// - single-arg assertions: verb must be in a curated bounding set
-///   (`assertIsNone`, `assertTrue`, `assertFalse`, ...).
-/// - multi-arg comparison assertions: any non-deser positional arg
-///   must be a literal expression.
-/// - multi-arg `assertIsInstance` / `assertNotIsInstance`: the type
-///   argument bounds the deser result, suppress regardless of the
-///   value position.
+/// - the deser call must reach the assertion through allowed wrappers
+///   only (parenthesized_expression, comparison_operator with literal
+///   counterpart, unary `not`, `isinstance(_, TYPE)`, `bool` / `len` /
+///   `type` / `id` single-arg wrap); boolean ops and conditional
+///   expressions break the bound and reject.
+/// - unittest verbs must start with `assert` or `fail` (case-sensitive
+///   per Python conventions) and pass the curated single-arg / multi-
+///   arg bounding tables.
+/// - pytest plain `assert` requires the deser to be the asserted
+///   expression (named_child(0) of `assert_statement`), not the
+///   optional message at named_child(1).
 fn is_python_deser_inside_unittest_assertion(
     cap_node: tree_sitter::Node,
     bytes: &[u8],
 ) -> bool {
-    // Two entry shapes:
-    //   (a) AST-pattern: `cap_node` is the `pickle` / `yaml` / `shelve`
-    //       identifier under the deser call's `function.object` path.
-    //       Walk up to the deser call, then up two more levels
-    //       (argument_list, assertion call).
-    //   (b) CFG-emission: `cap_node` is somewhere inside the OUTER
-    //       assertion call (`self.assertEqual(...)`).  Look for a
+    // Three entry shapes:
+    //   (a) unittest AST-pattern: `cap_node` is the `pickle` / `yaml` /
+    //       `shelve` identifier under the deser call's `function.object`
+    //       path.  Walk up to the deser call, then up to an outer
+    //       assertion call via `argument_list`.
+    //   (b) unittest CFG-emission: `cap_node` is somewhere inside the
+    //       OUTER assertion call (`self.assertEqual(...)`).  Look for a
     //       deser sub-call inside its argument_list.
+    //   (c) pytest plain-assert: `cap_node` resolves to the deser call,
+    //       which sits directly under an `assert_statement` (possibly
+    //       through allowed bounding wrappers).
     let enclosing_call = find_enclosing_call(cap_node);
     let Some(enclosing_call) = enclosing_call else {
         return false;
     };
 
-    // Try (a): enclosing call IS the deser.
+    // Path (a)/(c): enclosing call IS the deser.
     if is_python_deser_call(enclosing_call, bytes) {
-        let Some(arg_list) = enclosing_call.parent() else {
-            return false;
-        };
-        if arg_list.kind() != "argument_list" {
-            return false;
+        // (a) walk to outer call assertion via argument_list.
+        if let Some(arg_list) = enclosing_call.parent()
+            && arg_list.kind() == "argument_list"
+            && let Some(assertion_call) = arg_list.parent()
+            && assertion_call.kind() == "call"
+            && python_assertion_bounds_deser(assertion_call, enclosing_call, bytes)
+        {
+            return true;
         }
-        let Some(assertion_call) = arg_list.parent() else {
-            return false;
-        };
-        if assertion_call.kind() != "call" {
-            return false;
+        // (c) walk up to assert_statement through allowed wrappers.
+        if python_pytest_assert_bounds_deser(enclosing_call, bytes) {
+            return true;
         }
-        return python_assertion_bounds_deser(assertion_call, enclosing_call, bytes);
+        return false;
     }
 
-    // Try (b): enclosing call IS an assertion that wraps a deser arg.
+    // Path (b): enclosing call IS an assertion that wraps a deser arg.
     if let Some(deser_call) = python_find_direct_deser_arg(enclosing_call, bytes) {
         return python_assertion_bounds_deser(enclosing_call, deser_call, bytes);
     }
@@ -3384,6 +3426,150 @@ fn python_assertion_bounds_deser(
         }
     }
     false
+}
+
+/// pytest plain-`assert` bounding check.  `deser_call` must be the
+/// recognised deser invocation; we walk upward through allowed
+/// wrappers until we reach an `assert_statement` whose first named
+/// child (the asserted expression, NOT the optional message) is the
+/// chain we walked.  Boolean operators and conditional expressions
+/// break the bound (they can short-circuit past the assertion).
+fn python_pytest_assert_bounds_deser(
+    deser_call: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    let mut cur = deser_call;
+    for _ in 0..8 {
+        let Some(parent) = cur.parent() else {
+            return false;
+        };
+        match parent.kind() {
+            "assert_statement" => {
+                // Asserted expression sits at named_child(0); the
+                // optional message sits at named_child(1).
+                let first = parent.named_child(0);
+                return first.is_some_and(|n| n.id() == cur.id());
+            }
+            "comparison_operator" => {
+                if !python_comparison_other_side_is_literal(parent, cur, bytes) {
+                    return false;
+                }
+                cur = parent;
+            }
+            // `not deser` parses as `not_operator`; `+/-/~ deser` as
+            // `unary_operator`.  Both leave the deser-side as the sole
+            // operand and bound the assertion result to a scalar.
+            "unary_operator" | "not_operator" => {
+                cur = parent;
+            }
+            "parenthesized_expression" => {
+                cur = parent;
+            }
+            "argument_list" => {
+                let Some(parent_call) = parent.parent() else {
+                    return false;
+                };
+                if parent_call.kind() != "call" {
+                    return false;
+                }
+                let Some(func) = parent_call.child_by_field_name("function") else {
+                    return false;
+                };
+                if func.kind() != "identifier" {
+                    return false;
+                }
+                let Ok(name) = std::str::from_utf8(&bytes[func.byte_range()]) else {
+                    return false;
+                };
+                match name {
+                    "isinstance" => {
+                        // isinstance(deser, TYPE) — deser must be at
+                        // positional index 0 and the second positional
+                        // arg must be a type reference.
+                        let mut pos = 0usize;
+                        let mut found_at: Option<usize> = None;
+                        let mut other_args: Vec<tree_sitter::Node> = Vec::new();
+                        for i in 0..parent.named_child_count() as u32 {
+                            let Some(c) = parent.named_child(i) else {
+                                return false;
+                            };
+                            if c.kind() == "keyword_argument" {
+                                continue;
+                            }
+                            if c.id() == cur.id() {
+                                found_at = Some(pos);
+                            } else {
+                                other_args.push(c);
+                            }
+                            pos += 1;
+                        }
+                        if found_at != Some(0)
+                            || other_args.len() != 1
+                            || !is_python_type_reference(other_args[0])
+                        {
+                            return false;
+                        }
+                    }
+                    "bool" | "len" | "type" | "id" => {
+                        // bool(deser) / len(deser) / type(deser) /
+                        // id(deser) — single-arg scalar wrappers.
+                        let mut named_count = 0usize;
+                        for i in 0..parent.named_child_count() as u32 {
+                            let Some(c) = parent.named_child(i) else {
+                                return false;
+                            };
+                            if c.kind() == "keyword_argument" {
+                                continue;
+                            }
+                            named_count += 1;
+                        }
+                        if named_count != 1 {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+                cur = parent_call;
+            }
+            // Boolean ops and conditionals can short-circuit and let
+            // a poisoned blob's side effect run before the assertion
+            // fires.  Reject so the original finding stands.
+            "boolean_operator" | "conditional_expression" => return false,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// `comparison_operator` bounding: the other operand(s) must all be
+/// literal expressions (recursive literal classifier).  Operator-kind
+/// children (`is` / `is_not` / `in` / `not_in` are named in
+/// tree-sitter-python) are skipped.  Also requires `deser_side` to
+/// actually be one of the named children, defending against unrelated
+/// chained comparisons.
+fn python_comparison_other_side_is_literal(
+    cmp: tree_sitter::Node,
+    deser_side: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    let mut found_self = false;
+    for i in 0..cmp.named_child_count() as u32 {
+        let Some(c) = cmp.named_child(i) else {
+            return false;
+        };
+        match c.kind() {
+            "is" | "is_not" | "in" | "not_in" => continue,
+            _ => {}
+        }
+        if c.id() == deser_side.id() {
+            found_self = true;
+            continue;
+        }
+        if !is_python_assertion_literal_expected(c, bytes) {
+            return false;
+        }
+    }
+    found_self
 }
 
 /// Returns `true` when `call_node` is a Python `call` whose callee
@@ -3579,6 +3765,391 @@ fn is_python_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -
 /// Treat them as non-literal because the interpolated value is
 /// dynamic.
 fn has_python_string_interpolation(node: tree_sitter::Node) -> bool {
+    for i in 0..node.named_child_count() as u32 {
+        if let Some(c) = node.named_child(i)
+            && c.kind() == "interpolation"
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Ruby Layer C5: returns `true` when a `Marshal.load` / `YAML.load` /
+/// `Psych.load` call sits directly inside a Minitest assertion or RSpec
+/// matcher chain whose other operand is a literal expected.  Same
+/// non-actionability rationale as the Python and PHP recognisers
+/// above: round-trip tests bound the deser result to a literal, a
+/// poisoned blob would fail the assertion, no object-injection side
+/// effect escapes the test boundary.
+///
+/// Conservative recognition:
+/// - Minitest: `assert_equal LIT, deser`, `assert_nil deser`,
+///   `assert deser` (truthy), and the `refute_*` mirrors.
+/// - RSpec: `expect(deser).to eq(LIT)`, `expect(deser).to be_nil`,
+///   `expect(deser).to be_a(TYPE)`, `be_truthy`, `not_to`/`to_not`.
+/// - Old-style `.should ==` chains are NOT recognised (they're
+///   discouraged in modern RSpec and the AST shape parses as a
+///   `binary` rather than the receiver-method-arguments shape).
+fn is_ruby_deser_inside_test_assertion(
+    cap_node: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    let enclosing_call = find_enclosing_call(cap_node);
+    let Some(deser_call) = enclosing_call else {
+        return false;
+    };
+    if !is_ruby_deser_call(deser_call, bytes) {
+        return false;
+    }
+    let Some(arg_list) = deser_call.parent() else {
+        return false;
+    };
+    if arg_list.kind() != "argument_list" {
+        return false;
+    }
+    let Some(outer_call) = arg_list.parent() else {
+        return false;
+    };
+    if outer_call.kind() != "call" {
+        return false;
+    }
+    if outer_call.child_by_field_name("receiver").is_some() {
+        return false;
+    }
+    let Some(method_node) = outer_call.child_by_field_name("method") else {
+        return false;
+    };
+    let Ok(name) = std::str::from_utf8(&bytes[method_node.byte_range()]) else {
+        return false;
+    };
+
+    if is_ruby_minitest_single_arg_bounding_verb(name)
+        || is_ruby_minitest_multi_arg_bounding_verb(name)
+        || matches!(
+            name,
+            "assert_kind_of"
+                | "assert_instance_of"
+                | "refute_kind_of"
+                | "refute_instance_of"
+        )
+    {
+        return ruby_minitest_assertion_bounds_deser(outer_call, deser_call, bytes);
+    }
+
+    if name == "expect" {
+        let Some(rspec_outer) = outer_call.parent() else {
+            return false;
+        };
+        if rspec_outer.kind() != "call" {
+            return false;
+        }
+        let Some(receiver) = rspec_outer.child_by_field_name("receiver") else {
+            return false;
+        };
+        if receiver.id() != outer_call.id() {
+            return false;
+        }
+        let Some(rspec_method) = rspec_outer.child_by_field_name("method") else {
+            return false;
+        };
+        let Ok(verb) = std::str::from_utf8(&bytes[rspec_method.byte_range()]) else {
+            return false;
+        };
+        if !matches!(verb, "to" | "not_to" | "to_not") {
+            return false;
+        }
+        let Some(matcher_args) = rspec_outer.child_by_field_name("arguments") else {
+            return false;
+        };
+        return ruby_rspec_matcher_bounds_deser(matcher_args, bytes);
+    }
+
+    false
+}
+
+/// `Marshal.load` / `YAML.load` / `YAML.unsafe_load` / `Psych.load` /
+/// `Psych.unsafe_load` shape recogniser.  Only the canonical `Module.method`
+/// chain — bare-leaf `load(b)` is ambiguous in Ruby and not flagged as a
+/// pattern hit, so no need to handle it here.
+fn is_ruby_deser_call(call_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Some(receiver) = call_node.child_by_field_name("receiver") else {
+        return false;
+    };
+    let Some(method) = call_node.child_by_field_name("method") else {
+        return false;
+    };
+    if receiver.kind() != "constant" {
+        return false;
+    }
+    let Ok(recv_text) = std::str::from_utf8(&bytes[receiver.byte_range()]) else {
+        return false;
+    };
+    let Ok(method_text) = std::str::from_utf8(&bytes[method.byte_range()]) else {
+        return false;
+    };
+    matches!(
+        (recv_text, method_text),
+        ("Marshal", "load")
+            | ("Marshal", "restore")
+            | ("YAML", "load")
+            | ("YAML", "unsafe_load")
+            | ("YAML", "load_file")
+            | ("Psych", "load")
+            | ("Psych", "unsafe_load")
+            | ("Psych", "load_file")
+    )
+}
+
+fn ruby_minitest_assertion_bounds_deser(
+    call: tree_sitter::Node,
+    deser_call: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    let Some(method) = call.child_by_field_name("method") else {
+        return false;
+    };
+    let Ok(name) = std::str::from_utf8(&bytes[method.byte_range()]) else {
+        return false;
+    };
+    let Some(arg_list) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut pos_args: Vec<tree_sitter::Node> = Vec::new();
+    let mut deser_pos: Option<usize> = None;
+    for i in 0..arg_list.named_child_count() as u32 {
+        let Some(c) = arg_list.named_child(i) else {
+            continue;
+        };
+        // Minitest verbs accept a trailing message argument as last
+        // positional; both that and the value positions are checked
+        // through the literal tester so kwargs and hash splats are
+        // the only kinds that need to be stripped here.
+        if matches!(c.kind(), "pair" | "hash_splat_argument") {
+            continue;
+        }
+        if c.id() == deser_call.id() {
+            deser_pos = Some(pos_args.len());
+        }
+        pos_args.push(c);
+    }
+    let Some(deser_pos) = deser_pos else {
+        return false;
+    };
+    if pos_args.is_empty() {
+        return false;
+    }
+
+    if pos_args.len() == 1 {
+        return is_ruby_minitest_single_arg_bounding_verb(name);
+    }
+
+    if matches!(
+        name,
+        "assert_kind_of"
+            | "assert_instance_of"
+            | "refute_kind_of"
+            | "refute_instance_of"
+    ) {
+        let type_pos = if deser_pos == 0 { 1 } else { 0 };
+        if let Some(type_arg) = pos_args.get(type_pos)
+            && is_ruby_type_reference(*type_arg)
+        {
+            return true;
+        }
+    }
+
+    if !is_ruby_minitest_multi_arg_bounding_verb(name) {
+        return false;
+    }
+    for (i, arg) in pos_args.iter().enumerate() {
+        if i == deser_pos {
+            continue;
+        }
+        if is_ruby_assertion_literal_expected(*arg, bytes) {
+            return true;
+        }
+    }
+    false
+}
+
+fn ruby_rspec_matcher_bounds_deser(args_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Some(matcher) = args_node.named_child(0) else {
+        return false;
+    };
+    match matcher.kind() {
+        "identifier" => {
+            // Bare-name matchers: be_nil, be_truthy, be_falsey, etc.
+            let Ok(name) = std::str::from_utf8(&bytes[matcher.byte_range()]) else {
+                return false;
+            };
+            is_ruby_rspec_bare_matcher(name)
+        }
+        "call" => {
+            let Some(method) = matcher.child_by_field_name("method") else {
+                return false;
+            };
+            let Ok(name) = std::str::from_utf8(&bytes[method.byte_range()]) else {
+                return false;
+            };
+            let Some(matcher_args) = matcher.child_by_field_name("arguments") else {
+                return false;
+            };
+            match name {
+                "eq" | "eql" | "equal" | "match_array" | "contain_exactly" => {
+                    let mut any = false;
+                    for i in 0..matcher_args.named_child_count() as u32 {
+                        let Some(c) = matcher_args.named_child(i) else {
+                            return false;
+                        };
+                        if !is_ruby_assertion_literal_expected(c, bytes) {
+                            return false;
+                        }
+                        any = true;
+                    }
+                    any
+                }
+                "be_a" | "be_an" | "be_kind_of" | "be_instance_of" | "be_a_kind_of" => {
+                    let Some(c) = matcher_args.named_child(0) else {
+                        return false;
+                    };
+                    is_ruby_type_reference(c)
+                }
+                "be" => {
+                    // `be(LITERAL)` — `be == LIT` shape isn't representable here,
+                    // accept a single literal arg.
+                    let Some(c) = matcher_args.named_child(0) else {
+                        return false;
+                    };
+                    is_ruby_assertion_literal_expected(c, bytes)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn is_ruby_minitest_single_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "assert"
+            | "assert_nil"
+            | "refute"
+            | "refute_nil"
+            | "assert_empty"
+            | "refute_empty"
+    )
+}
+
+fn is_ruby_minitest_multi_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "assert_equal"
+            | "assert_not_equal"
+            | "refute_equal"
+            | "assert_in_delta"
+            | "assert_in_epsilon"
+            | "assert_includes"
+            | "refute_includes"
+            | "assert_match"
+            | "refute_match"
+            | "assert_operator"
+            | "refute_operator"
+            | "assert_predicate"
+            | "refute_predicate"
+            | "assert_same"
+            | "refute_same"
+    )
+}
+
+fn is_ruby_rspec_bare_matcher(name: &str) -> bool {
+    matches!(
+        name,
+        "be_nil"
+            | "be_truthy"
+            | "be_falsey"
+            | "be_falsy"
+            | "be_empty"
+            | "be_present"
+            | "be_zero"
+            | "be_positive"
+            | "be_negative"
+    )
+}
+
+fn is_ruby_type_reference(node: tree_sitter::Node) -> bool {
+    matches!(
+        node.kind(),
+        "constant" | "scope_resolution" | "identifier"
+    )
+}
+
+/// Recursive Ruby literal classifier.  Strings count when they have no
+/// `interpolation` children (`"hello"` literal yes, `"#{x}"` no).
+/// Symbols, numbers, booleans, `nil`, arrays / hashes (recursive),
+/// negative numeric unary, and ranges with literal endpoints all
+/// qualify.
+fn is_ruby_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    match node.kind() {
+        "string" => !has_ruby_string_interpolation(node),
+        "string_array" | "symbol_array" => true,
+        "integer" | "float" | "true" | "false" | "nil"
+        | "simple_symbol" | "hash_key_symbol" | "rational" | "complex"
+        | "regex" => true,
+        "unary" => node
+            .named_child(0)
+            .is_some_and(|c| is_ruby_assertion_literal_expected(c, bytes)),
+        "array" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_ruby_assertion_literal_expected(c, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        "hash" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(pair) = node.named_child(i) else {
+                    return false;
+                };
+                if pair.kind() != "pair" {
+                    return false;
+                }
+                let Some(key) = pair.child_by_field_name("key") else {
+                    return false;
+                };
+                let Some(value) = pair.child_by_field_name("value") else {
+                    return false;
+                };
+                if !is_ruby_assertion_literal_expected(key, bytes) {
+                    return false;
+                }
+                if !is_ruby_assertion_literal_expected(value, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        "range" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_ruby_assertion_literal_expected(c, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn has_ruby_string_interpolation(node: tree_sitter::Node) -> bool {
     for i in 0..node.named_child_count() as u32 {
         if let Some(c) = node.named_child(i)
             && c.kind() == "interpolation"
@@ -5764,6 +6335,29 @@ fn first_python_capture<'tree>(
     cap.node
 }
 
+/// Helper that runs a tree-sitter query against Ruby source and returns
+/// the first capture-0 node, panicking if no match is found.  Used by
+/// the Ruby suppression tests below.
+#[cfg(test)]
+fn first_ruby_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    query_str: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE);
+    let query = tree_sitter::Query::new(&lang, query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    let cap = m
+        .captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0");
+    cap.node
+}
+
 /// Helper that runs a tree-sitter query against PHP source and returns the
 /// first capture-0 node, panicking if no match is found.  Used by the PHP
 /// suppression tests below.
@@ -6281,6 +6875,311 @@ fn python_deser_inside_unittest_assertion_recognises_roundtrip_shapes() {
     assert!(
         !is_python_deser_inside_unittest_assertion(cap, code),
         "f-string expected (interpolation) should NOT be suppressed"
+    );
+}
+
+/// Pytest plain-`assert` round-trip recogniser invariants.  Same
+/// entry point as the unittest test above (the function handles both
+/// idioms) but the asserted shape sits under an `assert_statement`
+/// instead of a `unittest.TestCase` method call.
+#[test]
+fn python_deser_inside_pytest_assert_recognises_roundtrip_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(call function: (attribute object: (identifier) @pkg (#eq? @pkg "pickle") attribute: (identifier) @fn (#match? @fn "^loads?$"))) @vuln"#;
+
+    // assert deser == LITERAL
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b) == [1, 2, 3]\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser == [literal] should be suppressed"
+    );
+
+    // assert deser is None
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b) is None\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser is None should be suppressed"
+    );
+
+    // assert deser in [LITERAL, ...]
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b) in [1, 2, 3]\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser in [literal] should be suppressed"
+    );
+
+    // assert deser  (truthy bare)
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser (truthy bare) should be suppressed"
+    );
+
+    // assert not deser
+    let code = b"import pickle\ndef t(b):\n    assert not pickle.loads(b)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert not deser should be suppressed"
+    );
+
+    // assert isinstance(deser, dict)
+    let code =
+        b"import pickle\ndef t(b):\n    assert isinstance(pickle.loads(b), dict)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert isinstance(deser, dict) should be suppressed"
+    );
+
+    // assert (deser == LITERAL) — paren wrap.
+    let code = b"import pickle\ndef t(b):\n    assert (pickle.loads(b) == [1])\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert (deser == literal) with paren wrap should be suppressed"
+    );
+
+    // assert deser == LITERAL, "msg"
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b) == 1, 'round trip'\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser == literal, msg should be suppressed (msg is named_child(1))"
+    );
+
+    // assert bool(deser)
+    let code = b"import pickle\ndef t(b):\n    assert bool(pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert bool(deser) should be suppressed"
+    );
+
+    // assert len(deser) == 3
+    let code = b"import pickle\ndef t(b):\n    assert len(pickle.loads(b)) == 3\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert len(deser) == int_literal should be suppressed"
+    );
+
+    // Negatives ----------------------------------------------------------
+
+    // assert deser and X — boolean op short-circuits, can run side effect.
+    let code = b"import pickle\ndef t(b, x):\n    assert pickle.loads(b) and x\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser and X (boolean op) should NOT be suppressed"
+    );
+
+    // assert deser if cond else X — conditional short-circuits.
+    let code = b"import pickle\ndef t(b, c):\n    assert (pickle.loads(b) if c else 0)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assert (deser if c else x) should NOT be suppressed"
+    );
+
+    // assert wrapper(deser) == LITERAL — arbitrary user fn breaks bound.
+    let code = b"import pickle\ndef t(b):\n    assert wrapper(pickle.loads(b)) == [1]\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assert wrapper(deser) == literal should NOT be suppressed"
+    );
+
+    // assert deser == non-literal — bound depends on dynamic var.
+    let code = b"import pickle\ndef t(b, e):\n    assert pickle.loads(b) == e\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser == non_literal should NOT be suppressed"
+    );
+
+    // assert isinstance(deser, type_var) where type is dynamic.
+    let code = b"import pickle\ndef t(b):\n    t = some_type_factory()\n    assert isinstance(pickle.loads(b), t)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    // `t` is an `identifier` and `is_python_type_reference` accepts
+    // identifier (assertIsInstance treats user-class identifiers as
+    // type references), so this case stays suppressed.  Pinned to
+    // document the matching behaviour rather than tighten it.
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert isinstance(deser, identifier) treats identifier as type ref"
+    );
+
+    // Production assignment-then-assert: deser sits in `actual = pickle.loads(b)`,
+    // not under the assert.  Must keep firing.
+    let code = b"import pickle\ndef t(b):\n    actual = pickle.loads(b)\n    assert actual == [1]\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "deser bound to a name then asserted should NOT be suppressed (assignment context)"
+    );
+}
+
+/// Ruby Layer C5 invariants.  The recogniser must accept Minitest
+/// `assert_*`/`refute_*` shapes, RSpec `expect(_).to MATCHER` shapes,
+/// and reject production calls / dynamic-expected / unrelated wrappers.
+#[test]
+fn ruby_deser_inside_test_assertion_recognises_roundtrip_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+    // Capture the `Marshal` constant under the deser call's `receiver` field.
+    let q = r#"(call receiver: (constant) @recv (#eq? @recv "Marshal") method: (identifier) @m (#eq? @m "load")) @vuln"#;
+
+    // Minitest assert_equal LITERAL, deser
+    let code = b"class T\n  def t(b)\n    assert_equal [1, 2, 3], Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "assert_equal [literal], Marshal.load(b) should be suppressed"
+    );
+
+    // Minitest assert_nil
+    let code = b"class T\n  def t(b)\n    assert_nil Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "assert_nil Marshal.load(b) should be suppressed"
+    );
+
+    // Minitest single-arg truthy assert
+    let code = b"class T\n  def t(b)\n    assert Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "assert Marshal.load(b) (truthy) should be suppressed"
+    );
+
+    // Minitest assert_kind_of TYPE, deser
+    let code = b"class T\n  def t(b)\n    assert_kind_of Array, Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "assert_kind_of TYPE, deser should be suppressed"
+    );
+
+    // Minitest refute_equal
+    let code = b"class T\n  def t(b)\n    refute_equal [9, 9], Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "refute_equal [literal], deser should be suppressed"
+    );
+
+    // RSpec expect(deser).to eq(LITERAL)
+    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to eq([1, 2, 3])\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).to eq([literal]) should be suppressed"
+    );
+
+    // RSpec expect(deser).to be_nil
+    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to be_nil\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).to be_nil should be suppressed"
+    );
+
+    // RSpec expect(deser).to be_a(TYPE)
+    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to be_a(Array)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).to be_a(TYPE) should be suppressed"
+    );
+
+    // RSpec not_to be_nil
+    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).not_to be_nil\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).not_to be_nil should be suppressed"
+    );
+
+    // Negatives ----------------------------------------------------------
+
+    // Production call (no assertion) keeps firing.
+    let code = b"def handler(blob)\n  Marshal.load(blob)\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "production Marshal.load should NOT be suppressed"
+    );
+
+    // assert_equal with dynamic expected keeps firing.
+    let code = b"class T\n  def t(b, expected)\n    assert_equal expected, Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "assert_equal non_literal, deser should NOT be suppressed"
+    );
+
+    // RSpec expect(deser).to eq(dynamic) keeps firing.
+    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to eq(expected)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).to eq(non_literal) should NOT be suppressed"
+    );
+
+    // Custom unrecognised verb (not in the bounding sets) keeps firing.
+    let code = b"class T\n  def t(b)\n    custom_check Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "non-assertion-verb wrap should NOT be suppressed"
+    );
+
+    // RSpec .should == LIT (old-style, parses as `binary`, not the
+    // expected receiver-method-arguments shape) keeps firing.
+    let code = b"describe X do\n  it 'x' do\n    Marshal.load(b).should == [1]\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "old-style .should == LIT should NOT be suppressed"
     );
 }
 
