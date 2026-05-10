@@ -395,24 +395,6 @@ implied or surfaced but did not finish.
       The single-arg constructor passthrough below covers the
       simpler `Url::parse("https://api/" + tainted)` form via
       abstract concat prefix.
-- [ ] Phase 14 audit — the `Net::HTTP.start` SSRF rule fires on the
-      first positional arg, which is the host string.  Ruby's
-      `Net::HTTP.start(host, port, opts)` overloads with optional
-      options that can include `:proxy_addr` / `:use_ssl` etc.
-      When the host is hardcoded but the proxy address is tainted,
-      the SSRF would still fire (correctly) on the host arg if
-      tainted, but a pure proxy-tainted shape lacks coverage.
-      Park: the proxy-tainted shape is uncommon and out of scope
-      for the current SSRF positives.
-- [ ] Phase 14 audit — `Faraday.new(url: base)` is registered as
-      `TypeKind::HttpClient` in `constructor_type` (Ruby).  The
-      kwarg-form `url:` argument carries the base URL receiver-side
-      and would itself be SSRF-relevant when tainted, but the type-
-      qualified label rules apply at the verb-method call site
-      (`client.get(path)`), not at construction.  When a fixture
-      surfaces a tainted base shape (`Faraday.new(url: req.params[:base])`),
-      add a Faraday-specific gate that also activates SSRF on the
-      `url:` kwarg at construction time.
 - [ ] Phase 14 audit — PHP `Client` constructor recognition in
       `constructor_type` matches the bare leaf `Client`.  Real
       project code commonly aliases the Guzzle `Client` to a local

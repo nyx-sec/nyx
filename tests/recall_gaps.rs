@@ -665,6 +665,11 @@ fn ssrf_cross_language() {
         // Ruby — Net::HTTP.get + Faraday.get (Phase 14 sink).
         "ssrf_rb_positive.rb",
         "ssrf_rb_search_params.rb",
+        // Ruby Faraday.new(url: tainted) construction-time SSRF and
+        // Net::HTTP.start(host, port, proxy_addr: tainted) proxy-tainted
+        // Destination gates added in the Phase 14 follow-up.
+        "ssrf_rb_faraday_new.rb",
+        "ssrf_rb_net_http_proxy.rb",
         // PHP — curl_exec via curl_setopt CURLOPT_URL gate (Phase 14)
         // + Guzzle Client::request (Phase 14 sink).
         "ssrf_php_positive.php",

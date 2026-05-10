@@ -449,6 +449,32 @@ pub static RULES: &[LabelRule] = &[
 /// `Nokogiri::XML::ParseOptions::DEFAULT_XML`); any non-dangerous
 /// scope-qualified constant disables the gate.
 pub static GATED_SINKS: &[SinkGate] = &[
+    // `Faraday.new(url: tainted)` — base-URL kwarg controls the destination
+    // origin for every subsequent verb call on the returned client
+    // (`client.get(path)` / `.post` / etc.).  When the kwarg value is
+    // attacker-controlled, the constructor itself is the SSRF entry point;
+    // the existing type-qualified rules on `HttpClient.get` / `.post` only
+    // cover taint flowing into the per-call `path` arg.
+    //
+    // Activation is `Destination` on positional position 0 with a single
+    // `url` field; tree-sitter-ruby emits the kwarg as a `pair` node sibling
+    // of the positional args, and `extract_destination_kwarg_pairs` walks
+    // those pairs (Ruby support added alongside this gate in
+    // `cfg::literals::extract_destination_kwarg_pairs`).
+    SinkGate {
+        callee_matcher: "Faraday.new",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
     // `Nokogiri::XML(xml, url=nil, encoding=nil, options=NIL)` — top-level
     // module method.  arg 3 carries the parse-option flag literal.
     //

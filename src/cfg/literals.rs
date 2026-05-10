@@ -168,6 +168,13 @@ pub(super) fn extract_destination_field_pairs(
 /// `requests.post(url, data=tainted, json=safe)` where `data` and `json` are
 /// `keyword_argument` siblings of the positional URL.
 ///
+/// Also covers Ruby, where tree-sitter-ruby emits `pair` nodes (with
+/// `key`/`value` fields) directly under `argument_list` for the
+/// `Faraday.new(url: x)` / `Net::HTTP.start(host, port, proxy_addr: prx)`
+/// kwarg shape.  The `key` is typically a `hash_key_symbol` whose text is the
+/// bare identifier (`url`); `simple_symbol` (`:url`) and string keys are
+/// normalised by stripping a leading `:` or wrapping quotes.
+///
 /// Returns the union of matching kwargs, preserving the kwarg name in the
 /// `field` slot so callers can still attribute findings per-field.  Empty
 /// when no matching kwargs exist or the call has no `arguments` field.
@@ -186,22 +193,39 @@ pub(super) fn extract_destination_kwarg_pairs(
     let mut cursor = args_node.walk();
     for child in args_node.named_children(&mut cursor) {
         let kind = child.kind();
-        if kind != "keyword_argument" && kind != "named_argument" {
-            continue;
-        }
-        let named_count = child.named_child_count();
-        let name_node = child
-            .child_by_field_name("name")
-            .or_else(|| child.named_child(0));
-        let value_node = child
-            .child_by_field_name("value")
-            .or_else(|| child.named_child(named_count.saturating_sub(1) as u32));
+        let (name_node, value_node) =
+            if kind == "keyword_argument" || kind == "named_argument" {
+                let named_count = child.named_child_count();
+                (
+                    child
+                        .child_by_field_name("name")
+                        .or_else(|| child.named_child(0)),
+                    child
+                        .child_by_field_name("value")
+                        .or_else(|| child.named_child(named_count.saturating_sub(1) as u32)),
+                )
+            } else if kind == "pair" {
+                // Ruby `pair` node sits directly under `argument_list` for
+                // kwarg-style call args (`f(url: x)`).  `key`/`value` fields
+                // are populated; key text is `hash_key_symbol` ("url"),
+                // `simple_symbol` (":url"), or a string literal.
+                (
+                    child.child_by_field_name("key"),
+                    child.child_by_field_name("value"),
+                )
+            } else {
+                continue;
+            };
         let (Some(nn), Some(vn)) = (name_node, value_node) else {
             continue;
         };
-        let Some(name) = text_of(nn, code) else {
+        let Some(name_raw) = text_of(nn, code) else {
             continue;
         };
+        let name = name_raw
+            .trim_start_matches(':')
+            .trim_matches(['"', '\''])
+            .to_string();
         if !fields.iter().any(|&f| f == name) {
             continue;
         }
