@@ -79,6 +79,111 @@ pub fn collect_safe_lookup_fields(
     out
 }
 
+/// Per-file class-level constant scalar map: field name → literal value text.
+///
+/// Recognises Java fields declared `static final TYPE NAME = LITERAL;` where
+/// `LITERAL` is one of the primitive scalar literal kinds (string, integer
+/// of any base, floating-point, character, boolean, null).  Used by
+/// `cfg_analysis::guards` to suppress `cfg-unguarded-sink` when a sink's
+/// argument is one of these class-level constants (the per-function SSA
+/// const-prop sees a free identifier and would otherwise treat it as a
+/// runtime-dynamic value).
+///
+/// Empty for non-Java files.  Scalar means single-value, not container; the
+/// `Map.of(...)` form is captured by [`collect_safe_lookup_fields`].
+pub fn collect_class_constant_scalars(
+    root: Node<'_>,
+    lang: &str,
+    code: &[u8],
+) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    if lang == "java" {
+        collect_java_constant_scalars(root, code, &mut out);
+    }
+    out
+}
+
+fn collect_java_constant_scalars(
+    root: Node<'_>,
+    code: &[u8],
+    out: &mut HashMap<String, String>,
+) {
+    walk(root, &mut |node| {
+        if node.kind() != "field_declaration" {
+            return;
+        }
+        if !has_static_modifier(node) || !has_final_modifier(node) {
+            return;
+        }
+        // A single `field_declaration` may carry multiple
+        // `variable_declarator` children (`static final int A = 1, B = 2;`).
+        // Iterate every declarator field; tree-sitter exposes them under
+        // the `declarator` field name as repeated entries.
+        let mut cursor = node.walk();
+        for child in node.children_by_field_name("declarator", &mut cursor) {
+            let Some(name_node) = child.child_by_field_name("name") else {
+                continue;
+            };
+            let Some(field_name) = text_of(name_node, code) else {
+                continue;
+            };
+            let Some(value_node) = child.child_by_field_name("value") else {
+                continue;
+            };
+            let Some(literal) = scalar_literal_text(value_node, code) else {
+                continue;
+            };
+            out.insert(field_name, literal);
+        }
+    });
+}
+
+/// `true` when `field_declaration` carries a `static` modifier.
+fn has_static_modifier(field_decl: Node<'_>) -> bool {
+    let mut cursor = field_decl.walk();
+    for child in field_decl.children(&mut cursor) {
+        if child.kind() != "modifiers" {
+            continue;
+        }
+        let mut sub = child.walk();
+        for mod_child in child.children(&mut sub) {
+            if mod_child.kind() == "static" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Return the source text when `value` is a primitive scalar literal node.
+/// Returns `None` for compound expressions, identifier references, method
+/// invocations, and other non-literal initializers.  String literals
+/// containing `escape_sequence` children are accepted: the suppression
+/// consumer only needs to know the binding is constant, not what the
+/// decoded payload would be.
+fn scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
+    match value.kind() {
+        "string_literal"
+        | "decimal_integer_literal"
+        | "hex_integer_literal"
+        | "octal_integer_literal"
+        | "binary_integer_literal"
+        | "decimal_floating_point_literal"
+        | "hex_floating_point_literal"
+        | "character_literal"
+        | "true"
+        | "false"
+        | "null_literal" => text_of(value, code),
+        // Unary `-1`, `+0`, `!true` over a literal child still resolve to a
+        // compile-time constant; recurse into the operand.
+        "unary_expression" => {
+            let operand = value.child_by_field_name("operand")?;
+            scalar_literal_text(operand, code)
+        }
+        _ => None,
+    }
+}
+
 fn collect_java(root: Node<'_>, code: &[u8], out: &mut HashMap<String, Vec<String>>) {
     walk(root, &mut |node| {
         if node.kind() != "field_declaration" {
@@ -344,6 +449,112 @@ mod tests {
             .unwrap();
         let tree = p.parse(src, None).unwrap();
         let out = collect_safe_lookup_fields(tree.root_node(), "javascript", src.as_bytes());
+        assert!(out.is_empty());
+    }
+
+    fn collect_consts(src: &str) -> HashMap<String, String> {
+        let mut p = Parser::new();
+        p.set_language(&tree_sitter_java::LANGUAGE.into()).unwrap();
+        let tree = p.parse(src, None).unwrap();
+        collect_class_constant_scalars(tree.root_node(), "java", src.as_bytes())
+    }
+
+    #[test]
+    fn class_constants_capture_string_int_bool() {
+        let src = r#"
+            class C {
+                private static final String DRIVER = "com.mysql.cj.jdbc.Driver";
+                public static final int LIMIT = 100;
+                static final boolean DEBUG = false;
+            }
+        "#;
+        let out = collect_consts(src);
+        assert_eq!(out.get("DRIVER"), Some(&"\"com.mysql.cj.jdbc.Driver\"".to_string()));
+        assert_eq!(out.get("LIMIT"), Some(&"100".to_string()));
+        assert_eq!(out.get("DEBUG"), Some(&"false".to_string()));
+    }
+
+    #[test]
+    fn class_constants_capture_multi_declarator() {
+        let src = r#"
+            class C {
+                private static final int A = 1, B = 2, C2 = 3;
+            }
+        "#;
+        let out = collect_consts(src);
+        assert_eq!(out.get("A"), Some(&"1".to_string()));
+        assert_eq!(out.get("B"), Some(&"2".to_string()));
+        assert_eq!(out.get("C2"), Some(&"3".to_string()));
+    }
+
+    #[test]
+    fn class_constants_capture_unary_negation() {
+        let src = r#"
+            class C {
+                private static final int OFFSET = -1;
+            }
+        "#;
+        let out = collect_consts(src);
+        // text_of returns the operand text, not the wrapper text.
+        assert_eq!(out.get("OFFSET"), Some(&"1".to_string()));
+    }
+
+    #[test]
+    fn class_constants_reject_non_static() {
+        let src = r#"
+            class C {
+                private final String NAME = "x";
+            }
+        "#;
+        let out = collect_consts(src);
+        assert!(!out.contains_key("NAME"));
+    }
+
+    #[test]
+    fn class_constants_reject_non_final() {
+        let src = r#"
+            class C {
+                private static String NAME = "x";
+            }
+        "#;
+        let out = collect_consts(src);
+        assert!(!out.contains_key("NAME"));
+    }
+
+    #[test]
+    fn class_constants_reject_identifier_value() {
+        let src = r#"
+            class C {
+                private static final String OTHER = computed();
+                private static final String COPY = OTHER;
+            }
+        "#;
+        let out = collect_consts(src);
+        assert!(!out.contains_key("OTHER"));
+        assert!(!out.contains_key("COPY"));
+    }
+
+    #[test]
+    fn class_constants_capture_inside_inner_class() {
+        let src = r#"
+            class Outer {
+                static class Inner {
+                    private static final String DRIVER = "x";
+                }
+            }
+        "#;
+        let out = collect_consts(src);
+        assert_eq!(out.get("DRIVER"), Some(&"\"x\"".to_string()));
+    }
+
+    #[test]
+    fn class_constants_ignore_non_java_lang() {
+        let src = "const x = 1;";
+        let mut p = Parser::new();
+        p.set_language(&tree_sitter_javascript::LANGUAGE.into())
+            .unwrap();
+        let tree = p.parse(src, None).unwrap();
+        let out = collect_class_constant_scalars(tree.root_node(), "javascript", src.as_bytes());
         assert!(out.is_empty());
     }
 }

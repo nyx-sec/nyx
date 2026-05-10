@@ -1098,6 +1098,22 @@ fn fp_guard_cfg_unguarded_dao_passthrough_java() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Java `Class.forName(STATIC_FINAL_CONSTANT)` and similar
+/// sink calls whose argument is a class-level `static final TYPE NAME =
+/// LITERAL;` field reference.  The field lives outside any function
+/// body, so the per-function CFG one-hop trace and the per-function SSA
+/// const-prop both treat the identifier as a runtime-dynamic value; the
+/// structural rule then fires `cfg-unguarded-sink` on every call site.
+/// The class-constant-scalars map collected at CFG build time exposes
+/// these compile-time constants so the all-args-constant check picks
+/// them up.
+#[test]
+fn fp_guard_cfg_unguarded_class_constant_java() {
+    let dir = fixture_path("fp_guards/cfg_unguarded_class_constant_java");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Drupal Database Query subclasses use
 /// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
 /// statement object then bind values out of band via

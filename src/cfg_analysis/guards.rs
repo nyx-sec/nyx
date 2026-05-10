@@ -88,6 +88,17 @@ fn is_all_args_constant(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
                 }
             }
         }
+        // Class-level constant scalar: Java `static final TYPE NAME = LIT;`
+        // field references are compile-time constants that the per-function
+        // CFG one-hop trace can't see (fields live outside any function
+        // body) and that SSA const-prop doesn't surface either (the per-
+        // function lowering treats the cross-scope reference as a free
+        // identifier).
+        if let Some(map) = ctx.class_constant_scalars
+            && map.contains_key(u.as_str())
+        {
+            return true;
+        }
         false
     }) || ssa_all_sink_operands_constant(ctx, sink, callee_desc, &callee_parts, &outer_parts)
 }

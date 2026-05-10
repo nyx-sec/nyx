@@ -741,6 +741,15 @@ pub struct FileCfg {
     /// does not light up downstream sinks when the receiver is a
     /// known-safe map field.
     pub safe_lookup_fields: HashMap<String, Vec<String>>,
+    /// Class-level constant scalars: field name → literal text.
+    /// Populated for Java `static final TYPE NAME = LITERAL;` declarations
+    /// where the RHS is a primitive scalar literal (string, integer,
+    /// floating-point, char, boolean, null).  Consumed by
+    /// `cfg_analysis::guards` to recognise sink arguments that resolve to
+    /// class-level constants (the per-function SSA const-prop sees a free
+    /// identifier and would otherwise treat the binding as runtime-dynamic).
+    /// Empty for non-Java files.
+    pub class_constant_scalars: HashMap<String, String>,
 }
 
 impl FileCfg {
@@ -6208,6 +6217,12 @@ pub(crate) fn build_cfg<'a>(
     // set.  Empty for other languages.
     let safe_lookup_fields = safe_fields::collect_safe_lookup_fields(tree.root_node(), lang, code);
 
+    // Java class-level constant scalars: `static final TYPE NAME = LITERAL;`
+    // declarations whose name surfaces at a sink as a compile-time-bounded
+    // value.  Empty for other languages.
+    let class_constant_scalars =
+        safe_fields::collect_class_constant_scalars(tree.root_node(), lang, code);
+
     FileCfg {
         bodies,
         summaries,
@@ -6218,6 +6233,7 @@ pub(crate) fn build_cfg<'a>(
         local_imports,
         entry_kinds,
         safe_lookup_fields,
+        class_constant_scalars,
     }
 }
 

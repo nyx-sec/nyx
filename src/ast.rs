@@ -1879,6 +1879,7 @@ impl<'a> ParsedFile<'a> {
                         .get(&body.meta.id)
                         .unwrap_or(&empty_set),
                 ),
+                class_constant_scalars: Some(&self.file_cfg.class_constant_scalars),
             };
             for cf in cfg_analysis::run_all(&cfg_ctx) {
                 // Layer C4 mirror at the CFG-emission point: Python
