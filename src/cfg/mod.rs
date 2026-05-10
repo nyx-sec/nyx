@@ -2544,6 +2544,28 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // React JSX text-content auto-escape sanitizer synthesis.  When the
+    // assignment / wrapper / return AST contains a `{expr}` interpolation as
+    // a direct child of a `jsx_element` or `jsx_fragment` (NOT inside a
+    // `jsx_attribute`), React's renderer escapes HTML metacharacters in the
+    // interpolated value.  Tag the wrapping node `Sanitizer(HTML_ESCAPE)` so
+    // SSA-level Assign / Call processing clears `HTML_ESCAPE` from the
+    // resulting JSX value's caps.  Strictly additive — Source / Sink labels
+    // already attached are preserved.  Already-present `Sanitizer(HTML_ESCAPE)`
+    // is left untouched to avoid duplicate entries.
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && matches!(
+            lookup(lang, ast.kind()),
+            Kind::CallWrapper | Kind::Assignment | Kind::Return
+        )
+        && !labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sanitizer(c) if c.contains(Cap::HTML_ESCAPE)))
+        && jsx_text_content_interp_present(ast, lang)
+    {
+        labels.push(DataLabel::Sanitizer(Cap::HTML_ESCAPE));
+    }
+
     // Shape-based sanitizer synthesis for Ruby ActiveRecord query methods.
     // The static label table marks `where` / `order` / `pluck` / `group` /
     // `having` / `joins` as `Sink(SQL_QUERY)` because their string-interpolation
@@ -3475,6 +3497,42 @@ fn collect_jsx_dangerous_html_attrs<'a>(
             stack.push(child);
         }
     }
+}
+
+/// True when `root`'s subtree contains a `jsx_expression` whose direct
+/// parent is a `jsx_element` or `jsx_fragment` (i.e. a `{expr}` text-content
+/// interpolation between JSX tags).  React renders text content with HTML
+/// metachar escaping, so any taint flowing through such an interpolation
+/// has its `HTML_ESCAPE` cap cleared by the time the JSX value is rendered.
+///
+/// Bails at nested function-literal boundaries so JSX inside a closure body
+/// (`const fn = () => <div>{bio}</div>`) does not falsely tag the outer
+/// assignment — the closure's result only escapes when the closure is called
+/// and rendered, which the outer assignment does not perform.
+///
+/// Excludes attribute interpolations (`<a href={url}/>`); React does
+/// auto-escape attribute values as well, but the deferred-plan scope is
+/// text-content only.  Widen if a fixture surfaces a pure-attribute FP.
+fn jsx_text_content_interp_present(root: Node, lang: &str) -> bool {
+    let mut stack: Vec<Node> = vec![root];
+    while let Some(node) = stack.pop() {
+        // Closure boundary: nested function bodies do not flow their JSX
+        // result out through this assignment's value.
+        if matches!(lookup(lang, node.kind()), Kind::Function) && node.id() != root.id() {
+            continue;
+        }
+        if node.kind() == "jsx_expression"
+            && let Some(parent) = node.parent()
+            && matches!(parent.kind(), "jsx_element" | "jsx_fragment")
+        {
+            return true;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    false
 }
 
 /// Read the attribute name off a `jsx_attribute` node and compare against

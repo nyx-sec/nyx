@@ -745,6 +745,20 @@ fn fp_guard_sanitizer_html_escape_js() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, React JSX text-content auto-escape: `{expr}` interpolations
+/// that are direct children of `jsx_element` / `jsx_fragment` tags carry an
+/// implicit `Sanitizer(HTML_ESCAPE)` because React's renderer escapes HTML
+/// metacharacters in text content.  Closes ts-safe-010 (`safe_jsx_text.tsx`)
+/// in `tests/benchmark`.  Attribute interpolations and `dangerouslySetInnerHTML`
+/// are NOT covered by this synthesis and remain in their existing sink path
+/// (regression-checked by `tests/benchmark/corpus/typescript/xss/xss_dangerously_set_inner_html.tsx`).
+#[test]
+fn fp_guard_jsx_text_content_sanitizer_tsx() {
+    let dir = fixture_path("fp_guards/jsx_text_content_sanitizer_tsx");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, sanitizer edge case: shlex.quote with shell metacharacters.
 #[test]
 fn fp_guard_sanitizer_shlex_quote_py() {

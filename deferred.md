@@ -843,27 +843,6 @@ implied or surfaced but did not finish.
         `Map.get` to a `StringFact::any_of([v1, v2, ...])` that the
         sink-suppression layer recognises as locked.
 
-- [ ] React JSX text-content auto-escape sanitizer (ts-safe-010).
-      Fixture: `tests/benchmark/corpus/typescript/safe/safe_jsx_text.tsx`
-      has `const page = <div>{bio}</div>; res.send(page);` where
-      `bio = req.query.bio`.  React auto-escapes text content between
-      JSX tags, but the engine has no model for that, so it fires a
-      `taint-unsanitised-flow` finding.  Path forward: synthesize a
-      Sanitizer(HTML_ESCAPE) CFG node similar to the existing
-      `try_lower_jsx_dangerous_html` synthesis at
-      `src/cfg/mod.rs::try_lower_jsx_dangerous_html`.  Walk the AST
-      for `jsx_expression` nodes whose direct parent is a
-      `jsx_element` / `jsx_self_closing_element` / `jsx_fragment` AND
-      whose grandparent is NOT a `jsx_attribute` (the attribute case
-      already has dedicated dangerouslySetInnerHTML sink synthesis;
-      other attribute uses like `onClick={...}` are not text
-      content).  Sanitize HTML_ESCAPE only — other caps (CMDi, SQLi,
-      SSRF, etc.) flow through unchanged, since React text-escape
-      neutralizes only HTML metachars.  Risk: over-suppression on
-      legitimate XSS-via-attribute or innerHTML shapes.  The
-      attribute-vs-text-content distinction is structural (jsx_attribute
-      ancestor check), so the risk is bounded.
-
 ## Deferred phases
 
 (none)

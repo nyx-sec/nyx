@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-09T23:34:28Z",
+  "timestamp": "2026-05-10T01:01:14Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -9578,17 +9578,13 @@
       "language": "typescript",
       "vuln_class": "safe",
       "is_vulnerable": false,
-      "outcome_file_level": "FP",
-      "outcome_rule_level": "FP",
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
       "outcome_location_level": null,
       "matched_rule_ids": [],
-      "unexpected_rule_ids": [
-        "taint-unsanitised-flow (source 7:5)"
-      ],
-      "all_finding_ids": [
-        "taint-unsanitised-flow (source 7:5)"
-      ],
-      "security_finding_count": 1,
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
       "non_security_finding_count": 0
     },
     {
@@ -10059,21 +10055,21 @@
   ],
   "aggregate_file_level": {
     "tp": 275,
-    "fp": 2,
+    "fp": 1,
     "fn_": 0,
-    "tn": 285,
-    "precision": 0.9927797833935018,
+    "tn": 286,
+    "precision": 0.9963768115942029,
     "recall": 1.0,
-    "f1": 0.996376811594203
+    "f1": 0.9981851179673321
   },
   "aggregate_rule_level": {
     "tp": 275,
-    "fp": 2,
+    "fp": 1,
     "fn_": 0,
-    "tn": 285,
-    "precision": 0.9927797833935018,
+    "tn": 286,
+    "precision": 0.9963768115942029,
     "recall": 1.0,
-    "f1": 0.996376811594203
+    "f1": 0.9981851179673321
   },
   "by_language": {
     "c": {
@@ -10159,12 +10155,12 @@
     },
     "typescript": {
       "tp": 36,
-      "fp": 1,
+      "fp": 0,
       "fn_": 0,
-      "tn": 26,
-      "precision": 0.972972972972973,
+      "tn": 27,
+      "precision": 1.0,
       "recall": 1.0,
-      "f1": 0.9863013698630138
+      "f1": 1.0
     }
   },
   "by_vuln_class": {
@@ -10305,9 +10301,9 @@
     },
     "safe": {
       "tp": 0,
-      "fp": 2,
+      "fp": 1,
       "fn_": 0,
-      "tn": 282,
+      "tn": 283,
       "precision": 0.0,
       "recall": 1.0,
       "f1": 0.0
