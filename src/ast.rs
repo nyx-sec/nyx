@@ -1576,6 +1576,14 @@ impl<'a> ParsedFile<'a> {
     /// the standalone [`crate::taint::analyse_file`] entry point already
     /// passes `None` here for the same reason.
     ///
+    /// 2026-05-10 measurement: enabling the locator here gains 2 multi-hop
+    /// benchmark cases at location level but regresses 7 single-hop
+    /// helper cases whose `expected_sink_lines` are calibrated to the
+    /// call site.  The fix that preserves both is option (2) in the
+    /// "Multi-hop intra-file sink attribution gap" entry of deferred.md
+    /// (a `from_chain` flag on `SinkSite`); option (1) — locator-only —
+    /// is dead per that measurement.
+    ///
     /// Cross-file primary attribution is unaffected: the artifact-extraction
     /// path that persists summaries to SQLite for cross-file consumption
     /// runs through [`crate::taint::extract_ssa_artifacts_from_file_cfg`]

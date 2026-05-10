@@ -761,6 +761,31 @@ implied or surfaced but did not finish.
       threading a new field through `SinkSite`, `union_sink_sites`,
       `union_param_sink_sites`, the `summary_extract` path, and
       cross-file persistence.
+      2026-05-10 session 0007 investigation: re-tested option (1) by
+      enabling locator on `lower_ssa_for_fused`. Real_world test
+      delta: 5 hard fixture failures (the documented set: 3 JS, 1
+      Go, 1 Python closure/lambda fixtures), 2 unexpected EXTRA
+      findings vanish (better attribution), proto_pollution.js
+      attribution improves (line 17→6). Benchmark delta is
+      net-negative: 2 originally-FN multi-hop cases gain location-
+      level TPs (cve-java-ghsa-h8cj-hpmg-636v-vulnerable, java-sqli-
+      stmt-execute-002), but 7 single-hop helper-with-internal-sink
+      ground-truth cases REGRESS to location-level FN because their
+      `expected_sink_lines` are calibrated to the call site, not the
+      callee's internal sink (rs-cmdi-003, rs-cmdi-009, rs-ssrf-002,
+      cve-go-2023-3188-vulnerable, cve-rb-2021-21288-vulnerable, cve-
+      rb-2023-38337-vulnerable, cve-ts-ghsa-4x48-cgf9-q33f-vulnerable).
+      Net: +2 / -7 = -5 location-level TPs. The ground truth on
+      rs-cmdi-003 explicitly notes: "Engine attributes intra-file
+      helper sinks at the call site (line 10), not the inner
+      Command::new (line 5); see locator-policy comment in
+      src/ast.rs." Option (1) is dead — would need ground-truth
+      retagging of 7+ benchmark cases (each conscious of the call-
+      site policy) AND fixture audit. Option (2) (from_chain flag)
+      remains the only structurally-clean path: it preserves call-
+      site emission for single-hop intra-file helpers (matching the
+      benchmark calibration) while promoting only multi-hop chains
+      (which have no per-frame intermediate finding to dedup with).
 
 - [ ] PHP foreach-key string interpolation FP. Shape:
       `foreach ($variables as $var => $val) {
