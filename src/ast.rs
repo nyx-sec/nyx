@@ -370,9 +370,7 @@ fn build_taint_diag(
         });
     }
 
-    let sink_evidence_snippet = primary_snippet_hint
-        .clone()
-        .or_else(|| Some(short_call_site.clone()));
+    let sink_evidence_snippet = primary_snippet_hint.or(Some(short_call_site));
 
     // Resolved sink capability bits, used by deduplication to distinguish
     // sinks with different cap types on the same source line (e.g.
@@ -662,11 +660,11 @@ fn build_taint_diag(
         confidence: None,
         evidence: Some(Evidence {
             source: Some(SpanEvidence {
-                path: file_path_owned.clone(),
+                path: file_path_owned,
                 line: (source_point.row + 1) as u32,
                 col: (source_point.column + 1) as u32,
                 kind: "source".into(),
-                snippet: Some(short_source.clone()),
+                snippet: Some(short_source),
             }),
             sink: Some(SpanEvidence {
                 path: primary_path.clone(),

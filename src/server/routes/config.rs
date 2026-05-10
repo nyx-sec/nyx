@@ -161,7 +161,7 @@ async fn add_rule(
             .or_default();
 
         let new_rule = crate::utils::config::ConfigLabelRule {
-            matchers: rule.matchers.clone(),
+            matchers: rule.matchers,
             kind: rule_kind,
             cap: cap_name,
             case_sensitive: false,
@@ -242,7 +242,7 @@ async fn add_terminator(
             .entry(term.lang.clone())
             .or_default();
         if !lang_cfg.terminators.contains(&term.name) {
-            lang_cfg.terminators.push(term.name.clone());
+            lang_cfg.terminators.push(term.name);
         }
     }
 

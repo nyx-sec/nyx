@@ -3264,8 +3264,8 @@ fn try_lower_subscript_write(
         kind: StmtKind::Call,
         call: CallMeta {
             callee: Some("__index_set__".to_string()),
-            receiver: Some(arr_text.clone()),
-            arg_uses: vec![vec![idx_text.clone()], rhs_uses.clone()],
+            receiver: Some(arr_text),
+            arg_uses: vec![vec![idx_text], rhs_uses],
             call_ordinal: ord,
             sink_payload_args: pp_payload_args,
             ..Default::default()

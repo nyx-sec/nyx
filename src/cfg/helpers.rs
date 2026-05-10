@@ -210,7 +210,7 @@ pub(crate) fn first_call_ident_with_span<'a>(
                             .and_then(|f| root_receiver_text(f, lang, code));
                         match (recv, func) {
                             (Some(r), Some(f)) => Some(format!("{r}.{f}")),
-                            (_, Some(f)) => Some(f.to_string()),
+                            (_, Some(f)) => Some(f),
                             _ => None,
                         }
                     }

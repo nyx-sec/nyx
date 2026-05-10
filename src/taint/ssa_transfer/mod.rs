@@ -6403,7 +6403,7 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                             .as_ref()
                             .and_then(|d| (d.len() == 1).then(|| d[0].clone()));
                         if let Some(needle) = needle {
-                            let mut new_fact = input_fact.clone();
+                            let mut new_fact = input_fact;
                             let mut narrowed = false;
                             if needle == ".." {
                                 new_fact = new_fact.with_dotdot_cleared();

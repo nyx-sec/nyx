@@ -435,11 +435,9 @@ pub(super) fn extract_const_macro_arg(
         // C/C++ identifier / PHP `name` node for define-style constants.
         // Scoped C++ identifiers (`Curl::OPT_POSTFIELDS`) and PHP namespaced
         // names also surface here so the dangerous_values match catches them.
-        "identifier" | "name" | "qualified_name" | "scoped_identifier" => {
-            text_of(arg, code).map(|s| s.to_string())
-        }
+        "identifier" | "name" | "qualified_name" | "scoped_identifier" => text_of(arg, code),
         // Ruby bare constant (`NOENT`) — leaf form.
-        "constant" => text_of(arg, code).map(|s| s.to_string()),
+        "constant" => text_of(arg, code),
         // Ruby scope-qualified constant (`Nokogiri::XML::ParseOptions::NOENT`).
         // Return only the rightmost `name` segment so the gate's
         // `dangerous_values` list can stay identifier-bare instead of
@@ -448,8 +446,7 @@ pub(super) fn extract_const_macro_arg(
         "scope_resolution" => arg
             .child_by_field_name("name")
             .and_then(|n| text_of(n, code))
-            .map(|s| s.to_string())
-            .or_else(|| text_of(arg, code).map(|s| s.to_string())),
+            .or_else(|| text_of(arg, code)),
         // Integer literals at the activation arg position.  PHP / C / C++
         // commonly use plain `0` to opt into the safe-default option set
         // (e.g. `simplexml_load_string($xml, "SimpleXMLElement", 0)`).  The
@@ -457,7 +454,7 @@ pub(super) fn extract_const_macro_arg(
         // the literal text lets the comparison fail against `LIBXML_NOENT`
         // and suppresses the conservative-fire branch.
         "integer" | "integer_literal" | "number_literal" | "decimal_integer_literal" => {
-            text_of(arg, code).map(|s| s.to_string())
+            text_of(arg, code)
         }
         _ => None,
     }
@@ -491,7 +488,7 @@ pub(super) fn extract_const_keyword_arg(
             // distinguish literal-safe from dynamic.
             return match value_node.kind() {
                 "true" | "false" | "none" | "integer" | "float" | "string" | "string_literal"
-                | "identifier" => text_of(value_node, code).map(|s| s.to_string()),
+                | "identifier" => text_of(value_node, code),
                 _ => None,
             }
             .filter(|_| {
@@ -585,7 +582,7 @@ pub(super) fn extract_object_arg_property(
         let val_node = unwrap_parens(val_node);
         return match val_node.kind() {
             "true" | "false" | "null" | "undefined" | "number" | "string" | "string_literal" => {
-                text_of(val_node, code).map(|s| s.to_string())
+                text_of(val_node, code)
             }
             // JS booleans true/false are their own node kinds (above), but
             // some grammar versions wrap them as identifier literals; surface
@@ -859,7 +856,7 @@ pub(super) fn js_chain_outer_method_for_inner<'a>(
             if inner_matched {
                 return function
                     .child_by_field_name("property")
-                    .and_then(|p| text_of(p, code).map(|s| s.to_string()));
+                    .and_then(|p| text_of(p, code));
             }
         }
         // Recurse: outer chain may have more depth (`a.b().c().d()` ,
@@ -2140,7 +2137,7 @@ pub(super) fn extract_arg_string_literals(call_node: Node, code: &[u8]) -> Vec<O
             | "integer"
             | "number"
             | "number_literal"
-            | "decimal_literal" => text_of(target, code).map(|s| s.to_string()),
+            | "decimal_literal" => text_of(target, code),
             _ => None,
         };
         result.push(literal);
@@ -2159,7 +2156,7 @@ pub(super) fn strip_literal_quotes(raw: &str, node: Node, code: &[u8]) -> Option
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "string_content" {
-            return text_of(child, code).map(|s| s.to_string());
+            return text_of(child, code);
         }
     }
     if raw.len() >= 2 {

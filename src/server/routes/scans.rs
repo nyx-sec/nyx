@@ -309,13 +309,12 @@ async fn get_scan_findings(
     let per_page = query.per_page.unwrap_or(50).min(200);
     let start = (page - 1) * per_page;
 
-    let scan_root = state.scan_root.clone();
     let page_findings: Vec<FindingView> = filtered
         .into_iter()
         .enumerate()
         .skip(start)
         .take(per_page)
-        .map(|(i, d)| models::finding_from_diag_with_context(i, d, &scan_root))
+        .map(|(i, d)| models::finding_from_diag_with_context(i, d, &state.scan_root))
         .collect();
 
     Ok(Json(serde_json::json!({
@@ -361,8 +360,6 @@ async fn compare_scans(
             .push((i, d));
     }
 
-    let scan_root = state.scan_root.clone();
-
     let mut new_findings = Vec::new();
     let mut fixed_findings = Vec::new();
     let mut changed_findings = Vec::new();
@@ -378,7 +375,7 @@ async fn compare_scans(
             for i in 0..matched {
                 let (idx, diag) = right_group[i];
                 let (_, left_diag) = left_group[i];
-                let view = models::finding_from_diag_with_context(idx, diag, &scan_root);
+                let view = models::finding_from_diag_with_context(idx, diag, &state.scan_root);
                 let changes = compute_field_changes(left_diag, diag);
                 if changes.is_empty() {
                     unchanged_findings.push(ComparedFinding {
@@ -397,7 +394,7 @@ async fn compare_scans(
             for &(idx, diag) in &right_group[matched..] {
                 new_findings.push(ComparedFinding {
                     fingerprint: fp.clone(),
-                    finding: models::finding_from_diag_with_context(idx, diag, &scan_root),
+                    finding: models::finding_from_diag_with_context(idx, diag, &state.scan_root),
                 });
             }
         } else {
@@ -405,7 +402,7 @@ async fn compare_scans(
             for &(idx, diag) in right_group {
                 new_findings.push(ComparedFinding {
                     fingerprint: fp.clone(),
-                    finding: models::finding_from_diag_with_context(idx, diag, &scan_root),
+                    finding: models::finding_from_diag_with_context(idx, diag, &state.scan_root),
                 });
             }
         }
@@ -419,7 +416,7 @@ async fn compare_scans(
         for &(idx, diag) in &left_group[start..] {
             fixed_findings.push(ComparedFinding {
                 fingerprint: fp.clone(),
-                finding: models::finding_from_diag_with_context(idx, diag, &scan_root),
+                finding: models::finding_from_diag_with_context(idx, diag, &state.scan_root),
             });
         }
     }

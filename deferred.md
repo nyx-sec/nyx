@@ -12,20 +12,6 @@ implied or surfaced but did not finish.
       next to the harness). If a future phase needs the baseline mirrored
       back into `.pitboss/play/`, the runner — not an implementer — must
       copy it.
-- [ ] Tighten `ExpectedFinding.sink_line` placeholders. Phase 01 wrote `0`
-      for every gap-area test because the fixtures do not exist yet. The
-      phase that un-ignores each test must update its `sink_line` (and,
-      where stable, `source_line`) to a real fixture line. Phase 03 did
-      this for `promise_then_callback`, `promise_all_taint`, and
-      `for_await_of_stream`; phase 06 did it for `jsx_dangerous_html`
-      (sink_line = 8 on `page.tsx`, the `__html: input` value span);
-      phase 07 did it for `orm_builders` (six positives + cap-aware
-      assertion on `sqli_typeorm_query.ts`);
-      phase 08 did it for `ssrf_url_builders` (five positives +
-      cap-aware assertion + origin-locked negative);
-      phase 09 did it for `cross_package_ipa`
-      (`handler.ts:7` source 5 unsafe positive + silent-at-`handler.ts:13`
-      sanitiser negative); `nextjs_entrypoints` still owns its own.
 - [ ] `Promise.all` per-element precision. Phase 03 conservatively unions
       all element taints into a scalar `VarTaint` on the result. Real
       shape is a tuple/array where each index has its own taint; the

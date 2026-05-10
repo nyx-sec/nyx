@@ -1150,7 +1150,7 @@ fn analyse_body_with_seed(
                 cross_package_imports,
                 // Phase 10 — Next.js entry-point seeding (looked up
                 // above when overriding `param_types`).
-                entry_kind: body_entry_kind.clone(),
+                entry_kind: body_entry_kind,
             };
             let (events, block_states) =
                 ssa_transfer::run_ssa_taint_full(&ssa_body, cfg, &transfer);
