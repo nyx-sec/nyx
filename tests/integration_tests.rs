@@ -1125,6 +1125,43 @@ fn fp_guard_php_dbal_builder_via_factory_def() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Doctrine DBAL `<builder>->getSQL()` accessor *composed*
+/// with constant string-shaping ops:
+///   AdapterMySQL: `preg_replace('/^INSERT/i', 'INSERT IGNORE',
+///                  $builder->getSQL())` patches the leading verb without
+///                  user payload.
+///   AdapterSqlite: `$builder->getSQL() . ' ON CONFLICT DO NOTHING'`
+///                  appends a constant suffix.
+/// The direct-accessor recognition (`sink_first_arg_is_builder_get_sql`)
+/// only matches when arg 0 is itself the accessor or a local-var alias
+/// of it; the composition recognition extends coverage to arg 0 *bytes*
+/// containing a `$<builder>->getSQL(` token where every PHP variable in
+/// the slice is bound by a query-builder factory.  Distilled from
+/// nextcloud `lib/private/DB/AdapterMySQL.php` and `AdapterSqlite.php`.
+#[test]
+fn fp_guard_php_dbal_builder_compose_sql() {
+    let dir = fixture_path("fp_guards/php_dbal_builder_compose_sql");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, PHP `foreach` over a literal-keyed array whose foreach-key
+/// flows into a SQL_QUERY sink string interpolation
+/// (`"SHOW VARIABLES LIKE '$var'"`).  When `$variables` is built only
+/// from `['LIT' => 'LIT', ...]` literal-keyed array initialisers and
+/// optional `$variables['LIT'] = 'LIT';` subscript-set extensions, the
+/// foreach-key ranges over a finite metachar-free literal set, so the
+/// interpolated SQL is bounded.  Negative case
+/// (`UnsafeBypass.php`) iterates a method parameter; the suppression
+/// must NOT fire and `cfg-unguarded-sink` must still emit.  Distilled
+/// from nextcloud `lib/private/DB/MySqlTools.php`.
+#[test]
+fn fp_guard_php_foreach_safe_literal_keys() {
+    let dir = fixture_path("fp_guards/php_foreach_safe_literal_keys");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, PHP `md5()` / `sha1()` weak-hash pattern rule firing
 /// syntactically on every callsite.  Real-world PHP uses these
 /// functions pervasively for non-cryptographic purposes (ETag

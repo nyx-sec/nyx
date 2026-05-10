@@ -728,6 +728,837 @@ fn is_dbal_safe_sql_accessor(name: &str) -> bool {
         && name.ends_with("SQL")
 }
 
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the sink's first
+/// positional argument *composes* a Doctrine DBAL safe-SQL accessor with
+/// constant string-shaping ops.  Two real-world shapes from nextcloud:
+///   (a) `$conn->executeStatement(preg_replace('/^INSERT/i', 'INSERT IGNORE',
+///        $builder->getSQL()), ...)`
+///   (b) `$conn->executeStatement($builder->getSQL() . ' ON CONFLICT DO
+///        NOTHING', ...)`
+///
+/// Strategy (byte-level, conservative):
+///   1. Lang-gate to PHP.  Cap-gate to SQL_QUERY-only.
+///   2. Extract the sink's first-positional-arg source bytes by balanced-paren
+///      walk inside the call's `ast.span`, with single/double-quoted-string
+///      awareness.
+///   3. Scan arg-0 bytes for every PHP variable token `$<name>`.  Every var
+///      must be bound by a query-builder factory (`getQueryBuilder` /
+///      `createQueryBuilder` / `*queryBuilder`).  Bypasses `arg_uses` because
+///      `collect_idents_with_paths` also surfaces method names (`getSQL`,
+///      `getParameters`) that are not variable references in PHP.
+///   4. At least one var must appear in arg-0 bytes as the receiver of a DBAL
+///      safe-SQL accessor call (`$<recv>->getSQL(` or `$<recv>->get*SQL(`).
+///
+/// The taint engine has already cleared this flow (gate is `!has_taint`),
+/// so the suppression's job is to silence the structural cfg-unguarded-sink
+/// over-fire on builder-composed SQL.  PHP-only.
+fn sink_first_arg_composes_safe_dbal_sql(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    if sink_caps != Cap::SQL_QUERY {
+        return false;
+    }
+    if ctx.lang != Lang::Php {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+    let Some(arg0_bytes) = first_positional_arg_bytes(info, ctx.source_bytes) else {
+        return false;
+    };
+    if arg0_bytes.is_empty() {
+        return false;
+    }
+    let vars = extract_php_variables(arg0_bytes);
+    if vars.is_empty() {
+        return false;
+    }
+    let mut accessor_seen = false;
+    for name in &vars {
+        if !receiver_defined_by_builder_factory(ctx, sink, name) {
+            return false;
+        }
+        if arg_bytes_call_dbal_accessor_on(arg0_bytes, name) {
+            accessor_seen = true;
+        }
+    }
+    accessor_seen
+}
+
+/// Extract the unique PHP variable identifiers appearing as `$<name>` tokens
+/// in `bytes`.  Skips the `$` sigil; variables tokens are alphanumeric +
+/// underscore.  Order-stable (insertion order, with deduplication), so the
+/// caller's any-failure-bails loop deterministically rejects the first
+/// non-builder-bound var.
+fn extract_php_variables(bytes: &[u8]) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        let mut e = i + 1;
+        while e < bytes.len() && (bytes[e].is_ascii_alphanumeric() || bytes[e] == b'_') {
+            e += 1;
+        }
+        if e > i + 1 {
+            if let Ok(name) = std::str::from_utf8(&bytes[i + 1..e]) {
+                if !result.iter().any(|n| n == name) {
+                    result.push(name.to_string());
+                }
+            }
+        }
+        i = e.max(i + 1);
+    }
+    result
+}
+
+/// Extract the source bytes of the sink call's first positional argument.
+///
+/// Scans `info.ast.span` for the first `(` (outer args opener), then
+/// balance-walks parens with single/double-quoted-string awareness, returning
+/// the slice up to the first depth-1 `,` or the matching closing `)`.
+/// PHP-shaped: handles `'...'` and `"..."` with backslash escapes; ignores
+/// heredoc/nowdoc, which don't appear inside DBAL call-site argument lists
+/// in practice.  `callee_span` is intentionally ignored because the upstream
+/// CFG narrowing path may set it to the *whole* call span (e.g. when a
+/// `return $this->conn->executeStatement(...)` is lowered: `inner_text_span`
+/// records the call's span via `first_call_ident_with_span`).  Searching
+/// from `ast.span.0` and matching the first `(` is robust across both
+/// direct-call and statement-wrapped shapes.
+///
+/// Returns `None` if no `(` is found or the walk runs off the end of
+/// `ast.span` without closing.
+fn first_positional_arg_bytes<'a>(
+    info: &crate::cfg::NodeInfo,
+    bytes: &'a [u8],
+) -> Option<&'a [u8]> {
+    let span = info.ast.span;
+    if span.1 > bytes.len() || span.0 >= span.1 {
+        return None;
+    }
+    let mut i = span.0;
+    while i < span.1 && bytes[i] != b'(' {
+        i += 1;
+    }
+    if i >= span.1 {
+        return None;
+    }
+    let arg_start = i + 1;
+    let mut j = arg_start;
+    let mut depth: i32 = 1;
+    let mut quote: Option<u8> = None;
+    while j < span.1 {
+        let b = bytes[j];
+        if let Some(q) = quote {
+            if b == b'\\' && j + 1 < span.1 {
+                j += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            j += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => {
+                quote = Some(b);
+                j += 1;
+            }
+            b'(' => {
+                depth += 1;
+                j += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&bytes[arg_start..j]);
+                }
+                j += 1;
+            }
+            b',' if depth == 1 => {
+                return Some(&bytes[arg_start..j]);
+            }
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Return true if `arg0` contains a method-call against `recv_name` whose
+/// method matches [`is_dbal_safe_sql_accessor`].  Recognises the PHP
+/// member-access shape `$<recv>-><method>(`.  The backward walk stops at
+/// the first non-identifier byte; the immediately preceding byte must be
+/// the `$` sigil so `mybuilder->getSQL` does not match `recv = "builder"`.
+fn arg_bytes_call_dbal_accessor_on(arg0: &[u8], recv_name: &str) -> bool {
+    if recv_name.is_empty() {
+        return false;
+    }
+    let recv_bytes = recv_name.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < arg0.len() {
+        if arg0[i] != b'-' || arg0[i + 1] != b'>' {
+            i += 1;
+            continue;
+        }
+        // Walk backward to capture the receiver identifier ending at i.
+        let mut s = i;
+        while s > 0 {
+            let c = arg0[s - 1];
+            if c.is_ascii_alphanumeric() || c == b'_' {
+                s -= 1;
+            } else {
+                break;
+            }
+        }
+        if s == i || s == 0 || arg0[s - 1] != b'$' || &arg0[s..i] != recv_bytes {
+            i += 2;
+            continue;
+        }
+        // Walk forward to capture the method identifier following `->`.
+        let mut e = i + 2;
+        while e < arg0.len() {
+            let c = arg0[e];
+            if c.is_ascii_alphanumeric() || c == b'_' {
+                e += 1;
+            } else {
+                break;
+            }
+        }
+        // Must be followed by `(`.
+        if e < arg0.len() && arg0[e] == b'(' {
+            if let Ok(method) = std::str::from_utf8(&arg0[i + 2..e]) {
+                if is_dbal_safe_sql_accessor(method) {
+                    return true;
+                }
+            }
+        }
+        i += 2;
+    }
+    false
+}
+
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the sink's first
+/// positional argument interpolates only PHP variables that are bound by a
+/// `foreach` over a literal-keyed array within the same function body.
+/// Real-world shape from nextcloud `lib/private/DB/MySqlTools.php:27`:
+///   ```php
+///   $variables = ['innodb_file_per_table' => 'ON'];
+///   if (...) { $variables['innodb_file_format'] = 'Barracuda'; }
+///   foreach ($variables as $var => $val) {
+///       $connection->executeQuery("SHOW VARIABLES LIKE '$var'");
+///   }
+///   ```
+/// The foreach-key `$var` ranges over `{innodb_file_per_table,
+/// innodb_file_format, innodb_large_prefix}`, all metachar-free, so the
+/// interpolated SQL is bounded.
+///
+/// Strategy (byte-level, conservative):
+///   1. Lang-gate to PHP.  Cap-gate to SQL_QUERY-only.
+///   2. Extract the sink's first-positional-arg source bytes; collect every
+///      `$<name>` interpolation token.
+///   3. For every var, walk the enclosing function bytes.  Find the
+///      innermost `foreach ($X as $name => $...)` or `foreach ($X as $name)`
+///      pattern whose body contains the sink span, with `$name` matching
+///      the use site.
+///   4. Find every assignment of `$X` in the function body.  Each must be
+///      either an array literal `['LIT' => 'LIT', ...]` (key-arrow form) or
+///      a subscript-set `$X['LIT'] = 'LIT';`.  Every key/value involved
+///      must be metachar-free (alphanumeric + `_`, `-`, `.`).
+///   5. Whether the use site reads the foreach-key (`$key` slot) or
+///      foreach-value (`$val` slot), the corresponding literal set must be
+///      proven safe.
+///
+/// PHP-only.  Limited to the simple foreach + literal-array shape; bare-
+/// reference / by-reference foreach variants and dynamic array sources
+/// fall through to the structural finding.
+fn sink_arg_uses_safe_foreach_key(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    if sink_caps != Cap::SQL_QUERY {
+        return false;
+    }
+    if ctx.lang != Lang::Php {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+    let Some(arg0_bytes) = first_positional_arg_bytes(info, ctx.source_bytes) else {
+        return false;
+    };
+    if arg0_bytes.is_empty() {
+        return false;
+    }
+    let vars = extract_php_variables(arg0_bytes);
+    if vars.is_empty() {
+        return false;
+    }
+    let Some(func_scope) = enclosing_func_byte_scope(ctx, sink) else {
+        return false;
+    };
+    for name in &vars {
+        if !php_var_safe_via_foreach_literal_array(
+            ctx.source_bytes,
+            func_scope,
+            info.ast.span.0,
+            name,
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Extent of the enclosing function body.  Returns `None` when the sink
+/// has no `enclosing_func` (e.g. file-level top-level statement) or no
+/// matching CFG nodes.  The byte range is `(min_span.0, max_span.1)` over
+/// the function's CFG nodes, conservative against multi-statement bodies.
+fn enclosing_func_byte_scope(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+) -> Option<(usize, usize)> {
+    let sink_func = ctx.cfg[sink].ast.enclosing_func.as_deref()?;
+    let mut lo = usize::MAX;
+    let mut hi = 0usize;
+    for n in ctx.cfg.node_indices() {
+        let info = &ctx.cfg[n];
+        if info.ast.enclosing_func.as_deref() != Some(sink_func) {
+            continue;
+        }
+        if info.ast.span.0 < lo {
+            lo = info.ast.span.0;
+        }
+        if info.ast.span.1 > hi {
+            hi = info.ast.span.1;
+        }
+    }
+    if lo == usize::MAX || hi == 0 || lo >= hi {
+        return None;
+    }
+    Some((lo, hi))
+}
+
+/// Walk `source[func_scope]` for `foreach (...)` blocks containing
+/// `sink_span_start` in their body.  Match the iteration pattern shape and
+/// (when found) verify every assignment of the iterated identifier in the
+/// function body is a literal-keyed array or a subscript-set with literal
+/// key, with all keys/values metachar-free.  Returns true only when *every*
+/// candidate foreach proves safe; bails (returns false) on the first
+/// failure to keep the suppression conservative.
+fn php_var_safe_via_foreach_literal_array(
+    source: &[u8],
+    func_scope: (usize, usize),
+    sink_span_start: usize,
+    name: &str,
+) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    if func_scope.0 >= func_scope.1 || func_scope.1 > source.len() {
+        return false;
+    }
+    let scope = &source[func_scope.0..func_scope.1];
+    let sink_offset = if sink_span_start >= func_scope.0 {
+        sink_span_start - func_scope.0
+    } else {
+        return false;
+    };
+    let needle = b"foreach";
+    let mut cursor = 0usize;
+    let mut matched_any = false;
+    while cursor + needle.len() <= scope.len() {
+        let Some(rel) = find_subslice(&scope[cursor..], needle) else {
+            break;
+        };
+        let pos = cursor + rel;
+        cursor = pos + needle.len();
+        // Require word boundary: prev byte (if any) must not be alnum/`_`.
+        if pos > 0 {
+            let prev = scope[pos - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        // Skip whitespace; require `(`.
+        let mut p = pos + needle.len();
+        while p < scope.len() && matches!(scope[p], b' ' | b'\t' | b'\n' | b'\r') {
+            p += 1;
+        }
+        if p >= scope.len() || scope[p] != b'(' {
+            continue;
+        }
+        // Balanced walk to closing `)`.
+        let header_open = p;
+        let mut depth = 1i32;
+        let mut q = p + 1;
+        let mut quote: Option<u8> = None;
+        while q < scope.len() && depth > 0 {
+            let b = scope[q];
+            if let Some(c) = quote {
+                if b == b'\\' && q + 1 < scope.len() {
+                    q += 2;
+                    continue;
+                }
+                if b == c {
+                    quote = None;
+                }
+                q += 1;
+                continue;
+            }
+            match b {
+                b'\'' | b'"' => quote = Some(b),
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            q += 1;
+        }
+        if depth != 0 {
+            continue;
+        }
+        let header_close = q - 1;
+        // Skip whitespace; require `{`.
+        let mut bp = header_close + 1;
+        while bp < scope.len() && matches!(scope[bp], b' ' | b'\t' | b'\n' | b'\r') {
+            bp += 1;
+        }
+        if bp >= scope.len() || scope[bp] != b'{' {
+            continue;
+        }
+        // Balanced walk to closing `}`.
+        let body_open = bp;
+        let mut bdepth = 1i32;
+        let mut bq = bp + 1;
+        let mut bquote: Option<u8> = None;
+        while bq < scope.len() && bdepth > 0 {
+            let b = scope[bq];
+            if let Some(c) = bquote {
+                if b == b'\\' && bq + 1 < scope.len() {
+                    bq += 2;
+                    continue;
+                }
+                if b == c {
+                    bquote = None;
+                }
+                bq += 1;
+                continue;
+            }
+            match b {
+                b'\'' | b'"' => bquote = Some(b),
+                b'{' => bdepth += 1,
+                b'}' => bdepth -= 1,
+                _ => {}
+            }
+            bq += 1;
+        }
+        if bdepth != 0 {
+            continue;
+        }
+        let body_end = bq - 1;
+        // Sink position must lie inside the body.
+        if sink_offset < body_open || sink_offset > body_end {
+            continue;
+        }
+        let header = &scope[header_open + 1..header_close];
+        let Some((iter_var, key_var, val_var)) = parse_foreach_header(header) else {
+            return false;
+        };
+        let used_as_key = key_var.as_deref() == Some(name);
+        let used_as_val = val_var.as_str() == name;
+        if !used_as_key && !used_as_val {
+            // The use site references some other variable; not bound by
+            // this foreach.  Continue scanning (might be a nested foreach).
+            continue;
+        }
+        if !php_iter_var_assigns_safe_literals(scope, &iter_var, used_as_key, used_as_val) {
+            return false;
+        }
+        matched_any = true;
+    }
+    matched_any
+}
+
+/// Parse a foreach header text (the bytes between `(` and `)`).  Returns
+/// `(iter_var, key_var, value_var)`.  Recognises `$X as $V` and
+/// `$X as $K => $V` shapes; bails (returns `None`) on by-reference
+/// (`& $V`), expressions (`call() as $V`), or any unexpected token.
+fn parse_foreach_header(header: &[u8]) -> Option<(String, Option<String>, String)> {
+    let text = std::str::from_utf8(header).ok()?.trim();
+    let lower = text;
+    let as_pos = find_word(lower.as_bytes(), b"as")?;
+    let iter_part = lower[..as_pos].trim();
+    let body_part = lower[as_pos + 2..].trim();
+    let iter_var = parse_simple_var(iter_part)?;
+    if body_part.contains("=>") {
+        let mut split = body_part.splitn(2, "=>");
+        let k = split.next()?.trim();
+        let v = split.next()?.trim();
+        let key_var = parse_simple_var(k)?;
+        let val_var = parse_simple_var(v)?;
+        Some((iter_var, Some(key_var), val_var))
+    } else {
+        let val_var = parse_simple_var(body_part)?;
+        Some((iter_var, None, val_var))
+    }
+}
+
+/// Parse a `$<name>` token, rejecting any extra tokens (whitespace OK).
+/// By-reference (`&$x`), splat (`...$x`), or list-destructuring shapes
+/// produce `None` so the suppression bails conservatively.
+fn parse_simple_var(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.first() != Some(&b'$') {
+        return None;
+    }
+    let rest = &trimmed[1..];
+    if rest.is_empty() {
+        return None;
+    }
+    if !rest
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return None;
+    }
+    Some(rest.to_string())
+}
+
+/// Find a whole-word match of `word` inside `text`.  Word boundaries are
+/// non-alnum/non-`_` bytes (or the buffer edges).  Returns the byte offset
+/// of the first match.
+fn find_word(text: &[u8], word: &[u8]) -> Option<usize> {
+    let mut cursor = 0usize;
+    while cursor + word.len() <= text.len() {
+        let rel = find_subslice(&text[cursor..], word)?;
+        let pos = cursor + rel;
+        let prev_ok = pos == 0 || {
+            let p = text[pos - 1];
+            !(p.is_ascii_alphanumeric() || p == b'_')
+        };
+        let next = pos + word.len();
+        let next_ok = next == text.len() || {
+            let p = text[next];
+            !(p.is_ascii_alphanumeric() || p == b'_')
+        };
+        if prev_ok && next_ok {
+            return Some(pos);
+        }
+        cursor = pos + 1;
+    }
+    None
+}
+
+/// For every assignment of `$<iter_var>` inside `scope` (the enclosing
+/// function bytes), require every key/value referenced is a metachar-free
+/// string literal (alphanumeric, `_`, `-`, `.`, space).  Recognises:
+///   * `$<iter_var> = ['LIT' => 'LIT', ...];` (key-arrow array literal)
+///   * `$<iter_var>['LIT'] = 'LIT';` (subscript-set with literal key)
+/// Conservative: any other assignment shape, missing literals, or empty
+/// array set returns false.  When `used_as_key` is true, the literal keys
+/// must be safe; when `used_as_val` is true, the literal values must be
+/// safe; both flags can be true at once.
+fn php_iter_var_assigns_safe_literals(
+    scope: &[u8],
+    iter_var: &str,
+    used_as_key: bool,
+    used_as_val: bool,
+) -> bool {
+    if iter_var.is_empty() {
+        return false;
+    }
+    let needle: Vec<u8> = std::iter::once(b'$')
+        .chain(iter_var.bytes())
+        .collect();
+    let mut cursor = 0usize;
+    let mut saw_init = false;
+    while cursor + needle.len() <= scope.len() {
+        let Some(rel) = find_subslice(&scope[cursor..], &needle) else {
+            break;
+        };
+        let pos = cursor + rel;
+        cursor = pos + 1;
+        // Word-boundary on the trailing side: the next byte must not be
+        // alnum/`_` (no `$variables_extra`).
+        let after = pos + needle.len();
+        if after < scope.len() {
+            let b = scope[after];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                continue;
+            }
+        }
+        // Skip trailing whitespace.
+        let mut p = after;
+        while p < scope.len() && matches!(scope[p], b' ' | b'\t' | b'\n' | b'\r') {
+            p += 1;
+        }
+        if p >= scope.len() {
+            continue;
+        }
+        match scope[p] {
+            b'=' => {
+                // Direct assignment: `$X = ['k' => 'v', ...];`
+                if p + 1 < scope.len() && scope[p + 1] == b'=' {
+                    continue; // comparison
+                }
+                if !php_check_array_literal_assignment(scope, p + 1, used_as_key, used_as_val) {
+                    return false;
+                }
+                saw_init = true;
+            }
+            b'[' => {
+                // Subscript-set: `$X['LIT'] = 'LIT';`
+                if !php_check_subscript_set(scope, p, used_as_key, used_as_val) {
+                    return false;
+                }
+            }
+            _ => {
+                // Other usage (foreach iter, function arg, member access).
+                // Doesn't add to the literal set; allowed as long as no
+                // unrecognised assignment shape appears.
+            }
+        }
+    }
+    saw_init
+}
+
+/// Validate an array-literal assignment after `$X =` (cursor points at
+/// the byte just after `=`).  Allowed: optional whitespace, then `[ ... ];`
+/// where every element is `'LIT' => 'LIT'` with metachar-free literals.
+fn php_check_array_literal_assignment(
+    scope: &[u8],
+    after_eq: usize,
+    used_as_key: bool,
+    used_as_val: bool,
+) -> bool {
+    let mut p = after_eq;
+    while p < scope.len() && matches!(scope[p], b' ' | b'\t' | b'\n' | b'\r') {
+        p += 1;
+    }
+    if p >= scope.len() || scope[p] != b'[' {
+        return false;
+    }
+    let body_open = p + 1;
+    let mut depth = 1i32;
+    let mut q = body_open;
+    let mut quote: Option<u8> = None;
+    while q < scope.len() && depth > 0 {
+        let b = scope[q];
+        if let Some(c) = quote {
+            if b == b'\\' && q + 1 < scope.len() {
+                q += 2;
+                continue;
+            }
+            if b == c {
+                quote = None;
+            }
+            q += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'[' => depth += 1,
+            b']' => depth -= 1,
+            _ => {}
+        }
+        q += 1;
+    }
+    if depth != 0 {
+        return false;
+    }
+    let body_close = q - 1;
+    let elements = &scope[body_open..body_close];
+    php_check_kv_array_literal(elements, used_as_key, used_as_val)
+}
+
+/// Walk an array-literal body (between `[` and `]`).  Each element must
+/// be `'LIT' => 'LIT'`.  All keys/values used by the consumer must be
+/// metachar-free.
+fn php_check_kv_array_literal(elements: &[u8], used_as_key: bool, used_as_val: bool) -> bool {
+    if elements.iter().all(|b| b.is_ascii_whitespace()) {
+        return false;
+    }
+    // Split by `,` at depth 0.
+    let mut start = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut depth = 0i32;
+    let mut any_pair = false;
+    let mut i = 0usize;
+    while i < elements.len() {
+        let b = elements[i];
+        if let Some(c) = quote {
+            if b == b'\\' && i + 1 < elements.len() {
+                i += 2;
+                continue;
+            }
+            if b == c {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'[' | b'(' => depth += 1,
+            b']' | b')' => depth -= 1,
+            b',' if depth == 0 => {
+                if !php_check_arrow_pair(&elements[start..i], used_as_key, used_as_val) {
+                    return false;
+                }
+                any_pair = true;
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let tail = &elements[start..];
+    if tail.iter().any(|b| !b.is_ascii_whitespace()) {
+        if !php_check_arrow_pair(tail, used_as_key, used_as_val) {
+            return false;
+        }
+        any_pair = true;
+    }
+    any_pair
+}
+
+/// Validate one `'LIT' => 'LIT'` pair.  Both literals must be string
+/// literals (`'...'` or `"..."`) with metachar-free contents per
+/// `is_metachar_free_literal`.
+fn php_check_arrow_pair(pair: &[u8], used_as_key: bool, used_as_val: bool) -> bool {
+    let text = std::str::from_utf8(pair).map(str::trim).unwrap_or("");
+    let mut split = text.splitn(2, "=>");
+    let k = match split.next() {
+        Some(s) => s.trim(),
+        None => return false,
+    };
+    let v = match split.next() {
+        Some(s) => s.trim(),
+        None => return false,
+    };
+    if used_as_key && !is_metachar_free_string_literal(k.as_bytes()) {
+        return false;
+    }
+    if used_as_val && !is_metachar_free_string_literal(v.as_bytes()) {
+        return false;
+    }
+    true
+}
+
+/// Validate a subscript-set assignment `$X[...] = ...;` starting at the
+/// `[` byte.  Both the subscript key (when `used_as_key`) and the
+/// assigned value (when `used_as_val`) must be metachar-free string
+/// literals.
+fn php_check_subscript_set(
+    scope: &[u8],
+    open_bracket: usize,
+    used_as_key: bool,
+    used_as_val: bool,
+) -> bool {
+    let mut depth = 1i32;
+    let mut q = open_bracket + 1;
+    let mut quote: Option<u8> = None;
+    while q < scope.len() && depth > 0 {
+        let b = scope[q];
+        if let Some(c) = quote {
+            if b == b'\\' && q + 1 < scope.len() {
+                q += 2;
+                continue;
+            }
+            if b == c {
+                quote = None;
+            }
+            q += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'[' => depth += 1,
+            b']' => depth -= 1,
+            _ => {}
+        }
+        q += 1;
+    }
+    if depth != 0 {
+        return false;
+    }
+    let close_bracket = q - 1;
+    let key_bytes = &scope[open_bracket + 1..close_bracket];
+    if used_as_key && !is_metachar_free_string_literal(key_bytes.trim_ascii()) {
+        return false;
+    }
+    // Skip whitespace; require `=`, not `==`.
+    let mut p = close_bracket + 1;
+    while p < scope.len() && matches!(scope[p], b' ' | b'\t' | b'\n' | b'\r') {
+        p += 1;
+    }
+    if p >= scope.len() || scope[p] != b'=' {
+        return false;
+    }
+    if p + 1 < scope.len() && scope[p + 1] == b'=' {
+        return false;
+    }
+    // Read the RHS up to the next `;` at depth 0 (no string awareness needed
+    // beyond `;` because PHP statement separator).
+    let mut q = p + 1;
+    let mut quote: Option<u8> = None;
+    let mut depth = 0i32;
+    while q < scope.len() {
+        let b = scope[q];
+        if let Some(c) = quote {
+            if b == b'\\' && q + 1 < scope.len() {
+                q += 2;
+                continue;
+            }
+            if b == c {
+                quote = None;
+            }
+            q += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b';' if depth == 0 => break,
+            _ => {}
+        }
+        q += 1;
+    }
+    let rhs = &scope[p + 1..q];
+    if used_as_val && !is_metachar_free_string_literal(rhs.trim_ascii()) {
+        return false;
+    }
+    true
+}
+
+/// `true` when `bytes` form a single-quoted or double-quoted string
+/// literal whose contents are alphanumeric, `_`, `-`, `.`, or space —
+/// safe for SQL pattern literal interpolation.  Rejects empty string,
+/// any escape sequences, control characters, quotes, semicolons, or
+/// shell/SQL metacharacters.
+fn is_metachar_free_string_literal(bytes: &[u8]) -> bool {
+    if bytes.len() < 2 {
+        return false;
+    }
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    if first != last || (first != b'\'' && first != b'"') {
+        return false;
+    }
+    let inner = &bytes[1..bytes.len() - 1];
+    if inner.is_empty() {
+        return false;
+    }
+    inner
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b' '))
+}
+
 /// Check whether the source bytes inside the sink's `callee_span` end with a
 /// zero-argument call form: trailing `)` preceded by `(` with only whitespace
 /// in between.  Used to identify `qb.executeQuery()` / `qb.executeStatement()`
@@ -1707,6 +2538,25 @@ impl CfgAnalysis for UnguardedSink {
             // the SQL is parameterised by construction (Doctrine DBAL),
             // independent of which receiver fires the terminal verb.
             if !has_taint && sink_first_arg_is_builder_get_sql(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // Composition: `<builder>.getSQL()` wrapped by string-shaping ops
+            // (`preg_replace('/^INSERT/i', 'INSERT IGNORE', $b->getSQL())`,
+            // `$b->getSQL() . ' ON CONFLICT DO NOTHING'`).  Closes the
+            // remaining nextcloud `AdapterMySQL.php` / `AdapterSqlite.php`
+            // FPs after the direct accessor recognition above.
+            if !has_taint && sink_first_arg_composes_safe_dbal_sql(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // PHP foreach-key string interpolation: arg-0 is a SQL string
+            // whose interpolated `$<var>` is bound by a `foreach ($X as $var)`
+            // (or `as $key => $var`) over a literal-keyed array assigned
+            // earlier in the same function.  The literal set is finite and
+            // metachar-free, so the interpolated SQL is bounded.  Closes the
+            // nextcloud `lib/private/DB/MySqlTools.php:27` FP.
+            if !has_taint && sink_arg_uses_safe_foreach_key(ctx, *sink, sink_caps) {
                 continue;
             }
 

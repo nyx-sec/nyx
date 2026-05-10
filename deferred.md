@@ -807,44 +807,37 @@ implied or surfaced but did not finish.
       `union_param_sink_sites`, the `summary_extract` path, and
       cross-file persistence.
 
-- [ ] PHP `executeStatement` arg composition with safe builders. The
-      `cfg-unguarded-sink` rule still fires for two shapes that compose
-      DBAL-safe SQL via wrapper-builder operators:
-      (1) `$conn->executeStatement(preg_replace('/^INSERT/i',
-          'INSERT IGNORE', $builder->getSQL()), ...)`  — AdapterMySQL.
-      (2) `$conn->executeStatement($builder->getSQL() . ' ON CONFLICT
-          DO NOTHING', ...)`  — AdapterSqlite.
-      Session 0008 (2026-05-09) added `sink_first_arg_is_builder_get_sql`
-      which closes the direct case (`$conn->execute*($builder->getSQL(),
-      ...)`) and the indirect-via-local case (`$sql = $builder->getSQL();
-      $conn->execute*($sql)`).  The composition shapes need either:
-      (a) inner-call-recursive analysis: walk the SSA value of arg 0
-          through Call ops whose callees are recognised string-shaping
-          functions (`preg_replace`, `str_replace`, concat) when their
-          remaining operands are constant strings + a `getSQL` source.
-      (b) byte-level scan: the source bytes for the sink's first arg
-          contain `getSQL(` AND no user-controlled identifier outside the
-          known shaping-function frames.
-      Both are bounded extensions of the existing accessor recognition
-      but require an SSA back-walk through arbitrary string ops.  Park
-      until a real-world recall target surfaces a precision-critical
-      case; today the AdapterMySQL / AdapterSqlite FPs are the only two
-      remaining cfg-unguarded-sink additions on nextcloud.
-
 - [ ] PHP foreach-key string interpolation FP. Shape:
       `foreach ($variables as $var => $val) {
          $connection->executeQuery("SHOW VARIABLES LIKE '$var'");
        }`
-      where `$variables` is a literal map (`['innodb_file_per_table' =>
-      'ON', ...]`).  The `$var` ranges over a finite set of metachar-free
-      literals, so the interpolated SQL is bounded.  This is the PHP
-      analog of session 0006's Java `Map.of` allowlist
-      (`safe_lookup_fields` in `src/cfg/safe_fields.rs`); the missing
-      piece is a per-language extension point that recognises PHP `foreach
-      ... as $key => $val` over array literals and binds `$key` /
-      `$val` to the literal key / value sets.  Park until a recall target
-      surfaces additional foreach-key shapes; today the MySqlTools FP is
-      the only known instance.
+      where `$variables` is built from literal-keyed assignments
+      (`['innodb_file_per_table' => 'ON']` plus conditional
+      `$variables['innodb_file_format'] = 'Barracuda';` extensions).
+      The `$var` ranges over a finite set of metachar-free literals,
+      so the interpolated SQL is bounded.  This is the PHP analog of
+      session 0006's Java `Map.of` allowlist (`safe_lookup_fields` in
+      `src/cfg/safe_fields.rs`); the missing piece is a per-language
+      extension point that:
+      (a) walks the enclosing function for `foreach ($X as $K => $V)`,
+      (b) collects all defining assignments of `$X` in the same body,
+      (c) requires every assignment to be either an array literal with
+          string-literal keys or a `$X[STRING_LIT] = LITERAL` subscript
+          set, and
+      (d) binds `$K` / `$V` to the union of those literal key/value sets.
+      The cfg-unguarded-sink suppression then reads arg-0 bytes for any
+      `$<name>` interpolation where `<name>` is a bound foreach-key with
+      a metachar-free value set.
+      Session 0009 (2026-05-09) closed the AdapterMySQL preg_replace +
+      AdapterSqlite concat composition shapes via
+      `sink_first_arg_composes_safe_dbal_sql` in
+      `src/cfg_analysis/guards.rs`; only the MySqlTools.php:27 foreach-
+      key shape remains as a cfg-unguarded-sink add on nextcloud.
+      Park until either (a) a second real-world fixture surfaces (today
+      the cost is ~200 lines of new module + thread-local plumbing for
+      a single FP), or (b) the broader Java safe-lookup machinery is
+      generalised to a per-language registry that PHP foreach-keys can
+      register against.
 
 ## Deferred phases
 
