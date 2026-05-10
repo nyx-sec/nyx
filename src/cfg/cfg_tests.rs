@@ -1501,6 +1501,105 @@ fn rust_println_macro_named_arg_lifted() {
     assert!(found, "no println! macro_invocation node found");
 }
 
+/// `format!(URL_FMT, path)` where `URL_FMT` resolves to a top-level
+/// `const &str` literal must seed a `string_prefix` on the let-binding
+/// node so `is_string_safe_for_ssrf` can lock the host the same way
+/// `format!("https://api/{}", path)` does. The bridge fires only when
+/// the first non-string token in the macro is an identifier whose
+/// matching `const_item` has a string-literal value.
+#[test]
+fn rust_format_macro_const_first_arg_seeds_string_prefix() {
+    let src = b"const URL_FMT: &str = \"https://api.example.com/users/{}\";\n\
+                fn f(path: String) { let u = format!(URL_FMT, path); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    let mut prefix: Option<String> = None;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("u")
+            && let Some(p) = info.string_prefix.as_deref()
+        {
+            prefix = Some(p.to_string());
+        }
+    }
+    assert_eq!(
+        prefix.as_deref(),
+        Some("https://api.example.com/users/"),
+        "expected URL_FMT const to bridge into the format!() string_prefix",
+    );
+}
+
+/// Counter-test: when the named const has no string-literal initializer
+/// (e.g. `const X: usize = 4;`), the bridge must not fabricate a
+/// prefix from a non-string value.
+#[test]
+fn rust_format_macro_const_first_arg_non_string_skipped() {
+    let src = b"const N: usize = 4;\n\
+                fn f(path: String) { let u = format!(N, path); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("u") {
+            assert!(
+                info.string_prefix.is_none(),
+                "non-string const must not seed a prefix; got {:?}",
+                info.string_prefix
+            );
+        }
+    }
+}
+
+/// `static NAME: &str = "...";` declarations participate alongside
+/// `const_item`: both shapes carry a `name` field and a string-literal
+/// `value` so the bridge resolves either form identically.
+#[test]
+fn rust_format_macro_static_first_arg_seeds_string_prefix() {
+    let src = b"static API_BASE: &str = \"https://api.example.com/users/{}\";\n\
+                fn f(path: String) { let u = format!(API_BASE, path); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    let mut prefix: Option<String> = None;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("u")
+            && let Some(p) = info.string_prefix.as_deref()
+        {
+            prefix = Some(p.to_string());
+        }
+    }
+    assert_eq!(
+        prefix.as_deref(),
+        Some("https://api.example.com/users/"),
+        "expected static API_BASE to bridge into the format!() string_prefix",
+    );
+}
+
+/// A const declared inside a function body must not bridge: only
+/// file-level `const_item` declarations participate to keep the
+/// lookup deterministic. (The macro's first arg can shadow a
+/// file-level const with an inner-fn const, but inner consts are
+/// off-scope for the AST-time prefix bridge.)
+#[test]
+fn rust_format_macro_inner_const_not_bridged() {
+    let src = b"fn f(path: String) {\n\
+                  const URL_FMT: &str = \"https://api/{}\";\n\
+                  let u = format!(URL_FMT, path);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("u") {
+            assert!(
+                info.string_prefix.is_none(),
+                "inner-fn const must not bridge; got {:?}",
+                info.string_prefix
+            );
+        }
+    }
+}
+
 #[test]
 fn go_no_import_bindings() {
     let src = b"package main\nimport alias \"fmt\"\n";

@@ -378,20 +378,6 @@ implied or surfaced but did not finish.
       `use \GuzzleHttp\Client as ApiClient;`) would tighten the
       gate.  Out of scope for Phase 14 because no PHP fixture in
       the corpus exercises the false-collision shape.
-- [ ] Phase 14 audit — Rust's `format!` prefix extraction (Case 3
-      in `prefix_of_expression`) walks the macro `token_tree`
-      directly rather than via `cur.child_by_field_name("arguments")`
-      because tree-sitter-rust models macro args as a `token_tree`
-      (no `arguments` field).  The helper looks for the first
-      `string_literal` / `raw_string_literal` direct or nested
-      child.  Conservative against macros whose first arg is a
-      complex expression — those return `None` and the shape
-      falls back to the SSA-level concat path (which doesn't fire
-      for `format!` because the format args are not surfaced as
-      individual identifiers).  If a `format!` shape surfaces with
-      a non-literal first arg (e.g. `format!(URL_FMT, x)` where
-      `URL_FMT` is a `const`), bridge by consulting the SSA
-      const-prop facts on the format-string SSA value.
 - [ ] Phase 15 audit — Go GORM `db.Raw(sql)` is reached via the
       flat `db.Raw` matcher (added alongside `db.Query` /
       `db.Exec`) rather than via the type-qualified `GormDb.Raw`

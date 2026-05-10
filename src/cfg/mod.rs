@@ -1262,6 +1262,13 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
                 } else if !trimmed.is_empty() {
                     return Some(trimmed);
                 }
+            } else if let Some(prefix) = rust_macro_const_first_arg_prefix(cur, code) {
+                // No literal first arg, but the first non-literal token is an
+                // identifier that resolves to a top-level `const NAME: &str = "lit";`
+                // declaration in the same file. Treat the const value as if it
+                // had been written inline so `format!(URL_FMT, x)` locks the
+                // host the same way `format!("https://api/{}", x)` does.
+                return Some(prefix);
             }
         }
     }
@@ -1285,6 +1292,83 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
         }
     }
 
+    None
+}
+
+/// Resolve the leading prefix of a Rust `format!(IDENT, ...)`-style macro
+/// when the first arg is a bare identifier bound to a top-level
+/// `const NAME: &str = "literal";` or `static NAME: &str = "literal";`
+/// declaration in the same file. Returns the leading literal text up to
+/// the first `{` placeholder, or the whole literal when no placeholder is
+/// present.
+///
+/// Walks the macro's `token_tree` for the first identifier (skipping the
+/// `(` `)` `,` punctuation), then ascends to the file root and scans direct
+/// `const_item` / `static_item` children for a name match. Bypasses inner
+/// functions / impl blocks: only file-level declarations participate, which
+/// keeps the lookup deterministic and avoids shadowing surprises.
+fn rust_macro_const_first_arg_prefix(macro_node: Node, code: &[u8]) -> Option<String> {
+    let token_tree = {
+        let mut w = macro_node.walk();
+        macro_node
+            .named_children(&mut w)
+            .find(|c| c.kind() == "token_tree")?
+    };
+    let first_ident_name = {
+        let mut w = token_tree.walk();
+        let mut found: Option<String> = None;
+        for child in token_tree.named_children(&mut w) {
+            match child.kind() {
+                "string_literal" | "raw_string_literal" => return None,
+                "identifier" => {
+                    found = text_of(child, code);
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        found?
+    };
+    let mut root = macro_node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let mut rw = root.walk();
+    for child in root.named_children(&mut rw) {
+        if !matches!(child.kind(), "const_item" | "static_item") {
+            continue;
+        }
+        let name = child
+            .child_by_field_name("name")
+            .and_then(|n| text_of(n, code));
+        if name.as_deref() != Some(first_ident_name.as_str()) {
+            continue;
+        }
+        let value = child.child_by_field_name("value")?;
+        let lit = if matches!(value.kind(), "string_literal" | "raw_string_literal") {
+            value
+        } else {
+            continue;
+        };
+        let mut iw = lit.walk();
+        let frag_text = lit
+            .named_children(&mut iw)
+            .find(|c| c.kind() == "string_content" || c.kind() == "string_fragment")
+            .and_then(|n| text_of(n, code));
+        let raw = match frag_text {
+            Some(t) => t,
+            None => text_of(lit, code)?,
+        };
+        let trimmed = strip_string_quotes_loose(&raw);
+        if let Some(idx) = trimmed.find('{') {
+            let head = trimmed[..idx].to_string();
+            if !head.is_empty() {
+                return Some(head);
+            }
+        } else if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
     None
 }
 
