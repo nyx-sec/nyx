@@ -2003,11 +2003,31 @@ pub(super) fn call_ident_of<'a>(n: Node<'a>, lang: &str, code: &'a [u8]) -> Opti
                 .child_by_field_name("method")
                 .or_else(|| n.child_by_field_name("name"))
                 .and_then(|f| text_of(f, code));
-            let recv = n
+            let recv_node = n
                 .child_by_field_name("object")
                 .or_else(|| n.child_by_field_name("receiver"))
-                .or_else(|| n.child_by_field_name("scope"))
-                .and_then(|f| root_receiver_text(f, lang, code));
+                .or_else(|| n.child_by_field_name("scope"));
+            let recv = recv_node.and_then(|f| root_receiver_text(f, lang, code));
+            // Preserve Java `.getClass()` segment in the chained callee text
+            // so downstream predicates (e.g.
+            // [`crate::ssa::type_facts::is_safe_string_producing_callee`])
+            // can recognise idiomatic `obj.getClass().<accessor>()` chains.
+            // Without this, `root_receiver_text` collapses the chain to
+            // `obj.<accessor>`, indistinguishable from a user-defined method.
+            let recv = if lang == "java"
+                && let Some(rn) = recv_node
+                && lookup(lang, rn.kind()) == Kind::CallMethod
+                && let Some(inner_method) = rn
+                    .child_by_field_name("method")
+                    .or_else(|| rn.child_by_field_name("name"))
+                    .and_then(|f| text_of(f, code))
+                && inner_method == "getClass"
+                && let Some(r) = recv
+            {
+                Some(format!("{r}.getClass"))
+            } else {
+                recv
+            };
             match (recv, func) {
                 (Some(r), Some(f)) => Some(format!("{r}.{f}")),
                 (_, Some(f)) => Some(f),

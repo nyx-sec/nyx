@@ -807,10 +807,9 @@ implied or surfaced but did not finish.
       `union_param_sink_sites`, the `summary_extract` path, and
       cross-file persistence.
 
-- [ ] Java header-injection FPs on chained `getClass().<accessor>()`
-      and `Map.of` allowlist lookup shapes. 2026-05-09 session 0003
-      closed two of four CVE-corpus patched-counterpart FPs by
-      adding `is_safe_string_producing_callee` in
+- [ ] Java header-injection FP on Map.of allowlist lookup. 2026-05-09
+      session 0003 closed two of four CVE-corpus patched-counterpart FPs
+      by adding `is_safe_string_producing_callee` in
       `src/ssa/type_facts.rs` (recognises `Integer.toString` /
       `Long.toString` / `Float.toString` / `Double.toString` /
       `Short.toString` / `Byte.toString` / `Boolean.toString` /
@@ -822,22 +821,17 @@ implied or surfaced but did not finish.
       `HEADER_INJECTION` and `OPEN_REDIRECT`, and adding a
       `apply_arg_type_safe_suppression` arg-level filter at Call
       sinks in `src/taint/ssa_transfer/mod.rs` keyed off
-      `info.arg_callees`.  Closes:
-      `cve-java-2015-7501-patched` (Integer.toString) +
-      `cve-java-2022-42889-patched` (String.valueOf chain).
+      `info.arg_callees`.  Closed: `cve-java-2015-7501-patched`
+      (Integer.toString) + `cve-java-2022-42889-patched` (String.valueOf
+      chain).  2026-05-09 session 0004 closed
+      `cve-java-2022-1471-patched` by extending
+      `call_ident_of`'s `Kind::CallMethod` arm in
+      `src/cfg/literals.rs` to preserve the `.getClass` segment when the
+      receiver is itself a `Kind::CallMethod` whose method name is
+      `getClass` (Java only).  Now `loaded.getClass().getName()`
+      collapses to `loaded.getClass.getName` and the predicate's
+      chain-form check matches reliably.
       Remaining (parked):
-      * `cve-java-2022-1471-patched` (`loaded.getClass().getName()`).
-        The CFG/SSA pipeline's `call_ident_of` collapses chain text
-        into `<root_recv>.<leaf_method>` (e.g. `loaded.getName`),
-        dropping the intermediate `.getClass()` segment that the
-        predicate's chain-form check needs to disambiguate from
-        unrelated user-defined `getName()` methods.  Path forward:
-        either extend `extract_arg_callees` to format chained
-        method invocations with the inner method preserved (e.g.
-        `getClass.getName`) gated on lang=Java, or add a per-arg
-        `arg_is_class_name_accessor: Vec<bool>` to NodeInfo
-        populated by an AST walker.  Adding a new NodeInfo field
-        is invasive (70+ fields, serialisation roundtrip).
       * `cve-java-2017-12629-patched`
         (`TRANSFORMERS.get(tainted)` against `Map.of("identity",
         "classpath:xslt/identity.xsl", "summary",
@@ -849,22 +843,26 @@ implied or surfaced but did not finish.
         `Map.get` to a `StringFact::any_of([v1, v2, ...])` that the
         sink-suppression layer recognises as locked.
 
-- [ ] Symex pre-existing rule-FN for `cve-js-2025-64430-vulnerable`
-      (Parse Server SSRF). Engine fires
-      `taint-header-injection (source 52:30)` instead of the
-      ground-truth-expected `taint-unsanitised-flow`.  Pre-dates
-      session 0003 (verified by `git stash` + re-run).  No setHeader
-      / addHeader / addCookie call exists in the fixture, so the
-      label-rule attribution is structural noise from the body of
-      `addFileDataIfNeeded`'s file._data assignment, which a
-      member-assignment matcher promotes to HEADER_INJECTION.  The
-      real SSRF flow (`req.body` → `file._source.uri` →
-      `downloadFileFromURI` → `http.get(uri, ...)`) is not surfaced
-      because the inline-callee analysis does not trace
-      `addFileDataIfNeeded(file)` deep enough.  Park: requires
-      either disambiguating the HEADER_INJECTION matcher off
-      `_data`-shaped properties or fixing the cross-helper SSRF
-      attribution.
+- [ ] React JSX text-content auto-escape sanitizer (ts-safe-010).
+      Fixture: `tests/benchmark/corpus/typescript/safe/safe_jsx_text.tsx`
+      has `const page = <div>{bio}</div>; res.send(page);` where
+      `bio = req.query.bio`.  React auto-escapes text content between
+      JSX tags, but the engine has no model for that, so it fires a
+      `taint-unsanitised-flow` finding.  Path forward: synthesize a
+      Sanitizer(HTML_ESCAPE) CFG node similar to the existing
+      `try_lower_jsx_dangerous_html` synthesis at
+      `src/cfg/mod.rs::try_lower_jsx_dangerous_html`.  Walk the AST
+      for `jsx_expression` nodes whose direct parent is a
+      `jsx_element` / `jsx_self_closing_element` / `jsx_fragment` AND
+      whose grandparent is NOT a `jsx_attribute` (the attribute case
+      already has dedicated dangerouslySetInnerHTML sink synthesis;
+      other attribute uses like `onClick={...}` are not text
+      content).  Sanitize HTML_ESCAPE only — other caps (CMDi, SQLi,
+      SSRF, etc.) flow through unchanged, since React text-escape
+      neutralizes only HTML metachars.  Risk: over-suppression on
+      legitimate XSS-via-attribute or innerHTML shapes.  The
+      attribute-vs-text-content distinction is structural (jsx_attribute
+      ancestor check), so the risk is bounded.
 
 ## Deferred phases
 

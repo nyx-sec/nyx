@@ -412,6 +412,16 @@ pub(crate) fn first_member_label(
         }
         // PHP/Python/Ruby subscript access: `$_GET['cmd']`, `os.environ['KEY']`, `params[:cmd]`
         // Try to classify the object (before the `[`) as a source.
+        //
+        // Source-only on the receiver: a subscript reads a value from the
+        // receiver, so a Sink label found on the receiver text (e.g.
+        // `response.headers['content-type']`, where `response.headers`
+        // matches the JS HEADER_INJECTION sink rule) describes the
+        // *target* of a hypothetical write, not this read.  Promoting it
+        // would fire phantom sinks at every `body =
+        // response.headers["X"]`-shape line.  Sinks/Sanitizers reachable
+        // via callable positions (function-arg, method-receiver) still
+        // flow through the outer recursive walk below.
         "subscript_expression" | "subscript" | "element_reference" => {
             if let Some(obj) = n
                 .child_by_field_name("object")
@@ -419,15 +429,23 @@ pub(crate) fn first_member_label(
                 .or_else(|| n.child(0))
             {
                 if let Some(txt) = text_of(obj, code)
-                    && let Some(lbl) = classify(lang, &txt, extra_labels)
+                    && let Some(lbl @ DataLabel::Source(_)) = classify(lang, &txt, extra_labels)
                 {
                     return Some(lbl);
                 }
-                // Recurse into the object for nested member accesses
-                if let Some(lbl) = first_member_label(obj, lang, code, extra_labels) {
+                // Recurse into the object for nested member accesses, but
+                // keep the same Source-only restriction as above by passing
+                // through the dedicated source-only walker.
+                if let Some(lbl @ DataLabel::Source(_)) =
+                    first_member_label(obj, lang, code, extra_labels)
+                {
                     return Some(lbl);
                 }
             }
+            // Suppress further descent into this subscript node, the outer
+            // child-walk loop would otherwise enter the receiver via the
+            // member_expression arm and reattach a value-extraction Sink.
+            return None;
         }
         _ => {}
     }

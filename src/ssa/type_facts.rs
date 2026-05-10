@@ -1281,13 +1281,14 @@ pub fn is_safe_string_producing_callee(callee: &str) -> bool {
             _ => {}
         }
     }
-    // Chained `<expr>.getClass().<accessor>()` form.  Collapsed callee
-    // text retains the inner `.getClass()` literal, so a contains-check
-    // is sufficient and avoids over-matching on unrelated `getName`
-    // methods on user-defined classes.
+    // Chained `<expr>.getClass().<accessor>()` form.  The Java arm of
+    // `call_ident_of` preserves the inner `.getClass` segment in the
+    // collapsed chain text (e.g. `loaded.getClass.getName`), so a
+    // contains-check on `.getClass.` suffices to disambiguate from
+    // user-defined `getName` methods on unrelated classes.
     let suffix = after_colons.rsplit(['.', ':']).next().unwrap_or(after_colons);
     if matches!(suffix, "getName" | "getSimpleName" | "getCanonicalName")
-        && after_colons.contains(".getClass()")
+        && (after_colons.contains(".getClass.") || after_colons.contains(".getClass()"))
     {
         return true;
     }

@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-09T22:19:23Z",
+  "timestamp": "2026-05-09T23:34:28Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -1460,17 +1460,13 @@
       "language": "java",
       "vuln_class": "safe",
       "is_vulnerable": false,
-      "outcome_file_level": "FP",
-      "outcome_rule_level": "FP",
+      "outcome_file_level": "TN",
+      "outcome_rule_level": "TN",
       "outcome_location_level": null,
       "matched_rule_ids": [],
-      "unexpected_rule_ids": [
-        "taint-header-injection (source 29:23)"
-      ],
-      "all_finding_ids": [
-        "taint-header-injection (source 29:23)"
-      ],
-      "security_finding_count": 1,
+      "unexpected_rule_ids": [],
+      "all_finding_ids": [],
+      "security_finding_count": 0,
       "non_security_finding_count": 0
     },
     {
@@ -1485,14 +1481,11 @@
       "matched_rule_ids": [
         "java.deser.snakeyaml_unsafe_constructor"
       ],
-      "unexpected_rule_ids": [
-        "taint-header-injection (source 34:23)"
-      ],
+      "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "java.deser.snakeyaml_unsafe_constructor",
-        "taint-header-injection (source 34:23)"
+        "java.deser.snakeyaml_unsafe_constructor"
       ],
-      "security_finding_count": 2,
+      "security_finding_count": 1,
       "non_security_finding_count": 0
     },
     {
@@ -1655,14 +1648,14 @@
       "vuln_class": "ssrf",
       "is_vulnerable": true,
       "outcome_file_level": "TP",
-      "outcome_rule_level": "FN",
+      "outcome_rule_level": "TP",
       "outcome_location_level": null,
-      "matched_rule_ids": [],
-      "unexpected_rule_ids": [
-        "taint-header-injection (source 52:30)"
+      "matched_rule_ids": [
+        "taint-unsanitised-flow (source 52:30)"
       ],
+      "unexpected_rule_ids": [],
       "all_finding_ids": [
-        "taint-header-injection (source 52:30)"
+        "taint-unsanitised-flow (source 52:30)"
       ],
       "security_finding_count": 1,
       "non_security_finding_count": 0
@@ -10066,21 +10059,21 @@
   ],
   "aggregate_file_level": {
     "tp": 275,
-    "fp": 3,
+    "fp": 2,
     "fn_": 0,
-    "tn": 284,
-    "precision": 0.9892086330935251,
+    "tn": 285,
+    "precision": 0.9927797833935018,
     "recall": 1.0,
-    "f1": 0.9945750452079565
+    "f1": 0.996376811594203
   },
   "aggregate_rule_level": {
-    "tp": 274,
-    "fp": 3,
-    "fn_": 1,
-    "tn": 284,
-    "precision": 0.9891696750902527,
-    "recall": 0.9963636363636363,
-    "f1": 0.9927536231884057
+    "tp": 275,
+    "fp": 2,
+    "fn_": 0,
+    "tn": 285,
+    "precision": 0.9927797833935018,
+    "recall": 1.0,
+    "f1": 0.996376811594203
   },
   "by_language": {
     "c": {
@@ -10112,21 +10105,21 @@
     },
     "java": {
       "tp": 23,
-      "fp": 2,
+      "fp": 1,
       "fn_": 0,
-      "tn": 21,
-      "precision": 0.92,
+      "tn": 22,
+      "precision": 0.9583333333333334,
       "recall": 1.0,
-      "f1": 0.9583333333333334
+      "f1": 0.9787234042553191
     },
     "javascript": {
-      "tp": 24,
+      "tp": 25,
       "fp": 0,
-      "fn_": 1,
+      "fn_": 0,
       "tn": 32,
       "precision": 1.0,
-      "recall": 0.96,
-      "f1": 0.9795918367346939
+      "recall": 1.0,
+      "f1": 1.0
     },
     "php": {
       "tp": 22,
@@ -10312,9 +10305,9 @@
     },
     "safe": {
       "tp": 0,
-      "fp": 3,
+      "fp": 2,
       "fn_": 0,
-      "tn": 281,
+      "tn": 282,
       "precision": 0.0,
       "recall": 1.0,
       "f1": 0.0
@@ -10347,13 +10340,13 @@
       "f1": 1.0
     },
     "ssrf": {
-      "tp": 31,
+      "tp": 32,
       "fp": 0,
-      "fn_": 1,
+      "fn_": 0,
       "tn": 0,
       "precision": 1.0,
-      "recall": 0.96875,
-      "f1": 0.9841269841269841
+      "recall": 1.0,
+      "f1": 1.0
     },
     "xss": {
       "tp": 24,
@@ -10367,31 +10360,31 @@
   },
   "by_confidence": {
     ">=High": {
-      "tp": 84,
+      "tp": 85,
       "fp": 115,
-      "fn_": 191,
+      "fn_": 190,
       "tn": 172,
-      "precision": 0.4221105527638191,
-      "recall": 0.3054545454545455,
-      "f1": 0.35443037974683544
+      "precision": 0.425,
+      "recall": 0.3090909090909091,
+      "f1": 0.3578947368421052
     },
     ">=Low": {
-      "tp": 85,
+      "tp": 86,
       "fp": 143,
-      "fn_": 190,
+      "fn_": 189,
       "tn": 144,
-      "precision": 0.37280701754385964,
-      "recall": 0.3090909090909091,
-      "f1": 0.33797216699801197
+      "precision": 0.37554585152838427,
+      "recall": 0.31272727272727274,
+      "f1": 0.3412698412698413
     },
     ">=Medium": {
-      "tp": 85,
+      "tp": 86,
       "fp": 134,
-      "fn_": 190,
+      "fn_": 189,
       "tn": 153,
-      "precision": 0.3881278538812785,
-      "recall": 0.3090909090909091,
-      "f1": 0.3441295546558704
+      "precision": 0.39090909090909093,
+      "recall": 0.31272727272727274,
+      "f1": 0.3474747474747475
     }
   }
 }
