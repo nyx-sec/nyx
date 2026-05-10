@@ -10,6 +10,7 @@ use crate::cfg::StmtKind;
 use crate::labels::{Cap, DataLabel, RuntimeLabelRule};
 use crate::patterns::Severity;
 use crate::ssa::const_prop::ConstLattice;
+use crate::symbol::Lang;
 use crate::ssa::type_facts::TypeFactResult;
 use crate::ssa::{SsaOp, SsaValue};
 use crate::taint::path_state::{PredicateKind, classify_condition};
@@ -511,6 +512,126 @@ fn sink_args_jpa_criteria_query_safe(
         }
     }
     crate::ssa::type_facts::is_safe_query_object_arg(&values, sink_caps, type_facts)
+}
+
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the call site is
+/// a zero-positional-argument query-builder execute / create verb.
+///
+/// Doctrine DBAL `QueryBuilder` (`$qb->select(...)->from(...)->executeQuery()`),
+/// JPA / Hibernate `CriteriaBuilder` (`cb.createQuery()` returning the
+/// query-object factory), and any chained-builder pattern share the shape:
+/// the SQL string is bound earlier on the receiver chain via parameterized
+/// API calls (`->select`, `->from`, `->where(... param ...)`), and the
+/// terminal verb that fires on the sink list (`executeQuery`,
+/// `executeStatement`, `executeUpdate`, `createQuery`, `createNativeQuery`)
+/// takes zero positional args, no SQL string ever flows through the call
+/// site itself.
+///
+/// vs. the dangerous flat shape:
+/// `$conn->executeQuery($sql, $params)` — arg 0 carries the SQL string,
+/// the structural finding is correctly preserved.
+///
+/// Restricted to verb names where JDBC / Doctrine / JPA expose a
+/// receiver-built (zero-arg) overload.  PHP `stmt.execute` is excluded
+/// because PDOStatement::execute() can be reached via a tainted
+/// `prepare($sql)` chain where the SQL was already built unsafely;
+/// the receiver-side taint check is the only thing that fires there.
+fn sink_is_zero_arg_query_builder(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
+    if !sink_caps.intersects(Cap::SQL_QUERY) {
+        return false;
+    }
+    // Only suppress when the sink's caps are SQL_QUERY-only.  Multi-cap
+    // sinks may carry a non-SQL injection vector through the same call.
+    if sink_caps != Cap::SQL_QUERY {
+        return false;
+    }
+    // Restrict to PHP.  Java / Kotlin / JVM langs already cover the
+    // safe prepared-statement shape via the `prepareStatement` Sanitizer
+    // rule that dominates `pstmt.executeUpdate()` / `pstmt.executeQuery()`
+    // at the structural finding site.  PHP's Doctrine DBAL `QueryBuilder`
+    // and Drupal `Connection::prepareStatement` shapes need explicit
+    // structural support because the receiver isn't always sanitized in
+    // a way the dominator-Sanitizer scan recognises (chain receiver,
+    // closure-captured helper, etc.).
+    if ctx.lang != Lang::Php {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+    let callee = match info.call.callee.as_deref() {
+        Some(c) => c,
+        None => return false,
+    };
+    let suffix = callee.rsplit('.').next().unwrap_or(callee);
+    let is_builder_verb =
+        matches!(suffix, "executeQuery" | "executeStatement" | "createQuery");
+    if !is_builder_verb {
+        return false;
+    }
+    // Restrict to receivers that name a known query-builder.  The
+    // root-receiver text is the leftmost segment of the callee chain;
+    // for `$qb->...->executeQuery()` the root is `qb`, for
+    // `$deleteQuery->executeStatement()` it is `deleteQuery`, etc.
+    // Patterns canvassed from Doctrine DBAL / Drupal Database / Nextcloud
+    // dav / lib idioms:
+    //   * canonical names: qb, query, queryBuilder, builder, q
+    //   * verb-bound builders: deleteQuery, insertQuery, selectTagQuery,
+    //     calendarObjectIdQuery, deleteQb, qbDeleteCalendarObjectProps
+    //   * action-named builders: insert, update, delete, select, upsert,
+    //     forUpdate, restoreUpdate
+    // Receivers named after the SQL connection (`conn`, `connection`,
+    // `dbc`, `db`) or entity-manager (`em`, `entityManager`) are
+    // excluded since their `executeQuery` / `executeStatement` overloads
+    // accept a SQL string arg.
+    let root_receiver = match callee.split('.').next() {
+        Some(r) if !r.is_empty() => r,
+        _ => return false,
+    };
+    let receiver_lower = root_receiver.to_ascii_lowercase();
+    let is_builder_receiver = receiver_lower == "qb"
+        || receiver_lower == "q"
+        || receiver_lower == "query"
+        || receiver_lower == "querybuilder"
+        || receiver_lower == "builder"
+        || receiver_lower == "insert"
+        || receiver_lower == "update"
+        || receiver_lower == "delete"
+        || receiver_lower == "select"
+        || receiver_lower == "upsert"
+        || receiver_lower.starts_with("qb")
+        || receiver_lower.starts_with("querybuilder")
+        || receiver_lower.ends_with("qb")
+        || receiver_lower.ends_with("query")
+        || receiver_lower.ends_with("builder");
+    if !is_builder_receiver {
+        return false;
+    }
+    // The CFG node may represent an outer call with the inner classifiable
+    // call's text overridden onto `info.call.callee` (e.g.
+    // `$this->atomic(function () use (...) { $qb->...->executeStatement(); })`
+    // surfaces as `outer_callee = this.atomic` + `callee = qb.executeStatement`),
+    // so `arg_uses` on this node reflects the outer call, not the inner.
+    // Use `callee_span` when present to bound-check the inner call's text:
+    // the trailing characters in that span must be a close-paren preceded
+    // by an open-paren (with optional whitespace), no positional payload.
+    let span = info.call.callee_span.unwrap_or(info.ast.span);
+    let bytes = ctx.source_bytes;
+    if span.0 >= span.1 || span.1 > bytes.len() {
+        return false;
+    }
+    let slice = &bytes[span.0..span.1];
+    // Skip trailing whitespace.
+    let mut end = slice.len();
+    while end > 0 && matches!(slice[end - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        end -= 1;
+    }
+    if end == 0 || slice[end - 1] != b')' {
+        return false;
+    }
+    end -= 1;
+    while end > 0 && matches!(slice[end - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        end -= 1;
+    }
+    end > 0 && slice[end - 1] == b'('
 }
 
 /// Walk the sink's Call SSA arguments and check whether every real argument
@@ -1268,6 +1389,18 @@ impl CfgAnalysis for UnguardedSink {
             // never the payload.  Closes openmrs / xwiki / keycloak
             // Hibernate-DAO FP cluster.
             if !has_taint && sink_args_jpa_criteria_query_safe(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // Zero-arg query-builder verbs: Doctrine DBAL `QueryBuilder`,
+            // JPA `CriteriaBuilder`, and similar chain-builder shapes
+            // execute a query that was bound earlier on the receiver via
+            // parameterised API calls.  No SQL string is concatenated at
+            // the terminal call site.  Closes the nextcloud apps/dav and
+            // lib/private/DB cluster (`$qb->executeQuery()` /
+            // `$qb->executeStatement()` after `select`/`from`/`where`/
+            // `setParameter` chains).
+            if !has_taint && sink_is_zero_arg_query_builder(ctx, *sink, sink_caps) {
                 continue;
             }
 

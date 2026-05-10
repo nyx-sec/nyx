@@ -1022,6 +1022,39 @@ fn fp_guard_php_unserialize_allowed_classes() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Drupal Database Query subclasses use
+/// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
+/// statement object then bind values out of band via
+/// `$stmt->execute($values, $opts)`.  Phase 15 added `stmt.execute`
+/// as a SQL_QUERY sink, so without recognising `prepareStatement`
+/// as a SQL_QUERY sanitizer (semantic twin of `prepare`) the rule
+/// fires on every Truncate / Update / Delete / Insert / Upsert
+/// subclass.  Distilled from drupal core/lib/Drupal/Core/Database
+/// /Query/{Truncate,Update,Delete,Insert,Upsert}.php.
+#[test]
+fn fp_guard_php_drupal_prepare_statement() {
+    let dir = fixture_path("fp_guards/php_drupal_prepare_statement");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL `QueryBuilder` chain (`$qb->select(...)
+/// ->from(...)->where(...)->executeQuery()`).  The terminal
+/// `executeQuery` / `executeStatement` verbs take zero positional
+/// args; the SQL is bound earlier on the chain via parameterised
+/// API calls.  Without a structural zero-arg suppression the flat
+/// `executeQuery` SQL_QUERY sink rule fires every time, surfacing
+/// ~160 cfg-unguarded-sink findings on a single nextcloud snapshot
+/// (CalDavBackend, CardDavBackend, lib/private/DB).  Distilled from
+/// nextcloud apps/dav/lib/CalDAV/CalDavBackend.php /
+/// CardDavBackend.php.
+#[test]
+fn fp_guard_php_doctrine_querybuilder() {
+    let dir = fixture_path("fp_guards/php_doctrine_querybuilder");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, PHP `md5()` / `sha1()` weak-hash pattern rule firing
 /// syntactically on every callsite.  Real-world PHP uses these
 /// functions pervasively for non-cryptographic purposes (ETag

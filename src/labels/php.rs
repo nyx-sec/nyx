@@ -48,9 +48,13 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: false,
     },
-    // PDO parameterized queries
+    // PDO parameterized queries.  `prepareStatement` covers Drupal's
+    // Database\\Connection convention (and any PSR-style wrapper that
+    // uses the longer name); semantically identical to `prepare` —
+    // both return a statement object, the bind step ships values as
+    // out-of-band parameters, no concatenation occurs.
     LabelRule {
-        matchers: &["prepare", "bindParam", "bindValue"],
+        matchers: &["prepare", "prepareStatement", "bindParam", "bindValue"],
         label: DataLabel::Sanitizer(Cap::SQL_QUERY),
         case_sensitive: false,
     },
