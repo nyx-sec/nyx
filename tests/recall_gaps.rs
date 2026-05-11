@@ -808,6 +808,7 @@ fn orm_xlang() {
         ("sqli_rb_where_interp.rb", 9usize),
         ("sqli_go_concat.go", 14usize),
         ("sqli_go_gorm_raw.go", 20usize),
+        ("sqli_go_gorm_raw_named.go", 28usize),
         ("sqli_php_pdo_concat.php", 9usize),
         ("sqli_php_doctrine_interp.php", 10usize),
     ];

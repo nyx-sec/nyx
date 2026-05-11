@@ -2454,6 +2454,29 @@ fn py_subscript_write_lowers_to_index_set_call() {
 }
 
 #[test]
+fn go_selector_expression_call_sets_receiver() {
+    // Regression for Phase 15 deferred GORM tuple-return case.
+    // Go's `userDb.Raw(sql)` parses as `call_expression` whose `function`
+    // field is a `selector_expression` (operand=userDb, field=Raw).
+    // The CFG-side `Kind::CallFn` arm must extract `userDb` as the
+    // receiver so type-qualified resolution can rewrite `userDb.Raw` →
+    // `GormDb.Raw` once `userDb`'s SSA value is tagged via
+    // `constructor_type(Lang::Go, "gorm.Open")`.  Pre-fix the arm only
+    // recognised JS/TS `member_expression`, Python `attribute`, and Rust
+    // `field_expression`; Go fell through to receiver=None.
+    let src = br#"package main
+func f(userDb int) {
+    userDb.Raw("SELECT 1")
+}
+"#;
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "go", ts_lang);
+    let node = find_node_with_callee(&cfg, "userDb.Raw")
+        .expect("go: userDb.Raw node should be present");
+    assert_eq!(node.call.receiver.as_deref(), Some("userDb"));
+}
+
+#[test]
 fn go_index_expr_read_lowers_to_index_get_call() {
     with_pointer_on(|| {
         let src = br#"package main

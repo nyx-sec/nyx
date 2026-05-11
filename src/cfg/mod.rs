@@ -3028,6 +3028,11 @@ pub(super) fn push_node<'a>(
                 // Rust `obj.method(x)`: call_expression.function = field_expression
                 //    (field on `value`, not `object`, value can be another call
                 //    for chained forms like `Connection::open(p).unwrap().execute(...)`).
+                // Go `obj.method(x)`: call_expression.function = selector_expression
+                //    (operand=receiver, field=method name).  Without this branch,
+                //    `userDb.Raw(sql)` where `userDb` was bound from `gorm.Open(...)`
+                //    loses its receiver channel, so type-qualified resolution can't
+                //    rewrite `userDb.Raw` → `GormDb.Raw`.
                 // Pull the receiver from the object/attribute-owner field.
                 let func_child = cn.child_by_field_name("function");
                 let recv_node = match func_child {
@@ -3035,6 +3040,9 @@ pub(super) fn push_node<'a>(
                         fc.child_by_field_name("object")
                     }
                     Some(fc) if fc.kind() == "field_expression" => fc.child_by_field_name("value"),
+                    Some(fc) if fc.kind() == "selector_expression" => {
+                        fc.child_by_field_name("operand")
+                    }
                     _ => None,
                 };
                 if let Some(rn) = recv_node {
