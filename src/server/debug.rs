@@ -1187,6 +1187,18 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::Template => "Template".into(),
         TypeKind::Dto(_) => "Dto".into(),
         TypeKind::NullPrototypeObject => "NullPrototypeObject".into(),
+        TypeKind::FileSystemPromisesNs => "FileSystemPromisesNs".into(),
+        TypeKind::Sequelize => "Sequelize".into(),
+        TypeKind::TypeOrmRepo => "TypeOrmRepo".into(),
+        TypeKind::TypeOrmManager => "TypeOrmManager".into(),
+        TypeKind::MikroOrmEm => "MikroOrmEm".into(),
+        TypeKind::Request => "Request".into(),
+        TypeKind::SqlAlchemySession => "SqlAlchemySession".into(),
+        TypeKind::DjangoQuerySet => "DjangoQuerySet".into(),
+        TypeKind::ActiveRecordRelation => "ActiveRecordRelation".into(),
+        TypeKind::GormDb => "GormDb".into(),
+        TypeKind::SqlxDb => "SqlxDb".into(),
+        TypeKind::HibernateSession => "HibernateSession".into(),
     }
 }
 
@@ -1565,6 +1577,10 @@ pub fn analyse_function_taint(
         auto_seed_handler_params: matches!(lang, Lang::JavaScript | Lang::TypeScript),
         cross_file_bodies: global_summaries.and_then(|gs| gs.bodies_by_key()),
         pointer_facts: None,
+        cross_package_imports: None,
+        entry_kind: None,
+        param_route_capture: None,
+        recording_summary: false,
     };
 
     crate::taint::ssa_transfer::run_ssa_taint_full_with_exits(ssa, cfg, &transfer)
@@ -1628,7 +1644,7 @@ pub fn analyse_file_summaries(
     config: &Config,
 ) -> Result<GlobalSummaries, StatusCode> {
     let bytes = std::fs::read(file_path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let (func_summaries, ssa_rows, _ssa_bodies, auth_rows) =
+    let (func_summaries, ssa_rows, _ssa_bodies, auth_rows, cross_pkg_imports) =
         crate::ast::extract_all_summaries_from_bytes(&bytes, file_path, config, None)
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -1639,6 +1655,9 @@ pub fn analyse_file_summaries(
     }
     for (key, auth_summary) in auth_rows {
         global.insert_auth(key, auth_summary);
+    }
+    if let Some((ns, map)) = cross_pkg_imports {
+        global.insert_cross_package_imports(ns, map);
     }
 
     Ok(global)
@@ -1883,6 +1902,7 @@ function consume() {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         );
 
@@ -2039,6 +2059,7 @@ async function recentAuditLogs() {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let facts = analyse_body(&body, BodyId(0));

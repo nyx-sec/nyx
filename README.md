@@ -8,6 +8,8 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)](https://www.rust-lang.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/elicpeter/nyx/ci.yml?branch=master)](https://github.com/elicpeter/nyx/actions)
 [![Docs](https://img.shields.io/badge/docs-elicpeter.github.io%2Fnyx-blue)](https://elicpeter.github.io/nyx/)
+
+English · [简体中文](./README.zh-CN.md)
 </div>
 
 <p align="center"><img src="assets/screenshots/demo.gif" alt="Nyx UI walkthrough: empty Welcome state, kicking off a scan, the populated overview with Health Score, drilling into a HIGH finding's flow visualizer, then the triage flow" width="900"/></p>
@@ -74,7 +76,7 @@ Forward cross-file taint runs in every profile. Symex and the demand-driven back
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.6.1
+- uses: elicpeter/nyx@v0.7.0
   with:
     format: sarif
     fail-on: MEDIUM

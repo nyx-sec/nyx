@@ -1384,6 +1384,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let empty_succs = HashMap::new();
@@ -1445,6 +1446,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let empty_succs = HashMap::new();
@@ -1579,6 +1581,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let finding = make_finding(n0, n1);
@@ -1688,6 +1691,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         // Finding path goes through B0 → B1 → B3
@@ -1836,6 +1840,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let finding = Finding {
@@ -1950,6 +1955,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let mut exc_succs: HashMap<BlockId, SmallVec<[BlockId; 2]>> = HashMap::new();
@@ -2018,6 +2024,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let mut exc_succs: HashMap<BlockId, SmallVec<[BlockId; 2]>> = HashMap::new();
@@ -2127,6 +2134,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let finding = Finding {

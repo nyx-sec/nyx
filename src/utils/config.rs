@@ -794,6 +794,13 @@ pub struct Config {
     /// not persisted to config files.
     #[serde(skip)]
     pub framework_ctx: Option<crate::utils::project::FrameworkContext>,
+    /// TS/JS module resolver state, set by the scan pipeline once per scan
+    /// after the file walk and before pass 1. `None` outside the scan paths
+    /// (e.g. unit-test direct callers of `analyse_file_fused`); consumers
+    /// must treat absence as "no resolver hints available, fall back to
+    /// pre-resolver behaviour" rather than as a hard error.
+    #[serde(skip)]
+    pub module_graph: Option<std::sync::Arc<crate::resolve::ModuleGraph>>,
 }
 
 impl Config {

@@ -1,0 +1,2108 @@
+{
+  "_doc": "Phase 17 cross-lang recall-validation baseline for nextcloud (PHP). Re-capture by running scripts/validate_recall.sh --lang php nextcloud <clone_path> --capture.",
+  "target": "nextcloud",
+  "lang": "php",
+  "clone_url": "https://github.com/nextcloud/server",
+  "exercises_recall_items": [],
+  "captured_against": "real-scan @ 5c0fe4c3cc7adea955abcf4b530bb056583b1651",
+  "captured_on": "2026-05-09",
+  "pinned_commit": "5c0fe4c3cc7adea955abcf4b530bb056583b1651",
+  "findings": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/src/utils/RedirectUnsupportedBrowsers.js",
+      "line": 35,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/files/src/actions/openLocallyAction.ts",
+      "line": 83,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "lib/private/Security/CertificateManager.php",
+      "line": 136,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/Command/Encryption/MigrateKeyStorage.php",
+      "line": 155,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/Command/Security/ImportCertificate.php",
+      "line": 45,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "lib/private/Encryption/File.php",
+      "line": 77,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "lib/private/Setup.php",
+      "line": 629,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/Command/Encryption/MigrateKeyStorage.php",
+      "line": 109,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "lib/private/Security/CertificateManager.php",
+      "line": 124,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "lib/private/Security/CertificateManager.php",
+      "line": 130,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "lib/private/IntegrityCheck/Checker.php",
+      "line": 207,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "lib/private/IntegrityCheck/Checker.php",
+      "line": 236,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/src/services/UnifiedSearchService.js",
+      "line": 61,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "core/src/services/LegacyUnifiedSearchService.js",
+      "line": 63,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/src/services/LegacyUnifiedSearchService.js",
+      "line": 32,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/src/services/LegacyUnifiedSearchService.js",
+      "line": 63,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/src/services/UnifiedSearchService.js",
+      "line": 25,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/src/services/UnifiedSearchService.js",
+      "line": 61,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Archive/TAR.php",
+      "line": 95,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Security/Signature/SignatureManager.php",
+      "line": 97,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "lib/private/Files/Type/Detection.php",
+      "line": 255,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "lib/private/LargeFileHelper.php",
+      "line": 185,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "lib/private/Preview/Movie.php",
+      "line": 285,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "lib/private/Preview/Movie.php",
+      "line": 337,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "lib/private/Preview/Office.php",
+      "line": 76,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "apps/provisioning_api/lib/Controller/AUserDataOCSController.php",
+      "line": 80,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "apps/settings/lib/Controller/CommonSettingsTrait.php",
+      "line": 137,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.assert_string",
+      "path_suffix": "apps/theming/lib/Command/UpdateConfig.php",
+      "line": 60,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.code_exec.preg_replace_e",
+      "path_suffix": "lib/public/Files/Events/BeforeZipCreatedEvent.php",
+      "line": 61,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "apps/user_ldap/lib/Migration/Version1190Date20230706134108.php",
+      "line": 84,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "lib/private/Repair/RemoveBrokenProperties.php",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.deser.unserialize",
+      "path_suffix": "lib/private/TaskProcessing/Manager.php",
+      "line": 892,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/federation/src/services/api.ts",
+      "line": 58,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/files/src/actions/convertUtils.ts",
+      "line": 51,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/files/src/actions/convertUtils.ts",
+      "line": 131,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/files/src/services/Templates.js",
+      "line": 22,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/files/src/views/folderTree.ts",
+      "line": 95,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/files/src/views/folderTree.ts",
+      "line": 172,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/files/src/views/folderTree.ts",
+      "line": 174,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/files_external/src/composables/useEntities.ts",
+      "line": 24,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/files_external/src/services/externalStorage.ts",
+      "line": 83,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/settings/src/constants/OfficeSuites.js",
+      "line": 45,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/settings/src/constants/OfficeSuites.js",
+      "line": 55,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/systemtags/src/services/systemtags.ts",
+      "line": 84,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/systemtags/src/services/systemtags.ts",
+      "line": 90,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "apps/updatenotification/src/init.ts",
+      "line": 45,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "cypress/e2e/files/FilesUtils.ts",
+      "line": 10,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "cypress/e2e/files/FilesUtils.ts",
+      "line": 27,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "cypress/e2e/files/FilesUtils.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "cypress/e2e/files/FilesUtils.ts",
+      "line": 155,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "cypress/e2e/files/FilesUtils.ts",
+      "line": 382,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "cypress/e2e/files_external/StorageUtils.ts",
+      "line": 62,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "apps/testing/lib/Controller/RoutesController.php",
+      "line": 38,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.path.include_variable",
+      "path_suffix": "lib/private/Config.php",
+      "line": 240,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Preview/Provider.php",
+      "line": 112,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/dav/tests/integration/UserMigration/CalendarMigratorTest.php",
+      "line": 180,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/Storage/Storage.php",
+      "line": 159,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/Cache/WatcherTest.php",
+      "line": 183,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/ObjectStore/ObjectStoreScannerTest.php",
+      "line": 47,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/Cache/UpdaterLegacyTest.php",
+      "line": 54,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/Cache/ScannerTest.php",
+      "line": 60,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/ViewTest.php",
+      "line": 650,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/dav/tests/integration/UserMigration/CalendarMigratorTest.php",
+      "line": 79,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/dav/tests/integration/UserMigration/CalendarMigratorTest.php",
+      "line": 94,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/Cache/ScannerTest.php",
+      "line": 100,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/Stream/EncryptionTest.php",
+      "line": 288,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "tests/lib/Files/Stream/EncryptionTest.php",
+      "line": 331,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/files/lib/Command/Object/Info.php",
+      "line": 72,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "console.php",
+      "line": 118,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "console.php",
+      "line": 120,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/dav/lib/Connector/Sabre/DummyGetResponsePlugin.php",
+      "line": 48,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/dav/lib/Connector/Sabre/File.php",
+      "line": 190,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/dav/lib/Connector/Sabre/ZipFolderPlugin.php",
+      "line": 80,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/encryption/lib/Command/FixKeyLocation.php",
+      "line": 243,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files/lib/Command/Get.php",
+      "line": 57,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files/lib/Command/Get.php",
+      "line": 62,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files/lib/Command/Object/Get.php",
+      "line": 53,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files/lib/Command/Object/Put.php",
+      "line": 59,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files/lib/Command/Put.php",
+      "line": 50,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files/lib/Command/Put.php",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files_external/lib/Lib/Storage/AmazonS3.php",
+      "line": 570,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files_external/lib/Lib/Storage/Swift.php",
+      "line": 409,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files_external/lib/Lib/Storage/Swift.php",
+      "line": 558,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files_versions/lib/Versions/LegacyVersionsBackend.php",
+      "line": 347,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/theming/lib/Service/BackgroundService.php",
+      "line": 241,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/theming/lib/Service/BackgroundService.php",
+      "line": 324,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/Controller/TaskProcessingApiController.php",
+      "line": 527,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "core/Controller/TaskProcessingApiController.php",
+      "line": 565,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/ObjectStore/ObjectStoreStorage.php",
+      "line": 372,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/ObjectStore/S3ObjectTrait.php",
+      "line": 225,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/ObjectStore/Swift.php",
+      "line": 66,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Common.php",
+      "line": 219,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Common.php",
+      "line": 220,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Common.php",
+      "line": 527,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/DAV.php",
+      "line": 515,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/LocalTempFileTrait.php",
+      "line": 40,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Encryption.php",
+      "line": 360,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/Template/TemplateManager.php",
+      "line": 170,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Files/View.php",
+      "line": 1083,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Preview/Bundled.php",
+      "line": 31,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Preview/Generator.php",
+      "line": 584,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Preview/Imaginary.php",
+      "line": 65,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Preview/MarkDown.php",
+      "line": 23,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Preview/ProviderV2.php",
+      "line": 76,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/Preview/TXT.php",
+      "line": 38,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/private/legacy/OC_Util.php",
+      "line": 188,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "lib/public/AppFramework/Http/FileDisplayResponse.php",
+      "line": 50,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/lib/Command/ImportCalendar.php",
+      "line": 114,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/lib/Connector/Sabre/File.php",
+      "line": 179,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/lib/Direct/DirectFile.php",
+      "line": 40,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/lib/Upload/AssemblyStream.php",
+      "line": 283,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_external/lib/Lib/Storage/AmazonS3.php",
+      "line": 403,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_external/lib/Lib/Storage/FTP.php",
+      "line": 280,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_external/lib/Lib/Storage/SFTP.php",
+      "line": 351,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_external/lib/Lib/Storage/StreamWrapper.php",
+      "line": 64,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_sharing/lib/SharedStorage.php",
+      "line": 345,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_trashbin/lib/Sabre/TrashFile.php",
+      "line": 18,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_trashbin/lib/Sabre/TrashFolderFile.php",
+      "line": 13,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_versions/lib/Storage.php",
+      "line": 433,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/files_versions/lib/Versions/LegacyVersionsBackend.php",
+      "line": 189,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/AppFramework/Http/Output.php",
+      "line": 35,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/AppFramework/Http/Request.php",
+      "line": 362,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Archive/TAR.php",
+      "line": 305,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Filesystem.php",
+      "line": 531,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Node/File.php",
+      "line": 96,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/ObjectStore/ObjectStoreScanner.php",
+      "line": 32,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/ObjectStore/ObjectStoreStorage.php",
+      "line": 309,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/ObjectStore/ObjectStoreStorage.php",
+      "line": 441,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/SimpleFS/NewSimpleFile.php",
+      "line": 183,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/SimpleFS/NewSimpleFile.php",
+      "line": 185,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/SimpleFS/NewSimpleFile.php",
+      "line": 198,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/SimpleFS/SimpleFile.php",
+      "line": 145,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/SimpleFS/SimpleFile.php",
+      "line": 156,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/CommonTest.php",
+      "line": 53,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Local.php",
+      "line": 405,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/DirPermissionsMask.php",
+      "line": 179,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/DirPermissionsMask.php",
+      "line": 182,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Encoding.php",
+      "line": 199,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Encryption.php",
+      "line": 261,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Encryption.php",
+      "line": 265,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Encryption.php",
+      "line": 372,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Encryption.php",
+      "line": 692,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Jail.php",
+      "line": 166,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/KnownMtime.php",
+      "line": 108,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/PermissionsMask.php",
+      "line": 101,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/PermissionsMask.php",
+      "line": 104,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Quota.php",
+      "line": 120,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Storage/Wrapper/Wrapper.php",
+      "line": 147,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Stream/Encryption.php",
+      "line": 156,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Files/Stream/SeekableHttpStream.php",
+      "line": 50,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "lib/private/Repair/Owncloud/MoveAvatarsBackgroundJob.php",
+      "line": 52,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/dav/lib/Comments/RootCollection.php",
+      "line": 115,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/dav/lib/Comments/RootCollection.php",
+      "line": 127,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/dav/lib/Connector/LegacyPublicAuth.php",
+      "line": 99,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/dav/lib/DAV/ViewOnlyPlugin.php",
+      "line": 61,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/deleteAction.spec.ts",
+      "line": 311,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/deleteAction.spec.ts",
+      "line": 324,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/deleteAction.spec.ts",
+      "line": 520,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/deleteAction.spec.ts",
+      "line": 536,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 192,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 204,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 223,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 238,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 257,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 272,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 292,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 307,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 326,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 344,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 364,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/favoriteAction.spec.ts",
+      "line": 382,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/sidebarAction.spec.ts",
+      "line": 157,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/sidebarAction.spec.ts",
+      "line": 175,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/sidebarAction.spec.ts",
+      "line": 184,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/sidebarAction.spec.ts",
+      "line": 200,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/sidebarAction.spec.ts",
+      "line": 211,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/actions/sidebarAction.spec.ts",
+      "line": 225,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/components/FileEntryMixin.ts",
+      "line": 384,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/components/FileEntryMixin.ts",
+      "line": 401,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/composables/useHotKeys.spec.ts",
+      "line": 131,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/composables/useHotKeys.spec.ts",
+      "line": 145,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/views/favorites.spec.ts",
+      "line": 128,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/views/favorites.spec.ts",
+      "line": 151,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/views/favorites.spec.ts",
+      "line": 163,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/views/favorites.spec.ts",
+      "line": 198,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/views/favorites.spec.ts",
+      "line": 219,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files/src/views/favorites.spec.ts",
+      "line": 244,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_sharing/lib/AppInfo/Application.php",
+      "line": 160,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_sharing/lib/AppInfo/Application.php",
+      "line": 165,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_sharing/lib/Controller/ShareAPIController.php",
+      "line": 611,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_sharing/src/files_actions/acceptShareAction.ts",
+      "line": 41,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_sharing/src/files_actions/openInFilesAction.spec.ts",
+      "line": 80,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_sharing/src/files_actions/openInFilesAction.spec.ts",
+      "line": 94,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_sharing/src/files_actions/rejectShareAction.ts",
+      "line": 69,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_sharing/src/files_actions/restoreShareAction.ts",
+      "line": 40,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_actions/restoreAction.spec.ts",
+      "line": 136,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_actions/restoreAction.spec.ts",
+      "line": 141,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_actions/restoreAction.spec.ts",
+      "line": 144,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_actions/restoreAction.spec.ts",
+      "line": 156,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_actions/restoreAction.spec.ts",
+      "line": 161,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_actions/restoreAction.spec.ts",
+      "line": 172,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_actions/restoreAction.spec.ts",
+      "line": 180,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_actions/restoreAction.ts",
+      "line": 68,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 121,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 148,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 152,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 160,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 170,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 178,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 190,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 200,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/files_trashbin/src/files_listActions/emptyTrashAction.spec.ts",
+      "line": 212,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/provisioning_api/lib/AppInfo/Application.php",
+      "line": 55,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/settings/lib/Controller/AppSettingsController.php",
+      "line": 173,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/settings/lib/Controller/CommonSettingsTrait.php",
+      "line": 137,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/systemtags/lib/AppInfo/Application.php",
+      "line": 44,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/user_ldap/lib/Migration/Version1190Date20230706134108.php",
+      "line": 84,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/workflowengine/src/helpers/validators.js",
+      "line": 18,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/workflowengine/src/helpers/validators.js",
+      "line": 29,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "apps/workflowengine/src/helpers/validators.js",
+      "line": 40,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "core/src/Util/get-url-parameter.js",
+      "line": 10,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "cypress/support/commonUtils.ts",
+      "line": 55,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "cypress/support/commonUtils.ts",
+      "line": 56,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/AppFramework/App.php",
+      "line": 134,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/AppFramework/DependencyInjection/DIContainer.php",
+      "line": 309,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/AppFramework/Utility/SimpleContainer.php",
+      "line": 43,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/AppFramework/Utility/SimpleContainer.php",
+      "line": 79,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Authentication/Token/PublicKeyToken.php",
+      "line": 105,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Authentication/Token/PublicKeyTokenProvider.php",
+      "line": 164,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Collaboration/Resources/ProviderManager.php",
+      "line": 34,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Command/QueueBus.php",
+      "line": 44,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Diagnostics/QueryLogger.php",
+      "line": 37,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Files/Filesystem.php",
+      "line": 208,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/InitialStateService.php",
+      "line": 95,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Memcache/Redis.php",
+      "line": 210,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Preview/Movie.php",
+      "line": 285,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Preview/Storage/ObjectStorePreviewStorage.php",
+      "line": 111,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Remote/Instance.php",
+      "line": 99,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "lib/private/Updater/VersionCheck.php",
+      "line": 121,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.xss.location_assign",
+      "path_suffix": "core/src/unsupported-browser.js",
+      "line": 14,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.xss.location_assign",
+      "path_suffix": "core/src/utils/xhr-request.js",
+      "line": 57,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "php.cmdi.system",
+      "path_suffix": "tests/lib/Files/ViewTest.php",
+      "line": 158,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/dav/tests/unit/CalDAV/Import/ImportServiceTest.php",
+      "line": 52,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/dav/tests/unit/CalDAV/WebcalCaching/ConnectionTest.php",
+      "line": 128,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/dav/tests/unit/Connector/Sabre/RequestTest/Sapi.php",
+      "line": 41,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/dav/tests/unit/Files/MultipartRequestParserTest.php",
+      "line": 67,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "apps/files_sharing/tests/SharedStorageTest.php",
+      "line": 179,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "tests/lib/AppFramework/Http/FileDisplayResponseTest.php",
+      "line": 74,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "tests/lib/Files/FilesystemTest.php",
+      "line": 321,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "tests/lib/Files/Node/FileTest.php",
+      "line": 156,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "tests/lib/Files/ObjectStore/S3SSEKMSTest.php",
+      "line": 66,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "tests/lib/Files/ObjectStore/S3Test.php",
+      "line": 108,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-unreachable-sink",
+      "path_suffix": "apps/user_ldap/tests/Integration/AbstractIntegrationTest.php",
+      "line": 155,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/tests/integration/UserMigration/CalendarMigratorTest.php",
+      "line": 90,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/tests/integration/UserMigration/ContactsMigratorTest.php",
+      "line": 46,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/tests/unit/CalDAV/WebcalCaching/RefreshWebcalServiceTest.php",
+      "line": 47,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/tests/unit/Connector/Sabre/FileTest.php",
+      "line": 98,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/dav/tests/unit/Connector/Sabre/RequestTest/RequestTestCase.php",
+      "line": 37,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "apps/settings/tests/UserMigration/AccountMigratorTest.php",
+      "line": 120,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "tests/lib/AppFramework/Http/OutputTest.php",
+      "line": 28,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "tests/lib/Files/ObjectStore/ObjectStoreTestCase.php",
+      "line": 45,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "path_suffix": "tests/lib/Files/Storage/Wrapper/EncryptionTest.php",
+      "line": 727,
+      "severity": "Low",
+      "verdict": "FP",
+      "note": "Test fixture / helper. The flagged shape is in the test path, not request-reachable production code."
+    }
+  ]
+}

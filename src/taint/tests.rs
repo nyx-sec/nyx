@@ -63,6 +63,10 @@ fn ssa_analyse_rust(src: &[u8]) -> Vec<Finding> {
         auto_seed_handler_params: false,
         cross_file_bodies: None,
         pointer_facts: None,
+        cross_package_imports: None,
+        entry_kind: None,
+        param_route_capture: None,
+        recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, cfg, &transfer);
     let mut findings = ssa_transfer::ssa_events_to_findings(&events, &ssa, cfg);
@@ -663,6 +667,7 @@ fn cross_file_sink_finding_carries_primary_location() {
         col: 5,
         snippet: "Command::new(\"sh\").arg(cmd).status().unwrap();".into(),
         cap: Cap::SHELL_ESCAPE,
+        from_chain: false,
     };
     global.insert(
         key,
@@ -3788,6 +3793,10 @@ fn assert_ssa_integration(src: &[u8]) {
         auto_seed_handler_params: false,
         cross_file_bodies: None,
         pointer_facts: None,
+        cross_package_imports: None,
+        entry_kind: None,
+        param_route_capture: None,
+        recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);
     let mut ssa_findings = ssa_transfer::ssa_events_to_findings(&events, &ssa, the_cfg);
@@ -3926,6 +3935,10 @@ fn integ_php_echo_simple_var() {
         auto_seed_handler_params: false,
         cross_file_bodies: None,
         pointer_facts: None,
+        cross_package_imports: None,
+        entry_kind: None,
+        param_route_capture: None,
+        recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);
     let mut ssa_findings = ssa_transfer::ssa_events_to_findings(&events, &ssa, the_cfg);
@@ -3996,6 +4009,10 @@ fn integ_c_curl_handle_ssrf() {
         auto_seed_handler_params: false,
         cross_file_bodies: None,
         pointer_facts: None,
+        cross_package_imports: None,
+        entry_kind: None,
+        param_route_capture: None,
+        recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);
     let mut ssa_findings = ssa_transfer::ssa_events_to_findings(&events, &ssa, the_cfg);
@@ -5481,6 +5498,8 @@ class Worker {
         &file_cfg.summaries,
         None,
         None,
+        None,
+        None,
     );
 
     // Collect containers of every key named "process".
@@ -5551,6 +5570,8 @@ function helper(x) {
         Lang::JavaScript,
         "test.js",
         &file_cfg.summaries,
+        None,
+        None,
         None,
         None,
     );
@@ -5776,6 +5797,8 @@ class Reader {
         &file_cfg.summaries,
         None,
         None,
+        None,
+        None,
     );
 
     let read_sum = summaries
@@ -5819,6 +5842,8 @@ class Maker {
         Lang::Java,
         "Maker.java",
         &file_cfg.summaries,
+        None,
+        None,
         None,
         None,
     );
@@ -6838,6 +6863,55 @@ function handler(req, res) {
 /// strip is element-of-array-after-filter scoped, not a wholesale
 /// kill on any `<arr>.filter` call regardless of callback identity.
 #[test]
+fn callee_body_carries_file_cross_package_imports() {
+    // Phase 09: every `CalleeSsaBody` produced from a file's lowering
+    // pipeline should carry the file-level cross-package import map
+    // so the inline-analysis frame can resolve the callee's local
+    // names against the callee's own package boundary (step 0.7
+    // inside an inlined frame).
+    let src = b"export function passthrough(s) { return s; }\n";
+    let lang = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
+    let mut file_cfg = parse_lang(src, "javascript", lang);
+
+    // Inject a synthetic resolved import binding the way the Phase 04
+    // resolver would for `import { helper } from "@scope/util/helper";`.
+    file_cfg
+        .resolved_imports
+        .push(crate::resolve::ImportBinding {
+            local_name: "helper".to_string(),
+            source_module: "@scope/util/helper".to_string(),
+            resolved_file: Some(std::path::PathBuf::from("/scope/util/src/helper.ts")),
+            exported_name: Some("helper".to_string()),
+        });
+
+    let (_summaries, bodies) = super::extract_ssa_artifacts_from_file_cfg(
+        &file_cfg,
+        Lang::JavaScript,
+        "test.js",
+        &file_cfg.summaries,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    assert!(
+        !bodies.is_empty(),
+        "expected at least one eligible body for `passthrough`",
+    );
+    for (_key, body) in &bodies {
+        assert!(
+            !body.cross_package_imports.is_empty(),
+            "every body in a file with resolved imports should carry the file's cross-package import map; got an empty map",
+        );
+        assert!(
+            body.cross_package_imports.contains_key("helper"),
+            "expected the synthetic `helper` binding to surface in the body's cross-package import map",
+        );
+    }
+}
+
+#[test]
 fn cve_2026_42353_filter_without_validator_callback_preserves_taint() {
     let src = br#"
 const fs = require('fs');
@@ -6866,4 +6940,75 @@ function handler(req, res) {
         !findings.is_empty(),
         "expected taint flow via filter(pickFirst) — pickFirst is not a recognised validator and must not strip taint; got 0 findings",
     );
+}
+
+// ── Phase 09 cross-package namespace migration ─────────────────────────────
+
+/// `build_cross_package_func_keys` produces a package-prefixed
+/// [`FuncKey::namespace`] for files inside a discovered monorepo
+/// package and a plain namespace otherwise.
+///
+/// Locks in the migration done as part of the deferred Phase 09 audit:
+/// SSA summary keys produced by
+/// [`crate::taint::lower_all_functions_from_bodies`] use
+/// `namespace_with_package` for their namespace, so the cross-package
+/// import map's `FuncKey::namespace` must agree for step 0.7 of
+/// `resolve_callee_full` to land hits in
+/// [`crate::summary::GlobalSummaries::ssa_by_key`].
+#[test]
+fn cross_package_func_keys_namespace_uses_resolver_when_available() {
+    use crate::resolve::{ImportBinding, build_module_graph};
+    use std::path::PathBuf;
+
+    let mut fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fixture_root.push("tests/fixtures/resolver");
+    let root = fixture_root
+        .canonicalize()
+        .unwrap_or_else(|_| fixture_root.clone());
+    let graph = build_module_graph(std::slice::from_ref(&root));
+
+    let resolved_file = root.join("packages/util/src/index.ts");
+    let binding = ImportBinding {
+        local_name: "doStuff".to_string(),
+        source_module: "@scope/util".to_string(),
+        resolved_file: Some(resolved_file.clone()),
+        exported_name: Some("doStuff".to_string()),
+    };
+    let scan_root = root.to_string_lossy().to_string();
+
+    let with_resolver = crate::taint::build_cross_package_func_keys(
+        std::slice::from_ref(&binding),
+        Some(&scan_root),
+        Some(&graph),
+        Lang::TypeScript,
+    );
+    let key = with_resolver
+        .get("doStuff")
+        .expect("resolved binding maps to a FuncKey");
+    assert!(
+        key.namespace.starts_with("@scope/util::"),
+        "expected package-prefixed namespace, got {ns}",
+        ns = key.namespace,
+    );
+    assert!(
+        key.namespace.ends_with("packages/util/src/index.ts"),
+        "expected the suffix to remain the scan-root-relative path, got {ns}",
+        ns = key.namespace,
+    );
+
+    let without_resolver = crate::taint::build_cross_package_func_keys(
+        std::slice::from_ref(&binding),
+        Some(&scan_root),
+        None,
+        Lang::TypeScript,
+    );
+    let plain = without_resolver
+        .get("doStuff")
+        .expect("plain binding maps to a FuncKey");
+    assert!(
+        !plain.namespace.contains("::"),
+        "without a resolver the namespace must stay plain, got {ns}",
+        ns = plain.namespace,
+    );
+    assert_eq!(plain.namespace, "packages/util/src/index.ts");
 }

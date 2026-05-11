@@ -1368,17 +1368,39 @@ fn truncate_prefix_lock(s: &str) -> String {
     }
 }
 
+/// Longest common prefix, char-aligned so multi-byte UTF-8 sequences are
+/// kept whole. The earlier byte-iteration form re-encoded continuation
+/// bytes as Latin-1 chars and produced mojibake; the same fix lives at
+/// `crate::abstract_interp::string_domain::longest_common_prefix`.
 fn longest_common_prefix(a: &str, b: &str) -> String {
-    a.bytes()
-        .zip(b.bytes())
+    a.chars()
+        .zip(b.chars())
         .take_while(|(x, y)| x == y)
-        .map(|(x, _)| x as char)
+        .map(|(x, _)| x)
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── LCP helper ──────────────────────────────────────────────────────
+
+    #[test]
+    fn lcp_basic() {
+        assert_eq!(longest_common_prefix("abcdef", "abcxyz"), "abc");
+        assert_eq!(longest_common_prefix("abc", "abc"), "abc");
+        assert_eq!(longest_common_prefix("", "abc"), "");
+    }
+
+    #[test]
+    fn lcp_keeps_utf8_codepoints_whole() {
+        // Without char-alignment, byte iteration would emit the
+        // continuation byte 0xA9 as a separate char and corrupt the
+        // prefix.  Both the 2-byte and 3-byte UTF-8 cases must survive.
+        assert_eq!(longest_common_prefix("héllo", "héllo!"), "héllo");
+        assert_eq!(longest_common_prefix("名前.json", "名前.txt"), "名前.");
+    }
 
     // ── Tri lattice laws ────────────────────────────────────────────────
 

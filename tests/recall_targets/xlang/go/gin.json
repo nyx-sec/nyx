@@ -1,0 +1,132 @@
+{
+  "_doc": "Phase 17 cross-lang recall-validation baseline for gin-gonic/gin (Go). Re-capture by running scripts/validate_recall.sh --lang go gin <clone_path> --capture. Updated 2026-05-09 after fmt.Fprintf safe-writer suppression, Go switch container fallback fix, and same-request self-redirect suppression removed five FPs.",
+  "target": "gin",
+  "lang": "go",
+  "clone_url": "https://github.com/gin-gonic/gin",
+  "exercises_recall_items": [],
+  "captured_against": "real-scan @ d3ffc9985281dcf4d3bef604cce4e662b1a327a6",
+  "captured_on": "2026-05-09",
+  "pinned_commit": "d3ffc9985281dcf4d3bef604cce4e662b1a327a6",
+  "findings": [
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "gin_integration_test.go",
+      "line": 396,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "gin_test.go",
+      "line": 658,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "gin_test.go",
+      "line": 728,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "gin_test.go",
+      "line": 769,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "gin_test.go",
+      "line": 804,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "gin_test.go",
+      "line": 692,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "go.transport.insecure_skip_verify",
+      "path_suffix": "gin_integration_test.go",
+      "line": 38,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "go.transport.insecure_skip_verify",
+      "path_suffix": "gin_test.go",
+      "line": 177,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "go.transport.insecure_skip_verify",
+      "path_suffix": "gin_test.go",
+      "line": 295,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "go.transport.insecure_skip_verify",
+      "path_suffix": "gin_test.go",
+      "line": 404,
+      "severity": "High",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "path_suffix": "context_test.go",
+      "line": 3317,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "gin_test.go",
+      "line": 87,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "routes_test.go",
+      "line": 385,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "routes_test.go",
+      "line": 420,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    },
+    {
+      "rule_id": "go.secrets.hardcoded_key",
+      "path_suffix": "recovery_test.go",
+      "line": 21,
+      "severity": "Medium",
+      "verdict": "FP",
+      "note": "Test fixture in *_test.go file. The vulnerable shape is part of the test scaffold, not gin runtime code."
+    }
+  ]
+}

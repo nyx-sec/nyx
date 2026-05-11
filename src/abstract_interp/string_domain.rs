@@ -350,6 +350,25 @@ impl StringFact {
             is_bottom: false,
         }
     }
+
+    /// SSRF helper: build a fact for `new URL(path, base)` where `base` is a
+    /// literal origin (`https://api.example.com`).  The result behaves as
+    /// `base ++ path`, the locked-host prefix survives even when the path
+    /// component carries arbitrary taint, and the fact's `prefix` is what
+    /// `is_string_safe_for_ssrf` consults to suppress the SSRF sink.
+    ///
+    /// `path` carries any string knowledge for the path component (typically
+    /// `StringFact::top()`).  When the base already ends in `/`, the helper
+    /// keeps it as-is; otherwise appends a `/` so the prefix unambiguously
+    /// includes the path separator (the SSRF check looks for
+    /// `scheme://host/`).
+    pub fn from_url_with_base(base: &str, path: &Self) -> Self {
+        let mut anchor = base.to_string();
+        if !anchor.ends_with('/') {
+            anchor.push('/');
+        }
+        StringFact::exact(&anchor).concat(path)
+    }
 }
 
 impl Lattice for StringFact {
@@ -941,6 +960,40 @@ mod tests {
         let suffix = j.suffix.as_deref().unwrap_or("");
         assert!(suffix.is_char_boundary(0) && suffix.is_char_boundary(suffix.len()));
         assert!(suffix.ends_with('好'));
+    }
+
+    /// Phase 08: a URL prefix-lock obtained from `new URL(path, base)`
+    /// must survive concatenation with a tainted (Top-suffix) path
+    /// component. The `is_string_safe_for_ssrf` check only consults the
+    /// `prefix`, so the locked-host base must remain intact even when the
+    /// path-side fact carries no knowledge.
+    #[test]
+    fn from_url_with_base_locks_prefix_under_tainted_suffix() {
+        let base = "https://api.cal.com";
+        let tainted_path = StringFact::top();
+        let f = StringFact::from_url_with_base(base, &tainted_path);
+        assert_eq!(
+            f.prefix.as_deref(),
+            Some("https://api.cal.com/"),
+            "prefix lock must include the path separator"
+        );
+        // The path component contributes no suffix knowledge, the result
+        // must mirror that without losing the prefix lock.
+        assert!(
+            f.suffix.is_none(),
+            "suffix is unknown when path-side fact is Top"
+        );
+    }
+
+    /// A concrete path component contributes its suffix knowledge to the
+    /// concatenated URL fact while the base prefix stays locked.
+    #[test]
+    fn from_url_with_base_keeps_prefix_with_concrete_path_suffix() {
+        let base = "https://api.cal.com/";
+        let path = StringFact::from_suffix(".json");
+        let f = StringFact::from_url_with_base(base, &path);
+        assert_eq!(f.prefix.as_deref(), Some("https://api.cal.com/"));
+        assert_eq!(f.suffix.as_deref(), Some(".json"));
     }
 
     /// Concat with empty-string `exact("")` should preserve the other

@@ -113,7 +113,25 @@ pub static RULES: &[LabelRule] = &[
     // in the resource-lifecycle acquire/release pair (cfg_analysis::RUBY_RESOURCES),
     // so this entry is additive, it does not disturb resource-leak detection.
     LabelRule {
-        matchers: &["File.open", "File.new", "File.read", "IO.read"],
+        matchers: &[
+            "File.open",
+            "File.new",
+            "File.read",
+            "IO.read",
+            // Phase 13 — write-side and directory-listing path-traversal
+            // sinks.  `Pathname.new(p)` is conservative: a Pathname
+            // construction with attacker-controlled `p` is the documented
+            // entry point for downstream Path / File operations and
+            // surfaces the path-traversal vector at the construction
+            // site.  `Dir.entries` / `Dir.glob` enumerate filesystem
+            // contents, so a tainted path argument is a directory
+            // disclosure / glob-injection vector.
+            "File.write",
+            "IO.write",
+            "Pathname.new",
+            "Dir.entries",
+            "Dir.glob",
+        ],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
@@ -136,10 +154,28 @@ pub static RULES: &[LabelRule] = &[
         matchers: &[
             "Net::HTTP.get",
             "Net::HTTP.post",
+            // Phase 14 — `Net::HTTP.start(host, port, ...)` is a session
+            // factory whose host argument is the SSRF vector when
+            // tainted.  `Net::HTTP.get_response(uri)` is a stdlib
+            // convenience wrapper around `start` + `request_get`.
+            "Net::HTTP.start",
+            "Net::HTTP.get_response",
             "URI.open",
             "OpenURI.open_uri",
             "HTTParty.get",
             "HTTParty.post",
+            // Phase 14 — Faraday::Connection verb methods on a typed
+            // receiver.  `Faraday.new(url: base)` produces an
+            // `HttpClient`-typed value (see `constructor_type`); the
+            // `client.get(path)` chain resolves through the
+            // type-qualified `HttpClient.get` rule below.  Bare
+            // `Faraday.get` / `.post` / etc. are the module-level
+            // shorthand the existing `Faraday.post` matcher already
+            // covers for DATA_EXFIL; SSRF needs the read-shaped
+            // verbs registered explicitly.
+            "Faraday.get",
+            "Faraday.head",
+            "Faraday.delete",
         ],
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
@@ -214,10 +250,40 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     // SQL injection: ActiveRecord unsafe raw-query execution APIs.
+    // Phase 15 expands coverage with `exec_query` (the raw-SQL execution
+    // verb on the ActiveRecord connection adapter) and `select_value` /
+    // `select_values` / `select_rows` (driver-level select helpers that
+    // accept a literal SQL string).
     LabelRule {
-        matchers: &["find_by_sql", "connection.execute", "select_all"],
+        matchers: &[
+            "find_by_sql",
+            "connection.execute",
+            "select_all",
+            "exec_query",
+            "select_value",
+            "select_values",
+            "select_rows",
+            "select_one",
+        ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — receiver-typed ActiveRecord raw-SQL sinks.  The
+    // `ActiveRecordRelation` TypeKind is set by `constructor_type` on
+    // class-method scope chains (`User.where(...)` etc.); type-qualified
+    // resolution rewrites `relation.find_by_sql(sql)` →
+    // `ActiveRecordRelation.find_by_sql` so the chained shape is caught
+    // even when the receiver text has lost its model-class prefix.
+    LabelRule {
+        matchers: &[
+            "ActiveRecordRelation.find_by_sql",
+            "ActiveRecordRelation.exec_query",
+            "ActiveRecordRelation.select_all",
+            "ActiveRecordRelation.select_one",
+            "ActiveRecordRelation.select_value",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // SQL injection: ActiveRecord query methods that accept raw SQL strings.
     // `where` and `order` are the most common Rails SQLi vectors when called
@@ -383,6 +449,32 @@ pub static RULES: &[LabelRule] = &[
 /// `Nokogiri::XML::ParseOptions::DEFAULT_XML`); any non-dangerous
 /// scope-qualified constant disables the gate.
 pub static GATED_SINKS: &[SinkGate] = &[
+    // `Faraday.new(url: tainted)` — base-URL kwarg controls the destination
+    // origin for every subsequent verb call on the returned client
+    // (`client.get(path)` / `.post` / etc.).  When the kwarg value is
+    // attacker-controlled, the constructor itself is the SSRF entry point;
+    // the existing type-qualified rules on `HttpClient.get` / `.post` only
+    // cover taint flowing into the per-call `path` arg.
+    //
+    // Activation is `Destination` on positional position 0 with a single
+    // `url` field; tree-sitter-ruby emits the kwarg as a `pair` node sibling
+    // of the positional args, and `extract_destination_kwarg_pairs` walks
+    // those pairs (Ruby support added alongside this gate in
+    // `cfg::literals::extract_destination_kwarg_pairs`).
+    SinkGate {
+        callee_matcher: "Faraday.new",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
     // `Nokogiri::XML(xml, url=nil, encoding=nil, options=NIL)` — top-level
     // module method.  arg 3 carries the parse-option flag literal.
     //

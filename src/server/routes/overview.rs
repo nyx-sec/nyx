@@ -149,7 +149,7 @@ async fn overview(State(state): State<AppState>) -> Json<OverviewResponse> {
         latest_scan_id,
         latest_scan_at,
         by_severity: summary.by_severity.clone(),
-        by_category: summary.by_category.clone(),
+        by_category: summary.by_category,
         by_language,
         top_files,
         top_directories,

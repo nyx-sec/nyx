@@ -282,6 +282,23 @@ pub struct AnalysisUnit {
     /// destructures route through a base chain, not a top-level
     /// binding.
     pub self_scoped_session_bases: HashSet<String>,
+    /// True when this JS/TS unit is the body of a NextAuth options
+    /// factory: its function body contains an object literal with a
+    /// `callbacks: { ... }` property whose nested entries name at
+    /// least one NextAuth canonical callback (`signIn` / `session` /
+    /// `jwt` / `redirect` / `authorize` / `authorized`).  Set by
+    /// `build_function_unit_with_meta` when the file structures the
+    /// options as `export const X = (...) => ({ callbacks: { ... } })`
+    /// (cal.com's `getOptions` shape) rather than the flat
+    /// `export const authOptions = { callbacks: { ... } }` shape.
+    /// Operations inside the inner callback bodies still get
+    /// accumulated under the outer factory unit (the unit-creation
+    /// pass does not descend into object-literal method shorthands),
+    /// so the outer unit is the only place the auth analyser can
+    /// recognise the identity-resolution context.  Consulted by
+    /// `is_nextauth_callback_unit` so the missing-ownership check
+    /// suppresses operations inside the factory.
+    pub is_nextauth_options_factory: bool,
 }
 
 /// Per-function summary of which positional parameters are

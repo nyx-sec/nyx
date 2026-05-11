@@ -101,7 +101,7 @@ origin-attribution.
 taint flow to the return value is fully validated by a dominating
 predicate (regex allowlist, type check, validation call) on every
 return path. At call sites, each tainted argument passed to a
-validated position — and the call's own return value — are marked
+validated position, and the call's own return value, are marked
 `validated_must` / `validated_may` in the caller's SSA taint state,
 the same way an inline `if (!regex.test(x)) throw …` would validate
 the surviving branch. Sound because the summary is recorded only when

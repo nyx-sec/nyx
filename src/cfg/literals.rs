@@ -1,22 +1,45 @@
 use super::conditions::unwrap_parens;
+use super::helpers::{collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements};
 use super::{
     anon_fn_name, collect_idents, collect_idents_with_paths, find_constructor_type_child,
     first_call_ident, root_receiver_text, text_of,
 };
 use crate::labels::{Cap, Kind, lookup};
+use smallvec::SmallVec;
 use tree_sitter::Node;
 
 /// Find the inner CallFn/CallMethod/CallMacro node within an AST node.
 /// For direct call nodes, returns the node itself. For wrappers, searches
-/// up to two levels of children.
+/// up to two levels of children, transparently descending through
+/// `await_expression` / `yield_expression` (`Kind::AwaitForward`) wrappers
+/// so `const x = await foo(y)` reaches the inner `call_expression` at
+/// effective depth 3 (`lexical_declaration > variable_declarator >
+/// await_expression > call_expression`).
 pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
     match lookup(lang, n.kind()) {
         Kind::CallFn | Kind::CallMethod | Kind::CallMacro => Some(n),
+        Kind::AwaitForward => {
+            // Transparent wrapper: descend into the awaited expression.
+            let mut cursor = n.walk();
+            for c in n.children(&mut cursor) {
+                if let Some(found) = find_call_node(c, lang) {
+                    return Some(found);
+                }
+            }
+            None
+        }
         _ => {
             let mut cursor = n.walk();
             for c in n.children(&mut cursor) {
                 match lookup(lang, c.kind()) {
                     Kind::CallFn | Kind::CallMethod | Kind::CallMacro => return Some(c),
+                    // Skip past await/yield wrappers without consuming a
+                    // recursion level — the wrapper itself is transparent.
+                    Kind::AwaitForward => {
+                        if let Some(found) = find_call_node(c, lang) {
+                            return Some(found);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -25,11 +48,14 @@ pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
             for c in n.children(&mut cursor2) {
                 let mut cursor3 = c.walk();
                 for gc in c.children(&mut cursor3) {
-                    if matches!(
-                        lookup(lang, gc.kind()),
-                        Kind::CallFn | Kind::CallMethod | Kind::CallMacro
-                    ) {
-                        return Some(gc);
+                    match lookup(lang, gc.kind()) {
+                        Kind::CallFn | Kind::CallMethod | Kind::CallMacro => return Some(gc),
+                        Kind::AwaitForward => {
+                            if let Some(found) = find_call_node(gc, lang) {
+                                return Some(found);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -108,9 +134,43 @@ pub(super) fn extract_destination_field_pairs(
                             raw
                         }
                     }),
-                    // Computed keys like `[someVar]` can't be statically
-                    // resolved, skip (conservative: not a destination field).
-                    "computed_property_name" => continue,
+                    // Computed keys: resolve only when the inner expression
+                    // is a pure string literal (`['url']`).  Dynamic forms
+                    // (`[someVar]`, `[`url-${i}`]`, ``[`url`]`` with
+                    // interpolation) stay conservative-skip.
+                    "computed_property_name" => {
+                        let mut inner_cursor = key_node.walk();
+                        let inner = key_node.named_children(&mut inner_cursor).find(|c| {
+                            !matches!(c.kind(), "comment" | "block_comment" | "line_comment")
+                        });
+                        match inner.map(|n| (n.kind(), n)) {
+                            Some(("string" | "string_literal", n)) => text_of(n, code).map(|raw| {
+                                if raw.len() >= 2 {
+                                    raw[1..raw.len() - 1].to_string()
+                                } else {
+                                    raw
+                                }
+                            }),
+                            // Template strings only when no interpolation
+                            // (no `template_substitution` children).
+                            Some(("template_string", n))
+                                if {
+                                    let mut tc = n.walk();
+                                    !n.named_children(&mut tc)
+                                        .any(|c| c.kind() == "template_substitution")
+                                } =>
+                            {
+                                text_of(n, code).map(|raw| {
+                                    if raw.len() >= 2 {
+                                        raw[1..raw.len() - 1].to_string()
+                                    } else {
+                                        raw
+                                    }
+                                })
+                            }
+                            _ => continue,
+                        }
+                    }
                     _ => text_of(key_node, code),
                 };
                 let Some(key) = key_text else {
@@ -144,6 +204,13 @@ pub(super) fn extract_destination_field_pairs(
 /// `requests.post(url, data=tainted, json=safe)` where `data` and `json` are
 /// `keyword_argument` siblings of the positional URL.
 ///
+/// Also covers Ruby, where tree-sitter-ruby emits `pair` nodes (with
+/// `key`/`value` fields) directly under `argument_list` for the
+/// `Faraday.new(url: x)` / `Net::HTTP.start(host, port, proxy_addr: prx)`
+/// kwarg shape.  The `key` is typically a `hash_key_symbol` whose text is the
+/// bare identifier (`url`); `simple_symbol` (`:url`) and string keys are
+/// normalised by stripping a leading `:` or wrapping quotes.
+///
 /// Returns the union of matching kwargs, preserving the kwarg name in the
 /// `field` slot so callers can still attribute findings per-field.  Empty
 /// when no matching kwargs exist or the call has no `arguments` field.
@@ -162,22 +229,38 @@ pub(super) fn extract_destination_kwarg_pairs(
     let mut cursor = args_node.walk();
     for child in args_node.named_children(&mut cursor) {
         let kind = child.kind();
-        if kind != "keyword_argument" && kind != "named_argument" {
+        let (name_node, value_node) = if kind == "keyword_argument" || kind == "named_argument" {
+            let named_count = child.named_child_count();
+            (
+                child
+                    .child_by_field_name("name")
+                    .or_else(|| child.named_child(0)),
+                child
+                    .child_by_field_name("value")
+                    .or_else(|| child.named_child(named_count.saturating_sub(1) as u32)),
+            )
+        } else if kind == "pair" {
+            // Ruby `pair` node sits directly under `argument_list` for
+            // kwarg-style call args (`f(url: x)`).  `key`/`value` fields
+            // are populated; key text is `hash_key_symbol` ("url"),
+            // `simple_symbol` (":url"), or a string literal.
+            (
+                child.child_by_field_name("key"),
+                child.child_by_field_name("value"),
+            )
+        } else {
             continue;
-        }
-        let named_count = child.named_child_count();
-        let name_node = child
-            .child_by_field_name("name")
-            .or_else(|| child.named_child(0));
-        let value_node = child
-            .child_by_field_name("value")
-            .or_else(|| child.named_child(named_count.saturating_sub(1) as u32));
+        };
         let (Some(nn), Some(vn)) = (name_node, value_node) else {
             continue;
         };
-        let Some(name) = text_of(nn, code) else {
+        let Some(name_raw) = text_of(nn, code) else {
             continue;
         };
+        let name = name_raw
+            .trim_start_matches(':')
+            .trim_matches(['"', '\''])
+            .to_string();
         if !fields.iter().any(|&f| f == name) {
             continue;
         }
@@ -387,11 +470,9 @@ pub(super) fn extract_const_macro_arg(
         // C/C++ identifier / PHP `name` node for define-style constants.
         // Scoped C++ identifiers (`Curl::OPT_POSTFIELDS`) and PHP namespaced
         // names also surface here so the dangerous_values match catches them.
-        "identifier" | "name" | "qualified_name" | "scoped_identifier" => {
-            text_of(arg, code).map(|s| s.to_string())
-        }
+        "identifier" | "name" | "qualified_name" | "scoped_identifier" => text_of(arg, code),
         // Ruby bare constant (`NOENT`) — leaf form.
-        "constant" => text_of(arg, code).map(|s| s.to_string()),
+        "constant" => text_of(arg, code),
         // Ruby scope-qualified constant (`Nokogiri::XML::ParseOptions::NOENT`).
         // Return only the rightmost `name` segment so the gate's
         // `dangerous_values` list can stay identifier-bare instead of
@@ -400,8 +481,7 @@ pub(super) fn extract_const_macro_arg(
         "scope_resolution" => arg
             .child_by_field_name("name")
             .and_then(|n| text_of(n, code))
-            .map(|s| s.to_string())
-            .or_else(|| text_of(arg, code).map(|s| s.to_string())),
+            .or_else(|| text_of(arg, code)),
         // Integer literals at the activation arg position.  PHP / C / C++
         // commonly use plain `0` to opt into the safe-default option set
         // (e.g. `simplexml_load_string($xml, "SimpleXMLElement", 0)`).  The
@@ -409,7 +489,7 @@ pub(super) fn extract_const_macro_arg(
         // the literal text lets the comparison fail against `LIBXML_NOENT`
         // and suppresses the conservative-fire branch.
         "integer" | "integer_literal" | "number_literal" | "decimal_integer_literal" => {
-            text_of(arg, code).map(|s| s.to_string())
+            text_of(arg, code)
         }
         _ => None,
     }
@@ -443,7 +523,7 @@ pub(super) fn extract_const_keyword_arg(
             // distinguish literal-safe from dynamic.
             return match value_node.kind() {
                 "true" | "false" | "none" | "integer" | "float" | "string" | "string_literal"
-                | "identifier" => text_of(value_node, code).map(|s| s.to_string()),
+                | "identifier" => text_of(value_node, code),
                 _ => None,
             }
             .filter(|_| {
@@ -537,7 +617,7 @@ pub(super) fn extract_object_arg_property(
         let val_node = unwrap_parens(val_node);
         return match val_node.kind() {
             "true" | "false" | "null" | "undefined" | "number" | "string" | "string_literal" => {
-                text_of(val_node, code).map(|s| s.to_string())
+                text_of(val_node, code)
             }
             // JS booleans true/false are their own node kinds (above), but
             // some grammar versions wrap them as identifier literals; surface
@@ -811,7 +891,7 @@ pub(super) fn js_chain_outer_method_for_inner<'a>(
             if inner_matched {
                 return function
                     .child_by_field_name("property")
-                    .and_then(|p| text_of(p, code).map(|s| s.to_string()));
+                    .and_then(|p| text_of(p, code));
             }
         }
         // Recurse: outer chain may have more depth (`a.b().c().d()` ,
@@ -1518,6 +1598,18 @@ pub(super) fn extract_arg_uses(call_node: Node, code: &[u8]) -> Vec<Vec<String>>
         return result;
     }
 
+    // Rust `tokio::join!` / `futures::join!` (and their `try_*` variants).
+    // tree-sitter-rust models macro args as a `token_tree` rather than an
+    // `arguments` field, so a vanilla extraction returns nothing.  Walk the
+    // top-level token_tree splitting on `,` separators, lifting identifiers
+    // out of each chunk so the existing PromiseCombinator transfer can union
+    // arg-side taint into the resulting tuple value.
+    if call_node.kind() == "macro_invocation"
+        && let Some(arg_uses) = extract_rust_macro_join_arg_uses(call_node, code)
+    {
+        return arg_uses;
+    }
+
     let Some(args_node) = call_node.child_by_field_name("arguments") else {
         return Vec::new();
     };
@@ -1549,6 +1641,82 @@ pub(super) fn extract_arg_uses(call_node: Node, code: &[u8]) -> Vec<Vec<String>>
         result.push(combined);
     }
     result
+}
+
+/// `tokio::join!` / `futures::join!` (and their `try_*` variants) bundle
+/// concurrently-awaited futures into a tuple result.  tree-sitter-rust
+/// represents the args as a `token_tree` whose children alternate between
+/// expressions and `,` separators (`token_tree` itself nests on every
+/// parenthesised group, e.g. the `(x)` inside `fetch(x)`).  Walk the
+/// top-level token_tree, segment by `,` leaves, and lift identifiers out
+/// of each chunk so the SSA Call op carries one positional arg per future.
+///
+/// Returns `Some(arg_uses)` only when the macro is one of the recognised
+/// join macros, so `extract_arg_uses` can fall through to its normal
+/// `arguments`-field path for every other macro shape (`format!`,
+/// `println!`, custom DSL macros) where arg lifting could disturb existing
+/// label / SSA flow.
+pub(super) fn extract_rust_macro_join_arg_uses(
+    call_node: Node,
+    code: &[u8],
+) -> Option<Vec<Vec<String>>> {
+    let macro_node = call_node.child_by_field_name("macro")?;
+    let macro_text = text_of(macro_node, code)?;
+    if !is_rust_join_macro(&macro_text) {
+        return None;
+    }
+    let tt = match call_node.child_by_field_name("token_tree") {
+        Some(t) => t,
+        None => {
+            let mut cursor = call_node.walk();
+            call_node
+                .children(&mut cursor)
+                .find(|c| c.kind() == "token_tree")?
+        }
+    };
+    let mut chunks: Vec<Vec<Node>> = vec![Vec::new()];
+    let mut cursor = tt.walk();
+    for child in tt.children(&mut cursor) {
+        // Skip the surrounding `(`/`)` punctuation.
+        if !child.is_named() {
+            let kind = child.kind();
+            if kind == "," {
+                chunks.push(Vec::new());
+                continue;
+            }
+            if kind == "(" || kind == ")" {
+                continue;
+            }
+        }
+        chunks.last_mut().unwrap().push(child);
+    }
+    let mut result = Vec::new();
+    for chunk in chunks {
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut idents = Vec::new();
+        let mut paths = Vec::new();
+        for n in chunk {
+            collect_idents_with_paths(n, code, &mut idents, &mut paths);
+        }
+        let mut combined = paths;
+        combined.extend(idents);
+        result.push(combined);
+    }
+    Some(result)
+}
+
+fn is_rust_join_macro(macro_text: &str) -> bool {
+    matches!(
+        macro_text,
+        "tokio::join"
+            | "tokio::try_join"
+            | "futures::join"
+            | "futures::try_join"
+            | "join"
+            | "try_join"
+    )
 }
 
 /// Extract keyword / named argument bindings for a call node.
@@ -1891,11 +2059,31 @@ pub(super) fn call_ident_of<'a>(n: Node<'a>, lang: &str, code: &'a [u8]) -> Opti
                 .child_by_field_name("method")
                 .or_else(|| n.child_by_field_name("name"))
                 .and_then(|f| text_of(f, code));
-            let recv = n
+            let recv_node = n
                 .child_by_field_name("object")
                 .or_else(|| n.child_by_field_name("receiver"))
-                .or_else(|| n.child_by_field_name("scope"))
-                .and_then(|f| root_receiver_text(f, lang, code));
+                .or_else(|| n.child_by_field_name("scope"));
+            let recv = recv_node.and_then(|f| root_receiver_text(f, lang, code));
+            // Preserve Java `.getClass()` segment in the chained callee text
+            // so downstream predicates (e.g.
+            // [`crate::ssa::type_facts::is_safe_string_producing_callee`])
+            // can recognise idiomatic `obj.getClass().<accessor>()` chains.
+            // Without this, `root_receiver_text` collapses the chain to
+            // `obj.<accessor>`, indistinguishable from a user-defined method.
+            let recv = if lang == "java"
+                && let Some(rn) = recv_node
+                && lookup(lang, rn.kind()) == Kind::CallMethod
+                && let Some(inner_method) = rn
+                    .child_by_field_name("method")
+                    .or_else(|| rn.child_by_field_name("name"))
+                    .and_then(|f| text_of(f, code))
+                && inner_method == "getClass"
+                && let Some(r) = recv
+            {
+                Some(format!("{r}.getClass"))
+            } else {
+                recv
+            };
             match (recv, func) {
                 (Some(r), Some(f)) => Some(format!("{r}.{f}")),
                 (_, Some(f)) => Some(f),
@@ -1984,7 +2172,7 @@ pub(super) fn extract_arg_string_literals(call_node: Node, code: &[u8]) -> Vec<O
             | "integer"
             | "number"
             | "number_literal"
-            | "decimal_literal" => text_of(target, code).map(|s| s.to_string()),
+            | "decimal_literal" => text_of(target, code),
             _ => None,
         };
         result.push(literal);
@@ -2003,7 +2191,7 @@ pub(super) fn strip_literal_quotes(raw: &str, node: Node, code: &[u8]) -> Option
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "string_content" {
-            return text_of(child, code).map(|s| s.to_string());
+            return text_of(child, code);
         }
     }
     if raw.len() >= 2 {
@@ -2044,20 +2232,43 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     result
 }
 
-/// Return `(defines, uses)` for the AST fragment `ast`.
-/// Returns (defines, uses, extra_defines) where extra_defines captures additional
-/// bindings from destructuring patterns beyond the primary define.
+/// Return `(defines, uses, extra_defines, array_pattern_indices,
+/// rhs_array_elements)` for the AST fragment `ast`.
+///
+/// `extra_defines` captures additional bindings from destructuring patterns
+/// beyond the primary define. `array_pattern_indices`, when non-empty, gives
+/// the source-order position of each binding in `iter::once(defines).chain(
+/// extra_defines)` for `array_pattern` / `tuple_pattern` LHS shapes. Empty
+/// for non-array destructures and for non-skip array patterns where callers
+/// can derive sequential 0..N indices implicitly.
+///
+/// `rhs_array_elements`, when non-empty, gives source-order RHS slots for
+/// destructure-from-array-literal shapes (`const [a, b] = [safe, tainted]`,
+/// `let (a, b) = (safe, tainted)`, Python `a, b = safe, tainted`). Each slot
+/// is `Some(ident)` for a bare-ident element or `None` for a syntactic
+/// literal. Empty when RHS isn't an array-literal shape or any element is
+/// too complex; callers fall back to scalar union in that case.
+#[allow(clippy::type_complexity)]
 pub(super) fn def_use(
     ast: Node,
     lang: &str,
     code: &[u8],
-) -> (Option<String>, Vec<String>, Vec<String>) {
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> (
+    Option<String>,
+    Vec<String>,
+    Vec<String>,
+    SmallVec<[usize; 4]>,
+    SmallVec<[crate::cfg::RhsArraySlot; 4]>,
+) {
     match lookup(lang, ast.kind()) {
         // Declaration wrappers (let, var, short_var_declaration, etc.)
         Kind::CallWrapper => {
             let mut defs = None;
             let mut extra_defs = Vec::new();
             let mut uses = Vec::new();
+            let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
+            let mut rhs_array_elements: SmallVec<[crate::cfg::RhsArraySlot; 4]> = SmallVec::new();
 
             // Try direct field names first (Rust `let_declaration`, Go `short_var_declaration`)
             let def_node = ast
@@ -2076,17 +2287,30 @@ pub(super) fn def_use(
 
             if def_node.is_some() || val_node.is_some() {
                 if let Some(pat) = def_node {
-                    let mut idents = Vec::new();
-                    let mut paths = Vec::new();
-                    collect_idents_with_paths(pat, code, &mut idents, &mut paths);
-                    let first = paths.pop().or_else(|| idents.first().cloned());
-                    // Remaining idents are extra defines (for destructuring)
-                    for ident in &idents {
-                        if first.as_ref() != Some(ident) {
-                            extra_defs.push(ident.clone());
+                    let bindings = collect_array_pattern_bindings_indexed(pat, code);
+                    if !bindings.is_empty() {
+                        let mut iter = bindings.into_iter();
+                        if let Some((first_name, first_idx)) = iter.next() {
+                            defs = Some(first_name);
+                            pattern_indices.push(first_idx);
                         }
+                        for (name, idx) in iter {
+                            extra_defs.push(name);
+                            pattern_indices.push(idx);
+                        }
+                    } else {
+                        let mut idents = Vec::new();
+                        let mut paths = Vec::new();
+                        collect_idents_with_paths(pat, code, &mut idents, &mut paths);
+                        let first = paths.pop().or_else(|| idents.first().cloned());
+                        // Remaining idents are extra defines (for destructuring)
+                        for ident in &idents {
+                            if first.as_ref() != Some(ident) {
+                                extra_defs.push(ident.clone());
+                            }
+                        }
+                        defs = first;
                     }
-                    defs = first;
                 }
                 if let Some(val) = val_node {
                     let mut idents = Vec::new();
@@ -2099,6 +2323,14 @@ pub(super) fn def_use(
                     // the format-string bytes, not as a separate AST
                     // argument node, so collect_idents misses it.
                     uses.extend(extract_rust_format_macro_named_idents_in(val, code));
+                    // When the LHS is a recognised destructure pattern AND
+                    // the RHS is a bare array-literal shape (no call), record
+                    // per-element idents so the SSA destructure rewrite can
+                    // map each binding to its specific RHS slot.
+                    if !pattern_indices.is_empty() {
+                        rhs_array_elements =
+                            collect_rhs_array_literal_elements(val, lang, code, extra_labels);
+                    }
                 }
             } else {
                 // Try nested declarator pattern (JS/TS `lexical_declaration` → `variable_declarator`,
@@ -2135,16 +2367,29 @@ pub(super) fn def_use(
                         if let Some(name_node) = child_name
                             && defs.is_none()
                         {
-                            let mut idents = Vec::new();
-                            let mut paths = Vec::new();
-                            collect_idents_with_paths(name_node, code, &mut idents, &mut paths);
-                            let first = paths.pop().or_else(|| idents.first().cloned());
-                            for ident in &idents {
-                                if first.as_ref() != Some(ident) {
-                                    extra_defs.push(ident.clone());
+                            let bindings = collect_array_pattern_bindings_indexed(name_node, code);
+                            if !bindings.is_empty() {
+                                let mut iter = bindings.into_iter();
+                                if let Some((first_name, first_idx)) = iter.next() {
+                                    defs = Some(first_name);
+                                    pattern_indices.push(first_idx);
                                 }
+                                for (name, idx) in iter {
+                                    extra_defs.push(name);
+                                    pattern_indices.push(idx);
+                                }
+                            } else {
+                                let mut idents = Vec::new();
+                                let mut paths = Vec::new();
+                                collect_idents_with_paths(name_node, code, &mut idents, &mut paths);
+                                let first = paths.pop().or_else(|| idents.first().cloned());
+                                for ident in &idents {
+                                    if first.as_ref() != Some(ident) {
+                                        extra_defs.push(ident.clone());
+                                    }
+                                }
+                                defs = first;
                             }
-                            defs = first;
                         }
                         if let Some(val_node) = child_value {
                             let mut idents = Vec::new();
@@ -2153,6 +2398,14 @@ pub(super) fn def_use(
                             uses.extend(paths);
                             uses.extend(idents);
                             uses.extend(extract_rust_format_macro_named_idents_in(val_node, code));
+                            if !pattern_indices.is_empty() && rhs_array_elements.is_empty() {
+                                rhs_array_elements = collect_rhs_array_literal_elements(
+                                    val_node,
+                                    lang,
+                                    code,
+                                    extra_labels,
+                                );
+                            }
                         }
                     }
                 }
@@ -2168,19 +2421,42 @@ pub(super) fn def_use(
                     uses.extend(extract_rust_format_macro_named_idents_in(ast, code));
                 }
             }
-            (defs, uses, extra_defs)
+            (defs, uses, extra_defs, pattern_indices, rhs_array_elements)
         }
 
-        // Plain assignment `x = y`
+        // Plain assignment `x = y` or destructuring assignment such as
+        // Python `a, b = await asyncio.gather(...)` whose LHS surfaces as
+        // a `pattern_list` / `tuple_pattern`. When the LHS is a
+        // destructure pattern that the indexed helper recognises, the
+        // primary binding lands in `defs`, the rest land in `extra_defs`,
+        // and `pattern_indices` carries source-order positions so the
+        // SSA lowering's destructure-promise rewrite can paint each
+        // binding from the matching combinator argument.
         Kind::Assignment => {
             let mut defs = None;
+            let mut extra_defs = Vec::new();
+            let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
+            let mut rhs_array_elements: SmallVec<[crate::cfg::RhsArraySlot; 4]> = SmallVec::new();
             let mut uses = Vec::new();
             if let Some(lhs) = ast.child_by_field_name("left") {
-                let mut idents = Vec::new();
-                let mut paths = Vec::new();
-                collect_idents_with_paths(lhs, code, &mut idents, &mut paths);
-                // Prefer dotted path (member expression) over last ident
-                defs = paths.pop().or_else(|| idents.pop());
+                let bindings = collect_array_pattern_bindings_indexed(lhs, code);
+                if !bindings.is_empty() {
+                    let mut iter = bindings.into_iter();
+                    if let Some((first_name, first_idx)) = iter.next() {
+                        defs = Some(first_name);
+                        pattern_indices.push(first_idx);
+                    }
+                    for (name, idx) in iter {
+                        extra_defs.push(name);
+                        pattern_indices.push(idx);
+                    }
+                } else {
+                    let mut idents = Vec::new();
+                    let mut paths = Vec::new();
+                    collect_idents_with_paths(lhs, code, &mut idents, &mut paths);
+                    // Prefer dotted path (member expression) over last ident
+                    defs = paths.pop().or_else(|| idents.pop());
+                }
             }
             if let Some(rhs) = ast.child_by_field_name("right") {
                 let mut idents = Vec::new();
@@ -2189,8 +2465,16 @@ pub(super) fn def_use(
                 uses.extend(paths);
                 uses.extend(idents);
                 uses.extend(extract_rust_format_macro_named_idents_in(rhs, code));
+                // When the LHS is a recognised destructure pattern AND the
+                // RHS is a bare array-literal shape, record per-element
+                // idents so the SSA destructure rewrite can map each
+                // binding to its specific RHS slot.
+                if !pattern_indices.is_empty() {
+                    rhs_array_elements =
+                        collect_rhs_array_literal_elements(rhs, lang, code, extra_labels);
+                }
             }
-            (defs, uses, vec![])
+            (defs, uses, extra_defs, pattern_indices, rhs_array_elements)
         }
 
         // if‑let / while‑let, the `let_condition` binds a variable from
@@ -2215,7 +2499,7 @@ pub(super) fn def_use(
                 if let Some(val) = c.child_by_field_name("value") {
                     collect_idents(val, code, &mut uses);
                 }
-                return (defs, uses, vec![]);
+                return (defs, uses, vec![], SmallVec::new(), SmallVec::new());
             }
 
             let mut idents = Vec::new();
@@ -2223,7 +2507,7 @@ pub(super) fn def_use(
             collect_idents_with_paths(ast, code, &mut idents, &mut paths);
             let mut uses = paths;
             uses.extend(idents);
-            (None, uses, vec![])
+            (None, uses, vec![], SmallVec::new(), SmallVec::new())
         }
 
         // for-in / for-of / Python `for x in iter:` ─────────────────────────
@@ -2267,7 +2551,7 @@ pub(super) fn def_use(
                 collect_idents_with_paths(ast, code, &mut idents, &mut paths);
                 let mut uses = paths;
                 uses.extend(idents);
-                return (None, uses, vec![]);
+                return (None, uses, vec![], SmallVec::new(), SmallVec::new());
             }
 
             let mut defs: Option<String> = None;
@@ -2293,7 +2577,7 @@ pub(super) fn def_use(
                 uses.extend(paths);
                 uses.extend(idents);
             }
-            (defs, uses, extra_defs)
+            (defs, uses, extra_defs, SmallVec::new(), SmallVec::new())
         }
 
         // everything else – no definition, but may read vars
@@ -2303,7 +2587,7 @@ pub(super) fn def_use(
             collect_idents_with_paths(ast, code, &mut idents, &mut paths);
             let mut uses = paths;
             uses.extend(idents);
-            (None, uses, vec![])
+            (None, uses, vec![], SmallVec::new(), SmallVec::new())
         }
     }
 }

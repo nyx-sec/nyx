@@ -1,0 +1,92 @@
+Phase 17 perf snapshot (cross-language validation freeze)
+=========================================================
+Captured 2026-05-09 against branch pitboss/run-20260507T064345Z.
+Host: Darwin 25.2.0 / arm64.
+Binary: target/release/nyx (cargo build --release).
+
+This file is the Phase 17 perf record. Acceptance: scanner throughput
+on the existing tests/fixtures/ corpus regresses by <= 10% vs the
+Phase 11 baseline recorded in tests/recall_targets/perf_after.txt.
+If regression exceeds 10% the runner must investigate before commit.
+
+cargo bench --bench scan_bench
+------------------------------
+ast_only_scan                          time:   [9.1576 ms  9.1754 ms  9.1958 ms]
+full_scan                              time:   [23.417 ms  23.451 ms  23.487 ms]
+full_scan_with_state                   time:   [23.444 ms  23.491 ms  23.546 ms]
+single_file_parse_cfg                  time:   [314.74 µs  315.53 µs  316.39 µs]
+state_analysis_only                    time:   [2.5713 µs  2.5744 µs  2.5780 µs]
+classify_hit                           time:   [94.124 ns  94.226 ns  94.329 ns]
+classify_miss                          time:   [1.0170 µs  1.0179 µs  1.0189 µs]
+analyse_file_fused_large_go            time:   [65.216 ms  65.361 ms  65.510 ms]
+extract_authorization_model_go         time:   [5.7215 ms  5.7310 ms  5.7411 ms]
+extract_authorization_model_shared_go  time:   [5.7859 ms  5.7931 ms  5.8008 ms]
+collect_top_level_units_go             time:   [3.9842 ms  3.9904 ms  3.9972 ms]
+const_propagate_large_go               time:   [173.48 µs  173.80 µs  174.12 µs]
+global_summaries_lookup_same_lang_go   time:   [12.122 µs  12.137 µs  12.153 µs]
+
+Per-bench delta vs Phase 11 (tests/recall_targets/perf_after.txt)
+----------------------------------------------------------------
+ast_only_scan                          9.78 -> 9.18 ms        -6.1%
+full_scan                              23.00 -> 23.45 ms      +2.0%
+full_scan_with_state                   23.11 -> 23.49 ms      +1.6%
+single_file_parse_cfg                  283.0 -> 315.5 µs      +11.5%   (single-file path; not on the
+                                                                       corpus throughput line below)
+state_analysis_only                    2.560 -> 2.574 µs      +0.5%
+classify_hit                           91.51 -> 94.23 ns      +3.0%
+classify_miss                          948 -> 1018 ns         +7.4%
+analyse_file_fused_large_go            63.79 -> 65.36 ms      +2.5%
+extract_authorization_model_go         5.669 -> 5.731 ms      +1.1%
+extract_authorization_model_shared_go  5.836 -> 5.793 ms      -0.7%
+collect_top_level_units_go             3.971 -> 3.990 ms      +0.5%
+const_propagate_large_go               172.9 -> 173.8 µs      +0.5%
+global_summaries_lookup_same_lang_go   12.23 -> 12.14 µs      -0.7%
+
+Most micro-benchmarks are within +/-3%. The single-file
+`single_file_parse_cfg` outlier (+11.5%) is dominated by the new
+cross-language label rules added in phases 12-16 (per-lang KINDS
+maps and gated sink dispatch); it is a single-file figure and does
+not gate corpus throughput, which is the acceptance line.
+
+Corpus throughput (tests/fixtures/, real run)
+---------------------------------------------
+Command: target/release/nyx scan tests/fixtures --index off --format json
+Best of three (warm parser cache, --index off):
+    1.657 s wall   1182 findings emitted
+    1.680 s wall   1182 findings emitted
+    2.487 s wall   1182 findings emitted (first run, cold)
+
+Reference number for future recall work:
+    corpus_throughput_seconds_warm = 1.66
+    corpus_findings_total           = 1182
+
+Phase 11 baseline (perf_after.txt):
+    corpus_throughput_seconds_warm = 1.55
+    corpus_findings_total           = 1143
+
+Delta:
+    wall      1.55 -> 1.66 s    +7.1%   (within the <=10% acceptance bar)
+    findings  1143 -> 1182      +39     (recall lift from phases 12-16:
+                                         async/await Python+Rust, fs path
+                                         traversal, SSRF/URL builders,
+                                         ORM coverage, framework entry
+                                         points)
+
+The +7.1% wall-clock regression is bounded by the 10% acceptance bar.
+Driver: phases 12-16 added per-lang label rules and entry-point
+detection across Python / Rust / Go / Ruby / Java / PHP. The
+per-language matchers fire in `classify` for every node in those
+languages now, which is the hot path. No corrective action required;
+future precision/perf work that touches the matchers should diff
+against this number.
+
+Cross-reference
+---------------
+Phase 11 baseline:    tests/recall_targets/perf_after.txt
+Phase 01 finding count: tests/recall_gaps_baseline.json (1121 @ ea82ea98)
+Phase 11 finding count: 1143 (perf_after.txt, post phases 03/05/06/07/08/09/10)
+Phase 17 finding count: 1182 (this file, post phases 12/13/14/15/16)
+Per-target sets:      tests/recall_targets/{cal_com,vercel_commerce,shadcn_examples,blitz_apps}.json
+Cross-lang sets:      tests/recall_targets/xlang/{php,java,python,rust,go,ruby}/<target>.json
+Runner:               scripts/validate_recall.sh (now accepts --lang)
+Schema test:          cargo test --test recall_gaps -- --ignored validate_real_world_targets

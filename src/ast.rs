@@ -30,11 +30,11 @@ use crate::evidence::{Evidence, FlowStep, SpanEvidence, StateEvidence};
 use crate::labels::{
     Cap, DataLabel, LangAnalysisRules, build_lang_rules, severity_for_source_kind,
 };
-use crate::patterns::{FindingCategory, Severity};
+use crate::patterns::{FindingCategory, PatternCategory, Severity};
 use crate::state;
 use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::summary::{FuncSummary, GlobalSummaries};
-use crate::symbol::{Lang, normalize_namespace};
+use crate::symbol::Lang;
 use crate::utils::config::AnalysisMode;
 use crate::utils::ext::lowercase_ext;
 use crate::utils::{Config, query_cache};
@@ -370,22 +370,30 @@ fn build_taint_diag(
         });
     }
 
-    let sink_evidence_snippet = primary_snippet_hint
-        .clone()
-        .or_else(|| Some(short_call_site.clone()));
+    let sink_evidence_snippet = primary_snippet_hint.or(Some(short_call_site));
 
     // Resolved sink capability bits, used by deduplication to distinguish
     // sinks with different cap types on the same source line (e.g.
     // `sink_sql(x); sink_shell(x);`).
-    let sink_caps_bits: u32 = cfg_graph[finding.sink]
-        .taint
-        .labels
-        .iter()
-        .filter_map(|l| match l {
-            crate::labels::DataLabel::Sink(c) => Some(c.bits()),
-            _ => None,
-        })
-        .fold(0u32, |acc, b| acc | b);
+    //
+    // Prefer the per-finding `effective_sink_caps` (set by the SSA dispatch
+    // when receiver-type qualification, gated rules, or other late-binding
+    // resolvers contribute caps that the CFG node's static labels do not
+    // carry).  Fall back to the union of `Sink(cap)` labels on the CFG
+    // node when the SSA dispatch did not narrow.
+    let sink_caps_bits: u32 = if !finding.effective_sink_caps.is_empty() {
+        finding.effective_sink_caps.bits()
+    } else {
+        cfg_graph[finding.sink]
+            .taint
+            .labels
+            .iter()
+            .filter_map(|l| match l {
+                crate::labels::DataLabel::Sink(c) => Some(c.bits()),
+                _ => None,
+            })
+            .fold(0u32, |acc, b| acc | b)
+    };
 
     // Cap-specific rule-id routing.
     //
@@ -652,11 +660,11 @@ fn build_taint_diag(
         confidence: None,
         evidence: Some(Evidence {
             source: Some(SpanEvidence {
-                path: file_path_owned.clone(),
+                path: file_path_owned,
                 line: (source_point.row + 1) as u32,
                 col: (source_point.column + 1) as u32,
                 kind: "source".into(),
-                snippet: Some(short_source.clone()),
+                snippet: Some(short_source),
             }),
             sink: Some(SpanEvidence {
                 path: primary_path.clone(),
@@ -721,6 +729,27 @@ pub fn lang_slug_for_path(path: &Path) -> Option<&'static str> {
 
 /// Resolve a file extension to a (tree‑sitter Language, slug) pair.
 fn lang_for_path(path: &Path) -> Option<(Language, &'static str)> {
+    // Distinguish `.tsx` from `.ts` before normalising via `lowercase_ext` —
+    // the latter merges both into the `"ts"` slug, which would lose the
+    // information needed to pick the JSX-aware TSX grammar.  The slug returned
+    // here stays `"typescript"` for both so all downstream KINDS / RULES /
+    // PARAM_CONFIG entries apply uniformly.
+    let raw_ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase());
+    if matches!(raw_ext.as_deref(), Some("tsx")) {
+        return Some((
+            Language::from(tree_sitter_typescript::LANGUAGE_TSX),
+            "typescript",
+        ));
+    }
+    if matches!(raw_ext.as_deref(), Some("jsx")) {
+        return Some((
+            Language::from(tree_sitter_javascript::LANGUAGE),
+            "javascript",
+        ));
+    }
     match lowercase_ext(path) {
         Some("rs") => Some((Language::from(tree_sitter_rust::LANGUAGE), "rust")),
         Some("c") => Some((Language::from(tree_sitter_c::LANGUAGE), "c")),
@@ -741,21 +770,7 @@ fn lang_for_path(path: &Path) -> Option<(Language, &'static str)> {
             Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
             "typescript",
         )),
-        // TSX grammar is a superset of TypeScript plus JSX element/attribute
-        // nodes, all TypeScript KINDS / RULES / PARAM_CONFIG entries apply,
-        // and JSX-specific sinks (e.g. `dangerouslySetInnerHTML`) layer on top
-        // via the same `typescript` slug.
-        Some("tsx") => Some((
-            Language::from(tree_sitter_typescript::LANGUAGE_TSX),
-            "typescript",
-        )),
         Some("js") => Some((
-            Language::from(tree_sitter_javascript::LANGUAGE),
-            "javascript",
-        )),
-        // JSX uses the same JavaScript grammar (tree-sitter-javascript handles
-        // JSX natively), slug "javascript" so all JS rules apply.
-        Some("jsx") => Some((
             Language::from(tree_sitter_javascript::LANGUAGE),
             "javascript",
         )),
@@ -770,20 +785,71 @@ fn is_binary(bytes: &[u8]) -> bool {
 }
 
 /// Check if a file path indicates a test file. Matches filename-based
-/// conventions (`.test.js`, `.spec.ts`) and the `__tests__` directory
-/// convention.  Directory-only checks (`test/`, `tests/`, `fixtures/`)
-/// are intentionally excluded because they're too broad when scanning
-/// absolute paths.
-fn is_test_file(path: &Path) -> bool {
+/// conventions across the languages the engine supports, plus the
+/// `__tests__` directory convention used by JS/TS tooling.
+///
+/// Directory-only checks (`test/`, `tests/`, `fixtures/`) are
+/// intentionally excluded because they are too broad when scanning
+/// absolute paths.  Severity-downgrade for those directories lives in
+/// [`is_nonprod_path`].
+pub(crate) fn is_test_file(path: &Path) -> bool {
+    // Filename-suffix conventions that are unambiguous markers of a test
+    // module.  Each entry must end with a `.<ext>` suffix so PHP
+    // `*Test.php` does not match a class file named `MyContestTest.php`
+    // — the engine's recogniser matches on the filename, not class
+    // declarations.
     static TEST_SUFFIXES: &[&str] = &[
+        // JS / TS
         ".test.js",
         ".test.ts",
         ".test.jsx",
         ".test.tsx",
+        ".test.mjs",
+        ".test.cjs",
         ".spec.js",
         ".spec.ts",
         ".spec.jsx",
         ".spec.tsx",
+        ".spec.mjs",
+        ".spec.cjs",
+        // Python (`pytest` and `unittest` conventions)
+        "_test.py",
+        "_tests.py",
+        // Java (JUnit / TestNG)
+        "Test.java",
+        "Tests.java",
+        "IT.java",
+        // PHP (PHPUnit)
+        "Test.php",
+        // Ruby (RSpec / Minitest)
+        "_spec.rb",
+        "_test.rb",
+        // Go
+        "_test.go",
+        // Rust (uncommon but used by some crates)
+        "_test.rs",
+        "_tests.rs",
+        // C / C++ (varies; cover the common shapes)
+        "_test.c",
+        "_test.cc",
+        "_test.cpp",
+        "_test.cxx",
+        "_test.h",
+        "_test.hpp",
+    ];
+
+    // Filename-prefix conventions for languages whose convention puts
+    // the `test_` marker at the start instead of the end.
+    static TEST_PREFIXES: &[&str] = &[
+        // Python (`pytest`)
+        "test_",
+        // C / C++ test runners
+    ];
+
+    // Exact filenames that are always test infrastructure.
+    static TEST_EXACT: &[&str] = &[
+        // Pytest fixture entry point (always a test helper, never prod)
+        "conftest.py",
     ];
 
     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -792,9 +858,28 @@ fn is_test_file(path: &Path) -> bool {
                 return true;
             }
         }
+        for prefix in TEST_PREFIXES {
+            if name.starts_with(prefix)
+                && (name.ends_with(".py")
+                    || name.ends_with(".c")
+                    || name.ends_with(".cc")
+                    || name.ends_with(".cpp")
+                    || name.ends_with(".cxx"))
+            {
+                return true;
+            }
+        }
+        if TEST_EXACT.contains(&name) {
+            return true;
+        }
     }
 
-    // __tests__ is specific enough (React/Jest convention) to match on directory
+    // `__tests__` is specific enough (React/Jest convention) to match on
+    // directory.  Other test directories (`tests/`, `test/`, `spec/`)
+    // overlap with production paths in some real codebases (e.g.
+    // django apps that ship a `tests` submodule alongside production
+    // code under the same package), so the broad directory check stays
+    // in [`is_nonprod_path`] for severity downgrade only.
     for component in path.components() {
         if let std::path::Component::Normal(c) = component
             && c == "__tests__"
@@ -806,12 +891,86 @@ fn is_test_file(path: &Path) -> bool {
     false
 }
 
+/// Detect bundled or minified third-party assets that the engine should not
+/// analyse.  These files are produced by build tooling, ship verbatim from
+/// upstream packages, and can never be remediated by the codebase author, so
+/// any finding raised against them is signal-less noise.
+///
+/// Triggers (any one is sufficient):
+///   * Filename ends in `.min.js`, `.min.css`, `.bundle.js`, `.umd.js`,
+///     `.umd.min.js`, `.iife.js`, `.iife.min.js`, or `.bundled.js`.
+///   * Path component `bower_components` (legacy front-end package dir).
+///   * Path component `vendor` AND filename has a front-end asset extension
+///     (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, `.css`).  Restricted to
+///     web assets so Go module vendoring (`vendor/<pkg>/*.go`) is not
+///     suppressed.
+///
+/// The check is conservative: it skips files only when the evidence is
+/// unambiguous.  Hand-authored vendored plugins that lack a `.min` suffix and
+/// live outside `vendor/` (e.g. `webapp/.../scripts/jquery-ui-plugin.js`) are
+/// still parsed; their findings flow through `is_nonprod_path` for severity
+/// downgrade instead.
+pub(crate) fn is_vendored_asset_path(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let lower: String = name.to_ascii_lowercase();
+        const SUFFIXES: &[&str] = &[
+            ".min.js",
+            ".min.css",
+            ".bundle.js",
+            ".bundled.js",
+            ".umd.js",
+            ".umd.min.js",
+            ".iife.js",
+            ".iife.min.js",
+        ];
+        if SUFFIXES.iter().any(|s| lower.ends_with(s)) {
+            return true;
+        }
+    }
+
+    let mut has_vendor_component = false;
+    for component in path.components() {
+        if let std::path::Component::Normal(c) = component
+            && let Some(s) = c.to_str()
+        {
+            if s.eq_ignore_ascii_case("bower_components") {
+                return true;
+            }
+            if s.eq_ignore_ascii_case("vendor") || s.eq_ignore_ascii_case("vendors") {
+                has_vendor_component = true;
+            }
+        }
+    }
+
+    if has_vendor_component && let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let ext_lower: String = ext.to_ascii_lowercase();
+        const FRONT_END_EXTS: &[&str] = &[
+            "js", "mjs", "cjs", "jsx", "ts", "tsx", "css", "scss", "less",
+        ];
+        if FRONT_END_EXTS.iter().any(|e| *e == ext_lower) {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Pattern IDs that are noise-prone in test files (fixture credentials,
 /// non-crypto randomness, plain HTTP in test harnesses).
 fn is_test_suppressible_pattern(id: &str) -> bool {
-    // Suffix-match to handle both js. and ts. prefixes
+    // Suffix-match so a single rule covers the per-language prefixes
+    // (`js.`, `ts.`, `go.`, `php.`, `py.`, `rb.`, `java.`).  Each entry
+    // is a class of finding that is informational at best in a test
+    // module: hardcoded test API tokens, weak hashes used for fast
+    // deterministic test data, insecure RNG used for fixture seeding.
     id.ends_with(".secrets.hardcoded_secret")
+        || id.ends_with(".secrets.hardcoded_key")
         || id.ends_with(".crypto.math_random")
+        || id.ends_with(".crypto.insecure_random")
+        || id.ends_with(".crypto.weak_digest")
+        || id.ends_with(".crypto.md5")
+        || id.ends_with(".crypto.sha1")
+        || id.ends_with(".crypto.rand")
         || id.ends_with(".transport.fetch_http")
 }
 
@@ -908,6 +1067,9 @@ impl<'a> ParsedSource<'a> {
         // this thread that the caller did not consume.  Ensures the slot
         // always reflects "this parse" by the time we return.
         LAST_PARSE_TIMEOUT_MS.with(|c| c.set(None));
+        if is_vendored_asset_path(path) {
+            return Ok(None);
+        }
         if is_binary(bytes) {
             return Ok(None);
         }
@@ -980,9 +1142,24 @@ impl<'a> ParsedSource<'a> {
             let mut matches = cursor.matches(&cq.query, root, self.bytes);
             while let Some(m) = matches.next() {
                 if let Some(cap) = m.captures.iter().find(|c| c.index == 0) {
-                    // Layer A: suppress Security findings on calls with all-literal args
+                    // Layer A: suppress Security findings on calls with all-literal args.
+                    //
+                    // Carve-outs for categories where the literal argument IS
+                    // the bug (algorithm choice, hardcoded secret, insecure
+                    // protocol scheme, unsafe config flag): suppression would
+                    // silence the actual signal.  Hash algorithms picked from
+                    // string literals (`MessageDigest.getInstance("MD5")`,
+                    // `hashlib.md5(b"…")`) are weak regardless of caller-side
+                    // data flow.
                     if cq.meta.category.finding_category() == FindingCategory::Security
-                        && is_call_all_args_literal(cap.node, self.bytes)
+                        && !matches!(
+                            cq.meta.category,
+                            PatternCategory::Crypto
+                                | PatternCategory::Secrets
+                                | PatternCategory::InsecureConfig
+                                | PatternCategory::InsecureTransport
+                        )
+                        && is_call_all_args_literal(cap.node, self.bytes, self.lang_slug)
                     {
                         continue;
                     }
@@ -1034,6 +1211,61 @@ impl<'a> ParsedSource<'a> {
                     if cq.meta.id == "php.deser.unserialize"
                         && self.lang_slug == "php"
                         && is_php_unserialize_magic_method_passthrough(cap.node, self.bytes)
+                    {
+                        continue;
+                    }
+                    // Layer C3: PHP `unserialize($x)` inside a PHPUnit
+                    // assertion of the form
+                    // `$this->assertSame(LITERAL, unserialize($x))`
+                    // (or `assertEquals` / `assertNull` / static / self
+                    // / parent dispatch variants).  The literal expected
+                    // value bounds the unserialize result so the
+                    // call-site cannot release attacker-controlled
+                    // object graphs into the test process — failed
+                    // assertions abort the test rather than leak side
+                    // effects.  Drupal / Joomla / Nextcloud each carry
+                    // tens of these `Serializable` round-trip
+                    // assertions in their test trees and every firing
+                    // is noise.
+                    if cq.meta.id == "php.deser.unserialize"
+                        && self.lang_slug == "php"
+                        && is_php_unserialize_inside_phpunit_assertion(cap.node, self.bytes)
+                    {
+                        continue;
+                    }
+                    // Layer C4: Python `pickle.loads` / `yaml.load` /
+                    // `shelve.open` / kindred deserialization sinks
+                    // wrapped in a `unittest.TestCase` assertion whose
+                    // other argument is a literal expected value (or
+                    // whose verb itself constrains the result, e.g.
+                    // `assertIsNone(pickle.loads(blob))`).  The
+                    // assertion bounds the deser result so attacker-
+                    // controlled blobs would fail loudly rather than
+                    // leak side effects out of the test boundary.
+                    // Mirrors the PHP Layer C3 recogniser; deferred
+                    // note in `project_realrepo_*.md` flagged the same
+                    // FP shape on Python test trees.
+                    if matches!(
+                        cq.meta.id,
+                        "py.deser.pickle_loads" | "py.deser.yaml_load" | "py.deser.shelve_open"
+                    ) && self.lang_slug == "python"
+                        && is_python_deser_inside_unittest_assertion(cap.node, self.bytes)
+                    {
+                        continue;
+                    }
+                    // Layer C5: Ruby `Marshal.load` / `YAML.load` /
+                    // `Psych.load` wrapped in a Minitest assertion
+                    // (`assert_equal LIT, deser`, `assert_nil deser`,
+                    // `assert deser`, `refute_equal LIT, deser`, ...) or
+                    // an RSpec matcher chain (`expect(deser).to eq(LIT)`,
+                    // `expect(deser).to be_nil`, `be_a(TYPE)`, ...).
+                    // Same bounding semantics as the PHP / Python paths:
+                    // a poisoned blob fails the assertion loudly rather
+                    // than leak object-injection side effects out of
+                    // the test boundary.
+                    if matches!(cq.meta.id, "rb.deser.marshal_load" | "rb.deser.yaml_load")
+                        && self.lang_slug == "ruby"
+                        && is_ruby_deser_inside_test_assertion(cap.node, self.bytes)
                     {
                         continue;
                     }
@@ -1213,13 +1445,35 @@ impl<'a> ParsedFile<'a> {
         } else {
             None
         };
-        let file_cfg = build_cfg(
+        let mut file_cfg = build_cfg(
             &source.tree,
             source.bytes,
             source.lang_slug,
             &source.file_path_str,
             rules_ref,
         );
+
+        // Phase 04: when the scan paths produced a project ModuleGraph,
+        // resolve this file's imports against it and stash both on the
+        // FileCfg (for local consumers) and on the global per-file
+        // ImportTable (for cross-file lookups in phases 05/09/10). The
+        // wiring is no-op for non-JS/TS files and for direct callers of
+        // `analyse_file_fused` that pass a `Config` without a resolver
+        // (e.g. unit tests).
+        if let Some(graph) = cfg.module_graph.as_deref() {
+            let bindings = crate::resolve::extract_resolved_imports(
+                &source.tree,
+                source.bytes,
+                source.path,
+                graph,
+                source.lang_slug,
+            );
+            if !bindings.is_empty() {
+                graph.record_imports_for_file(source.path.to_path_buf(), bindings.clone());
+                file_cfg.resolved_imports = bindings;
+            }
+        }
+
         Self {
             source,
             file_cfg,
@@ -1300,6 +1554,34 @@ impl<'a> ParsedFile<'a> {
             }
         }
 
+        // Phase 10 — annotate entry-point summaries.  Match each
+        // summary's body span (looked up via `FuncSummaries` keyed on
+        // `FuncKey`) against the per-file `entry_kinds` table so the
+        // tag survives SQLite round-trips and cross-file consumption.
+        if !self.file_cfg.entry_kinds.is_empty() {
+            // Build a (name, container, disambig) → span lookup from
+            // the file's bodies so we can associate each exported
+            // FuncSummary with its body span.
+            let mut by_identity: std::collections::HashMap<
+                (String, String, Option<u32>),
+                (usize, usize),
+            > = std::collections::HashMap::new();
+            for body in self.file_cfg.function_bodies() {
+                if let Some(key) = &body.meta.func_key {
+                    by_identity.insert(
+                        (key.name.clone(), key.container.clone(), key.disambig),
+                        body.meta.span,
+                    );
+                }
+            }
+            for s in &mut out {
+                let id = (s.name.clone(), s.container.clone(), s.disambig);
+                if let Some(span) = by_identity.get(&id) {
+                    s.entry_kind = self.file_cfg.entry_kinds.get(span).cloned();
+                }
+            }
+        }
+
         // Rust-specific enrichment: derive the crate-relative module path for
         // this file and parse every top-level `use` declaration into an alias
         // map. The information lets the call graph resolve same-name functions
@@ -1345,6 +1627,7 @@ impl<'a> ParsedFile<'a> {
         &self,
         global_summaries: Option<&GlobalSummaries>,
         scan_root: Option<&Path>,
+        module_graph: Option<&crate::resolve::ModuleGraph>,
     ) -> (
         Vec<(crate::symbol::FuncKey, SsaFuncSummary)>,
         Vec<(
@@ -1354,7 +1637,11 @@ impl<'a> ParsedFile<'a> {
     ) {
         let caller_lang = Lang::from_slug(self.source.lang_slug).unwrap_or(Lang::Rust);
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
-        let namespace = normalize_namespace(&self.source.file_path_str, scan_root_str.as_deref());
+        let namespace = crate::symbol::namespace_with_package(
+            &self.source.file_path_str,
+            scan_root_str.as_deref(),
+            module_graph,
+        );
 
         // Use the FileCfg path (same one `analyse_file` uses at taint time) so
         // the SSA summaries stored cross-file match exactly what pass 2 will
@@ -1371,6 +1658,8 @@ impl<'a> ParsedFile<'a> {
             self.local_summaries(),
             global_summaries,
             Some(&locator),
+            scan_root_str.as_deref(),
+            module_graph,
         );
 
         (summaries.into_iter().collect(), bodies)
@@ -1386,29 +1675,30 @@ impl<'a> ParsedFile<'a> {
     ///
     /// # Locator policy
     ///
-    /// Lowering does **not** attach a [`crate::summary::SinkSiteLocator`].
-    /// Per the same-file rationale documented on [`crate::taint::analyse_file`]:
-    /// pass-2 intra-file summaries are transient and behavior depends on
-    /// `SinkSite.cap` only, which is always populated.  Attaching a locator
-    /// here populates `param_to_sink` with concrete coordinates that the
-    /// emission path then promotes into `Finding.primary_location`,
-    /// causing the same-file summary-resolved sink to be reported at the
-    /// callee-internal sink line instead of the call site, which both
-    /// duplicates the intraprocedural finding the taint engine already
-    /// emits at that exact line and re-attributes the flow finding away
-    /// from the user-visible call site.  Closure-capture, lambda, and
-    /// helper-with-internal-sink fixtures all expect call-site emission;
-    /// the standalone [`crate::taint::analyse_file`] entry point already
-    /// passes `None` here for the same reason.
+    /// Attaches a [`crate::summary::SinkSiteLocator`] so intra-file
+    /// summaries record concrete sink coordinates and a `from_chain` flag
+    /// distinguishing chain-hop markers from this body's own locator span.
+    /// Pass-2 emission then gates promotion into `Finding.primary_location`
+    /// on `from_chain || file_rel != caller_namespace`, see
+    /// [`crate::taint::ssa_transfer::should_promote_sink_site`].
     ///
-    /// Cross-file primary attribution is unaffected: the artifact-extraction
-    /// path that persists summaries to SQLite for cross-file consumption
-    /// runs through [`crate::taint::extract_ssa_artifacts_from_file_cfg`]
-    /// which threads its own locator-equipped lowering separately.
+    /// Same-file single-hop helpers continue to surface the flow finding
+    /// at the call site (their site is `from_chain=false` and lives in the
+    /// caller's namespace, gate fails).  Multi-hop chains promote because
+    /// `summary_extract` flips `from_chain=true` on every site that came
+    /// via `event.primary_sink_site`, the callee already pierced through
+    /// at least one summary boundary to record the deepest coordinates.
+    /// Cross-file callees promote because `file_rel` differs.  This
+    /// preserves the closure-capture / lambda / helper-with-internal-sink
+    /// fixture shape (two findings: deep + call-site) while gaining
+    /// deep-line attribution on multi-hop chains that have no per-frame
+    /// intermediate finding to dedup with.  See "Multi-hop intra-file
+    /// sink attribution gap" in deferred.md for the design tradeoff.
     fn lower_ssa_for_fused(
         &self,
         global_summaries: Option<&GlobalSummaries>,
         scan_root: Option<&Path>,
+        module_graph: Option<&crate::resolve::ModuleGraph>,
     ) -> (
         std::collections::HashMap<
             crate::symbol::FuncKey,
@@ -1421,14 +1711,25 @@ impl<'a> ParsedFile<'a> {
     ) {
         let caller_lang = Lang::from_slug(self.source.lang_slug).unwrap_or(Lang::Rust);
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
-        let namespace = normalize_namespace(&self.source.file_path_str, scan_root_str.as_deref());
+        let namespace = crate::symbol::namespace_with_package(
+            &self.source.file_path_str,
+            scan_root_str.as_deref(),
+            module_graph,
+        );
+        let locator = crate::summary::SinkSiteLocator {
+            tree: &self.source.tree,
+            bytes: self.source.bytes,
+            file_rel: &namespace,
+        };
         crate::taint::lower_all_functions_from_bodies(
             &self.file_cfg,
             caller_lang,
             &namespace,
             self.local_summaries(),
             global_summaries,
-            None,
+            Some(&locator),
+            scan_root_str.as_deref(),
+            module_graph,
         )
     }
 
@@ -1452,7 +1753,8 @@ impl<'a> ParsedFile<'a> {
         // in `analyse_file_fused`.
         crate::taint::ssa_transfer::reset_path_safe_suppressed_spans();
         crate::taint::ssa_transfer::reset_all_validated_spans();
-        let (ssa_summaries, callee_bodies) = self.lower_ssa_for_fused(global_summaries, scan_root);
+        let (ssa_summaries, callee_bodies) =
+            self.lower_ssa_for_fused(global_summaries, scan_root, cfg.module_graph.as_deref());
         self.run_cfg_analyses_with_lowered(
             cfg,
             global_summaries,
@@ -1488,11 +1790,29 @@ impl<'a> ParsedFile<'a> {
         tracing::debug!("Running taint analysis on: {}", self.source.path.display());
         tracing::debug!("Func summaries: {:?}", self.local_summaries());
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
-        let namespace = normalize_namespace(&self.source.file_path_str, scan_root_str.as_deref());
+        let namespace = crate::symbol::namespace_with_package(
+            &self.source.file_path_str,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+        );
         let extra = if self.lang_rules.extra_labels.is_empty() {
             None
         } else {
             Some(self.lang_rules.extra_labels.as_slice())
+        };
+        // Phase-09 cross-package import lookup. Built per-file from the
+        // resolver's verdict; consumed by `resolve_callee_full` step 0.7
+        // when a flat-name lookup would otherwise miss.
+        let cross_package_imports = crate::taint::build_cross_package_func_keys(
+            &self.file_cfg.resolved_imports,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+            caller_lang,
+        );
+        let cross_package_imports_ref = if cross_package_imports.is_empty() {
+            None
+        } else {
+            Some(&cross_package_imports)
         };
         let taint_results = crate::taint::analyse_file_with_lowered(
             &self.file_cfg,
@@ -1504,6 +1824,7 @@ impl<'a> ParsedFile<'a> {
             extra,
             ssa_summaries,
             callee_bodies,
+            cross_package_imports_ref,
         );
         // Drain the path-safe-suppressed sink-span set published by the
         // SSA taint engine.  Used below by the state-analysis pass to
@@ -1585,8 +1906,44 @@ impl<'a> ParsedFile<'a> {
                         .get(&body.meta.id)
                         .unwrap_or(&empty_set),
                 ),
+                class_constant_scalars: Some(&self.file_cfg.class_constant_scalars),
             };
             for cf in cfg_analysis::run_all(&cfg_ctx) {
+                // Layer C4 mirror at the CFG-emission point: Python
+                // `pickle.loads` / `yaml.load` / `shelve.open` calls
+                // wrapped inside a `unittest.TestCase` literal-bound
+                // assertion fire `cfg-unguarded-sink` because the
+                // structural rule has no taint context.  Apply the
+                // same recogniser used by the AST-pattern layer so
+                // both sides agree on what counts as test-bound deser.
+                if cf.rule_id == "cfg-unguarded-sink"
+                    && self.source.lang_slug == "python"
+                    && let Some(node) = self
+                        .source
+                        .tree
+                        .root_node()
+                        .descendant_for_byte_range(cf.span.0, cf.span.1)
+                    && is_python_deser_inside_unittest_assertion(node, self.source.bytes)
+                {
+                    continue;
+                }
+                // Layer C5 mirror: Ruby `Marshal.load` / `YAML.load` /
+                // `Psych.load` inside Minitest / RSpec assertions also
+                // fire `cfg-unguarded-sink` from the structural rule
+                // (which has no taint context).  Apply the same
+                // recogniser used by the AST-pattern layer so both
+                // sides agree on what counts as test-bound deser.
+                if cf.rule_id == "cfg-unguarded-sink"
+                    && self.source.lang_slug == "ruby"
+                    && let Some(node) = self
+                        .source
+                        .tree
+                        .root_node()
+                        .descendant_for_byte_range(cf.span.0, cf.span.1)
+                    && is_ruby_deser_inside_test_assertion(node, self.source.bytes)
+                {
+                    continue;
+                }
                 let point = byte_offset_to_point(&self.source.tree, cf.span.0);
                 let cfg_confidence = Some(match cf.confidence {
                     cfg_analysis::Confidence::High => crate::evidence::Confidence::High,
@@ -1921,7 +2278,7 @@ pub fn perf_stage_breakdown_fused(
 
     let s_lower = Instant::now();
     let (lowered_summaries, lowered_bodies) =
-        parsed.lower_ssa_for_fused(global_summaries, scan_root);
+        parsed.lower_ssa_for_fused(global_summaries, scan_root, cfg.module_graph.as_deref());
     let t_lower = s_lower.elapsed().as_micros();
     let lower_breakdown = crate::taint::perf_lower_timings_take().unwrap_or([0; 7]);
 
@@ -2012,7 +2369,7 @@ pub fn perf_stage_breakdown(
     let t_auth = s_auth.elapsed().as_micros();
 
     let s_ssa = Instant::now();
-    let _ = parsed.extract_ssa_artifacts(global_summaries, scan_root);
+    let _ = parsed.extract_ssa_artifacts(global_summaries, scan_root, cfg.module_graph.as_deref());
     let t_ssa = s_ssa.elapsed().as_micros();
 
     Some([t_parse_cfg, t_taint, t_suppr, t_ast, t_auth, t_ssa])
@@ -2039,15 +2396,20 @@ pub fn extract_all_summaries_from_bytes(
         crate::symbol::FuncKey,
         auth_analysis::model::AuthCheckSummary,
     )>,
+    Option<(
+        String,
+        std::sync::Arc<HashMap<String, crate::symbol::FuncKey>>,
+    )>,
 )> {
     let _span = tracing::debug_span!("extract_all_summaries", file = %path.display()).entered();
     let Some(source) = ParsedSource::try_new(bytes, path)? else {
-        return Ok((vec![], vec![], vec![], vec![]));
+        return Ok((vec![], vec![], vec![], vec![], None));
     };
     let lang_slug = source.lang_slug;
     let parsed = ParsedFile::from_source(source, cfg);
     let func_summaries = parsed.export_summaries_with_root(scan_root);
-    let (ssa_summaries, ssa_bodies) = parsed.extract_ssa_artifacts(None, scan_root);
+    let (ssa_summaries, ssa_bodies) =
+        parsed.extract_ssa_artifacts(None, scan_root, cfg.module_graph.as_deref());
     let auth_summaries = auth_analysis::extract_auth_summaries_by_key(
         &parsed.source.tree,
         parsed.source.bytes,
@@ -2056,7 +2418,35 @@ pub fn extract_all_summaries_from_bytes(
         cfg,
         scan_root,
     );
-    Ok((func_summaries, ssa_summaries, ssa_bodies, auth_summaries))
+    let cross_package_imports = if parsed.file_cfg.resolved_imports.is_empty() {
+        None
+    } else {
+        let scan_root_str = scan_root.map(|p| p.to_string_lossy());
+        let ns = crate::symbol::namespace_with_package(
+            &parsed.source.file_path_str,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+        );
+        let caller_lang = Lang::from_slug(parsed.source.lang_slug).unwrap_or(Lang::Rust);
+        let map = crate::taint::build_cross_package_func_keys(
+            &parsed.file_cfg.resolved_imports,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+            caller_lang,
+        );
+        if map.is_empty() {
+            None
+        } else {
+            Some((ns, std::sync::Arc::new(map)))
+        }
+    };
+    Ok((
+        func_summaries,
+        ssa_summaries,
+        ssa_bodies,
+        auth_summaries,
+        cross_package_imports,
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2064,12 +2454,15 @@ pub fn extract_all_summaries_from_bytes(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Returns `true` when the captured call node has only literal arguments
-/// (string, number, boolean, null/nil/none).  Used to suppress AST pattern
-/// findings on provably-constant calls like `os.system("echo health-ok")`.
+/// (string, number, boolean, null/nil/none), or identifier arguments that
+/// resolve to a file-level scalar constant (`const NAME = "x"` at module
+/// scope and equivalent in Java / Go / Python / Rust).  Used to suppress
+/// AST pattern findings on provably-constant calls like
+/// `os.system(DEFAULT_CMD)` where `DEFAULT_CMD = "ls -la"`.
 ///
 /// Conservative: returns `false` whenever the tree structure is unclear or
 /// any argument is non-literal (including interpolated strings).
-fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8]) -> bool {
+fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8], lang_slug: &str) -> bool {
     // Walk upwards from the captured node to find the closest call_expression
     // (or similar) ancestor, then locate its argument list child.
     let call_node = find_enclosing_call(node);
@@ -2085,6 +2478,11 @@ fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8]) -> bool {
         None => return false,
     };
 
+    // Build the file-level scalar binding set lazily: only resolve once per
+    // call, never if every arg is a syntactic literal.  Cheap: walks the
+    // file root's direct children for const / module-level assignment forms.
+    let scalars = file_level_scalar_bindings(node, bytes, lang_slug);
+
     let mut has_any_arg = false;
     for i in 0..arg_list.named_child_count() as u32 {
         let child = match arg_list.named_child(i) {
@@ -2092,7 +2490,7 @@ fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8]) -> bool {
             None => continue,
         };
         has_any_arg = true;
-        if !is_literal_node(child, bytes) {
+        if !is_literal_or_named_scalar(child, bytes, &scalars) {
             return false;
         }
     }
@@ -2100,6 +2498,63 @@ fn is_call_all_args_literal(node: tree_sitter::Node, bytes: &[u8]) -> bool {
     // If the argument list is empty (no args), we conservatively do NOT
     // suppress, the danger may come from side effects, not arguments.
     has_any_arg
+}
+
+/// Walk up from `node` to the file root and collect every file-level scalar
+/// binding name reachable on this language.  Empty set for languages without
+/// a recognised binding form (JS/TS, Ruby, PHP, C/C++).
+fn file_level_scalar_bindings(
+    node: tree_sitter::Node,
+    bytes: &[u8],
+    lang_slug: &str,
+) -> std::collections::HashSet<String> {
+    let mut root = node;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    crate::cfg::safe_fields::collect_class_constant_scalars(root, lang_slug, bytes)
+        .into_keys()
+        .collect()
+}
+
+/// Like [`is_literal_node`] but also accepts identifiers that resolve to a
+/// file-level scalar binding (constant string / number / bool).
+fn is_literal_or_named_scalar(
+    node: tree_sitter::Node,
+    bytes: &[u8],
+    scalars: &std::collections::HashSet<String>,
+) -> bool {
+    if is_literal_node(node, bytes) {
+        return true;
+    }
+    let kind = node.kind();
+    // Identifier forms vary across grammars.  PHP / Ruby use `variable_name`;
+    // every other supported language uses bare `identifier`.  An `argument`
+    // wrapper (PHP / Go) lifts a single child — unwrap and recurse.
+    match kind {
+        "identifier" | "variable_name" => {
+            let Ok(text) = std::str::from_utf8(&bytes[node.byte_range()]) else {
+                return false;
+            };
+            scalars.contains(text)
+        }
+        "argument" => node
+            .named_child(0)
+            .is_some_and(|c| is_literal_or_named_scalar(c, bytes, scalars)),
+        // Unary / binary forms over a scalar binding remain a literal-valued
+        // expression at compile time.
+        "unary_expression" | "unary_op" => node
+            .named_child(0)
+            .is_some_and(|c| is_literal_or_named_scalar(c, bytes, scalars)),
+        "binary_expression" | "concatenated_string" => {
+            node.named_child_count() >= 2
+                && (0..node.named_child_count() as u32).all(|i| {
+                    node.named_child(i)
+                        .is_some_and(|c| is_literal_or_named_scalar(c, bytes, scalars))
+                })
+        }
+        _ => false,
+    }
 }
 
 /// Walk up to find a call-expression-like ancestor of the captured node.
@@ -2112,8 +2567,15 @@ fn find_enclosing_call(mut node: tree_sitter::Node) -> Option<tree_sitter::Node>
         if kind.contains("call") && !kind.contains("callee") {
             return Some(node);
         }
-        // PHP: function_call_expression
-        if kind == "function_call_expression" {
+        // Java / PHP / C-family kinds that don't have "call" in their name
+        // but represent the same call shape for arg-list inspection.
+        if matches!(
+            kind,
+            "function_call_expression"
+                | "method_invocation"
+                | "object_creation_expression"
+                | "explicit_constructor_invocation"
+        ) {
             return Some(node);
         }
         // Stop at scope/statement boundaries, don't cross into outer calls
@@ -2652,6 +3114,1131 @@ fn is_php_unserialize_magic_method_passthrough(cap_node: tree_sitter::Node, byte
         return false;
     };
     arg_name == param_name
+}
+
+/// PHP-only Layer C3: returns `true` when an `unserialize($x)` call
+/// site is the second (or later) argument of a PHPUnit assertion call
+/// whose first (expected) argument is a literal expression
+/// (scalar, array literal, class constant access, or unary on a
+/// literal).
+///
+/// **Why this is a non-actionable site for `php.deser.unserialize`:**
+/// PHPUnit's `assertSame($expected, $actual)` /
+/// `assertEquals(...)` / `assertNull(...)` family bound the
+/// `unserialize` result to the literal expected value: if the
+/// `$blob` argument were attacker-controlled and produced a
+/// different shape, the assertion would fail loudly rather than
+/// permit any object-injection side effect to escape the test
+/// boundary.  Drupal, Joomla, and Nextcloud each carry tens of
+/// these `Serializable` / cache / session round-trip tests and
+/// every firing is noise; the actionable signal lives at the
+/// production call sites that thread real input through
+/// `unserialize` without an assertion sandwich.
+///
+/// Conservative recognition:
+/// - the `unserialize(...)` call must be wrapped in an `argument`
+///   node whose parent is `arguments`
+/// - the enclosing call must be a `member_call_expression`,
+///   `nullsafe_member_call_expression`, `scoped_call_expression`,
+///   or `function_call_expression` with a method/function name
+///   starting with `assert` (case-insensitive) — covers the entire
+///   PHPUnit assertion family
+/// - the assertion must have at least two argument slots (an
+///   expected/actual pair)
+/// - the first argument's inner expression must be a literal: a
+///   string / number / boolean / null literal, an
+///   `array_creation_expression` whose elements are recursively
+///   literal, a `class_constant_access_expression`, or a unary
+///   sign on one of the above
+///
+/// Genuine production sites (`unserialize($_GET[...])`, helpers
+/// reading from session/cache and handing the value to caller
+/// code) keep firing because they are not wrapped in a PHPUnit
+/// assertion.  Single-argument assertions (`assertNotNull($x)`)
+/// and assertions whose expected value is itself dynamic
+/// (`assertEquals($computed, unserialize($blob))`) keep firing
+/// because the bound is not statically verifiable.
+fn is_php_unserialize_inside_phpunit_assertion(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    // The pattern captures `@n` (the function name); locate the enclosing
+    // function_call_expression.  Mirrors the magic-method recogniser.
+    let call_node = if cap_node.kind() == "function_call_expression" {
+        cap_node
+    } else {
+        let mut cur = cap_node;
+        let mut found = None;
+        for _ in 0..4 {
+            if cur.kind() == "function_call_expression" {
+                found = Some(cur);
+                break;
+            }
+            match cur.parent() {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        match found {
+            Some(c) => c,
+            None => return false,
+        }
+    };
+
+    // The unserialize call must sit directly inside an `argument` wrapper
+    // that is itself inside an `arguments` list.  Reject any wrapping
+    // expression (binary, conditional, etc.) — those break the literal
+    // bounding the assertion provides.
+    let Some(arg_wrapper) = call_node.parent() else {
+        return false;
+    };
+    if arg_wrapper.kind() != "argument" {
+        return false;
+    }
+    let Some(arguments) = arg_wrapper.parent() else {
+        return false;
+    };
+    if arguments.kind() != "arguments" {
+        return false;
+    }
+    let Some(assertion_call) = arguments.parent() else {
+        return false;
+    };
+    if !matches!(
+        assertion_call.kind(),
+        "member_call_expression"
+            | "nullsafe_member_call_expression"
+            | "scoped_call_expression"
+            | "function_call_expression"
+    ) {
+        return false;
+    }
+
+    // Method/function name must start with `assert` (case-insensitive).
+    let name_node = assertion_call
+        .child_by_field_name("name")
+        .or_else(|| find_named_child_of_kind(assertion_call, "name"));
+    let Some(name_node) = name_node else {
+        return false;
+    };
+    let Ok(method_name) = std::str::from_utf8(&bytes[name_node.byte_range()]) else {
+        return false;
+    };
+    if !method_name
+        .chars()
+        .take(6)
+        .collect::<String>()
+        .eq_ignore_ascii_case("assert")
+    {
+        return false;
+    }
+
+    // Collect the assertion's argument wrappers.
+    let mut args: Vec<tree_sitter::Node> = Vec::new();
+    for i in 0..arguments.named_child_count() as u32 {
+        if let Some(c) = arguments.named_child(i)
+            && c.kind() == "argument"
+        {
+            args.push(c);
+        }
+    }
+    if args.is_empty() {
+        return false;
+    }
+
+    // Single-arg assertions: the verb itself bounds the result
+    // (`assertNull`, `assertIsArray`, `assertTrue`, ...).  Restrict to
+    // a curated set so generic `assertSomething(unserialize($x))`
+    // helpers without a documented bound don't qualify.
+    if args.len() == 1 {
+        return is_phpunit_single_arg_bounding_verb(method_name);
+    }
+
+    // Multi-arg assertions: the first argument is the expected /
+    // literal-pinned value (PHPUnit's documented `$expected, $actual`
+    // order).  The expected must be a static literal expression.
+    let Some(first_inner) = args[0].named_child(0) else {
+        return false;
+    };
+    is_php_assertion_literal_expected(first_inner, bytes)
+}
+
+/// PHPUnit single-arg assertion verbs whose name itself constrains
+/// the inspected value to a known type or constant.  When
+/// `unserialize($x)` is the sole argument to one of these, a failed
+/// assertion aborts the test rather than letting an object-injection
+/// side effect escape.
+fn is_phpunit_single_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "assertnull"
+            | "assertnotnull"
+            | "assertempty"
+            | "assertnotempty"
+            | "asserttrue"
+            | "assertfalse"
+            | "assertnan"
+            | "assertfinite"
+            | "assertinfinite"
+            | "assertisarray"
+            | "assertisnotarray"
+            | "assertisbool"
+            | "assertisnotbool"
+            | "assertiscallable"
+            | "assertisnotcallable"
+            | "assertisfloat"
+            | "assertisnotfloat"
+            | "assertisint"
+            | "assertisnotint"
+            | "assertisiterable"
+            | "assertisnotiterable"
+            | "assertisnumeric"
+            | "assertisnotnumeric"
+            | "assertisobject"
+            | "assertisnotobject"
+            | "assertisresource"
+            | "assertisnotresource"
+            | "assertisclosedresource"
+            | "assertisnotclosedresource"
+            | "assertisstring"
+            | "assertisnotstring"
+            | "assertisscalar"
+            | "assertisnotscalar"
+    )
+}
+
+/// PHP-only helper: returns `true` if `node` is a statically literal
+/// expression suitable as the "expected" argument of a PHPUnit
+/// assertion.  Recursive: array elements must themselves be literal.
+/// Class constants (`Foo::BAR`) count as literal — they resolve to
+/// build-time values and PHPUnit treats them as expected pinning.
+fn is_php_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    match node.kind() {
+        "string"
+        | "integer"
+        | "float"
+        | "boolean"
+        | "null"
+        | "true"
+        | "false"
+        | "class_constant_access_expression"
+        | "scoped_property_access_expression" => true,
+        "encapsed_string" => !has_interpolation(node),
+        "unary_op_expression" => node
+            .named_child(0)
+            .is_some_and(|c| is_php_assertion_literal_expected(c, bytes)),
+        "array_creation_expression" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(child) = node.named_child(i) else {
+                    return false;
+                };
+                if child.kind() != "array_element_initializer" {
+                    return false;
+                }
+                // array_element_initializer can have one (value) or
+                // two (key, value) named children; both must be literal.
+                for j in 0..child.named_child_count() as u32 {
+                    let Some(grand) = child.named_child(j) else {
+                        return false;
+                    };
+                    if !is_php_assertion_literal_expected(grand, bytes) {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Python-only Layer C4: returns `true` when a deserialization call
+/// (`pickle.loads`, `yaml.load`, `shelve.open`, etc.) sits inside a
+/// test assertion that bounds the result to a literal-expected shape.
+///
+/// Two assertion idioms are recognised:
+/// 1. `unittest.TestCase` style — `self.assertEqual(LITERAL, pickle.loads(b))`,
+///    `self.assertIsNone(pickle.loads(b))`, etc.
+/// 2. pytest plain `assert` — `assert pickle.loads(b) == LITERAL`,
+///    `assert pickle.loads(b) is None`, `assert isinstance(pickle.loads(b),
+///    dict)`, `assert pickle.loads(b)` (truthy), `assert not
+///    pickle.loads(b)` (falsy).
+///
+/// **Why this is a non-actionable site:** the assertion bounds the
+/// deser result to a literal expected; if the blob argument were
+/// attacker-controlled and produced a different shape, the assertion
+/// would fail loudly rather than permit any object-injection side
+/// effect to escape the test boundary.  Python projects ship
+/// round-trip tests for every pickled / YAML-loaded data class, and
+/// every firing on those test bodies is noise.
+///
+/// Conservative recognition:
+/// - the deser call must reach the assertion through allowed wrappers
+///   only (parenthesized_expression, comparison_operator with literal
+///   counterpart, unary `not`, `isinstance(_, TYPE)`, `bool` / `len` /
+///   `type` / `id` single-arg wrap); boolean ops and conditional
+///   expressions break the bound and reject.
+/// - unittest verbs must start with `assert` or `fail` (case-sensitive
+///   per Python conventions) and pass the curated single-arg / multi-
+///   arg bounding tables.
+/// - pytest plain `assert` requires the deser to be the asserted
+///   expression (named_child(0) of `assert_statement`), not the
+///   optional message at named_child(1).
+fn is_python_deser_inside_unittest_assertion(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    // Three entry shapes:
+    //   (a) unittest AST-pattern: `cap_node` is the `pickle` / `yaml` /
+    //       `shelve` identifier under the deser call's `function.object`
+    //       path.  Walk up to the deser call, then up to an outer
+    //       assertion call via `argument_list`.
+    //   (b) unittest CFG-emission: `cap_node` is somewhere inside the
+    //       OUTER assertion call (`self.assertEqual(...)`).  Look for a
+    //       deser sub-call inside its argument_list.
+    //   (c) pytest plain-assert: `cap_node` resolves to the deser call,
+    //       which sits directly under an `assert_statement` (possibly
+    //       through allowed bounding wrappers).
+    let enclosing_call = find_enclosing_call(cap_node);
+    let Some(enclosing_call) = enclosing_call else {
+        return false;
+    };
+
+    // Path (a)/(c): enclosing call IS the deser.
+    if is_python_deser_call(enclosing_call, bytes) {
+        // (a) walk to outer call assertion via argument_list.
+        if let Some(arg_list) = enclosing_call.parent()
+            && arg_list.kind() == "argument_list"
+            && let Some(assertion_call) = arg_list.parent()
+            && assertion_call.kind() == "call"
+            && python_assertion_bounds_deser(assertion_call, enclosing_call, bytes)
+        {
+            return true;
+        }
+        // (c) walk up to assert_statement through allowed wrappers.
+        if python_pytest_assert_bounds_deser(enclosing_call, bytes) {
+            return true;
+        }
+        return false;
+    }
+
+    // Path (b): enclosing call IS an assertion that wraps a deser arg.
+    if let Some(deser_call) = python_find_direct_deser_arg(enclosing_call, bytes) {
+        return python_assertion_bounds_deser(enclosing_call, deser_call, bytes);
+    }
+
+    false
+}
+
+/// Search the assertion call's argument_list for a direct child that
+/// is a recognised deserialization call.  Direct child only — wrapped
+/// expressions (binary, conditional, parenthesized) break the literal
+/// bound and must keep firing.
+fn python_find_direct_deser_arg<'tree>(
+    assertion_call: tree_sitter::Node<'tree>,
+    bytes: &[u8],
+) -> Option<tree_sitter::Node<'tree>> {
+    let arg_list = assertion_call.child_by_field_name("arguments")?;
+    if arg_list.kind() != "argument_list" {
+        return None;
+    }
+    for i in 0..arg_list.named_child_count() as u32 {
+        let Some(c) = arg_list.named_child(i) else {
+            continue;
+        };
+        if c.kind() == "call" && is_python_deser_call(c, bytes) {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// Core bounding check: given an assertion `call` node and the
+/// deser sub-call inside its arg list, decide whether the assertion
+/// bounds the deser result so the call is non-actionable.
+fn python_assertion_bounds_deser(
+    assertion_call: tree_sitter::Node,
+    deser_call: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    let Some(func) = assertion_call.child_by_field_name("function") else {
+        return false;
+    };
+    let name_node = match func.kind() {
+        "attribute" => func
+            .child_by_field_name("attribute")
+            .or_else(|| find_named_child_of_kind(func, "identifier")),
+        "identifier" => Some(func),
+        _ => return false,
+    };
+    let Some(name_node) = name_node else {
+        return false;
+    };
+    let Ok(verb) = std::str::from_utf8(&bytes[name_node.byte_range()]) else {
+        return false;
+    };
+    let lowered = verb.to_ascii_lowercase();
+    if !(lowered.starts_with("assert") || lowered.starts_with("fail")) {
+        return false;
+    }
+
+    let Some(arg_list) = assertion_call.child_by_field_name("arguments") else {
+        return false;
+    };
+    if arg_list.kind() != "argument_list" {
+        return false;
+    }
+    let mut pos_args: Vec<tree_sitter::Node> = Vec::new();
+    let mut deser_pos: Option<usize> = None;
+    for i in 0..arg_list.named_child_count() as u32 {
+        let Some(c) = arg_list.named_child(i) else {
+            continue;
+        };
+        if c.kind() == "keyword_argument" {
+            continue;
+        }
+        if c.id() == deser_call.id() {
+            deser_pos = Some(pos_args.len());
+        }
+        pos_args.push(c);
+    }
+    let Some(deser_pos) = deser_pos else {
+        return false;
+    };
+    if pos_args.is_empty() {
+        return false;
+    }
+
+    if pos_args.len() == 1 {
+        return is_python_unittest_single_arg_bounding_verb(verb);
+    }
+
+    if matches!(verb, "assertIsInstance" | "assertNotIsInstance") {
+        let type_pos = if deser_pos == 0 { 1 } else { 0 };
+        if let Some(type_arg) = pos_args.get(type_pos)
+            && is_python_type_reference(*type_arg)
+        {
+            return true;
+        }
+    }
+
+    if !is_python_unittest_multi_arg_bounding_verb(verb) {
+        return false;
+    }
+    for (i, arg) in pos_args.iter().enumerate() {
+        if i == deser_pos {
+            continue;
+        }
+        if is_python_assertion_literal_expected(*arg, bytes) {
+            return true;
+        }
+    }
+    false
+}
+
+/// pytest plain-`assert` bounding check.  `deser_call` must be the
+/// recognised deser invocation; we walk upward through allowed
+/// wrappers until we reach an `assert_statement` whose first named
+/// child (the asserted expression, NOT the optional message) is the
+/// chain we walked.  Boolean operators and conditional expressions
+/// break the bound (they can short-circuit past the assertion).
+fn python_pytest_assert_bounds_deser(deser_call: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let mut cur = deser_call;
+    for _ in 0..8 {
+        let Some(parent) = cur.parent() else {
+            return false;
+        };
+        match parent.kind() {
+            "assert_statement" => {
+                // Asserted expression sits at named_child(0); the
+                // optional message sits at named_child(1).
+                let first = parent.named_child(0);
+                return first.is_some_and(|n| n.id() == cur.id());
+            }
+            "comparison_operator" => {
+                if !python_comparison_other_side_is_literal(parent, cur, bytes) {
+                    return false;
+                }
+                cur = parent;
+            }
+            // `not deser` parses as `not_operator`; `+/-/~ deser` as
+            // `unary_operator`.  Both leave the deser-side as the sole
+            // operand and bound the assertion result to a scalar.
+            "unary_operator" | "not_operator" => {
+                cur = parent;
+            }
+            "parenthesized_expression" => {
+                cur = parent;
+            }
+            "argument_list" => {
+                let Some(parent_call) = parent.parent() else {
+                    return false;
+                };
+                if parent_call.kind() != "call" {
+                    return false;
+                }
+                let Some(func) = parent_call.child_by_field_name("function") else {
+                    return false;
+                };
+                if func.kind() != "identifier" {
+                    return false;
+                }
+                let Ok(name) = std::str::from_utf8(&bytes[func.byte_range()]) else {
+                    return false;
+                };
+                match name {
+                    "isinstance" => {
+                        // isinstance(deser, TYPE) — deser must be at
+                        // positional index 0 and the second positional
+                        // arg must be a type reference.
+                        let mut pos = 0usize;
+                        let mut found_at: Option<usize> = None;
+                        let mut other_args: Vec<tree_sitter::Node> = Vec::new();
+                        for i in 0..parent.named_child_count() as u32 {
+                            let Some(c) = parent.named_child(i) else {
+                                return false;
+                            };
+                            if c.kind() == "keyword_argument" {
+                                continue;
+                            }
+                            if c.id() == cur.id() {
+                                found_at = Some(pos);
+                            } else {
+                                other_args.push(c);
+                            }
+                            pos += 1;
+                        }
+                        if found_at != Some(0)
+                            || other_args.len() != 1
+                            || !is_python_type_reference(other_args[0])
+                        {
+                            return false;
+                        }
+                    }
+                    "bool" | "len" | "type" | "id" => {
+                        // bool(deser) / len(deser) / type(deser) /
+                        // id(deser) — single-arg scalar wrappers.
+                        let mut named_count = 0usize;
+                        for i in 0..parent.named_child_count() as u32 {
+                            let Some(c) = parent.named_child(i) else {
+                                return false;
+                            };
+                            if c.kind() == "keyword_argument" {
+                                continue;
+                            }
+                            named_count += 1;
+                        }
+                        if named_count != 1 {
+                            return false;
+                        }
+                    }
+                    _ => return false,
+                }
+                cur = parent_call;
+            }
+            // Boolean ops and conditionals can short-circuit and let
+            // a poisoned blob's side effect run before the assertion
+            // fires.  Reject so the original finding stands.
+            "boolean_operator" | "conditional_expression" => return false,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// `comparison_operator` bounding: the other operand(s) must all be
+/// literal expressions (recursive literal classifier).  Operator-kind
+/// children (`is` / `is_not` / `in` / `not_in` are named in
+/// tree-sitter-python) are skipped.  Also requires `deser_side` to
+/// actually be one of the named children, defending against unrelated
+/// chained comparisons.
+fn python_comparison_other_side_is_literal(
+    cmp: tree_sitter::Node,
+    deser_side: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    let mut found_self = false;
+    for i in 0..cmp.named_child_count() as u32 {
+        let Some(c) = cmp.named_child(i) else {
+            return false;
+        };
+        match c.kind() {
+            "is" | "is_not" | "in" | "not_in" => continue,
+            _ => {}
+        }
+        if c.id() == deser_side.id() {
+            found_self = true;
+            continue;
+        }
+        if !is_python_assertion_literal_expected(c, bytes) {
+            return false;
+        }
+    }
+    found_self
+}
+
+/// Returns `true` when `call_node` is a Python `call` whose callee
+/// is a recognised deserialization function (`pickle.loads` /
+/// `pickle.load` / `yaml.load` / `shelve.open` / `marshal.loads` /
+/// `marshal.load`).  Plain identifier callees (`loads(blob)` after
+/// `from pickle import loads`) are also recognised by leaf name to
+/// match the import-shape ambiguity.
+fn is_python_deser_call(call_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Some(func) = call_node.child_by_field_name("function") else {
+        return false;
+    };
+    match func.kind() {
+        "attribute" => {
+            let Some(obj) = func.child_by_field_name("object") else {
+                return false;
+            };
+            let Some(attr) = func.child_by_field_name("attribute") else {
+                return false;
+            };
+            let Ok(obj_text) = std::str::from_utf8(&bytes[obj.byte_range()]) else {
+                return false;
+            };
+            let Ok(attr_text) = std::str::from_utf8(&bytes[attr.byte_range()]) else {
+                return false;
+            };
+            matches!(
+                (obj_text, attr_text),
+                ("pickle", "loads")
+                    | ("pickle", "load")
+                    | ("cPickle", "loads")
+                    | ("cPickle", "load")
+                    | ("yaml", "load")
+                    | ("yaml", "unsafe_load")
+                    | ("shelve", "open")
+                    | ("marshal", "loads")
+                    | ("marshal", "load")
+            )
+        }
+        "identifier" => {
+            let Ok(name) = std::str::from_utf8(&bytes[func.byte_range()]) else {
+                return false;
+            };
+            matches!(name, "loads" | "load" | "unsafe_load")
+        }
+        _ => false,
+    }
+}
+
+/// Single-arg `unittest.TestCase` assertion verbs whose name itself
+/// constrains the inspected value.  When the deser call is the sole
+/// positional argument to one of these, a failed assertion aborts
+/// the test rather than letting an object-injection side effect
+/// escape.
+fn is_python_unittest_single_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "assertIsNone"
+            | "assertIsNotNone"
+            | "assertTrue"
+            | "assertFalse"
+            | "assertNotNone"
+            | "assertNone"
+            | "failIf"
+            | "failUnless"
+            | "assert_"
+    )
+}
+
+/// Multi-arg `unittest.TestCase` assertion verbs that perform a
+/// literal-comparable bound on every value position (equality,
+/// ordering, membership, regex match, type-equality).
+fn is_python_unittest_multi_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "assertEqual"
+            | "assertEquals"
+            | "assertNotEqual"
+            | "assertNotEquals"
+            | "assert_equal"
+            | "assert_not_equal"
+            | "assertIs"
+            | "assertIsNot"
+            | "assertAlmostEqual"
+            | "assertNotAlmostEqual"
+            | "assertGreater"
+            | "assertGreaterEqual"
+            | "assertLess"
+            | "assertLessEqual"
+            | "assertListEqual"
+            | "assertTupleEqual"
+            | "assertDictEqual"
+            | "assertSetEqual"
+            | "assertSequenceEqual"
+            | "assertMultiLineEqual"
+            | "assertCountEqual"
+            | "assertItemsEqual"
+            | "assertIn"
+            | "assertNotIn"
+            | "assertRegex"
+            | "assertNotRegex"
+            | "assertRegexpMatches"
+            | "assertNotRegexpMatches"
+            | "failUnlessEqual"
+            | "failIfEqual"
+    )
+}
+
+/// Recognise a Python type reference suitable as the second arg to
+/// `assertIsInstance(value, type)`.  Accepts builtin/user-class
+/// identifiers, dotted attribute access (`module.Type`), generic
+/// subscripts (`list[int]`), and tuples-of-types.
+fn is_python_type_reference(node: tree_sitter::Node) -> bool {
+    match node.kind() {
+        "identifier" | "attribute" | "subscript" => true,
+        "tuple" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_python_type_reference(c) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Python literal expression suitable as the "expected" argument of
+/// a `unittest.TestCase.assertEqual`-family assertion.  Recursive:
+/// list / tuple / set / dict elements and unary signs on numerics
+/// must themselves be literal.  Identifier references and attribute
+/// access do NOT count (those could resolve to dynamic values).
+fn is_python_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    match node.kind() {
+        "string" => !has_python_string_interpolation(node),
+        "concatenated_string" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_python_assertion_literal_expected(c, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        "integer" | "float" | "true" | "false" | "none" | "ellipsis" => true,
+        "unary_operator" => node
+            .named_child(0)
+            .is_some_and(|c| is_python_assertion_literal_expected(c, bytes)),
+        "list" | "tuple" | "set" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_python_assertion_literal_expected(c, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        "dictionary" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if c.kind() != "pair" {
+                    return false;
+                }
+                let Some(key) = c.child_by_field_name("key") else {
+                    return false;
+                };
+                let Some(value) = c.child_by_field_name("value") else {
+                    return false;
+                };
+                if !is_python_assertion_literal_expected(key, bytes) {
+                    return false;
+                }
+                if !is_python_assertion_literal_expected(value, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Python f-strings are `string` nodes with `interpolation` children.
+/// Treat them as non-literal because the interpolated value is
+/// dynamic.
+fn has_python_string_interpolation(node: tree_sitter::Node) -> bool {
+    for i in 0..node.named_child_count() as u32 {
+        if let Some(c) = node.named_child(i)
+            && c.kind() == "interpolation"
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Ruby Layer C5: returns `true` when a `Marshal.load` / `YAML.load` /
+/// `Psych.load` call sits directly inside a Minitest assertion or RSpec
+/// matcher chain whose other operand is a literal expected.  Same
+/// non-actionability rationale as the Python and PHP recognisers
+/// above: round-trip tests bound the deser result to a literal, a
+/// poisoned blob would fail the assertion, no object-injection side
+/// effect escapes the test boundary.
+///
+/// Conservative recognition:
+/// - Minitest: `assert_equal LIT, deser`, `assert_nil deser`,
+///   `assert deser` (truthy), and the `refute_*` mirrors.
+/// - RSpec: `expect(deser).to eq(LIT)`, `expect(deser).to be_nil`,
+///   `expect(deser).to be_a(TYPE)`, `be_truthy`, `not_to`/`to_not`.
+/// - Old-style `.should ==` chains are NOT recognised (they're
+///   discouraged in modern RSpec and the AST shape parses as a
+///   `binary` rather than the receiver-method-arguments shape).
+fn is_ruby_deser_inside_test_assertion(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let enclosing_call = find_enclosing_call(cap_node);
+    let Some(deser_call) = enclosing_call else {
+        return false;
+    };
+    if !is_ruby_deser_call(deser_call, bytes) {
+        return false;
+    }
+    let Some(arg_list) = deser_call.parent() else {
+        return false;
+    };
+    if arg_list.kind() != "argument_list" {
+        return false;
+    }
+    let Some(outer_call) = arg_list.parent() else {
+        return false;
+    };
+    if outer_call.kind() != "call" {
+        return false;
+    }
+    if outer_call.child_by_field_name("receiver").is_some() {
+        return false;
+    }
+    let Some(method_node) = outer_call.child_by_field_name("method") else {
+        return false;
+    };
+    let Ok(name) = std::str::from_utf8(&bytes[method_node.byte_range()]) else {
+        return false;
+    };
+
+    if is_ruby_minitest_single_arg_bounding_verb(name)
+        || is_ruby_minitest_multi_arg_bounding_verb(name)
+        || matches!(
+            name,
+            "assert_kind_of" | "assert_instance_of" | "refute_kind_of" | "refute_instance_of"
+        )
+    {
+        return ruby_minitest_assertion_bounds_deser(outer_call, deser_call, bytes);
+    }
+
+    if name == "expect" {
+        let Some(rspec_outer) = outer_call.parent() else {
+            return false;
+        };
+        if rspec_outer.kind() != "call" {
+            return false;
+        }
+        let Some(receiver) = rspec_outer.child_by_field_name("receiver") else {
+            return false;
+        };
+        if receiver.id() != outer_call.id() {
+            return false;
+        }
+        let Some(rspec_method) = rspec_outer.child_by_field_name("method") else {
+            return false;
+        };
+        let Ok(verb) = std::str::from_utf8(&bytes[rspec_method.byte_range()]) else {
+            return false;
+        };
+        if !matches!(verb, "to" | "not_to" | "to_not") {
+            return false;
+        }
+        let Some(matcher_args) = rspec_outer.child_by_field_name("arguments") else {
+            return false;
+        };
+        return ruby_rspec_matcher_bounds_deser(matcher_args, bytes);
+    }
+
+    false
+}
+
+/// `Marshal.load` / `YAML.load` / `YAML.unsafe_load` / `Psych.load` /
+/// `Psych.unsafe_load` shape recogniser.  Only the canonical `Module.method`
+/// chain — bare-leaf `load(b)` is ambiguous in Ruby and not flagged as a
+/// pattern hit, so no need to handle it here.
+fn is_ruby_deser_call(call_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Some(receiver) = call_node.child_by_field_name("receiver") else {
+        return false;
+    };
+    let Some(method) = call_node.child_by_field_name("method") else {
+        return false;
+    };
+    if receiver.kind() != "constant" {
+        return false;
+    }
+    let Ok(recv_text) = std::str::from_utf8(&bytes[receiver.byte_range()]) else {
+        return false;
+    };
+    let Ok(method_text) = std::str::from_utf8(&bytes[method.byte_range()]) else {
+        return false;
+    };
+    matches!(
+        (recv_text, method_text),
+        ("Marshal", "load")
+            | ("Marshal", "restore")
+            | ("YAML", "load")
+            | ("YAML", "unsafe_load")
+            | ("YAML", "load_file")
+            | ("Psych", "load")
+            | ("Psych", "unsafe_load")
+            | ("Psych", "load_file")
+    )
+}
+
+fn ruby_minitest_assertion_bounds_deser(
+    call: tree_sitter::Node,
+    deser_call: tree_sitter::Node,
+    bytes: &[u8],
+) -> bool {
+    let Some(method) = call.child_by_field_name("method") else {
+        return false;
+    };
+    let Ok(name) = std::str::from_utf8(&bytes[method.byte_range()]) else {
+        return false;
+    };
+    let Some(arg_list) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut pos_args: Vec<tree_sitter::Node> = Vec::new();
+    let mut deser_pos: Option<usize> = None;
+    for i in 0..arg_list.named_child_count() as u32 {
+        let Some(c) = arg_list.named_child(i) else {
+            continue;
+        };
+        // Minitest verbs accept a trailing message argument as last
+        // positional; both that and the value positions are checked
+        // through the literal tester so kwargs and hash splats are
+        // the only kinds that need to be stripped here.
+        if matches!(c.kind(), "pair" | "hash_splat_argument") {
+            continue;
+        }
+        if c.id() == deser_call.id() {
+            deser_pos = Some(pos_args.len());
+        }
+        pos_args.push(c);
+    }
+    let Some(deser_pos) = deser_pos else {
+        return false;
+    };
+    if pos_args.is_empty() {
+        return false;
+    }
+
+    if pos_args.len() == 1 {
+        return is_ruby_minitest_single_arg_bounding_verb(name);
+    }
+
+    if matches!(
+        name,
+        "assert_kind_of" | "assert_instance_of" | "refute_kind_of" | "refute_instance_of"
+    ) {
+        let type_pos = if deser_pos == 0 { 1 } else { 0 };
+        if let Some(type_arg) = pos_args.get(type_pos)
+            && is_ruby_type_reference(*type_arg)
+        {
+            return true;
+        }
+    }
+
+    if !is_ruby_minitest_multi_arg_bounding_verb(name) {
+        return false;
+    }
+    for (i, arg) in pos_args.iter().enumerate() {
+        if i == deser_pos {
+            continue;
+        }
+        if is_ruby_assertion_literal_expected(*arg, bytes) {
+            return true;
+        }
+    }
+    false
+}
+
+fn ruby_rspec_matcher_bounds_deser(args_node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Some(matcher) = args_node.named_child(0) else {
+        return false;
+    };
+    match matcher.kind() {
+        "identifier" => {
+            // Bare-name matchers: be_nil, be_truthy, be_falsey, etc.
+            let Ok(name) = std::str::from_utf8(&bytes[matcher.byte_range()]) else {
+                return false;
+            };
+            is_ruby_rspec_bare_matcher(name)
+        }
+        "call" => {
+            let Some(method) = matcher.child_by_field_name("method") else {
+                return false;
+            };
+            let Ok(name) = std::str::from_utf8(&bytes[method.byte_range()]) else {
+                return false;
+            };
+            let Some(matcher_args) = matcher.child_by_field_name("arguments") else {
+                return false;
+            };
+            match name {
+                "eq" | "eql" | "equal" | "match_array" | "contain_exactly" => {
+                    let mut any = false;
+                    for i in 0..matcher_args.named_child_count() as u32 {
+                        let Some(c) = matcher_args.named_child(i) else {
+                            return false;
+                        };
+                        if !is_ruby_assertion_literal_expected(c, bytes) {
+                            return false;
+                        }
+                        any = true;
+                    }
+                    any
+                }
+                "be_a" | "be_an" | "be_kind_of" | "be_instance_of" | "be_a_kind_of" => {
+                    let Some(c) = matcher_args.named_child(0) else {
+                        return false;
+                    };
+                    is_ruby_type_reference(c)
+                }
+                "be" => {
+                    // `be(LITERAL)` — `be == LIT` shape isn't representable here,
+                    // accept a single literal arg.
+                    let Some(c) = matcher_args.named_child(0) else {
+                        return false;
+                    };
+                    is_ruby_assertion_literal_expected(c, bytes)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn is_ruby_minitest_single_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "assert" | "assert_nil" | "refute" | "refute_nil" | "assert_empty" | "refute_empty"
+    )
+}
+
+fn is_ruby_minitest_multi_arg_bounding_verb(name: &str) -> bool {
+    matches!(
+        name,
+        "assert_equal"
+            | "assert_not_equal"
+            | "refute_equal"
+            | "assert_in_delta"
+            | "assert_in_epsilon"
+            | "assert_includes"
+            | "refute_includes"
+            | "assert_match"
+            | "refute_match"
+            | "assert_operator"
+            | "refute_operator"
+            | "assert_predicate"
+            | "refute_predicate"
+            | "assert_same"
+            | "refute_same"
+    )
+}
+
+fn is_ruby_rspec_bare_matcher(name: &str) -> bool {
+    matches!(
+        name,
+        "be_nil"
+            | "be_truthy"
+            | "be_falsey"
+            | "be_falsy"
+            | "be_empty"
+            | "be_present"
+            | "be_zero"
+            | "be_positive"
+            | "be_negative"
+    )
+}
+
+fn is_ruby_type_reference(node: tree_sitter::Node) -> bool {
+    matches!(node.kind(), "constant" | "scope_resolution" | "identifier")
+}
+
+/// Recursive Ruby literal classifier.  Strings count when they have no
+/// `interpolation` children (`"hello"` literal yes, `"#{x}"` no).
+/// Symbols, numbers, booleans, `nil`, arrays / hashes (recursive),
+/// negative numeric unary, and ranges with literal endpoints all
+/// qualify.
+fn is_ruby_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> bool {
+    match node.kind() {
+        "string" => !has_ruby_string_interpolation(node),
+        "string_array" | "symbol_array" => true,
+        "integer" | "float" | "true" | "false" | "nil" | "simple_symbol" | "hash_key_symbol"
+        | "rational" | "complex" | "regex" => true,
+        "unary" => node
+            .named_child(0)
+            .is_some_and(|c| is_ruby_assertion_literal_expected(c, bytes)),
+        "array" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_ruby_assertion_literal_expected(c, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        "hash" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(pair) = node.named_child(i) else {
+                    return false;
+                };
+                if pair.kind() != "pair" {
+                    return false;
+                }
+                let Some(key) = pair.child_by_field_name("key") else {
+                    return false;
+                };
+                let Some(value) = pair.child_by_field_name("value") else {
+                    return false;
+                };
+                if !is_ruby_assertion_literal_expected(key, bytes) {
+                    return false;
+                }
+                if !is_ruby_assertion_literal_expected(value, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        "range" => {
+            for i in 0..node.named_child_count() as u32 {
+                let Some(c) = node.named_child(i) else {
+                    return false;
+                };
+                if !is_ruby_assertion_literal_expected(c, bytes) {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn has_ruby_string_interpolation(node: tree_sitter::Node) -> bool {
+    for i in 0..node.named_child_count() as u32 {
+        if let Some(c) = node.named_child(i)
+            && c.kind() == "interpolation"
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// C/C++-only Layer D: structural suppression of buffer-overflow pattern
@@ -3629,15 +5216,18 @@ pub(crate) fn name_is_non_crypto(name: &str) -> bool {
         if prev_pos == 0 {
             return true;
         }
-        let prev_char_orig = bytes_orig[prev_pos - 1] as char;
-        // Word boundary: underscore, digit, etc.
-        if !prev_char_orig.is_ascii_alphabetic() {
+        // Word boundary: previous byte is ASCII non-letter (underscore,
+        // digit, etc.).  Treat non-ASCII (UTF-8 continuation / leading
+        // bytes) conservatively as part of an identifier letter — no
+        // boundary — to avoid mis-classifying `ëhash`-style names that
+        // have no real word break before the suffix.
+        let prev_byte = bytes_orig[prev_pos - 1];
+        if prev_byte.is_ascii() && !prev_byte.is_ascii_alphabetic() {
             return true;
         }
         // CamelCase boundary: suffix starts with an uppercase letter
         // in the original casing (`storageId`, `tableHash`, `sqlMd5`).
-        let suffix_first_orig = bytes_orig[prev_pos] as char;
-        if suffix_first_orig.is_ascii_uppercase() {
+        if bytes_orig[prev_pos].is_ascii_uppercase() {
             return true;
         }
         // Long stand-alone suffix (≥4 chars) — accept without boundary.
@@ -4261,6 +5851,22 @@ pub struct FusedResult {
     /// `GlobalSummaries.router_facts_by_module`; pass 2 resolves them
     /// per-file via `GlobalSummaries::resolve_cross_file_router_deps`.
     pub router_facts: Option<(String, auth_analysis::router_facts::PerFileRouterFacts)>,
+    /// Per-file Phase-09 cross-package import map.  `None` when the
+    /// file's resolver produced no resolved bindings; otherwise
+    /// `Some((namespace, map))` where `namespace` is the file's
+    /// scan-root-relative path (matching `FuncKey::namespace`) and
+    /// `map` maps each local import binding name (e.g. `escapeHtml`)
+    /// to the canonical `FuncKey` of the imported function in its
+    /// own package.  Pass 1 collects these into
+    /// `GlobalSummaries.cross_package_imports_by_namespace`; pass 2's
+    /// `inline_analyse_callee` consults the index when an inlined
+    /// callee body's own `cross_package_imports` Arc is empty (the
+    /// indexed-mode case where bodies round-trip through SQLite and
+    /// the Arc field is `#[serde(skip)]`).
+    pub cross_package_imports: Option<(
+        String,
+        std::sync::Arc<HashMap<String, crate::symbol::FuncKey>>,
+    )>,
 }
 
 /// Parse the file once, build the CFG once, and produce both function
@@ -4297,6 +5903,7 @@ pub fn analyse_file_fused(
             ssa_bodies: vec![],
             auth_summaries: vec![],
             router_facts: None,
+            cross_package_imports: None,
         });
     };
 
@@ -4329,7 +5936,7 @@ pub fn analyse_file_fused(
         crate::taint::ssa_transfer::reset_path_safe_suppressed_spans();
         crate::taint::ssa_transfer::reset_all_validated_spans();
         let (lowered_summaries, lowered_bodies) =
-            parsed.lower_ssa_for_fused(global_summaries, scan_root);
+            parsed.lower_ssa_for_fused(global_summaries, scan_root, cfg.module_graph.as_deref());
         out.extend(parsed.run_cfg_analyses_with_lowered(
             cfg,
             global_summaries,
@@ -4444,6 +6051,29 @@ pub fn analyse_file_fused(
     }
     parsed.source.finalize_diags(&mut out, cfg);
 
+    let cross_package_imports_for_this_file = if parsed.file_cfg.resolved_imports.is_empty() {
+        None
+    } else {
+        let scan_root_str = scan_root.map(|p| p.to_string_lossy());
+        let ns = crate::symbol::namespace_with_package(
+            &parsed.source.file_path_str,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+        );
+        let caller_lang = Lang::from_slug(parsed.source.lang_slug).unwrap_or(Lang::Rust);
+        let map = crate::taint::build_cross_package_func_keys(
+            &parsed.file_cfg.resolved_imports,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+            caller_lang,
+        );
+        if map.is_empty() {
+            None
+        } else {
+            Some((ns, std::sync::Arc::new(map)))
+        }
+    };
+
     Ok(FusedResult {
         summaries,
         diags: out,
@@ -4452,6 +6082,7 @@ pub fn analyse_file_fused(
         ssa_bodies,
         auth_summaries,
         router_facts: router_facts_for_this_file,
+        cross_package_imports: cross_package_imports_for_this_file,
     })
 }
 
@@ -4520,6 +6151,135 @@ fn nonprod_path_detection() {
 }
 
 #[test]
+fn test_file_detection_covers_all_supported_languages() {
+    // JS / TS — the existing surface, kept as a regression guard.
+    assert!(is_test_file(Path::new("src/foo.test.js")));
+    assert!(is_test_file(Path::new("src/foo.test.ts")));
+    assert!(is_test_file(Path::new("src/foo.spec.tsx")));
+    assert!(is_test_file(Path::new("src/foo.test.mjs")));
+    assert!(is_test_file(Path::new("src/__tests__/Component.jsx")));
+
+    // Python.
+    assert!(is_test_file(Path::new("tests/test_login.py")));
+    assert!(is_test_file(Path::new("project/views_test.py")));
+    assert!(is_test_file(Path::new("project/tests/conftest.py")));
+    assert!(is_test_file(Path::new("project/foo_tests.py")));
+
+    // Java (JUnit / TestNG).
+    assert!(is_test_file(Path::new("src/UserTest.java")));
+    assert!(is_test_file(Path::new("src/UserTests.java")));
+    assert!(is_test_file(Path::new("src/UserIT.java")));
+
+    // PHP (PHPUnit).
+    assert!(is_test_file(Path::new(
+        "tests/unit/Gis/GisVisualizationTest.php"
+    )));
+
+    // Ruby (RSpec / Minitest).
+    assert!(is_test_file(Path::new("spec/widget_spec.rb")));
+    assert!(is_test_file(Path::new("test/widget_test.rb")));
+
+    // Go.
+    assert!(is_test_file(Path::new("pkg/auth/login_test.go")));
+
+    // Rust (uncommon but valid).
+    assert!(is_test_file(Path::new("src/parser_test.rs")));
+
+    // C / C++.
+    assert!(is_test_file(Path::new("src/auth_test.c")));
+    assert!(is_test_file(Path::new("src/auth_test.cpp")));
+    assert!(is_test_file(Path::new("tests/test_main.cc")));
+
+    // Production paths must NOT match.
+    assert!(!is_test_file(Path::new("src/main.rs")));
+    assert!(!is_test_file(Path::new("src/UserController.java")));
+    assert!(!is_test_file(Path::new("app/views.py")));
+    assert!(!is_test_file(Path::new("pkg/auth/login.go")));
+    assert!(!is_test_file(Path::new("src/handler.go")));
+    assert!(!is_test_file(Path::new("src/Foo.php")));
+    assert!(!is_test_file(Path::new("src/Controllers/Operations.php")));
+}
+
+#[test]
+fn test_suppressible_pattern_covers_cross_language_noise() {
+    // JS / TS — pre-existing surface, kept as a regression guard.
+    assert!(is_test_suppressible_pattern("js.crypto.math_random"));
+    assert!(is_test_suppressible_pattern("ts.crypto.math_random"));
+    assert!(is_test_suppressible_pattern("js.secrets.hardcoded_secret"));
+    assert!(is_test_suppressible_pattern("ts.transport.fetch_http"));
+
+    // Cross-language extensions added so weak crypto / hardcoded test
+    // tokens / insecure RNG used as fixture seeds do not surface as
+    // findings inside test modules.
+    assert!(is_test_suppressible_pattern("php.crypto.md5"));
+    assert!(is_test_suppressible_pattern("php.crypto.sha1"));
+    assert!(is_test_suppressible_pattern("php.crypto.rand"));
+    assert!(is_test_suppressible_pattern("py.crypto.md5"));
+    assert!(is_test_suppressible_pattern("py.crypto.sha1"));
+    assert!(is_test_suppressible_pattern("rb.crypto.md5"));
+    assert!(is_test_suppressible_pattern("go.crypto.md5"));
+    assert!(is_test_suppressible_pattern("go.crypto.sha1"));
+    assert!(is_test_suppressible_pattern("go.secrets.hardcoded_key"));
+    assert!(is_test_suppressible_pattern("java.crypto.weak_digest"));
+    assert!(is_test_suppressible_pattern("java.crypto.insecure_random"));
+
+    // Other security-relevant patterns must NOT be suppressed in tests:
+    // they capture real attack surface that test fixtures themselves can
+    // demonstrate (deserialization, command injection, taint flows).
+    assert!(!is_test_suppressible_pattern("php.deser.unserialize"));
+    assert!(!is_test_suppressible_pattern("py.deser.pickle_loads"));
+    assert!(!is_test_suppressible_pattern("php.cmdi.system"));
+    assert!(!is_test_suppressible_pattern("taint-unsanitised-flow"));
+    assert!(!is_test_suppressible_pattern("cfg-unguarded-sink"));
+}
+
+#[test]
+fn vendored_asset_path_detection() {
+    // Minified bundle filename markers always trigger.
+    assert!(is_vendored_asset_path(Path::new(
+        "src/main/webapp/scripts/jquery-ui.custom.min.js"
+    )));
+    assert!(is_vendored_asset_path(Path::new("core/assets/htmx.min.js")));
+    assert!(is_vendored_asset_path(Path::new("public/app.bundle.js")));
+    assert!(is_vendored_asset_path(Path::new(
+        "dist/transliteration.umd.min.js"
+    )));
+    assert!(is_vendored_asset_path(Path::new("dist/lib.iife.js")));
+    assert!(is_vendored_asset_path(Path::new("css/site.min.css")));
+
+    // Path-component triggers: bower_components is unambiguous.
+    assert!(is_vendored_asset_path(Path::new(
+        "bower_components/lodash/lodash.js"
+    )));
+
+    // `vendor/` triggers only for front-end asset extensions, so Go module
+    // vendoring under `vendor/` keeps being scanned.
+    assert!(is_vendored_asset_path(Path::new(
+        "core/assets/vendor/jquery/jquery.js"
+    )));
+    assert!(is_vendored_asset_path(Path::new("src/vendors/foo/lib.css")));
+    assert!(!is_vendored_asset_path(Path::new(
+        "vendor/github.com/foo/bar/lib.go"
+    )));
+    assert!(!is_vendored_asset_path(Path::new(
+        "vendor/github.com/foo/bar/lib.rs"
+    )));
+
+    // Hand-authored production paths must NOT match.
+    assert!(!is_vendored_asset_path(Path::new("src/main.js")));
+    assert!(!is_vendored_asset_path(Path::new(
+        "app/components/Button.tsx"
+    )));
+    assert!(!is_vendored_asset_path(Path::new("lib/handler.py")));
+    // Plain `.js` outside vendor/bower with no `.min` suffix stays in scope
+    // even when the directory hints at third-party origin; the engine's
+    // existing `is_nonprod_path` downgrade still fires for those.
+    assert!(!is_vendored_asset_path(Path::new(
+        "webapp/WEB-INF/view/scripts/jquery-ui/jquery-ui-timepicker-addon.js"
+    )));
+}
+
+#[test]
 fn severity_downgrade_works() {
     assert_eq!(downgrade_severity(Severity::High), Severity::Medium);
     assert_eq!(downgrade_severity(Severity::Medium), Severity::Low);
@@ -4583,7 +6343,7 @@ fn constant_arg_suppression_works() {
         let m = matches.next().expect("query should match");
         let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
         assert!(
-            is_call_all_args_literal(cap.node, code),
+            is_call_all_args_literal(cap.node, code, "php"),
             "PHP system(\"echo health-ok\") should have all-literal args"
         );
     }
@@ -4606,7 +6366,7 @@ fn constant_arg_suppression_works() {
         let m = matches.next().expect("query should match");
         let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
         assert!(
-            is_call_all_args_literal(cap.node, code),
+            is_call_all_args_literal(cap.node, code, "python"),
             "Python os.system(\"echo health-ok\") should have all-literal args"
         );
     }
@@ -4629,10 +6389,103 @@ fn constant_arg_suppression_works() {
         let m = matches.next().expect("query should match");
         let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
         assert!(
-            !is_call_all_args_literal(cap.node, code),
+            !is_call_all_args_literal(cap.node, code, "python"),
             "Python os.system(cmd) should NOT have all-literal args"
         );
     }
+
+    // Python: os.system(DEFAULT_CMD) with module-level `DEFAULT_CMD = "ls -la"`
+    // should be suppressed via the file-level scalar binding map.
+    {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+        parser.set_language(&lang).unwrap();
+        let code = b"import os\nDEFAULT_CMD = \"ls -la\"\nos.system(DEFAULT_CMD)\n";
+        let tree = parser.parse(code, None).unwrap();
+        let query_str = r#"(call
+            function: (attribute
+                object: (identifier) @pkg (#eq? @pkg "os")
+                attribute: (identifier) @fn (#eq? @fn "system")))
+            @vuln"#;
+        let query = tree_sitter::Query::new(&lang, query_str).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), code.as_slice());
+        let m = matches.next().expect("query should match");
+        let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
+        assert!(
+            is_call_all_args_literal(cap.node, code, "python"),
+            "os.system(DEFAULT_CMD) with module-level scalar should be suppressed"
+        );
+    }
+
+    // Go: db.Exec(DriverName) with package-level `const DriverName = "postgres"`
+    // should be suppressed via the file-level scalar binding map.
+    {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = tree_sitter::Language::from(tree_sitter_go::LANGUAGE);
+        parser.set_language(&lang).unwrap();
+        let code = b"package main\nconst DriverName = \"postgres\"\nfunc f(db Db) { db.Exec(DriverName) }\n";
+        let tree = parser.parse(code, None).unwrap();
+        let query_str = r#"(call_expression
+            function: (selector_expression
+                field: (field_identifier) @m (#eq? @m "Exec")))
+            @vuln"#;
+        let query = tree_sitter::Query::new(&lang, query_str).unwrap();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&query, tree.root_node(), code.as_slice());
+        let m = matches.next().expect("query should match");
+        let cap = m.captures.iter().find(|c| c.index == 0).unwrap();
+        assert!(
+            is_call_all_args_literal(cap.node, code, "go"),
+            "db.Exec(DriverName) with package-level const should be suppressed"
+        );
+    }
+}
+
+/// Helper that runs a tree-sitter query against Python source and
+/// returns the first capture-0 node, panicking if no match is found.
+/// Used by the Python suppression tests below.
+#[cfg(test)]
+fn first_python_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    query_str: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    let query = tree_sitter::Query::new(&lang, query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    let cap = m
+        .captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0");
+    cap.node
+}
+
+/// Helper that runs a tree-sitter query against Ruby source and returns
+/// the first capture-0 node, panicking if no match is found.  Used by
+/// the Ruby suppression tests below.
+#[cfg(test)]
+fn first_ruby_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    query_str: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE);
+    let query = tree_sitter::Query::new(&lang, query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    let cap = m
+        .captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0");
+    cap.node
 }
 
 /// Helper that runs a tree-sitter query against PHP source and returns the
@@ -4869,6 +6722,609 @@ fn php_unserialize_magic_method_passthrough_recognises_serializable_contract() {
 }
 
 #[test]
+fn php_unserialize_inside_phpunit_assertion_recognises_roundtrip_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(function_call_expression function: (name) @n (#eq? @n "unserialize")) @vuln"#;
+
+    // Canonical assertSame with array literal expected.
+    let code = b"<?php\nclass T { public function t() { $this->assertSame(['a' => 1], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertSame(literal array, unserialize($x)) should be suppressed"
+    );
+
+    // assertEquals with scalar string expected.
+    let code =
+        b"<?php\nclass T { public function t() { $this->assertEquals('hello', unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertEquals(literal string, unserialize($x)) should be suppressed"
+    );
+
+    // Static dispatch: static::assertSame(...).
+    let code =
+        b"<?php\nclass T { public function t() { static::assertSame(['x'], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "static::assertSame should be suppressed"
+    );
+
+    // Self dispatch: self::assertEquals(...).
+    let code =
+        b"<?php\nclass T { public function t() { self::assertEquals(['y'], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "self::assertEquals should be suppressed"
+    );
+
+    // Single-arg verb: assertNull(unserialize($x)).  The verb itself
+    // bounds the result.
+    let code = b"<?php\nclass T { public function t() { $this->assertNull(unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertNull(unserialize($x)) should be suppressed (verb bounds the result)"
+    );
+
+    // Single-arg verb: assertIsArray(unserialize($x)).
+    let code =
+        b"<?php\nclass T { public function t() { $this->assertIsArray(unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertIsArray(unserialize($x)) should be suppressed"
+    );
+
+    // Case-insensitive method name (PHP semantics).
+    let code =
+        b"<?php\nclass T { public function t() { $this->AssertSame(['z'], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "method name should match case-insensitively"
+    );
+
+    // Free function `unserialize` outside any assertion: keep firing.
+    let code = b"<?php\n$x = unserialize($_GET['blob']);\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "unserialize outside any assertion should NOT be suppressed"
+    );
+
+    // assertEquals with a NON-literal first arg ($computed) keeps firing —
+    // the result is not statically pinned.
+    let code =
+        b"<?php\nclass T { public function t($e) { $this->assertEquals($e, unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "assertEquals($computed, unserialize($x)) should NOT be suppressed"
+    );
+
+    // Single-arg unrecognised assertion verb keeps firing.
+    let code = b"<?php\nclass T { public function t() { $this->assertSomethingCustom(unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "1-arg unknown assertion verb should NOT be suppressed"
+    );
+
+    // Wrapping in another expression (binary, ternary) breaks the
+    // bound — unserialize is no longer the direct argument.  Conservative.
+    let code = b"<?php\nclass T { public function t() { $this->assertSame(['x'], unserialize($b) ?: []); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "wrapped (ternary) unserialize argument should NOT be suppressed"
+    );
+
+    // Method call whose name does NOT start with `assert` keeps firing.
+    let code = b"<?php\nclass T { public function t() { $this->log(['x'], unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "non-assert method should NOT be suppressed"
+    );
+
+    // First arg is a literal but it's a single-arg call (no actual) — defensive.
+    let code = b"<?php\nclass T { public function t() { $this->assertSame(unserialize($b)); } }\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_php_capture(&tree, code, q);
+    assert!(
+        !is_php_unserialize_inside_phpunit_assertion(cap, code),
+        "single-arg `assertSame(unserialize($x))` should NOT be suppressed (no expected)"
+    );
+}
+
+#[test]
+fn python_deser_inside_unittest_assertion_recognises_roundtrip_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+    // Pickle pattern equivalent: capture the `pickle` identifier under
+    // the deser call's `function.object` path.
+    let q = r#"(call function: (attribute object: (identifier) @pkg (#eq? @pkg "pickle") attribute: (identifier) @fn (#match? @fn "^loads?$"))) @vuln"#;
+
+    // Canonical assertEqual with dict literal expected.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEqual({'a': 1}, pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEqual(dict literal, pickle.loads(b)) should be suppressed"
+    );
+
+    // assertEquals with list literal expected.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEquals([1, 2, 3], pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEquals(list literal, pickle.loads(b)) should be suppressed"
+    );
+
+    // pytest-style ordering: deser first, literal second.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEqual(pickle.loads(b), {'k': 'v'})\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEqual(pickle.loads(b), dict literal) should be suppressed"
+    );
+
+    // Unary negative literal.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEqual(-7, pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEqual(unary-negative literal, pickle.loads(b)) should be suppressed"
+    );
+
+    // Single-arg verb: assertIsNone.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertIsNone(pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertIsNone(pickle.loads(b)) should be suppressed (verb bounds)"
+    );
+
+    // Single-arg verb: assertTrue.
+    let code =
+        b"import pickle\nclass T:\n    def t(self, b):\n        self.assertTrue(pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertTrue(pickle.loads(b)) should be suppressed (verb bounds)"
+    );
+
+    // assertIsInstance(value, type).
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertIsInstance(pickle.loads(b), dict)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assertIsInstance(pickle.loads(b), dict) should be suppressed (type bounds)"
+    );
+
+    // msg=... kwarg: keep firing? actually no, msg is just informational; bound is satisfied.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertEqual([1], pickle.loads(b), msg='preserve')\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "msg= kwarg should not break the literal-positional bound"
+    );
+
+    // Free function shape (`from pickle import loads`) covered via leaf-
+    // name match.  Use a different query that captures the identifier
+    // call shape.
+    let code_ff = b"from pickle import loads\nclass T:\n    def t(self, b):\n        self.assertEqual([1], loads(b))\n";
+    let tree = parser.parse(code_ff, None).unwrap();
+    // For free-function calls, use a query matching the bare identifier callee.
+    let q2 = r#"(call function: (identifier) @fn (#match? @fn "^loads?$")) @vuln"#;
+    let cap = first_python_capture(&tree, code_ff, q2);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code_ff),
+        "assertEqual(literal, loads(b)) for `from pickle import loads` should be suppressed"
+    );
+
+    // Production call (no assertion wrap) keeps firing.
+    let code = b"import pickle\ndef handler(blob):\n    return pickle.loads(blob)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "production pickle.loads should NOT be suppressed"
+    );
+
+    // Non-literal expected ($computed) keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b, expected):\n        self.assertEqual(expected, pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assertEqual(non-literal, pickle.loads(b)) should NOT be suppressed"
+    );
+
+    // Non-assert verb keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.checkEqual([1], pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "checkEqual (non-assert verb) should NOT be suppressed"
+    );
+
+    // Wrapped in ternary: bound is broken.
+    let code = b"import pickle\nclass T:\n    def t(self, b, c):\n        self.assertEqual([1], pickle.loads(b) if c else [])\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "ternary wrapping pickle.loads should NOT be suppressed"
+    );
+
+    // assertCustom (unrecognised single-arg verb) keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertCustomCheck(pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assertCustomCheck single-arg should NOT be suppressed (verb not in bounding set)"
+    );
+
+    // assertEqual where both args are non-literal keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b, e):\n        self.assertEqual(e, pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "two non-literal positional args should NOT be suppressed"
+    );
+
+    // f-string expected (interpolation) keeps firing.
+    let code = b"import pickle\nclass T:\n    def t(self, b, x):\n        self.assertEqual(f'pre-{x}', pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "f-string expected (interpolation) should NOT be suppressed"
+    );
+}
+
+/// Pytest plain-`assert` round-trip recogniser invariants.  Same
+/// entry point as the unittest test above (the function handles both
+/// idioms) but the asserted shape sits under an `assert_statement`
+/// instead of a `unittest.TestCase` method call.
+#[test]
+fn python_deser_inside_pytest_assert_recognises_roundtrip_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_python::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+    let q = r#"(call function: (attribute object: (identifier) @pkg (#eq? @pkg "pickle") attribute: (identifier) @fn (#match? @fn "^loads?$"))) @vuln"#;
+
+    // assert deser == LITERAL
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b) == [1, 2, 3]\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser == [literal] should be suppressed"
+    );
+
+    // assert deser is None
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b) is None\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser is None should be suppressed"
+    );
+
+    // assert deser in [LITERAL, ...]
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b) in [1, 2, 3]\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser in [literal] should be suppressed"
+    );
+
+    // assert deser  (truthy bare)
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser (truthy bare) should be suppressed"
+    );
+
+    // assert not deser
+    let code = b"import pickle\ndef t(b):\n    assert not pickle.loads(b)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert not deser should be suppressed"
+    );
+
+    // assert isinstance(deser, dict)
+    let code = b"import pickle\ndef t(b):\n    assert isinstance(pickle.loads(b), dict)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert isinstance(deser, dict) should be suppressed"
+    );
+
+    // assert (deser == LITERAL) — paren wrap.
+    let code = b"import pickle\ndef t(b):\n    assert (pickle.loads(b) == [1])\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert (deser == literal) with paren wrap should be suppressed"
+    );
+
+    // assert deser == LITERAL, "msg"
+    let code = b"import pickle\ndef t(b):\n    assert pickle.loads(b) == 1, 'round trip'\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser == literal, msg should be suppressed (msg is named_child(1))"
+    );
+
+    // assert bool(deser)
+    let code = b"import pickle\ndef t(b):\n    assert bool(pickle.loads(b))\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert bool(deser) should be suppressed"
+    );
+
+    // assert len(deser) == 3
+    let code = b"import pickle\ndef t(b):\n    assert len(pickle.loads(b)) == 3\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert len(deser) == int_literal should be suppressed"
+    );
+
+    // Negatives ----------------------------------------------------------
+
+    // assert deser and X — boolean op short-circuits, can run side effect.
+    let code = b"import pickle\ndef t(b, x):\n    assert pickle.loads(b) and x\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser and X (boolean op) should NOT be suppressed"
+    );
+
+    // assert deser if cond else X — conditional short-circuits.
+    let code = b"import pickle\ndef t(b, c):\n    assert (pickle.loads(b) if c else 0)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assert (deser if c else x) should NOT be suppressed"
+    );
+
+    // assert wrapper(deser) == LITERAL — arbitrary user fn breaks bound.
+    let code = b"import pickle\ndef t(b):\n    assert wrapper(pickle.loads(b)) == [1]\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assert wrapper(deser) == literal should NOT be suppressed"
+    );
+
+    // assert deser == non-literal — bound depends on dynamic var.
+    let code = b"import pickle\ndef t(b, e):\n    assert pickle.loads(b) == e\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "assert deser == non_literal should NOT be suppressed"
+    );
+
+    // assert isinstance(deser, type_var) where type is dynamic.
+    let code = b"import pickle\ndef t(b):\n    t = some_type_factory()\n    assert isinstance(pickle.loads(b), t)\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    // `t` is an `identifier` and `is_python_type_reference` accepts
+    // identifier (assertIsInstance treats user-class identifiers as
+    // type references), so this case stays suppressed.  Pinned to
+    // document the matching behaviour rather than tighten it.
+    assert!(
+        is_python_deser_inside_unittest_assertion(cap, code),
+        "assert isinstance(deser, identifier) treats identifier as type ref"
+    );
+
+    // Production assignment-then-assert: deser sits in `actual = pickle.loads(b)`,
+    // not under the assert.  Must keep firing.
+    let code =
+        b"import pickle\ndef t(b):\n    actual = pickle.loads(b)\n    assert actual == [1]\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_python_capture(&tree, code, q);
+    assert!(
+        !is_python_deser_inside_unittest_assertion(cap, code),
+        "deser bound to a name then asserted should NOT be suppressed (assignment context)"
+    );
+}
+
+/// Ruby Layer C5 invariants.  The recogniser must accept Minitest
+/// `assert_*`/`refute_*` shapes, RSpec `expect(_).to MATCHER` shapes,
+/// and reject production calls / dynamic-expected / unrelated wrappers.
+#[test]
+fn ruby_deser_inside_test_assertion_recognises_roundtrip_shapes() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+    // Capture the `Marshal` constant under the deser call's `receiver` field.
+    let q = r#"(call receiver: (constant) @recv (#eq? @recv "Marshal") method: (identifier) @m (#eq? @m "load")) @vuln"#;
+
+    // Minitest assert_equal LITERAL, deser
+    let code = b"class T\n  def t(b)\n    assert_equal [1, 2, 3], Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "assert_equal [literal], Marshal.load(b) should be suppressed"
+    );
+
+    // Minitest assert_nil
+    let code = b"class T\n  def t(b)\n    assert_nil Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "assert_nil Marshal.load(b) should be suppressed"
+    );
+
+    // Minitest single-arg truthy assert
+    let code = b"class T\n  def t(b)\n    assert Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "assert Marshal.load(b) (truthy) should be suppressed"
+    );
+
+    // Minitest assert_kind_of TYPE, deser
+    let code = b"class T\n  def t(b)\n    assert_kind_of Array, Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "assert_kind_of TYPE, deser should be suppressed"
+    );
+
+    // Minitest refute_equal
+    let code = b"class T\n  def t(b)\n    refute_equal [9, 9], Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "refute_equal [literal], deser should be suppressed"
+    );
+
+    // RSpec expect(deser).to eq(LITERAL)
+    let code =
+        b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to eq([1, 2, 3])\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).to eq([literal]) should be suppressed"
+    );
+
+    // RSpec expect(deser).to be_nil
+    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to be_nil\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).to be_nil should be suppressed"
+    );
+
+    // RSpec expect(deser).to be_a(TYPE)
+    let code =
+        b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to be_a(Array)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).to be_a(TYPE) should be suppressed"
+    );
+
+    // RSpec not_to be_nil
+    let code =
+        b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).not_to be_nil\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).not_to be_nil should be suppressed"
+    );
+
+    // Negatives ----------------------------------------------------------
+
+    // Production call (no assertion) keeps firing.
+    let code = b"def handler(blob)\n  Marshal.load(blob)\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "production Marshal.load should NOT be suppressed"
+    );
+
+    // assert_equal with dynamic expected keeps firing.
+    let code =
+        b"class T\n  def t(b, expected)\n    assert_equal expected, Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "assert_equal non_literal, deser should NOT be suppressed"
+    );
+
+    // RSpec expect(deser).to eq(dynamic) keeps firing.
+    let code =
+        b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to eq(expected)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "expect(deser).to eq(non_literal) should NOT be suppressed"
+    );
+
+    // Custom unrecognised verb (not in the bounding sets) keeps firing.
+    let code = b"class T\n  def t(b)\n    custom_check Marshal.load(b)\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "non-assertion-verb wrap should NOT be suppressed"
+    );
+
+    // RSpec .should == LIT (old-style, parses as `binary`, not the
+    // expected receiver-method-arguments shape) keeps firing.
+    let code = b"describe X do\n  it 'x' do\n    Marshal.load(b).should == [1]\n  end\nend\n";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_ruby_capture(&tree, code, q);
+    assert!(
+        !is_ruby_deser_inside_test_assertion(cap, code),
+        "old-style .should == LIT should NOT be suppressed"
+    );
+}
+
+#[test]
 fn php_weak_hash_non_crypto_use_recognises_canonical_shapes() {
     let mut parser = tree_sitter::Parser::new();
     let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
@@ -5052,6 +7508,17 @@ fn name_is_non_crypto_recognises_word_boundary_suffixes() {
     assert!(!name_is_non_crypto("result"));
     assert!(!name_is_non_crypto("output"));
     assert!(!name_is_non_crypto(""));
+
+    // Non-ASCII before a short suffix should NOT be treated as a word
+    // boundary (no false-positive classification on identifiers like
+    // `tëhash` whose previous char is a Unicode letter, not punctuation).
+    assert!(!name_is_non_crypto("tëid"));
+    // Non-ASCII before a long (≥4) suffix still classifies via the
+    // length fallback, matching the `columnnameshashes` shape.
+    assert!(name_is_non_crypto("tëhash"));
+    // Non-ASCII before a real underscore-prefixed suffix continues to
+    // classify via the underscore boundary.
+    assert!(name_is_non_crypto("tablë_id"));
 }
 
 #[test]
@@ -5457,5 +7924,85 @@ fn is_literal_node_rejects_python_fstring_with_interpolation() {
     assert!(
         is_literal_node(rhs, code),
         "plain string literal must be classified as literal"
+    );
+}
+
+#[cfg(test)]
+fn first_java_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    query_str: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_java::LANGUAGE);
+    let query = tree_sitter::Query::new(&lang, query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    m.captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0")
+        .node
+}
+
+#[test]
+fn is_call_all_args_literal_recognises_java_call_kinds() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_java::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+
+    // method_invocation with literal arg, Layer A must suppress.
+    let code = b"class T { void f() throws Exception { Class.forName(\"com.foo.Bar\"); } }";
+    let tree = parser.parse(code, None).unwrap();
+    let q = r#"(method_invocation
+                 object: (identifier) @c (#eq? @c "Class")
+                 name: (identifier) @id (#eq? @id "forName"))
+               @vuln"#;
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        is_call_all_args_literal(cap, code, "java"),
+        "method_invocation with literal arg must trigger Layer A suppression"
+    );
+
+    // method_invocation with class-constant arg, Layer A must suppress
+    // via the file-level scalar-binding lookup (session 0014/0015).
+    let code = b"class T {\n  private static final String D = \"com.foo.Bar\";\n  void f() throws Exception { Class.forName(D); }\n}";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        is_call_all_args_literal(cap, code, "java"),
+        "method_invocation with class-const arg must trigger Layer A suppression"
+    );
+
+    // method_invocation with parameter arg, Layer A must NOT suppress.
+    let code = b"class T { void f(String s) throws Exception { Class.forName(s); } }";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        !is_call_all_args_literal(cap, code, "java"),
+        "method_invocation with non-literal arg must NOT trigger Layer A suppression"
+    );
+
+    // object_creation_expression with empty args (`new Yaml()` shape).
+    // `has_any_arg` stays false so the gate also returns false: empty
+    // arg lists do not satisfy "all args are literal" (arg-less calls
+    // can still carry side-effect risk via the constructor itself).
+    let code = b"class T { Object f() { return new Object(); } }";
+    let tree = parser.parse(code, None).unwrap();
+    let q = r#"(object_creation_expression) @vuln"#;
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        !is_call_all_args_literal(cap, code, "java"),
+        "object_creation_expression with empty args must NOT trigger Layer A"
+    );
+
+    // object_creation_expression with literal arg, must suppress.
+    let code = b"class T { Object f() { return new String(\"literal\"); } }";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        is_call_all_args_literal(cap, code, "java"),
+        "object_creation_expression with literal arg must trigger Layer A"
     );
 }

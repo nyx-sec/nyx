@@ -373,6 +373,22 @@ pub struct SsaBody {
     /// produced before this field existed.
     #[serde(default)]
     pub synthetic_externals: HashSet<SsaValue>,
+    /// SSA values whose [`SsaOp::Assign`] is a slot-scoped binding from a
+    /// bare-array destructure rewrite (see `bare_array_ops` in
+    /// [`crate::ssa::lower`]). The Assign transfer arm in
+    /// [`crate::taint::ssa_transfer`] consults this set to skip the
+    /// `info.taint.labels` Source pickup that would otherwise bleed the
+    /// outer destructure node's Source label into the slot-scoped binding.
+    ///
+    /// Operand union still runs normally, so transitive taint via an
+    /// inner ident (e.g. `helper(tainted_local)` in slot 1 of
+    /// `[req.body.other, helper(tainted_local)]`) propagates through the
+    /// Assign's operands without inheriting the outer-node Source.
+    ///
+    /// Empty by default; only the per-slot kill arm in the bare-array
+    /// destructure lowering populates this set.
+    #[serde(default)]
+    pub slot_scoped_assigns: HashSet<SsaValue>,
 }
 
 impl SsaBody {
@@ -581,6 +597,7 @@ mod tests {
             field_interner: FieldInterner::new(),
             field_writes: HashMap::new(),
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         let fid = body.intern_field("mu");
         body.blocks[0].body.push(SsaInst {

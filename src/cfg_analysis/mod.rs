@@ -208,6 +208,13 @@ pub struct AnalysisContext<'a> {
     /// in a callback the per-body CFG can't observe.  When `None`, no
     /// closure-based suppression is applied.
     pub closure_released_var_names: Option<&'a std::collections::HashSet<String>>,
+    /// Class-level constant scalars discovered for this file, keyed by
+    /// the unqualified field name (Java `static final TYPE NAME = LIT;`).
+    /// Used by `cfg_analysis::guards` to treat identifiers referencing
+    /// these fields as compile-time constants for the
+    /// `cfg-unguarded-sink` all-args-constant check.  `None` outside Java
+    /// and on call sites that have not threaded the map through.
+    pub class_constant_scalars: Option<&'a std::collections::HashMap<String, String>>,
 }
 
 pub trait CfgAnalysis {

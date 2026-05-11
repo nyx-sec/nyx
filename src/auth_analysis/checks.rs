@@ -90,6 +90,13 @@ fn check_ownership_gaps(
             if op.sink_class.is_some_and(|c| !c.is_auth_relevant()) {
                 continue;
             }
+            // NextAuth callbacks are themselves the authentication
+            // boundary, both reads and mutations inside them operate on
+            // identity context, so suppress regardless of op kind.
+            // Other auth helpers stay read-only-suppressed.
+            if is_nextauth_callback_unit(unit) {
+                continue;
+            }
             if op.kind == OperationKind::Read && unit_is_auth_helper(unit) {
                 continue;
             }
@@ -103,6 +110,40 @@ fn check_ownership_gaps(
             }
             if op.kind == OperationKind::Read || op.kind == OperationKind::Mutation {
                 if is_delegated_read_with_actor_context(unit, op, &relevant_subjects) {
+                    continue;
+                }
+                // Owner-equality scoping: when the same call composes a
+                // foreign-id subject with an actor-context subject (e.g.
+                // `db.findFirst({where: {id: input.id, userId: ctx.user.id}})`
+                // in a TRPC handler), the actor pin tenant-scopes the
+                // query to the authenticated user.  The relevant_subjects
+                // filter has already excluded actor-context entries; if
+                // the unfiltered op.subjects still carries an
+                // actor-context subject, the missing co-binding is the
+                // owner-eq witness.
+                //
+                // `is_actor_context_subject` is constrained: it only
+                // accepts subjects whose base is in
+                // `is_self_scoped_session_base` (`req.user`,
+                // `ctx.session.user`, etc.) OR in the per-unit
+                // `self_scoped_session_bases` set populated by the
+                // typed-extractor pre-pass (TRPC alias matches,
+                // NextAuth callback formals).  Generic `user.id` /
+                // `me.id` does not qualify, so unrelated co-occurrences
+                // do not over-suppress.
+                //
+                // Trade-off: a privesc-via-`data` shape like
+                // `db.update({where: {id: input.id}, data: {ownerId: ctx.user.id}})`
+                // would also be suppressed because both subjects appear
+                // at the call site without arg-position info.  That
+                // pattern is rare and would need its own rule.  The
+                // owner-eq common case removes ~70 cal.com FPs and
+                // matches the canonical Express / TRPC scoping idiom.
+                let has_actor_co_subject = op
+                    .subjects
+                    .iter()
+                    .any(|s| is_actor_context_subject(s, unit));
+                if has_actor_co_subject {
                     continue;
                 }
                 if !has_prior_subject_auth(unit, op, &relevant_subjects) {
@@ -879,7 +920,7 @@ fn unit_is_auth_helper(unit: &AnalysisUnit) -> bool {
         .filter(|c| c.is_ascii_alphanumeric())
         .map(|c| c.to_ascii_lowercase())
         .collect();
-    (normalized.starts_with("has")
+    if (normalized.starts_with("has")
         || normalized.starts_with("check")
         || normalized.starts_with("require")
         || normalized.starts_with("verify")
@@ -891,6 +932,62 @@ fn unit_is_auth_helper(unit: &AnalysisUnit) -> bool {
             || normalized.contains("access")
             || normalized.contains("permission")
             || normalized.contains("authoriz"))
+    {
+        return true;
+    }
+    is_nextauth_callback_unit(unit)
+}
+
+/// True when this unit IS, or LEXICALLY CONTAINS, a NextAuth
+/// (next-auth) callback definition.
+///
+/// Two shapes are recognised:
+///   * A unit whose name is `signIn` / `session` / `jwt` / `redirect` /
+///     `authorize` / `authorized` AND whose destructured params include
+///     a canonical NextAuth formal (`user` / `token` / `account` /
+///     `profile` / `credentials` / `session` / `trigger`).  Matches the
+///     flat `export const authOptions = { callbacks: { ... } }` shape
+///     where the top-level unit-creation pass walks into the object
+///     literal and produces one unit per method.
+///   * A unit whose body contains an object literal with a
+///     `callbacks: { ... }` property naming at least one NextAuth
+///     callback (set by `body_returns_nextauth_options` at extract
+///     time).  Matches the `export const getOptions = (...) =>
+///     ({ callbacks: { ... } })` shape where the inner callback
+///     methods do not become their own units — operations from their
+///     bodies get accumulated under the outer arrow's unit, so the
+///     outer unit's name (`getOptions`) is the only handle the
+///     suppressor can latch onto.
+///
+/// NextAuth callbacks ARE the authentication boundary; operations on
+/// `user.id` / `existingUser.id` inside them resolve the authenticated
+/// identity, they do not look up a tenant-scoped resource based on
+/// untrusted input.
+fn is_nextauth_callback_unit(unit: &AnalysisUnit) -> bool {
+    if unit.is_nextauth_options_factory {
+        return true;
+    }
+    let Some(name) = unit.name.as_deref() else {
+        return false;
+    };
+    if !matches!(
+        name,
+        "signIn" | "session" | "jwt" | "redirect" | "authorize" | "authorized"
+    ) {
+        return false;
+    }
+    const SIGNAL_PARAMS: &[&str] = &[
+        "user",
+        "token",
+        "account",
+        "profile",
+        "credentials",
+        "session",
+        "trigger",
+    ];
+    unit.params
+        .iter()
+        .any(|p| SIGNAL_PARAMS.contains(&p.as_str()))
 }
 
 fn is_delegated_read_with_actor_context(
@@ -1118,6 +1215,7 @@ mod tests {
             typed_bounded_vars: HashSet::new(),
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
+            is_nextauth_options_factory: false,
         }
     }
 

@@ -32,7 +32,37 @@ use nyx_scanner::database::index::Indexer;
 use nyx_scanner::utils::config::AnalysisMode;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+// Indexed scan helpers each open a fresh SQLite r2d2 pool (default max_size
+// ~ ncpus+4) plus rayon-driven tree-sitter parsing across the fixture tree.
+// Cargo runs every `#[test]` in this binary in parallel by default, so 30+
+// indexed scans race to acquire file descriptors at once.  Each pooled
+// SQLite WAL connection costs ~3 fds (db + -wal + -shm); on sandboxes with
+// a low per-process fd limit this exhausts EMFILE and surfaces as
+// `Os { code: 24, … "Too many open files" }` panics from `build_index` /
+// `scan_with_index_parallel`.
+//
+// Cap the pool to a small number of connections via `NYX_INDEX_POOL_MAX` so
+// each parallel test holds far fewer fds.  The cap is set once before any
+// indexed scan runs, which keeps the suite embarrassingly parallel
+// (previous workaround serialised every indexed scan via a process-wide
+// mutex; that doubled wall-clock time on multi-core hosts).
+fn ensure_index_pool_cap() {
+    static SET: OnceLock<()> = OnceLock::new();
+    SET.get_or_init(|| {
+        if std::env::var_os("NYX_INDEX_POOL_MAX").is_none() {
+            // SAFETY: We set the env var exactly once, inside `OnceLock`'s
+            // single-init barrier.  No other thread in this test binary
+            // has called `Indexer::init` yet (the helpers call
+            // `ensure_index_pool_cap()` before any `init`), so no reader
+            // is concurrently observing this env value.
+            unsafe {
+                std::env::set_var("NYX_INDEX_POOL_MAX", "2");
+            }
+        }
+    });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Fingerprint
@@ -101,6 +131,7 @@ fn scan_no_index(fixture_root: &Path, mode: AnalysisMode) -> Vec<Diag> {
 
 /// Cold indexed scan: fresh DB, build index, then run indexed scan.
 fn scan_indexed_cold(fixture_root: &Path, mode: AnalysisMode) -> (Vec<Diag>, PathBuf) {
+    ensure_index_pool_cap();
     let cfg = test_config(mode);
     let td = tempfile::tempdir().expect("tempdir");
     let db_path = td.path().join("parity.sqlite");
@@ -122,6 +153,7 @@ fn scan_indexed_cold(fixture_root: &Path, mode: AnalysisMode) -> (Vec<Diag>, Pat
 /// same pool.  The second scan tests that cached artefacts don't perturb
 /// output.
 fn scan_indexed_warm(fixture_root: &Path, mode: AnalysisMode) -> Vec<Diag> {
+    ensure_index_pool_cap();
     let cfg = test_config(mode);
     let td = tempfile::tempdir().expect("tempdir");
     let db_path = td.path().join("parity.sqlite");

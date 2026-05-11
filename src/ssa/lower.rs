@@ -257,6 +257,7 @@ fn lower_to_ssa_inner(
         field_interner,
         field_writes,
         synthetic_externals,
+        slot_scoped_assigns,
     ) = rename_variables(
         cfg,
         &blocks_nodes,
@@ -326,6 +327,7 @@ fn lower_to_ssa_inner(
         field_interner,
         field_writes,
         synthetic_externals,
+        slot_scoped_assigns,
     };
 
     // 9. Catch-block reachability invariant.
@@ -957,6 +959,7 @@ fn rename_variables(
     crate::ssa::ir::FieldInterner,
     HashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)>,
     HashSet<SsaValue>,
+    HashSet<SsaValue>,
 ) {
     let num_blocks = blocks_nodes.len();
     let mut next_value: u32 = 0;
@@ -973,6 +976,10 @@ fn rename_variables(
     // Populated below at the synthetic-Assign emission site.  Read by
     // the taint engine to lift the assign into a structural field WRITE.
     let mut field_writes: HashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)> = HashMap::new();
+    // SSA values whose `Assign` comes from a bare-array destructure
+    // slot-scoped kill arm; the taint engine consults this set to skip
+    // outer-node Source label pickup while still unioning operand taint.
+    let mut slot_scoped_assigns: HashSet<SsaValue> = HashSet::new();
 
     // Per-variable rename stacks
     let mut var_stacks: HashMap<String, Vec<SsaValue>> = HashMap::new();
@@ -1041,6 +1048,7 @@ fn rename_variables(
         nop_nodes: &HashSet<NodeIndex>,
         field_interner: &mut crate::ssa::ir::FieldInterner,
         field_writes: &mut HashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)>,
+        slot_scoped_assigns: &mut HashSet<SsaValue>,
     ) {
         let block_id = BlockId(block_idx as u32);
 
@@ -1258,6 +1266,27 @@ fn rename_variables(
                 } else {
                     SsaOp::Assign(uses)
                 }
+            } else if info.is_await_forward
+                && info.call.callee.is_none()
+                && !info.taint.uses.is_empty()
+            {
+                // `await x` resolves to the same value as `x` — model as a 1:1
+                // copy so taint, origins, and abstract-domain facts forward
+                // unchanged.  Gated on `callee.is_none()` so an await-wrapped
+                // call still lowers as a Call op rather than being collapsed
+                // to Assign (today CFG splits `await foo(x)` into two nodes,
+                // but the guard keeps the invariant explicit).
+                let uses: SmallVec<[SsaValue; 4]> = info
+                    .taint
+                    .uses
+                    .iter()
+                    .filter_map(|u| var_stacks.get(u).and_then(|s| s.last().copied()))
+                    .collect();
+                if uses.is_empty() {
+                    SsaOp::Nop
+                } else {
+                    SsaOp::Assign(uses)
+                }
             } else if matches!(
                 info.kind,
                 StmtKind::Entry
@@ -1344,15 +1373,311 @@ fn rename_variables(
 
             cfg_node_map.insert(node, v);
 
-            // Clone op for potential extra_defines before moving into SsaInst
-            let primary_op_for_extras = if info.taint.extra_defines.is_empty() {
+            // Promise.all-style array-destructure precision: when a CallWrapper
+            // node binds an array_pattern (`const [a, b] = await Promise.all(
+            // [x, y])` or `let (a, b) = tokio::join!(x, y)`) and the value is a
+            // promise combinator that produces an array/tuple of per-element
+            // results (`Promise.all`, `Promise.allSettled`, `asyncio.gather`,
+            // `tokio::join!` and friends), rewrite the per-binding SSA so each
+            // binding sees only its own index's taint instead of the scalar
+            // union that `try_apply_promise_combinator` would produce.
+            //
+            // Two argument shapes are supported:
+            //   (a) literal-array (JS/Python): one positional arg whose
+            //       collected idents represent the array elements in order,
+            //       e.g. `Promise.all([x, y])` → args = [[x, y]].
+            //   (b) positional (Rust macros): N positional args, each one
+            //       ident, e.g. `tokio::join!(x, y)` → args = [[x], [y]].
+            //
+            // `Promise.race` and `Promise.resolve` are excluded: the awaited
+            // value of a race is whichever promise wins (a single value, not
+            // an array), and destructuring that value index-by-index does not
+            // correspond to the args.
+            // The rewrite fires when:
+            //   - the call is a promise combinator that produces an array of
+            //     per-element results (`All` / `AllSettled`), AND
+            //   - the LHS destructures into >= 2 bindings (sequential case
+            //     where `extra_defines` is non-empty), OR
+            //   - the LHS is an array_pattern with at least one skip slot
+            //     (`array_pattern_indices` is non-empty, even if `extra_defines`
+            //     itself is empty — `const [, b]` is a single-binding pattern
+            //     whose index is 1, not 0).
+            let is_combinator_rewrite_target = matches!(
+                info.call
+                    .callee
+                    .as_deref()
+                    .and_then(crate::labels::is_any_promise_combinator),
+                Some(
+                    crate::labels::PromiseCombinatorKind::All
+                        | crate::labels::PromiseCombinatorKind::AllSettled
+                )
+            );
+            // Indices for each binding in source order: primary at index 0,
+            // then extras. Falls back to sequential 0..N when the AST didn't
+            // record explicit indices (non-array_pattern destructures and
+            // tuple_pattern shapes that contain no wildcards).
+            let binding_indices: SmallVec<[usize; 4]> =
+                if !info.taint.array_pattern_indices.is_empty() {
+                    info.taint.array_pattern_indices.clone()
+                } else if !info.taint.extra_defines.is_empty() {
+                    (0..=info.taint.extra_defines.len()).collect()
+                } else {
+                    SmallVec::new()
+                };
+            let promise_destruct_args: Option<SmallVec<[SsaValue; 4]>> =
+                if is_combinator_rewrite_target && !binding_indices.is_empty() {
+                    let max_index = binding_indices.iter().copied().max().unwrap_or(0);
+                    let needed = max_index + 1;
+                    // Use `info.call.arg_uses` directly rather than the
+                    // build_call_args-derived `args`, which may include an
+                    // implicit "uses not in arg_uses" group appended for chain
+                    // bookkeeping that would inflate the apparent arity.
+                    let arg_uses = &info.call.arg_uses;
+                    let map_idents = |idents: &[String]| -> Option<SmallVec<[SsaValue; 4]>> {
+                        let mapped: SmallVec<[SsaValue; 4]> = idents
+                            .iter()
+                            .take(needed)
+                            .filter_map(|ident| {
+                                var_stacks.get(ident).and_then(|s| s.last().copied())
+                            })
+                            .collect();
+                        if mapped.len() == needed {
+                            Some(mapped)
+                        } else {
+                            None
+                        }
+                    };
+                    if arg_uses.len() == 1 && arg_uses[0].len() >= needed {
+                        // Shape (a): single positional arg whose idents are the
+                        // array elements in source order (`Promise.all([x, y])`,
+                        // `asyncio.gather([x, y])`).
+                        map_idents(&arg_uses[0])
+                    } else if arg_uses.len() >= needed
+                        && arg_uses.iter().take(needed).all(|g| g.len() == 1)
+                    {
+                        // Shape (b): N positional args, each with one ident
+                        // (`tokio::join!(x, y)`).
+                        let names: Vec<&String> =
+                            arg_uses.iter().take(needed).map(|g| &g[0]).collect();
+                        let mapped: SmallVec<[SsaValue; 4]> = names
+                            .iter()
+                            .filter_map(|ident| {
+                                var_stacks
+                                    .get(ident.as_str())
+                                    .and_then(|s| s.last().copied())
+                            })
+                            .collect();
+                        if mapped.len() == needed {
+                            Some(mapped)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            // Bare-array RHS destructure precision: when the LHS is an
+            // array_pattern / tuple_pattern / pattern_list / left_assignment_list
+            // AND the RHS is a bare array-literal, build per-source-position
+            // ops so each binding sees only its index's element instead of
+            // the scalar union of every RHS ident.
+            //
+            // Three slot shapes are recognised by `collect_rhs_array_literal_elements`:
+            //
+            //   * `Ident(name)` — bare identifier. Emit `Assign(reaching_def)`.
+            //   * `Literal` — syntactic literal (string/number/etc.). Emit
+            //     `Const(None)` so the binding carries no taint.
+            //   * `Complex(uses)` — call / binary / subscript / member access /
+            //     interpolated string / nested array literal / etc. Emit
+            //     `Assign(union of inner ident reaching defs)` — slot-scoped
+            //     union, not the whole-RHS union the legacy path produced.
+            //     Falls back to `Const(None)` when no inner idents resolve
+            //     (pure literal subexpression like `1 + 2`).
+            //
+            // Closes FPs like `const [a, b] = [safe, tainted]; exec(b);`
+            // (Ident shape) and `const [c, d] = [fn(req.x), 'lit']; exec(d);`
+            // (Complex shape) where the legacy union painted the safe binding.
+            //
+            // The promise-combinator path above has already populated
+            // `promise_destruct_args` when its preconditions held, so the
+            // mutual exclusion is gated through `promise_destruct_args.is_none()`
+            // rather than `info.call.callee.is_none()`. The earlier
+            // callee-none gate was wrong because the outer
+            // variable_declarator node picks up `info.call.callee` whenever
+            // the RHS text matches a Source label — which is exactly the
+            // case where we need the per-slot rewrite most.
+            // The outer node may carry a `DataLabel::Source(_)` whose
+            // classification matched somewhere in the RHS expression text
+            // (`req.body.cmd`, `process.env.X`, etc.). For multi-slot
+            // RHS we can't statically partition WHICH slot caused that
+            // match, but it must originate from a Complex slot (Literal
+            // and bare-Ident slots whose names resolve through
+            // `var_stacks` carry their own SsaValue identity). Treat
+            // Complex slots as Source-emitting when the outer label set
+            // included Source — strict precision improvement over the
+            // legacy union path which painted EVERY slot, including
+            // Literal, with the outer Source.
+            let outer_is_source = info
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
+
+            // Per-slot Source classification (see `RhsArraySlot::Complex.source_cap`):
+            // when at least one Complex slot's own subtree classified as
+            // Source, we know which slot(s) carried the source pattern, so
+            // sibling Complex slots without their own source_cap stay
+            // slot-scoped (Assign / Const).  Otherwise (the outer node
+            // matched but no per-slot classifier fired — typical of subscript
+            // chains and other shapes whose source flows via reaching-def
+            // rather than static text), fall back to the conservative
+            // "all-Complex-are-Source" emission for legacy preservation.
+            use crate::cfg::RhsArraySlot;
+            let any_slot_has_source_cap = info.taint.rhs_array_elements.iter().any(|s| {
+                matches!(
+                    s,
+                    RhsArraySlot::Complex { source_cap, .. }
+                        if !source_cap.is_empty()
+                )
+            });
+            let effective_outer_fallback = outer_is_source && !any_slot_has_source_cap;
+
+            let bare_array_ops: Option<(SmallVec<[SsaOp; 4]>, SmallVec<[bool; 4]>)> =
+                if !info.taint.rhs_array_elements.is_empty()
+                    && !binding_indices.is_empty()
+                    && promise_destruct_args.is_none()
+                {
+                    let max_index = binding_indices.iter().copied().max().unwrap_or(0);
+                    let needed = max_index + 1;
+                    if info.taint.rhs_array_elements.len() < needed {
+                        None
+                    } else {
+                        let mut per_pos: SmallVec<[SsaOp; 4]> = SmallVec::new();
+                        let mut slot_scoped_mask: SmallVec<[bool; 4]> = SmallVec::new();
+                        let mut bail = false;
+                        for slot in info.taint.rhs_array_elements.iter().take(needed) {
+                            let mut is_slot_scoped = false;
+                            let slot_op = match slot {
+                                RhsArraySlot::Ident(ident) => {
+                                    match var_stacks
+                                        .get(ident.as_str())
+                                        .and_then(|s| s.last().copied())
+                                    {
+                                        Some(sv) => SsaOp::Assign(SmallVec::from_elem(sv, 1)),
+                                        None => {
+                                            bail = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                RhsArraySlot::Literal => SsaOp::Const(None),
+                                RhsArraySlot::Complex {
+                                    uses: inner_uses,
+                                    source_cap,
+                                } => {
+                                    let mut mapped: SmallVec<[SsaValue; 4]> = SmallVec::new();
+                                    for ident in inner_uses.iter() {
+                                        if let Some(sv) = var_stacks
+                                            .get(ident.as_str())
+                                            .and_then(|s| s.last().copied())
+                                        {
+                                            if !mapped.contains(&sv) {
+                                                mapped.push(sv);
+                                            }
+                                        }
+                                    }
+                                    if !source_cap.is_empty() {
+                                        // Per-slot classification found a Source
+                                        // pattern (e.g. `req.body.cmd`) inside
+                                        // THIS slot's subtree.  Emit Source so the
+                                        // binding inherits the outer-node Source
+                                        // caps for this slot's index.
+                                        SsaOp::Source
+                                    } else if outer_is_source && any_slot_has_source_cap {
+                                        // Some OTHER slot's subtree classified as
+                                        // Source; this slot did NOT.  Emit
+                                        // Assign(mapped) and mark the slot as
+                                        // slot-scoped so the taint transfer's
+                                        // Assign arm skips outer-node Source
+                                        // label pickup for this binding (without
+                                        // losing transitive taint through inner
+                                        // uses).  When `mapped` is empty, fall
+                                        // back to Const(None) — the binding
+                                        // carries no taint anyway.
+                                        if mapped.is_empty() {
+                                            SsaOp::Const(None)
+                                        } else {
+                                            is_slot_scoped = true;
+                                            SsaOp::Assign(mapped.clone())
+                                        }
+                                    } else if effective_outer_fallback {
+                                        // Outer-node Source label but no
+                                        // per-slot classifier fired on any slot
+                                        // (typical of subscript-on-tainted-local
+                                        // shapes). Preserve legacy conservative
+                                        // emission for unrecognised shapes.
+                                        SsaOp::Source
+                                    } else if mapped.is_empty() {
+                                        SsaOp::Const(None)
+                                    } else {
+                                        SsaOp::Assign(mapped)
+                                    }
+                                }
+                            };
+                            per_pos.push(slot_op);
+                            slot_scoped_mask.push(is_slot_scoped);
+                        }
+                        if bail {
+                            None
+                        } else {
+                            Some((per_pos, slot_scoped_mask))
+                        }
+                    }
+                } else {
+                    None
+                };
+
+            // Clone op for potential extra_defines before moving into SsaInst.
+            // For the destructure-promise / bare-array rewrites, the
+            // per-extra ops are built explicitly below, so the shared clone
+            // path is bypassed.
+            let primary_op_for_extras = if info.taint.extra_defines.is_empty()
+                || promise_destruct_args.is_some()
+                || bare_array_ops.is_some()
+            {
                 None
             } else {
                 Some(op.clone())
             };
+
+            // Override primary op to single-operand Assign when the
+            // destructure-promise rewrite fires. The primary's source-order
+            // index is `binding_indices[0]` — non-zero for skip-leading
+            // patterns like `const [, b]` where `b` is the FIRST (and only)
+            // binding but lives at pattern position 1.
+            let primary_op = if let Some(ref args) = promise_destruct_args {
+                let primary_idx = binding_indices.first().copied().unwrap_or(0);
+                let pick = args.get(primary_idx).copied().unwrap_or(args[0]);
+                SsaOp::Assign(SmallVec::from_elem(pick, 1))
+            } else if let Some((ref per_pos, ref slot_scoped_mask)) = bare_array_ops {
+                let primary_idx = binding_indices.first().copied().unwrap_or(0);
+                if slot_scoped_mask.get(primary_idx).copied().unwrap_or(false) {
+                    slot_scoped_assigns.insert(v);
+                }
+                per_pos
+                    .get(primary_idx)
+                    .cloned()
+                    .unwrap_or(SsaOp::Const(None))
+            } else {
+                op
+            };
+
             ssa_blocks[block_idx].body.push(SsaInst {
                 value: v,
-                op,
+                op: primary_op,
                 cfg_node: node,
                 var_name: var_name_for_ssa.clone(),
                 span: info.ast.span,
@@ -1423,7 +1748,66 @@ fn rename_variables(
 
             // Emit extra SSA instructions for destructuring bindings.
             // Each extra define inherits the same op (Source/Call/Assign) as the primary.
-            if let Some(ref primary_op) = primary_op_for_extras {
+            //
+            // For the destructure-promise rewrite, each extra emits an Assign
+            // on its corresponding indexed argument so per-element taint is
+            // preserved instead of the scalar union. The source-order index
+            // for `extra_defines[i]` is `binding_indices[i + 1]` — accounts
+            // for skip slots like `const [a, , b]` where `b` sits at index 2,
+            // not at index 1.
+            if let Some(ref pd_args) = promise_destruct_args {
+                for (i, extra_def) in info.taint.extra_defines.iter().enumerate() {
+                    let ev = SsaValue(*next_value);
+                    *next_value += 1;
+                    value_defs.push(ValueDef {
+                        var_name: Some(extra_def.clone()),
+                        cfg_node: node,
+                        block: block_id,
+                    });
+                    var_stacks.entry(extra_def.clone()).or_default().push(ev);
+                    let extra_idx = binding_indices.get(i + 1).copied().unwrap_or(i + 1);
+                    let arg = pd_args.get(extra_idx).copied().unwrap_or(pd_args[0]);
+                    ssa_blocks[block_idx].body.push(SsaInst {
+                        value: ev,
+                        op: SsaOp::Assign(SmallVec::from_elem(arg, 1)),
+                        cfg_node: node,
+                        var_name: Some(extra_def.clone()),
+                        span: info.ast.span,
+                    });
+                }
+            } else if let Some((ref per_pos, ref slot_scoped_mask)) = bare_array_ops {
+                // Bare-array RHS destructure: each extra emits the op for its
+                // source-order RHS position. Ident slots emit Assign of the
+                // ident's reaching SSA value; literal slots emit Const(None).
+                // Slot-scoped Assigns are registered in
+                // `slot_scoped_assigns` so the taint transfer skips
+                // outer-node Source pickup for those bindings.
+                for (i, extra_def) in info.taint.extra_defines.iter().enumerate() {
+                    let ev = SsaValue(*next_value);
+                    *next_value += 1;
+                    value_defs.push(ValueDef {
+                        var_name: Some(extra_def.clone()),
+                        cfg_node: node,
+                        block: block_id,
+                    });
+                    var_stacks.entry(extra_def.clone()).or_default().push(ev);
+                    let extra_idx = binding_indices.get(i + 1).copied().unwrap_or(i + 1);
+                    let op_for_extra = per_pos
+                        .get(extra_idx)
+                        .cloned()
+                        .unwrap_or(SsaOp::Const(None));
+                    if slot_scoped_mask.get(extra_idx).copied().unwrap_or(false) {
+                        slot_scoped_assigns.insert(ev);
+                    }
+                    ssa_blocks[block_idx].body.push(SsaInst {
+                        value: ev,
+                        op: op_for_extra,
+                        cfg_node: node,
+                        var_name: Some(extra_def.clone()),
+                        span: info.ast.span,
+                    });
+                }
+            } else if let Some(ref primary_op) = primary_op_for_extras {
                 for extra_def in &info.taint.extra_defines {
                     let ev = SsaValue(*next_value);
                     *next_value += 1;
@@ -1685,6 +2069,7 @@ fn rename_variables(
                 nop_nodes,
                 field_interner,
                 field_writes,
+                slot_scoped_assigns,
             );
         }
 
@@ -1802,6 +2187,7 @@ fn rename_variables(
         nop_nodes,
         &mut field_interner,
         &mut field_writes,
+        &mut slot_scoped_assigns,
     );
 
     // Process orphan blocks (e.g. catch blocks disconnected after exception edge removal).
@@ -1843,6 +2229,7 @@ fn rename_variables(
                     nop_nodes,
                     &mut field_interner,
                     &mut field_writes,
+                    &mut slot_scoped_assigns,
                 );
             }
         }
@@ -1855,6 +2242,7 @@ fn rename_variables(
         field_interner,
         field_writes,
         synthetic_externals,
+        slot_scoped_assigns,
     )
 }
 

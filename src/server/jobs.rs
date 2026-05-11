@@ -169,7 +169,7 @@ impl JobManager {
                 started_at: Some(chrono::Utc::now().to_rfc3339()),
                 finished_at: None,
                 duration_secs: None,
-                engine_version: Some(engine_version.clone()),
+                engine_version: Some(engine_version),
                 languages: None,
                 files_scanned: None,
                 files_skipped: None,
@@ -261,7 +261,7 @@ impl JobManager {
             let languages: Vec<String> = progress_snap.languages.keys().cloned().collect();
             let files_scanned = progress_snap.files_discovered;
             let files_skipped = progress_snap.files_skipped;
-            let timing = progress_snap.timing.clone();
+            let timing = progress_snap.timing;
             let finished_at = chrono::Utc::now();
 
             // Prepare the final state outside the lock.
@@ -292,9 +292,9 @@ impl JobManager {
                 if let Some(job) = jobs.get_mut(&jid) {
                     job.finished_at = Some(finished_at);
                     job.duration_secs = Some(elapsed);
-                    job.languages = Some(languages.clone());
+                    job.languages = Some(languages);
                     job.files_scanned = Some(files_scanned);
-                    job.timing = Some(timing.clone());
+                    job.timing = Some(timing);
                     job.status = status.clone();
                     job.findings = diags;
                     job.error = error_str.clone();
@@ -590,7 +590,7 @@ handleRequest({ query: { name: '<b>x</b>' } }, { send() {} });
 
         let id = manager
             .start_scan(
-                project_dir.clone(),
+                project_dir,
                 test_config(),
                 tx,
                 Some(Arc::clone(&pool)),

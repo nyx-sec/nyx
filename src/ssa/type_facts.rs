@@ -1,5 +1,6 @@
 #![allow(clippy::if_same_then_else)]
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
 use super::const_prop::ConstLattice;
@@ -8,6 +9,88 @@ use crate::cfg::{BinOp, Cfg};
 use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
+
+thread_local! {
+    /// Per-file local import view (local-name → source-module specifier),
+    /// set by [`with_file_imports`] around every per-body SSA pass that
+    /// needs to gate ORM TypeKind assignment in [`constructor_type`].
+    /// `None` (default) preserves prior un-gated behaviour for legacy /
+    /// test paths that build SSA without a surrounding file context.
+    static FILE_IMPORTS_TLS: RefCell<Option<HashMap<String, String>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` with `imports` published to the per-thread file-imports view.
+/// Restores the prior value on drop so nested calls compose; pass `None`
+/// to suppress gating for callers that lack a file context.
+pub fn with_file_imports<R>(imports: Option<&HashMap<String, String>>, f: impl FnOnce() -> R) -> R {
+    let prev = FILE_IMPORTS_TLS.with(|cell| {
+        cell.borrow_mut()
+            .replace(imports.cloned().unwrap_or_default())
+    });
+    let restore_to = if imports.is_some() { prev } else { None };
+    struct Guard(Option<HashMap<String, String>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            FILE_IMPORTS_TLS.with(|cell| *cell.borrow_mut() = self.0.take());
+        }
+    }
+    let _guard = Guard(restore_to);
+    f()
+}
+
+/// Returns true iff any local-import in the active file-imports view maps
+/// to a module specifier whose canonical form satisfies `pred`.  When the
+/// view has not been published (legacy / test paths) the predicate is
+/// considered satisfied so prior behaviour is preserved.
+fn file_imports_match(pred: impl Fn(&str) -> bool) -> bool {
+    FILE_IMPORTS_TLS.with(|cell| {
+        let borrowed = cell.borrow();
+        let Some(map) = borrowed.as_ref() else {
+            return true;
+        };
+        map.values().any(|spec| pred(spec.as_str()))
+    })
+}
+
+/// Strip a leading `node:` prefix from a module specifier so gates can
+/// match `import x from "fs"` and `import x from "node:fs"` uniformly.
+fn strip_node_prefix(spec: &str) -> &str {
+    spec.strip_prefix("node:").unwrap_or(spec)
+}
+
+/// Returns true iff the active file-imports view satisfies the
+/// import-gate for an ORM TypeKind.  When the TLS view is unset (legacy
+/// callers without file context) the gate is treated as satisfied so
+/// prior behaviour is preserved.
+fn orm_typekind_import_satisfied(tk: &TypeKind) -> bool {
+    let predicate: fn(&str) -> bool = match tk {
+        TypeKind::Sequelize => |spec| {
+            let s = strip_node_prefix(spec);
+            s == "sequelize" || s.starts_with("sequelize/")
+        },
+        TypeKind::TypeOrmRepo | TypeKind::TypeOrmManager => |spec| {
+            let s = strip_node_prefix(spec);
+            s == "typeorm" || s.starts_with("typeorm/")
+        },
+        TypeKind::MikroOrmEm => |spec| {
+            let s = strip_node_prefix(spec);
+            s.starts_with("@mikro-orm/")
+        },
+        _ => return true,
+    };
+    file_imports_match(predicate)
+}
+
+/// Small helper used inside [`constructor_type`] to fold the ORM import
+/// gate into the JS/TS arm without restructuring the surrounding
+/// `match`.  Returns `Some(tk)` only when the gate is satisfied.
+fn orm_gate(tk: TypeKind) -> Option<TypeKind> {
+    if orm_typekind_import_satisfied(&tk) {
+        Some(tk)
+    } else {
+        None
+    }
+}
 
 /// Inferred type kind for an SSA value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +175,18 @@ pub enum TypeKind {
     /// Strictly additive, without a DTO definition, callers fall back
     /// to name-only resolution.
     Dto(DtoFields),
+    /// The `node:fs/promises` namespace. Receivers typed as
+    /// `FileSystemPromisesNs` resolve method calls (`recv.readFile(...)`,
+    /// `recv.open(...)`, ...) through the type-qualified rewrite to
+    /// `FileSystemPromisesNs.<method>`, which the Phase 05 FILE_IO
+    /// matcher list covers without an [`crate::labels::LabelGate`]
+    /// (the receiver type is itself the import witness). The TypeKind
+    /// is reached today via the gated-import path in
+    /// `crate::cfg::apply_gated_label_rules`; SSA-time tagging from
+    /// `constructor_type` is intentionally not wired (member-of-call
+    /// shapes like `fs.promises` decompose into Call + FieldProj ops,
+    /// so the full expression text never reaches the constructor table).
+    FileSystemPromisesNs,
     /// An object created with `Object.create(null)` — has no prototype
     /// chain, so subscript-write keys cannot pollute `Object.prototype`.
     /// Populated for JS/TS values whose constructor call is
@@ -101,6 +196,71 @@ pub enum TypeKind {
     /// the receiver only sometimes null-prototyped, the fact widens to
     /// `Unknown` and the sink fires on the unsafe path.
     NullPrototypeObject,
+    /// A Sequelize ORM instance produced by `new Sequelize(...)`. The
+    /// type-qualified resolver rewrites `sequelize.literal(x)` →
+    /// `Sequelize.literal` against a flat SQL_QUERY rule, so user-supplied
+    /// strings flowing into Sequelize raw-SQL helpers are caught.
+    Sequelize,
+    /// A TypeORM `Repository<T>` instance, produced by
+    /// `getRepository(Entity)` / `manager.getRepository(Entity)`.
+    /// `repo.query(sql)` and `repo.createQueryBuilder().query` etc. are
+    /// SQL_QUERY sinks — type-qualified callees match flat
+    /// `TypeOrmRepo.<method>` rules.
+    TypeOrmRepo,
+    /// A TypeORM `EntityManager` produced by `getManager()` /
+    /// `connection.manager`. Same sink shape as `Repository<T>`.
+    TypeOrmManager,
+    /// A MikroORM `EntityManager` produced by `orm.em.fork()` /
+    /// `createEntityManager()`. `em.execute(sql)` is the raw-SQL sink.
+    MikroOrmEm,
+    /// A Web-platform `Request` object passed as the first argument to a
+    /// Next.js App Router HTTP-method handler (`GET`, `POST`, ...).
+    /// Phase 10 seeds the formal at function entry so receiver-method
+    /// reads (`req.json()`, `req.formData()`, `req.text()`,
+    /// `req.headers.get(...)`, `req.url`) carry their parameter's
+    /// taint through `Request.<method>` label rewrites without
+    /// requiring a caller-side flow.
+    Request,
+    /// A SQLAlchemy `Session` / `Connection` produced by
+    /// `sessionmaker()()`, `Session(engine)`, `engine.connect()`,
+    /// `scoped_session()()`.  Type-qualified resolution rewrites
+    /// `session.execute(sql)` → `SqlAlchemySession.execute` against
+    /// the flat SQL_QUERY rule so Python ORM raw-SQL passthrough is
+    /// caught even when the receiver name shadows another `execute`
+    /// method.
+    SqlAlchemySession,
+    /// A Django ORM `QuerySet` / `Manager` produced by
+    /// `Model.objects` access or `Model.objects.filter(...)`-shaped
+    /// chains.  Receiver type for `qs.raw(sql)` and `qs.extra(...)`
+    /// raw-SQL passthrough sinks.
+    DjangoQuerySet,
+    /// An ActiveRecord `Relation` produced by `Model.where(...)` /
+    /// `Model.all` / `Model.find_by_sql(...)`-shaped chains, or by
+    /// the model class itself when used as a class-method receiver.
+    /// Used so `relation.find_by_sql(sql)` and chained raw-SQL
+    /// methods resolve to receiver-typed sinks instead of bare verbs.
+    ActiveRecordRelation,
+    /// A GORM `*gorm.DB` produced by `gorm.Open(dialector, &gorm.Config{})`.
+    /// Receiver for `db.Raw(sql)` / `db.Exec(sql)` raw-SQL passthrough
+    /// sinks.  Distinct from `DatabaseConnection` so the Go
+    /// type-qualified rules fire only on GORM receivers and don't
+    /// collide with stdlib `*sql.DB` or `*sqlx.DB`.
+    GormDb,
+    /// A `*sqlx.DB` / `*sqlx.Tx` produced by `sqlx.Connect(driver, dsn)`
+    /// / `sqlx.Open(...)` / `sqlx.MustConnect(...)`.  Receiver for
+    /// `sqlxDb.NamedExec(sql, ...)` / `sqlxDb.NamedQuery(sql, ...)` /
+    /// `sqlxDb.Select(dest, sql, ...)` etc. raw-SQL passthrough sinks.
+    SqlxDb,
+    /// A Hibernate `org.hibernate.Session` produced by
+    /// `sessionFactory.openSession()` / `sessionFactory.getCurrentSession()`
+    /// or via a declared field/local of type `Session`.  Receiver for
+    /// `sess.createQuery(sql)` / `sess.createSQLQuery(sql)` /
+    /// `sess.createNativeQuery(sql)` raw-SQL passthrough sinks.  The
+    /// flat `session.create*` matchers in `labels/java.rs` only fire on
+    /// receivers literally named `session`; this TypeKind closes the
+    /// arbitrary-receiver-name shape (`sess`, `hibernateSession`, etc.)
+    /// via type-qualified resolution.
+    HibernateSession,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -146,6 +306,18 @@ impl TypeKind {
             Self::XPathClient => Some("XPathClient"),
             Self::XmlParser => Some("XmlParser"),
             Self::Template => Some("Template"),
+            Self::FileSystemPromisesNs => Some("FileSystemPromisesNs"),
+            Self::Sequelize => Some("Sequelize"),
+            Self::TypeOrmRepo => Some("TypeOrmRepo"),
+            Self::TypeOrmManager => Some("TypeOrmManager"),
+            Self::MikroOrmEm => Some("MikroOrmEm"),
+            Self::Request => Some("Request"),
+            Self::SqlAlchemySession => Some("SqlAlchemySession"),
+            Self::DjangoQuerySet => Some("DjangoQuerySet"),
+            Self::ActiveRecordRelation => Some("ActiveRecordRelation"),
+            Self::GormDb => Some("GormDb"),
+            Self::SqlxDb => Some("SqlxDb"),
+            Self::HibernateSession => Some("HibernateSession"),
             _ => None,
         }
     }
@@ -251,9 +423,14 @@ impl TypeFactResult {
 /// Suppression policy:
 /// * [`TypeKind::Int`] (and float, treated as numeric): suppresses
 ///   `SQL_QUERY`, `FILE_IO`, `SHELL_ESCAPE`, `HTML_ESCAPE`, `SSRF`,
-///   `DATA_EXFIL`, numeric values cannot carry the metacharacters
-///   required to drive any of these injection classes, nor can they
-///   encode credentials/tokens that meaningfully constitute leakage.
+///   `DATA_EXFIL`, `HEADER_INJECTION`, `OPEN_REDIRECT`. Numeric values
+///   cannot carry the metacharacters required to drive any of these
+///   injection classes, nor can they encode credentials/tokens that
+///   meaningfully constitute leakage.  HEADER_INJECTION needs CRLF;
+///   OPEN_REDIRECT needs a `://` scheme followed by an attacker host
+///   ,  numeric scalars and the safe-string upgrades that share this
+///   tag (see [`is_safe_string_producing_callee`]) cannot encode
+///   either.
 /// * [`TypeKind::Bool`]: suppresses every type-suppressible bit ,
 ///   `true`/`false` cannot carry a payload of any kind.
 pub fn is_type_safe_for_sink(
@@ -267,7 +444,9 @@ pub fn is_type_safe_for_sink(
         | Cap::SHELL_ESCAPE
         | Cap::HTML_ESCAPE
         | Cap::SSRF
-        | Cap::DATA_EXFIL;
+        | Cap::DATA_EXFIL
+        | Cap::HEADER_INJECTION
+        | Cap::OPEN_REDIRECT;
     if !sink_caps.intersects(type_suppressible) {
         return false;
     }
@@ -389,6 +568,38 @@ fn receiver_is_criteria_builder(receiver_text: &str) -> bool {
         || receiver_text.contains(".cb.")
 }
 
+/// True when `callee` is a single-argument URL/URI factory whose first
+/// argument carries the resulting URL's full spec (so a leading literal
+/// prefix on that arg locks the constructed URL's host).  Used by the
+/// abstract-string transfer in
+/// `taint::ssa_transfer::transfer_abstract` to gate the single-arg URL
+/// constructor StringFact passthrough alongside the
+/// `constructor_type(...) == TypeKind::Url` check.  Currently covers
+/// Java's static `URI.create(spec)` and `URL.of(spec)` factories
+/// (`URL.of` introduced in Java 23, returns a `URL` from a single
+/// string spec).  Bare-leaf forms (`URI.create`, `URL.of`) and
+/// fully-qualified prefixes (`java.net.URI.create`) are both accepted.
+pub(crate) fn is_url_single_arg_factory(lang: Lang, callee: &str) -> bool {
+    matches!(lang, Lang::Java)
+        && (callee == "URI.create"
+            || callee.ends_with(".URI.create")
+            || callee == "URL.of"
+            || callee.ends_with(".URL.of"))
+}
+
+/// True when `field_name` reads off a WHATWG `URL` instance as a logical
+/// alias of the same URL value: `searchParams` is the mutable view (any
+/// `.set` / `.append` on it mutates the underlying URL), the others are
+/// pure-string projections of the same URL.  Used by the FieldProj
+/// type-aliasing rule so a `.set(k, v)` on the searchParams view dispatches
+/// to the URL receiver-type rule rather than as an opaque Object.
+pub(crate) fn is_url_identity_field(field_name: &str) -> bool {
+    matches!(
+        field_name,
+        "searchParams" | "host" | "hostname" | "pathname" | "href" | "origin"
+    )
+}
+
 /// Infer a type from a constructor, factory, or allocator call.
 ///
 /// Maps known constructor/factory/allocator patterns to security-relevant
@@ -426,6 +637,18 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             "createStatement" | "prepareCall" => Some(TypeKind::DatabaseConnection),
             "FileInputStream" | "FileOutputStream" | "FileReader" | "FileWriter"
             | "BufferedReader" | "BufferedWriter" => Some(TypeKind::FileHandle),
+            // Phase 13 — `java.nio.file.Paths.get(...)` returns a `Path`,
+            // and `java.io.File(...)` is the legacy stdlib path handle.
+            // Tagging the receiver as `FileHandle` lets the type-qualified
+            // resolver rewrite chained ops like `.normalize()` /
+            // `.toAbsolutePath()` on the returned value via the new
+            // `FileHandle.*` matchers.  `get` matched on its own would
+            // over-fire (Map.get / List.get / etc.); the qualified
+            // `Paths.get` form is unambiguous.
+            "get" if callee == "Paths.get" || callee.ends_with(".Paths.get") => {
+                Some(TypeKind::FileHandle)
+            }
+            "File" => Some(TypeKind::FileHandle),
             "getWriter" | "getOutputStream" => Some(TypeKind::HttpResponse),
             // JPA / Hibernate Criteria API factory methods.  These are
             // unambiguous: `createCriteriaUpdate` / `createCriteriaDelete`
@@ -475,31 +698,66 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // `tpl.process(...)` → `Template.process` against the
             // existing flat rule in `labels/java.rs`.
             "Template" | "getTemplate" => Some(TypeKind::Template),
+            // Hibernate `SessionFactory.openSession()` /
+            // `SessionFactory.getCurrentSession()` produce an
+            // `org.hibernate.Session` instance whose `createQuery(sql)` /
+            // `createSQLQuery(sql)` / `createNativeQuery(sql)` are SQL
+            // sinks.  Method names are unique to Hibernate so suffix
+            // matching is unambiguous.  `openStatelessSession` returns a
+            // `StatelessSession` with the same query-builder API.
+            "openSession" | "getCurrentSession" | "openStatelessSession" => {
+                Some(TypeKind::HibernateSession)
+            }
             _ => None,
         },
-        Lang::JavaScript | Lang::TypeScript => match suffix {
-            "URL" => Some(TypeKind::Url),
-            "Request" | "XMLHttpRequest" => Some(TypeKind::HttpClient),
-            // JS built-in collection constructors. `new Map()` / `new Set()`
-            // / `new WeakMap()` / `new WeakSet()` / `new Array()` produce
-            // in-memory collections; downstream `m.get(k)` / `m.set(k, v)`
-            // / `s.add(x)` / `s.has(x)` / `arr.find(p)` are container ops,
-            // not data-layer reads. Without this mapping the bare verb
-            // dispatch in `auth_analysis::config::classify_sink_class`
-            // matches the `get` / `find` / `add` read/mutation indicators
-            // and over-fires `js.auth.missing_ownership_check` on every
-            // Map lookup in pure data-manipulation code (excalidraw's
-            // `elementsMap.get(id)`, `origIdToDuplicateId.get(...)`,
-            // `groupIdMapForOperation.set(...)` shapes).
-            "Map" | "Set" | "WeakMap" | "WeakSet" | "Array" => Some(TypeKind::LocalCollection),
-            // ldapjs client factory: `ldap.createClient({ url: '…' })` returns
-            // a Client whose `search(base, opts, cb)` is an LDAP injection
-            // sink.  Match the qualified callee text rather than the bare
-            // `createClient` suffix to avoid widening to unrelated factories
-            // with the same verb name.
-            "createClient" if callee.contains("ldap") => Some(TypeKind::LdapClient),
-            _ => None,
-        },
+        Lang::JavaScript | Lang::TypeScript => {
+            // NB: `fs.promises` and `require('fs').promises` member-access
+            // shapes are NOT mapped here — SSA decomposes member-of-call
+            // into separate Call + FieldProj ops, so the full expression
+            // text never reaches `constructor_type` as a callee string.
+            // The `FileSystemPromisesNs` TypeKind is reached via the
+            // gated-import path in `cfg::apply_gated_label_rules` instead.
+            match suffix {
+                "URL" => Some(TypeKind::Url),
+                "Request" | "XMLHttpRequest" => Some(TypeKind::HttpClient),
+                // Phase 07 — ORM constructors / factory functions. Coverage:
+                // `new Sequelize(...)`           → Sequelize
+                // `getRepository(Entity)`        → TypeOrmRepo  (typeorm)
+                // `getManager()`                 → TypeOrmManager (typeorm)
+                // `createEntityManager()`        → MikroOrmEm (@mikro-orm/core)
+                // Gated on the per-file local-import view published via
+                // [`with_file_imports`]: the suffix names are distinctive but
+                // not unique (an app-internal class named `Sequelize` with a
+                // `.literal()` helper, a custom `getRepository` method on a
+                // user-defined repository pattern, etc. would collide).
+                // When the TLS view is unset (test paths / non-file callers)
+                // the gate is treated as satisfied so prior behaviour is
+                // preserved.
+                "Sequelize" => orm_gate(TypeKind::Sequelize),
+                "getRepository" => orm_gate(TypeKind::TypeOrmRepo),
+                "getManager" => orm_gate(TypeKind::TypeOrmManager),
+                "createEntityManager" => orm_gate(TypeKind::MikroOrmEm),
+                // JS built-in collection constructors. `new Map()` / `new Set()`
+                // / `new WeakMap()` / `new WeakSet()` / `new Array()` produce
+                // in-memory collections; downstream `m.get(k)` / `m.set(k, v)`
+                // / `s.add(x)` / `s.has(x)` / `arr.find(p)` are container ops,
+                // not data-layer reads. Without this mapping the bare verb
+                // dispatch in `auth_analysis::config::classify_sink_class`
+                // matches the `get` / `find` / `add` read/mutation indicators
+                // and over-fires `js.auth.missing_ownership_check` on every
+                // Map lookup in pure data-manipulation code (excalidraw's
+                // `elementsMap.get(id)`, `origIdToDuplicateId.get(...)`,
+                // `groupIdMapForOperation.set(...)` shapes).
+                "Map" | "Set" | "WeakMap" | "WeakSet" | "Array" => Some(TypeKind::LocalCollection),
+                // ldapjs client factory: `ldap.createClient({ url: '…' })` returns
+                // a Client whose `search(base, opts, cb)` is an LDAP injection
+                // sink.  Match the qualified callee text rather than the bare
+                // `createClient` suffix to avoid widening to unrelated factories
+                // with the same verb name.
+                "createClient" if callee.contains("ldap") => Some(TypeKind::LdapClient),
+                _ => None,
+            }
+        }
         Lang::Python => {
             // Python uses qualified names: requests.get, sqlite3.connect, etc.
             if callee.starts_with("requests.")
@@ -518,6 +776,25 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             } else if suffix == "open" && !callee.contains('.') {
                 // Bare `open()` is file I/O in Python
                 Some(TypeKind::FileHandle)
+            } else if callee == "Path"
+                || callee == "pathlib.Path"
+                || callee == "PurePath"
+                || callee == "pathlib.PurePath"
+                || callee == "PurePosixPath"
+                || callee == "pathlib.PurePosixPath"
+                || callee == "PureWindowsPath"
+                || callee == "pathlib.PureWindowsPath"
+                || callee == "PosixPath"
+                || callee == "WindowsPath"
+            {
+                // Phase 13 — `pathlib.Path(p)` and friends.  Tagging the
+                // receiver as `FileHandle` lets the type-qualified resolver
+                // rewrite `p.read_text()` / `p.write_text()` etc. against
+                // the new `FileHandle.*` matchers in `labels/python.rs`,
+                // covering the receiver-bound shape `p = Path(name);
+                // p.read_text()` that the chained `Path(name).read_text()`
+                // matcher already handles via paren-strip.
+                Some(TypeKind::FileHandle)
             } else if callee == "ldap.initialize"
                 || callee == "ldap3.Connection"
                 || callee.ends_with(".initialize") && callee.contains("ldap")
@@ -527,6 +804,45 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // LDAP-injection sinks.  ldap3: `Connection(server, ...)`
                 // returns a Connection with a `search()` method.
                 Some(TypeKind::LdapClient)
+            } else if callee == "sessionmaker"
+                || callee == "scoped_session"
+                || callee == "sqlalchemy.orm.sessionmaker"
+                || callee == "sqlalchemy.orm.scoped_session"
+                || callee == "Session"
+                || callee == "sqlalchemy.orm.Session"
+                || (suffix == "connect" && callee.contains("sqlalchemy"))
+                || (suffix == "begin" && callee.contains("engine"))
+            {
+                // Phase 15 — SQLAlchemy session / connection factories.
+                // `sessionmaker()` returns a callable, `sessionmaker()()`
+                // returns a Session; the inner-call collapse step in
+                // `cfg::push_node` flattens that to a single CallFn whose
+                // callee text suffix matches `sessionmaker`.  `Session(engine)`,
+                // `Session()`, and `engine.connect()` likewise produce a
+                // session-like object.  Tagging the resulting receiver as
+                // `SqlAlchemySession` lets the type-qualified resolver rewrite
+                // `session.execute(sql)` → `SqlAlchemySession.execute`.
+                Some(TypeKind::SqlAlchemySession)
+            } else if suffix == "objects" {
+                // Phase 15 — Django ORM `Model.objects` access surfaces as a
+                // FieldProj whose call form is `Model.objects` (read as a
+                // call by the chain-normalisation pass).  Tagging the
+                // resulting receiver as `DjangoQuerySet` lets `qs.raw(sql)` /
+                // `qs.extra(...)` rewrite to `DjangoQuerySet.<method>`.
+                Some(TypeKind::DjangoQuerySet)
+            } else if callee.contains(".objects.") && is_orm_queryset_chain_method(suffix) {
+                // Django ORM chained-queryset producers.
+                // `Model.objects.all() / .filter(...) / .exclude(...)` etc.
+                // return another `QuerySet`.  The FieldProj-chain
+                // decomposition for `Model.<chain>` bails when the base
+                // identifier (the class name `Model`) isn't in the local
+                // SSA var stack, leaving the Call op carrying the full
+                // chain text as its callee.  Tagging the result as
+                // `DjangoQuerySet` lets a bound `qs = Model.objects.all();
+                // qs.raw(sql)` resolve `qs.raw` via the type-qualified
+                // sink rule, closing the intermediate-binding shape that
+                // the flat `objects.raw` matcher misses.
+                Some(TypeKind::DjangoQuerySet)
             } else {
                 None
             }
@@ -544,6 +860,18 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // go-ldap (`github.com/go-ldap/ldap/v3`): `conn, _ := ldap.DialURL(url)`
                 // returns `*ldap.Conn` whose `Search(req)` is an LDAP-injection sink.
                 Some(TypeKind::LdapClient)
+            } else if callee.starts_with("gorm.") && matches!(suffix, "Open" | "Must") {
+                // Phase 15 — GORM: `gorm.Open(driver, &gorm.Config{})` returns
+                // `*gorm.DB`.  Tagging it as `GormDb` lets the type-qualified
+                // resolver rewrite `db.Raw(...)` → `GormDb.Raw` etc.
+                Some(TypeKind::GormDb)
+            } else if callee.starts_with("sqlx.")
+                && matches!(suffix, "Connect" | "MustConnect" | "Open" | "MustOpen")
+            {
+                // Phase 15 — sqlx: `sqlx.Connect("postgres", dsn)` returns
+                // `*sqlx.DB`; tagging it as `SqlxDb` lets `db.NamedExec(...)`
+                // / `db.NamedQuery(...)` rewrite to `SqlxDb.<method>`.
+                Some(TypeKind::SqlxDb)
             } else {
                 None
             }
@@ -551,6 +879,16 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
         Lang::Php => match suffix {
             "PDO" | "mysqli" => Some(TypeKind::DatabaseConnection),
             "curl_init" => Some(TypeKind::HttpClient),
+            // Phase 14 — Guzzle / Symfony HTTP client constructors.
+            // `new \GuzzleHttp\Client(...)` and `new Client(...)` both
+            // tail-match `Client` here; the resulting `TypeKind::HttpClient`
+            // routes `$c->request($method, $url)` through the type-qualified
+            // `HttpClient.request` SSRF rule in `labels/php.rs`.  The
+            // `Client` leaf can collide with framework-internal classes
+            // also named `Client`, but the source-sensitivity gate
+            // already silences plain user-input flows so the FP surface
+            // is bounded.
+            "Client" => Some(TypeKind::HttpClient),
             "fopen" => Some(TypeKind::FileHandle),
             "SplFileObject" => Some(TypeKind::FileHandle),
             // DOMXPath: `$xp = new DOMXPath($doc)`.  `$xp->query($expr)` /
@@ -621,6 +959,15 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // Suffix alone is too generic (new, get, open); match on full callee.
             if callee.contains("Net::HTTP") || after_colons.starts_with("HTTParty") {
                 Some(TypeKind::HttpClient)
+            } else if callee == "Faraday.new"
+                || callee == "RestClient::Resource.new"
+                || (after_colons.starts_with("Typhoeus") && suffix == "new")
+            {
+                // Phase 14 — Faraday / Typhoeus / rest-client client
+                // instances.  `client = Faraday.new(url: base)` returns
+                // an HTTP client whose `client.get(path)` resolves via
+                // the type-qualified `HttpClient.get` SSRF rule.
+                Some(TypeKind::HttpClient)
             } else if after_colons.starts_with("URI") && matches!(suffix, "parse" | "URI") {
                 Some(TypeKind::Url)
             } else if after_colons == "PG.connect"
@@ -635,10 +982,127 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // returns a connection whose `search(base:, filter:)` accepts
                 // an attacker-influenceable filter expression.
                 Some(TypeKind::LdapClient)
+            } else if matches!(
+                suffix,
+                "where" | "all" | "find_by_sql" | "find_by" | "joins" | "order"
+            ) && callee
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_uppercase())
+                .unwrap_or(false)
+            {
+                // Phase 15 — ActiveRecord class-method scopes return a
+                // `Relation` (chainable query object).  Tagging the receiver
+                // as `ActiveRecordRelation` lets the type-qualified resolver
+                // rewrite chained calls (`User.where(...).find_by_sql(...)`)
+                // to `ActiveRecordRelation.<method>` when the original class
+                // name is preserved in the receiver text.  Conservative:
+                // only fires on receivers that start with an uppercase
+                // segment (Ruby class-name convention) so plain helpers are
+                // not collected.
+                Some(TypeKind::ActiveRecordRelation)
             } else {
                 None
             }
         }
+    }
+}
+
+/// Phase 14 — recognise per-language URL builders that take a `(base,
+/// path)`-shaped argument pair.  Returns `Some((path_arg_idx, base_arg_idx))`
+/// when the callee is known to construct / join a URL out of a literal
+/// base origin and a (possibly tainted) path component.  The caller then:
+///
+/// 1. Forwards taint from the path arg into the call's result SSA value
+///    (so downstream HTTP sinks see the propagated taint).
+/// 2. When the base arg is a syntactic string literal, seeds the abstract
+///    [`crate::abstract_interp::StringFact::from_url_with_base`] on the
+///    result so [`is_string_safe_for_ssrf`] can suppress the SSRF sink at
+///    a fully-formed `scheme://host/...` prefix.
+///
+/// Coverage matches the phase-14 origin-lock table: JS/TS `new URL(path,
+/// base)` (constructor), Python `urllib.parse.urljoin(base, path)`, Java
+/// `new URL(URL context, String spec)`, Go `url.JoinPath(base, paths...)`,
+/// Ruby `URI.join(base, path)`.  Rust is intentionally omitted: the
+/// idiomatic shape is `Url::parse(base).unwrap().join(path)` (a chain),
+/// not a single (base, path) call, so no per-call site fits the helper's
+/// shape.  The `Url::parse(literal_url)` single-arg case is covered by
+/// generic abstract-string seeding via [`SsaOp::Const`].
+pub(crate) fn url_builder_arg_indices(
+    lang: Lang,
+    callee: &str,
+    outer_callee: Option<&str>,
+    is_constructor: bool,
+) -> Option<(usize, usize)> {
+    // Normalise to leaf segment (last `::`/`.` token) for languages that
+    // attach module / receiver prefixes in front of the callee text.
+    let leaf = callee.rsplit("::").next().unwrap_or(callee);
+    let leaf = leaf.rsplit('.').next().unwrap_or(leaf);
+    match lang {
+        Lang::JavaScript | Lang::TypeScript => {
+            if !is_constructor {
+                return None;
+            }
+            // CFG-level rewrite of source-bearing assignments may replace
+            // the visible callee with the source path; the original
+            // constructor identifier is preserved on `outer_callee`.
+            let direct = constructor_type(lang, callee) == Some(TypeKind::Url);
+            let via_outer =
+                outer_callee.is_some_and(|oc| constructor_type(lang, oc) == Some(TypeKind::Url));
+            if direct || via_outer {
+                Some((0, 1))
+            } else {
+                None
+            }
+        }
+        Lang::Python => {
+            // `urllib.parse.urljoin(base, path)` and the bare-import
+            // `urljoin(base, path)` (`from urllib.parse import urljoin`).
+            if callee == "urllib.parse.urljoin" || leaf == "urljoin" {
+                Some((1, 0))
+            } else {
+                None
+            }
+        }
+        Lang::Go => {
+            // `url.JoinPath(base, paths...)` and the receiver form
+            // `(*URL).JoinPath(base, paths...)` — both expose `JoinPath`
+            // as the leaf segment.  `(*URL).Parse(ref)` (single-arg
+            // resolve against a base URL receiver) is not modelled here
+            // because the base lives on the receiver rather than at a
+            // positional arg.
+            if leaf == "JoinPath" {
+                Some((1, 0))
+            } else {
+                None
+            }
+        }
+        Lang::Java => {
+            // `new URL(URL context, String spec)` — context (base) at
+            // arg 0, spec (path) at arg 1.  Only the explicit
+            // (context, spec) two-arg constructor form is recognised;
+            // `new URL(String spec)` and `new URI(String spec)` carry a
+            // single string literal that the generic abstract-string
+            // path already handles via `SsaOp::Const` seeding.
+            if is_constructor && (leaf == "URL" || leaf == "URI") {
+                Some((1, 0))
+            } else {
+                None
+            }
+        }
+        Lang::Ruby => {
+            // `URI.join(base, *paths)` — base at arg 0, first path at arg 1.
+            if callee == "URI.join" || (leaf == "join" && callee.contains("URI")) {
+                Some((1, 0))
+            } else {
+                None
+            }
+        }
+        // PHP / Rust / C / C++: no first-class (base, path) URL builder
+        // function the engine recognises.  Single-arg shapes (e.g.
+        // `Url::parse("https://api/" . $tainted)`) flow through the
+        // generic abstract-string concat prefix path.
+        _ => None,
     }
 }
 
@@ -782,6 +1246,48 @@ pub fn is_identity_method(callee: &str) -> bool {
     )
 }
 
+/// True when `verb` is an ORM queryset chain method that returns another
+/// queryset of the same logical type as the receiver.  Used to propagate
+/// `DjangoQuerySet` / `ActiveRecordRelation` type facts through chained
+/// calls (`qs.filter(...).exclude(...)`) so a terminal verb like `.raw(sql)`
+/// / `.find_by_sql(sql)` resolves via the type-qualified sink rule.
+pub fn is_orm_queryset_chain_method(verb: &str) -> bool {
+    matches!(
+        verb,
+        // Django queryset chain methods (subset that returns QuerySet)
+        "all"
+            | "filter"
+            | "exclude"
+            | "order_by"
+            | "annotate"
+            | "distinct"
+            | "select_related"
+            | "prefetch_related"
+            | "only"
+            | "defer"
+            | "reverse"
+            | "none"
+            | "using"
+            | "values"
+            | "values_list"
+            // ActiveRecord relation chain methods (subset that returns Relation)
+            | "where"
+            | "joins"
+            | "includes"
+            | "preload"
+            | "eager_load"
+            | "references"
+            | "group"
+            | "having"
+            | "limit"
+            | "offset"
+            | "lock"
+            | "readonly"
+            | "rewhere"
+            | "unscope"
+    )
+}
+
 pub fn is_int_producing_callee(callee: &str) -> bool {
     // Peel trailing identity methods (e.g. `.unwrap()`/`.expect("...")` after
     // `.parse()`) so the underlying numeric-producing verb is exposed.
@@ -798,6 +1304,77 @@ pub fn is_int_producing_callee(callee: &str) -> bool {
         | "parse" // Rust: `.parse::<N>()` / `.parse().unwrap()`, conservative
                   // (most Rust .parse() calls target numeric types)
     )
+}
+
+/// True when `callee` produces a string value that is provably free of
+/// CRLF / quote / shell-metacharacter / SQL-quote payloads ,  the
+/// canonical "safe-by-construction string" idiom.  Used as a stealth
+/// type-fact upgrade so the resulting SSA value is tagged as
+/// [`TypeKind::Int`] and the type-suppressible sink mask
+/// (HEADER_INJECTION / OPEN_REDIRECT / SQL_QUERY / ...) fires on
+/// idiomatic Java patterns:
+///
+/// ```java
+/// res.setHeader("X-Count", Integer.toString(payload.size()));
+/// res.setHeader("X-Class", loaded.getClass().getName());
+/// ```
+///
+/// Coverage:
+/// * Numeric-to-string converters: `Integer.toString` / `Long.toString`
+///   / `Float.toString` / `Double.toString` / `Short.toString` /
+///   `Byte.toString` / `Boolean.toString` / `Character.toString` ,
+///   output is `[+-]?\d+(\.\d+)?` / `"true"` / `"false"` / `"NaN"` /
+///   `"Infinity"`, none of which can carry CRLF or injection metachars.
+/// * `String.valueOf` static factories ,  most overloads (`int`,
+///   `long`, `boolean`, `char`, ...) emit the same digit / boolean /
+///   single-character text as their per-class `toString`.  The
+///   `Object` overload falls back to `Object.toString()` whose output
+///   shape depends on the runtime type, but the dominant safe usage
+///   shape (`String.valueOf(payload.size())`,
+///   `String.valueOf(rendered.length())`) covers the common
+///   header-injection mitigation pattern.
+/// * `Class.getName` / `Class.getSimpleName` / `Class.getCanonicalName`
+///   ,  the JVM class-name grammar disallows CRLF, quotes, slashes,
+///   spaces, and shell metacharacters; the dot-separated FQCN is safe
+///   for header / shell / SQL / file / HTML / SSRF sinks.
+///
+/// Receiver shape match: also accepts the chained form
+/// `<expr>.getClass().getName()` whose collapsed callee text contains
+/// `.getClass()` followed by the class-name accessor.
+pub fn is_safe_string_producing_callee(callee: &str) -> bool {
+    let base = peel_identity_suffix(callee);
+    // Last segment after `::` (Rust/Ruby) ,  Java callees normalise
+    // through `.` only, but the same peeling is harmless for cross-lang
+    // input.
+    let after_colons = base.rsplit("::").next().unwrap_or(&base);
+    if let Some((prefix, method)) = after_colons.rsplit_once('.') {
+        let class_name = prefix.rsplit(['.', ' ']).next().unwrap_or(prefix);
+        match (class_name, method) {
+            (
+                "Integer" | "Long" | "Float" | "Double" | "Short" | "Byte" | "Boolean"
+                | "Character",
+                "toString",
+            ) => return true,
+            ("String", "valueOf") => return true,
+            ("Class", "getName" | "getSimpleName" | "getCanonicalName") => return true,
+            _ => {}
+        }
+    }
+    // Chained `<expr>.getClass().<accessor>()` form.  The Java arm of
+    // `call_ident_of` preserves the inner `.getClass` segment in the
+    // collapsed chain text (e.g. `loaded.getClass.getName`), so a
+    // contains-check on `.getClass.` suffices to disambiguate from
+    // user-defined `getName` methods on unrelated classes.
+    let suffix = after_colons
+        .rsplit(['.', ':'])
+        .next()
+        .unwrap_or(after_colons);
+    if matches!(suffix, "getName" | "getSimpleName" | "getCanonicalName")
+        && (after_colons.contains(".getClass.") || after_colons.contains(".getClass()"))
+    {
+        return true;
+    }
+    false
 }
 
 /// Polarity hint for a generic input-validator callee.
@@ -939,15 +1516,41 @@ pub fn analyze_types_with_param_types(
                         .node_weight(inst.cfg_node)
                         .map(|ni| ni.call.produces_null_proto)
                         .unwrap_or(false);
+                    // The CFG-level text-rewrite for source-bearing
+                    // assignments (`const u = new URL(req.body.path, …)`
+                    // → `callee` becomes `req.body.path`) strips the
+                    // visible constructor identifier, so when the direct
+                    // `callee` mapping fails fall back to
+                    // `info.call.outer_callee` which preserves the
+                    // original (e.g. `URL`) for type inference.
+                    let outer_callee = cfg
+                        .node_weight(inst.cfg_node)
+                        .and_then(|ni| ni.call.outer_callee.clone());
+                    let constructor_ty = lang.and_then(|l| {
+                        constructor_type(l, callee).or_else(|| {
+                            outer_callee
+                                .as_deref()
+                                .and_then(|oc| constructor_type(l, oc))
+                        })
+                    });
                     if null_proto {
                         TypeFact::from_kind(TypeKind::NullPrototypeObject)
-                    } else if let Some(ty) = lang.and_then(|l| constructor_type(l, callee)) {
+                    } else if let Some(ty) = constructor_ty {
                         TypeFact::from_kind(ty)
                     } else if let Some(ty) =
                         lang.and_then(|l| arg_aware_call_type(l, callee, args, consts))
                     {
                         TypeFact::from_kind(ty)
                     } else if is_int_producing_callee(callee) {
+                        TypeFact::from_kind(TypeKind::Int)
+                    } else if is_safe_string_producing_callee(callee) {
+                        // Numeric/boolean to-string converters and class-name
+                        // accessors emit a string provably free of CRLF and
+                        // injection metacharacters.  Tag as `Int` so the
+                        // shared type-suppressible sink mask treats the
+                        // value as non-payload-bearing for HEADER_INJECTION
+                        // / OPEN_REDIRECT / SQL_QUERY / FILE_IO / SHELL /
+                        // HTML / SSRF / DATA_EXFIL.
                         TypeFact::from_kind(TypeKind::Int)
                     } else {
                         // Identity-preserving methods propagated in second pass.
@@ -1055,6 +1658,47 @@ pub fn analyze_types_with_param_types(
                 }
             }
 
+            // ORM queryset chain propagation.  `Model.objects.filter(...)`
+            // / `qs.exclude(...)` / `qs.all()` etc. return a `QuerySet` of
+            // the same logical type as the receiver.  When the receiver
+            // carries a `DjangoQuerySet` fact and the callee verb is one of
+            // the QuerySet-returning chain methods, propagate the fact to
+            // the result so a later `qs2.raw(sql)` / `qs2.extra(sql)` resolves
+            // via the type-qualified rule.  Gated on the receiver type to
+            // keep the FP surface bounded.
+            for inst in &block.body {
+                if let SsaOp::Call {
+                    callee,
+                    receiver: Some(recv),
+                    ..
+                } = &inst.op
+                {
+                    let suffix = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+                    if !is_orm_queryset_chain_method(suffix) {
+                        continue;
+                    }
+                    let recv_fact = facts.get(recv).cloned().unwrap_or_else(TypeFact::unknown);
+                    let propagate = matches!(
+                        recv_fact.kind,
+                        TypeKind::DjangoQuerySet | TypeKind::ActiveRecordRelation
+                    );
+                    if !propagate {
+                        continue;
+                    }
+                    let current_kind = facts
+                        .get(&inst.value)
+                        .map(|f| f.kind.clone())
+                        .unwrap_or(TypeKind::Unknown);
+                    if !matches!(current_kind, TypeKind::Unknown) {
+                        continue;
+                    }
+                    if facts.get(&inst.value) != Some(&recv_fact) {
+                        facts.insert(inst.value, recv_fact);
+                        changed = true;
+                    }
+                }
+            }
+
             // FieldProj receiver-driven type narrowing.  When
             // SSA lowering decomposed `a.b.c()` into a FieldProj chain,
             // intermediate FieldProj insts default to `projected_type =
@@ -1078,6 +1722,37 @@ pub fn analyze_types_with_param_types(
                     continue;
                 };
                 let field_name = body.field_name(*field).to_string();
+                // WHATWG URL alias: a `URL` instance's `searchParams`
+                // and identity-projection accessors (`host`, `hostname`,
+                // `pathname`, `href`, `origin`) read as the same logical
+                // URL for sink/sanitiser dispatch.  Mark the projection
+                // as `TypeKind::Url` so a downstream `.set(k, v)` /
+                // `.append(k, v)` on the searchParams view dispatches via
+                // the URL receiver-type rule rather than as an opaque
+                // Object.
+                if matches!(recv_fact.kind, TypeKind::Url) && is_url_identity_field(&field_name) {
+                    let new_fact = TypeFact::from_kind(TypeKind::Url);
+                    if facts.get(&inst.value) != Some(&new_fact) {
+                        facts.insert(inst.value, new_fact);
+                        changed = true;
+                    }
+                    continue;
+                }
+                // Django ORM manager projection.  `Model.objects` decomposes
+                // into a FieldProj whose `field` is `objects`.  Tag it as
+                // `DjangoQuerySet` so a downstream `qs.raw(sql)` /
+                // `qs.extra(sql)` (where `qs = Model.objects`) resolves via
+                // the type-qualified `DjangoQuerySet.<method>` sink rule.
+                // Strictly additive — fires only when the projection has not
+                // already been pinned to another type.
+                if matches!(lang, Some(Lang::Python)) && field_name == "objects" {
+                    let new_fact = TypeFact::from_kind(TypeKind::DjangoQuerySet);
+                    if facts.get(&inst.value) != Some(&new_fact) {
+                        facts.insert(inst.value, new_fact);
+                        changed = true;
+                    }
+                    continue;
+                }
                 let Some(new_fact) = TypeFact::from_dto_field(&recv_fact.kind, &field_name) else {
                     continue;
                 };
@@ -1122,6 +1797,37 @@ pub fn analyze_types_with_param_types(
                     continue;
                 }
                 if let SsaOp::Assign(uses) = &inst.op {
+                    // Django ORM manager projection in Assign form.
+                    // `qs = Model.objects` lowers to an Assign whose CFG
+                    // node carries `member_field = Some("objects")`.  The
+                    // FieldProj-chain decomposition only fires when there
+                    // is a trailing method call (e.g. `Model.objects.all()`);
+                    // the bare-projection shape leaves the Assign with
+                    // multiple operands (the path "Model.objects" plus the
+                    // unresolved root identifiers), so neither the len==1
+                    // copy-prop arm nor the len==2 BinOp arm picks up the
+                    // type.  Tag the result as `DjangoQuerySet` directly
+                    // when the CFG node's `member_field` is "objects" and
+                    // the language is Python; mirrors the FieldProj
+                    // second-pass arm above.  Strictly additive: only
+                    // fires when the result fact is still Unknown.
+                    if matches!(lang, Some(Lang::Python))
+                        && cfg
+                            .node_weight(inst.cfg_node)
+                            .and_then(|ni| ni.member_field.as_deref())
+                            == Some("objects")
+                    {
+                        let current_kind = facts
+                            .get(&inst.value)
+                            .map(|f| f.kind.clone())
+                            .unwrap_or(TypeKind::Unknown);
+                        if matches!(current_kind, TypeKind::Unknown) {
+                            let new_fact = TypeFact::from_kind(TypeKind::DjangoQuerySet);
+                            facts.insert(inst.value, new_fact);
+                            changed = true;
+                            continue;
+                        }
+                    }
                     if uses.len() == 1 {
                         // when the RHS is a single member-access
                         // expression and the receiver value carries a
@@ -1417,6 +2123,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::from([
@@ -1532,6 +2239,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::new();
@@ -1581,6 +2289,8 @@ mod tests {
             Cap::HTML_ESCAPE,
             Cap::SSRF,
             Cap::DATA_EXFIL,
+            Cap::HEADER_INJECTION,
+            Cap::OPEN_REDIRECT,
         ] {
             assert!(
                 is_type_safe_for_sink(&[SsaValue(0)], cap, &result),
@@ -1617,6 +2327,8 @@ mod tests {
             Cap::HTML_ESCAPE,
             Cap::SSRF,
             Cap::DATA_EXFIL,
+            Cap::HEADER_INJECTION,
+            Cap::OPEN_REDIRECT,
         ] {
             assert!(
                 is_type_safe_for_sink(&[SsaValue(0)], cap, &result),
@@ -1653,14 +2365,14 @@ mod tests {
     /// `is_type_safe_for_sink` requires an intentional matrix edit + a
     /// test update.  Truth values:
     ///
-    /// | TypeKind  | SQL | FILE | SHELL | HTML | SSRF | DATA_EXFIL | CODE_EXEC | DESERIALIZE |
-    /// |-----------|-----|------|-------|------|------|------------|-----------|-------------|
-    /// | Int       |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     N     |      N      |
-    /// | Bool      |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     N     |      N      |
-    /// | String    |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
-    /// | Url       |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
-    /// | Object    |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
-    /// | Unknown   |  N  |  N   |   N   |  N   |  N   |     N      |     N     |      N      |
+    /// | TypeKind | SQL | FILE | SHELL | HTML | SSRF | DATA_EXFIL | HEADER_INJ | OPEN_REDIR | CODE_EXEC | DESERIALIZE |
+    /// |----------|-----|------|-------|------|------|------------|------------|------------|-----------|-------------|
+    /// | Int      |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     Y      |     Y      |     N     |      N      |
+    /// | Bool     |  Y  |  Y   |   Y   |  Y   |  Y   |     Y      |     Y      |     Y      |     N     |      N      |
+    /// | String   |  N  |  N   |   N   |  N   |  N   |     N      |     N      |     N      |     N     |      N      |
+    /// | Url      |  N  |  N   |   N   |  N   |  N   |     N      |     N      |     N      |     N     |      N      |
+    /// | Object   |  N  |  N   |   N   |  N   |  N   |     N      |     N      |     N      |     N     |      N      |
+    /// | Unknown  |  N  |  N   |   N   |  N   |  N   |     N      |     N      |     N      |     N     |      N      |
     #[test]
     fn type_kind_cap_suppression_matrix() {
         use crate::labels::Cap;
@@ -1671,40 +2383,50 @@ mod tests {
             ("HTML_ESCAPE", Cap::HTML_ESCAPE),
             ("SSRF", Cap::SSRF),
             ("DATA_EXFIL", Cap::DATA_EXFIL),
+            ("HEADER_INJECTION", Cap::HEADER_INJECTION),
+            ("OPEN_REDIRECT", Cap::OPEN_REDIRECT),
             ("CODE_EXEC", Cap::CODE_EXEC),
             ("DESERIALIZE", Cap::DESERIALIZE),
         ];
         // (kind_name, kind, [suppress for each cap in `caps` order])
-        let rows: &[(&str, TypeKind, [bool; 8])] = &[
+        let rows: &[(&str, TypeKind, [bool; 10])] = &[
             (
                 "Int",
                 TypeKind::Int,
-                [true, true, true, true, true, true, false, false],
+                [true, true, true, true, true, true, true, true, false, false],
             ),
             (
                 "Bool",
                 TypeKind::Bool,
-                [true, true, true, true, true, true, false, false],
+                [true, true, true, true, true, true, true, true, false, false],
             ),
             (
                 "String",
                 TypeKind::String,
-                [false, false, false, false, false, false, false, false],
+                [
+                    false, false, false, false, false, false, false, false, false, false,
+                ],
             ),
             (
                 "Url",
                 TypeKind::Url,
-                [false, false, false, false, false, false, false, false],
+                [
+                    false, false, false, false, false, false, false, false, false, false,
+                ],
             ),
             (
                 "Object",
                 TypeKind::Object,
-                [false, false, false, false, false, false, false, false],
+                [
+                    false, false, false, false, false, false, false, false, false, false,
+                ],
             ),
             (
                 "Unknown",
                 TypeKind::Unknown,
-                [false, false, false, false, false, false, false, false],
+                [
+                    false, false, false, false, false, false, false, false, false, false,
+                ],
             ),
         ];
         for (kind_name, kind, expected) in rows {
@@ -1837,6 +2559,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::new();
@@ -2177,6 +2900,24 @@ mod tests {
         assert_eq!(
             constructor_type(Lang::Java, "MongoClient"),
             Some(TypeKind::DatabaseConnection)
+        );
+        // Hibernate Session factory methods.  Suffix-only match — receiver
+        // text is irrelevant.
+        assert_eq!(
+            constructor_type(Lang::Java, "sessionFactory.openSession"),
+            Some(TypeKind::HibernateSession)
+        );
+        assert_eq!(
+            constructor_type(Lang::Java, "sessionFactory.getCurrentSession"),
+            Some(TypeKind::HibernateSession)
+        );
+        assert_eq!(
+            constructor_type(Lang::Java, "openStatelessSession"),
+            Some(TypeKind::HibernateSession)
+        );
+        assert_eq!(
+            TypeKind::HibernateSession.label_prefix(),
+            Some("HibernateSession")
         );
     }
 

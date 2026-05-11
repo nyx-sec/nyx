@@ -447,6 +447,7 @@ mod tests {
                         typed_call_receivers: vec![],
                         validated_params_to_return: smallvec::SmallVec::new(),
                         param_to_gate_filters: vec![],
+                        entry_kind: None,
                     },
                 )],
             )
@@ -520,6 +521,7 @@ mod tests {
                 field_writes: std::collections::HashMap::new(),
 
                 synthetic_externals: std::collections::HashSet::new(),
+                slot_scoped_assigns: std::collections::HashSet::new(),
             },
             false,
             false,
@@ -544,6 +546,7 @@ mod tests {
                 field_writes: std::collections::HashMap::new(),
 
                 synthetic_externals: std::collections::HashSet::new(),
+                slot_scoped_assigns: std::collections::HashSet::new(),
             },
             true,
             true,
@@ -568,6 +571,7 @@ mod tests {
                 field_writes: std::collections::HashMap::new(),
 
                 synthetic_externals: std::collections::HashSet::new(),
+                slot_scoped_assigns: std::collections::HashSet::new(),
             },
             true,
             false,
@@ -666,6 +670,7 @@ mod tests {
                         typed_call_receivers: vec![],
                         validated_params_to_return: smallvec::SmallVec::new(),
                         param_to_gate_filters: vec![],
+                        entry_kind: None,
                     },
                 )],
             )

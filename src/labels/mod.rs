@@ -38,6 +38,61 @@ pub struct LabelRule {
     pub case_sensitive: bool,
 }
 
+/// Activation gate carried by a [`GatedLabelRule`]. Phase 05 introduces the
+/// import-derived gate so JS/TS bare-name `fs/promises` sinks (`readFile`,
+/// `writeFile`, ...) only fire when the call resolves to that module — a
+/// flat bare-name match would over-fire on user-defined `readFile` helpers.
+#[derive(Debug, Clone, Copy)]
+pub enum LabelGate {
+    /// Fires only when the call's leading identifier is locally bound by an
+    /// import / `require` whose `source_module` equals one of the listed
+    /// specifiers. The synthetic prefix `FileSystemPromisesNs.` produced by
+    /// receiver-type qualification also satisfies the gate (see Phase 05's
+    /// `TypeKind::FileSystemPromisesNs`).
+    ImportedFromModule(&'static [&'static str]),
+    /// Fires when *any* local-name in the file's import view resolves to one
+    /// of the listed specifiers, regardless of which identifier leads the
+    /// call. Used for Phase 07 ORM bare-name method sinks (Knex's `whereRaw`
+    /// / `orderByRaw` / `havingRaw`) where the receiver is a query-builder
+    /// instance whose binding name is arbitrary (`db`, `qb`, `users`, ...)
+    /// and the import witness is the package itself.
+    FileImportsModule(&'static [&'static str]),
+    /// Fires when the file's import view binds at least one of `local_names`
+    /// to one of `modules`. Tighter than [`Self::FileImportsModule`]: type-only
+    /// or peripheral named-import shapes (e.g. `import { Knex } from 'knex'`
+    /// for type-only use of `Knex.QueryBuilder`) do not satisfy the gate
+    /// unless the conventional value-binding name (`knex`, lowercase) is also
+    /// present. Used for Phase 07 deferred-item 10's tightening of the Knex
+    /// `whereRaw` / `orderByRaw` / `havingRaw` gate.
+    FileImportsModuleAsLocalName {
+        modules: &'static [&'static str],
+        local_names: &'static [&'static str],
+    },
+}
+
+/// A label rule that only fires when its [`LabelGate`] is satisfied at the
+/// call site. The matcher / label / case-sensitivity semantics mirror
+/// [`LabelRule`]; the gate is checked by [`classify_all_ctx`] using the
+/// caller-supplied [`ClassificationContext`].
+#[derive(Debug, Clone, Copy)]
+pub struct GatedLabelRule {
+    pub matchers: &'static [&'static str],
+    pub label: DataLabel,
+    pub case_sensitive: bool,
+    pub gate: LabelGate,
+}
+
+/// Per-file context consulted by [`classify_all_ctx`] when evaluating
+/// gated rules. Threaded from the CFG layer's gated post-pass; `None`
+/// elsewhere keeps existing classification paths intact.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ClassificationContext<'a> {
+    /// Local-name → source-module view of the file's imports. The map is
+    /// computed at CFG build time (see `cfg::imports::extract_local_import_view`)
+    /// so the gate fires before the project-wide resolver runs.
+    pub local_imports: Option<&'a std::collections::HashMap<String, String>>,
+}
+
 /// Sentinel returned by [`classify_gated_sink`] for the dynamic/unknown-activation
 /// branch: the gate fires conservatively and every positional argument must be
 /// considered a potential tainted payload, not just the explicit `payload_args`.
@@ -300,6 +355,17 @@ pub enum Kind {
     /// any other sequential statement in the CFG but explicitly classified so
     /// code that inspects `Kind` can recognise it.
     Seq,
+    /// Async-await unary forward.  An `await x` expression evaluates `x` and
+    /// resolves to the same value/taint, modelled as a 1:1 copy.  Lowered to
+    /// SSA as `SsaOp::Assign(operand)` so taint, origins, and abstract value
+    /// pass through unchanged.
+    AwaitForward,
+    /// JSX attribute (`<Tag name={value} />`).  Dispatched in the CFG so the
+    /// builder can recognise React-specific shapes such as
+    /// `dangerouslySetInnerHTML={{ __html: x }}` and synthesise a sink call.
+    /// The attribute name is read from the AST at CFG-build time, not carried
+    /// in this enum (which must remain `Copy` for `phf_map` storage).
+    JsxAttr,
     Other,
 }
 
@@ -444,6 +510,19 @@ static GATED_REGISTRY: Lazy<HashMap<&'static str, &'static [SinkGate]>> = Lazy::
     m.insert("rs", rust::GATED_SINKS);
     m
 });
+
+/// Per-language registry of [`GatedLabelRule`] entries. Phase 05 wires
+/// JS/TS only (the `fs/promises` FILE_IO matcher set); other languages
+/// fall back to an empty slice.
+static GATED_LABEL_REGISTRY: Lazy<HashMap<&'static str, &'static [GatedLabelRule]>> =
+    Lazy::new(|| {
+        let mut m = HashMap::new();
+        m.insert("javascript", javascript::GATED_LABEL_RULES);
+        m.insert("js", javascript::GATED_LABEL_RULES);
+        m.insert("typescript", typescript::GATED_LABEL_RULES);
+        m.insert("ts", typescript::GATED_LABEL_RULES);
+        m
+    });
 
 /// Feature flag for the Python prototype-pollution gates.  Disabled by
 /// default; set `NYX_PYTHON_PROTO_POLLUTION=1` (or `true`) to enable
@@ -597,6 +676,89 @@ pub fn lookup(lang: &str, raw: &str) -> Kind {
         .get(lang)
         .and_then(|m| m.get(raw).copied())
         .unwrap_or(Kind::Other)
+}
+
+/// Promise-callback methods (`p.then(cb)`, `p.catch(cb)`, `p.finally(cb)`).
+///
+/// These are not sinks. The taint engine consumes this predicate to recognise
+/// the receiver as a Promise whose resolved value will be fed to the callback's
+/// first parameter.  See phase 03 of `plan.md` for the recall-gap rationale.
+///
+/// JS/TS only.  `callee_leaf` is expected to be the post-`callee_leaf_name`
+/// short form (e.g. `"then"`, not `"p.then"`).
+pub fn is_promise_callback_method(lang: &str, callee_leaf: &str) -> bool {
+    if !matches!(lang, "javascript" | "js" | "typescript" | "ts" | "tsx") {
+        return false;
+    }
+    matches!(callee_leaf, "then" | "catch" | "finally")
+}
+
+/// Static `Promise.*` combinator a call resolves to, or `None`.
+///
+/// Combinators wrap arguments into a single Promise:
+///   * `Promise.resolve(x)` — identity for `x`.
+///   * `Promise.all([a, b])` — array whose elements have per-arg taint.
+///   * `Promise.allSettled([...])` — same shape as `all`, conservative union.
+///   * `Promise.race([...])` — first-to-settle, conservative union.
+///
+/// `callee` is the full callee text (e.g. `"Promise.all"`) since the leaf
+/// segment alone (`"all"`) is too generic to match safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseCombinatorKind {
+    Resolve,
+    All,
+    AllSettled,
+    Race,
+}
+
+/// Lang-agnostic recognition of any promise combinator callee text. Used by
+/// SSA lowering, which doesn't carry a `lang` argument.
+pub fn is_any_promise_combinator(callee: &str) -> Option<PromiseCombinatorKind> {
+    match callee {
+        "Promise.resolve" => Some(PromiseCombinatorKind::Resolve),
+        "Promise.all" => Some(PromiseCombinatorKind::All),
+        "Promise.allSettled" => Some(PromiseCombinatorKind::AllSettled),
+        "Promise.race" => Some(PromiseCombinatorKind::Race),
+        "asyncio.gather" | "asyncio.wait" => Some(PromiseCombinatorKind::All),
+        "tokio::join" | "tokio::try_join" | "futures::join" | "futures::try_join" => {
+            Some(PromiseCombinatorKind::All)
+        }
+        _ => None,
+    }
+}
+
+pub fn is_promise_combinator(lang: &str, callee: &str) -> Option<PromiseCombinatorKind> {
+    match lang {
+        "javascript" | "js" | "typescript" | "ts" | "tsx" => match callee {
+            "Promise.resolve" => Some(PromiseCombinatorKind::Resolve),
+            "Promise.all" => Some(PromiseCombinatorKind::All),
+            "Promise.allSettled" => Some(PromiseCombinatorKind::AllSettled),
+            "Promise.race" => Some(PromiseCombinatorKind::Race),
+            _ => None,
+        },
+        // Python: `asyncio.gather(...)` / `asyncio.wait(...)` resolve to a
+        // tuple/list whose elements carry the union of argument taints.
+        // `asyncio.wait` returns `(done, pending)` sets but the same
+        // conservative scalar-union approximation applies, downstream
+        // destructuring already taints all bindings.
+        "python" | "py" => match callee {
+            "asyncio.gather" | "asyncio.wait" => Some(PromiseCombinatorKind::All),
+            _ => None,
+        },
+        // Rust: `tokio::join!` / `futures::join!` (and their `try_*`
+        // variants) evaluate every future concurrently and bind the
+        // tuple of resolved values.  `cfg::push_node` rewrites the
+        // macro_invocation's `arg_uses` so each future's tainted inputs
+        // surface as a positional arg; this combinator entry then unions
+        // them onto the tuple value.
+        "rust" | "rs" => match callee {
+            "tokio::join" | "tokio::try_join" | "futures::join" | "futures::try_join" => {
+                Some(PromiseCombinatorKind::All)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// The kind of taint source, used to refine finding severity.
@@ -953,6 +1115,17 @@ fn ends_with_cs(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> bool {
     }
 }
 
+/// Allocation-free ASCII-case-insensitive prefix check on `&str` inputs.
+/// Used by the gated-sink dispatch hot path where the previous
+/// `value.to_ascii_lowercase().starts_with(&p.to_ascii_lowercase())` pair
+/// allocated two `String` values per check.
+#[inline]
+fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let h = haystack.as_bytes();
+    let n = needle.as_bytes();
+    h.len() >= n.len() && h[..n.len()].eq_ignore_ascii_case(n)
+}
+
 /// Prefix check with configurable case sensitivity.  The `=` exact-match
 /// sigil is meaningless for prefix matchers (which by definition match many
 /// suffixes); it is stripped if present so a malformed matcher like
@@ -1028,6 +1201,9 @@ pub fn classify(lang: &str, text: &str, extra: Option<&[RuntimeLabelRule]>) -> O
 
     // For chained calls like `r.URL.Query().Get`, also strip internal
     // `().` segments to produce a normalized form like `r.URL.Query.Get`.
+    // `normalize_chained_call` returns `Cow::Borrowed` when no rewrite is
+    // needed, so the alloc is paid only on inputs that actually require
+    // it.
     let full_normalized = normalize_chained_call(text);
     let full_norm_bytes = full_normalized.as_bytes();
 
@@ -1116,6 +1292,9 @@ pub fn classify_all(
         return SmallVec::new();
     }
 
+    // `normalize_chained_call` returns `Cow::Borrowed` when no rewrite
+    // is needed, so the alloc is paid only on inputs that actually
+    // require it. The hot classify path runs on every CFG node.
     let full_normalized = normalize_chained_call(text);
     let full_norm_bytes = full_normalized.as_bytes();
 
@@ -1196,6 +1375,228 @@ pub fn classify_all(
     }
 
     out
+}
+
+/// Classify a call with an optional [`ClassificationContext`] enabling
+/// gated rule evaluation.
+///
+/// This is a strict superset of [`classify_all`]: the same flat-rule
+/// matching runs first, then any per-language [`GatedLabelRule`] is
+/// evaluated against `ctx`. A `None` context (or a context with no
+/// `local_imports`) leaves only the synthetic receiver-type prefix
+/// (e.g. `FileSystemPromisesNs.`) able to satisfy the gate.
+pub fn classify_all_ctx(
+    lang: &str,
+    text: &str,
+    extra: Option<&[RuntimeLabelRule]>,
+    ctx: Option<&ClassificationContext<'_>>,
+) -> SmallVec<[DataLabel; 2]> {
+    let mut out = classify_all(lang, text, extra);
+    classify_gated_into(lang, text, ctx, &mut out);
+    out
+}
+
+/// Run only the gated-rule pass — skip the flat [`classify_all`] scan.
+///
+/// Use when the caller has already classified `text` with the flat rules
+/// during initial CFG construction and only needs the gate-conditioned
+/// labels (which require a per-file [`ClassificationContext`] not
+/// available at the original classification site).
+pub fn classify_gated_only(
+    lang: &str,
+    text: &str,
+    ctx: Option<&ClassificationContext<'_>>,
+) -> SmallVec<[DataLabel; 2]> {
+    let mut out = SmallVec::new();
+    classify_gated_into(lang, text, ctx, &mut out);
+    out
+}
+
+fn classify_gated_into(
+    lang: &str,
+    text: &str,
+    ctx: Option<&ClassificationContext<'_>>,
+    out: &mut SmallVec<[DataLabel; 2]>,
+) {
+    let gated = match GATED_LABEL_REGISTRY.get(lang).or_else(|| {
+        let key = lang.to_ascii_lowercase();
+        GATED_LABEL_REGISTRY.get(key.as_str())
+    }) {
+        Some(g) => *g,
+        None => return,
+    };
+    if gated.is_empty() {
+        return;
+    }
+
+    let head = text.split(['(', '<']).next().unwrap_or("");
+    let trimmed = head.trim().as_bytes();
+    if is_excluded(lang, trimmed) {
+        return;
+    }
+    let full_normalized = normalize_chained_call(text);
+    let full_norm_bytes = full_normalized.as_bytes();
+
+    #[inline]
+    fn push_dedup(out: &mut SmallVec<[DataLabel; 2]>, label: DataLabel) {
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    }
+
+    // Pass 1: exact / suffix.
+    for rule in gated {
+        for raw in rule.matchers {
+            let m = raw.as_bytes();
+            if m.last() == Some(&b'_') {
+                continue;
+            }
+            let matches = match_suffix_cs(trimmed, m, rule.case_sensitive)
+                || match_suffix_cs(full_norm_bytes, m, rule.case_sensitive);
+            if matches && gate_satisfied(&rule.gate, head, ctx) {
+                push_dedup(out, rule.label);
+            }
+        }
+    }
+    // Pass 2: prefix.
+    for rule in gated {
+        for raw in rule.matchers {
+            let m = raw.as_bytes();
+            if m.last() == Some(&b'_')
+                && (starts_with_cs(trimmed, m, rule.case_sensitive)
+                    || starts_with_cs(full_norm_bytes, m, rule.case_sensitive))
+                && gate_satisfied(&rule.gate, head, ctx)
+            {
+                push_dedup(out, rule.label);
+            }
+        }
+    }
+}
+
+/// Restricted payload-arg positions for known type-qualified sink callees.
+///
+/// Phase 07's ORM raw-SQL receiver methods (`TypeOrmRepo.query`,
+/// `TypeOrmManager.query`, `MikroOrmEm.execute`, etc.) take the SQL
+/// template at arg 0 and bind / parameter arrays at arg 1+. The flat
+/// label rule alone cannot encode this and would FP on
+/// `repo.query("SELECT $1", [tainted])`. When the type-qualified
+/// resolver synthesises one of these callees, this lookup returns the
+/// payload positions to which sink-taint checks must be restricted.
+///
+/// Sequelize.literal(sql) is single-arg, so `&[0]` is also correct
+/// (no precision loss vs the unconditional flat rule).
+pub fn type_qualified_sink_payload_args(qualified_callee: &str) -> Option<&'static [usize]> {
+    match qualified_callee {
+        "Sequelize.literal"
+        | "TypeOrmRepo.query"
+        | "TypeOrmRepo.createQueryBuilder"
+        | "TypeOrmManager.query"
+        | "TypeOrmManager.createQueryBuilder"
+        | "MikroOrmEm.execute" => Some(&[0]),
+        _ => None,
+    }
+}
+
+/// Receiver-type prefixes that count as a witness for a given module
+/// specifier on a [`LabelGate::ImportedFromModule`] gate.
+///
+/// When SSA receiver-type qualification synthesises a callee like
+/// `FileSystemPromisesNs.readFile(...)`, the leading identifier becomes
+/// the type prefix rather than an imported binding. Each gate module
+/// can declare which type prefixes legitimise the gate firing without
+/// a textual import witness. Returning an empty slice means the gate
+/// must fall back to the `local_imports` map alone.
+fn receiver_type_prefixes_for_module(module: &str) -> &'static [&'static str] {
+    if module.eq_ignore_ascii_case("node:fs/promises") || module.eq_ignore_ascii_case("fs/promises")
+    {
+        &["FileSystemPromisesNs"]
+    } else {
+        &[]
+    }
+}
+
+/// Evaluate a [`LabelGate`] against the call's leading identifier and the
+/// caller-supplied context. Receiver-type qualification can satisfy
+/// [`LabelGate::ImportedFromModule`] via
+/// [`receiver_type_prefixes_for_module`].
+fn gate_satisfied(
+    gate: &LabelGate,
+    callee_head: &str,
+    ctx: Option<&ClassificationContext<'_>>,
+) -> bool {
+    match gate {
+        LabelGate::ImportedFromModule(modules) => {
+            let leading = leading_identifier(callee_head);
+            for m in modules.iter() {
+                for prefix in receiver_type_prefixes_for_module(m) {
+                    if leading == *prefix {
+                        return true;
+                    }
+                }
+            }
+            let Some(ctx) = ctx else {
+                return false;
+            };
+            let Some(map) = ctx.local_imports else {
+                return false;
+            };
+            let Some(source_module) = map.get(leading) else {
+                return false;
+            };
+            modules
+                .iter()
+                .any(|m| source_module.eq_ignore_ascii_case(m))
+        }
+        LabelGate::FileImportsModule(modules) => {
+            let Some(ctx) = ctx else {
+                return false;
+            };
+            let Some(map) = ctx.local_imports else {
+                return false;
+            };
+            map.values().any(|source_module| {
+                modules
+                    .iter()
+                    .any(|m| source_module.eq_ignore_ascii_case(m))
+            })
+        }
+        LabelGate::FileImportsModuleAsLocalName {
+            modules,
+            local_names,
+        } => {
+            let Some(ctx) = ctx else {
+                return false;
+            };
+            let Some(map) = ctx.local_imports else {
+                return false;
+            };
+            local_names.iter().any(|name| {
+                map.get(*name).is_some_and(|source_module| {
+                    modules
+                        .iter()
+                        .any(|m| source_module.eq_ignore_ascii_case(m))
+                })
+            })
+        }
+    }
+}
+
+/// Leading identifier of a call expression's text — the segment up to the
+/// first `.`, `:`, `(`, or `<`. Used to drive ImportTable lookups.
+fn leading_identifier(callee_head: &str) -> &str {
+    let bytes = callee_head.as_bytes();
+    let mut end = 0;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'.' | b':' | b'(' | b'<' | b' ' | b'[' => {
+                end = i;
+                return &callee_head[..end];
+            }
+            _ => {}
+        }
+        end = i + 1;
+    }
+    &callee_head[..end]
 }
 
 /// Result of a gated-sink classification.
@@ -1289,8 +1690,7 @@ pub fn classify_gated_sink(
                 }
                 match const_keyword_arg(name) {
                     Some(v) => {
-                        let lower = v.to_ascii_lowercase();
-                        if values.iter().any(|dv| lower == dv.to_ascii_lowercase()) {
+                        if values.iter().any(|dv| v.eq_ignore_ascii_case(dv)) {
                             any_dangerous = true;
                             break;
                         }
@@ -1332,15 +1732,14 @@ pub fn classify_gated_sink(
 
         match activation_value {
             Some(value) => {
-                let lower = value.to_ascii_lowercase();
                 let is_dangerous = gate
                     .dangerous_values
                     .iter()
-                    .any(|v| lower == v.to_ascii_lowercase())
+                    .any(|v| value.eq_ignore_ascii_case(v))
                     || gate
                         .dangerous_prefixes
                         .iter()
-                        .any(|p| lower.starts_with(&p.to_ascii_lowercase()));
+                        .any(|p| starts_with_ignore_ascii_case(&value, p));
                 if is_dangerous {
                     out.push(GateMatch {
                         label: gate.label,
@@ -1379,7 +1778,7 @@ pub fn classify_gated_sink(
 /// Public wrapper for `normalize_chained_call` so callers outside the module
 /// can share the same normalization used by the label classifier.
 pub fn normalize_chained_call_for_classify(text: &str) -> String {
-    normalize_chained_call(text)
+    normalize_chained_call(text).into_owned()
 }
 
 /// Return the bare method-name segment of a callee text. Returns the
@@ -1394,38 +1793,79 @@ pub fn bare_method_name(callee: &str) -> &str {
 /// Normalize a chained method call: strip `()` between `.` segments.
 /// e.g. `r.URL.Query().Get` → `r.URL.Query.Get`
 /// e.g. `r.URL.Query().Get("host")` → `r.URL.Query.Get`
-fn normalize_chained_call(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
+///
+/// Returns a borrow when no transformation is required (no `()` between
+/// `.` segments and no leading `<`), avoiding the heap allocation. Only
+/// pays for a `String` when the input actually needs rewriting; the hot
+/// classify path runs on every CFG node so the borrow case dominates.
+fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'(' => {
-                // Skip from `(` to matching `)`, but only if followed by `.`
-                // This handles `Query().Get` → `Query.Get`
                 let mut depth = 1u32;
                 let mut j = i + 1;
                 while j < bytes.len() && depth > 0 {
-                    if bytes[j] == b'(' {
-                        depth += 1;
-                    } else if bytes[j] == b')' {
-                        depth -= 1;
+                    match bytes[j] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
                     }
                     j += 1;
                 }
-                // If we're at end or next char is `.`, skip the parens
+                if j >= bytes.len() || bytes[j] == b'.' {
+                    return std::borrow::Cow::Owned(normalize_chained_call_owned(text, i));
+                }
+                i += 1;
+            }
+            b'<' => return std::borrow::Cow::Borrowed(&text[..i]),
+            _ => i += 1,
+        }
+    }
+    std::borrow::Cow::Borrowed(text)
+}
+
+/// Slow path for `normalize_chained_call`: runs only when the input
+/// actually contains a `(...)` group followed by `.` (the case that
+/// requires removing characters). `prefix_end` is the byte offset of the
+/// first transformation point so the prefix can be copied wholesale.
+///
+/// `(`, `)`, `<`, and `.` are all ASCII, so byte-level scanning is safe
+/// for control characters. Non-ASCII identifier bytes are copied as
+/// contiguous slices to keep multi-byte UTF-8 sequences intact.
+fn normalize_chained_call_owned(text: &str, prefix_end: usize) -> String {
+    let bytes = text.as_bytes();
+    let mut result = String::with_capacity(text.len());
+    result.push_str(&text[..prefix_end]);
+    let mut i = prefix_end;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => {
+                let mut depth = 1u32;
+                let mut j = i + 1;
+                while j < bytes.len() && depth > 0 {
+                    match bytes[j] {
+                        b'(' => depth += 1,
+                        b')' => depth -= 1,
+                        _ => {}
+                    }
+                    j += 1;
+                }
                 if j >= bytes.len() || bytes[j] == b'.' {
                     i = j;
                 } else {
-                    // Keep the paren content (unusual case)
                     result.push('(');
                     i += 1;
                 }
             }
-            b'<' => break, // Stop at generic args
+            b'<' => break,
             _ => {
-                result.push(bytes[i] as char);
-                i += 1;
+                let start = i;
+                while i < bytes.len() && !matches!(bytes[i], b'(' | b'<') {
+                    i += 1;
+                }
+                result.push_str(&text[start..i]);
             }
         }
     }
@@ -1977,6 +2417,58 @@ mod tests {
         // Unrelated callees return None.
         assert_eq!(lookup_receiver_validator("python", "resolve"), None);
         assert_eq!(lookup_receiver_validator("python", "joinpath"), None);
+    }
+
+    #[test]
+    fn normalize_chained_call_borrows_when_no_change() {
+        // No parens, no `<` → no rewrite, borrow returned.
+        let r = normalize_chained_call("plain");
+        assert!(matches!(r, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(r.as_ref(), "plain");
+
+        // `(` mid-token but not at end of any `.` chain → still owned
+        // because the function's policy collapses any `(` followed by
+        // EOL or `.`. Use a callee with a non-collapsing shape: bare
+        // dotted text.
+        let r = normalize_chained_call("a.b.c");
+        assert!(matches!(r, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(r.as_ref(), "a.b.c");
+
+        // Truncate at `<` (generics) is a borrow with shorter slice.
+        let r = normalize_chained_call("Vec<T>");
+        assert!(matches!(r, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(r.as_ref(), "Vec");
+    }
+
+    #[test]
+    fn normalize_chained_call_collapses_paren_dot_chain() {
+        let r = normalize_chained_call("r.URL.Query().Get");
+        assert_eq!(r.as_ref(), "r.URL.Query.Get");
+
+        let r = normalize_chained_call("a.b().c().d");
+        assert_eq!(r.as_ref(), "a.b.c.d");
+
+        // Last paren-call before EOL is also collapsed (j >= bytes.len()).
+        let r = normalize_chained_call("a.b()");
+        assert_eq!(r.as_ref(), "a.b");
+    }
+
+    #[test]
+    fn normalize_chained_call_preserves_utf8_after_collapse() {
+        // Greek lowercase letters are 2-byte UTF-8 sequences.  The slow
+        // path must not split them when copying tail bytes after a
+        // collapsed `(...)` group.
+        let r = normalize_chained_call("obj.func().αβγ");
+        assert_eq!(r.as_ref(), "obj.func.αβγ");
+
+        // CJK ideographs are 3-byte sequences.  Same invariant.
+        let r = normalize_chained_call("a.b().名前");
+        assert_eq!(r.as_ref(), "a.b.名前");
+
+        // Emoji (4-byte sequence) inside an identifier.  Engines never
+        // see this in practice but the byte loop must not corrupt it.
+        let r = normalize_chained_call("x.y().🦀_id");
+        assert_eq!(r.as_ref(), "x.y.🦀_id");
     }
 
     #[test]
@@ -2737,6 +3229,26 @@ mod tests {
         let result = classify_all("javascript", "innerHTML", None);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], DataLabel::Sink(Cap::HTML_ESCAPE));
+    }
+
+    #[test]
+    fn starts_with_ignore_ascii_case_matches_canonical_shapes() {
+        assert!(starts_with_ignore_ascii_case(
+            "FILE://etc/passwd",
+            "file://"
+        ));
+        assert!(starts_with_ignore_ascii_case(
+            "file://etc/passwd",
+            "FILE://"
+        ));
+        assert!(starts_with_ignore_ascii_case("http://", "http://"));
+        assert!(starts_with_ignore_ascii_case("http://", ""));
+        assert!(!starts_with_ignore_ascii_case("http", "https"));
+        assert!(!starts_with_ignore_ascii_case("", "x"));
+        // Multibyte UTF-8: the helper is intentionally ASCII-only; non-ASCII
+        // bytes compare byte-for-byte (no Unicode case folding).
+        assert!(starts_with_ignore_ascii_case("café", "café"));
+        assert!(!starts_with_ignore_ascii_case("café", "CAFÉ"));
     }
 
     #[test]

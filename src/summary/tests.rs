@@ -530,6 +530,7 @@ fn ssa_summary_serde_round_trip_identity() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -564,6 +565,7 @@ fn ssa_summary_serde_round_trip_strip_bits() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -595,6 +597,7 @@ fn ssa_summary_serde_round_trip_add_bits() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -633,6 +636,7 @@ fn ssa_summary_serde_round_trip_all_variants() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -673,6 +677,7 @@ fn global_summaries_insert_ssa_exact_key_replacement() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     gs.insert_ssa(key.clone(), v1.clone());
     assert_eq!(gs.get_ssa(&key), Some(&v1));
@@ -701,6 +706,7 @@ fn global_summaries_insert_ssa_exact_key_replacement() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     gs.insert_ssa(key.clone(), v2.clone());
     assert_eq!(gs.get_ssa(&key), Some(&v2));
@@ -749,6 +755,7 @@ fn global_summaries_merge_with_ssa_entries() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let sum_b = SsaFuncSummary {
         param_to_return: vec![],
@@ -773,6 +780,7 @@ fn global_summaries_merge_with_ssa_entries() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
 
     gs1.insert_ssa(key_a.clone(), sum_a.clone());
@@ -821,6 +829,7 @@ fn global_summaries_is_empty_considers_ssa() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     );
 
@@ -852,6 +861,7 @@ fn ssa_summary_serde_round_trip_param_to_sink_param() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -898,6 +908,7 @@ fn ssa_summary_serde_round_trip_container_fields() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -954,6 +965,7 @@ fn ssa_summary_serde_round_trip_return_abstract() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -1029,6 +1041,7 @@ fn make_callee_body(
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         },
         opt: crate::ssa::OptimizeResult {
             const_values: std::collections::HashMap::new(),
@@ -1047,6 +1060,7 @@ fn make_callee_body(
         param_count,
         node_meta: std::collections::HashMap::new(),
         body_graph: None,
+        cross_package_imports: std::sync::Arc::new(std::collections::HashMap::new()),
     }
 }
 
@@ -1478,6 +1492,7 @@ fn global_summaries_resolve_body_requires_body_present() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     );
     // Don't insert body
@@ -3415,6 +3430,7 @@ fn sink_site_serde_round_trip_solo() {
         col: 9,
         snippet: "Command::new(\"sh\").arg(cmd).status()".into(),
         cap: Cap::CODE_EXEC | Cap::SHELL_ESCAPE,
+        from_chain: false,
     };
     let json = serde_json::to_string(&site).unwrap();
     let back: SinkSite = serde_json::from_str(&json).unwrap();
@@ -3446,6 +3462,7 @@ fn ssa_summary_serde_round_trip_with_sink_sites() {
         col: 4,
         snippet: "cursor.execute(sql)".into(),
         cap: Cap::SQL_QUERY,
+        from_chain: false,
     };
     let site_b = SinkSite {
         file_rel: "exec.py".into(),
@@ -3453,6 +3470,7 @@ fn ssa_summary_serde_round_trip_with_sink_sites() {
         col: 12,
         snippet: "subprocess.call(cmd, shell=True)".into(),
         cap: Cap::CODE_EXEC | Cap::SHELL_ESCAPE,
+        from_chain: false,
     };
     let summary = SsaFuncSummary {
         param_to_return: vec![(0, TaintTransform::Identity)],
@@ -3526,6 +3544,7 @@ fn merge_unions_sink_sites_with_dedup() {
         col: 1,
         snippet: "execute(sql)".into(),
         cap: Cap::SQL_QUERY,
+        from_chain: false,
     };
     let site_b = SinkSite {
         file_rel: "svc.py".into(),
@@ -3533,6 +3552,7 @@ fn merge_unions_sink_sites_with_dedup() {
         col: 4,
         snippet: "os.system(cmd)".into(),
         cap: Cap::CODE_EXEC,
+        from_chain: false,
     };
 
     let mut left = FuncSummary {
@@ -3623,6 +3643,7 @@ fn cf4_return_path_transform_serde_round_trip() {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     };
     let json = serde_json::to_string(&summary).unwrap();
     let back: SsaFuncSummary = serde_json::from_str(&json).unwrap();
@@ -4458,4 +4479,96 @@ mod hierarchy_widened_tests {
         assert!(post_merge_reinstalled.contains(&k_super));
         assert!(post_merge_reinstalled.contains(&k_sub));
     }
+}
+
+#[test]
+fn cross_package_imports_round_trip_via_global_summaries() {
+    use crate::symbol::{FuncKey, FuncKind, Lang};
+    let mut gs = GlobalSummaries::new();
+    let mut map: std::collections::HashMap<String, FuncKey> = std::collections::HashMap::new();
+    map.insert(
+        "escape".to_string(),
+        FuncKey {
+            lang: Lang::TypeScript,
+            namespace: "packages/util/src/escape.ts".to_string(),
+            container: String::new(),
+            name: "escape".to_string(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        },
+    );
+    let arc = std::sync::Arc::new(map);
+    gs.insert_cross_package_imports("apps/api/handler.ts".to_string(), arc.clone());
+
+    assert_eq!(gs.cross_package_imports_len(), 1);
+    let looked_up = gs
+        .get_cross_package_imports("apps/api/handler.ts")
+        .expect("namespace lookup must hit");
+    assert_eq!(looked_up.len(), 1);
+    assert!(looked_up.contains_key("escape"));
+    assert!(gs.get_cross_package_imports("missing").is_none());
+
+    // Inserting an empty map is a no-op so the index does not get
+    // polluted with bookkeeping rows when a file's resolver produces
+    // no resolved bindings.
+    gs.insert_cross_package_imports(
+        "apps/api/no_imports.ts".to_string(),
+        std::sync::Arc::new(std::collections::HashMap::new()),
+    );
+    assert_eq!(gs.cross_package_imports_len(), 1);
+}
+
+#[test]
+fn cross_package_imports_merged_across_thread_local_summaries() {
+    use crate::symbol::{FuncKey, FuncKind, Lang};
+
+    let mut gs_a = GlobalSummaries::new();
+    let mut map_a: std::collections::HashMap<String, FuncKey> = std::collections::HashMap::new();
+    map_a.insert(
+        "escape".to_string(),
+        FuncKey {
+            lang: Lang::TypeScript,
+            namespace: "packages/util/src/escape.ts".to_string(),
+            container: String::new(),
+            name: "escape".to_string(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        },
+    );
+    gs_a.insert_cross_package_imports(
+        "apps/api/handler_a.ts".to_string(),
+        std::sync::Arc::new(map_a),
+    );
+
+    let mut gs_b = GlobalSummaries::new();
+    let mut map_b: std::collections::HashMap<String, FuncKey> = std::collections::HashMap::new();
+    map_b.insert(
+        "format".to_string(),
+        FuncKey {
+            lang: Lang::TypeScript,
+            namespace: "packages/util/src/format.ts".to_string(),
+            container: String::new(),
+            name: "format".to_string(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        },
+    );
+    gs_b.insert_cross_package_imports(
+        "apps/api/handler_b.ts".to_string(),
+        std::sync::Arc::new(map_b),
+    );
+
+    gs_a.merge(gs_b);
+    assert_eq!(gs_a.cross_package_imports_len(), 2);
+    assert!(
+        gs_a.get_cross_package_imports("apps/api/handler_a.ts")
+            .is_some()
+    );
+    assert!(
+        gs_a.get_cross_package_imports("apps/api/handler_b.ts")
+            .is_some()
+    );
 }

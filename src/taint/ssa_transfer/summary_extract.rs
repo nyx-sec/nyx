@@ -264,6 +264,10 @@ pub fn extract_ssa_func_summary_full(
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: true,
         };
 
         let (events, block_states) = run_ssa_taint_full(ssa, cfg, &transfer);
@@ -745,14 +749,36 @@ pub fn extract_ssa_func_summary_full(
             if event.sink_caps.is_empty() {
                 continue;
             }
-            let site = match locator {
-                Some(loc) => {
-                    loc.site_for_span(cfg[event.sink_node].classification_span(), event.sink_caps)
+            // Preserve the deepest sink attribution across multi-hop summaries.
+            // When `event.primary_sink_site` is populated, the upstream
+            // resolver already pierced through a callee summary to the
+            // dangerous instruction's coordinates; promoting it here means a
+            // grandparent caller of this function sees `line N` of the
+            // innermost helper rather than `line M` of *this* function's
+            // call site to its child.  Mark `from_chain = true` so pass-2
+            // emission can distinguish multi-hop chain markers (always
+            // promote into `Finding.primary_location`) from this body's own
+            // locator-resolved sink (only promote across file boundaries).
+            // Falls back to locator-based call-site attribution when the
+            // event is intra-procedural.
+            let site = match event.primary_sink_site.as_ref() {
+                Some(s) => {
+                    let mut s = s.clone();
+                    s.from_chain = true;
+                    s
                 }
-                None => SinkSite::cap_only(event.sink_caps),
+                None => match locator {
+                    Some(loc) => loc
+                        .site_for_span(cfg[event.sink_node].classification_span(), event.sink_caps),
+                    None => SinkSite::cap_only(event.sink_caps),
+                },
             };
             let key = site.dedup_key();
-            if !param_sites.iter().any(|s| s.dedup_key() == key) {
+            if let Some(existing) = param_sites.iter_mut().find(|s| s.dedup_key() == key) {
+                if site.from_chain && !existing.from_chain {
+                    existing.from_chain = true;
+                }
+            } else {
                 param_sites.push(site);
             }
         }
@@ -812,6 +838,10 @@ pub fn extract_ssa_func_summary_full(
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: true,
         };
         detect_source_to_callback_from_states(
             ssa,
@@ -867,6 +897,11 @@ pub fn extract_ssa_func_summary_full(
         // caller patches it in.
         typed_call_receivers: Vec::new(),
         validated_params_to_return,
+        // Phase-10 entry-point classification is attached post-extraction
+        // by `taint::lower_all_functions_from_bodies` (which has access
+        // to `FileCfg::entry_kinds`).  Empty here means the extractor
+        // itself does not carry the tag.
+        entry_kind: None,
     }
 }
 
@@ -1112,11 +1147,25 @@ fn infer_summary_return_type(
             continue;
         }
         // Only inspect the very last instruction in the returning block.
+        // Mirror the CFG-level `outer_callee` fallback (Phase 08 audit) so a
+        // CFG-rewritten callee (e.g. `req.body.path` displacing `URL` on
+        // `new URL(req.body.path, base)`) still resolves to the original
+        // constructor identifier preserved in `callee_text`.
         if let Some(inst) = block.body.last()
-            && let SsaOp::Call { callee, .. } = &inst.op
-            && let Some(ty) = crate::ssa::type_facts::constructor_type(lang, callee)
+            && let SsaOp::Call {
+                callee,
+                callee_text,
+                ..
+            } = &inst.op
         {
-            return Some(ty);
+            if let Some(ty) = crate::ssa::type_facts::constructor_type(lang, callee) {
+                return Some(ty);
+            }
+            if let Some(orig) = callee_text.as_deref()
+                && let Some(ty) = crate::ssa::type_facts::constructor_type(lang, orig)
+            {
+                return Some(ty);
+            }
         }
     }
     None

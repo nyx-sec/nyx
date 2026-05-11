@@ -391,6 +391,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -438,6 +439,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -521,6 +523,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -585,6 +588,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -667,6 +671,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -740,6 +745,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -776,6 +782,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -834,6 +841,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -916,6 +924,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -996,6 +1005,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);
@@ -1033,6 +1043,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let info = analyse_loops(&ssa);

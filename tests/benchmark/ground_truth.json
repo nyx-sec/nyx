@@ -814,7 +814,8 @@
         "py.xss.jinja_from_string"
       ],
       "allowed_alternative_rule_ids": [
-        "taint-unsanitised-flow"
+        "taint-unsanitised-flow",
+        "taint-template-injection"
       ],
       "forbidden_rule_ids": [],
       "expected_severity": "HIGH",
@@ -11088,6 +11089,12 @@
       "expected_category": "Security",
       "expected_sink_lines": [
         [
+          76,
+          80
+        ]
+      ],
+      "expected_call_site_lines": [
+        [
           58,
           58
         ]
@@ -11104,7 +11111,7 @@
         "path_traversal",
         "rack-middleware"
       ],
-      "notes": "CVE-2023-38337: rswag-api Rack middleware concatenated env['PATH_INFO'] into the swagger root path with no validation; GET /../config/secrets.yml served arbitrary YAML/JSON files. Fixed in 2.10.1 by File.expand_path + start_with? rooted-path check. MIT"
+      "notes": "CVE-2023-38337: rswag-api Rack middleware concatenated env['PATH_INFO'] into the swagger root path with no validation; GET /../config/secrets.yml served arbitrary YAML/JSON files. Fixed in 2.10.1 by File.expand_path + start_with? rooted-path check. After multi-hop attribution lands (2026-05-10 session 0008 from_chain flag), engine reports the deeper File.read sink at line 76 (load_yaml arm) or line 80 (load_json arm); the call site for parse_file remains at line 58 and is asserted via expected_call_site_lines. MIT"
     },
     {
       "case_id": "cve-rb-2023-38337-patched",

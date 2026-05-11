@@ -60,6 +60,26 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SHELL_ESCAPE),
         case_sensitive: false,
     },
+    // Phase 13 — `Path::canonicalize` (and `tokio::fs::canonicalize`) is
+    // the canonical Rust path-traversal sanitiser when paired with a
+    // `starts_with(&base)` containment check.  Same convention as the
+    // Java / Python `.normalize()` / `.resolve()` sanitiser rules: the
+    // call clears the FILE_IO cap on its return so the cap-based gate
+    // suppresses the downstream `tokio::fs::*` / `std::fs::*` sink.
+    // Bare `canonicalize` would over-fire on unrelated APIs (e.g.
+    // `Url::canonicalize`); the qualified forms below are unique to
+    // path-handling.
+    LabelRule {
+        matchers: &[
+            "Path.canonicalize",
+            "PathBuf.canonicalize",
+            "fs::canonicalize",
+            "std::fs::canonicalize",
+            "tokio::fs::canonicalize",
+        ],
+        label: DataLabel::Sanitizer(Cap::FILE_IO),
+        case_sensitive: false,
+    },
     // ─────────── Sinks ─────────────
     LabelRule {
         matchers: &[
@@ -90,6 +110,21 @@ pub static RULES: &[LabelRule] = &[
             "fs::copy",
             "File::open",
             "File::create",
+            // Phase 13 — `tokio::fs` async path-traversal sinks.  The
+            // suffix matchers also catch the bare `tokio::fs::File::open`
+            // chain after paren-strip.  `tokio::fs::*` is the
+            // async-runtime-bound mirror of `std::fs::*`; same path
+            // arg-0 semantics.
+            "tokio::fs::read",
+            "tokio::fs::read_to_string",
+            "tokio::fs::write",
+            "tokio::fs::remove_file",
+            "tokio::fs::remove_dir",
+            "tokio::fs::remove_dir_all",
+            "tokio::fs::rename",
+            "tokio::fs::copy",
+            "tokio::fs::File::open",
+            "tokio::fs::File::create",
         ],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
@@ -105,6 +140,12 @@ pub static RULES: &[LabelRule] = &[
             "reqwest::Client.head",
             "reqwest::Client.patch",
             "reqwest::Client.request",
+            // Phase 14 — hyper Client `request(req)` dispatch entry. The
+            // `req` builder chain (covered by the type-qualified
+            // RequestBuilder.* / Request::builder.* rules below) smears
+            // URL taint into the request value via default propagation.
+            "hyper::Client.request",
+            "hyper::client::Client.request",
             // Chained constructor + verb form: `reqwest::Client::new()
             // .post(url)` reduces (via root-receiver collapse) to chain
             // text `Client::new.post`, so existing `Client.post` matchers
@@ -370,6 +411,10 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "let_declaration"        => Kind::CallWrapper,
     "expression_statement"   => Kind::CallWrapper,
     "assignment_expression"  => Kind::Assignment,
+    // `x.await` postfix.  Documented per-language so the contract does
+    // not depend on the raw-string fallback in `cfg::push_node`; SSA
+    // lowering emits `Assign(operand)` for these nodes.
+    "await_expression"       => Kind::AwaitForward,
 
     // struct expressions, recurse so env::var() calls inside field
     // initialisers produce Source-labelled CFG nodes (needed for summaries).

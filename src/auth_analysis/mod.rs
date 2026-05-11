@@ -1090,6 +1090,7 @@ mod tests {
             typed_bounded_vars: HashSet::new(),
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
+            is_nextauth_options_factory: false,
         }
     }
 
@@ -1205,6 +1206,7 @@ mod tests {
             typed_bounded_vars: HashSet::new(),
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
+            is_nextauth_options_factory: false,
         }
     }
 
