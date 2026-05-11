@@ -1202,6 +1202,7 @@ fn clone_preserves_all_sub_structs() {
             defines: Some("r".into()),
             uses: vec!["a".into(), "b".into()],
             extra_defines: vec!["c".into()],
+            array_pattern_indices: smallvec::SmallVec::new(),
         },
         ast: AstMeta {
             span: (10, 100),
@@ -3536,4 +3537,112 @@ class Foo {
         "unrecognised RHS `computeSomethingUnrelated()` must not register a receiver-type"
     );
     super::LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+}
+
+/// `collect_array_pattern_bindings_indexed` walks JS/TS `array_pattern`
+/// children in source order and records `(name, position)` for each
+/// simple-identifier binding. Skip slots (commas with no binding
+/// between) advance the position counter without emitting a binding,
+/// so `const [, b]` produces `[("b", 1)]` and `const [a, ,]` produces
+/// `[("a", 0)]`. Complex sub-patterns (`assignment_pattern`,
+/// `rest_pattern`, nested `array_pattern`) cause the helper to return
+/// an empty vec so the lowering rewrite falls back to scalar union.
+#[test]
+fn array_pattern_indexed_bindings_recognise_skip_slots() {
+    use super::helpers::collect_array_pattern_bindings_indexed;
+    fn first_array_pattern<'t>(n: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
+        if n.kind() == "array_pattern" {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = first_array_pattern(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn parse_first(src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_javascript::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+    fn run_case(src: &[u8]) -> Vec<(String, usize)> {
+        let (tree, bytes) = parse_first(src);
+        let pat = first_array_pattern(tree.root_node()).expect("array_pattern in fixture");
+        collect_array_pattern_bindings_indexed(pat, &bytes)
+            .into_iter()
+            .collect()
+    }
+    assert_eq!(
+        run_case(b"const [a, b] = x;"),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(run_case(b"const [, b] = x;"), vec![("b".into(), 1)]);
+    assert_eq!(run_case(b"const [a, ,] = x;"), vec![("a".into(), 0)]);
+    assert_eq!(
+        run_case(b"const [a, , c] = x;"),
+        vec![("a".into(), 0), ("c".into(), 2)],
+    );
+    // Rest patterns bail to empty so callers fall back to scalar union.
+    assert!(run_case(b"const [a, ...rest] = x;").is_empty());
+    // Default value patterns also bail.
+    assert!(run_case(b"const [a = 1, b] = x;").is_empty());
+    // Nested array patterns bail.
+    assert!(run_case(b"const [[a, b], c] = x;").is_empty());
+}
+
+/// Rust `tuple_pattern` shares the helper. The `_` wildcard
+/// (`_pattern` node) advances the position counter without binding,
+/// mirroring JS skip-slot semantics. Other complex sub-patterns
+/// (tuple-struct, parenthesized) bail to empty.
+#[test]
+fn tuple_pattern_indexed_bindings_recognise_rust_wildcards() {
+    use super::helpers::collect_array_pattern_bindings_indexed;
+    fn first_tuple_pattern<'t>(n: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
+        if n.kind() == "tuple_pattern" {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = first_tuple_pattern(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn parse_first_rust(src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_rust::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+    fn run_case(src: &[u8]) -> Vec<(String, usize)> {
+        let (tree, bytes) = parse_first_rust(src);
+        let pat = first_tuple_pattern(tree.root_node()).expect("tuple_pattern in fixture");
+        collect_array_pattern_bindings_indexed(pat, &bytes)
+            .into_iter()
+            .collect()
+    }
+    assert_eq!(
+        run_case(b"fn f() { let (a, b) = (1, 2); }"),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"fn f() { let (_, b) = (1, 2); }"),
+        vec![("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"fn f() { let (a, _) = (1, 2); }"),
+        vec![("a".into(), 0)],
+    );
+    assert_eq!(
+        run_case(b"fn f() { let (a, _, c) = (1, 2, 3); }"),
+        vec![("a".into(), 0), ("c".into(), 2)],
+    );
 }

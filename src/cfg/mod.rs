@@ -579,6 +579,18 @@ pub struct TaintMeta {
     /// Additional variable definitions from destructuring patterns.
     /// E.g. `const { a, b, c } = source()` → defines="a", extra_defines=["b", "c"].
     pub extra_defines: Vec<String>,
+    /// Pattern-position indices for array-pattern destructure bindings.
+    /// When non-empty, `array_pattern_indices[0]` is the position index for
+    /// `defines`, and `array_pattern_indices[1..]` are the indices for each
+    /// element of `extra_defines` in order. Populated only when the LHS is
+    /// an `array_pattern` (or tuple_pattern) so consumers can map binding
+    /// positions back to source-order arguments — e.g. `const [, b] =
+    /// Promise.all([safe, tainted])` records `array_pattern_indices=[1]`
+    /// so the SSA destructure-promise rewrite picks index 1 (tainted)
+    /// instead of index 0 (safe). Empty for object-destructure, plain
+    /// single-binding assignments, and non-array patterns.
+    #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
+    pub array_pattern_indices: SmallVec<[usize; 4]>,
 }
 
 /// AST origin/location metadata.
@@ -3058,7 +3070,7 @@ pub(super) fn push_node<'a>(
 
     /* ── 3.  GRAPH INSERTION + DEBUG ──────────────────────────────────── */
 
-    let (defines, uses, extra_defines) = def_use(ast, lang, code);
+    let (defines, uses, extra_defines, array_pattern_indices) = def_use(ast, lang, code);
 
     // Capture constant text for SSA constant propagation: when this node
     // defines a variable from a syntactic literal (no identifier uses),
@@ -3352,6 +3364,7 @@ pub(super) fn push_node<'a>(
             defines,
             uses,
             extra_defines,
+            array_pattern_indices,
         },
         ast: AstMeta {
             span,

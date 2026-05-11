@@ -1,9 +1,11 @@
 use super::conditions::unwrap_parens;
+use super::helpers::collect_array_pattern_bindings_indexed;
 use super::{
     anon_fn_name, collect_idents, collect_idents_with_paths, find_constructor_type_child,
     first_call_ident, root_receiver_text, text_of,
 };
 use crate::labels::{Cap, Kind, lookup};
+use smallvec::SmallVec;
 use tree_sitter::Node;
 
 /// Find the inner CallFn/CallMethod/CallMacro node within an AST node.
@@ -2235,20 +2237,32 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     result
 }
 
-/// Return `(defines, uses)` for the AST fragment `ast`.
-/// Returns (defines, uses, extra_defines) where extra_defines captures additional
-/// bindings from destructuring patterns beyond the primary define.
+/// Return `(defines, uses, extra_defines, array_pattern_indices)` for the
+/// AST fragment `ast`.
+///
+/// `extra_defines` captures additional bindings from destructuring patterns
+/// beyond the primary define. `array_pattern_indices`, when non-empty, gives
+/// the source-order position of each binding in `iter::once(defines).chain(
+/// extra_defines)` for `array_pattern` / `tuple_pattern` LHS shapes. Empty
+/// for non-array destructures and for non-skip array patterns where callers
+/// can derive sequential 0..N indices implicitly.
 pub(super) fn def_use(
     ast: Node,
     lang: &str,
     code: &[u8],
-) -> (Option<String>, Vec<String>, Vec<String>) {
+) -> (
+    Option<String>,
+    Vec<String>,
+    Vec<String>,
+    SmallVec<[usize; 4]>,
+) {
     match lookup(lang, ast.kind()) {
         // Declaration wrappers (let, var, short_var_declaration, etc.)
         Kind::CallWrapper => {
             let mut defs = None;
             let mut extra_defs = Vec::new();
             let mut uses = Vec::new();
+            let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
 
             // Try direct field names first (Rust `let_declaration`, Go `short_var_declaration`)
             let def_node = ast
@@ -2267,17 +2281,30 @@ pub(super) fn def_use(
 
             if def_node.is_some() || val_node.is_some() {
                 if let Some(pat) = def_node {
-                    let mut idents = Vec::new();
-                    let mut paths = Vec::new();
-                    collect_idents_with_paths(pat, code, &mut idents, &mut paths);
-                    let first = paths.pop().or_else(|| idents.first().cloned());
-                    // Remaining idents are extra defines (for destructuring)
-                    for ident in &idents {
-                        if first.as_ref() != Some(ident) {
-                            extra_defs.push(ident.clone());
+                    let bindings = collect_array_pattern_bindings_indexed(pat, code);
+                    if !bindings.is_empty() {
+                        let mut iter = bindings.into_iter();
+                        if let Some((first_name, first_idx)) = iter.next() {
+                            defs = Some(first_name);
+                            pattern_indices.push(first_idx);
                         }
+                        for (name, idx) in iter {
+                            extra_defs.push(name);
+                            pattern_indices.push(idx);
+                        }
+                    } else {
+                        let mut idents = Vec::new();
+                        let mut paths = Vec::new();
+                        collect_idents_with_paths(pat, code, &mut idents, &mut paths);
+                        let first = paths.pop().or_else(|| idents.first().cloned());
+                        // Remaining idents are extra defines (for destructuring)
+                        for ident in &idents {
+                            if first.as_ref() != Some(ident) {
+                                extra_defs.push(ident.clone());
+                            }
+                        }
+                        defs = first;
                     }
-                    defs = first;
                 }
                 if let Some(val) = val_node {
                     let mut idents = Vec::new();
@@ -2326,16 +2353,32 @@ pub(super) fn def_use(
                         if let Some(name_node) = child_name
                             && defs.is_none()
                         {
-                            let mut idents = Vec::new();
-                            let mut paths = Vec::new();
-                            collect_idents_with_paths(name_node, code, &mut idents, &mut paths);
-                            let first = paths.pop().or_else(|| idents.first().cloned());
-                            for ident in &idents {
-                                if first.as_ref() != Some(ident) {
-                                    extra_defs.push(ident.clone());
+                            let bindings =
+                                collect_array_pattern_bindings_indexed(name_node, code);
+                            if !bindings.is_empty() {
+                                let mut iter = bindings.into_iter();
+                                if let Some((first_name, first_idx)) = iter.next() {
+                                    defs = Some(first_name);
+                                    pattern_indices.push(first_idx);
                                 }
+                                for (name, idx) in iter {
+                                    extra_defs.push(name);
+                                    pattern_indices.push(idx);
+                                }
+                            } else {
+                                let mut idents = Vec::new();
+                                let mut paths = Vec::new();
+                                collect_idents_with_paths(
+                                    name_node, code, &mut idents, &mut paths,
+                                );
+                                let first = paths.pop().or_else(|| idents.first().cloned());
+                                for ident in &idents {
+                                    if first.as_ref() != Some(ident) {
+                                        extra_defs.push(ident.clone());
+                                    }
+                                }
+                                defs = first;
                             }
-                            defs = first;
                         }
                         if let Some(val_node) = child_value {
                             let mut idents = Vec::new();
@@ -2359,7 +2402,7 @@ pub(super) fn def_use(
                     uses.extend(extract_rust_format_macro_named_idents_in(ast, code));
                 }
             }
-            (defs, uses, extra_defs)
+            (defs, uses, extra_defs, pattern_indices)
         }
 
         // Plain assignment `x = y`
@@ -2381,7 +2424,7 @@ pub(super) fn def_use(
                 uses.extend(idents);
                 uses.extend(extract_rust_format_macro_named_idents_in(rhs, code));
             }
-            (defs, uses, vec![])
+            (defs, uses, vec![], SmallVec::new())
         }
 
         // if‑let / while‑let, the `let_condition` binds a variable from
@@ -2406,7 +2449,7 @@ pub(super) fn def_use(
                 if let Some(val) = c.child_by_field_name("value") {
                     collect_idents(val, code, &mut uses);
                 }
-                return (defs, uses, vec![]);
+                return (defs, uses, vec![], SmallVec::new());
             }
 
             let mut idents = Vec::new();
@@ -2414,7 +2457,7 @@ pub(super) fn def_use(
             collect_idents_with_paths(ast, code, &mut idents, &mut paths);
             let mut uses = paths;
             uses.extend(idents);
-            (None, uses, vec![])
+            (None, uses, vec![], SmallVec::new())
         }
 
         // for-in / for-of / Python `for x in iter:` ─────────────────────────
@@ -2458,7 +2501,7 @@ pub(super) fn def_use(
                 collect_idents_with_paths(ast, code, &mut idents, &mut paths);
                 let mut uses = paths;
                 uses.extend(idents);
-                return (None, uses, vec![]);
+                return (None, uses, vec![], SmallVec::new());
             }
 
             let mut defs: Option<String> = None;
@@ -2484,7 +2527,7 @@ pub(super) fn def_use(
                 uses.extend(paths);
                 uses.extend(idents);
             }
-            (defs, uses, extra_defs)
+            (defs, uses, extra_defs, SmallVec::new())
         }
 
         // everything else – no definition, but may read vars
@@ -2494,7 +2537,7 @@ pub(super) fn def_use(
             collect_idents_with_paths(ast, code, &mut idents, &mut paths);
             let mut uses = paths;
             uses.extend(idents);
-            (None, uses, vec![])
+            (None, uses, vec![], SmallVec::new())
         }
     }
 }

@@ -231,6 +231,11 @@ fn promise_all_taint() {
 /// the literal `"ok"` and `b` binds only to the tainted `req.body`. The
 /// scalar union from `try_apply_promise_combinator` is bypassed for the
 /// per-binding values.
+///
+/// Skip-slot cases (`const [, b]`, `const [a, ,]`) also need pattern-position
+/// indexing: `TaintMeta.array_pattern_indices` carries the source-order
+/// position of each binding so the rewrite picks `pd_args[index]` rather
+/// than `pd_args[binding_offset]`.
 #[test]
 fn promise_all_destruct_per_index() {
     let findings = scan_fixture("promise_all_destruct");
@@ -263,6 +268,39 @@ fn promise_all_destruct_per_index() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
+
+    // Skip-slot positives: only the index-aligned tainted bindings should fire.
+    for sink_line in [24usize, 36] {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: "promise_all_skip_slots.ts",
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
+
+    // Skip-slot negatives: lines 28 (`c` from `[, c]` of `[tainted, safe]`)
+    // and 32 (`d` from `[d, ,]` of `[safe, tainted, "extra"]`) must NOT fire.
+    for forbidden_line in [28usize, 32] {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with("promise_all_skip_slots.ts")
+                && f.line == forbidden_line
+                && f.id.starts_with("taint-unsanitised-flow")
+        });
+        assert!(
+            !leak,
+            "skip-slot binding at line {forbidden_line} must not carry req.body taint; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with("promise_all_skip_slots.ts"))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
 }
 
 /// Phase 03 recall-gap: `for await (const x of iter)` taints `x` from the

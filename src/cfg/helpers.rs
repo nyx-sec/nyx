@@ -1,6 +1,7 @@
 use super::anon_fn_name;
 use super::conditions::unwrap_parens;
 use crate::labels::{DataLabel, Kind, classify, lookup};
+use smallvec::SmallVec;
 use tree_sitter::Node;
 
 // -------------------------------------------------------------------------
@@ -752,6 +753,59 @@ pub(crate) fn collect_idents_with_paths(
             }
         }
     }
+}
+
+/// Walk an array/tuple destructure pattern in source order and return
+/// each simple-identifier binding paired with its position index.
+///
+/// Recognises:
+///   * JS/TS `array_pattern` — `const [a, b] = ...`, `const [, b] = ...`,
+///     `const [a, ,] = ...`. Skip slots (commas with no binding between)
+///     advance the position counter without emitting a binding.
+///   * Rust `tuple_pattern` — `let (a, _, b) = ...`. `_pattern` (wildcard)
+///     advances the position counter without emitting a binding.
+///
+/// Returns an empty `SmallVec` when the pattern is not one of the above
+/// kinds OR contains complex sub-patterns (`assignment_pattern` for
+/// `[a = 1, b]`, `rest_pattern` for `[a, ...rest]`, nested
+/// `array_pattern`, `object_pattern`). Callers treat the empty return as
+/// "no position-aware rewrite available; fall back to scalar union".
+pub(crate) fn collect_array_pattern_bindings_indexed(
+    pat: Node,
+    code: &[u8],
+) -> SmallVec<[(String, usize); 4]> {
+    let mut out: SmallVec<[(String, usize); 4]> = SmallVec::new();
+    let kind = pat.kind();
+    if !matches!(kind, "array_pattern" | "tuple_pattern") {
+        return out;
+    }
+    let mut cursor = pat.walk();
+    let mut pos: usize = 0;
+    for child in pat.children(&mut cursor) {
+        match child.kind() {
+            "[" | "]" | "(" | ")" => {}
+            "," => {
+                pos += 1;
+            }
+            "identifier" | "shorthand_property_identifier_pattern" => {
+                if let Some(txt) = text_of(child, code) {
+                    out.push((txt, pos));
+                }
+            }
+            // Rust wildcard `_` in tuple_pattern. Advances position counter
+            // without binding; no emit. Tree-sitter-rust models the
+            // wildcard as a leaf node whose `kind()` is literally "_".
+            "_" => {}
+            _ => {
+                // Complex sub-pattern. Bail by clearing — caller treats
+                // empty as "no position-aware rewrite", preserving the
+                // pre-existing scalar-union behavior for these shapes.
+                out.clear();
+                return out;
+            }
+        }
+    }
+    out
 }
 
 /// Recursively collect every identifier that occurs inside `n`.

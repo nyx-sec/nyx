@@ -1385,25 +1385,47 @@ fn rename_variables(
             // value of a race is whichever promise wins (a single value, not
             // an array), and destructuring that value index-by-index does not
             // correspond to the args.
+            // The rewrite fires when:
+            //   - the call is a promise combinator that produces an array of
+            //     per-element results (`All` / `AllSettled`), AND
+            //   - the LHS destructures into >= 2 bindings (sequential case
+            //     where `extra_defines` is non-empty), OR
+            //   - the LHS is an array_pattern with at least one skip slot
+            //     (`array_pattern_indices` is non-empty, even if `extra_defines`
+            //     itself is empty — `const [, b]` is a single-binding pattern
+            //     whose index is 1, not 0).
+            let is_combinator_rewrite_target = matches!(
+                info.call
+                    .callee
+                    .as_deref()
+                    .and_then(crate::labels::is_any_promise_combinator),
+                Some(
+                    crate::labels::PromiseCombinatorKind::All
+                        | crate::labels::PromiseCombinatorKind::AllSettled
+                )
+            );
+            // Indices for each binding in source order: primary at index 0,
+            // then extras. Falls back to sequential 0..N when the AST didn't
+            // record explicit indices (non-array_pattern destructures and
+            // tuple_pattern shapes that contain no wildcards).
+            let binding_indices: SmallVec<[usize; 4]> =
+                if !info.taint.array_pattern_indices.is_empty() {
+                    info.taint.array_pattern_indices.clone()
+                } else if !info.taint.extra_defines.is_empty() {
+                    (0..=info.taint.extra_defines.len()).collect()
+                } else {
+                    SmallVec::new()
+                };
             let promise_destruct_args: Option<SmallVec<[SsaValue; 4]>> =
-                if !info.taint.extra_defines.is_empty()
-                    && matches!(
-                        info.call
-                            .callee
-                            .as_deref()
-                            .and_then(crate::labels::is_any_promise_combinator),
-                        Some(
-                            crate::labels::PromiseCombinatorKind::All
-                                | crate::labels::PromiseCombinatorKind::AllSettled
-                        )
-                    )
-                {
+                if is_combinator_rewrite_target && !binding_indices.is_empty() {
+                    let max_index =
+                        binding_indices.iter().copied().max().unwrap_or(0);
+                    let needed = max_index + 1;
                     // Use `info.call.arg_uses` directly rather than the
                     // build_call_args-derived `args`, which may include an
                     // implicit "uses not in arg_uses" group appended for chain
                     // bookkeeping that would inflate the apparent arity.
                     let arg_uses = &info.call.arg_uses;
-                    let needed = 1 + info.taint.extra_defines.len();
                     let map_idents = |idents: &[String]| -> Option<SmallVec<[SsaValue; 4]>> {
                         let mapped: SmallVec<[SsaValue; 4]> = idents
                             .iter()
@@ -1453,9 +1475,14 @@ fn rename_variables(
             };
 
             // Override primary op to single-operand Assign when the
-            // destructure-promise rewrite fires.
+            // destructure-promise rewrite fires. The primary's source-order
+            // index is `binding_indices[0]` — non-zero for skip-leading
+            // patterns like `const [, b]` where `b` is the FIRST (and only)
+            // binding but lives at pattern position 1.
             let primary_op = if let Some(ref args) = promise_destruct_args {
-                SsaOp::Assign(SmallVec::from_elem(args[0], 1))
+                let primary_idx = binding_indices.first().copied().unwrap_or(0);
+                let pick = args.get(primary_idx).copied().unwrap_or(args[0]);
+                SsaOp::Assign(SmallVec::from_elem(pick, 1))
             } else {
                 op
             };
@@ -1536,7 +1563,10 @@ fn rename_variables(
             //
             // For the destructure-promise rewrite, each extra emits an Assign
             // on its corresponding indexed argument so per-element taint is
-            // preserved instead of the scalar union.
+            // preserved instead of the scalar union. The source-order index
+            // for `extra_defines[i]` is `binding_indices[i + 1]` — accounts
+            // for skip slots like `const [a, , b]` where `b` sits at index 2,
+            // not at index 1.
             if let Some(ref pd_args) = promise_destruct_args {
                 for (i, extra_def) in info.taint.extra_defines.iter().enumerate() {
                     let ev = SsaValue(*next_value);
@@ -1547,7 +1577,8 @@ fn rename_variables(
                         block: block_id,
                     });
                     var_stacks.entry(extra_def.clone()).or_default().push(ev);
-                    let arg = pd_args[i + 1];
+                    let extra_idx = binding_indices.get(i + 1).copied().unwrap_or(i + 1);
+                    let arg = pd_args.get(extra_idx).copied().unwrap_or(pd_args[0]);
                     ssa_blocks[block_idx].body.push(SsaInst {
                         value: ev,
                         op: SsaOp::Assign(SmallVec::from_elem(arg, 1)),
