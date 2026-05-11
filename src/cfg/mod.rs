@@ -155,6 +155,173 @@ thread_local! {
     /// resolved.
     pub(crate) static TYPE_ALIAS_LC: RefCell<std::collections::HashSet<String>>
         = RefCell::new(std::collections::HashSet::new());
+    /// Per-file map of `(enclosing-function start_byte, local-variable
+    /// name)` → [`crate::ssa::type_facts::TypeKind`].  Populated at the
+    /// top of [`build_cfg`] by walking each function body for local
+    /// variable declarations whose RHS callee is recognised by
+    /// [`crate::ssa::type_facts::constructor_type`].  Consulted by
+    /// `find_classifiable_inner_call` (in `helpers.rs`) to rewrite the
+    /// receiver in a chained inner call (`sess.createNativeQuery(...)`)
+    /// to its type prefix (`HibernateSession.createNativeQuery`) so a
+    /// type-qualified label rule fires when the legacy literal-receiver
+    /// rule misses.  Java-only today; extends to any language whose
+    /// `constructor_type` arm fires on the RHS callee.
+    pub(crate) static LOCAL_RECEIVER_TYPES:
+        RefCell<HashMap<(usize, String), crate::ssa::type_facts::TypeKind>>
+        = RefCell::new(HashMap::new());
+}
+
+/// Walk every function-kind node in the tree.  Within each function
+/// body, scan non-nested local variable declarations whose RHS is a
+/// call expression and whose callee is recognised by
+/// [`crate::ssa::type_facts::constructor_type`].  Record
+/// `(fn_start, var_name) → TypeKind` so chained inner calls receive a
+/// type-qualified rewrite at classify time.
+fn populate_local_receiver_types(tree: &Tree, lang: &str, code: &[u8]) {
+    use crate::ssa::type_facts::TypeKind;
+    let Some(lang_enum) = Lang::from_slug(lang) else {
+        return;
+    };
+    let mut out: HashMap<(usize, String), TypeKind> = HashMap::new();
+    walk_functions_for_locals(tree.root_node(), lang, lang_enum, code, &mut out);
+    LOCAL_RECEIVER_TYPES.with(|cell| *cell.borrow_mut() = out);
+}
+
+fn walk_functions_for_locals(
+    root: Node<'_>,
+    lang: &str,
+    lang_enum: Lang,
+    code: &[u8],
+    out: &mut HashMap<(usize, String), crate::ssa::type_facts::TypeKind>,
+) {
+    if lookup(lang, root.kind()) == Kind::Function {
+        let fn_start = root.start_byte();
+        collect_locals_in_fn(root, fn_start, true, lang, lang_enum, code, out);
+    }
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        walk_functions_for_locals(child, lang, lang_enum, code, out);
+    }
+}
+
+fn collect_locals_in_fn(
+    node: Node<'_>,
+    fn_start: usize,
+    is_root: bool,
+    lang: &str,
+    lang_enum: Lang,
+    code: &[u8],
+    out: &mut HashMap<(usize, String), crate::ssa::type_facts::TypeKind>,
+) {
+    use crate::ssa::type_facts::constructor_type;
+    // Don't descend into nested function bodies — they own their own
+    // scope and get their own (fn_start, var_name) bindings via the
+    // outer walk.
+    if !is_root && lookup(lang, node.kind()) == Kind::Function {
+        return;
+    }
+    if node.kind() == "local_variable_declaration"
+        || node.kind() == "variable_declarator"
+        || node.kind() == "let_declaration"
+        || node.kind() == "short_var_declaration"
+        || node.kind() == "var_spec"
+    {
+        let mut cursor = node.walk();
+        for declarator in node.children(&mut cursor) {
+            if declarator.kind() != "variable_declarator" {
+                continue;
+            }
+            let Some(name_node) = declarator.child_by_field_name("name") else {
+                continue;
+            };
+            let Some(name) = text_of(name_node, code) else {
+                continue;
+            };
+            let Some(value_node) = declarator
+                .child_by_field_name("value")
+                .or_else(|| declarator.child_by_field_name("right"))
+            else {
+                continue;
+            };
+            // The RHS may be a chain like `sf.openSession()`; we want
+            // the callee text to feed `constructor_type`.  For
+            // method_invocation / call_expression nodes, build the
+            // dotted callee path.
+            let Some(callee) = callee_text_for_constructor(value_node, lang, code) else {
+                continue;
+            };
+            if let Some(kind) = constructor_type(lang_enum, &callee) {
+                out.insert((fn_start, name), kind);
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_locals_in_fn(child, fn_start, false, lang, lang_enum, code, out);
+    }
+}
+
+fn callee_text_for_constructor(node: Node<'_>, lang: &str, code: &[u8]) -> Option<String> {
+    match lookup(lang, node.kind()) {
+        Kind::CallFn => node
+            .child_by_field_name("function")
+            .or_else(|| node.child_by_field_name("name"))
+            .and_then(|f| text_of(f, code)),
+        Kind::CallMethod => {
+            let method = node
+                .child_by_field_name("method")
+                .or_else(|| node.child_by_field_name("name"))
+                .and_then(|f| text_of(f, code))?;
+            let recv = node
+                .child_by_field_name("object")
+                .or_else(|| node.child_by_field_name("receiver"))
+                .or_else(|| node.child_by_field_name("scope"))
+                .and_then(|f| root_receiver_text(f, lang, code));
+            match recv {
+                Some(r) => Some(format!("{r}.{method}")),
+                None => Some(method),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Walk up from `n` to find the enclosing function-kind node's
+/// `start_byte`.  Returns `None` for top-level nodes.
+fn enclosing_fn_start(n: Node<'_>, lang: &str) -> Option<usize> {
+    let mut cur = n.parent()?;
+    loop {
+        if lookup(lang, cur.kind()) == Kind::Function {
+            return Some(cur.start_byte());
+        }
+        cur = cur.parent()?;
+    }
+}
+
+/// Look up `(fn_start, var_name)` in the per-file local-receiver-types
+/// map populated by [`populate_local_receiver_types`].  Returns `None`
+/// when no binding was recorded (no view published, name not bound, or
+/// RHS callee not recognised by `constructor_type`).
+pub(crate) fn lookup_local_receiver_type(
+    fn_start: usize,
+    var_name: &str,
+) -> Option<crate::ssa::type_facts::TypeKind> {
+    LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow().get(&(fn_start, var_name.to_string())).cloned())
+}
+
+/// Public entry consulted by `find_classifiable_inner_call`: given the
+/// inner call's AST node and its bare receiver text, return the
+/// `label_prefix()` for the receiver's locally-bound TypeKind, when
+/// available.  Returns `None` when no enclosing function is found, no
+/// binding was recorded, or the bound `TypeKind` has no label prefix.
+pub(crate) fn local_receiver_type_prefix(
+    inner_call: Node<'_>,
+    receiver: &str,
+    lang: &str,
+) -> Option<&'static str> {
+    let fn_start = enclosing_fn_start(inner_call, lang)?;
+    let kind = lookup_local_receiver_type(fn_start, receiver)?;
+    kind.label_prefix()
 }
 
 /// Populate the per-file DFS-index map from a preorder walk of the
@@ -6070,6 +6237,13 @@ pub(crate) fn build_cfg<'a>(
         *cell.borrow_mut() =
             dto::collect_type_alias_local_collections(tree.root_node(), lang, code);
     });
+    // harvest per-function local-receiver type bindings, so a chained
+    // inner call (`sess.createNativeQuery(sql).getResultList()`) can
+    // rewrite the receiver `sess` to its type prefix
+    // (`HibernateSession`) when the legacy literal-receiver classify
+    // misses.  Java-only today; the helper is lang-agnostic, gated on
+    // `constructor_type` recognising the RHS callee.
+    populate_local_receiver_types(tree, lang, code);
 
     // Create the top-level body graph (BodyId(0)).
     let (mut g, entry, exit) = create_body_graph(0, code.len(), None);
@@ -6215,6 +6389,7 @@ pub(crate) fn build_cfg<'a>(
     // same hygiene for the DTO map.
     DTO_CLASSES.with(|cell| cell.borrow_mut().clear());
     TYPE_ALIAS_LC.with(|cell| cell.borrow_mut().clear());
+    LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
 
     // collect every
     // declared inheritance / impl / implements relationship in the

@@ -805,6 +805,7 @@ fn orm_xlang() {
         ("SqliJavaConcat.java", 18usize),
         ("SqliJavaHibernateNative.java", 14usize),
         ("SqliJavaHibernateNamedSession.java", 19usize),
+        ("SqliJavaHibernateChainedSession.java", 23usize),
         ("sqli_rb_concat.rb", 8usize),
         ("sqli_rb_where_interp.rb", 9usize),
         ("sqli_go_concat.go", 14usize),

@@ -269,6 +269,11 @@ pub(crate) fn find_classifiable_inner_call<'a>(
         }
         match lookup(lang, c.kind()) {
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
+                // For CallMethod we also remember the bare receiver
+                // identifier so we can try a type-qualified rewrite
+                // when the literal classify misses.
+                let mut method_receiver: Option<String> = None;
+                let mut method_name: Option<String> = None;
                 let ident = match lookup(lang, c.kind()) {
                     Kind::CallFn => c
                         .child_by_field_name("function")
@@ -286,6 +291,8 @@ pub(crate) fn find_classifiable_inner_call<'a>(
                             .or_else(|| c.child_by_field_name("receiver"))
                             .or_else(|| c.child_by_field_name("scope"))
                             .and_then(|f| root_receiver_text(f, lang, code));
+                        method_receiver = recv.clone();
+                        method_name = func.clone();
                         match (recv, func) {
                             (Some(r), Some(f)) => Some(format!("{r}.{f}")),
                             (_, Some(f)) => Some(f),
@@ -301,6 +308,37 @@ pub(crate) fn find_classifiable_inner_call<'a>(
                     && let Some(lbl) = classify(lang, id, extra)
                 {
                     return Some((id.clone(), lbl, (c.start_byte(), c.end_byte())));
+                }
+                // Receiver-type rewrite fallback: when the literal
+                // `recv.method` text didn't classify, AND we're inside
+                // a chained call (parent `n` is itself a call), look
+                // up `recv`'s locally-bound type and retry with the
+                // type prefix.  E.g. for
+                // `sess.createNativeQuery(sql).getResultList()`, the
+                // inner `sess.createNativeQuery` rewrites to
+                // `HibernateSession.createNativeQuery` (rule fires).
+                //
+                // Gated on `n` being a Call-kind so the rewrite only
+                // fires on chain-hop inner calls.  When `n` is an
+                // expression-statement / variable-declarator / etc.
+                // the candidate `c` IS the outermost call of the
+                // statement, and the SSA-time
+                // `resolve_type_qualified_labels` path handles it
+                // with multi-label semantics that single-label
+                // `classify` here would erase.
+                let parent_is_call = matches!(
+                    lookup(lang, n.kind()),
+                    Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+                );
+                if parent_is_call
+                    && let (Some(recv), Some(method)) = (method_receiver, method_name)
+                    && let Some(prefix) =
+                        crate::cfg::local_receiver_type_prefix(c, &recv, lang)
+                {
+                    let alt = format!("{prefix}.{method}");
+                    if let Some(lbl) = classify(lang, &alt, extra) {
+                        return Some((alt, lbl, (c.start_byte(), c.end_byte())));
+                    }
                 }
                 // Recurse into arguments of this call
                 if let Some(found) = find_classifiable_inner_call(c, lang, code, extra) {

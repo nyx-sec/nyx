@@ -3446,3 +3446,94 @@ fn python_member_field_assignment_non_objects_does_not_match() {
         detected
     );
 }
+
+/// Phase 15 chained-shape closure: a Java local of the form
+/// `Session sess = sf.openSession();` registers `(fn_start, "sess")`
+/// → `TypeKind::HibernateSession` in the per-file local-receiver-types
+/// map, so `find_classifiable_inner_call` can rewrite the chained
+/// inner `sess.createNativeQuery(...)` to
+/// `HibernateSession.createNativeQuery` when the legacy literal-
+/// receiver classify misses.
+#[test]
+fn java_hibernate_session_open_registers_local_receiver_type() {
+    let src = br#"
+class Foo {
+    void bar(SessionFactory sf, String sql) {
+        Session sess = sf.openSession();
+        sess.createNativeQuery(sql).getResultList();
+    }
+}
+"#;
+    let ts_lang = Language::from(tree_sitter_java::LANGUAGE);
+    let _ = parse_to_file_cfg(src, "java", ts_lang);
+    // The TLS map is cleared at the end of `build_cfg`, but the
+    // public lookup helper consults it during construction.  Re-run
+    // population manually for the assertion.
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&Language::from(tree_sitter_java::LANGUAGE)).unwrap();
+    let tree = parser.parse(src.as_slice(), None).unwrap();
+    super::populate_local_receiver_types(&tree, "java", src);
+    // Walk to find the function body's start_byte.
+    fn find_method_start(node: tree_sitter::Node<'_>) -> Option<usize> {
+        if node.kind() == "method_declaration" {
+            return Some(node.start_byte());
+        }
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            if let Some(s) = find_method_start(child) {
+                return Some(s);
+            }
+        }
+        None
+    }
+    let fn_start = find_method_start(tree.root_node()).expect("method_declaration in fixture");
+    let got = super::lookup_local_receiver_type(fn_start, "sess");
+    assert_eq!(
+        got,
+        Some(crate::ssa::type_facts::TypeKind::HibernateSession),
+        "local `Session sess = sf.openSession()` should bind to HibernateSession"
+    );
+    // Cleanup so the TLS state doesn't leak into other tests.
+    super::LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+}
+
+/// Same Java per-file map: a local whose RHS is unrelated (no
+/// `constructor_type` match) must NOT register.  Confirms the
+/// recogniser is anchored on `constructor_type`'s callee classifier
+/// rather than the declared receiver type, so a generic
+/// `Session foo = computeFoo()` doesn't bleed an unrelated method
+/// into the type-qualified pool.
+#[test]
+fn java_unrecognised_rhs_does_not_register_local_receiver_type() {
+    let src = br#"
+class Foo {
+    void bar() {
+        Session sess = computeSomethingUnrelated();
+        sess.doSomething();
+    }
+}
+"#;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&Language::from(tree_sitter_java::LANGUAGE)).unwrap();
+    let tree = parser.parse(src.as_slice(), None).unwrap();
+    super::populate_local_receiver_types(&tree, "java", src);
+    fn find_method_start(node: tree_sitter::Node<'_>) -> Option<usize> {
+        if node.kind() == "method_declaration" {
+            return Some(node.start_byte());
+        }
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            if let Some(s) = find_method_start(child) {
+                return Some(s);
+            }
+        }
+        None
+    }
+    let fn_start = find_method_start(tree.root_node()).expect("method_declaration in fixture");
+    let got = super::lookup_local_receiver_type(fn_start, "sess");
+    assert_eq!(
+        got, None,
+        "unrecognised RHS `computeSomethingUnrelated()` must not register a receiver-type"
+    );
+    super::LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+}
