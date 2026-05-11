@@ -2054,54 +2054,6 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
-      "line": 71,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
-      "line": 81,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
-      "line": 97,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
-      "line": 109,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
-      "line": 122,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/features/auth/lib/next-auth-custom-adapter.ts",
-      "line": 153,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/features/auth/lib/onboardingUtils.ts",
       "line": 28,
       "severity": "High",

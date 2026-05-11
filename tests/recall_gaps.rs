@@ -753,6 +753,7 @@ fn ssrf_cross_language() {
         "ssrf_rs_origin_locked_const_fmt.rs",
         "ssrf_go_origin_locked.go",
         "ssrf_rb_origin_locked.rb",
+        "ssrf_rb_origin_locked_interp.rb",
         "ssrf_php_origin_locked.php",
     ];
     for file in negatives {

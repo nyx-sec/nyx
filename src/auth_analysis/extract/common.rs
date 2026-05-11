@@ -740,23 +740,39 @@ pub fn build_function_unit_with_meta(
     }
 }
 
-/// True when the function body at `node` contains an object literal
-/// with a `callbacks: { ... }` property whose nested entries name at
-/// least one canonical NextAuth callback (`signIn`, `session`, `jwt`,
-/// `redirect`, `authorize`, `authorized`).  Recognises the cal.com
-/// idiom `export const getOptions = (...) => ({ callbacks: { ... } })`
-/// where the top-level unit-creation pass attributes every operation
-/// from the inner callback methods to the OUTER arrow's unit (object
-/// method shorthands are not enumerated as separate units).  Without
-/// this flag the outer unit's name is `getOptions`, not `jwt`, so
-/// `is_nextauth_callback_unit` cannot suppress the cluster.
+/// True when the function body at `node` is a NextAuth authority
+/// surface.  Recognises two shapes:
+///
+///   1. An object literal with a `callbacks: { ... }` property whose
+///      nested entries name at least one canonical NextAuth callback
+///      (`signIn`, `session`, `jwt`, `redirect`, `authorize`,
+///      `authorized`).  Matches the cal.com idiom
+///      `export const getOptions = (...) => ({ callbacks: { ... } })`.
+///
+///   2. An object literal whose entries name at least one distinctive
+///      NextAuth Adapter method (`getUserByAccount`, `linkAccount`,
+///      `unlinkAccount`, `createVerificationToken`,
+///      `useVerificationToken`, `getSessionAndUser`) AND at least one
+///      other canonical Adapter method.  Matches the cal.com idiom
+///      `function CalComAdapter(prisma): Adapter { return { ... } }`
+///      where the returned Adapter object holds the implementation.
+///
+/// In both shapes the inner method bodies are NOT enumerated as
+/// separate units (object method shorthands stay anonymous), so every
+/// identity-resolution operation from the inner methods accumulates
+/// onto the outer factory's unit.  Without this flag the outer unit's
+/// name is `getOptions` / `CalComAdapter`, so `is_nextauth_callback_unit`
+/// cannot match by name and the missing-ownership rule fires on every
+/// identity lookup inside the surface.
 ///
 /// JS/TS-only by construction (matches `object` / `pair` /
-/// `method_definition` node kinds).  Returns false on other languages.
+/// `method_definition` / `shorthand_property_identifier` node kinds).
+/// Returns false on other languages.
 fn body_returns_nextauth_options(node: Node<'_>, bytes: &[u8]) -> bool {
     fn scan(node: Node<'_>, bytes: &[u8]) -> bool {
         if matches!(node.kind(), "object" | "object_expression")
-            && object_has_nextauth_callbacks_property(node, bytes)
+            && (object_has_nextauth_callbacks_property(node, bytes)
+                || object_is_nextauth_adapter(node, bytes))
         {
             return true;
         }
@@ -849,6 +865,79 @@ fn is_nextauth_callback_name(name: &str) -> bool {
     matches!(
         name,
         "signIn" | "session" | "jwt" | "redirect" | "authorize" | "authorized"
+    )
+}
+
+/// True when the object literal at `node` looks like a NextAuth
+/// Adapter implementation: at least one distinctive Adapter method
+/// name AND at least two canonical Adapter method names overall.
+/// The distinctive subset (`getUserByAccount`, `linkAccount`,
+/// `unlinkAccount`, `createVerificationToken`, `useVerificationToken`,
+/// `getSessionAndUser`) names operations that are unique to the
+/// NextAuth Adapter contract; the broader canonical set (createUser /
+/// getUser / getUserByEmail / updateUser / deleteUser / createSession /
+/// updateSession / deleteSession) overlaps with generic CRUD repos, so
+/// the distinctive-name witness gates the recognition.
+fn object_is_nextauth_adapter(node: Node<'_>, bytes: &[u8]) -> bool {
+    let mut distinctive_seen = false;
+    let mut total = 0_usize;
+    for entry in named_children(node) {
+        let Some(key_text) = adapter_object_entry_key(entry, bytes) else {
+            continue;
+        };
+        if !is_nextauth_adapter_method_name(&key_text) {
+            continue;
+        }
+        total += 1;
+        if is_nextauth_adapter_distinctive_method_name(&key_text) {
+            distinctive_seen = true;
+        }
+    }
+    distinctive_seen && total >= 2
+}
+
+fn adapter_object_entry_key(entry: Node<'_>, bytes: &[u8]) -> Option<String> {
+    match entry.kind() {
+        "method_definition" => entry
+            .child_by_field_name("name")
+            .map(|n| object_key_text(n, bytes)),
+        "pair" => entry
+            .child_by_field_name("key")
+            .map(|n| object_key_text(n, bytes)),
+        "shorthand_property_identifier" => Some(text(entry, bytes)),
+        _ => None,
+    }
+}
+
+fn is_nextauth_adapter_method_name(name: &str) -> bool {
+    matches!(
+        name,
+        "createUser"
+            | "getUser"
+            | "getUserByEmail"
+            | "getUserByAccount"
+            | "updateUser"
+            | "deleteUser"
+            | "linkAccount"
+            | "unlinkAccount"
+            | "createSession"
+            | "getSessionAndUser"
+            | "updateSession"
+            | "deleteSession"
+            | "createVerificationToken"
+            | "useVerificationToken"
+    )
+}
+
+fn is_nextauth_adapter_distinctive_method_name(name: &str) -> bool {
+    matches!(
+        name,
+        "getUserByAccount"
+            | "linkAccount"
+            | "unlinkAccount"
+            | "createVerificationToken"
+            | "useVerificationToken"
+            | "getSessionAndUser"
     )
 }
 
@@ -5702,6 +5791,104 @@ export async function handleGet({ id }: { id: string }) {
             Some("webhook"),
             "owner subject base must be the row var: {:?}",
             owner_subject
+        );
+    }
+
+    /// Pin the NextAuth Adapter factory recogniser added in session
+    /// 0030.  `body_returns_nextauth_options` must flip on for the
+    /// cal.com `function CalComAdapter(client): Adapter { return {
+    /// createUser, getUser, getUserByAccount, ... } }` shape so that
+    /// `is_nextauth_callback_unit` suppresses the missing-ownership
+    /// rule across the inner Adapter methods (their operations
+    /// accumulate onto the outer factory's unit).
+    #[test]
+    fn nextauth_adapter_factory_flags_outer_unit() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+declare const prismaClient: any;
+export default function CalComAdapter(client: any) {
+  return {
+    createUser: async (data: { email: string }) => {
+      const user = await prismaClient.user.create({ data });
+      return user;
+    },
+    getUser: async (id: string) => {
+      const user = await prismaClient.user.findUnique({ where: { id } });
+      return user;
+    },
+    async getUserByAccount(providerAccountId: { provider: string; providerAccountId: string }) {
+      const account = await prismaClient.account.findUnique({
+        where: { provider_providerAccountId: providerAccountId },
+        select: { user: true },
+      });
+      return account?.user ?? null;
+    },
+    createVerificationToken: async (data: any) => prismaClient.verificationToken.create({ data }),
+    useVerificationToken: async (identifier: any) => prismaClient.verificationToken.delete({ where: identifier }),
+    linkAccount: async (account: any) => prismaClient.account.create({ data: account }),
+    unlinkAccount: async (providerAccountId: any) => prismaClient.account.delete({ where: providerAccountId }),
+  };
+}
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let rules = crate::auth_analysis::config::AuthAnalysisRules::disabled();
+        let mut model = crate::auth_analysis::model::AuthorizationModel::default();
+        super::collect_top_level_units(tree.root_node(), src, &rules, &mut model);
+        let unit = model
+            .units
+            .iter()
+            .find(|u| u.name.as_deref() == Some("CalComAdapter"))
+            .expect("CalComAdapter unit");
+        assert!(
+            unit.is_nextauth_options_factory,
+            "Adapter factory must set is_nextauth_options_factory: \
+             {:?}",
+            unit.name
+        );
+    }
+
+    /// Negative: a generic CRUD repo with `createUser` / `getUser` /
+    /// `updateUser` / `deleteUser` (no Adapter-distinctive method
+    /// names) must NOT be flagged as a NextAuth Adapter.  Without the
+    /// distinctive-name gate any plain user repo would suppress
+    /// missing-ownership findings.
+    #[test]
+    fn nextauth_adapter_recogniser_rejects_generic_crud_repo() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+declare const db: any;
+export function makeUserRepo() {
+  return {
+    createUser: async (data: any) => db.user.create({ data }),
+    getUser: async (id: string) => db.user.findUnique({ where: { id } }),
+    updateUser: async (id: string, data: any) => db.user.update({ where: { id }, data }),
+    deleteUser: async (id: string) => db.user.delete({ where: { id } }),
+  };
+}
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let rules = crate::auth_analysis::config::AuthAnalysisRules::disabled();
+        let mut model = crate::auth_analysis::model::AuthorizationModel::default();
+        super::collect_top_level_units(tree.root_node(), src, &rules, &mut model);
+        let unit = model
+            .units
+            .iter()
+            .find(|u| u.name.as_deref() == Some("makeUserRepo"))
+            .expect("makeUserRepo unit");
+        assert!(
+            !unit.is_nextauth_options_factory,
+            "generic CRUD repo must NOT be flagged as Adapter: {:?}",
+            unit.name
         );
     }
 }

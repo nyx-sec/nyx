@@ -74,9 +74,10 @@ use literals::{
     extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
     extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
     find_call_node, find_call_node_deep, find_chained_inner_call, has_keyword_arg,
-    has_object_arg_property, has_only_literal_args, is_object_create_null_call,
-    is_parameterized_query_call, java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
-    js_chain_outer_method_for_inner, ruby_chain_arg0_for_method, walk_chain_inner_call_args,
+    has_object_arg_property, has_only_literal_args, has_string_interpolation,
+    is_object_create_null_call, is_parameterized_query_call, java_chain_arg0_kind_for_method,
+    js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, ruby_chain_arg0_for_method,
+    walk_chain_inner_call_args,
 };
 use params::{
     compute_container_and_kind, extract_param_meta, inject_framework_param_sources,
@@ -1282,14 +1283,18 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
         }
     }
 
-    // Case 4: Python f-string interpolation — leading literal
-    // fragment of a `formatted_string` whose first child is a plain
-    // `string_content` token.  Restricted to `formatted_string` so
-    // JS / TS / Java plain string literals (kind `string`) do not
-    // accidentally seed a prefix when they appear unmodified at a
-    // call's first argument position (which would mis-fire as a
-    // hardcoded-URL prefix lock on every literal-URL call site).
-    if cur.kind() == "formatted_string" {
+    // Case 4: interpolated-string leading literal fragment.
+    // Python f-strings parse as `formatted_string`; Ruby interpolated
+    // strings parse as `string` with an `interpolation` child.  The
+    // `string + has_interpolation child` gate keeps plain JS / TS /
+    // Java `string` nodes (whose children are only
+    // `string_content`/`string_fragment`) from accidentally seeding a
+    // phantom prefix on every literal-URL call site.  PHP double-
+    // quoted strings parse as `encapsed_string`, distinct kind, so
+    // they don't trip this branch either.
+    let is_fstring = cur.kind() == "formatted_string";
+    let is_interp_string = cur.kind() == "string" && has_string_interpolation(cur);
+    if is_fstring || is_interp_string {
         let mut w = cur.walk();
         let first = cur.named_children(&mut w).next()?;
         if matches!(first.kind(), "string_content" | "string_fragment") {
