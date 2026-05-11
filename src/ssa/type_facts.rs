@@ -248,6 +248,16 @@ pub enum TypeKind {
     /// `sqlxDb.NamedExec(sql, ...)` / `sqlxDb.NamedQuery(sql, ...)` /
     /// `sqlxDb.Select(dest, sql, ...)` etc. raw-SQL passthrough sinks.
     SqlxDb,
+    /// A Hibernate `org.hibernate.Session` produced by
+    /// `sessionFactory.openSession()` / `sessionFactory.getCurrentSession()`
+    /// or via a declared field/local of type `Session`.  Receiver for
+    /// `sess.createQuery(sql)` / `sess.createSQLQuery(sql)` /
+    /// `sess.createNativeQuery(sql)` raw-SQL passthrough sinks.  The
+    /// flat `session.create*` matchers in `labels/java.rs` only fire on
+    /// receivers literally named `session`; this TypeKind closes the
+    /// arbitrary-receiver-name shape (`sess`, `hibernateSession`, etc.)
+    /// via type-qualified resolution.
+    HibernateSession,
 }
 
 /// structural carrier for a recognised DTO type.  Maps
@@ -304,6 +314,7 @@ impl TypeKind {
             Self::ActiveRecordRelation => Some("ActiveRecordRelation"),
             Self::GormDb => Some("GormDb"),
             Self::SqlxDb => Some("SqlxDb"),
+            Self::HibernateSession => Some("HibernateSession"),
             _ => None,
         }
     }
@@ -684,6 +695,16 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // `tpl.process(...)` → `Template.process` against the
             // existing flat rule in `labels/java.rs`.
             "Template" | "getTemplate" => Some(TypeKind::Template),
+            // Hibernate `SessionFactory.openSession()` /
+            // `SessionFactory.getCurrentSession()` produce an
+            // `org.hibernate.Session` instance whose `createQuery(sql)` /
+            // `createSQLQuery(sql)` / `createNativeQuery(sql)` are SQL
+            // sinks.  Method names are unique to Hibernate so suffix
+            // matching is unambiguous.  `openStatelessSession` returns a
+            // `StatelessSession` with the same query-builder API.
+            "openSession" | "getCurrentSession" | "openStatelessSession" => {
+                Some(TypeKind::HibernateSession)
+            }
             _ => None,
         },
         Lang::JavaScript | Lang::TypeScript => {
@@ -2835,6 +2856,24 @@ mod tests {
         assert_eq!(
             constructor_type(Lang::Java, "MongoClient"),
             Some(TypeKind::DatabaseConnection)
+        );
+        // Hibernate Session factory methods.  Suffix-only match — receiver
+        // text is irrelevant.
+        assert_eq!(
+            constructor_type(Lang::Java, "sessionFactory.openSession"),
+            Some(TypeKind::HibernateSession)
+        );
+        assert_eq!(
+            constructor_type(Lang::Java, "sessionFactory.getCurrentSession"),
+            Some(TypeKind::HibernateSession)
+        );
+        assert_eq!(
+            constructor_type(Lang::Java, "openStatelessSession"),
+            Some(TypeKind::HibernateSession)
+        );
+        assert_eq!(
+            TypeKind::HibernateSession.label_prefix(),
+            Some("HibernateSession")
         );
     }
 

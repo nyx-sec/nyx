@@ -365,6 +365,18 @@ pub static RULES: &[LabelRule] = &[
             "getSession.createQuery",
             "getSession.createSQLQuery",
             "getSession.createNativeQuery",
+            // Type-qualified Hibernate Session matchers fire when the
+            // receiver carries a `TypeKind::HibernateSession` fact (set
+            // by `constructor_type` for `sessionFactory.openSession()` /
+            // `sessionFactory.getCurrentSession()` /
+            // `sessionFactory.openStatelessSession()` returns).  Closes
+            // the arbitrary-receiver-name shape (`sess`,
+            // `hibernateSession`, etc.) the flat `session.*` matchers
+            // above only catch when receiver is literally named
+            // `session`.
+            "HibernateSession.createQuery",
+            "HibernateSession.createSQLQuery",
+            "HibernateSession.createNativeQuery",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
@@ -918,6 +930,56 @@ pub static GATED_SINKS: &[SinkGate] = &[
     },
     SinkGate {
         callee_matcher: "getSession.createNativeQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Type-qualified Hibernate Session gates.  Mirror the
+    // `session.create*` family above so type-qualified resolution at
+    // sink-firing time consults `payload_args = &[0]` and suppresses
+    // tainted bind-arg shapes that route through `setParameter` /
+    // `setString` rather than the raw query string.  Receivers carry
+    // `TypeKind::HibernateSession` via `constructor_type`'s
+    // `openSession` / `getCurrentSession` / `openStatelessSession`
+    // arms.
+    SinkGate {
+        callee_matcher: "HibernateSession.createQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HibernateSession.createSQLQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HibernateSession.createNativeQuery",
         arg_index: 0,
         dangerous_values: &[],
         dangerous_prefixes: &[],

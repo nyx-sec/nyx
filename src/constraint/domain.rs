@@ -229,7 +229,8 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         | TypeKind::DjangoQuerySet
         | TypeKind::ActiveRecordRelation
         | TypeKind::GormDb
-        | TypeKind::SqlxDb => 3,
+        | TypeKind::SqlxDb
+        | TypeKind::HibernateSession => 3,
     }
 }
 

@@ -804,6 +804,7 @@ fn orm_xlang() {
         ("sqli_py_sqlalchemy_text_fstring.py", 18usize),
         ("SqliJavaConcat.java", 18usize),
         ("SqliJavaHibernateNative.java", 14usize),
+        ("SqliJavaHibernateNamedSession.java", 19usize),
         ("sqli_rb_concat.rb", 8usize),
         ("sqli_rb_where_interp.rb", 9usize),
         ("sqli_go_concat.go", 14usize),
