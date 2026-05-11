@@ -1171,6 +1171,61 @@ fn python_flask_route_path_capture_seeding() {
     );
 }
 
+/// Python FastAPI entry-kind seeding precision for `FastApiRoute`:
+/// path-bound formals from `{name}` brace-segment captures
+/// (`@app.get("/items/{item_id}")` + `def read_item(item_id: str):`)
+/// AND Annotated typed extractors (`q: Annotated[str, Query()]`) get
+/// painted as `Source(UserInput)`. Formals that carry a `Depends(...)`
+/// default or a non-extractor type annotation (`db: Session`,
+/// `request: Request`) stay un-seeded. Without per-formal gating,
+/// FastAPI handlers fell back to `cfg-unguarded-sink` for path-bound
+/// flows. The positive shapes assert the rule_id is specifically
+/// `taint-unsanitised-flow`, so a future regression that drops
+/// entry-kind seeding is forcing-function caught. The negative shape
+/// pins the absence of `taint-unsanitised-flow` on a DI-only handler.
+#[test]
+fn python_fastapi_route_per_formal_seeding() {
+    let findings = scan_fixture("entry_points_xlang_python_fastapi");
+    let positives = [
+        ("fastapi_path_capture.py", 18usize),
+        ("fastapi_annotated_query.py", 17usize),
+    ];
+    for (file, sink_line) in positives {
+        let hit = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && f.id.starts_with("taint-unsanitised-flow")
+                && f.line == sink_line
+        });
+        assert!(
+            hit,
+            "Python FastAPI handler {file}:{sink_line} must fire \
+             `taint-unsanitised-flow`; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    let depends_taint: Vec<&_> = findings
+        .iter()
+        .filter(|f| {
+            f.path.ends_with("fastapi_depends_denylist.py")
+                && f.id.starts_with("taint-unsanitised-flow")
+        })
+        .collect();
+    assert!(
+        depends_taint.is_empty(),
+        "FastAPI Depends(...) DI handle must not be painted as Source; got:\n{}",
+        depends_taint
+            .iter()
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
 /// Ruby Sinatra entry-kind seeding precision for `SinatraRoute`:
 /// path-bound block formals (`get "/u/:name" do |name| ... end`)
 /// get painted as `Source(UserInput)`, while routes without path

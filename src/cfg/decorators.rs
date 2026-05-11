@@ -635,6 +635,7 @@ fn extract_python_route_captures<'a>(
             continue;
         };
         collect_flask_path_captures(&pattern, out);
+        collect_fastapi_path_captures(&pattern, out);
     }
 }
 
@@ -784,6 +785,39 @@ fn collect_sinatra_path_captures(pattern: &str, out: &mut Vec<String>) {
     }
 }
 
+/// Parse FastAPI / Starlette-style `{name}` / `{name:converter}` capture
+/// segments out of a route pattern. Pushes the inner name (lowercased)
+/// into `out`. FastAPI puts the name FIRST (`{item_id:int}`), unlike
+/// Flask which puts the converter first (`<int:item_id>`). Skips
+/// malformed segments (no closing `}`, empty name) and rejects names
+/// with non-identifier characters.
+fn collect_fastapi_path_captures(pattern: &str, out: &mut Vec<String>) {
+    let bytes = pattern.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'}' {
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+            let inner = &pattern[i + 1..j];
+            let name = inner.split(':').next().unwrap_or(inner).trim();
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                let lower = name.to_ascii_lowercase();
+                if !out.iter().any(|existing| existing == &lower) {
+                    out.push(lower);
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
 /// Parse Flask-style `<conv:name>` / `<name>` capture segments out of a
 /// route pattern. Pushes the inner name (lowercased) into `out`. Skips
 /// malformed segments (no closing `>`, empty name).
@@ -924,5 +958,66 @@ mod path_capture_tests {
     #[test]
     fn sinatra_empty_when_no_captures() {
         assert_eq!(collect_sinatra_for("/static/path"), Vec::<String>::new());
+    }
+
+    fn collect_fastapi_for(pat: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_fastapi_path_captures(pat, &mut out);
+        out
+    }
+
+    #[test]
+    fn fastapi_extracts_bare_capture() {
+        assert_eq!(
+            collect_fastapi_for("/items/{item_id}"),
+            vec!["item_id".to_string()]
+        );
+    }
+
+    #[test]
+    fn fastapi_extracts_converter_capture() {
+        assert_eq!(
+            collect_fastapi_for("/items/{item_id:int}"),
+            vec!["item_id".to_string()]
+        );
+    }
+
+    #[test]
+    fn fastapi_extracts_path_converter() {
+        assert_eq!(
+            collect_fastapi_for("/files/{file_path:path}"),
+            vec!["file_path".to_string()]
+        );
+    }
+
+    #[test]
+    fn fastapi_extracts_multiple_captures() {
+        assert_eq!(
+            collect_fastapi_for("/u/{uid}/post/{pid:int}"),
+            vec!["uid".to_string(), "pid".to_string()]
+        );
+    }
+
+    #[test]
+    fn fastapi_dedupes_repeated_names() {
+        let mut out = Vec::new();
+        collect_fastapi_path_captures("/{a}/{a}", &mut out);
+        assert_eq!(out, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn fastapi_rejects_unclosed_brace() {
+        assert_eq!(collect_fastapi_for("/{oops"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn fastapi_rejects_non_ident_chars() {
+        assert_eq!(collect_fastapi_for("/{bad name}"), Vec::<String>::new());
+        assert_eq!(collect_fastapi_for("/{name!}"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn fastapi_empty_when_no_captures() {
+        assert_eq!(collect_fastapi_for("/static/path"), Vec::<String>::new());
     }
 }

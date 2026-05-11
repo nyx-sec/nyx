@@ -1128,6 +1128,40 @@ fn analyse_body_with_seed(
                 )
             })
         });
+    // Python FastAPI / Starlette handlers need scoped lowering so the
+    // route-bound and typed-extractor formals materialise as `SsaOp::Param`
+    // ops that the entry-point seeding pass paints as `Source(UserInput)`.
+    // The per-formal decision in `ssa_transfer` consults BOTH
+    // `BodyMeta.param_route_capture` (for `{name}` brace-segment captures)
+    // and `type_facts.get_type(value)` (for `Annotated[T, Path()/Query()/Body()
+    // /Header()/Cookie()/Form()/File()]` typed extractors). Formals without
+    // either signal — `db: Session = Depends(get_db)`, `request: Request`,
+    // bare `session` — stay un-seeded, matching the Hard Rule 3 policy that
+    // unannotated formals are not adversary input.
+    //
+    // Gated on "at least one formal qualifies" to mirror the Flask gate:
+    // a handler with zero path captures and zero typed extractors gets the
+    // existing label-rule treatment (free-name captures of `request`,
+    // `b64decode`, etc. bubble up as synthetic externals without scoped
+    // lowering shifting attribution).
+    let is_python_fastapi_route = lang == Lang::Python
+        && body.meta.kind == crate::cfg::BodyKind::NamedFunction
+        && (body
+            .meta
+            .param_route_capture
+            .iter()
+            .any(|captured| *captured)
+            || body.meta.param_types.iter().any(|t| t.is_some()))
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries.and_then(|m| m.get(&k)).is_some_and(|s| {
+                matches!(
+                    s.entry_kind,
+                    Some(crate::entry_points::EntryKind::FastApiRoute { .. })
+                )
+            })
+        });
     let use_scoped_lowering = !is_toplevel
         && (matches!(lang, Lang::JavaScript | Lang::TypeScript)
             || has_nonempty_seed
@@ -1135,6 +1169,7 @@ fn analyse_body_with_seed(
             || is_java_entry_method
             || is_rust_entry_method
             || is_python_flask_route
+            || is_python_fastapi_route
             || is_ruby_sinatra_route);
     let ssa_result = if use_scoped_lowering {
         let func_name = body.meta.name.clone().unwrap_or_else(|| {

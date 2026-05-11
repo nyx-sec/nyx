@@ -462,6 +462,39 @@ fn run_ssa_taint_internal(
                     continue;
                 }
             }
+            if !is_self && matches!(entry_kind, EntryKind::FastApiRoute { .. }) {
+                // FastAPI / Starlette handlers mix four formal shapes:
+                //   - path captures (`@app.get("/u/{name}")` + `name: str`)
+                //   - typed extractors (`q: Annotated[int, Query()]`,
+                //     `body: Annotated[User, Body()]`)
+                //   - DI handles (`db: Session = Depends(get_db)`)
+                //   - implicit globals (`request: Request`)
+                //
+                // Seed only when the formal is either a path capture
+                // (`param_route_capture[idx]`) OR carries a recognised
+                // FastAPI typed-extractor wrapper. `classify_param_type_python`
+                // populates `BodyMeta.param_types` with `Some(TypeKind)` for
+                // `Annotated[T, Path()/Query()/Body()/Header()/Cookie()/Form()
+                // /File()]` shapes; everything else (`Session`, `Request`,
+                // bare `dict`, unannotated) returns `None`.
+                // `analyze_types_with_param_types` then materialises
+                // `Some(&TypeKind::Unknown)` for `None` entries, so the gate
+                // must reject both missing facts and explicit `Unknown`.
+                let seed_capture = param_index
+                    .and_then(|idx| {
+                        transfer
+                            .param_route_capture
+                            .and_then(|m| m.get(idx).copied())
+                    })
+                    .unwrap_or(false);
+                let seed_extractor = transfer
+                    .type_facts
+                    .and_then(|tf| tf.get_type(inst.value))
+                    .is_some_and(|t| !matches!(t, crate::ssa::type_facts::TypeKind::Unknown));
+                if !seed_capture && !seed_extractor {
+                    continue;
+                }
+            }
             let origin = TaintOrigin {
                 node: inst.cfg_node,
                 source_kind,
