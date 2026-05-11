@@ -3717,3 +3717,72 @@ fn pattern_list_indexed_bindings_recognise_python_destructure() {
     // sub-patterns to preserve flat-binding-only semantics.
     assert!(run_case(b"(a, b), c = ((1, 2), 3)\n", &["pattern_list"]).is_empty());
 }
+
+/// Ruby `left_assignment_list` is the LHS node tree-sitter-ruby produces
+/// for `a, b = ...`.  The helper walks comma-separated identifier
+/// children in source order, emitting `(name, position)` for each.
+/// Ruby `_` is a normal identifier (matches Python convention).
+/// `rest_assignment` (`*rest`) and `destructured_left_assignment`
+/// (parenthesised nested destructure) hit the bail branch so callers
+/// fall back to scalar union for those advanced shapes.
+#[test]
+fn left_assignment_list_indexed_bindings_recognise_ruby_destructure() {
+    use super::helpers::collect_array_pattern_bindings_indexed;
+    fn first_left_assignment_list<'t>(n: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
+        if n.kind() == "left_assignment_list" {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = first_left_assignment_list(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn parse_first_ruby(src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_ruby::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+    fn run_case(src: &[u8]) -> Vec<(String, usize)> {
+        let (tree, bytes) = parse_first_ruby(src);
+        let pat = first_left_assignment_list(tree.root_node())
+            .expect("left_assignment_list in fixture");
+        collect_array_pattern_bindings_indexed(pat, &bytes)
+            .into_iter()
+            .collect()
+    }
+    assert_eq!(
+        run_case(b"a, b = [x, y]\n"),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"a, b, c = [x, y, z]\n"),
+        vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 2)],
+    );
+    // Underscore is a regular identifier binding in Ruby (idiomatic
+    // "unused" marker, but still resolvable in scope).
+    assert_eq!(
+        run_case(b"_, b = [x, y]\n"),
+        vec![("_".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"a, _ = [x, y]\n"),
+        vec![("a".into(), 0), ("_".into(), 1)],
+    );
+    // Call return value, helper walks LHS regardless of RHS shape.
+    assert_eq!(
+        run_case(b"a, b = func()\n"),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    // Splat tail bails because rest_assignment is a complex sub-pattern.
+    assert!(run_case(b"a, *rest = [x, y, z]\n").is_empty());
+    // Parenthesised nested destructure bails because
+    // destructured_left_assignment isn't in the simple-identifier
+    // whitelist.
+    assert!(run_case(b"(a, b) = [x, y]\n").is_empty());
+}

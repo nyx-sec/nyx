@@ -334,6 +334,26 @@ fn promise_all_destruct_per_index() {
                 .join("\n"),
         );
     }
+
+    // Ruby parallel assignment `a, b = [array_literal]` is a FN-closure
+    // shape, not a per-index precision shape (no combinator rewrite
+    // for bare array literals yet).  Pre-fix the legacy
+    // `Kind::Assignment` def_use path called `idents.pop()` on the
+    // LHS, recording only the LAST binding (`b`) as the def and
+    // silently dropping `a`.  Post-fix every binding fires via the
+    // scalar union of RHS uses, no FN.  Each handler block has 2 or 3
+    // bindings; every sink line on a binding must fire.
+    for sink_line in [25usize, 26, 31, 32, 37, 38, 39] {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: "ruby_parallel_assignment_fp.rb",
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
 }
 
 /// Phase 03 recall-gap: `for await (const x of iter)` taints `x` from the
