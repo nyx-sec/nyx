@@ -806,6 +806,21 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // resulting receiver as `DjangoQuerySet` lets `qs.raw(sql)` /
                 // `qs.extra(...)` rewrite to `DjangoQuerySet.<method>`.
                 Some(TypeKind::DjangoQuerySet)
+            } else if callee.contains(".objects.")
+                && is_orm_queryset_chain_method(suffix)
+            {
+                // Django ORM chained-queryset producers.
+                // `Model.objects.all() / .filter(...) / .exclude(...)` etc.
+                // return another `QuerySet`.  The FieldProj-chain
+                // decomposition for `Model.<chain>` bails when the base
+                // identifier (the class name `Model`) isn't in the local
+                // SSA var stack, leaving the Call op carrying the full
+                // chain text as its callee.  Tagging the result as
+                // `DjangoQuerySet` lets a bound `qs = Model.objects.all();
+                // qs.raw(sql)` resolve `qs.raw` via the type-qualified
+                // sink rule, closing the intermediate-binding shape that
+                // the flat `objects.raw` matcher misses.
+                Some(TypeKind::DjangoQuerySet)
             } else {
                 None
             }
@@ -1209,6 +1224,48 @@ pub fn is_identity_method(callee: &str) -> bool {
     )
 }
 
+/// True when `verb` is an ORM queryset chain method that returns another
+/// queryset of the same logical type as the receiver.  Used to propagate
+/// `DjangoQuerySet` / `ActiveRecordRelation` type facts through chained
+/// calls (`qs.filter(...).exclude(...)`) so a terminal verb like `.raw(sql)`
+/// / `.find_by_sql(sql)` resolves via the type-qualified sink rule.
+pub fn is_orm_queryset_chain_method(verb: &str) -> bool {
+    matches!(
+        verb,
+        // Django queryset chain methods (subset that returns QuerySet)
+        "all"
+            | "filter"
+            | "exclude"
+            | "order_by"
+            | "annotate"
+            | "distinct"
+            | "select_related"
+            | "prefetch_related"
+            | "only"
+            | "defer"
+            | "reverse"
+            | "none"
+            | "using"
+            | "values"
+            | "values_list"
+            // ActiveRecord relation chain methods (subset that returns Relation)
+            | "where"
+            | "joins"
+            | "includes"
+            | "preload"
+            | "eager_load"
+            | "references"
+            | "group"
+            | "having"
+            | "limit"
+            | "offset"
+            | "lock"
+            | "readonly"
+            | "rewhere"
+            | "unscope"
+    )
+}
+
 pub fn is_int_producing_callee(callee: &str) -> bool {
     // Peel trailing identity methods (e.g. `.unwrap()`/`.expect("...")` after
     // `.parse()`) so the underlying numeric-producing verb is exposed.
@@ -1576,6 +1633,47 @@ pub fn analyze_types_with_param_types(
                 }
             }
 
+            // ORM queryset chain propagation.  `Model.objects.filter(...)`
+            // / `qs.exclude(...)` / `qs.all()` etc. return a `QuerySet` of
+            // the same logical type as the receiver.  When the receiver
+            // carries a `DjangoQuerySet` fact and the callee verb is one of
+            // the QuerySet-returning chain methods, propagate the fact to
+            // the result so a later `qs2.raw(sql)` / `qs2.extra(sql)` resolves
+            // via the type-qualified rule.  Gated on the receiver type to
+            // keep the FP surface bounded.
+            for inst in &block.body {
+                if let SsaOp::Call {
+                    callee,
+                    receiver: Some(recv),
+                    ..
+                } = &inst.op
+                {
+                    let suffix = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+                    if !is_orm_queryset_chain_method(suffix) {
+                        continue;
+                    }
+                    let recv_fact = facts.get(recv).cloned().unwrap_or_else(TypeFact::unknown);
+                    let propagate = matches!(
+                        recv_fact.kind,
+                        TypeKind::DjangoQuerySet | TypeKind::ActiveRecordRelation
+                    );
+                    if !propagate {
+                        continue;
+                    }
+                    let current_kind = facts
+                        .get(&inst.value)
+                        .map(|f| f.kind.clone())
+                        .unwrap_or(TypeKind::Unknown);
+                    if !matches!(current_kind, TypeKind::Unknown) {
+                        continue;
+                    }
+                    if facts.get(&inst.value) != Some(&recv_fact) {
+                        facts.insert(inst.value, recv_fact);
+                        changed = true;
+                    }
+                }
+            }
+
             // FieldProj receiver-driven type narrowing.  When
             // SSA lowering decomposed `a.b.c()` into a FieldProj chain,
             // intermediate FieldProj insts default to `projected_type =
@@ -1611,6 +1709,21 @@ pub fn analyze_types_with_param_types(
                     && is_url_identity_field(&field_name)
                 {
                     let new_fact = TypeFact::from_kind(TypeKind::Url);
+                    if facts.get(&inst.value) != Some(&new_fact) {
+                        facts.insert(inst.value, new_fact);
+                        changed = true;
+                    }
+                    continue;
+                }
+                // Django ORM manager projection.  `Model.objects` decomposes
+                // into a FieldProj whose `field` is `objects`.  Tag it as
+                // `DjangoQuerySet` so a downstream `qs.raw(sql)` /
+                // `qs.extra(sql)` (where `qs = Model.objects`) resolves via
+                // the type-qualified `DjangoQuerySet.<method>` sink rule.
+                // Strictly additive — fires only when the projection has not
+                // already been pinned to another type.
+                if matches!(lang, Some(Lang::Python)) && field_name == "objects" {
+                    let new_fact = TypeFact::from_kind(TypeKind::DjangoQuerySet);
                     if facts.get(&inst.value) != Some(&new_fact) {
                         facts.insert(inst.value, new_fact);
                         changed = true;

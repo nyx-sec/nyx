@@ -809,6 +809,7 @@ fn orm_xlang() {
         ("sqli_go_concat.go", 14usize),
         ("sqli_go_gorm_raw.go", 20usize),
         ("sqli_go_gorm_raw_named.go", 28usize),
+        ("sqli_py_django_qs_bound.py", 14usize),
         ("sqli_php_pdo_concat.php", 9usize),
         ("sqli_php_doctrine_interp.php", 10usize),
     ];
