@@ -1043,11 +1043,37 @@ fn analyse_body_with_seed(
                 .and_then(|m| m.get(&k))
                 .is_some_and(|s| s.entry_kind.is_some())
         });
+    // Rust framework handlers (axum, actix-web, Rocket) need scoped
+    // lowering so the typed-extractor formals (`Query<T>`, `Json<T>`,
+    // `Form<T>`, `Path<T>`) materialise as `SsaOp::Param` ops that the
+    // entry-point seeding pass paints as `Source(UserInput)`.  The
+    // per-formal seed decision is gated on a recovered `TypeKind` from
+    // `BodyMeta.param_types`: extractor-wrapped formals get
+    // `Some(TypeKind::Int|String|Bool|...)` (or a DTO type) via
+    // `rust_type_to_kind`, while denylist wrappers (`State<T>`,
+    // `Extension<T>`, `Pool<T>`, ...) and bare primitives stay `None`
+    // and are skipped at seed time.  This keeps DI handles
+    // server-side without painting the database pool as adversary input.
+    let is_rust_entry_method = lang == Lang::Rust
+        && body.meta.kind == crate::cfg::BodyKind::NamedFunction
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries.and_then(|m| m.get(&k)).is_some_and(|s| {
+                matches!(
+                    s.entry_kind,
+                    Some(crate::entry_points::EntryKind::AxumHandler)
+                        | Some(crate::entry_points::EntryKind::ActixHandler)
+                        | Some(crate::entry_points::EntryKind::RocketRoute)
+                )
+            })
+        });
     let use_scoped_lowering = !is_toplevel
         && (matches!(lang, Lang::JavaScript | Lang::TypeScript)
             || has_nonempty_seed
             || is_java_lambda
-            || is_java_entry_method);
+            || is_java_entry_method
+            || is_rust_entry_method);
     let ssa_result = if use_scoped_lowering {
         let func_name = body.meta.name.clone().unwrap_or_else(|| {
             body.meta

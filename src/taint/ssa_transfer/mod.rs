@@ -383,6 +383,42 @@ fn run_ssa_taint_internal(
             if !seed_this {
                 continue;
             }
+            // Rust framework handlers (axum / actix-web / Rocket):
+            // skip seeding when the formal isn't a recognised typed
+            // extractor.  `param_types` is recovered at CFG
+            // construction time via `rust_type_to_kind`, which only
+            // matches `Query<T>` / `Json<T>` / `Form<T>` / `Path<T>`
+            // / `web::*` wrappers (Hard Rule 3 — bare primitives and
+            // denylist wrappers like `State<T>`, `Extension<T>`,
+            // `Pool<T>`, `Db<T>` return `None`).  The downstream
+            // type-fact pass propagates the recovered `TypeKind` onto
+            // the SSA `Param` value, so `type_facts.get_type(value)`
+            // returning `None` means "no extractor wrapper" → don't
+            // paint as adversary input.  Without this gate, lifting
+            // scoped lowering for Rust handlers would FP-fire every
+            // database / shared-state sink that accepts a DI handle.
+            if !is_self
+                && matches!(
+                    entry_kind,
+                    EntryKind::AxumHandler | EntryKind::ActixHandler | EntryKind::RocketRoute,
+                )
+            {
+                // Treat both missing facts and the explicit `Unknown`
+                // bottom element as "no extractor wrapper".
+                // `analyze_types_with_param_types` materialises
+                // `Some(&TypeKind::Unknown)` for every Param whose
+                // `BodyMeta.param_types` entry was None (denylist
+                // wrappers like `State<T>` / `Extension<T>`, bare
+                // primitives, unrecognised user types), so excluding
+                // `is_some` alone would still let them through.
+                let seed_extractor = transfer
+                    .type_facts
+                    .and_then(|tf| tf.get_type(inst.value))
+                    .is_some_and(|t| !matches!(t, crate::ssa::type_facts::TypeKind::Unknown));
+                if !seed_extractor {
+                    continue;
+                }
+            }
             let origin = TaintOrigin {
                 node: inst.cfg_node,
                 source_kind,

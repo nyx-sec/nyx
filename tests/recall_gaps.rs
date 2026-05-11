@@ -1059,6 +1059,63 @@ fn entry_points_xlang() {
     }
 }
 
+/// Rust entry-kind seeding precision: typed extractor formals
+/// (`Query<T>`, `Json<T>`, `Form<T>`, `Path<T>`, `web::*<T>`) get
+/// painted as `Source(UserInput)`, while denylist DI handles
+/// (`State<T>`, `Extension<T>`, ...) do not.  Without this guard, the
+/// scoped-lowering lift for Rust handlers would FP-fire every
+/// database / shared-state sink consuming a pool handle.  The
+/// positive shape asserts the rule_id is specifically
+/// `taint-unsanitised-flow` (not `cfg-unguarded-sink`), so a future
+/// regression that drops entry-kind seeding is forcing-function
+/// caught.
+#[test]
+fn rust_entry_kind_typed_extractor_seeding() {
+    let findings = scan_fixture("entry_points_xlang_rust");
+    let positives = [
+        ("axum_query_typed_extractor.rs", 12usize),
+        ("actix_path_typed_extractor.rs", 11usize),
+    ];
+    for (file, sink_line) in positives {
+        let hit = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && f.id.starts_with("taint-unsanitised-flow")
+                && f.line == sink_line
+        });
+        assert!(
+            hit,
+            "Rust typed-extractor handler {file}:{sink_line} must fire \
+             `taint-unsanitised-flow`; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    // Negative: State<Arc<DbPool>> formals must not produce
+    // taint-unsanitised-flow findings.  cfg-unguarded-sink is fine
+    // — that is the pre-existing structural backup, not a seeding
+    // claim against the formal.
+    let state_taint_findings: Vec<&_> = findings
+        .iter()
+        .filter(|f| {
+            f.path.ends_with("axum_state_denylist.rs")
+                && f.id.starts_with("taint-unsanitised-flow")
+        })
+        .collect();
+    assert!(
+        state_taint_findings.is_empty(),
+        "State<DbPool> formals must not be painted as Source; got:\n{}",
+        state_taint_findings
+            .iter()
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
 /// Phase 11 + 17 acceptance: every per-target baseline JSON in
 /// `tests/recall_targets/` (Phase 11 JS targets) and
 /// `tests/recall_targets/xlang/<lang>/` (Phase 17 cross-lang targets)
