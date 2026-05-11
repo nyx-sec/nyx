@@ -204,6 +204,51 @@ pub struct SsaTaintTransfer<'a> {
     /// the matching cells.  Strict-additive: `None` reproduces today's
     /// pointer-unaware behaviour.
     pub pointer_facts: Option<&'a crate::pointer::PointsToFacts>,
+    /// Phase-09 cross-package import lookup: maps the caller-file's local
+    /// binding name (e.g. `escapeHtml`) to the canonical [`FuncKey`] of
+    /// the imported function in its own package's namespace.
+    ///
+    /// Populated by [`crate::taint::build_cross_package_func_keys`] from
+    /// each file's [`crate::cfg::FileCfg::resolved_imports`] before pass-2
+    /// taint analysis. Consumed by `resolve_callee_full` at step 0.7 to
+    /// look up the cross-package callee's SSA summary directly via
+    /// [`crate::summary::GlobalSummaries::get_ssa`].
+    ///
+    /// `None` (or empty map) when the file has no resolver-resolved
+    /// imports (non-JS/TS, no `ModuleGraph`, no resolved package boundary).
+    /// In that case step 0.7 is a no-op and resolution falls through to
+    /// the existing flat-name paths.
+    pub cross_package_imports: Option<&'a HashMap<String, FuncKey>>,
+    /// Phase-10 Next.js entry-point classification for the body
+    /// currently under analysis.  When `Some(_)`, every formal
+    /// [`SsaOp::Param`] in the entry block is seeded with
+    /// `Cap::all()` taint and a `TaintOrigin` whose
+    /// [`SourceKind`] is derived from the entry kind, mirroring an
+    /// HTTP request handler's adversary-controlled inputs.  `None`
+    /// preserves today's per-callsite seeding (`global_seed`,
+    /// `param_seed`, `auto_seed_handler_params`).
+    pub entry_kind: Option<crate::entry_points::EntryKind>,
+    /// Per-formal route-capture flag, indexed by `SsaOp::Param.index`.
+    /// Used by the entry-kind seeding pass for Python `FlaskRoute`
+    /// (and any future per-formal-name framework gate) to restrict
+    /// `Source(UserInput)` painting to formals whose names appear as
+    /// path captures in the routing decorator.  Out-of-range indices
+    /// default to `false` and skip seeding.  `None` preserves today's
+    /// "seed every Param" behaviour for entry kinds without per-formal
+    /// gating (Spring, JaxRs, Sinatra, Express, Gin, AppRoute, ...).
+    pub param_route_capture: Option<&'a [bool]>,
+    /// True when the transfer is driving a per-parameter probe inside
+    /// [`crate::taint::ssa_transfer::summary_extract::extract_ssa_func_summary`]
+    /// rather than the pass-2 emission path.  The probes record chain-hop
+    /// sites onto the function's [`crate::summary::ssa_summary::SsaFuncSummary`];
+    /// pass-2 emission gates the same sites against the
+    /// `from_chain || file_rel != caller_namespace` predicate so single-hop
+    /// intra-file helpers keep call-site emission.  Probes set this flag
+    /// so `pick_primary_sink_sites` always promotes a deeper-callee site
+    /// into `event.primary_sink_site`, regardless of file boundary, so
+    /// `crate::taint::ssa_transfer::summary_extract` can flip
+    /// `from_chain=true` and persist the chain hop.  Default: false.
+    pub recording_summary: bool,
 }
 
 /// Per-predecessor state tracking for path-sensitive phi evaluation.
@@ -256,6 +301,235 @@ fn run_ssa_taint_internal(
     let mut block_states: Vec<Option<SsaTaintState>> = vec![None; num_blocks];
     let mut block_exit_states: Vec<Option<SsaTaintState>> = vec![None; num_blocks];
     block_states[ssa.entry.0 as usize] = Some(SsaTaintState::initial());
+
+    // Phase 10 + Phase 16 — entry-point parameter seeding.  When the
+    // body under analysis is a recognised framework entry (Next.js,
+    // Express, Django, FastAPI, Flask, Spring, JAX-RS, Rails, Sinatra,
+    // axum, actix-web, rocket, net/http, gin, ...), seed the relevant
+    // formal `Param` operations in the entry block with `Cap::all()` and
+    // a `TaintOrigin::UserInput` so the engine treats request-bound
+    // inputs as adversary-controlled without waiting for a caller-side
+    // flow.  Per-variant policy below selects which formals to seed:
+    // most variants seed every named formal; Express seeds only the
+    // first (`req`); `net/http` seeds only the second (`r` after `w`);
+    // class-method shapes (Django CBV) skip implicit `self`.
+    // Entry-kind seeding paints framework handler formals as
+    // adversary-controlled.  Suppress entirely when the body lives in a
+    // test file: closures with the right shape (`func(c *gin.Context)`,
+    // `func(req, res)`, etc.) appear in unit tests as scaffolding, not
+    // as request-reachable production routes.  Painting their formals
+    // as Source surfaces every internal sink the test exercises as a
+    // finding whose "attacker" is the test author.
+    let body_in_test_file = !transfer.namespace.is_empty()
+        && crate::ast::is_test_file(std::path::Path::new(transfer.namespace));
+    if !body_in_test_file
+        && let (Some(entry_kind), Some(state)) = (
+            transfer.entry_kind.as_ref(),
+            block_states[ssa.entry.0 as usize].as_mut(),
+        )
+    {
+        use crate::entry_points::EntryKind;
+        let source_kind = SourceKind::UserInput;
+        // (skip_self_param, only_param_index, seed_at_all) —
+        // `only_param_index = Some(i)` restricts seeding to the `i`-th
+        // non-self formal Param op (counted in SSA insertion order).
+        // `None` seeds every Param.  `seed_at_all = false` skips seeding
+        // entirely; the engine relies on existing label rules instead.
+        let (skip_self, only_index, seed_at_all): (bool, Option<usize>, bool) = match entry_kind {
+            // Pure Param-only handlers, all named formals are request-bound.
+            EntryKind::AppRouteHandler { .. }
+            | EntryKind::UseServerDirective
+            | EntryKind::FormAction
+            | EntryKind::FastApiRoute { .. }
+            | EntryKind::FlaskRoute { .. }
+            | EntryKind::SpringMapping { .. }
+            | EntryKind::JaxRsResource
+            | EntryKind::SinatraRoute { .. }
+            | EntryKind::AxumHandler
+            | EntryKind::ActixHandler
+            | EntryKind::RocketRoute => (true, None, true),
+            // Class-method shapes — `self` is the controller instance,
+            // not adversary input.
+            EntryKind::DjangoView { .. } | EntryKind::RailsAction => (true, None, true),
+            // Express handler `(req, res, next)` — `req.body` /
+            // `req.query` / `req.params` / `req.headers` already classify
+            // as Source via the JS label rules shipped before phase 16,
+            // so the SSA engine sees user input via member-access paths
+            // without needing a flat `req` seed.  Seeding `req` itself
+            // as `Source(Cap::all())` adds nothing for those flows but
+            // re-fires every excluded `req.session.*` / `req.app.*`
+            // lifecycle method as a structural sink (FP regression in
+            // `session_destroy_safe.js` /
+            // `session_destroy_with_query.js`).  Skip seeding for
+            // Express; the existing label rules carry the request.
+            EntryKind::ExpressRoute { .. } => (true, Some(0), false),
+            // Gin (`*gin.Context`), echo (`echo.Context`), fiber
+            // (`*fiber.Ctx`), iris (`iris.Context`) — `c.Query` /
+            // `c.Param` / `c.PostForm` / `c.QueryArray` /
+            // `c.PostFormArray` / `c.QueryParam` are classified as
+            // `Source(Cap::all())` by the framework-aware label rules
+            // in `src/labels/go.rs` (gated on `DetectedFramework::Gin`).
+            // The receiver-method calls flow that taint through to
+            // local variables without painting the bare `c` object,
+            // which avoids the FP shape where excluded lifecycle
+            // methods (`c.AbortWithStatus`, `c.Set`, `c.Next`) get
+            // re-classified as sinks consuming an adversary-painted
+            // receiver.  Same precedent as Express above.
+            EntryKind::GinRoute => (true, None, false),
+            // net/http `(w http.ResponseWriter, r *http.Request)` —
+            // `r.FormValue` / `r.URL.Query` / `r.URL.Query.Get` /
+            // `r.Header.Get` / `r.Header.Values` / `r.Body` /
+            // `r.Cookie` / `r.Cookies` are classified as
+            // `Source(Cap::all())` by the global Go label rules.
+            // The access-path label rules carry every adversary byte
+            // through to local variables.  Painting the bare `r`
+            // object as `Source(Cap::all())` would re-fire excluded
+            // methods like `r.Context()` and `r.WithContext(...)` as
+            // structural sinks, mirroring the Express FP risk.
+            EntryKind::GoNetHttp => (true, Some(1), false),
+        };
+        let entry_block = &ssa.blocks[ssa.entry.0 as usize];
+        for inst in entry_block.phis.iter().chain(entry_block.body.iter()) {
+            if !seed_at_all {
+                continue;
+            }
+            let (is_self, param_index) = match &inst.op {
+                SsaOp::SelfParam => (true, None),
+                SsaOp::Param { index } => (false, Some(*index)),
+                _ => continue,
+            };
+            if skip_self && is_self {
+                continue;
+            }
+            if ssa.synthetic_externals.contains(&inst.value) {
+                continue;
+            }
+            let seed_this = match (only_index, param_index) {
+                (Some(want), Some(idx)) => idx == want,
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
+            if !seed_this {
+                continue;
+            }
+            // Rust framework handlers (axum / actix-web / Rocket):
+            // skip seeding when the formal isn't a recognised typed
+            // extractor.  `param_types` is recovered at CFG
+            // construction time via `rust_type_to_kind`, which only
+            // matches `Query<T>` / `Json<T>` / `Form<T>` / `Path<T>`
+            // / `web::*` wrappers (Hard Rule 3 — bare primitives and
+            // denylist wrappers like `State<T>`, `Extension<T>`,
+            // `Pool<T>`, `Db<T>` return `None`).  The downstream
+            // type-fact pass propagates the recovered `TypeKind` onto
+            // the SSA `Param` value, so `type_facts.get_type(value)`
+            // returning `None` means "no extractor wrapper" → don't
+            // paint as adversary input.  Without this gate, lifting
+            // scoped lowering for Rust handlers would FP-fire every
+            // database / shared-state sink that accepts a DI handle.
+            if !is_self
+                && matches!(
+                    entry_kind,
+                    EntryKind::AxumHandler | EntryKind::ActixHandler | EntryKind::RocketRoute,
+                )
+            {
+                // Treat both missing facts and the explicit `Unknown`
+                // bottom element as "no extractor wrapper".
+                // `analyze_types_with_param_types` materialises
+                // `Some(&TypeKind::Unknown)` for every Param whose
+                // `BodyMeta.param_types` entry was None (denylist
+                // wrappers like `State<T>` / `Extension<T>`, bare
+                // primitives, unrecognised user types), so excluding
+                // `is_some` alone would still let them through.
+                let seed_extractor = transfer
+                    .type_facts
+                    .and_then(|tf| tf.get_type(inst.value))
+                    .is_some_and(|t| !matches!(t, crate::ssa::type_facts::TypeKind::Unknown));
+                if !seed_extractor {
+                    continue;
+                }
+            }
+            if !is_self
+                && matches!(
+                    entry_kind,
+                    EntryKind::FlaskRoute { .. } | EntryKind::SinatraRoute { .. }
+                )
+            {
+                // Python Flask handlers carry path-bound captures
+                // (`@app.route("/u/<name>")` + `def view(name):`) alongside
+                // implicit globals (`request`, `g`) and DI-injected
+                // formals (webargs, dependency injection). Only the
+                // path-bound captures qualify as adversary input.
+                //
+                // Ruby Sinatra handlers (`get "/u/:name" do |name| ... end`)
+                // share the same per-formal model: the block formal `name`
+                // is path-bound; other formals are unusual but possible
+                // (`do |name, captures| ...`) and must come from a
+                // recognised capture in the route pattern to seed.
+                //
+                // `BodyMeta.param_route_capture` is populated at CFG
+                // construction time from `extract_route_path_captures`;
+                // formals not in the capture set fall back to existing
+                // label rules (`request.json()`, `params['x']`, ...)
+                // for source attribution.
+                let seed_capture = param_index
+                    .and_then(|idx| {
+                        transfer
+                            .param_route_capture
+                            .and_then(|m| m.get(idx).copied())
+                    })
+                    .unwrap_or(false);
+                if !seed_capture {
+                    continue;
+                }
+            }
+            if !is_self && matches!(entry_kind, EntryKind::FastApiRoute { .. }) {
+                // FastAPI / Starlette handlers mix four formal shapes:
+                //   - path captures (`@app.get("/u/{name}")` + `name: str`)
+                //   - typed extractors (`q: Annotated[int, Query()]`,
+                //     `body: Annotated[User, Body()]`)
+                //   - DI handles (`db: Session = Depends(get_db)`)
+                //   - implicit globals (`request: Request`)
+                //
+                // Seed only when the formal is either a path capture
+                // (`param_route_capture[idx]`) OR carries a recognised
+                // FastAPI typed-extractor wrapper. `classify_param_type_python`
+                // populates `BodyMeta.param_types` with `Some(TypeKind)` for
+                // `Annotated[T, Path()/Query()/Body()/Header()/Cookie()/Form()
+                // /File()]` shapes; everything else (`Session`, `Request`,
+                // bare `dict`, unannotated) returns `None`.
+                // `analyze_types_with_param_types` then materialises
+                // `Some(&TypeKind::Unknown)` for `None` entries, so the gate
+                // must reject both missing facts and explicit `Unknown`.
+                let seed_capture = param_index
+                    .and_then(|idx| {
+                        transfer
+                            .param_route_capture
+                            .and_then(|m| m.get(idx).copied())
+                    })
+                    .unwrap_or(false);
+                let seed_extractor = transfer
+                    .type_facts
+                    .and_then(|tf| tf.get_type(inst.value))
+                    .is_some_and(|t| !matches!(t, crate::ssa::type_facts::TypeKind::Unknown));
+                if !seed_capture && !seed_extractor {
+                    continue;
+                }
+            }
+            let origin = TaintOrigin {
+                node: inst.cfg_node,
+                source_kind,
+                source_span: None,
+            };
+            state.set(
+                inst.value,
+                VarTaint {
+                    caps: Cap::all(),
+                    origins: SmallVec::from_elem(origin, 1),
+                    uses_summary: false,
+                },
+            );
+        }
+    }
 
     // Seed entry block's PathEnv from optimization results
     if let Some(ref mut entry_state) = block_states[ssa.entry.0 as usize] {
@@ -1956,12 +2230,21 @@ fn apply_path_fact_branch_narrowing_with_interner(
 // ── Context-Sensitive Inline Analysis Functions ───────────────────────
 
 /// Build a compact taint signature from the actual argument taint at a call site.
-fn build_arg_taint_sig(
+/// Cache-key builder.  Folds optional Phase 03 promise-callback seeds in.
+///
+/// Cap bits from `promise_callback_seeds[i] = (idx, taint)` are unioned
+/// onto position `idx` of the signature so two cache lookups for the
+/// same callback function but different receiver-promise taints map to
+/// distinct entries.  Without this, an unseeded `cb()` call earlier in
+/// the same file would poison the cache for a later seeded
+/// `p.then(cb)`.
+fn build_arg_taint_sig_with_seeds(
     args: &[SmallVec<[SsaValue; 2]>],
     receiver: &Option<SsaValue>,
     state: &SsaTaintState,
+    promise_callback_seeds: PromiseCallbackSeeds<'_>,
 ) -> ArgTaintSig {
-    let mut sig = SmallVec::new();
+    let mut sig: SmallVec<[(usize, u32); 4]> = SmallVec::new();
 
     // Receiver taint at position usize::MAX (sentinel)
     if let Some(rv) = receiver {
@@ -1980,6 +2263,20 @@ fn build_arg_taint_sig(
         }
         if !caps.is_empty() {
             sig.push((i, caps.bits()));
+        }
+    }
+
+    // Phase 03: fold extra param seeds into the signature so two
+    // callers seeding the same callback with different caps cache
+    // separately.
+    for (idx, seed) in promise_callback_seeds {
+        if seed.caps.is_empty() {
+            continue;
+        }
+        if let Some(slot) = sig.iter_mut().find(|(j, _)| *j == *idx) {
+            slot.1 |= seed.caps.bits();
+        } else {
+            sig.push((*idx, seed.caps.bits()));
         }
     }
 
@@ -2018,6 +2315,43 @@ fn inline_analyse_callee(
     cfg: &Cfg,
     caller_ssa: &SsaBody,
     call_inst: &SsaInst,
+) -> Option<InlineResult> {
+    inline_analyse_callee_with_seeds(
+        callee,
+        args,
+        receiver,
+        state,
+        transfer,
+        cfg,
+        caller_ssa,
+        call_inst,
+        &[],
+    )
+}
+
+/// Promise-callback seed entries plumbed into [`inline_analyse_callee_with_seeds`].
+///
+/// Each entry is `(param_idx, seed)`: when the inline-analyzed callee binds
+/// `Param { index: param_idx }`, the corresponding parameter's entry-state
+/// taint is unioned with `seed` *before* `run_ssa_taint_full` executes.
+///
+/// Phase 03 uses this to seed the first parameter of a `.then(cb)` /
+/// `.catch(cb)` callback with the receiver Promise's resolved-value taint
+/// when the callback itself is the inlined callee (the outer `.then` call's
+/// receiver does not appear in `args`, so the existing `arg → param` seed
+/// mechanism would otherwise lose the flow).
+pub(crate) type PromiseCallbackSeeds<'a> = &'a [(usize, VarTaint)];
+
+fn inline_analyse_callee_with_seeds(
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    receiver: &Option<SsaValue>,
+    state: &SsaTaintState,
+    transfer: &SsaTaintTransfer,
+    cfg: &Cfg,
+    caller_ssa: &SsaBody,
+    call_inst: &SsaInst,
+    promise_callback_seeds: PromiseCallbackSeeds<'_>,
 ) -> Option<InlineResult> {
     // Enforce k=1 depth limit
     if transfer.context_depth >= 1 {
@@ -2126,8 +2460,9 @@ fn inline_analyse_callee(
         return None;
     }
 
-    // Build cache key from actual argument taint
-    let sig = build_arg_taint_sig(args, receiver, state);
+    // Build cache key from actual argument taint, folding any extra
+    // promise-callback seeds into the signature.
+    let sig = build_arg_taint_sig_with_seeds(args, receiver, state, promise_callback_seeds);
 
     // Check cache (keyed by FuncKey + arg signature).  The cached value
     // is a structural shape, re-attribute origins to the current call
@@ -2195,7 +2530,32 @@ fn inline_analyse_callee(
         }
     };
 
-    let param_seed: Vec<Option<VarTaint>> = args.iter().map(combine_taint).collect();
+    let mut param_seed: Vec<Option<VarTaint>> = args.iter().map(combine_taint).collect();
+    // Phase 03 promise-callback hook: union extra per-param seeds (from
+    // `.then(cb)` / `.catch(cb)` resolved-value flows) into `param_seed`.
+    // Cap union + origin merge keeps the cache key (`ArgTaintSig`) the
+    // same shape as a normal call: the seeded caps end up reflected in
+    // the `(idx, caps_bits)` signature, so two callbacks with different
+    // receiver caps cache under different keys.
+    if !promise_callback_seeds.is_empty() {
+        for (idx, seed) in promise_callback_seeds {
+            while param_seed.len() <= *idx {
+                param_seed.push(None);
+            }
+            let merged = match param_seed[*idx].take() {
+                None => seed.clone(),
+                Some(mut existing) => {
+                    existing.caps |= seed.caps;
+                    for o in &seed.origins {
+                        push_origin_bounded(&mut existing.origins, *o);
+                    }
+                    existing.uses_summary |= seed.uses_summary;
+                    existing
+                }
+            };
+            param_seed[*idx] = Some(merged);
+        }
+    }
     let receiver_seed: Option<VarTaint> = receiver.and_then(|rv| {
         state.get(rv).map(|taint| VarTaint {
             caps: taint.caps,
@@ -2316,6 +2676,32 @@ fn inline_analyse_callee(
         // forward the caller's facts. `PointsToSummary` is the
         // cross-call substitute.
         pointer_facts: None,
+        // The inlined callee body lives in another file with its own
+        // import view; the caller's `cross_package_imports` would
+        // resolve the callee's local names against the wrong package
+        // boundary. Each `CalleeSsaBody` carries its own map populated
+        // at lowering time from the source file's
+        // [`crate::cfg::FileCfg::resolved_imports`], so we can forward
+        // the *callee's* view here for transitive Phase 09 step 0.7
+        // resolution. SQLite-cached bodies (loaded with `node_meta`
+        // populated and `body_graph: None`) carry an empty map; we then
+        // recover the callee's import view from
+        // [`crate::summary::GlobalSummaries::get_cross_package_imports`]
+        // (populated in pass 1 from each file's resolved imports), so
+        // indexed-mode scans see the same step 0.7 hits as in-memory
+        // scans for transitive cross-package IPA inside the inlined
+        // frame.
+        cross_package_imports: if !callee_body.cross_package_imports.is_empty() {
+            Some(callee_body.cross_package_imports.as_ref())
+        } else {
+            transfer
+                .global_summaries
+                .and_then(|gs| gs.get_cross_package_imports(&callee_key.namespace))
+                .map(|arc| arc.as_ref())
+        },
+        entry_kind: None,
+        param_route_capture: None,
+        recording_summary: transfer.recording_summary,
     };
 
     // Use the callee's own body graph for inline analysis (per-body CFGs
@@ -3258,6 +3644,290 @@ fn ssa_value_validated_bits(
     }
 }
 
+/// Phase 03: handle JS/TS Promise-callback method calls (`.then(cb)`,
+/// `.catch(cb)`, `.finally(cb)`).
+///
+/// Returns `true` when the call was recognised as a Promise callback and
+/// fully handled here (caller returns from the Call arm without further
+/// processing).  Returns `false` for any other call.
+///
+/// Semantics:
+///   * `p.then(cb)` — `cb`'s first parameter receives `p`'s resolved-value
+///     taint; result of `then(cb)` carries `cb`'s return taint plus a
+///     conservative copy of `p`'s taint (subsequent `.then` calls in a
+///     chain re-feed it).
+///   * `p.catch(cb)` — same shape as `.then`.  The receiver may have
+///     resolved or rejected, but at the taint level we treat both
+///     identically (caps are coarse enough that a rejection-only flow
+///     does not need a separate channel).
+///   * `p.finally(cb)` — `cb` takes no value parameter; result is `p`'s
+///     taint unchanged.
+fn try_apply_promise_callback(
+    inst: &SsaInst,
+    info: &crate::cfg::NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    receiver: &Option<SsaValue>,
+    state: &mut SsaTaintState,
+    transfer: &SsaTaintTransfer,
+    cfg: &Cfg,
+    caller_ssa: &SsaBody,
+) -> bool {
+    let leaf = crate::callgraph::callee_leaf_name(callee);
+    if !crate::labels::is_promise_callback_method(transfer.lang.as_str(), leaf) {
+        return false;
+    }
+
+    // Upstream Promise taint = receiver taint + every non-callback arg's
+    // taint.  When the upstream is a chained expression
+    // (`Promise.resolve(req.body).then(cb)`), tree-sitter's receiver field
+    // resolves to the chain-root identifier (`Promise` here), which has no
+    // useful taint; the chained subexpression's taint instead surfaces in
+    // the implicit-uses arg group emitted by SSA `build_call_args`.
+    // Unioning both channels covers the named-promise (`p.then(cb)`),
+    // chained (`Promise.resolve(x).then(cb)`), and `await`-wrapped
+    // (`await p.then(cb)` lowered to `Assign` over the call result) shapes.
+    let mut receiver_taint = VarTaint {
+        caps: Cap::empty(),
+        origins: SmallVec::new(),
+        uses_summary: false,
+    };
+    if let Some(rv) = receiver {
+        if let Some(t) = state.get(*rv) {
+            receiver_taint.caps |= t.caps;
+            for o in &t.origins {
+                push_origin_bounded(&mut receiver_taint.origins, *o);
+            }
+            receiver_taint.uses_summary |= t.uses_summary;
+        }
+    }
+    for (idx, arg_group) in args.iter().enumerate() {
+        if idx == 0 {
+            // Skip the callback argument itself; its taint is the function
+            // reference, not the value flowed into the callback.
+            continue;
+        }
+        for &v in arg_group {
+            if let Some(t) = state.get(v) {
+                receiver_taint.caps |= t.caps;
+                for o in &t.origins {
+                    push_origin_bounded(&mut receiver_taint.origins, *o);
+                }
+                receiver_taint.uses_summary |= t.uses_summary;
+            }
+        }
+    }
+    // Chained-receiver shape (`Promise.resolve(req.body).then(cb)`): the inner
+    // `Promise.resolve` collapses into the outer `.then` CFG node, so the
+    // resolved-value Source label rides on the `.then` node's labels rather
+    // than on a separate SSA op the receiver/args reach.  Union those Source
+    // caps so the chained shape seeds the callback's param[0] the same way
+    // the named-promise shape does.  Synthesise a minimal origin pointing
+    // at the `.then` node so the seed carries provenance.
+    let label_source_caps = info
+        .taint
+        .labels
+        .iter()
+        .filter_map(|l| match l {
+            DataLabel::Source(bits) => Some(*bits),
+            _ => None,
+        })
+        .fold(Cap::empty(), |acc, b| acc | b);
+    if !label_source_caps.is_empty() {
+        receiver_taint.caps |= label_source_caps;
+        let synthetic_origin = TaintOrigin {
+            node: inst.cfg_node,
+            source_kind: crate::labels::infer_source_kind(label_source_caps, callee),
+            source_span: None,
+        };
+        if !receiver_taint
+            .origins
+            .iter()
+            .any(|o| o.node == inst.cfg_node)
+        {
+            push_origin_bounded(&mut receiver_taint.origins, synthetic_origin);
+        }
+    }
+    let receiver_taint: Option<VarTaint> = if receiver_taint.caps.is_empty() {
+        None
+    } else {
+        Some(receiver_taint)
+    };
+
+    // Combine receiver taint into the result so chain-style `.then().then()`
+    // continues to flow even when the callback's body is opaque or absent
+    // (e.g. trailing `.then(console.log)`).  For `finally`, callback has no
+    // value param and the chain just forwards `p`.
+    let mut combined_caps = Cap::empty();
+    let mut combined_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    let mut combined_summary = false;
+    if let Some(ref rt) = receiver_taint {
+        combined_caps |= rt.caps;
+        for o in &rt.origins {
+            push_origin_bounded(&mut combined_origins, *o);
+        }
+        combined_summary |= rt.uses_summary;
+    }
+
+    if !matches!(leaf, "finally") {
+        // Pull the callback function out of arg[0]; the .finally callback
+        // has no resolved-value parameter so its inline analysis does not
+        // need a seed and we leave the callback opaque (chain just
+        // forwards `p`).
+        if let Some(cb_arg) = args.first() {
+            for &cb_v in cb_arg {
+                let cb_name = caller_ssa
+                    .value_defs
+                    .get(cb_v.0 as usize)
+                    .and_then(|vd| vd.var_name.as_deref());
+                let Some(name) = cb_name else { continue };
+                // Promise callbacks accept only the resolved value as
+                // arg[0]; build synthetic args so the existing
+                // `arg_uses → param_seed` path still runs (constants,
+                // origin chain truncation, abstract-state seeding).
+                // The dedicated `promise_callback_seeds` channel then
+                // unions the receiver's taint into param[0]'s entry
+                // state for callbacks whose declared arity is zero
+                // (e.g. `() => doStuff()` reading from a closed-over
+                // promise field).
+                let synthetic_args: Vec<SmallVec<[SsaValue; 2]>> = Vec::new();
+                let seeds: smallvec::SmallVec<[(usize, VarTaint); 1]> =
+                    if let Some(ref rt) = receiver_taint {
+                        smallvec::smallvec![(0, rt.clone())]
+                    } else {
+                        smallvec::SmallVec::new()
+                    };
+                if let Some(result) = inline_analyse_callee_with_seeds(
+                    name,
+                    &synthetic_args,
+                    &None,
+                    state,
+                    transfer,
+                    cfg,
+                    caller_ssa,
+                    inst,
+                    seeds.as_slice(),
+                ) {
+                    if let Some(rt) = result.return_taint {
+                        combined_caps |= rt.caps;
+                        for o in &rt.origins {
+                            push_origin_bounded(&mut combined_origins, *o);
+                        }
+                        combined_summary |= rt.uses_summary;
+                    }
+                }
+            }
+        }
+    }
+
+    // Source/sanitizer labels on the .then/.catch node itself stay
+    // honoured: a custom rule that taints `then` (rare but possible) or
+    // sanitises it should still apply.
+    for lbl in &info.taint.labels {
+        match lbl {
+            DataLabel::Source(bits) => {
+                combined_caps |= *bits;
+                let source_kind = crate::labels::infer_source_kind(*bits, callee);
+                let origin = TaintOrigin {
+                    node: inst.cfg_node,
+                    source_kind,
+                    source_span: None,
+                };
+                if !combined_origins.iter().any(|o| o.node == inst.cfg_node) {
+                    combined_origins.push(origin);
+                }
+            }
+            DataLabel::Sanitizer(bits) => {
+                combined_caps &= !*bits;
+            }
+            _ => {}
+        }
+    }
+
+    if combined_caps.is_empty() {
+        state.remove(inst.value);
+    } else {
+        state.set(
+            inst.value,
+            VarTaint {
+                caps: combined_caps,
+                origins: combined_origins,
+                uses_summary: combined_summary,
+            },
+        );
+    }
+    true
+}
+
+/// Phase 03: handle JS/TS `Promise.resolve|all|allSettled|race(...)`.
+///
+/// For all four shapes the conservative approximation is: result = union
+/// of every argument's taint.  `Promise.all` would in principle produce
+/// a per-element-tainted array, but downstream destructuring already
+/// taints all bindings via the existing destructuring handling, so the
+/// scalar union is precise enough at the recall-gap level.
+fn try_apply_promise_combinator(
+    inst: &SsaInst,
+    info: &crate::cfg::NodeInfo,
+    callee: &str,
+    args: &[SmallVec<[SsaValue; 2]>],
+    state: &mut SsaTaintState,
+    transfer: &SsaTaintTransfer,
+) -> bool {
+    if crate::labels::is_promise_combinator(transfer.lang.as_str(), callee).is_none() {
+        return false;
+    }
+
+    let mut caps = Cap::empty();
+    let mut origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+    let mut uses_summary = false;
+    for arg_group in args {
+        for &v in arg_group {
+            if let Some(taint) = state.get(v) {
+                caps |= taint.caps;
+                uses_summary |= taint.uses_summary;
+                for o in &taint.origins {
+                    push_origin_bounded(&mut origins, *o);
+                }
+            }
+        }
+    }
+
+    // Honour custom Source/Sanitizer labels on the Promise.* call node.
+    for lbl in &info.taint.labels {
+        match lbl {
+            DataLabel::Source(bits) => {
+                caps |= *bits;
+                let source_kind = crate::labels::infer_source_kind(*bits, callee);
+                let origin = TaintOrigin {
+                    node: inst.cfg_node,
+                    source_kind,
+                    source_span: None,
+                };
+                if !origins.iter().any(|o| o.node == inst.cfg_node) {
+                    origins.push(origin);
+                }
+            }
+            DataLabel::Sanitizer(bits) => caps &= !*bits,
+            _ => {}
+        }
+    }
+
+    if caps.is_empty() {
+        state.remove(inst.value);
+    } else {
+        state.set(
+            inst.value,
+            VarTaint {
+                caps,
+                origins,
+                uses_summary,
+            },
+        );
+    }
+    true
+}
+
 /// Transfer a single SSA instruction.
 pub(super) fn transfer_inst(
     inst: &SsaInst,
@@ -3327,6 +3997,90 @@ pub(super) fn transfer_inst(
             // not data-flow operations.
             if crate::labels::is_excluded(transfer.lang.as_str(), callee.as_bytes()) {
                 return;
+            }
+
+            // Phase 03 Promise plumbing: handle `.then(cb)`/`.catch(cb)`/
+            // `.finally(cb)` and `Promise.resolve|all|allSettled|race(...)`
+            // before the rest of the Call arm.  Returning early avoids
+            // re-classifying these as ordinary calls (no summary, no sink),
+            // which would otherwise drop the receiver/element taint flow.
+            if try_apply_promise_callback(
+                inst, info, callee, args, receiver, state, transfer, cfg, ssa,
+            ) {
+                return;
+            }
+            if try_apply_promise_combinator(inst, info, callee, args, state, transfer) {
+                return;
+            }
+
+            // Phase 08 — `URL.searchParams.set/append`: writing a key/value
+            // pair on the searchParams view mutates the underlying URL.
+            // The receiver of the Call is the searchParams projection
+            // (TypeKind::Url alias via `is_url_identity_field`); walking
+            // back through the FieldProj chain reaches the original URL
+            // SSA value and any intermediate projections.  Union the
+            // arg-side taint into each of those values so a downstream
+            // `fetch(u)` / `axios.get(u)` sees the URL as tainted.
+            if let Some(rv) = *receiver {
+                let leaf = crate::callgraph::callee_leaf_name(callee);
+                if matches!(leaf, "set" | "append") {
+                    let receiver_kind = transfer
+                        .type_facts
+                        .and_then(|tf| tf.get_type(rv))
+                        .cloned()
+                        .or_else(|| {
+                            state
+                                .path_env
+                                .as_ref()
+                                .and_then(|env| env.get(rv).types.as_singleton())
+                        });
+                    if matches!(receiver_kind, Some(crate::ssa::type_facts::TypeKind::Url)) {
+                        let mut arg_caps = Cap::empty();
+                        let mut arg_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+                        let mut arg_uses_summary = false;
+                        for arg_group in args.iter() {
+                            for &v in arg_group {
+                                if let Some(t) = state.get(v) {
+                                    arg_caps |= t.caps;
+                                    arg_uses_summary |= t.uses_summary;
+                                    for o in &t.origins {
+                                        push_origin_bounded(&mut arg_origins, *o);
+                                    }
+                                }
+                            }
+                        }
+                        if !arg_caps.is_empty() {
+                            // Walk the FieldProj receiver chain (and any
+                            // Rust-style nested call receivers) so every
+                            // SSA value that aliases the URL — `u`,
+                            // `u.searchParams`, etc. — picks up the new
+                            // taint, not just the immediate set receiver.
+                            let chain =
+                                receiver_candidates_for_type_lookup(rv, Some(ssa), transfer.lang);
+                            for v in chain {
+                                let combined = match state.get(v) {
+                                    Some(prev) => {
+                                        let mut origins = prev.origins.clone();
+                                        for o in &arg_origins {
+                                            push_origin_bounded(&mut origins, *o);
+                                        }
+                                        VarTaint {
+                                            caps: prev.caps | arg_caps,
+                                            origins,
+                                            uses_summary: prev.uses_summary | arg_uses_summary,
+                                        }
+                                    }
+                                    None => VarTaint {
+                                        caps: arg_caps,
+                                        origins: arg_origins.clone(),
+                                        uses_summary: arg_uses_summary,
+                                    },
+                                };
+                                state.set(v, combined);
+                            }
+                        }
+                    }
+                }
             }
 
             // Chain-wrapper sanitiser detection.  Computed up-front so
@@ -3533,6 +4287,41 @@ pub(super) fn transfer_inst(
             // Check for source labels first
             let mut return_bits = Cap::empty();
             let mut return_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
+
+            // Phase 08 / Phase 14 — URL-builder path-arg taint propagation.
+            // Per-language `(base, path)` URL builders that don't carry a
+            // label rule and have no summary: without an explicit
+            // propagation pass the constructed URL value would arrive
+            // untainted at the downstream HTTP sink and the SSRF would be
+            // missed.  The arg-position table lives in
+            // [`crate::ssa::type_facts::url_builder_arg_indices`] —
+            // generalised in Phase 14 from the JS/TS-only Phase-08
+            // constructor recognition to cover Python `urljoin`, Go
+            // `url.JoinPath`, Java `new URL(URL, spec)`, Ruby `URI.join`.
+            //
+            // Origin-locked suppression (when the base arg is a literal)
+            // lives in the abstract domain
+            // (`StringFact::from_url_with_base`) and runs in
+            // `is_string_safe_for_ssrf`, so propagating the taint here is
+            // safe: the prefix-lock fact still suppresses the sink for
+            // the two-arg form.
+            if let Some((path_idx, _base_idx)) = crate::ssa::type_facts::url_builder_arg_indices(
+                transfer.lang,
+                callee,
+                info.call.outer_callee.as_deref(),
+                info.call.is_constructor,
+            ) {
+                if let Some(path_group) = args.get(path_idx) {
+                    for &v in path_group {
+                        if let Some(t) = state.get(v) {
+                            return_bits |= t.caps;
+                            for o in &t.origins {
+                                push_origin_bounded(&mut return_origins, *o);
+                            }
+                        }
+                    }
+                }
+            }
 
             // Network-fetch source suppression: a Call that carries BOTH
             // a Source label and a Sink(SSRF) label is a network-fetch
@@ -4813,18 +5602,25 @@ pub(super) fn transfer_inst(
                 }
             }
 
-            // Check for source labels
-            for lbl in &info.taint.labels {
-                if let DataLabel::Source(bits) = lbl {
-                    combined_caps |= *bits;
-                    let callee_str = info.call.callee.as_deref().unwrap_or("");
-                    let source_kind = crate::labels::infer_source_kind(*bits, callee_str);
-                    let origin = TaintOrigin {
-                        node: inst.cfg_node,
-                        source_kind,
-                        source_span: None,
-                    };
-                    push_origin_bounded(&mut combined_origins, origin);
+            // Check for source labels.  Skip outer-node Source pickup when
+            // this Assign was emitted by the bare-array slot-scoped kill arm
+            // in `src/ssa/lower.rs` (per-slot Source classification puts the
+            // SsaValue into `ssa.slot_scoped_assigns`).  Operand union still
+            // ran above, so transitive taint via inner uses propagates.
+            let suppress_node_source = ssa.slot_scoped_assigns.contains(&inst.value);
+            if !suppress_node_source {
+                for lbl in &info.taint.labels {
+                    if let DataLabel::Source(bits) = lbl {
+                        combined_caps |= *bits;
+                        let callee_str = info.call.callee.as_deref().unwrap_or("");
+                        let source_kind = crate::labels::infer_source_kind(*bits, callee_str);
+                        let origin = TaintOrigin {
+                            node: inst.cfg_node,
+                            source_kind,
+                            source_span: None,
+                        };
+                        push_origin_bounded(&mut combined_origins, origin);
+                    }
                 }
             }
 
@@ -5320,6 +6116,37 @@ pub(super) fn transfer_inst(
     }
 }
 
+/// Resolve a URL builder's `(base)` arg to a concrete origin string when
+/// either (a) the call site recorded a syntactic string literal at
+/// `base_idx`, or (b) the SSA value at that arg position carries an
+/// abstract-string singleton domain (typical for
+/// `const BASE = "https://..."; new URL(path, BASE)`).
+///
+/// Returning `Some(s)` means the prefix-lock arm can seed the result's
+/// [`StringFact`] via [`StringFact::from_url_with_base`].
+fn url_builder_concrete_base(
+    info: &NodeInfo,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+    base_idx: usize,
+) -> Option<String> {
+    if let Some(s) = info
+        .call
+        .arg_string_literals
+        .get(base_idx)
+        .and_then(|s| s.as_deref())
+    {
+        return Some(s.to_string());
+    }
+    let bv = args.get(base_idx).and_then(|g| g.first().copied())?;
+    let dom = abs.get(bv).string.domain?;
+    if dom.len() == 1 {
+        Some(dom.into_iter().next().expect("len==1 guards index"))
+    } else {
+        None
+    }
+}
+
 /// Compute abstract values for an SSA instruction.
 ///
 /// Propagates interval and string domain facts forward through constants,
@@ -5551,6 +6378,117 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
             }
         }
 
+        // Phase 08 / Phase 14 — `(base, path)` URL builder origin-lock.
+        // When the base arg is a literal (read off
+        // `info.call.arg_string_literals[base_idx]`) or a const-bound
+        // identifier whose abstract `StringFact.domain` is a singleton
+        // (e.g. `const BASE = "https://api.cal.com"; new URL(path, BASE)`),
+        // seed the result's [`StringFact`] with
+        // `from_url_with_base(base, path_string)` so the locked-host
+        // prefix survives even when the path component carries arbitrary
+        // taint. `is_string_safe_for_ssrf` honours the prefix and
+        // suppresses the SSRF sink at the downstream HTTP call. The
+        // arg-position table lives in
+        // [`crate::ssa::type_facts::url_builder_arg_indices`] — covers
+        // JS/TS `new URL(path, base)`, Python `urljoin(base, path)`,
+        // Go `url.JoinPath(base, ...)`, Java `new URL(URL, spec)`,
+        // Ruby `URI.join(base, path)`.
+        SsaOp::Call { callee, args, .. }
+            if lang
+                .and_then(|l| {
+                    crate::ssa::type_facts::url_builder_arg_indices(
+                        l,
+                        callee,
+                        info.call.outer_callee.as_deref(),
+                        info.call.is_constructor,
+                    )
+                })
+                .is_some_and(|(_p, base_idx)| {
+                    url_builder_concrete_base(info, args, abs, base_idx).is_some()
+                }) =>
+        {
+            let lang_u = lang.expect("guard ensures lang.is_some()");
+            let (path_idx, base_idx) = crate::ssa::type_facts::url_builder_arg_indices(
+                lang_u,
+                callee,
+                info.call.outer_callee.as_deref(),
+                info.call.is_constructor,
+            )
+            .expect("guard ensures Some");
+            let base =
+                url_builder_concrete_base(info, args, abs, base_idx).expect("guard ensures Some");
+            let path_string = args
+                .get(path_idx)
+                .and_then(|g| g.first().copied())
+                .map(|pv| abs.get(pv).string)
+                .unwrap_or_else(StringFact::top);
+            abs.set(
+                inst.value,
+                AbstractValue {
+                    interval: IntervalFact::top(),
+                    string: StringFact::from_url_with_base(&base, &path_string),
+                    bits: BitFact::top(),
+                    path: PathFact::top(),
+                },
+            );
+        }
+
+        // Phase 14 — single-arg URL/URI constructor StringFact passthrough.
+        // `new URL(spec)` (Java/JS), plus the static factory list in
+        // [`crate::ssa::type_facts::is_url_single_arg_factory`] — when the
+        // single argument's StringFact carries a locked-host prefix
+        // (typically from a literal+tainted concat), propagate it onto
+        // the constructed URL value so a downstream receiver sink like
+        // `u.openStream()` / `u.openConnection()` can consult the prefix
+        // through `is_abstract_safe_for_sink`.  Strictly additive: the
+        // 2-arg `(base, path)` shape is handled by the
+        // `url_builder_arg_indices` arm above; this single-arg arm only
+        // fires when that arm doesn't.
+        SsaOp::Call { callee, args, .. }
+            if lang.is_some_and(|l| {
+                let l_u = l;
+                let is_url_ctor = info.call.is_constructor
+                    && crate::ssa::type_facts::constructor_type(l_u, callee)
+                        == Some(crate::ssa::type_facts::TypeKind::Url);
+                let via_outer = info.call.outer_callee.as_deref().is_some_and(|oc| {
+                    crate::ssa::type_facts::constructor_type(l_u, oc)
+                        == Some(crate::ssa::type_facts::TypeKind::Url)
+                });
+                let is_static_factory =
+                    crate::ssa::type_facts::is_url_single_arg_factory(l_u, callee);
+                (is_url_ctor || via_outer || is_static_factory)
+                    && crate::ssa::type_facts::url_builder_arg_indices(
+                        l_u,
+                        callee,
+                        info.call.outer_callee.as_deref(),
+                        info.call.is_constructor,
+                    )
+                    .is_none_or(|(_p, base_idx)| {
+                        // Skip when the 2-arg arm above would already
+                        // have fired (it consumed a literal or
+                        // const-bound singleton base).
+                        url_builder_concrete_base(info, args, abs, base_idx).is_none()
+                    })
+            }) =>
+        {
+            let arg_string = args
+                .first()
+                .and_then(|g| g.first().copied())
+                .map(|pv| abs.get(pv).string)
+                .unwrap_or_else(StringFact::top);
+            if !arg_string.is_top() {
+                abs.set(
+                    inst.value,
+                    AbstractValue {
+                        interval: IntervalFact::top(),
+                        string: arg_string,
+                        bits: BitFact::top(),
+                        path: PathFact::top(),
+                    },
+                );
+            }
+        }
+
         // Known integer-producing calls get a bounded interval so downstream
         // arithmetic transfer produces useful facts (e.g. parseInt(x) * 10).
         // Unknown calls: implicit Top (don't store).
@@ -5630,7 +6568,7 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                             .as_ref()
                             .and_then(|d| (d.len() == 1).then(|| d[0].clone()));
                         if let Some(needle) = needle {
-                            let mut new_fact = input_fact.clone();
+                            let mut new_fact = input_fact;
                             let mut narrowed = false;
                             if needle == ".." {
                                 new_fact = new_fact.with_dotdot_cleared();
@@ -6014,6 +6952,10 @@ fn collect_block_events(
 
         // Type-qualified sink resolution: when normal sink resolution found nothing,
         // try using the receiver's inferred type to construct a qualified callee name.
+        // For known type-qualified ORM raw-SQL methods (`TypeOrmRepo.query` et al.),
+        // also capture the restricted payload-arg list so bind-array taint at arg 1+
+        // does not fire.
+        let mut tq_payload_args: Option<&'static [usize]> = None;
         if sink_caps.is_empty() {
             if let SsaOp::Call {
                 callee,
@@ -6022,7 +6964,7 @@ fn collect_block_events(
             } = &inst.op
             {
                 if transfer.type_facts.is_some() || state.path_env.is_some() {
-                    let tq_labels = resolve_type_qualified_labels(
+                    let (tq_labels, tq_args) = resolve_type_qualified_labels_with_args(
                         callee,
                         *rv,
                         transfer.type_facts,
@@ -6036,6 +6978,7 @@ fn collect_block_events(
                             sink_caps |= *bits;
                         }
                     }
+                    tq_payload_args = tq_args;
                 }
             }
         }
@@ -6108,22 +7051,129 @@ fn collect_block_events(
             }
         }
 
+        // Phase 03: Promise-callback synthetic source_to_callback.  When
+        // the call is `p.then(cb)` / `p.catch(cb)` with a tainted
+        // receiver, the callback's first parameter receives the
+        // resolved-value taint.  Synthesise a single-entry
+        // `source_to_callback = [(0, receiver_caps)]` so the
+        // existing callback-pattern detector below pairs `cb`'s
+        // `param_to_sink` with the receiver's caps and emits the
+        // sink finding.
+        let synthetic_promise_callback: Option<(usize, Cap)> = match &inst.op {
+            SsaOp::Call {
+                callee,
+                receiver,
+                args,
+                ..
+            } => {
+                let leaf = crate::callgraph::callee_leaf_name(callee);
+                if crate::labels::is_promise_callback_method(transfer.lang.as_str(), leaf)
+                    && !matches!(leaf, "finally")
+                {
+                    let mut recv_caps = Cap::empty();
+                    if let Some(rv) = receiver {
+                        if let Some(t) = state.get(*rv) {
+                            recv_caps |= t.caps;
+                        }
+                    }
+                    // Chained-receiver shape (`Promise.resolve(req.body).then(cb)`):
+                    // the inner Promise.resolve call collapses into the outer
+                    // .then node so there is no separate Call op for it.  The
+                    // resolved-value taint instead surfaces in the implicit-uses
+                    // arg group emitted by `build_call_args`.  Union those caps
+                    // (skipping arg[0], which is the callback function itself,
+                    // not the resolved value) so the named-promise and chained
+                    // shapes share one source_to_callback synthesis path.
+                    for (idx, arg_group) in args.iter().enumerate() {
+                        if idx == 0 {
+                            continue;
+                        }
+                        for &v in arg_group {
+                            if let Some(t) = state.get(v) {
+                                recv_caps |= t.caps;
+                            }
+                        }
+                    }
+                    // Same chained shape: when the inner `Promise.resolve`
+                    // collapses into the `.then` node, its Source label is
+                    // attached directly to the `.then` node's labels rather
+                    // than to a separate SSA op whose value the receiver/args
+                    // would expose.  Union those Source caps so the callback
+                    // pattern fires uniformly across named and chained shapes.
+                    for lbl in &info.taint.labels {
+                        if let DataLabel::Source(bits) = lbl {
+                            recv_caps |= *bits;
+                        }
+                    }
+                    if recv_caps.is_empty() {
+                        None
+                    } else {
+                        Some((0usize, recv_caps))
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         if sink_caps.is_empty() {
             // Callback pattern: check if callee has source_to_callback and the
             // actual callback argument has a matching param_to_sink.
             if let SsaOp::Call { callee, .. } = &inst.op {
                 let caller_func = info.ast.enclosing_func.as_deref().unwrap_or("");
                 // Use arg_uses.len() for arity (see transfer_inst's Call arm).
-                if let Some(resolved) = resolve_callee_hinted(
+                let resolved = resolve_callee_hinted(
                     transfer,
                     callee,
                     caller_func,
                     info.call.call_ordinal,
                     Some(info.call.arg_uses.len()),
-                ) {
-                    for &(cb_idx, src_caps) in &resolved.source_to_callback {
-                        let cb_name = info.arg_callees.get(cb_idx).and_then(|ac| ac.as_ref());
-                        if let Some(cb_callee) = cb_name {
+                );
+                // Collect source_to_callback entries: real summary (if any)
+                // plus the Phase 03 synthetic entry for promise callbacks.
+                let mut s2c: SmallVec<[(usize, Cap); 2]> = SmallVec::new();
+                if let Some(ref r) = resolved {
+                    for &e in &r.source_to_callback {
+                        s2c.push(e);
+                    }
+                }
+                if let Some(entry) = synthetic_promise_callback {
+                    if !s2c.iter().any(|&(i, _)| i == entry.0) {
+                        s2c.push(entry);
+                    }
+                }
+                if !s2c.is_empty() {
+                    for &(cb_idx, src_caps) in &s2c {
+                        // Two channels for resolving the callback's name:
+                        //   1. `info.arg_callees` — populated when the
+                        //      argument is a tree-sitter call/function node;
+                        //      the typical path for inline arrow callbacks
+                        //      and for native CallFn/CallMethod arguments.
+                        //   2. SSA `value_defs.var_name` of the argument
+                        //      itself — a plain identifier reference such as
+                        //      `p.then(cb)` doesn't classify as a Call AST
+                        //      node so `arg_callees[0]` is `None`, but the
+                        //      lowered SSA value carries the identifier text
+                        //      via `var_name`.  Falling back to it lets
+                        //      Phase 03 promise-callback synthesis resolve
+                        //      the named-callback shape.
+                        let arg_callees_name: Option<String> =
+                            info.arg_callees.get(cb_idx).and_then(|ac| ac.clone());
+                        let ssa_var_name: Option<String> =
+                            if let SsaOp::Call { args, .. } = &inst.op {
+                                args.get(cb_idx).and_then(|grp| {
+                                    grp.iter().find_map(|v| {
+                                        ssa.value_defs
+                                            .get(v.0 as usize)
+                                            .and_then(|vd| vd.var_name.clone())
+                                            .filter(|n| !n.contains('.') && !n.is_empty())
+                                    })
+                                })
+                            } else {
+                                None
+                            };
+                        let cb_callee_owned = arg_callees_name.or(ssa_var_name);
+                        if let Some(cb_callee) = cb_callee_owned.as_deref() {
                             // First try the standard summary-based resolution
                             // path (covers user-defined functions and built-ins
                             // that landed in label-derived summaries upstream).
@@ -6137,6 +7187,15 @@ fn collect_block_events(
                             // param_to_sink.
                             let cb_resolved = resolve_callee(transfer, cb_callee, caller_func, 0);
                             let mut matching_sink_caps = Cap::empty();
+                            // Mark every callback-resolved sink site as
+                            // `from_chain=true`: the callback callee is a
+                            // logically-deeper frame than the outer
+                            // `.then(cb)` / `setImmediate(cb)` / etc. call
+                            // site. Without this, `should_promote_sink_site`
+                            // filters same-file callback sinks out (the file
+                            // matches `caller_namespace`), and the trace
+                            // finding falls back to the outer dispatch line
+                            // instead of attributing to the actual sink.
                             let cb_param_to_sink_sites: Vec<(usize, SmallVec<[SinkSite; 1]>)> =
                                 if let Some(ref r) = cb_resolved {
                                     matching_sink_caps = r
@@ -6144,7 +7203,20 @@ fn collect_block_events(
                                         .iter()
                                         .filter(|(_, caps)| !(src_caps & *caps).is_empty())
                                         .fold(Cap::empty(), |acc, (_, c)| acc | *c);
-                                    r.param_to_sink_sites.clone()
+                                    r.param_to_sink_sites
+                                        .iter()
+                                        .map(|(idx, sites)| {
+                                            let chain_sites: SmallVec<[SinkSite; 1]> = sites
+                                                .iter()
+                                                .map(|s| {
+                                                    let mut sc = s.clone();
+                                                    sc.from_chain = true;
+                                                    sc
+                                                })
+                                                .collect();
+                                            (*idx, chain_sites)
+                                        })
+                                        .collect()
                                 } else {
                                     vec![]
                                 };
@@ -6190,6 +7262,8 @@ fn collect_block_events(
                                 let cb_sites = pick_primary_sink_sites_from_resolved(
                                     matching_sink_caps,
                                     &cb_param_to_sink_sites,
+                                    transfer.namespace,
+                                    transfer.recording_summary,
                                 );
                                 emit_ssa_taint_events(
                                     events,
@@ -6325,6 +7399,29 @@ fn collect_block_events(
             continue;
         }
 
+        // Go same-request self-redirect suppression.
+        //
+        // `http.Redirect(w, r, url, code)` whose URL string arg is derived
+        // from the same request's `*url.URL` is a same-origin redirect by
+        // construction: scheme/host echo the inbound request, only the path
+        // can be edited.  gin's `redirectTrailingSlash` /
+        // `redirectFixedPath` / `redirectRequest` helpers all bottom out in
+        // this shape (`req := c.Request; rURL := req.URL.String();
+        // http.Redirect(w, req, rURL, code)`).  Without this suppression,
+        // the inner `http.Redirect` records `param_to_sink` for OPEN_REDIRECT
+        // and the IPA path then surfaces `taint-open-redirect` at every
+        // call site that reaches `redirectTrailingSlash(c)` with a
+        // tainted `c.Request.URL`.
+        if transfer.lang == Lang::Go
+            && sink_caps.intersects(Cap::OPEN_REDIRECT)
+            && is_go_request_self_redirect(inst, info, ssa)
+        {
+            sink_caps &= !Cap::OPEN_REDIRECT;
+        }
+        if sink_caps.is_empty() {
+            continue;
+        }
+
         // Same-node Sanitizer subtraction.  When the CFG node carries both
         // Sink and Sanitizer labels for overlapping caps, the shape-based
         // synthesis pattern used by Ruby AR safe-arg-0 detection
@@ -6351,7 +7448,7 @@ fn collect_block_events(
 
         // Suppress known non-sink callees (e.g., System.out.println in Java)
         if let SsaOp::Call { callee, .. } = &inst.op {
-            sink_caps = suppress_known_safe_callees(sink_caps, callee, transfer.lang);
+            sink_caps = suppress_known_safe_callees(sink_caps, callee, transfer.lang, info);
             if sink_caps.is_empty() {
                 continue;
             }
@@ -6542,7 +7639,7 @@ fn collect_block_events(
                 .map(|e| (sink_caps & e.caps, Some(e.idx.as_slice()), None))
                 .collect()
         } else {
-            smallvec::smallvec![(sink_caps, None, None)]
+            smallvec::smallvec![(sink_caps, tq_payload_args, None)]
         };
 
         for (filter_caps, positions_override, destination_override) in filter_iter {
@@ -6618,6 +7715,8 @@ fn collect_block_events(
                 &tainted,
                 filter_caps,
                 &sink_info.param_to_sink_sites,
+                transfer.namespace,
+                transfer.recording_summary,
             );
             emit_ssa_taint_events(
                 events,
@@ -6635,6 +7734,26 @@ fn collect_block_events(
 
 // ── Primary sink-site attribution ───────────────────────────────────────
 
+/// Decide whether a [`SinkSite`] should be promoted into a caller-side
+/// `Finding.primary_location`.
+///
+/// Same-file single-hop helpers keep call-site emission, the existing
+/// intra-procedural finding already lights up the deep sink line and the
+/// flow finding then fires at the call site to give reviewers two
+/// coordinates (deep + call-site).  Promoting the deep coordinate onto
+/// the flow finding would collapse the pair via `deduplicate_taint_flows`
+/// and matches benchmark fixtures that expect the call-site shape.
+///
+/// Multi-hop chains and cross-file callees promote: a chain hop has no
+/// per-frame intermediate finding to dedup with, and a cross-file callee's
+/// body is not visible to the caller's intra-file taint pass.
+///
+/// Returns `true` when the site is `from_chain` (chain-hop marker) or its
+/// `file_rel` differs from the caller's namespace (cross-file).
+fn should_promote_sink_site(site: &SinkSite, caller_namespace: &str) -> bool {
+    site.from_chain || (!site.file_rel.is_empty() && site.file_rel != caller_namespace)
+}
+
 /// Pick primary [`SinkSite`]s for a summary-based sink event in the main
 /// sink-detection path.
 ///
@@ -6644,7 +7763,11 @@ fn collect_block_events(
 ///    carried the tainted flow), AND
 /// 2. [`SinkSite`] carries resolved coordinates (`line != 0`, cap-only
 ///    sites are ignored), AND
-/// 3. [`SinkSite::cap`] intersects `sink_caps` (the propagated cap mask).
+/// 3. [`SinkSite::cap`] intersects `sink_caps` (the propagated cap mask),
+///    AND
+/// 4. [`should_promote_sink_site`] returns `true` (chain-hop marker or
+///    cross-file callee), so same-file single-hop helpers keep their
+///    call-site emission.
 ///
 /// Returns the deduped list of matching sites (`dedup_key` identity).
 /// Empty ⇒ no primary attribution, caller emits a single event with
@@ -6654,6 +7777,8 @@ fn pick_primary_sink_sites(
     tainted: &[(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)],
     sink_caps: Cap,
     param_to_sink_sites: &[(usize, SmallVec<[SinkSite; 1]>)],
+    caller_namespace: &str,
+    recording_summary: bool,
 ) -> Vec<SinkSite> {
     if param_to_sink_sites.is_empty() || tainted.is_empty() {
         return Vec::new();
@@ -6680,6 +7805,9 @@ fn pick_primary_sink_sites(
             if (site.cap & sink_caps).is_empty() {
                 continue;
             }
+            if !recording_summary && !should_promote_sink_site(site, caller_namespace) {
+                continue;
+            }
             let key = (site.file_rel.clone(), site.line, site.col, site.cap.bits());
             if seen.insert(key) {
                 out.push(site.clone());
@@ -6692,10 +7820,13 @@ fn pick_primary_sink_sites(
 /// Pick primary [`SinkSite`]s for the callback-pattern path, where the
 /// tainted-arg positional mapping is not directly available (the callback
 /// callee is resolved separately from the outer call's `args`).  Matches
-/// solely on cap intersection and coordinate resolution.
+/// on cap intersection, coordinate resolution, and the same chain-hop /
+/// cross-file gate used by [`pick_primary_sink_sites`].
 fn pick_primary_sink_sites_from_resolved(
     sink_caps: Cap,
     param_to_sink_sites: &[(usize, SmallVec<[SinkSite; 1]>)],
+    caller_namespace: &str,
+    recording_summary: bool,
 ) -> Vec<SinkSite> {
     if param_to_sink_sites.is_empty() {
         return Vec::new();
@@ -6708,6 +7839,9 @@ fn pick_primary_sink_sites_from_resolved(
                 continue;
             }
             if (site.cap & sink_caps).is_empty() {
+                continue;
+            }
+            if !recording_summary && !should_promote_sink_site(site, caller_namespace) {
                 continue;
             }
             let key = (site.file_rel.clone(), site.line, site.col, site.cap.bits());
@@ -7207,7 +8341,21 @@ fn try_container_propagation(
         ContainerOp::Load { index_arg } => {
             let container_val = match resolve_container(receiver) {
                 Some(v) => v,
-                None => return false,
+                None => {
+                    // Java safe-lookup field fallback: when the receiver is a
+                    // free identifier (no SSA value to look up) and the
+                    // callee text is `<NAME>.get`, check whether `<NAME>`
+                    // is a class field whose initializer is a recognised
+                    // safe map (`final ... = Map.of(literal, literal,
+                    // ...)`).  In that case the lookup result is bounded
+                    // to the literal value set, so a tainted key cannot
+                    // taint the result; leave `inst.value` untainted and
+                    // claim the call as handled.
+                    if lang == Lang::Java && try_java_safe_field_lookup_load(callee) {
+                        return true;
+                    }
+                    return false;
+                }
             };
 
             // Resolve index argument to HeapSlot.
@@ -7666,6 +8814,13 @@ fn collect_tainted_sink_values(
                 }
             }
             apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+            apply_arg_type_safe_suppression(
+                &mut result,
+                sink_caps,
+                transfer.type_facts,
+                inst,
+                info,
+            );
             return result;
         }
     }
@@ -7695,6 +8850,13 @@ fn collect_tainted_sink_values(
                 }
             }
             apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+            apply_arg_type_safe_suppression(
+                &mut result,
+                sink_caps,
+                transfer.type_facts,
+                inst,
+                info,
+            );
             return result;
         }
     }
@@ -7710,7 +8872,93 @@ fn collect_tainted_sink_values(
     }
 
     apply_field_aware_suppression(&mut result, inst, info, state, sink_caps, ssa);
+    apply_arg_type_safe_suppression(&mut result, sink_caps, transfer.type_facts, inst, info);
     result
+}
+
+/// Drop tainted argument SSA values from the per-call sink-emission set
+/// when their inferred [`crate::ssa::type_facts::TypeKind`] proves the
+/// value is payload-incompatible with `sink_caps` (e.g. an `Int`-tagged
+/// value reaching a `HEADER_INJECTION` sink: numeric scalars, the
+/// safe-string conversions in
+/// [`crate::ssa::type_facts::is_safe_string_producing_callee`], and
+/// `length()` / `size()` numeric-property reads cannot encode CRLF or
+/// any sink-class metacharacter).
+///
+/// Mirrors the non-call sink path's
+/// [`crate::ssa::type_facts::is_type_safe_for_sink`] gate at line 7317
+/// of the main analyser, applied here on Call instructions so the
+/// shared suppression rule covers idiomatic Java mitigation patterns
+/// (`res.setHeader("X-Count", Integer.toString(payload.size()))`,
+/// `res.setHeader("X-Class", loaded.getClass().getName())`) without
+/// special-casing the sink callee.
+fn apply_arg_type_safe_suppression(
+    result: &mut Vec<(SsaValue, Cap, SmallVec<[TaintOrigin; 2]>)>,
+    sink_caps: Cap,
+    _type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
+    inst: &SsaInst,
+    info: &NodeInfo,
+) {
+    use crate::ssa::type_facts::is_safe_string_producing_callee;
+    if result.is_empty() {
+        return;
+    }
+    // Type-suppression mask. An arg whose enclosing call is a "safe
+    // string" producer (numeric/boolean to-string conversion or a
+    // class-name accessor) emits a string provably free of the
+    // metacharacters that drive these injection classes.  The same
+    // mask the shared
+    // [`crate::ssa::type_facts::is_type_safe_for_sink`] gate uses for
+    // `Int` / `Bool` values, applied here at Call sinks against the
+    // arg-level callee text instead of the value-level type kind.
+    let type_suppressible = Cap::SQL_QUERY
+        | Cap::FILE_IO
+        | Cap::SHELL_ESCAPE
+        | Cap::HTML_ESCAPE
+        | Cap::SSRF
+        | Cap::DATA_EXFIL
+        | Cap::HEADER_INJECTION
+        | Cap::OPEN_REDIRECT;
+    let sink_fully_type_suppressible =
+        !sink_caps.is_empty() && (sink_caps & !type_suppressible).is_empty();
+    if !sink_fully_type_suppressible {
+        return;
+    }
+    // Identify SSA values whose enclosing arg position has an inner
+    // call to a safe-string producer
+    // ([`is_safe_string_producing_callee`]).  The CFG/SSA pipeline does
+    // not lower nested method invocations into separate Call SSA ops
+    // (the outer call's arg list captures the inner receiver's SSA
+    // value directly), so the only place to recover "this arg came
+    // from `Integer.toString` / `Class.getName` / ..." is the
+    // `info.arg_callees` text recorded by `extract_arg_callees`.
+    //
+    // Strict-additive: we only suppress when the entire arg expression
+    // IS a safe-string-producing call, not when a tainted value flows
+    // through a string concat ,  the latter is a real SQLi shape
+    // (`"SELECT ... LIMIT " + intExpr`) and must keep firing.
+    let SsaOp::Call { args, .. } = &inst.op else {
+        return;
+    };
+    let mut safe_string_values: std::collections::HashSet<SsaValue> =
+        std::collections::HashSet::new();
+    for (pos, arg_vals) in args.iter().enumerate() {
+        let safe = info
+            .arg_callees
+            .get(pos)
+            .and_then(|c| c.as_deref())
+            .map(is_safe_string_producing_callee)
+            .unwrap_or(false);
+        if safe {
+            for &v in arg_vals {
+                safe_string_values.insert(v);
+            }
+        }
+    }
+    if safe_string_values.is_empty() {
+        return;
+    }
+    result.retain(|(v, _, _)| !safe_string_values.contains(v));
 }
 
 /// Suppress plain-ident taint when a dotted-path field value used by the same
@@ -7915,6 +9163,201 @@ fn inst_use_values(inst: &SsaInst) -> Vec<SsaValue> {
         | SsaOp::Nop
         | SsaOp::Undef => Vec::new(),
     }
+}
+
+// ── Go same-request self-redirect detection ────────────────────────────
+
+/// Detect Go `http.Redirect(w, r, urlExpr, code)` whose URL string arg is
+/// derived from the same `*http.Request`'s `URL` (e.g. `r.URL.String()`,
+/// `r.URL.RequestURI()`, `r.URL.EscapedPath()`).  Such a redirect echoes
+/// the inbound request's URL with at most path-only edits, so scheme/host
+/// are same-origin by construction and `Cap::OPEN_REDIRECT` cannot fire.
+///
+/// Recognition is purely syntactic over the SSA call's args:
+///   * arg 1 (the `*Request`) and arg 2 (the URL string) are correlated
+///     through the FieldProj `URL` accessor on a shared receiver chain.
+///   * arg 2's defining op is a Call to a `*url.URL` accessor whose
+///     return is a string derived from the URL.
+///
+/// gin's `redirectTrailingSlash` / `redirectFixedPath` / `redirectRequest`
+/// helpers are the canonical shape; the same gate applies to any
+/// hand-written `http.Redirect(w, r, r.URL.String(), code)` form.
+fn is_go_request_self_redirect(inst: &SsaInst, info: &NodeInfo, ssa: &SsaBody) -> bool {
+    let callee = match info.call.callee.as_deref() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !callee.eq_ignore_ascii_case("http.Redirect") {
+        return false;
+    }
+    let SsaOp::Call { ref args, .. } = inst.op else {
+        return false;
+    };
+    // `http.Redirect(w, r, url, code)` is the canonical 4-arg shape, but
+    // SSA construction sometimes folds the package-qualifier into an extra
+    // arg-0 phantom group (5-arg shape); both keep `r`/`url` at indices
+    // 1/2.  Accept either.
+    let req_arg_idx = 1usize;
+    let url_arg_idx = 2usize;
+    if args.len() <= url_arg_idx {
+        return false;
+    }
+    let url_v = match args[url_arg_idx].first() {
+        Some(&v) => v,
+        None => return false,
+    };
+    // Resolve the request's canonical name.  Prefer the SSA-level value
+    // when args[1] is populated; fall back to the CFG's `arg_uses` row,
+    // which records the syntactic identifier list for arg position 1
+    // even when SSA didn't lift the reference into a tracked value.
+    let (req_v_opt, req_name) = match args[req_arg_idx].first() {
+        Some(&v) => (Some(v), ssa_canonical_var_name(v, ssa)),
+        None => (
+            None,
+            info.call
+                .arg_uses
+                .get(req_arg_idx)
+                .and_then(|row| row.first())
+                .cloned(),
+        ),
+    };
+    is_request_url_method_value(url_v, req_v_opt, req_name.as_deref(), ssa)
+}
+
+/// Walk through `Assign` hops to find the canonical "name" of an SSA
+/// value: prefer the leading use's `var_name` when the def is an Assign
+/// chain; otherwise fall back to the value's own `var_name`.
+fn ssa_canonical_var_name(v: SsaValue, ssa: &SsaBody) -> Option<String> {
+    let mut cur = v;
+    for _ in 0..8 {
+        let def = ssa.def_of(cur);
+        if let Some(name) = def.var_name.as_deref() {
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+        let def_inst = find_inst_for_value(cur, ssa)?;
+        if let SsaOp::Assign(uses) = &def_inst.op {
+            if let Some(&first) = uses.first() {
+                if first == cur {
+                    return None;
+                }
+                cur = first;
+                continue;
+            }
+        }
+        return None;
+    }
+    None
+}
+
+/// Return true when `url_v` traces (through up to a few Assign hops) to
+/// either of two equivalent SSA shapes that read a `*url.URL` accessor on
+/// the same request:
+///   1. Decomposed chain — `Call("String"|"RequestURI"|...)` whose
+///      receiver is `FieldProj(req, "URL")` (chained-method shape, kicks
+///      in for `r.URL.String()`-style method calls).
+///   2. Flat chain — `Call("<req>.URL.<accessor>", rcv=None)` (no
+///      decomposition), used by SSA lowering for plain field reads
+///      (`r.URL.Path`) and short method chains alike.
+///
+/// Match success means: arg 1 (the `*Request`) and arg 2 (the URL string)
+/// are correlated through the same request's `URL` field, so the redirect
+/// destination is same-origin by construction.
+fn is_request_url_method_value(
+    url_v: SsaValue,
+    req_v: Option<SsaValue>,
+    req_name: Option<&str>,
+    ssa: &SsaBody,
+) -> bool {
+    let mut cur = url_v;
+    for _ in 0..8 {
+        let Some(def_inst) = find_inst_for_value(cur, ssa) else {
+            return false;
+        };
+        match &def_inst.op {
+            SsaOp::Assign(uses) if uses.len() == 1 => {
+                cur = uses[0];
+            }
+            SsaOp::Call {
+                callee,
+                receiver: Some(rcv),
+                ..
+            } => {
+                if !is_url_accessor_method(callee) {
+                    return false;
+                }
+                let Some(rcv_def) = find_inst_for_value(*rcv, ssa) else {
+                    return false;
+                };
+                let SsaOp::FieldProj {
+                    receiver: inner_recv,
+                    field,
+                    ..
+                } = rcv_def.op
+                else {
+                    return false;
+                };
+                if ssa.field_interner.resolve(field) != "URL" {
+                    return false;
+                }
+                if Some(inner_recv) == req_v {
+                    return true;
+                }
+                let inner_name = ssa_canonical_var_name(inner_recv, ssa);
+                return match (inner_name.as_deref(), req_name) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => false,
+                };
+            }
+            SsaOp::Call {
+                callee,
+                receiver: None,
+                ..
+            } => {
+                // Flat chain shape: callee text is `<root>.URL.<accessor>`.
+                let req_name = match req_name {
+                    Some(n) => n,
+                    None => return false,
+                };
+                let prefix = format!("{req_name}.URL.");
+                if !callee.starts_with(&prefix) {
+                    return false;
+                }
+                let suffix = &callee[prefix.len()..];
+                // Reject deeper chains (e.g. `<root>.URL.X.Y`) so the
+                // gate stays scoped to direct URL accessors.
+                if suffix.contains('.') {
+                    return false;
+                }
+                return is_url_accessor_method(suffix);
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Bare-method names on `*url.URL` whose return is a string derived from
+/// the URL value.  Recognised for the same-request self-redirect gate.
+fn is_url_accessor_method(callee: &str) -> bool {
+    matches!(
+        callee,
+        "String" | "RequestURI" | "EscapedPath" | "Path" | "RawPath" | "RawQuery"
+    )
+}
+
+/// Locate the [`SsaInst`] that defines `v` within its declared block.
+/// Returns `None` only when the SSA body is malformed (the instruction
+/// table and `value_defs` table disagree on which block defines `v`).
+fn find_inst_for_value(v: SsaValue, ssa: &SsaBody) -> Option<&SsaInst> {
+    let def = ssa.def_of(v);
+    let block = ssa.block(def.block);
+    block
+        .phis
+        .iter()
+        .chain(block.body.iter())
+        .find(|inst| inst.value == v)
 }
 
 // ── Alias-Aware Sanitization ────────────────────────────────────────────
@@ -8199,6 +9642,69 @@ fn resolve_type_qualified_labels(
     SmallVec::new()
 }
 
+/// Sibling of [`resolve_type_qualified_labels`] used at sink-firing time.
+///
+/// Returns the resolved sink labels plus, when the matched qualified
+/// callee has a known restricted payload arg list (Phase 07 ORM raw-SQL
+/// receiver methods such as `TypeOrmRepo.query`), the static slice
+/// describing which positional args carry the SQL payload. The caller
+/// uses this slice to override `positions_override` so taint flowing
+/// only into the bind-array argument (arg 1+) does not fire.
+#[allow(clippy::too_many_arguments)]
+fn resolve_type_qualified_labels_with_args(
+    callee: &str,
+    receiver: SsaValue,
+    type_facts: Option<&crate::ssa::type_facts::TypeFactResult>,
+    path_env: Option<&constraint::PathEnv>,
+    lang: Lang,
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
+    ssa: Option<&SsaBody>,
+) -> (SmallVec<[DataLabel; 2]>, Option<&'static [usize]>) {
+    let method_candidates = method_candidates_from_chain(callee, lang);
+    let receiver_candidates = receiver_candidates_for_type_lookup(receiver, ssa, lang);
+
+    if let Some(tf) = type_facts {
+        for rv in &receiver_candidates {
+            if let Some(receiver_type) = tf.get_type(*rv) {
+                if let Some(prefix) = receiver_type.label_prefix() {
+                    for method in &method_candidates {
+                        let qualified = format!("{}.{}", prefix, method);
+                        let labels =
+                            crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
+                        if !labels.is_empty() {
+                            let payload =
+                                crate::labels::type_qualified_sink_payload_args(&qualified);
+                            return (labels, payload);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(env) = path_env {
+        for rv in &receiver_candidates {
+            let types = env.get(*rv).types;
+            if let Some(kind) = types.as_singleton() {
+                if let Some(prefix) = kind.label_prefix() {
+                    for method in &method_candidates {
+                        let qualified = format!("{}.{}", prefix, method);
+                        let labels =
+                            crate::labels::classify_all(lang.as_str(), &qualified, extra_labels);
+                        if !labels.is_empty() {
+                            let payload =
+                                crate::labels::type_qualified_sink_payload_args(&qualified);
+                            return (labels, payload);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (SmallVec::new(), None)
+}
+
 /// Walk back through `SsaOp::Call.receiver` and `SsaOp::FieldProj.receiver`
 /// chains to collect candidate SSA values for type-fact lookup.
 ///
@@ -8234,11 +9740,17 @@ fn receiver_candidates_for_type_lookup(
                         SsaOp::FieldProj { receiver, .. } => {
                             next_receiver = Some(*receiver);
                         }
-                        // Rust-only: chain through nested Call receivers
-                        // (`conn.execute(x).unwrap()` parsed as one outer call).
+                        // Chain through nested Call receivers.  Rust:
+                        // `conn.execute(x).unwrap()` parsed as one outer
+                        // call.  JS/TS: `getUrl().searchParams.set(k, v)`,
+                        // where the FieldProj walks `searchParams →
+                        // <call result>` and we want to keep walking
+                        // through the `getUrl()` call to surface the
+                        // original URL receiver value (Phase 09 deferred
+                        // fix).
                         SsaOp::Call {
                             receiver: Some(rv), ..
-                        } if matches!(lang, Lang::Rust) => {
+                        } if matches!(lang, Lang::Rust | Lang::JavaScript | Lang::TypeScript) => {
                             next_receiver = Some(*rv);
                         }
                         _ => {}
@@ -8297,7 +9809,7 @@ fn method_candidates_from_chain(callee: &str, lang: Lang) -> SmallVec<[String; 4
 ///
 /// These are callees whose suffix matches a broad sink rule but whose
 /// receiver is known to be safe (console output, not HTTP response).
-fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang) -> Cap {
+fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &NodeInfo) -> Cap {
     match lang {
         Lang::Java => {
             if callee.starts_with("System.out.") || callee.starts_with("System.err.") {
@@ -8306,8 +9818,58 @@ fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang) -> Cap 
                 sink_caps
             }
         }
+        // Go `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln` carry an HTML_ESCAPE
+        // sink label because they CAN write to an `http.ResponseWriter`.  When
+        // the writer (positional arg 0) is a known non-response stream
+        // (stderr/stdout/discard/gin's package-level debug writers), the call
+        // is a logging side effect, not a response-rendering sink, and the
+        // HTML_ESCAPE bit should be stripped.  Without this strip, gin's own
+        // `defer func() { debugPrintError(err) }()` shape lights up as
+        // `taint-unsanitised-flow` because `debugPrintError` summarises as
+        // param 0 → `fmt.Fprintf` HTML_ESCAPE through the IPA path.
+        Lang::Go => {
+            if !sink_caps.intersects(Cap::HTML_ESCAPE) {
+                return sink_caps;
+            }
+            let is_fprintf = matches!(callee, "fmt.Fprintf" | "fmt.Fprint" | "fmt.Fprintln");
+            if !is_fprintf {
+                return sink_caps;
+            }
+            let Some(first_arg) = info.call.arg_uses.first() else {
+                return sink_caps;
+            };
+            if first_arg
+                .iter()
+                .any(|s| is_go_non_response_writer(s.as_str()))
+            {
+                sink_caps & !Cap::HTML_ESCAPE
+            } else {
+                sink_caps
+            }
+        }
         _ => sink_caps,
     }
+}
+
+/// Recognise Go writer identifiers that are categorically not
+/// `http.ResponseWriter` and therefore should not host an XSS sink for
+/// `fmt.Fprintf` / `fmt.Fprint` / `fmt.Fprintln`.  The set covers the
+/// stdlib stdout/stderr/discard streams plus gin's package-level
+/// `DefaultWriter` / `DefaultErrorWriter` (both are `io.Writer` aliases for
+/// `os.Stdout` / `os.Stderr`).  Both qualified (`gin.DefaultErrorWriter`)
+/// and bare (`DefaultErrorWriter`, intra-package) shapes match.
+fn is_go_non_response_writer(text: &str) -> bool {
+    matches!(
+        text,
+        "os.Stderr"
+            | "os.Stdout"
+            | "io.Discard"
+            | "ioutil.Discard"
+            | "DefaultErrorWriter"
+            | "DefaultWriter"
+            | "gin.DefaultErrorWriter"
+            | "gin.DefaultWriter"
+    )
 }
 
 /// Check if a sink is type-safe (e.g., SQL injection or path traversal with int-typed argument).
@@ -8883,6 +10445,31 @@ fn is_stringify_callee(callee: &str) -> bool {
 /// Returns `false` when `static_map` is `None`, when any value is missing,
 /// or when any value's bounded set contains a shell metacharacter, the
 /// predicate is conservative, so a missing entry never suppresses.
+/// Java-only suppression for the free-identifier `<FIELD>.get(key)` shape.
+///
+/// When a class field is initialized with `Map.of(literal, literal, ...)`
+/// and the consumer references it via the bare field name (no `this.` /
+/// no SSA-resolved receiver) the receiver lookup in `try_container_
+/// propagation` fails, leaving the engine to fall back to default
+/// arg-to-result propagation.  This walks the callee text — required to
+/// be a single-segment `<FIELD>.get` — and consults the per-file
+/// safe-lookup map populated by the build_cfg pre-pass.  Returns `true`
+/// when the lookup is safe to suppress.
+fn try_java_safe_field_lookup_load(callee: &str) -> bool {
+    let Some(dot_pos) = callee.rfind('.') else {
+        return false;
+    };
+    let receiver_name = &callee[..dot_pos];
+    let method = &callee[dot_pos + 1..];
+    if method != "get" {
+        return false;
+    }
+    if receiver_name.is_empty() || receiver_name.contains('.') || receiver_name.contains('(') {
+        return false;
+    }
+    crate::cfg::safe_fields::safe_lookup_field_values(receiver_name).is_some()
+}
+
 fn is_static_map_shell_safe(
     values: &[SsaValue],
     static_map: Option<&crate::ssa::static_map::StaticMapResult>,
@@ -9668,6 +11255,64 @@ fn resolve_callee_full(
         }
     }
 
+    // 0.7) Cross-package import resolution (Phase 09).
+    //
+    // When the callee leaf name matches an import binding the resolver
+    // resolved to a concrete `(file, exported_name)` pair, look up the
+    // canonical [`FuncKey`] in [`GlobalSummaries::ssa_by_key`].  This
+    // closes the recall gap on `import { foo } from '@scope/pkg'` shapes
+    // where `foo` lives in another package's namespace and the same-name
+    // narrowing in step 0.5 can't reach it (the caller's namespace ≠ the
+    // callee's namespace).
+    //
+    // The pre-built map carries the target's `(lang, namespace, name)`
+    // triple but leaves arity / container / disambig / kind unset because
+    // the resolver doesn't inspect the export's signature.  We narrow
+    // candidates by those three fields plus the call-site arity hint when
+    // available; if exactly one survives, claim resolution.  On miss or
+    // ambiguity we fall through to the existing flat paths.
+    if let (Some(map), Some(gs)) = (transfer.cross_package_imports, transfer.global_summaries) {
+        if let Some(target) = map.get(normalized) {
+            // Indexed candidate lookup: the
+            // `(lang, namespace, name)` triple narrows to the small
+            // set of SSA keys that share the import target's leaf
+            // name.  Replaces the prior `O(|ssa_by_key|)` scan over
+            // every persisted SSA key with a single hash probe plus
+            // an iteration over only the matching bucket.
+            let candidates = gs.ssa_keys_by_qualified(target.lang, &target.namespace, &target.name);
+            let mut hit: Option<&FuncKey> = None;
+            let mut ambiguous = false;
+            for k in candidates {
+                if !k.container.is_empty() {
+                    continue;
+                }
+                if let Some(want) = arity_hint
+                    && k.arity != Some(want)
+                {
+                    continue;
+                }
+                if hit.replace(k).is_some() {
+                    ambiguous = true;
+                    break;
+                }
+            }
+            if !ambiguous && let Some(k) = hit {
+                if let Some(ssa_sum) = gs.get_ssa(k) {
+                    tracing::debug!(
+                        callee = %callee,
+                        target_namespace = %target.namespace,
+                        target_name = %target.name,
+                        "cross-package SSA summary hit (step 0.7)"
+                    );
+                    return Some(convert_ssa_to_resolved_for_caller(
+                        ssa_sum,
+                        Some(transfer.namespace),
+                    ));
+                }
+            }
+        }
+    }
+
     // 1) Local (same-file), lookup via canonical FuncKey using the
     // same qualified-first policy as the global resolver.
     if let Some(key) = resolve_local_func_key_query(transfer.local_summaries, &build_query()) {
@@ -9959,14 +11604,16 @@ fn convert_ssa_to_resolved_for_caller(
     // extraction time) remain in the list but contribute no primary
     // location, the emission site filters by `SinkSite::line != 0`.
     //
-    // Strip same-file sites when `caller_namespace` is supplied: the
-    // caller's own taint analysis already produces a finding at the
-    // callee's internal sink (e.g. closure body's `eval(q)` finding at
-    // pass-1 lexical containment), so promoting `primary_location` at
-    // the call site to the same line collides with that finding under
-    // [`crate::commands::scan::deduplicate_taint_flows`] and silently
-    // drops the call-site finding.  Cross-file sites are preserved
-    // (the other file's analysis can't be deduped against this one).
+    // Strip same-file, non-chain sites when `caller_namespace` is
+    // supplied: a single-hop intra-file helper's own sink coordinates
+    // collide with the caller's pass-2 intraprocedural finding under
+    // [`crate::commands::scan::deduplicate_taint_flows`], silently
+    // dropping the call-site flow finding.  Sites with `from_chain=true`
+    // are chain-hop markers from a deeper callee and have no matching
+    // intermediate finding to dedup with — keep them so multi-hop
+    // chains surface the deepest sink line.  Cross-file sites are
+    // preserved (the other file's analysis can't be deduped against
+    // this one).  Mirrors the gate in [`should_promote_sink_site`].
     let param_to_sink_sites = if let Some(caller_ns) = caller_namespace {
         ssa_sum
             .param_to_sink
@@ -9974,7 +11621,7 @@ fn convert_ssa_to_resolved_for_caller(
             .map(|(idx, sites)| {
                 let filtered: SmallVec<[crate::summary::SinkSite; 1]> = sites
                     .iter()
-                    .filter(|s| s.file_rel.is_empty() || s.file_rel != caller_ns)
+                    .filter(|s| s.from_chain || s.file_rel.is_empty() || s.file_rel != caller_ns)
                     .cloned()
                     .collect();
                 (*idx, filtered)

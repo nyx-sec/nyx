@@ -94,6 +94,21 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SQL_QUERY),
         case_sensitive: false,
     },
+    // Phase 15 — JPA / Hibernate `Query.setParameter(name, value)` /
+    // `Query.setParameterList(...)` bind a positional / named parameter
+    // and return the same query object.  The bind step does NOT inject
+    // the value into the SQL string; the value is sent as a separate
+    // parameter through the JDBC layer at execution.  Treating
+    // `setParameter` / `setParameterList` as a SQL_QUERY sanitizer
+    // clears any taint inadvertently smeared onto the chain return so
+    // downstream `.getResultList()` / `.executeUpdate()` calls see a
+    // clean value.  Case-sensitive: these are JPA-specific verb names
+    // and the chain shape is canonical.
+    LabelRule {
+        matchers: &["setParameter", "setParameterList"],
+        label: DataLabel::Sanitizer(Cap::SQL_QUERY),
+        case_sensitive: true,
+    },
     // ─────────── Sinks ─────────────
     LabelRule {
         matchers: &["Runtime.exec", "ProcessBuilder"],
@@ -125,6 +140,72 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::CODE_EXEC),
         case_sensitive: false,
     },
+    // Phase 13 — java.nio.file path-traversal sinks.  `Files.<verb>` is
+    // the modern stdlib API for read/write/copy/move/delete operations;
+    // each takes a `Path` (or `Path` + payload) as arg 0.  Default
+    // arg→return propagation smears taint through `Paths.get(...)`
+    // (forwarder) so the path arg of these calls inherits any taint
+    // present on the components.  `FileInputStream` / `FileOutputStream` /
+    // `RandomAccessFile` are constructor-style sinks: `new
+    // FileInputStream(path)` reaches the FILE_IO sink at the
+    // `object_creation_expression` level (mapped to `Kind::CallFn` in
+    // Java's KINDS).  Receiver-typing already maps these classes to
+    // `TypeKind::FileHandle` (see `class_name_to_type_kind`) so chained
+    // method calls on the resulting handle resolve via type-qualified
+    // labels, but the construction call itself is the canonical
+    // path-traversal vector.
+    LabelRule {
+        matchers: &[
+            "Files.readString",
+            "Files.readAllBytes",
+            "Files.readAllLines",
+            "Files.write",
+            "Files.writeString",
+            "Files.lines",
+            "Files.copy",
+            "Files.move",
+            "Files.delete",
+            "Files.deleteIfExists",
+            "Files.newInputStream",
+            "Files.newOutputStream",
+            "Files.newBufferedReader",
+            "Files.newBufferedWriter",
+            "FileInputStream",
+            "FileOutputStream",
+            "RandomAccessFile",
+        ],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+    },
+    // Phase 13 — `Path.normalize()` collapses `.` / `..` segments and
+    // is the canonical Java path-traversal sanitiser when paired with
+    // a `startsWith(base)` containment check (not modelled here; the
+    // sanitiser rule clears the FILE_IO cap on the call's return,
+    // which is sufficient for the cap-based gate to suppress the
+    // sink finding).  Case-sensitive: `Path.normalize` is unique to
+    // `java.nio.file.Path`; bare `normalize` would over-fire on
+    // `Locale.normalize`, `BigDecimal.normalize`, etc.
+    LabelRule {
+        matchers: &[
+            "Path.normalize",
+            // Canonical Java path-traversal sanitiser idiom:
+            // `base.resolve(name).normalize()`.  CFG paren-strip yields
+            // callee text `<receiver>.resolve.normalize`; the bare 2-call
+            // `resolve.normalize` suffix is unique to `java.nio.file.Path`
+            // (no overload across the supported corpus produces the same
+            // chain text).  Case-sensitive on the leaf chain to avoid
+            // colliding with non-path `.resolve()`-then-`.normalize()`
+            // shapes in unrelated grammars.
+            "resolve.normalize",
+            // Receiver-bound shape `Paths.get(p).normalize()` — the
+            // `Paths.get` constructor mapping in `ssa/type_facts.rs` types
+            // the receiver as `FileHandle`, so the type-qualified resolver
+            // rewrites `<v>.normalize` → `FileHandle.normalize` here.
+            "FileHandle.normalize",
+        ],
+        label: DataLabel::Sanitizer(Cap::FILE_IO),
+        case_sensitive: true,
+    },
     // HTTP response sinks, println/print are broad (also match System.out)
     // but necessary to catch response.getWriter().println() via suffix matching.
     LabelRule {
@@ -134,12 +215,34 @@ pub static RULES: &[LabelRule] = &[
     },
     // openConnection() is the standard java.net.URL API for initiating a connection.
     // It is the correct interception point, the URL is already set on the object.
+    //
+    // Phase 14 — additional SSRF entry points covered:
+    //   * `URL.openStream` — equivalent of `URL.openConnection().getInputStream()`,
+    //     fetches the resource at the URL directly.  Bare `openStream`
+    //     suffix is unique to `java.net.URL` in the supported corpus.
+    //   * `OkHttpClient.newCall(Request)` — Square OkHttp's request
+    //     dispatch entry point.  The `Request` is built via a
+    //     `Request.Builder().url(u).build()` chain whose default
+    //     arg→return propagation smears URL taint through the chain.
+    //   * `RestTemplate.getForEntity` / `RestTemplate.headForHeaders` —
+    //     read-shaped Spring verbs that take the URL at arg 0.
     LabelRule {
         matchers: &[
             "openConnection",
+            "openStream",
             "HttpClient.send",
             "HttpClient.sendAsync",
+            // Phase 14 — `OkHttpClient.newCall(Request)` and the
+            // generic `HttpClient.newCall` form OkHttp resolves to via
+            // the JAVA_HIERARCHY (OkHttpClient → HttpClient).  Both
+            // forms are covered so a constructor-typed receiver
+            // (HttpClient) and a class-named receiver (OkHttpClient)
+            // both fire.
+            "HttpClient.newCall",
+            "OkHttpClient.newCall",
             "getForObject",
+            "getForEntity",
+            "headForHeaders",
             "RestTemplate.exchange",
             "postForObject",
             "postForEntity",
@@ -246,8 +349,34 @@ pub static RULES: &[LabelRule] = &[
         matchers: &[
             "entityManager.createNativeQuery",
             "entityManager.createQuery",
+            "em.createNativeQuery",
+            "em.createQuery",
             "session.createQuery",
             "session.createSQLQuery",
+            "session.createNativeQuery",
+            // Phase 15 — Spring Data JPA / Hibernate factory chains:
+            // `getEntityManager().createNativeQuery(...)` /
+            // `getSession().createQuery(...)` reduce to
+            // `getEntityManager.createNativeQuery` /
+            // `getSession.createQuery` after the chain-normalisation
+            // strips parens.
+            "getEntityManager.createNativeQuery",
+            "getEntityManager.createQuery",
+            "getSession.createQuery",
+            "getSession.createSQLQuery",
+            "getSession.createNativeQuery",
+            // Type-qualified Hibernate Session matchers fire when the
+            // receiver carries a `TypeKind::HibernateSession` fact (set
+            // by `constructor_type` for `sessionFactory.openSession()` /
+            // `sessionFactory.getCurrentSession()` /
+            // `sessionFactory.openStatelessSession()` returns).  Closes
+            // the arbitrary-receiver-name shape (`sess`,
+            // `hibernateSession`, etc.) the flat `session.*` matchers
+            // above only catch when receiver is literally named
+            // `session`.
+            "HibernateSession.createQuery",
+            "HibernateSession.createSQLQuery",
+            "HibernateSession.createNativeQuery",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
@@ -478,6 +607,385 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::SSTI),
         case_sensitive: true,
         payload_args: &[3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── SQL execute payload-arg gating (Phase 15 deferred fix, Java) ──────
+    //
+    // Mirrors the Python resolution recorded in `python::GATED_SINKS`: the
+    // flat rules above already classify these callees as `Sink(SQL_QUERY)`
+    // on every argument.  The JDBC / JPA / Hibernate / Spring conventions
+    // are that arg 0 is the SQL template (or HQL/JPQL string) and any
+    // remaining arguments are bind values, RowMappers, result-set classes,
+    // or other non-SQL payloads.  Tainted bind values are SAFE because the
+    // driver / JPA layer escapes them; tainted SQL is the SQLi vector.
+    //
+    // These Destination-activation gates carry the same `Sink(SQL_QUERY)`
+    // label as the flat rule (so cap dedupes against the flat label) but
+    // propagate `payload_args: &[0]` into `sink_payload_args`, narrowing the
+    // SSA sink scan to arg 0 only.  Receiver-typed `DatabaseConnection.*`
+    // forms are case-sensitive, matching the flat rule.
+    SinkGate {
+        callee_matcher: "executeQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "executeUpdate",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.executeBatch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.executeLargeUpdate",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Spring JdbcTemplate verbs.  All take SQL at arg 0; remaining args are
+    // bind values (`Object[]` / varargs) or `RowMapper` / `ResultSetExtractor`
+    // / class hints — all non-SQL payloads.
+    SinkGate {
+        callee_matcher: "jdbcTemplate.query",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jdbcTemplate.update",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jdbcTemplate.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jdbcTemplate.queryForObject",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jdbcTemplate.queryForList",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // JPA / Hibernate factories.  `createQuery(sql)` / `createQuery(sql, ResultClass)`
+    // both take the SQL/JPQL/HQL string at arg 0; the optional `ResultClass`
+    // at arg 1 is metadata, not SQL.
+    SinkGate {
+        callee_matcher: "entityManager.createQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "entityManager.createNativeQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "em.createQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "em.createNativeQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "session.createQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "session.createSQLQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "session.createNativeQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "getEntityManager.createQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "getEntityManager.createNativeQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "getSession.createQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "getSession.createSQLQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "getSession.createNativeQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Type-qualified Hibernate Session gates.  Mirror the
+    // `session.create*` family above so type-qualified resolution at
+    // sink-firing time consults `payload_args = &[0]` and suppresses
+    // tainted bind-arg shapes that route through `setParameter` /
+    // `setString` rather than the raw query string.  Receivers carry
+    // `TypeKind::HibernateSession` via `constructor_type`'s
+    // `openSession` / `getCurrentSession` / `openStatelessSession`
+    // arms.
+    SinkGate {
+        callee_matcher: "HibernateSession.createQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HibernateSession.createSQLQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "HibernateSession.createNativeQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {

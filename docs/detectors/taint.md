@@ -160,7 +160,7 @@ Some detector classes need to know not just *that* a value is attacker-influence
 | `Sensitive` | `Cookie`, `Header`, `EnvironmentConfig`, `FileSystem`, `Database`, `CaughtException`, `Unknown` | Operator-bound state that should not leak across boundaries. |
 | `Secret` | (reserved for explicit credential sources) | Highest tier; treated identically to `Sensitive` today. |
 
-`Cap::DATA_EXFIL` only fires when the contributing source is at least `Sensitive`. Plain user input flowing into an outbound `fetch` body is suppressed at finding-emission time — the canonical false-positive class for API gateways and telemetry forwarders that proxy `req.body`. SSRF and other classes are unaffected; the gate is scoped to `DATA_EXFIL`.
+`Cap::DATA_EXFIL` only fires when the contributing source is at least `Sensitive`. Plain user input flowing into an outbound `fetch` body is suppressed at finding-emission time. That is the canonical false-positive class for API gateways and telemetry forwarders that proxy `req.body`. SSRF and other classes are unaffected; the gate is scoped to `DATA_EXFIL`.
 
 If a project legitimately classifies a request body as sensitive (e.g. an internal forwarder where `req.body` carries a pre-authenticated user token), override via custom rules in `nyx.conf`:
 
@@ -177,7 +177,7 @@ Or re-classify the source itself with a custom Source rule whose name matches on
 
 ## DATA_EXFIL suppression layers
 
-Three knobs ship out of the box so projects can match the cap to their architecture without per-call suppressions.
+Three suppression knobs ship by default so projects can match the cap to their architecture without per-call suppressions.
 
 ### 1. Forwarding-wrapper sanitizer convention
 
@@ -215,7 +215,7 @@ trusted_destinations = [
 ]
 ```
 
-Use full origins or origin-pinned paths so a partial-host match across unrelated origins cannot occur. `https://api.` would also match `https://api.evil.example.com/` — the entry must include the path separator (`/`) at the end of the host.
+Use full origins or origin-pinned paths so a partial-host match across unrelated origins cannot occur. `https://api.` would also match `https://api.evil.example.com/`, so the entry must include the path separator (`/`) at the end of the host.
 
 The match consults the abstract string domain: a literal URL is a static prefix; a template literal `\`https://api.internal/${id}\`` exposes the prefix `https://api.internal/`; a fully dynamic URL has no prefix and the cap fires as usual.
 
@@ -228,7 +228,7 @@ Some projects forward user-bound payloads as a matter of architecture. Turn the 
 enabled = false
 ```
 
-`enabled = false` strips `Cap::DATA_EXFIL` from sink caps before event emission, so no `taint-data-exfiltration` finding reaches the report. The decision is per-project — other projects loaded by the same `nyx serve` instance keep their own settings.
+`enabled = false` strips `Cap::DATA_EXFIL` from sink caps before event emission, so no `taint-data-exfiltration` finding reaches the report. The decision is per-project; other projects loaded by the same `nyx serve` instance keep their own settings.
 
 ## DATA_EXFIL sinks per language
 

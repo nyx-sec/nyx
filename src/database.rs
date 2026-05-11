@@ -59,6 +59,7 @@ pub mod index {
             disambig INTEGER,
             kind TEXT NOT NULL DEFAULT 'fn',
             summary TEXT NOT NULL,
+            entry_kind TEXT,
             updated_at INTEGER NOT NULL,
             UNIQUE(project, file_path, name, container, arity, disambig, kind)
         );
@@ -76,6 +77,7 @@ pub mod index {
             disambig INTEGER,
             kind TEXT NOT NULL DEFAULT 'fn',
             summary TEXT NOT NULL,
+            entry_kind TEXT,
             updated_at INTEGER NOT NULL,
             UNIQUE(project, file_path, name, container, arity, disambig, kind)
         );
@@ -112,6 +114,17 @@ pub mod index {
             body BLOB NOT NULL,
             updated_at INTEGER NOT NULL,
             UNIQUE(project, file_path, name, container, arity, disambig, kind)
+        );
+
+        CREATE TABLE IF NOT EXISTS cross_package_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_hash BLOB NOT NULL,
+            namespace TEXT NOT NULL,
+            imports BLOB NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(project, file_path)
         );
 
         CREATE TABLE IF NOT EXISTS scans (
@@ -204,6 +217,8 @@ pub mod index {
             ON ssa_function_bodies(project, file_path);
         CREATE INDEX IF NOT EXISTS idx_auth_check_summaries_project_file
             ON auth_check_summaries(project, file_path);
+        CREATE INDEX IF NOT EXISTS idx_cross_package_imports_project_file
+            ON cross_package_imports(project, file_path);
     "#;
 
     /// Engine version used to detect stale caches across upgrades.
@@ -311,7 +326,17 @@ pub mod index {
             // workers on machines with more cores than that during the
             // parallel indexing pass.  Size the pool to comfortably hold
             // a connection per rayon thread plus a small slack.
-            let max_conns = (num_cpus::get() as u32 + 4).max(16);
+            //
+            // `NYX_INDEX_POOL_MAX` overrides the auto-sized default. Use it in
+            // fd-constrained environments (test sandboxes, containers with low
+            // ulimit) where many parallel indexed scans would otherwise exhaust
+            // EMFILE: each pooled SQLite WAL connection costs ~3 fds (db + -wal
+            // + -shm), so 30 parallel scans × 16 conns × 3 fds = 1440 fds.
+            let max_conns = std::env::var("NYX_INDEX_POOL_MAX")
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|n| *n >= 1)
+                .unwrap_or_else(|| (num_cpus::get() as u32 + 4).max(16));
             let pool = Arc::new(Pool::builder().max_size(max_conns).build(manager)?);
 
             {
@@ -400,6 +425,14 @@ pub mod index {
                     conn.execute_batch(SCHEMA)?;
                 }
 
+                // Phase 10 — `entry_kind` column on (ssa_)function_summaries.
+                // Non-destructive `ALTER TABLE ... ADD COLUMN` so existing
+                // rows survive the upgrade.  The column is nullable; the
+                // INSERT paths write the JSON-encoded `EntryKind` text or
+                // NULL when the function is not an entry point.
+                Self::ensure_column(&conn, "function_summaries", "entry_kind", "TEXT")?;
+                Self::ensure_column(&conn, "ssa_function_summaries", "entry_kind", "TEXT")?;
+
                 // Ensure the auth_check_summaries table exists for DBs
                 // created before this column set was introduced.  The
                 // `CREATE TABLE IF NOT EXISTS` in SCHEMA handles new DBs;
@@ -419,6 +452,26 @@ pub mod index {
                     conn.execute_batch(SCHEMA)?;
                 }
 
+                // Phase 09 indexed-mode parity: ensure the
+                // `cross_package_imports` table exists for DBs created
+                // before this column set was introduced.  `CREATE TABLE
+                // IF NOT EXISTS` in SCHEMA handles new DBs; this branch
+                // only fires when the table is missing entirely from a
+                // pre-existing DB.
+                let cpi_exists: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM sqlite_master
+                         WHERE type = 'table' AND name = 'cross_package_imports'",
+                        [],
+                        |_| Ok(true),
+                    )
+                    .optional()?
+                    .unwrap_or(false);
+                if !cpi_exists {
+                    tracing::info!("creating cross_package_imports table");
+                    conn.execute_batch(SCHEMA)?;
+                }
+
                 // Schema version check: invalidate cached summary tables
                 // when the on-disk artefact layout has changed in an
                 // incompatible way, independently of the engine version.
@@ -431,6 +484,33 @@ pub mod index {
                 Self::check_engine_version(&conn)?;
             }
             Ok(pool)
+        }
+
+        /// Add a column to an existing table when it is missing.
+        ///
+        /// Non-destructive: leaves all existing rows untouched, populating
+        /// the new column with NULL.  Used to thread additive schema
+        /// changes (Phase 10's `entry_kind`) into pre-existing databases
+        /// without forcing a full cache rebuild.
+        fn ensure_column(
+            conn: &Connection,
+            table: &str,
+            column: &str,
+            sqlite_type: &str,
+        ) -> NyxResult<()> {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let cols: std::collections::HashSet<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .collect();
+            if cols.contains(column) {
+                return Ok(());
+            }
+            tracing::info!("adding column {column} to {table}");
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {sqlite_type}"
+            ))?;
+            Ok(())
         }
 
         /// Check stored schema version against the compiled-in value.
@@ -468,7 +548,8 @@ pub mod index {
                          DELETE FROM function_summaries;
                          DELETE FROM ssa_function_summaries;
                          DELETE FROM auth_check_summaries;
-                         DELETE FROM files;",
+                         DELETE FROM files;
+                         DROP TABLE IF EXISTS cross_package_imports;",
                     )?;
                     conn.execute_batch(SCHEMA)?;
                     conn.execute(
@@ -801,14 +882,19 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO function_summaries
                         (project, file_path, file_hash, name, arity, lang,
-                         container, disambig, kind, summary, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         container, disambig, kind, summary, entry_kind, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )?;
 
                 for s in summaries {
                     let json = serde_json::to_string(s)
                         .map_err(|e| NyxError::Msg(format!("summary serialise: {e}")))?;
                     let disambig_sql = s.disambig.map(|d| d as i64);
+                    let entry_kind_sql = s
+                        .entry_kind
+                        .as_ref()
+                        .map(|ek| serde_json::to_string(ek).unwrap_or_else(|_| String::new()))
+                        .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
                         path_str,
@@ -820,6 +906,7 @@ pub mod index {
                         disambig_sql,
                         s.kind.as_str(),
                         json,
+                        entry_kind_sql,
                         now
                     ])?;
                 }
@@ -863,8 +950,8 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO ssa_function_summaries
                         (project, file_path, file_hash, name, arity, lang, namespace,
-                         container, disambig, kind, summary, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         container, disambig, kind, summary, entry_kind, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 )?;
 
                 for (name, arity, lang, namespace, container, disambig, kind, summary) in summaries
@@ -872,6 +959,11 @@ pub mod index {
                     let json = serde_json::to_string(summary)
                         .map_err(|e| NyxError::Msg(format!("SSA summary serialise: {e}")))?;
                     let disambig_sql = disambig.map(|d| d as i64);
+                    let entry_kind_sql = summary
+                        .entry_kind
+                        .as_ref()
+                        .map(|ek| serde_json::to_string(ek).unwrap_or_else(|_| String::new()))
+                        .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
                         path_str,
@@ -884,6 +976,7 @@ pub mod index {
                         disambig_sql,
                         kind.as_str(),
                         json,
+                        entry_kind_sql,
                         now
                     ])?;
                 }
@@ -1392,6 +1485,10 @@ pub mod index {
                 crate::symbol::FuncKind,
                 crate::auth_analysis::model::AuthCheckSummary,
             )],
+            cross_package_imports: Option<(
+                &str,
+                &std::collections::HashMap<String, crate::symbol::FuncKey>,
+            )>,
         ) -> NyxResult<()> {
             let tx = self.conn.transaction()?;
             let path_str = file_path.to_string_lossy();
@@ -1406,13 +1503,18 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO function_summaries
                         (project, file_path, file_hash, name, arity, lang,
-                         container, disambig, kind, summary, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                         container, disambig, kind, summary, entry_kind, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )?;
                 for s in func_summaries {
                     let json = serde_json::to_string(s)
                         .map_err(|e| NyxError::Msg(format!("summary serialise: {e}")))?;
                     let disambig_sql = s.disambig.map(|d| d as i64);
+                    let entry_kind_sql = s
+                        .entry_kind
+                        .as_ref()
+                        .map(|ek| serde_json::to_string(ek).unwrap_or_else(|_| String::new()))
+                        .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
                         path_str,
@@ -1424,6 +1526,7 @@ pub mod index {
                         disambig_sql,
                         s.kind.as_str(),
                         json,
+                        entry_kind_sql,
                         now
                     ])?;
                 }
@@ -1439,8 +1542,8 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO ssa_function_summaries
                         (project, file_path, file_hash, name, arity, lang, namespace,
-                         container, disambig, kind, summary, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         container, disambig, kind, summary, entry_kind, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 )?;
                 for (name, arity, lang, namespace, container, disambig, kind, summary) in
                     ssa_summaries
@@ -1448,6 +1551,11 @@ pub mod index {
                     let json = serde_json::to_string(summary)
                         .map_err(|e| NyxError::Msg(format!("SSA summary serialise: {e}")))?;
                     let disambig_sql = disambig.map(|d| d as i64);
+                    let entry_kind_sql = summary
+                        .entry_kind
+                        .as_ref()
+                        .map(|ek| serde_json::to_string(ek).unwrap_or_else(|_| String::new()))
+                        .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
                         path_str,
@@ -1460,6 +1568,7 @@ pub mod index {
                         disambig_sql,
                         kind.as_str(),
                         json,
+                        entry_kind_sql,
                         now
                     ])?;
                 }
@@ -1534,6 +1643,26 @@ pub mod index {
                         now
                     ])?;
                 }
+            }
+
+            // cross_package_imports: replace this file's row, even with
+            // an empty input, so a file that lost its imports does not
+            // leave stale resolutions in the cache.
+            tx.execute(
+                "DELETE FROM cross_package_imports WHERE project = ?1 AND file_path = ?2",
+                params![self.project, path_str],
+            )?;
+            if let Some((namespace, map)) = cross_package_imports
+                && !map.is_empty()
+            {
+                let blob = rmp_serde::to_vec_named(map)
+                    .map_err(|e| NyxError::Msg(format!("cross_package_imports serialise: {e}")))?;
+                tx.execute(
+                    "INSERT OR REPLACE INTO cross_package_imports
+                        (project, file_path, file_hash, namespace, imports, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![self.project, path_str, file_hash, namespace, blob, now],
+                )?;
             }
 
             tx.commit()?;
@@ -1622,6 +1751,61 @@ pub mod index {
             Ok(out)
         }
 
+        /// Load every persisted per-file Phase-09 cross-package import map
+        /// for this project.
+        ///
+        /// Returns rows as `(file_path, namespace, imports_map)`.  Used by
+        /// pass 2 of indexed scans to populate
+        /// `GlobalSummaries::cross_package_imports_by_namespace`, recovering
+        /// the per-file import view that
+        /// [`crate::taint::ssa_transfer::CalleeSsaBody::cross_package_imports`]
+        /// loses across SQLite round-trip (`#[serde(skip)]`).
+        pub fn load_all_cross_package_imports(
+            &self,
+        ) -> NyxResult<
+            Vec<(
+                String,
+                String,
+                std::collections::HashMap<String, crate::symbol::FuncKey>,
+            )>,
+        > {
+            let mut stmt = self.c().prepare(
+                "SELECT file_path, namespace, imports
+                 FROM cross_package_imports WHERE project = ?1",
+            )?;
+
+            let rows: Vec<(String, String, Vec<u8>)> = stmt
+                .query_map([&self.project], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                })?
+                .filter_map(|r| match r {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!("failed to read cross_package_imports row: {e}");
+                        None
+                    }
+                })
+                .collect();
+
+            let mut out = Vec::with_capacity(rows.len());
+            for (fp, ns, blob) in rows {
+                match rmp_serde::from_slice::<
+                    std::collections::HashMap<String, crate::symbol::FuncKey>,
+                >(&blob)
+                {
+                    Ok(map) => out.push((fp, ns, map)),
+                    Err(e) => {
+                        tracing::warn!("failed to deserialize cross_package_imports blob: {e}");
+                    }
+                }
+            }
+            Ok(out)
+        }
+
         /// Remove a file and all derived persisted state for this project.
         ///
         /// This deletes the file row, issues, and all persisted summary rows so
@@ -1657,6 +1841,10 @@ pub mod index {
             )?;
             tx.execute(
                 "DELETE FROM auth_check_summaries WHERE project = ?1 AND file_path = ?2",
+                params![self.project, path_str.as_ref()],
+            )?;
+            tx.execute(
+                "DELETE FROM cross_package_imports WHERE project = ?1 AND file_path = ?2",
                 params![self.project, path_str.as_ref()],
             )?;
 
@@ -2539,6 +2727,7 @@ fn ssa_summaries_round_trip() {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         ),
         (
@@ -2575,6 +2764,7 @@ fn ssa_summaries_round_trip() {
                 typed_call_receivers: vec![],
                 validated_params_to_return: smallvec::SmallVec::new(),
                 param_to_gate_filters: vec![],
+                entry_kind: None,
             },
         ),
     ];
@@ -2749,6 +2939,7 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash_v1, &sums_v1)
@@ -2787,6 +2978,7 @@ fn ssa_summaries_hash_rescan_replaces_stale() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash_v2, &sums_v2)
@@ -2846,6 +3038,7 @@ fn clear_drops_ssa_summaries_table() {
             typed_call_receivers: vec![],
             validated_params_to_return: smallvec::SmallVec::new(),
             param_to_gate_filters: vec![],
+            entry_kind: None,
         },
     )];
     idx.replace_ssa_summaries_for_file(&f, &hash, &sums)
@@ -2903,6 +3096,7 @@ fn make_test_callee_body(
             field_interner: crate::ssa::ir::FieldInterner::new(),
             field_writes: std::collections::HashMap::new(),
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         },
         opt: crate::ssa::OptimizeResult {
             const_values: std::collections::HashMap::new(),
@@ -2921,7 +3115,56 @@ fn make_test_callee_body(
         param_count,
         node_meta: std::collections::HashMap::new(),
         body_graph: None,
+        cross_package_imports: std::sync::Arc::new(std::collections::HashMap::new()),
     }
+}
+
+#[test]
+fn cross_package_imports_round_trip_via_replace_all_for_file() {
+    use crate::symbol::{FuncKey, FuncKind, Lang};
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+    let f = td.path().join("caller.ts");
+    std::fs::write(&f, "import { escape } from '@scope/util';").unwrap();
+
+    let pool = index::Indexer::init(&db).unwrap();
+    let mut idx = index::Indexer::from_pool("proj", &pool).unwrap();
+    let hash = index::Indexer::digest_bytes(b"caller content");
+
+    let mut imports: std::collections::HashMap<String, FuncKey> = std::collections::HashMap::new();
+    imports.insert(
+        "escape".to_string(),
+        FuncKey {
+            lang: Lang::TypeScript,
+            namespace: "packages/util/src/escape.ts".to_string(),
+            container: String::new(),
+            name: "escape".to_string(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        },
+    );
+
+    idx.replace_all_for_file(&f, &hash, &[], &[], &[], &[], Some(("caller.ts", &imports)))
+        .unwrap();
+
+    let loaded = idx.load_all_cross_package_imports().unwrap();
+    assert_eq!(loaded.len(), 1);
+    let (fp, ns, map) = &loaded[0];
+    assert_eq!(fp, &f.to_string_lossy().to_string());
+    assert_eq!(ns, "caller.ts");
+    assert_eq!(map.len(), 1);
+    let key = map
+        .get("escape")
+        .expect("escape binding survives round-trip");
+    assert_eq!(key.namespace, "packages/util/src/escape.ts");
+    assert_eq!(key.name, "escape");
+    assert_eq!(key.lang, Lang::TypeScript);
+
+    // Empty input on rescan should drop the row.
+    idx.replace_all_for_file(&f, &hash, &[], &[], &[], &[], None)
+        .unwrap();
+    assert!(idx.load_all_cross_package_imports().unwrap().is_empty());
 }
 
 #[test]
@@ -3122,6 +3365,7 @@ fn make_test_ssa_summary() -> crate::summary::ssa_summary::SsaFuncSummary {
         typed_call_receivers: vec![],
         validated_params_to_return: smallvec::SmallVec::new(),
         param_to_gate_filters: vec![],
+        entry_kind: None,
     }
 }
 
@@ -3434,6 +3678,153 @@ fn missing_ssa_namespace_column_triggers_recreate() {
     idx.replace_ssa_summaries_for_file(&f, &hash, &sums)
         .unwrap();
     assert_eq!(idx.load_all_ssa_summaries().unwrap().len(), 1);
+}
+
+/// Phase 10 migration test.  Build a database whose
+/// `(ssa_)function_summaries` tables are at the post-Phase 09 shape
+/// (namespace + container + disambig + kind columns present, but no
+/// `entry_kind` column).  Insert a row directly so the migration must
+/// preserve it.  After `init`, the column should exist on both tables
+/// without dropping the pre-existing data.
+#[test]
+fn entry_kind_column_added_in_place_without_data_loss() {
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+
+    // Hand-build a pre-Phase-10 schema (no `entry_kind` column).
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL, path TEXT NOT NULL,
+                hash BLOB NOT NULL, mtime INTEGER NOT NULL,
+                scanned_at INTEGER NOT NULL, UNIQUE(project, path)
+            );
+            CREATE TABLE function_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL, file_path TEXT NOT NULL,
+                file_hash BLOB NOT NULL, name TEXT NOT NULL,
+                arity INTEGER NOT NULL DEFAULT -1, lang TEXT NOT NULL,
+                container TEXT NOT NULL DEFAULT '',
+                disambig INTEGER,
+                kind TEXT NOT NULL DEFAULT 'fn',
+                summary TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                UNIQUE(project, file_path, name, container, arity, disambig, kind)
+            );
+            CREATE TABLE ssa_function_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL, file_path TEXT NOT NULL,
+                file_hash BLOB NOT NULL, name TEXT NOT NULL,
+                arity INTEGER NOT NULL DEFAULT -1, lang TEXT NOT NULL,
+                namespace TEXT NOT NULL DEFAULT '',
+                container TEXT NOT NULL DEFAULT '',
+                disambig INTEGER,
+                kind TEXT NOT NULL DEFAULT 'fn',
+                summary TEXT NOT NULL, updated_at INTEGER NOT NULL,
+                UNIQUE(project, file_path, name, container, arity, disambig, kind)
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO function_summaries
+                (project, file_path, file_hash, name, arity, lang,
+                 container, disambig, kind, summary, updated_at)
+             VALUES ('proj', 'lib.py', X'00', 'old_func', 1, 'python',
+                     '', NULL, 'fn', '{}', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ssa_function_summaries
+                (project, file_path, file_hash, name, arity, lang,
+                 namespace, container, disambig, kind, summary, updated_at)
+             VALUES ('proj', 'lib.py', X'00', 'old_func', 1, 'python',
+                     '', '', NULL, 'fn', '{}', 0)",
+            [],
+        )
+        .unwrap();
+        // Pre-populate the metadata so `check_schema_version` and
+        // `check_engine_version` consider the database current and do
+        // not wipe the rows we just inserted.  The point of this test
+        // is the in-place `ALTER TABLE`; the version checks are a
+        // separate concern.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS nyx_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO nyx_metadata (key, value) VALUES ('schema_version', ?1)",
+            rusqlite::params![index::SCHEMA_VERSION],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO nyx_metadata (key, value) VALUES ('engine_version', ?1)",
+            rusqlite::params![index::ENGINE_VERSION],
+        )
+        .unwrap();
+    }
+
+    // Open via init — should non-destructively ALTER both tables to
+    // add `entry_kind`, leaving the seeded rows intact.
+    let pool = index::Indexer::init(&db).unwrap();
+
+    let conn = pool.get().unwrap();
+    let cols_for = |table: &str| {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap();
+        let v: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        v
+    };
+    assert!(
+        cols_for("function_summaries")
+            .iter()
+            .any(|c| c == "entry_kind"),
+        "function_summaries.entry_kind missing after migration"
+    );
+    assert!(
+        cols_for("ssa_function_summaries")
+            .iter()
+            .any(|c| c == "entry_kind"),
+        "ssa_function_summaries.entry_kind missing after migration"
+    );
+
+    // Pre-existing rows survive the migration.
+    let func_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM function_summaries WHERE project = 'proj'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(func_rows, 1, "pre-existing function_summaries row was lost");
+    let ssa_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM ssa_function_summaries WHERE project = 'proj'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        ssa_rows, 1,
+        "pre-existing ssa_function_summaries row was lost"
+    );
+
+    // Existing rows have NULL entry_kind by default.
+    let entry_kind_value: Option<String> = conn
+        .query_row(
+            "SELECT entry_kind FROM function_summaries WHERE project = 'proj'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(entry_kind_value.is_none());
 }
 
 #[test]

@@ -745,6 +745,20 @@ fn fp_guard_sanitizer_html_escape_js() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, React JSX text-content auto-escape: `{expr}` interpolations
+/// that are direct children of `jsx_element` / `jsx_fragment` tags carry an
+/// implicit `Sanitizer(HTML_ESCAPE)` because React's renderer escapes HTML
+/// metacharacters in text content.  Closes ts-safe-010 (`safe_jsx_text.tsx`)
+/// in `tests/benchmark`.  Attribute interpolations and `dangerouslySetInnerHTML`
+/// are NOT covered by this synthesis and remain in their existing sink path
+/// (regression-checked by `tests/benchmark/corpus/typescript/xss/xss_dangerously_set_inner_html.tsx`).
+#[test]
+fn fp_guard_jsx_text_content_sanitizer_tsx() {
+    let dir = fixture_path("fp_guards/jsx_text_content_sanitizer_tsx");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, sanitizer edge case: shlex.quote with shell metacharacters.
 #[test]
 fn fp_guard_sanitizer_shlex_quote_py() {
@@ -1008,6 +1022,325 @@ fn fp_guard_php_unserialize_allowed_classes() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, `php.deser.unserialize` inside a PHPUnit assertion call
+/// of the shape `$this->assertSame(LITERAL, unserialize($blob))` (and
+/// the `assertEquals` / `assertNull` / `assertIsArray` family,
+/// including `static::` / `self::` / `parent::` dispatch).  Drupal,
+/// Joomla, and Nextcloud each carry tens of these `Serializable` /
+/// cache / session round-trip tests in their test trees; the literal
+/// expected value bounds the `unserialize` result so a poisoned blob
+/// would abort the test rather than escape an object-injection side
+/// effect.
+#[test]
+fn fp_guard_php_unserialize_in_phpunit_assertion() {
+    let dir = fixture_path("fp_guards/php_unserialize_in_phpunit_assertion");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Python `unittest.TestCase` round-trip tests that wrap a
+/// `pickle.loads` / `yaml.load` / `shelve.open` call in an assertion
+/// whose other argument is a literal expected value.  The same shape
+/// that drives the PHP recogniser above:  a poisoned blob would fail
+/// the assertion rather than leak object-injection side effects out
+/// of the test boundary.  Suppresses both the `py.deser.*` AST-rule
+/// finding AND the `cfg-unguarded-sink` mirror.
+#[test]
+fn fp_guard_python_deser_in_unittest_assertion() {
+    let dir = fixture_path("fp_guards/python_deser_in_unittest_assertion");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, pytest plain-`assert` round-trip tests.  The assertion
+/// reaches the deser through allowed wrappers (comparison vs literal,
+/// `is None` / `is not None`, `in [LIT, ...]`, truthy bare assert,
+/// `not deser`, `isinstance(deser, TYPE)`, `bool` / `len` single-arg
+/// wrap).  Same bounding semantics as the unittest variant: a
+/// poisoned blob produces a different shape, the assertion fails, no
+/// side effect escapes the test boundary.
+#[test]
+fn fp_guard_python_deser_in_pytest_assert() {
+    let dir = fixture_path("fp_guards/python_deser_in_pytest_assert");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Ruby `Marshal.load` / `YAML.load` round-trip patterns
+/// inside Minitest assertion verbs (`assert_equal LIT, deser`,
+/// `assert_nil deser`, `assert deser`, `assert_kind_of TYPE, deser`,
+/// `refute_*` mirrors, `assert_includes LIT, deser`) and RSpec matcher
+/// chains (`expect(deser).to eq(LIT)`, `be_nil`, `be_a(TYPE)`,
+/// `be_truthy`, `match_array(LIT)`, `to`/`not_to`/`to_not`).  Mirror
+/// of the Python and PHP recognisers for Ruby test trees.
+#[test]
+fn fp_guard_ruby_deser_in_test_assertion() {
+    let dir = fixture_path("fp_guards/ruby_deser_in_test_assertion");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Hibernate / JPA DAO passthrough wrappers whose body is a
+/// single chain `getSession().createQuery(formal)` (or a longer chain
+/// like `getSession().getCriteriaBuilder().createQuery(formal)`).  The
+/// helper itself contributes no signal; whether each call site is
+/// parameterised is a caller-side concern.  The param-only filter must
+/// recognise method-call chain segments as pseudo-uses so the wrapper
+/// does not surface a structural `cfg-unguarded-sink` finding when
+/// taint analysis found nothing actionable.  Receiver-variable shapes
+/// (`cursor.execute(name)`, `stmt.executeUpdate(name)`) keep the
+/// finding because the receiver carries data the wrapper itself
+/// cannot reason about without taint.
+#[test]
+fn fp_guard_cfg_unguarded_dao_passthrough_java() {
+    let dir = fixture_path("fp_guards/cfg_unguarded_dao_passthrough_java");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Liquibase changeset wrappers like
+/// `Statement stmt = connection.createStatement(); stmt.executeQuery(sql);`.
+/// Both `stmt` and `sql` show up in the sink's `taint.uses`. `sql` is a
+/// formal parameter; `stmt` is a body-local whose every assignment is
+/// derived from the `connection` parameter (`connection.createStatement()`
+/// or `connection.unwrap().createStatement()`). The function is a thin
+/// wrapper around its params, so `cfg-unguarded-sink` should not fire,
+/// the structural backup adds no signal here. Receiver-variable shapes
+/// without a parameter-derived definition (`cursor.execute(name)` where
+/// `cursor` comes from module scope) still emit because their one-hop
+/// trace fails.
+#[test]
+fn fp_guard_cfg_unguarded_liquibase_changeset_java() {
+    let dir = fixture_path("fp_guards/cfg_unguarded_liquibase_changeset_java");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Java `Class.forName(STATIC_FINAL_CONSTANT)` and similar
+/// sink calls whose argument is a class-level `static final TYPE NAME =
+/// LITERAL;` field reference.  The field lives outside any function
+/// body, so the per-function CFG one-hop trace and the per-function SSA
+/// const-prop both treat the identifier as a runtime-dynamic value; the
+/// structural rule then fires `cfg-unguarded-sink` on every call site.
+/// The class-constant-scalars map collected at CFG build time exposes
+/// these compile-time constants so the all-args-constant check picks
+/// them up.
+#[test]
+fn fp_guard_cfg_unguarded_class_constant_java() {
+    let dir = fixture_path("fp_guards/cfg_unguarded_class_constant_java");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, file-level constant scalars across Python / Go / Rust.  The
+/// same gap the Java fixture closes also exists in other languages: a
+/// module-level `NAME = LITERAL` (Python), package-level `const NAME =
+/// LITERAL` (Go), and crate-level `const NAME: TYPE = LITERAL` (Rust)
+/// resolve as free identifiers inside any function body, so neither the
+/// CFG one-hop trace nor per-function SSA const-prop sees them as
+/// constant.  The same file-scalars map drives suppression of both the
+/// structural `cfg-unguarded-sink` rule and the AST-pattern rules like
+/// `py.cmdi.os_system` that gate on all-literal arguments.
+#[test]
+fn fp_guard_file_level_const_scalars_xlang() {
+    let dir = fixture_path("fp_guards/file_level_const_scalars_xlang");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Layer A literal-args suppression on Java
+/// `method_invocation` and `object_creation_expression` shapes.  The
+/// AST gate's `find_enclosing_call` walker only matched node kinds
+/// containing the substring `call`, so Java's `method_invocation`
+/// (e.g. `Class.forName(MYSQL_DRIVER)`) and `object_creation_expression`
+/// (e.g. `new Foo("literal")`) silently bypassed the suppression.
+/// Every `Class.forName(LITERAL)` / `Class.forName(CONST)` then fired
+/// `java.reflection.class_forname` regardless of whether the argument
+/// was provably constant.  Param-derived calls remain noisy because
+/// taint cannot prove the input safe.  The Crypto carve-out keeps
+/// `MessageDigest.getInstance("MD5")` firing because the literal
+/// algorithm name IS the weakness signal.
+#[test]
+fn fp_guard_ast_layer_a_java_call_args() {
+    let dir = fixture_path("fp_guards/ast_layer_a_java_call_args");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Crypto / Secrets / InsecureConfig / InsecureTransport
+/// patterns must keep firing under the Layer A literal-args
+/// suppression.  Pre-fix, `hashlib.md5(b"static")` was treated as
+/// "all-literal args" and silently suppressed even though MD5 is
+/// weak regardless of input.  The carve-out routes calls in those
+/// categories around the suppression.  The contrast call,
+/// `os.system("ls -la /tmp")`, stays suppressed because a literal
+/// command string carries no attacker-controlled data.
+#[test]
+fn fp_guard_ast_layer_a_crypto_carve_out_py() {
+    let dir = fixture_path("fp_guards/ast_layer_a_crypto_carve_out_py");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, resource-method summary builder must not propagate an
+/// Acquire effect onto callers when the method's acquire is inside a
+/// managed cleanup scope (Python `with`, Java try-with-resources, Ruby
+/// File.open block).  Pre-fix, every method body containing an `open(...)`
+/// (or `FileInputStream(...)`) callee produced a method-name Acquire
+/// summary regardless of whether the handle escaped receiver state;
+/// callers like `obj.method()` were then marked OPEN forever, surfacing
+/// `state-resource-leak subject=self` (58 findings on airflow) and the
+/// caller-side `obj` leak.  The fix gates the summary on
+/// `info.managed_resource == false` and on `info.taint.defines.is_some()`
+/// so anonymous (`return open(...)`) and managed-scope acquires no
+/// longer poison receiver state.
+#[test]
+fn fp_guard_state_resource_method_summary_managed_xlang() {
+    let dir = fixture_path("fp_guards/state_resource_method_summary_managed_xlang");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Drupal Database Query subclasses use
+/// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
+/// statement object then bind values out of band via
+/// `$stmt->execute($values, $opts)`.  Phase 15 added `stmt.execute`
+/// as a SQL_QUERY sink, so without recognising `prepareStatement`
+/// as a SQL_QUERY sanitizer (semantic twin of `prepare`) the rule
+/// fires on every Truncate / Update / Delete / Insert / Upsert
+/// subclass.  Distilled from drupal core/lib/Drupal/Core/Database
+/// /Query/{Truncate,Update,Delete,Insert,Upsert}.php.
+#[test]
+fn fp_guard_php_drupal_prepare_statement() {
+    let dir = fixture_path("fp_guards/php_drupal_prepare_statement");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL `QueryBuilder` chain (`$qb->select(...)
+/// ->from(...)->where(...)->executeQuery()`).  The terminal
+/// `executeQuery` / `executeStatement` verbs take zero positional
+/// args; the SQL is bound earlier on the chain via parameterised
+/// API calls.  Without a structural zero-arg suppression the flat
+/// `executeQuery` SQL_QUERY sink rule fires every time, surfacing
+/// ~160 cfg-unguarded-sink findings on a single nextcloud snapshot
+/// (CalDavBackend, CardDavBackend, lib/private/DB).  Distilled from
+/// nextcloud apps/dav/lib/CalDAV/CalDavBackend.php /
+/// CardDavBackend.php.
+#[test]
+fn fp_guard_php_doctrine_querybuilder() {
+    let dir = fixture_path("fp_guards/php_doctrine_querybuilder");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, thin PHP method wrappers that forward typed parameters to
+/// an inner sink call on `$this`.  `cfg-unguarded-sink` is a structural
+/// rule with zero signal at the wrapper site (every arg is the wrapper's
+/// own parameter); the real signal is at callers, which the taint engine
+/// handles.  The earlier `param_only && !in_entrypoint` suppression
+/// missed PHP method wrappers because `taint.uses` carries pseudo-uses
+/// for the chain receiver (`this`, `inner`) that aren't param names.
+/// Filtering callee-fragment uses out of the param-only check before
+/// comparing against the function's params closes the wrapper FP cluster
+/// across nextcloud `Connection::executeUpdate`,
+/// `ConnectionAdapter::executeQuery`, `ExtendedQueryBuilder::executeQuery`,
+/// drupal validators / containers, and similar shapes.
+#[test]
+fn fp_guard_php_thin_method_wrapper() {
+    let dir = fixture_path("fp_guards/php_thin_method_wrapper");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL `QueryBuilder::executeQuery` /
+/// `executeStatement` overloads that pass `$this->getSQL()` /
+/// `$this->getParameters()` to a connection's flat `executeQuery` /
+/// `executeStatement` overload.  `getSQL()` is the canonical accessor
+/// for the parameterised SQL string the builder constructed; the
+/// receiver of the terminal verb is the connection (not a builder), so
+/// the receiver-name suppression does not fire.  The first-arg
+/// accessor recognition closes the FP without depending on the
+/// receiver shape.  Distilled from nextcloud
+/// `lib/private/DB/QueryBuilder/QueryBuilder.php`.
+#[test]
+fn fp_guard_php_dbal_builder_get_sql() {
+    let dir = fixture_path("fp_guards/php_dbal_builder_get_sql");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL `Platform::get*SQL(...)` family of safe DDL
+/// builders.  Methods like `getTruncateTableSQL`, `getCreateTableSQL`,
+/// `getDropTableSQL` accept schema identifiers and emit DBMS-specific
+/// DDL with no user payload.  Migration code commonly binds the result
+/// to a local then passes it to `$this->dbc->executeStatement($sql)`.
+/// The first-arg accessor recognition walks back to the local's
+/// defining Call to identify the safe accessor before deciding the
+/// finding is structural noise.  Distilled from nextcloud
+/// `apps/user_ldap/lib/Migration/Version*.php` and `core/Migrations/
+/// Version*.php`.
+#[test]
+fn fp_guard_php_dbal_platform_ddl_builder() {
+    let dir = fixture_path("fp_guards/php_dbal_platform_ddl_builder");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL builder chain whose local variable is named
+/// after a verb (`forUpdate`) rather than a canonical builder name
+/// (`qb` / `query` / `builder`).  The receiver-name allowlist of the
+/// zero-arg query-builder suppression doesn't match, but the local was
+/// bound earlier in the body via `$this->connection->getQueryBuilder()`.
+/// The receiver-defined-by-builder-factory back-walk recognises it via
+/// the def-call's callee name (or via a source-text scan when the CFG
+/// def-lookup misses a multi-line chained assignment nested inside
+/// `try` / `for` blocks).  Distilled from nextcloud
+/// `lib/private/Files/Cache/Propagator.php`.
+#[test]
+fn fp_guard_php_dbal_builder_via_factory_def() {
+    let dir = fixture_path("fp_guards/php_dbal_builder_via_factory_def");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Doctrine DBAL `<builder>->getSQL()` accessor *composed*
+/// with constant string-shaping ops:
+///   AdapterMySQL: `preg_replace('/^INSERT/i', 'INSERT IGNORE',
+///                  $builder->getSQL())` patches the leading verb without
+///                  user payload.
+///   AdapterSqlite: `$builder->getSQL() . ' ON CONFLICT DO NOTHING'`
+///                  appends a constant suffix.
+/// The direct-accessor recognition (`sink_first_arg_is_builder_get_sql`)
+/// only matches when arg 0 is itself the accessor or a local-var alias
+/// of it; the composition recognition extends coverage to arg 0 *bytes*
+/// containing a `$<builder>->getSQL(` token where every PHP variable in
+/// the slice is bound by a query-builder factory.  Distilled from
+/// nextcloud `lib/private/DB/AdapterMySQL.php` and `AdapterSqlite.php`.
+#[test]
+fn fp_guard_php_dbal_builder_compose_sql() {
+    let dir = fixture_path("fp_guards/php_dbal_builder_compose_sql");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, PHP `foreach` over a literal-keyed array whose foreach-key
+/// flows into a SQL_QUERY sink string interpolation
+/// (`"SHOW VARIABLES LIKE '$var'"`).  When `$variables` is built only
+/// from `['LIT' => 'LIT', ...]` literal-keyed array initialisers and
+/// optional `$variables['LIT'] = 'LIT';` subscript-set extensions, the
+/// foreach-key ranges over a finite metachar-free literal set, so the
+/// interpolated SQL is bounded.  Negative case
+/// (`UnsafeBypass.php`) iterates a method parameter; the suppression
+/// must NOT fire and `cfg-unguarded-sink` must still emit.  Distilled
+/// from nextcloud `lib/private/DB/MySqlTools.php`.
+#[test]
+fn fp_guard_php_foreach_safe_literal_keys() {
+    let dir = fixture_path("fp_guards/php_foreach_safe_literal_keys");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, PHP `md5()` / `sha1()` weak-hash pattern rule firing
 /// syntactically on every callsite.  Real-world PHP uses these
 /// functions pervasively for non-cryptographic purposes (ETag
@@ -1044,6 +1377,121 @@ fn fp_guard_php_md5_sha1_non_crypto_use() {
 #[test]
 fn fp_guard_auth_local_collection_receiver() {
     let dir = fixture_path("fp_guards/auth_local_collection_receiver");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, NextAuth callback definitions (`signIn`/`session`/`jwt`/
+/// `authorize` etc.) are themselves the authentication boundary. Reads
+/// and mutations against `user.id` / `existingUser.id` inside them
+/// resolve the authenticated identity; they are not foreign-id lookups
+/// driven by untrusted request input. `is_nextauth_callback_unit` in
+/// `auth_analysis::checks` recognises these by name + canonical
+/// callback-formal evidence (any of `user`/`token`/`account`/
+/// `profile`/`credentials`/`session` in the destructured params) and
+/// suppresses missing-ownership findings on every op kind.
+#[test]
+fn fp_guard_auth_nextauth_callback() {
+    let dir = fixture_path("fp_guards/auth_nextauth_callback");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, cal.com-shaped TRPC handlers whose parameter is a
+/// destructured options alias (`{ ctx, input }: GetOptions`) where
+/// `GetOptions` is a local type alias whose `ctx.user` is typed
+/// `NonNullable<TrpcSessionUser>`. `collect_trpc_ctx_param` in
+/// `auth_analysis::extract::common` recognises three shapes:
+/// destructured shorthand, destructured rename (`ctx: c`), and plain
+/// identifier (`opts: GetOptions`). All three add the appropriate
+/// session-base entry to `self_scoped_session_bases` so `ctx.user.id`
+/// resolves as authenticated actor context, not foreign-id targeting.
+#[test]
+fn fp_guard_auth_trpc_handler_options() {
+    let dir = fixture_path("fp_guards/auth_trpc_handler_options");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Go `fmt.Fprintf` flagged as an HTML_ESCAPE sink even when
+/// the writer is a known non-response stream (`os.Stderr`, `os.Stdout`,
+/// `io.Discard`, gin's package-level `DefaultErrorWriter` /
+/// `DefaultWriter`).  Without the writer-aware suppression in
+/// `suppress_known_safe_callees`, gin's own `defer func() {
+/// debugPrintError(err) }()` shape lights up because `debugPrintError`
+/// summarises through the IPA path as param 0 → `fmt.Fprintf`
+/// HTML_ESCAPE.  The fixture also asserts the canonical
+/// `fmt.Fprintf(w http.ResponseWriter, ...)` XSS path still fires so the
+/// suppression does not over-clear.
+#[test]
+fn fp_guard_go_fmt_fprintf_safe_writer() {
+    let dir = fixture_path("fp_guards/go_fmt_fprintf_safe_writer");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Go `http.Redirect(w, r, urlExpr, code)` whose URL string is
+/// derived from the same request's `*url.URL` (e.g. `r.URL.String()`,
+/// `r.URL.Path`, `r.URL.RequestURI()`, `r.URL.EscapedPath()`).  Such a
+/// redirect echoes the inbound request's URL with at most path-only edits
+/// — scheme/host are same-origin by construction — so OPEN_REDIRECT is
+/// inapplicable.  Without this gate, gin's `redirectTrailingSlash` /
+/// `redirectFixedPath` / `redirectRequest` helpers record `param_to_sink`
+/// for OPEN_REDIRECT through the inner `http.Redirect` and then surface
+/// `taint-open-redirect` at every call site that reaches them with a
+/// tainted `c.Request.URL`.  The fixture also asserts that the canonical
+/// attacker-controlled `r.FormValue → http.Redirect` shape still fires so
+/// the gate does not over-clear.
+#[test]
+fn fp_guard_go_http_redirect_self_request() {
+    let dir = fixture_path("fp_guards/go_http_redirect_self_request");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, `new URL(req.body.path, BASE)` where `BASE` is a `const`
+/// identifier bound to a literal origin must NOT fire SSRF — the
+/// abstract-string singleton domain proves the origin is locked even
+/// though the base arg is not a syntactic literal at the call site.
+/// Negative control under `handler.ts` (base read from request body)
+/// MUST still surface `taint-ssrf`.
+#[test]
+fn fp_guard_url_builder_const_base() {
+    let dir = fixture_path("fp_guards/url_builder_const_base");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Java `final ... = Map.of(literal, literal, ...)` allowlist
+/// fields suppress the free-identifier `<FIELD>.get(taintedKey)` lookup so
+/// downstream sinks (here, `res.setHeader`) do NOT surface
+/// `taint-header-injection`.  Mirrors the CVE-2017-12629 patched
+/// counterpart shape: the engine had no model for unresolved-receiver
+/// container loads, so default arg-to-result propagation tainted the
+/// lookup result even though every value in the map is a literal.
+/// `safe_fields::collect_safe_lookup_fields` extracts the literal value
+/// set during CFG construction; the SSA taint engine consults the per-
+/// file view from `try_container_propagation`'s Load fallback and leaves
+/// the result untainted.  Recall control under `UnsafeBypass.java` MUST
+/// still surface a `taint-header-injection`.
+#[test]
+fn fp_guard_java_safe_map_field_lookup() {
+    let dir = fixture_path("fp_guards/java_safe_map_field_lookup");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, third-party bundled / minified assets must be skipped before
+/// parsing so vendored libraries (jQuery, htmx, Sortable, lodash) do not
+/// surface findings the codebase author cannot remediate.  `is_vendored_asset_path`
+/// matches `*.min.js` / `*.bundle.js` / `*.umd.js` / `*.umd.min.js` / `*.iife.js`
+/// suffixes plus `bower_components/` and (for front-end extensions only)
+/// `vendor/` path components.  Recall stays intact for genuine production
+/// `.js` files; the negative control under `src/handler.js` MUST still
+/// surface a `js.crypto.math_random` finding.
+#[test]
+fn fp_guard_vendored_assets_skip() {
+    let dir = fixture_path("fp_guards/vendored_assets_skip");
     let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
     validate_expectations(&diags, &dir);
 }
@@ -1125,6 +1573,25 @@ fn fp_guard_cpp_reinterpret_cast_byte_pointer() {
 #[test]
 fn fp_guard_auth_rust_param_typed_local_collection() {
     let dir = fixture_path("fp_guards/auth_rust_param_typed_local_collection");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, JS/TS post-fetch ownership equality check.  The cal.com
+/// shape `const x = await repo.findById(id); if (x.userId !== session.
+/// user.id) { notFound(); }` is the canonical post-fetch authorisation
+/// idiom across Next.js codebases.  Pre-fix the engine missed this
+/// because `detect_ownership_equality_check` only ran on rust-style
+/// `if_expression`, the strict-inequality operators `!==` / `===` were
+/// not in the recognised set, framework denial calls
+/// (`notFound`, `redirect`, `unauthorized`, `forbidden`) were not
+/// recognised as early-exit terminators, and `collect_row_population`
+/// missed JS/TS `variable_declarator` declarations because it only
+/// read the `pattern` / `left` field.  Each shape in the fixture
+/// exercises one column of that matrix.
+#[test]
+fn fp_guard_auth_post_fetch_ownership_jsts() {
+    let dir = fixture_path("fp_guards/auth_post_fetch_ownership_jsts");
     let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
     validate_expectations(&diags, &dir);
 }

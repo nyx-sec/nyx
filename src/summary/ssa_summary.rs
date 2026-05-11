@@ -347,6 +347,14 @@ pub struct SsaFuncSummary {
     /// on both vulnerable and patched code.
     #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
     pub validated_params_to_return: SmallVec<[usize; 2]>,
+
+    /// Phase-10 Next.js entry-point classification.  Mirrors
+    /// [`crate::summary::FuncSummary::entry_kind`] — recorded on the
+    /// SSA summary so cross-file consumers don't have to consult the
+    /// coarse `FuncSummary` to know whether the callee is an entry
+    /// point.  `None` for ordinary helpers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_kind: Option<crate::entry_points::EntryKind>,
 }
 
 /// A per-return-path [`PathFact`] entry.

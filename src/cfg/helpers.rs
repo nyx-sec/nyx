@@ -1,6 +1,7 @@
 use super::anon_fn_name;
 use super::conditions::unwrap_parens;
 use crate::labels::{DataLabel, Kind, classify, lookup};
+use smallvec::SmallVec;
 use tree_sitter::Node;
 
 // -------------------------------------------------------------------------
@@ -210,7 +211,7 @@ pub(crate) fn first_call_ident_with_span<'a>(
                             .and_then(|f| root_receiver_text(f, lang, code));
                         match (recv, func) {
                             (Some(r), Some(f)) => Some(format!("{r}.{f}")),
-                            (_, Some(f)) => Some(f.to_string()),
+                            (_, Some(f)) => Some(f),
                             _ => None,
                         }
                     }
@@ -269,6 +270,11 @@ pub(crate) fn find_classifiable_inner_call<'a>(
         }
         match lookup(lang, c.kind()) {
             Kind::CallFn | Kind::CallMethod | Kind::CallMacro => {
+                // For CallMethod we also remember the bare receiver
+                // identifier so we can try a type-qualified rewrite
+                // when the literal classify misses.
+                let mut method_receiver: Option<String> = None;
+                let mut method_name: Option<String> = None;
                 let ident = match lookup(lang, c.kind()) {
                     Kind::CallFn => c
                         .child_by_field_name("function")
@@ -286,6 +292,8 @@ pub(crate) fn find_classifiable_inner_call<'a>(
                             .or_else(|| c.child_by_field_name("receiver"))
                             .or_else(|| c.child_by_field_name("scope"))
                             .and_then(|f| root_receiver_text(f, lang, code));
+                        method_receiver = recv.clone();
+                        method_name = func.clone();
                         match (recv, func) {
                             (Some(r), Some(f)) => Some(format!("{r}.{f}")),
                             (_, Some(f)) => Some(f),
@@ -301,6 +309,36 @@ pub(crate) fn find_classifiable_inner_call<'a>(
                     && let Some(lbl) = classify(lang, id, extra)
                 {
                     return Some((id.clone(), lbl, (c.start_byte(), c.end_byte())));
+                }
+                // Receiver-type rewrite fallback: when the literal
+                // `recv.method` text didn't classify, AND we're inside
+                // a chained call (parent `n` is itself a call), look
+                // up `recv`'s locally-bound type and retry with the
+                // type prefix.  E.g. for
+                // `sess.createNativeQuery(sql).getResultList()`, the
+                // inner `sess.createNativeQuery` rewrites to
+                // `HibernateSession.createNativeQuery` (rule fires).
+                //
+                // Gated on `n` being a Call-kind so the rewrite only
+                // fires on chain-hop inner calls.  When `n` is an
+                // expression-statement / variable-declarator / etc.
+                // the candidate `c` IS the outermost call of the
+                // statement, and the SSA-time
+                // `resolve_type_qualified_labels` path handles it
+                // with multi-label semantics that single-label
+                // `classify` here would erase.
+                let parent_is_call = matches!(
+                    lookup(lang, n.kind()),
+                    Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+                );
+                if parent_is_call
+                    && let (Some(recv), Some(method)) = (method_receiver, method_name)
+                    && let Some(prefix) = crate::cfg::local_receiver_type_prefix(c, &recv, lang)
+                {
+                    let alt = format!("{prefix}.{method}");
+                    if let Some(lbl) = classify(lang, &alt, extra) {
+                        return Some((alt, lbl, (c.start_byte(), c.end_byte())));
+                    }
                 }
                 // Recurse into arguments of this call
                 if let Some(found) = find_classifiable_inner_call(c, lang, code, extra) {
@@ -412,6 +450,16 @@ pub(crate) fn first_member_label(
         }
         // PHP/Python/Ruby subscript access: `$_GET['cmd']`, `os.environ['KEY']`, `params[:cmd]`
         // Try to classify the object (before the `[`) as a source.
+        //
+        // Source-only on the receiver: a subscript reads a value from the
+        // receiver, so a Sink label found on the receiver text (e.g.
+        // `response.headers['content-type']`, where `response.headers`
+        // matches the JS HEADER_INJECTION sink rule) describes the
+        // *target* of a hypothetical write, not this read.  Promoting it
+        // would fire phantom sinks at every `body =
+        // response.headers["X"]`-shape line.  Sinks/Sanitizers reachable
+        // via callable positions (function-arg, method-receiver) still
+        // flow through the outer recursive walk below.
         "subscript_expression" | "subscript" | "element_reference" => {
             if let Some(obj) = n
                 .child_by_field_name("object")
@@ -419,15 +467,23 @@ pub(crate) fn first_member_label(
                 .or_else(|| n.child(0))
             {
                 if let Some(txt) = text_of(obj, code)
-                    && let Some(lbl) = classify(lang, &txt, extra_labels)
+                    && let Some(lbl @ DataLabel::Source(_)) = classify(lang, &txt, extra_labels)
                 {
                     return Some(lbl);
                 }
-                // Recurse into the object for nested member accesses
-                if let Some(lbl) = first_member_label(obj, lang, code, extra_labels) {
+                // Recurse into the object for nested member accesses, but
+                // keep the same Source-only restriction as above by passing
+                // through the dedicated source-only walker.
+                if let Some(lbl @ DataLabel::Source(_)) =
+                    first_member_label(obj, lang, code, extra_labels)
+                {
                     return Some(lbl);
                 }
             }
+            // Suppress further descent into this subscript node, the outer
+            // child-walk loop would otherwise enter the receiver via the
+            // member_expression arm and reattach a value-extraction Sink.
+            return None;
         }
         _ => {}
     }
@@ -678,6 +734,7 @@ pub(crate) fn collect_idents_with_paths(
         "identifier"
         | "field_identifier"
         | "property_identifier"
+        | "shorthand_property_identifier"
         | "shorthand_property_identifier_pattern" => {
             if let Some(txt) = text_of(n, code) {
                 idents.push(txt);
@@ -697,16 +754,241 @@ pub(crate) fn collect_idents_with_paths(
     }
 }
 
+/// Walk an array/tuple destructure pattern in source order and return
+/// each simple-identifier binding paired with its position index.
+///
+/// Recognises:
+///   * JS/TS `array_pattern` — `const [a, b] = ...`, `const [, b] = ...`,
+///     `const [a, ,] = ...`. Skip slots (commas with no binding between)
+///     advance the position counter without emitting a binding.
+///   * Rust `tuple_pattern` — `let (a, _, b) = ...`. `_pattern` (wildcard)
+///     advances the position counter without emitting a binding.
+///   * Python `pattern_list` / `tuple_pattern` — `a, b = ...` and
+///     `(a, b) = ...`. Python `_` is a normal identifier binding (not a
+///     wildcard), so every `identifier` child emits a (name, position)
+///     entry.
+///   * Ruby `left_assignment_list` — `a, b = ...`. Bare comma-list LHS
+///     produced by `assignment` whose RHS is an array literal, a call
+///     return, or another tuple-yielding expression. Ruby `_` is a normal
+///     identifier (matches Python convention; `_` may still be referenced
+///     later in scope). Splat (`*rest` parsed as `rest_assignment`) and
+///     parenthesised nested destructure (`destructured_left_assignment`)
+///     hit the bail branch and fall back to scalar union.
+///
+/// Returns an empty `SmallVec` when the pattern is not one of the above
+/// kinds OR contains complex sub-patterns (`assignment_pattern` for
+/// `[a = 1, b]`, `rest_pattern` for `[a, ...rest]`, Python
+/// `list_splat_pattern` for `a, *rest = ...`, Ruby `rest_assignment` for
+/// `a, *rest = ...`, nested `array_pattern`, `object_pattern`,
+/// `destructured_left_assignment`). Callers treat the empty return as
+/// "no position-aware rewrite available; fall back to scalar union".
+pub(crate) fn collect_array_pattern_bindings_indexed(
+    pat: Node,
+    code: &[u8],
+) -> SmallVec<[(String, usize); 4]> {
+    let mut out: SmallVec<[(String, usize); 4]> = SmallVec::new();
+    let kind = pat.kind();
+    if !matches!(
+        kind,
+        "array_pattern" | "tuple_pattern" | "pattern_list" | "left_assignment_list"
+    ) {
+        return out;
+    }
+    let mut cursor = pat.walk();
+    let mut pos: usize = 0;
+    for child in pat.children(&mut cursor) {
+        match child.kind() {
+            "[" | "]" | "(" | ")" => {}
+            "," => {
+                pos += 1;
+            }
+            "identifier" | "shorthand_property_identifier_pattern" => {
+                if let Some(txt) = text_of(child, code) {
+                    out.push((txt, pos));
+                }
+            }
+            // Rust wildcard `_` in tuple_pattern. Advances position counter
+            // without binding; no emit. Tree-sitter-rust models the
+            // wildcard as a leaf node whose `kind()` is literally "_".
+            "_" => {}
+            _ => {
+                // Complex sub-pattern. Bail by clearing — caller treats
+                // empty as "no position-aware rewrite", preserving the
+                // pre-existing scalar-union behavior for these shapes.
+                out.clear();
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// Walk an array-literal-shape RHS node and return one slot per source-order
+/// element. Each slot is one of:
+///   * `RhsArraySlot::Ident(name)` — bare identifier element.
+///   * `RhsArraySlot::Literal` — syntactic literal (string, number, bool,
+///     null/nil).
+///   * `RhsArraySlot::Complex(uses)` — call / binary / subscript / member
+///     access / nested array literal / etc. `uses` carries the inner
+///     identifier names (member-access paths first, bare idents second)
+///     harvested from the slot's subtree via `collect_idents_with_paths`.
+///
+/// Recognised RHS kinds:
+///   * JS/TS / Ruby `array` — `[a, b]`
+///   * Python `list` — `[a, b]`
+///   * Python `tuple` — `(a, b)`
+///   * Python `expression_list` — bare comma form `a, b`
+///   * Rust `tuple_expression` — `(a, b)`
+///
+/// Bails (returns empty) when the RHS is not one of these kinds OR contains
+/// a slot whose shape would shift index alignment (spread, list splat).
+/// Callers treat empty as "no per-element rewrite available; fall back to
+/// scalar union".
+pub(crate) fn collect_rhs_array_literal_elements(
+    rhs: Node,
+    lang: &str,
+    code: &[u8],
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> SmallVec<[crate::cfg::RhsArraySlot; 4]> {
+    use crate::cfg::RhsArraySlot;
+    use crate::labels::{Cap, DataLabel};
+
+    // Per-slot source classification: when a slot's own subtree carries a
+    // Source-labeled member-expression / subscript, capture the Cap so the
+    // SSA destructure rewrite emits Source for THIS slot specifically and
+    // lets sibling Complex slots stay slot-scoped Assign. Falls back to
+    // Cap::empty() when no per-slot source is recognised; the lowering
+    // path then consults the outer-node Source flag for conservative
+    // preservation of legacy behavior on shapes whose source pattern
+    // doesn't text-classify (e.g. a subscript on a tainted local).
+    let slot_source_cap = |slot: Node| -> Cap {
+        match first_member_label(slot, lang, code, extra_labels) {
+            Some(DataLabel::Source(c)) => c,
+            _ => Cap::empty(),
+        }
+    };
+
+    let mut out: SmallVec<[RhsArraySlot; 4]> = SmallVec::new();
+    let kind = rhs.kind();
+    if !matches!(
+        kind,
+        "array" | "array_literal" | "list" | "tuple" | "tuple_expression" | "expression_list"
+    ) {
+        return out;
+    }
+    let mut cursor = rhs.walk();
+    for child in rhs.named_children(&mut cursor) {
+        let ck = child.kind();
+        match ck {
+            "identifier"
+            | "shorthand_property_identifier"
+            | "shorthand_property_identifier_pattern"
+            | "field_identifier"
+            | "property_identifier" => match text_of(child, code) {
+                Some(txt) => out.push(RhsArraySlot::Ident(txt)),
+                None => {
+                    out.clear();
+                    return out;
+                }
+            },
+            "variable_name" => match text_of(child, code) {
+                Some(txt) => out.push(RhsArraySlot::Ident(txt.trim_start_matches('$').to_string())),
+                None => {
+                    out.clear();
+                    return out;
+                }
+            },
+            // Syntactic literal slots: no ident, no taint contribution.
+            // Names follow tree-sitter's per-grammar literal kinds across
+            // the supported languages.
+            "string"
+            | "string_literal"
+            | "raw_string_literal"
+            | "interpreted_string_literal"
+            | "concatenated_string"
+            | "integer"
+            | "integer_literal"
+            | "float"
+            | "float_literal"
+            | "number"
+            | "numeric_literal"
+            | "true"
+            | "false"
+            | "boolean_literal"
+            | "boolean"
+            | "null"
+            | "null_literal"
+            | "nil"
+            | "none"
+            | "None"
+            | "undefined" => {
+                out.push(RhsArraySlot::Literal);
+            }
+            // Spread / list-splat shift index alignment unpredictably
+            // (`[...arr, b]` may expand to N elements at index 0). Bail
+            // so callers fall back to scalar union.
+            "spread_element" | "list_splat" | "list_splat_pattern" | "splat_argument"
+            | "unary_splat" | "splat_expression" => {
+                out.clear();
+                return out;
+            }
+            // Interpolated strings carry inner identifier uses. Treat as
+            // Complex so the slot picks up the contributions from
+            // `${user.id}` etc.
+            "template_string" | "string_interpolation" | "interpolation" | "encapsed_string" => {
+                let mut idents = Vec::new();
+                let mut paths = Vec::new();
+                collect_idents_with_paths(child, code, &mut idents, &mut paths);
+                let mut uses: SmallVec<[String; 4]> = SmallVec::new();
+                for p in paths {
+                    uses.push(p);
+                }
+                for ident in idents {
+                    if !uses.iter().any(|u| u == &ident) {
+                        uses.push(ident);
+                    }
+                }
+                let source_cap = slot_source_cap(child);
+                out.push(RhsArraySlot::Complex { uses, source_cap });
+            }
+            // Everything else (call, member access, binary, subscript,
+            // unary, ternary, nested array literal, etc.) is a "complex"
+            // slot. Harvest inner ident uses so the SSA lowering can paint
+            // the binding with this slot's contributions only — not the
+            // union of every ident on the RHS.
+            _ => {
+                let mut idents = Vec::new();
+                let mut paths = Vec::new();
+                collect_idents_with_paths(child, code, &mut idents, &mut paths);
+                let mut uses: SmallVec<[String; 4]> = SmallVec::new();
+                for p in paths {
+                    uses.push(p);
+                }
+                for ident in idents {
+                    if !uses.iter().any(|u| u == &ident) {
+                        uses.push(ident);
+                    }
+                }
+                let source_cap = slot_source_cap(child);
+                out.push(RhsArraySlot::Complex { uses, source_cap });
+            }
+        }
+    }
+    out
+}
+
 /// Recursively collect every identifier that occurs inside `n`.
 ///
 /// Recognises `identifier` (most languages), `variable_name` (PHP),
 /// `field_identifier` (Go), `property_identifier` (JS/TS), and
-/// `shorthand_property_identifier_pattern` (JS/TS destructuring).
+/// `shorthand_property_identifier` / `shorthand_property_identifier_pattern`
+/// (JS/TS object-literal shorthand uses and destructuring binding patterns).
 pub(crate) fn collect_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
     match n.kind() {
         "identifier"
         | "field_identifier"
         | "property_identifier"
+        | "shorthand_property_identifier"
         | "shorthand_property_identifier_pattern"
         // PHP `name`: leaf node carrying the bare identifier text for
         // function/method names and similar grammar slots.  Without this

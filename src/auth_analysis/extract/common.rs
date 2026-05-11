@@ -712,6 +712,8 @@ pub fn build_function_unit_with_meta(
         .cloned()
         .collect();
 
+    let is_nextauth_options_factory = body_returns_nextauth_options(node, bytes);
+
     AnalysisUnit {
         kind,
         name,
@@ -734,7 +736,205 @@ pub fn build_function_unit_with_meta(
         typed_bounded_vars: preseeded_bounded,
         typed_bounded_dto_fields: std::collections::HashMap::new(),
         self_scoped_session_bases: state.self_scoped_session_bases,
+        is_nextauth_options_factory,
     }
+}
+
+/// True when the function body at `node` is a NextAuth authority
+/// surface.  Recognises two shapes:
+///
+///   1. An object literal with a `callbacks: { ... }` property whose
+///      nested entries name at least one canonical NextAuth callback
+///      (`signIn`, `session`, `jwt`, `redirect`, `authorize`,
+///      `authorized`).  Matches the cal.com idiom
+///      `export const getOptions = (...) => ({ callbacks: { ... } })`.
+///
+///   2. An object literal whose entries name at least one distinctive
+///      NextAuth Adapter method (`getUserByAccount`, `linkAccount`,
+///      `unlinkAccount`, `createVerificationToken`,
+///      `useVerificationToken`, `getSessionAndUser`) AND at least one
+///      other canonical Adapter method.  Matches the cal.com idiom
+///      `function CalComAdapter(prisma): Adapter { return { ... } }`
+///      where the returned Adapter object holds the implementation.
+///
+/// In both shapes the inner method bodies are NOT enumerated as
+/// separate units (object method shorthands stay anonymous), so every
+/// identity-resolution operation from the inner methods accumulates
+/// onto the outer factory's unit.  Without this flag the outer unit's
+/// name is `getOptions` / `CalComAdapter`, so `is_nextauth_callback_unit`
+/// cannot match by name and the missing-ownership rule fires on every
+/// identity lookup inside the surface.
+///
+/// JS/TS-only by construction (matches `object` / `pair` /
+/// `method_definition` / `shorthand_property_identifier` node kinds).
+/// Returns false on other languages.
+fn body_returns_nextauth_options(node: Node<'_>, bytes: &[u8]) -> bool {
+    fn scan(node: Node<'_>, bytes: &[u8]) -> bool {
+        if matches!(node.kind(), "object" | "object_expression")
+            && (object_has_nextauth_callbacks_property(node, bytes)
+                || object_is_nextauth_adapter(node, bytes))
+        {
+            return true;
+        }
+        for child in named_children(node) {
+            if scan(child, bytes) {
+                return true;
+            }
+        }
+        false
+    }
+    scan(node, bytes)
+}
+
+fn object_has_nextauth_callbacks_property(node: Node<'_>, bytes: &[u8]) -> bool {
+    for entry in named_children(node) {
+        let Some((key_text, value_node)) = object_entry_key_value(entry, bytes) else {
+            continue;
+        };
+        if key_text != "callbacks" {
+            continue;
+        }
+        if matches!(value_node.kind(), "object" | "object_expression")
+            && object_contains_nextauth_callback_method(value_node, bytes)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn object_contains_nextauth_callback_method(node: Node<'_>, bytes: &[u8]) -> bool {
+    for entry in named_children(node) {
+        if entry.kind() == "method_definition" {
+            if let Some(name_node) = entry.child_by_field_name("name") {
+                let name = text(name_node, bytes);
+                if is_nextauth_callback_name(&name) {
+                    return true;
+                }
+            }
+            continue;
+        }
+        if let Some((key_text, _value_node)) = object_entry_key_value(entry, bytes)
+            && is_nextauth_callback_name(&key_text)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn object_entry_key_value<'a>(entry: Node<'a>, bytes: &[u8]) -> Option<(String, Node<'a>)> {
+    match entry.kind() {
+        "pair" => {
+            let key = entry.child_by_field_name("key")?;
+            let value = entry.child_by_field_name("value")?;
+            Some((object_key_text(key, bytes), value))
+        }
+        "method_definition" => {
+            let name = entry.child_by_field_name("name")?;
+            Some((text(name, bytes), entry))
+        }
+        _ => None,
+    }
+}
+
+fn object_key_text(node: Node<'_>, bytes: &[u8]) -> String {
+    match node.kind() {
+        "property_identifier" | "identifier" | "shorthand_property_identifier" => text(node, bytes),
+        "string" | "string_literal" => {
+            let raw = text(node, bytes);
+            raw.trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                .to_string()
+        }
+        "computed_property_name" => {
+            if let Some(inner) = node.named_child(0) {
+                object_key_text(inner, bytes)
+            } else {
+                String::new()
+            }
+        }
+        _ => text(node, bytes),
+    }
+}
+
+fn is_nextauth_callback_name(name: &str) -> bool {
+    matches!(
+        name,
+        "signIn" | "session" | "jwt" | "redirect" | "authorize" | "authorized"
+    )
+}
+
+/// True when the object literal at `node` looks like a NextAuth
+/// Adapter implementation: at least one distinctive Adapter method
+/// name AND at least two canonical Adapter method names overall.
+/// The distinctive subset (`getUserByAccount`, `linkAccount`,
+/// `unlinkAccount`, `createVerificationToken`, `useVerificationToken`,
+/// `getSessionAndUser`) names operations that are unique to the
+/// NextAuth Adapter contract; the broader canonical set (createUser /
+/// getUser / getUserByEmail / updateUser / deleteUser / createSession /
+/// updateSession / deleteSession) overlaps with generic CRUD repos, so
+/// the distinctive-name witness gates the recognition.
+fn object_is_nextauth_adapter(node: Node<'_>, bytes: &[u8]) -> bool {
+    let mut distinctive_seen = false;
+    let mut total = 0_usize;
+    for entry in named_children(node) {
+        let Some(key_text) = adapter_object_entry_key(entry, bytes) else {
+            continue;
+        };
+        if !is_nextauth_adapter_method_name(&key_text) {
+            continue;
+        }
+        total += 1;
+        if is_nextauth_adapter_distinctive_method_name(&key_text) {
+            distinctive_seen = true;
+        }
+    }
+    distinctive_seen && total >= 2
+}
+
+fn adapter_object_entry_key(entry: Node<'_>, bytes: &[u8]) -> Option<String> {
+    match entry.kind() {
+        "method_definition" => entry
+            .child_by_field_name("name")
+            .map(|n| object_key_text(n, bytes)),
+        "pair" => entry
+            .child_by_field_name("key")
+            .map(|n| object_key_text(n, bytes)),
+        "shorthand_property_identifier" => Some(text(entry, bytes)),
+        _ => None,
+    }
+}
+
+fn is_nextauth_adapter_method_name(name: &str) -> bool {
+    matches!(
+        name,
+        "createUser"
+            | "getUser"
+            | "getUserByEmail"
+            | "getUserByAccount"
+            | "updateUser"
+            | "deleteUser"
+            | "linkAccount"
+            | "unlinkAccount"
+            | "createSession"
+            | "getSessionAndUser"
+            | "updateSession"
+            | "deleteSession"
+            | "createVerificationToken"
+            | "useVerificationToken"
+    )
+}
+
+fn is_nextauth_adapter_distinctive_method_name(name: &str) -> bool {
+    matches!(
+        name,
+        "getUserByAccount"
+            | "linkAccount"
+            | "unlinkAccount"
+            | "createVerificationToken"
+            | "useVerificationToken"
+            | "getSessionAndUser"
+    )
 }
 
 #[derive(Default)]
@@ -832,14 +1032,13 @@ fn collect_unit_state(
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
             collect_call(node, bytes, rules, state)
         }
-        "if_statement" | "elif_clause" | "while_statement" | "do_statement" | "if" | "unless"
-        | "if_modifier" | "unless_modifier" | "while_modifier" | "until_modifier"
-        | "while_expression" => {
+        "while_statement" | "do_statement" | "while_modifier" | "until_modifier"
+        | "while_expression" | "unless" | "unless_modifier" => {
             if let Some(condition) = node.child_by_field_name("condition") {
                 collect_condition(condition, bytes, rules, state);
             }
         }
-        "if_expression" => {
+        "if_statement" | "elif_clause" | "if_expression" | "if" | "if_modifier" => {
             if let Some(condition) = node.child_by_field_name("condition") {
                 collect_condition(condition, bytes, rules, state);
             }
@@ -868,6 +1067,12 @@ fn collect_unit_state(
             collect_self_actor_binding(node, bytes, rules, state);
             collect_self_actor_id_binding(node, bytes, state);
             collect_const_string_binding(node, bytes, state);
+            // JS/TS row-fetch declarators (`const webhook = await
+            // repo.findById(id)`) need row-population recognition so
+            // the post-fetch ownership-equality detector can attribute
+            // back to the row's let line. `collect_row_population`
+            // accepts the `name` field used by `variable_declarator`.
+            collect_row_population(node, bytes, state);
         }
         // Go `id := "id"` / Python `id = "id"` / Java `String id = "id";` /
         // Ruby `id = "id"`, language-specific binding nodes that the
@@ -1336,11 +1541,13 @@ fn collect_member_alias_binding(node: Node<'_>, bytes: &[u8], state: &mut UnitSt
 /// flagged despite a textual auth check on the resulting row.
 fn collect_row_population(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
     // Most languages expose `pattern`/`value` on let / const / var
-    // declarations.  Ruby `assignment` uses `left`/`right` instead, so
-    // accept either.  When both fields are missing, the node isn't an
-    // RHS-bound binding and we skip.
+    // declarations.  Ruby `assignment` uses `left`/`right` instead.
+    // JS/TS `variable_declarator` uses `name`/`value`.  Accept any of
+    // them; when none is present the node isn't an RHS-bound binding
+    // and we skip.
     let Some(pattern) = node
         .child_by_field_name("pattern")
+        .or_else(|| node.child_by_field_name("name"))
         .or_else(|| node.child_by_field_name("left"))
     else {
         return;
@@ -2784,8 +2991,8 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
     let Some(operator) = binary_operator_text(condition, bytes) else {
         return;
     };
-    let is_ne = matches!(operator.as_str(), "!=" | "ne");
-    let is_eq = matches!(operator.as_str(), "==" | "eq");
+    let is_ne = matches!(operator.as_str(), "!=" | "!==" | "ne");
+    let is_eq = matches!(operator.as_str(), "==" | "===" | "eq");
     if !is_ne && !is_eq {
         return;
     }
@@ -2801,7 +3008,7 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
         return;
     };
 
-    if !branch_has_early_exit(fail_branch) {
+    if !branch_has_early_exit(fail_branch, bytes) {
         return;
     }
 
@@ -2925,16 +3132,61 @@ fn resolve_else_block(alt: Node<'_>) -> Node<'_> {
     alt
 }
 
-fn branch_has_early_exit(branch: Node<'_>) -> bool {
-    named_children(branch).into_iter().any(node_is_early_exit)
+fn branch_has_early_exit(branch: Node<'_>, bytes: &[u8]) -> bool {
+    named_children(branch)
+        .into_iter()
+        .any(|n| node_is_early_exit(n, bytes))
 }
 
-fn node_is_early_exit(node: Node<'_>) -> bool {
+fn node_is_early_exit(node: Node<'_>, bytes: &[u8]) -> bool {
     match node.kind() {
         "return_expression" | "return_statement" => true,
-        "expression_statement" => named_children(node).into_iter().any(node_is_early_exit),
+        // Throwing aborts execution flow.  Common in JS/TS / Java
+        // (`throw new ForbiddenException()`), Python (`raise ...`),
+        // Ruby (`raise ...`).
+        "throw_statement" | "throw_expression" | "raise_statement" => true,
+        // A call whose callee name is in the framework denial set
+        // (`notFound()` / `redirect()` / `abort()` / `forbidden()` /
+        // `unauthorized()` / etc.) terminates the request.  These
+        // helpers either throw under the hood (Next.js, Flask) or
+        // exit the process (`process.exit`, `sys.exit`).
+        "call_expression" | "call" | "method_invocation" => is_denial_call(node, bytes),
+        "expression_statement" => named_children(node)
+            .into_iter()
+            .any(|n| node_is_early_exit(n, bytes)),
         _ => false,
     }
+}
+
+/// Recognise calls that act as request-terminating denial helpers.
+///
+/// The callee name is matched against a curated set of framework
+/// idioms.  This is read in `node_is_early_exit` from inside the
+/// row-ownership-equality detector, where the ambient context already
+/// requires an `owner.field` vs. `self.id` binary comparison; the
+/// denial-call match is only the early-exit witness, not the auth
+/// signal itself.
+fn is_denial_call(call_node: Node<'_>, bytes: &[u8]) -> bool {
+    let Some(callee_node) = call_node
+        .child_by_field_name("function")
+        .or_else(|| call_node.child_by_field_name("name"))
+    else {
+        return false;
+    };
+    let callee_text = text(callee_node, bytes);
+    let trimmed = callee_text.trim();
+    let leaf = trimmed.rsplit('.').next().unwrap_or(trimmed);
+    let leaf = leaf.rsplit("::").next().unwrap_or(leaf);
+    matches!(
+        leaf,
+        "notFound"
+            | "redirect"
+            | "permanentRedirect"
+            | "unauthorized"
+            | "forbidden"
+            | "abort"
+            | "halt"
+    )
 }
 
 pub(super) fn is_owner_field_subject(subject: &ValueRef) -> bool {
@@ -5418,5 +5670,221 @@ mod tests {
                 &callbacks
             ));
         }
+    }
+
+    #[test]
+    fn trpc_options_destructure_param_seeds_self_scoped_session_base() {
+        // Cal.com-shaped TRPC handler: parameter is a destructured
+        // options alias whose `ctx` field's nested type literal
+        // references `TrpcSessionUser`. `FileMeta::scan` adds
+        // `GetOptions` to `trpc_alias_names` (body-text marker hit);
+        // `collect_trpc_ctx_param` then fires on the
+        // `required_parameter` and seeds `ctx.user` into the unit's
+        // `self_scoped_session_bases`.
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+type TrpcSessionUser = { id: number };
+type GetOptions = {
+  ctx: { user: NonNullable<TrpcSessionUser> };
+  input: { id: number };
+};
+export const handleGet = async ({ ctx, input }: GetOptions) => {
+  return prisma.booking.findFirst({ where: { id: input.id, userId: ctx.user.id } });
+};
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let meta = super::FileMeta::scan(tree.root_node(), src);
+        assert!(
+            meta.trpc_alias_names.contains("GetOptions"),
+            "trpc_alias_names missing GetOptions: {:?}",
+            meta.trpc_alias_names
+        );
+
+        let rules = crate::auth_analysis::config::AuthAnalysisRules::disabled();
+        let mut model = crate::auth_analysis::model::AuthorizationModel::default();
+        super::collect_top_level_units(tree.root_node(), src, &rules, &mut model);
+        let unit = model
+            .units
+            .iter()
+            .find(|u| u.name.as_deref() == Some("handleGet"))
+            .expect("handleGet unit");
+        assert!(
+            unit.self_scoped_session_bases.contains("ctx.user"),
+            "self_scoped_session_bases missing ctx.user: {:?}",
+            unit.self_scoped_session_bases
+        );
+    }
+
+    /// Pin the JS/TS post-fetch ownership-equality recogniser added in
+    /// session 0011.  The `if_statement` arm of `collect_unit_state`
+    /// must dispatch to `detect_ownership_equality_check` (previously
+    /// only `if_expression` did), the strict `!==` operator must be
+    /// recognised as inequality, the framework denial helper
+    /// `notFound()` must count as an early-exit witness, and the JS/TS
+    /// `variable_declarator` arm must populate `row_population_data`
+    /// so the synthetic `Ownership` AuthCheck attributes back to the
+    /// row's let line.
+    #[test]
+    fn detect_post_fetch_ownership_jsts_with_strict_neq_and_denial_call() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+declare class Repo { findById(id: string): Promise<{ userId: number }>; }
+declare function getServerSession(): Promise<{ user?: { id: number } } | null>;
+declare function notFound(): never;
+export async function handleGet({ id }: { id: string }) {
+  const session = await getServerSession();
+  if (!session?.user?.id) return null;
+  const repo: Repo = new Repo();
+  const webhook = await repo.findById(id);
+  if (webhook.userId !== session.user.id) {
+    notFound();
+  }
+  return webhook;
+}
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let rules = crate::auth_analysis::config::AuthAnalysisRules::disabled();
+        let mut model = crate::auth_analysis::model::AuthorizationModel::default();
+        super::collect_top_level_units(tree.root_node(), src, &rules, &mut model);
+        let unit = model
+            .units
+            .iter()
+            .find(|u| u.name.as_deref() == Some("handleGet"))
+            .expect("handleGet unit");
+
+        let webhook_pop = unit
+            .row_population_data
+            .get("webhook")
+            .expect("collect_row_population must populate `webhook` from variable_declarator");
+        // The `let webhook = await repo.findById(id)` line should
+        // anchor at the call site, not the let line.  In this fixture
+        // both are on the same line so the back-dating is invisible
+        // here, the assertion is that the entry exists.
+        assert!(webhook_pop.0 > 0);
+
+        let owner_check = unit
+            .auth_checks
+            .iter()
+            .find(|c| matches!(c.kind, super::AuthCheckKind::Ownership))
+            .expect("ownership-equality detector must emit an Ownership AuthCheck");
+        let owner_subject = owner_check
+            .subjects
+            .iter()
+            .find(|s| s.field.as_deref() == Some("userId"))
+            .expect("Ownership AuthCheck must carry the owner field subject");
+        assert_eq!(
+            owner_subject.base.as_deref(),
+            Some("webhook"),
+            "owner subject base must be the row var: {:?}",
+            owner_subject
+        );
+    }
+
+    /// Pin the NextAuth Adapter factory recogniser added in session
+    /// 0030.  `body_returns_nextauth_options` must flip on for the
+    /// cal.com `function CalComAdapter(client): Adapter { return {
+    /// createUser, getUser, getUserByAccount, ... } }` shape so that
+    /// `is_nextauth_callback_unit` suppresses the missing-ownership
+    /// rule across the inner Adapter methods (their operations
+    /// accumulate onto the outer factory's unit).
+    #[test]
+    fn nextauth_adapter_factory_flags_outer_unit() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+declare const prismaClient: any;
+export default function CalComAdapter(client: any) {
+  return {
+    createUser: async (data: { email: string }) => {
+      const user = await prismaClient.user.create({ data });
+      return user;
+    },
+    getUser: async (id: string) => {
+      const user = await prismaClient.user.findUnique({ where: { id } });
+      return user;
+    },
+    async getUserByAccount(providerAccountId: { provider: string; providerAccountId: string }) {
+      const account = await prismaClient.account.findUnique({
+        where: { provider_providerAccountId: providerAccountId },
+        select: { user: true },
+      });
+      return account?.user ?? null;
+    },
+    createVerificationToken: async (data: any) => prismaClient.verificationToken.create({ data }),
+    useVerificationToken: async (identifier: any) => prismaClient.verificationToken.delete({ where: identifier }),
+    linkAccount: async (account: any) => prismaClient.account.create({ data: account }),
+    unlinkAccount: async (providerAccountId: any) => prismaClient.account.delete({ where: providerAccountId }),
+  };
+}
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let rules = crate::auth_analysis::config::AuthAnalysisRules::disabled();
+        let mut model = crate::auth_analysis::model::AuthorizationModel::default();
+        super::collect_top_level_units(tree.root_node(), src, &rules, &mut model);
+        let unit = model
+            .units
+            .iter()
+            .find(|u| u.name.as_deref() == Some("CalComAdapter"))
+            .expect("CalComAdapter unit");
+        assert!(
+            unit.is_nextauth_options_factory,
+            "Adapter factory must set is_nextauth_options_factory: \
+             {:?}",
+            unit.name
+        );
+    }
+
+    /// Negative: a generic CRUD repo with `createUser` / `getUser` /
+    /// `updateUser` / `deleteUser` (no Adapter-distinctive method
+    /// names) must NOT be flagged as a NextAuth Adapter.  Without the
+    /// distinctive-name gate any plain user repo would suppress
+    /// missing-ownership findings.
+    #[test]
+    fn nextauth_adapter_recogniser_rejects_generic_crud_repo() {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter::Language::from(
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            ))
+            .unwrap();
+        let src = br#"
+declare const db: any;
+export function makeUserRepo() {
+  return {
+    createUser: async (data: any) => db.user.create({ data }),
+    getUser: async (id: string) => db.user.findUnique({ where: { id } }),
+    updateUser: async (id: string, data: any) => db.user.update({ where: { id }, data }),
+    deleteUser: async (id: string) => db.user.delete({ where: { id } }),
+  };
+}
+"#;
+        let tree = parser.parse(src.as_slice(), None).unwrap();
+        let rules = crate::auth_analysis::config::AuthAnalysisRules::disabled();
+        let mut model = crate::auth_analysis::model::AuthorizationModel::default();
+        super::collect_top_level_units(tree.root_node(), src, &rules, &mut model);
+        let unit = model
+            .units
+            .iter()
+            .find(|u| u.name.as_deref() == Some("makeUserRepo"))
+            .expect("makeUserRepo unit");
+        assert!(
+            !unit.is_nextauth_options_factory,
+            "generic CRUD repo must NOT be flagged as Adapter: {:?}",
+            unit.name
+        );
     }
 }

@@ -1,7 +1,139 @@
 use super::{
     ImportBinding, ImportBindings, PromisifyAlias, PromisifyAliases, member_expr_text, text_of,
 };
+use std::collections::HashMap;
 use tree_sitter::{Node, Tree};
+
+/// File-local view of every JS/TS import binding: local-name → source-module
+/// specifier (verbatim from the `import` / `require` site, without `node:`
+/// stripping). Built once per CFG pass; consumed by the gated-label
+/// post-pass via [`crate::labels::ClassificationContext::local_imports`].
+///
+/// Records every binding regardless of aliasing (the legacy
+/// [`extract_import_bindings`] only preserves *renamed* bindings, which is
+/// not enough for Phase 05's `import { readFile } from 'fs/promises'`
+/// shape where `local_name == imported_name`).
+///
+/// Shares its top-level walk with [`crate::resolve::walk_js_top_level_imports`]
+/// so the import-clause / require-declarator parsing logic only lives in one
+/// place; this view simply discards the resolver verdict and side-effect-only
+/// markers.
+pub(super) fn extract_local_import_view(tree: &Tree, code: &[u8]) -> HashMap<String, String> {
+    let mut out: HashMap<String, String> = HashMap::new();
+    for raw in crate::resolve::walk_js_top_level_imports(tree, code) {
+        if raw.local.is_empty() {
+            continue;
+        }
+        out.insert(raw.local, raw.source_spec);
+    }
+    extend_with_promises_alias(tree, code, &mut out);
+    out
+}
+
+/// Recognise top-level `const fsp = fs.promises;` /
+/// `const fsp = require('fs').promises;` aliasing and add the new local
+/// name to the import view as `fs/promises` (or `node:fs/promises`,
+/// whichever the source binding spelt).
+///
+/// The Phase 05 `LabelGate::ImportedFromModule(&["fs/promises", ...])`
+/// only consults `local_imports[leading_identifier(callee)]`. Without
+/// this extension, `fsp.readFile(x)` evades the gate because `fsp`
+/// itself is not an import binding — only the underlying `fs`
+/// namespace is.
+fn extend_with_promises_alias(tree: &Tree, code: &[u8], out: &mut HashMap<String, String>) {
+    let root = tree.root_node();
+    let mut top_cursor = root.walk();
+    for child in root.children(&mut top_cursor) {
+        if !matches!(child.kind(), "lexical_declaration" | "variable_declaration") {
+            continue;
+        }
+        let mut decl_cursor = child.walk();
+        for decl in child.children(&mut decl_cursor) {
+            if decl.kind() != "variable_declarator" {
+                continue;
+            }
+            let (Some(name_node), Some(value_node)) = (
+                decl.child_by_field_name("name"),
+                decl.child_by_field_name("value"),
+            ) else {
+                continue;
+            };
+            if name_node.kind() != "identifier" {
+                continue;
+            }
+            let Some(local_name) = text_of(name_node, code) else {
+                continue;
+            };
+            if value_node.kind() != "member_expression" {
+                continue;
+            }
+            let property = value_node
+                .child_by_field_name("property")
+                .and_then(|p| text_of(p, code));
+            if property.as_deref() != Some("promises") {
+                continue;
+            }
+            let Some(obj) = value_node.child_by_field_name("object") else {
+                continue;
+            };
+            let Some(source) = promises_alias_source(obj, code, out) else {
+                continue;
+            };
+            // Don't override an existing import entry for the same name —
+            // an explicit import of `fsp` from `fs/promises` already says
+            // what we'd be inferring here.
+            out.entry(local_name).or_insert(source);
+        }
+    }
+}
+
+/// Resolve the object side of a `<lhs> = <obj>.promises` member-expression
+/// to a source-module string when `<obj>` is a known `fs` binding.
+///
+/// Recognised shapes:
+/// - identifier `X` where `local_imports[X]` is `fs` or `node:fs`
+/// - `require('fs')` / `require("node:fs")` call expression
+fn promises_alias_source(
+    obj: Node,
+    code: &[u8],
+    imports_so_far: &HashMap<String, String>,
+) -> Option<String> {
+    match obj.kind() {
+        "identifier" => {
+            let id = text_of(obj, code)?;
+            let module = imports_so_far.get(&id)?;
+            map_fs_module_to_promises(module)
+        }
+        "call_expression" => {
+            let func = obj.child_by_field_name("function")?;
+            if text_of(func, code).as_deref() != Some("require") {
+                return None;
+            }
+            let args = obj.child_by_field_name("arguments")?;
+            let mut cursor = args.walk();
+            for arg in args.children(&mut cursor) {
+                if !matches!(arg.kind(), "string" | "template_string") {
+                    continue;
+                }
+                let raw = text_of(arg, code)?;
+                let spec = raw.trim_matches(|c: char| c == '\'' || c == '"' || c == '`');
+                return map_fs_module_to_promises(spec);
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn map_fs_module_to_promises(module: &str) -> Option<String> {
+    if module.eq_ignore_ascii_case("fs") {
+        Some("fs/promises".to_string())
+    } else if module.eq_ignore_ascii_case("node:fs") {
+        Some("node:fs/promises".to_string())
+    } else {
+        None
+    }
+}
 
 // -------------------------------------------------------------------------
 //  Import binding extraction
@@ -358,6 +490,129 @@ fn extract_require_module(node: Node, code: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+/// Per-file Rust scan: did the file `use` a join-style macro from `tokio` or
+/// `futures`? Returns the crate prefix to use when the file calls a bare
+/// `join!` / `try_join!` macro.
+///
+/// Rationale: tree-sitter records `tokio::join!(...)` with a fully qualified
+/// `macro` field text, but `use tokio::join; ... join!(a, b)` records the
+/// bare leaf. Without this lookup, the SSA-level promise-combinator
+/// recogniser (`crate::labels::is_promise_combinator`) misses the bare form
+/// and the macro's argument taint is dropped. Conservative: returns `None`
+/// when both `tokio::<name>` and `futures::<name>` are imported (ambiguous)
+/// or when neither is, leaving the bare `join` callee alone.
+pub(super) fn rust_bare_join_crate_prefix(
+    root: Node,
+    code: &[u8],
+    leaf: &str,
+) -> Option<&'static str> {
+    if !matches!(leaf, "join" | "try_join") {
+        return None;
+    }
+    let mut cursor = root.walk();
+    let mut tokio_seen = false;
+    let mut futures_seen = false;
+    for child in root.children(&mut cursor) {
+        if child.kind() != "use_declaration" {
+            continue;
+        }
+        if rust_use_decl_imports_leaf(child, code, "tokio", leaf) {
+            tokio_seen = true;
+        }
+        if rust_use_decl_imports_leaf(child, code, "futures", leaf) {
+            futures_seen = true;
+        }
+    }
+    match (tokio_seen, futures_seen) {
+        (true, false) => Some("tokio"),
+        (false, true) => Some("futures"),
+        _ => None,
+    }
+}
+
+/// True when `use_decl` brings `<crate_prefix>::<leaf>` into scope.
+///
+/// Recognises the common shapes:
+/// * `use tokio::join;`                          → leaf at the path tail
+/// * `use tokio::{join, select};`                → leaf inside a use_list
+/// * `use tokio::join as my_join;`               → aliased; we detect the
+///   original path even though the aliased name is unused (the macro is
+///   typically invoked under its alias, but if the alias and the bare form
+///   collide the rewrite is still safe).
+/// * `use tokio::*;` is NOT recognised — wildcard imports are too permissive
+///   for the bare-leaf rewrite to stay precise.
+fn rust_use_decl_imports_leaf(use_decl: Node, code: &[u8], crate_prefix: &str, leaf: &str) -> bool {
+    let mut stack = vec![use_decl];
+    while let Some(node) = stack.pop() {
+        match node.kind() {
+            // `use tokio::join;` — argument is a `scoped_identifier`.
+            "scoped_identifier" => {
+                if scoped_identifier_matches(node, code, crate_prefix, leaf) {
+                    return true;
+                }
+            }
+            // `use tokio::{join, select};` — the `path` field is `tokio`,
+            // and a `use_list` enumerates leaves.
+            "scoped_use_list" => {
+                let path_ok = node
+                    .child_by_field_name("path")
+                    .and_then(|p| text_of(p, code))
+                    .as_deref()
+                    == Some(crate_prefix);
+                if path_ok && let Some(list) = node.child_by_field_name("list") {
+                    let mut lc = list.walk();
+                    for entry in list.named_children(&mut lc) {
+                        match entry.kind() {
+                            "identifier" if text_of(entry, code).as_deref() == Some(leaf) => {
+                                return true;
+                            }
+                            "use_as_clause"
+                                if entry
+                                    .child_by_field_name("path")
+                                    .and_then(|p| text_of(p, code))
+                                    .as_deref()
+                                    == Some(leaf) =>
+                            {
+                                return true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            // `use tokio::join as my_join;` — aliased clause sits directly
+            // under the use_declaration; check the path side.
+            "use_as_clause" => {
+                if let Some(p) = node.child_by_field_name("path")
+                    && p.kind() == "scoped_identifier"
+                    && scoped_identifier_matches(p, code, crate_prefix, leaf)
+                {
+                    return true;
+                }
+            }
+            _ => {
+                // Walk children for nested groups (`use a::{b::{c, d}}`).
+                let mut c = node.walk();
+                for ch in node.children(&mut c) {
+                    stack.push(ch);
+                }
+            }
+        }
+    }
+    false
+}
+
+fn scoped_identifier_matches(node: Node, code: &[u8], crate_prefix: &str, leaf: &str) -> bool {
+    let path_text = node
+        .child_by_field_name("path")
+        .and_then(|p| text_of(p, code));
+    let leaf_text = node
+        .child_by_field_name("name")
+        .and_then(|n| text_of(n, code));
+    matches!((path_text.as_deref(), leaf_text.as_deref()),
+        (Some(p), Some(l)) if p == crate_prefix && l == leaf)
 }
 
 // -------------------------------------------------------------------------

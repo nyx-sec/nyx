@@ -10,6 +10,43 @@ use std::collections::HashSet;
 
 pub struct ResourceMisuse;
 
+/// Distinguishes `obj.connect("event-name", handler)` event-handler
+/// registrations from real database-connection acquires.
+///
+/// Recognises the canonical handler shape: a string-literal first arg
+/// that does not look like a URL (`scheme://`), plus a second positional
+/// argument that resolves to a single identifier (the callable being
+/// registered).  SQLAlchemy `engine.connect()` and `sqlite3.connect(
+/// "path.db")` either pass zero args or a single string, so they fall
+/// through and the leak check still fires.
+///
+/// Kept out of the static `exclude_acquire` list because that list is
+/// callee-substring-only; this check needs to read argument shape from
+/// the call node.
+fn is_event_handler_register_shape(info: &crate::cfg::NodeInfo) -> bool {
+    let Some(first_literal) = info
+        .call
+        .arg_string_literals
+        .first()
+        .and_then(|x| x.as_ref())
+    else {
+        return false;
+    };
+    if first_literal.contains("://") {
+        return false;
+    }
+    let Some(second_uses) = info.call.arg_uses.get(1) else {
+        return false;
+    };
+    // A bare identifier (`callback`) lands as `["callback"]`; a
+    // member-access ref (`self._on_status`) lands as `["self",
+    // "_on_status"]`.  Both are valid handler shapes.  Real DB connects
+    // either have no second positional or pass a non-ident value
+    // (string literal for `connect("user", "pass", ...)`), which lands
+    // as an empty `arg_uses[1]`.
+    !second_uses.is_empty()
+}
+
 /// Find nodes matching acquire patterns for a given resource pair,
 /// excluding any that match `exclude_patterns`.
 fn find_acquire_nodes(
@@ -517,6 +554,21 @@ impl CfgAnalysis for ResourceMisuse {
                 if ctx.cfg[acquire].managed_resource {
                     continue;
                 }
+                // Suppress `obj.connect("event-name", callback)` event-
+                // handler registrations that share the `connect` /
+                // `cursor` callee suffix with real DB acquires.  Sphinx
+                // app.connect("config-inited", on_init), Flask blueprint
+                // handlers, and MQTT client.connect("topic", on_msg) all
+                // pass a string literal event name plus a callable
+                // identifier; SQLAlchemy `engine.connect()` and
+                // `sqlite3.connect("path.db")` either have no args or a
+                // single string arg.  Gated on the `db connection`
+                // resource name so file/socket/mutex pairs are untouched.
+                if pair.resource_name == "db connection"
+                    && is_event_handler_register_shape(&ctx.cfg[acquire])
+                {
+                    continue;
+                }
                 // SAFE-FOR-FIELD-LHS (Go only): skip member-expression
                 // LHS acquires.  `b.cpuprof = os.Create(...)` transfers
                 // ownership to the containing struct; closure
@@ -596,5 +648,85 @@ impl CfgAnalysis for ResourceMisuse {
         }
 
         findings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cfg::{CallMeta, NodeInfo, StmtKind};
+
+    fn call_node(arg_string_literals: Vec<Option<String>>, arg_uses: Vec<Vec<String>>) -> NodeInfo {
+        NodeInfo {
+            kind: StmtKind::Call,
+            call: CallMeta {
+                callee: Some("obj.connect".into()),
+                arg_string_literals,
+                arg_uses,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn event_handler_shape_recognises_sphinx_connect() {
+        // app.connect("config-inited", _on_init)
+        let info = call_node(
+            vec![Some("config-inited".into()), None],
+            vec![vec![], vec!["_on_init".into()]],
+        );
+        assert!(is_event_handler_register_shape(&info));
+    }
+
+    #[test]
+    fn event_handler_shape_recognises_self_method_callback() {
+        // client.connect("device/+", self._on_status)
+        let info = call_node(
+            vec![Some("device/+".into()), None],
+            vec![vec![], vec!["self".into(), "_on_status".into()]],
+        );
+        assert!(is_event_handler_register_shape(&info));
+    }
+
+    #[test]
+    fn event_handler_shape_rejects_url_first_arg() {
+        // engine.connect("postgres://localhost/mydb")
+        let info = call_node(vec![Some("postgres://localhost/mydb".into())], vec![vec![]]);
+        assert!(!is_event_handler_register_shape(&info));
+    }
+
+    #[test]
+    fn event_handler_shape_rejects_oracle_string_args() {
+        // cx_Oracle.connect("user", "pass", "dsn") -- arg1 is a literal,
+        // no identifier in `arg_uses[1]`.
+        let info = call_node(
+            vec![Some("user".into()), Some("pass".into()), Some("dsn".into())],
+            vec![vec![], vec![], vec![]],
+        );
+        assert!(!is_event_handler_register_shape(&info));
+    }
+
+    #[test]
+    fn event_handler_shape_rejects_no_args() {
+        // engine.connect()
+        let info = call_node(vec![], vec![]);
+        assert!(!is_event_handler_register_shape(&info));
+    }
+
+    #[test]
+    fn event_handler_shape_rejects_single_string_arg() {
+        // sqlite3.connect("path.db")
+        let info = call_node(vec![Some("path.db".into())], vec![vec![]]);
+        assert!(!is_event_handler_register_shape(&info));
+    }
+
+    #[test]
+    fn event_handler_shape_rejects_ident_first_arg() {
+        // signal.connect(receiver_func, sender=...) -- handled by the
+        // static exclude list `signal.connect`, but the shape check
+        // should also gate it out: first arg is not a string literal.
+        let info = call_node(vec![None], vec![vec!["receiver_func".into()]]);
+        assert!(!is_event_handler_register_shape(&info));
     }
 }

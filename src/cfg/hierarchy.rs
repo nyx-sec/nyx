@@ -337,7 +337,7 @@ fn collect_ruby<F: FnMut(String, String)>(root: Node<'_>, code: &[u8], push: &mu
                     && let Some(t) = text_of(c, code)
                 {
                     let leaf = t.rsplit("::").next().unwrap_or(&t).to_string();
-                    push(sub.clone(), leaf);
+                    push(sub, leaf);
                     break;
                 }
             }

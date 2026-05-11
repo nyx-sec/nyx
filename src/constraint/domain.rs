@@ -201,6 +201,36 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         // domain has no dedicated slot, share the Object index so
         // singleton recovery still maps to a meaningful TypeKind.
         TypeKind::NullPrototypeObject => 3,
+        // FileSystemPromisesNs is a JS-only namespace receiver type used
+        // by the Phase 05 fs/promises sink resolver. The bitset domain
+        // has no dedicated slot; share the Object index so singleton
+        // recovery still hands back a usable TypeKind.
+        TypeKind::FileSystemPromisesNs => 3,
+        // Phase 07 ORM receiver TypeKinds. They participate only in the
+        // type-qualified callee resolver via their `label_prefix()`; the
+        // bitset domain's flow-sensitive narrowing has no dedicated slot
+        // for them, so collapse to Object (3). Singleton recovery from
+        // the index will hand back `Object`, which is a benign upper
+        // bound for the ORM receiver shapes.
+        TypeKind::Sequelize
+        | TypeKind::TypeOrmRepo
+        | TypeKind::TypeOrmManager
+        | TypeKind::MikroOrmEm => 3,
+        // Phase 10 — `Request` is a Web-platform receiver type used
+        // by the App Router entry-point seeding path; it shares the
+        // Object slot for the same reason the ORM TypeKinds do.
+        TypeKind::Request => 3,
+        // Phase 15 — cross-language ORM receiver TypeKinds. Same
+        // rationale as the Phase 07 ORM TypeKinds above; they
+        // participate only in the type-qualified callee resolver via
+        // `label_prefix()` and have no dedicated slot in the bitset
+        // domain.
+        TypeKind::SqlAlchemySession
+        | TypeKind::DjangoQuerySet
+        | TypeKind::ActiveRecordRelation
+        | TypeKind::GormDb
+        | TypeKind::SqlxDb
+        | TypeKind::HibernateSession => 3,
     }
 }
 

@@ -97,6 +97,39 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
+    // Phase 13 — pathlib / aiofiles / shutil path-traversal sinks.
+    // Chained constructor + method shapes (`Path(p).read_text()`) reduce
+    // via paren-strip to the matcher text below; the path argument is
+    // the sink payload.  Receiver-bound shapes (`p = Path(...);
+    // p.read_text()`) are not covered here without a `pathlib.Path`
+    // TypeKind override and are left for a future phase.
+    LabelRule {
+        matchers: &[
+            "Path.open",
+            "Path.read_text",
+            "Path.write_text",
+            "Path.read_bytes",
+            "Path.write_bytes",
+            // Receiver-bound shapes (`p = Path(name); p.read_text()`)
+            // resolve via the `TypeKind::FileHandle` constructor mapping
+            // for `Path(...)` in `ssa/type_facts.rs`, which lets the
+            // type-qualified resolver rewrite `p.read_text` →
+            // `FileHandle.read_text` against the matchers below.
+            "FileHandle.open",
+            "FileHandle.read_text",
+            "FileHandle.write_text",
+            "FileHandle.read_bytes",
+            "FileHandle.write_bytes",
+            "aiofiles.open",
+            "shutil.copy",
+            "shutil.copy2",
+            "shutil.copyfile",
+            "shutil.move",
+            "shutil.rmtree",
+        ],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+    },
     LabelRule {
         matchers: &[
             "argparse.parse_args",
@@ -156,6 +189,22 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["os.path.abspath", "os.path.normpath"],
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: false,
+    },
+    // Phase 13 — `pathlib.Path.resolve(strict=True)` raises if the
+    // resolved path doesn't exist; the canonical / strict form is the
+    // documented path-traversal sanitiser.  Strict-mode argument
+    // inspection is not modeled (the rule fires for any `.resolve()`
+    // chained on a `Path(...)`); the false-clear risk on
+    // `Path(...).resolve()` (non-strict) is an accepted trade-off
+    // because the non-strict form still resolves symlinks and
+    // collapses `..` segments, which dominates the path-traversal
+    // attack surface.  Case-sensitive: `Path.resolve` is the literal
+    // pathlib method name; bare `resolve` is too broad (Django URL
+    // resolvers, Promise.resolve in JS-style libs).
+    LabelRule {
+        matchers: &["Path.resolve", "FileHandle.resolve"],
+        label: DataLabel::Sanitizer(Cap::FILE_IO),
+        case_sensitive: true,
     },
     // ─────────── Sinks ─────────────
     // Flask sinks
@@ -217,6 +266,26 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["objects.raw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — receiver-typed ORM sinks. `SqlAlchemySession.execute`
+    // / `SqlAlchemySession.scalar` / `SqlAlchemySession.scalars` etc.
+    // are produced when the receiver carries `TypeKind::SqlAlchemySession`
+    // (set by `constructor_type` for `sessionmaker()` / `Session(engine)` /
+    // `engine.connect()`).  `DjangoQuerySet.raw` / `DjangoQuerySet.extra`
+    // fire on `Model.objects.raw(sql)` / `Model.objects.extra(...)` shapes
+    // when the receiver was tagged via the `Model.objects` access path.
+    // `ActiveRecordRelation` is registered in `labels/ruby.rs`.
+    LabelRule {
+        matchers: &[
+            "SqlAlchemySession.execute",
+            "SqlAlchemySession.scalar",
+            "SqlAlchemySession.scalars",
+            "SqlAlchemySession.exec_driver_sql",
+            "DjangoQuerySet.raw",
+            "DjangoQuerySet.extra",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // SQL injection: sqlite3 / SQLAlchemy / generic DB connection execute.
     LabelRule {
@@ -1245,6 +1314,214 @@ pub static GATED_SINKS: &[SinkGate] = &[
             object_destination_fields: &["data"],
         },
     },
+    // ── SQL execute payload-arg gating (Phase 15 deferred fix) ────────────
+    //
+    // The flat label rules above already classify these callees as
+    // `Sink(SQL_QUERY)` on every argument.  The DB-API convention is that
+    // arg 0 is the SQL string and arg 1+ are parameterised bind values
+    // (`cursor.execute("SELECT * FROM t WHERE id = %s", (user_id,))`).  Tainted
+    // bind values are SAFE because the driver escapes them; tainted SQL is
+    // the SQLi vector.  These Destination-activation gates carry the same
+    // `Sink(SQL_QUERY)` label so they dedupe against the flat rule, but
+    // their `payload_args: &[0]` propagates into `sink_payload_args`,
+    // narrowing the SSA sink scan to arg 0 only.
+    SinkGate {
+        callee_matcher: "cursor.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "cursor.executemany",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "conn.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "connection.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "session.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "engine.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "objects.raw",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Receiver-typed forms; same payload shape (sql at arg 0).
+    SinkGate {
+        callee_matcher: "SqlAlchemySession.execute",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlAlchemySession.scalar",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlAlchemySession.scalars",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlAlchemySession.exec_driver_sql",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DjangoQuerySet.raw",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DjangoQuerySet.extra",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
 ];
 
 /// Prototype-pollution-style gates for Python.  Opt-in via the
@@ -1329,6 +1606,13 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "call"                  => Kind::CallFn,
     "assignment"            => Kind::Assignment,
     "expression_statement"  => Kind::CallWrapper,
+    // tree-sitter-python emits `await x` as a named `await` node (no
+    // `_expression` suffix, unlike JS/TS).  Map it to `AwaitForward` so
+    // the SSA lowering forwards the awaited value 1:1, mirroring the
+    // JS/TS contract.  Async-for in Python is plain `for_statement` with
+    // an unnamed `async` token child; the iterator-text rewrite in
+    // `cfg::push_node` covers both sync and async forms uniformly.
+    "await"                 => Kind::AwaitForward,
 
     // trivia
     "comment"               => Kind::Trivia,

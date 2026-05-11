@@ -102,6 +102,7 @@ pub mod database;
 #[cfg(feature = "dynamic")]
 pub mod dynamic;
 pub mod engine_notes;
+pub mod entry_points;
 pub mod errors;
 pub mod evidence;
 pub mod fmt;
@@ -111,6 +112,7 @@ pub mod output;
 pub mod patterns;
 pub mod pointer;
 pub mod rank;
+pub mod resolve;
 pub mod rust_resolve;
 #[cfg(feature = "serve")]
 pub mod server;

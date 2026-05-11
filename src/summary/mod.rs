@@ -33,6 +33,20 @@ use std::hash::{Hash, Hasher};
 /// Pairs a [`Cap`] with the source location of the consuming
 /// instruction so cross-file findings can attribute to the callee
 /// rather than the caller call-site.
+///
+/// `from_chain` distinguishes two flavours of recorded site:
+/// * `false`, the site was resolved via the body-local locator span,
+///   i.e. it points at a sink instruction in the function's own body.
+/// * `true`, the site was promoted from a deeper callee through
+///   `event.primary_sink_site`, i.e. this function's summary carries
+///   a chain-hop marker for a sink several frames down.
+///
+/// Pass-2 emission gates promotion of a site into `Finding.primary_location`
+/// on `from_chain || file_rel != caller_file_rel`: same-file single-hop
+/// helpers keep call-site emission (matching benchmark and real-world
+/// fixture calibration), multi-hop chains and cross-file callees surface
+/// the deep sink line.  See "Multi-hop intra-file sink attribution gap"
+/// in deferred.md for the design tradeoff.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SinkSite {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -44,11 +58,18 @@ pub struct SinkSite {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub snippet: String,
     pub cap: Cap,
+    /// True when this site was promoted from a deeper callee's summary
+    /// (`event.primary_sink_site` chain-hop), false when recorded from
+    /// the function's own locator span.  See struct docs.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub from_chain: bool,
 }
 
 impl SinkSite {
     /// Dedup key: two sites with the same `(file_rel, line, col, cap)`
-    /// describe the same consumption and collapse on merge.
+    /// describe the same consumption and collapse on merge.  `from_chain`
+    /// is intentionally excluded, the upgrade rule in [`union_sink_sites`]
+    /// takes over when two sites with different `from_chain` collide.
     pub(crate) fn dedup_key(&self) -> (&str, u32, u32, u32) {
         (self.file_rel.as_str(), self.line, self.col, self.cap.bits())
     }
@@ -62,8 +83,13 @@ impl SinkSite {
             col: 0,
             snippet: String::new(),
             cap,
+            from_chain: false,
         }
     }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Tree/bytes context for resolving a CFG span to a [`SinkSite`].
@@ -93,6 +119,7 @@ impl<'a> SinkSiteLocator<'a> {
             col: (point.column + 1) as u32,
             snippet,
             cap,
+            from_chain: false,
         }
     }
 }
@@ -101,11 +128,17 @@ pub(crate) use crate::utils::snippet::line_snippet;
 
 /// Union two `SmallVec<[SinkSite; 1]>` lists with `(file_rel, line, col,
 /// cap)` dedup.  Preserves insertion order of `existing` then appends any
-/// new sites from `incoming` not already present.
+/// new sites from `incoming` not already present.  When two sites with the
+/// same dedup key collide, `from_chain=true` wins, so a chain-hop marker is
+/// never lost when a same-file locator span happens to share coordinates.
 pub(crate) fn union_sink_sites(existing: &mut SmallVec<[SinkSite; 1]>, incoming: &[SinkSite]) {
     for site in incoming {
         let key = site.dedup_key();
-        if !existing.iter().any(|s| s.dedup_key() == key) {
+        if let Some(ex) = existing.iter_mut().find(|s| s.dedup_key() == key) {
+            if site.from_chain && !ex.from_chain {
+                ex.from_chain = true;
+            }
+        } else {
             existing.push(site.clone());
         }
     }
@@ -388,6 +421,16 @@ pub struct FuncSummary {
     /// [`crate::callgraph::TypeHierarchyIndex`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hierarchy_edges: Vec<(String, String)>,
+
+    /// Phase-10 Next.js entry-point classification.  When `Some(_)`,
+    /// the function is treated as an externally-driven entry point
+    /// whose parameters are seeded as `TaintOrigin::Source` at SSA
+    /// entry, mirroring the way an HTTP request handler's formals are
+    /// adversary-controlled by default.  `None` for ordinary
+    /// helpers — pass-2 keeps its existing baseline-subtraction
+    /// semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_kind: Option<crate::entry_points::EntryKind>,
 }
 
 // ── Cap conversion helpers ──────────────────────────────────────────────
@@ -421,6 +464,35 @@ impl FuncSummary {
         FuncKey {
             lang: Lang::from_slug(&self.lang).unwrap_or(Lang::Rust),
             namespace: normalize_namespace(&self.file_path, scan_root),
+            container: self.container.clone(),
+            name: self.name.clone(),
+            arity: Some(self.param_count),
+            disambig: self.disambig,
+            kind: self.kind,
+        }
+    }
+
+    /// Phase-04 [`FuncKey`] builder that consults a project-wide
+    /// [`crate::resolve::ModuleGraph`].
+    ///
+    /// When the file producing this summary lies inside a discovered
+    /// package, `namespace` becomes `"@scope/name::src/file.ts"`;
+    /// otherwise the result matches [`Self::func_key`] exactly.
+    /// Phase 04 only adds the helper, no resolution call site uses
+    /// it. Phase 10 switches the JS/TS pass-1 path to call this
+    /// instead of [`Self::func_key`].
+    pub fn func_key_with_resolver(
+        &self,
+        scan_root: Option<&str>,
+        module_graph: Option<&crate::resolve::ModuleGraph>,
+    ) -> FuncKey {
+        FuncKey {
+            lang: Lang::from_slug(&self.lang).unwrap_or(Lang::Rust),
+            namespace: crate::symbol::namespace_with_package(
+                &self.file_path,
+                scan_root,
+                module_graph,
+            ),
             container: self.container.clone(),
             name: self.name.clone(),
             arity: Some(self.param_count),
@@ -543,6 +615,26 @@ pub struct GlobalSummaries {
     /// Precise SSA-derived per-parameter summaries, keyed by `FuncKey`.
     /// These take precedence over `FuncSummary` during callee resolution.
     ssa_by_key: HashMap<FuncKey, SsaFuncSummary>,
+    /// Sibling index over [`Self::ssa_by_key`] keyed by
+    /// `(lang, namespace, name)`.  Populated in lockstep with `ssa_by_key`
+    /// (every `insert_ssa` / `merge` adds the key).  Used by the
+    /// cross-package SSA resolution path (step 0.7 in
+    /// `taint::ssa_transfer::resolve_callee`) to avoid an
+    /// `O(|ssa_by_key|)` linear scan per cross-package call site:
+    /// the resolver looks up the candidate `Vec<FuncKey>` and narrows
+    /// to a single hit by container / arity / disambig.  Strictly
+    /// additive: when the index is empty (e.g. tests that never insert
+    /// SSA summaries) the resolver falls back to its existing flat
+    /// paths.
+    ///
+    /// Note: SSA summaries are append-only on `GlobalSummaries` (no
+    /// remove/clear methods), so the index never needs invalidation.
+    /// Synthetic-disambig probing in
+    /// [`Self::reconcile_ssa_summary_key`] only mutates the inserted
+    /// key's `disambig` field, never the `(lang, namespace, name)`
+    /// triple, so the index value still points at every relevant
+    /// `FuncKey` after reconciliation.
+    ssa_by_lang_ns_name: HashMap<(Lang, String, String), Vec<FuncKey>>,
     /// Cross-file callee bodies for interprocedural symbolic execution.
     /// Keyed by `FuncKey` (same identity model as SSA summaries).
     bodies_by_key: HashMap<FuncKey, crate::taint::ssa_transfer::CalleeSsaBody>,
@@ -564,6 +656,16 @@ pub struct GlobalSummaries {
     /// execution-API auth-recognition gap on routes attached to bare
     /// child routers.
     router_facts_by_module: HashMap<String, crate::auth_analysis::router_facts::PerFileRouterFacts>,
+    /// Per-file Phase-09 cross-package import maps, keyed by file
+    /// namespace (scan-root-relative path, the same form
+    /// [`FuncKey::namespace`] uses).  Populated in pass 1 from each
+    /// file's [`crate::cfg::FileCfg::resolved_imports`] and consumed by
+    /// `inline_analyse_callee` when the inlined callee body's own
+    /// `cross_package_imports` Arc is empty (i.e. the body was loaded
+    /// from SQLite, where the field is `#[serde(skip)]`).  Closes the
+    /// indexed-mode parity gap on transitive cross-package IPA inside
+    /// inlined frames.
+    cross_package_imports_by_namespace: HashMap<String, std::sync::Arc<HashMap<String, FuncKey>>>,
     /// Type hierarchy index for runtime virtual-dispatch fan-out.
     ///
     /// Installed by [`Self::install_hierarchy`] after pass 1 from the
@@ -864,6 +966,7 @@ impl GlobalSummaries {
         }
         // SSA summaries: last-writer-wins (exact-key replacement, no unioning)
         for (key, ssa_sum) in other.ssa_by_key {
+            self.index_ssa_key(&key);
             self.ssa_by_key.insert(key, ssa_sum);
         }
         // Cross-file bodies: last-writer-wins
@@ -878,6 +981,10 @@ impl GlobalSummaries {
         // a file produces a fresh snapshot of its router declarations + edges.
         for (module_id, facts) in other.router_facts_by_module {
             self.router_facts_by_module.insert(module_id, facts);
+        }
+        // Cross-package imports: last-writer-wins per namespace.
+        for (ns, map) in other.cross_package_imports_by_namespace {
+            self.cross_package_imports_by_namespace.insert(ns, map);
         }
         // Hierarchy index: invalidate after a merge so the next consumer
         // sees a freshly-built view that includes `other`'s edges.  The
@@ -966,7 +1073,39 @@ impl GlobalSummaries {
         } else {
             self.reconcile_ssa_summary_key(key, &summary)
         };
+        self.index_ssa_key(&key);
         self.ssa_by_key.insert(key, summary);
+    }
+
+    /// Push `key` onto the secondary `(lang, namespace, name)` index.
+    /// Idempotent: a re-insert at the same triple does not duplicate
+    /// the key in the candidate vector.
+    fn index_ssa_key(&mut self, key: &FuncKey) {
+        let triple = (key.lang, key.namespace.clone(), key.name.clone());
+        let bucket = self.ssa_by_lang_ns_name.entry(triple).or_default();
+        if !bucket.contains(key) {
+            bucket.push(key.clone());
+        }
+    }
+
+    /// Look up SSA summary `FuncKey`s by `(lang, namespace, name)`.
+    /// Returns `&[]` when no SSA summary at that triple has been
+    /// stored.  Used by the cross-package resolution path so the
+    /// step-0.7 narrowing can iterate only the candidate set rather
+    /// than every persisted SSA key.
+    pub fn ssa_keys_by_qualified(&self, lang: Lang, namespace: &str, name: &str) -> &[FuncKey] {
+        // Borrow against (Lang, &str, &str) avoiding allocation by
+        // looking up with a tuple of owned Strings only when present.
+        // HashMap requires equivalent hash; (Lang, String, String)
+        // hashes the same as the equivalent tuple of equivalent
+        // values, so we construct a small owned key for the probe.
+        // Profile-light: this runs once per cross-package callee and
+        // both string clones are short (namespace path + leaf name).
+        let probe = (lang, namespace.to_string(), name.to_string());
+        self.ssa_by_lang_ns_name
+            .get(&probe)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Exact lookup of an SSA summary by fully-qualified key.
@@ -1088,6 +1227,38 @@ impl GlobalSummaries {
         self.router_facts_by_module.len()
     }
 
+    /// Insert a per-file Phase-09 cross-package import map.  Last-writer-wins
+    /// per namespace key — re-analysing a file produces a fresh snapshot
+    /// of its `(local_name → FuncKey)` resolutions.
+    pub fn insert_cross_package_imports(
+        &mut self,
+        namespace: String,
+        map: std::sync::Arc<HashMap<String, FuncKey>>,
+    ) {
+        if map.is_empty() {
+            return;
+        }
+        self.cross_package_imports_by_namespace
+            .insert(namespace, map);
+    }
+
+    /// Look up a per-file cross-package import map by file namespace.
+    /// Used by [`crate::taint::ssa_transfer`]'s inline-analysis frame to
+    /// recover the callee body's own import view when the body was loaded
+    /// from SQLite (where the Arc on `CalleeSsaBody` is stripped by
+    /// `#[serde(skip)]`).
+    pub fn get_cross_package_imports(
+        &self,
+        namespace: &str,
+    ) -> Option<&std::sync::Arc<HashMap<String, FuncKey>>> {
+        self.cross_package_imports_by_namespace.get(namespace)
+    }
+
+    /// Count of files that contributed cross-package import maps.
+    pub fn cross_package_imports_len(&self) -> usize {
+        self.cross_package_imports_by_namespace.len()
+    }
+
     /// Insert a cross-file callee body.
     ///
     /// See [`insert_ssa`](Self::insert_ssa) for the identity-safety rule.
@@ -1149,8 +1320,10 @@ impl GlobalSummaries {
     pub fn is_empty(&self) -> bool {
         self.by_key.is_empty()
             && self.ssa_by_key.is_empty()
+            && self.ssa_by_lang_ns_name.is_empty()
             && self.auth_by_key.is_empty()
             && self.router_facts_by_module.is_empty()
+            && self.cross_package_imports_by_namespace.is_empty()
     }
 
     /// Iterate over all (key, summary) pairs.
@@ -1683,6 +1856,10 @@ impl std::fmt::Debug for GlobalSummaries {
             .field("bodies_len", &self.bodies_by_key.len())
             .field("auth_len", &self.auth_by_key.len())
             .field("router_facts_len", &self.router_facts_by_module.len())
+            .field(
+                "cross_package_imports_len",
+                &self.cross_package_imports_by_namespace.len(),
+            )
             .finish()
     }
 }

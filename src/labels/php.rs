@@ -48,9 +48,29 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::FILE_IO),
         case_sensitive: false,
     },
-    // PDO parameterized queries
+    // PDO parameterized queries.  `prepareStatement` covers Drupal's
+    // Database\\Connection convention (and any PSR-style wrapper that
+    // uses the longer name); semantically identical to `prepare` —
+    // both return a statement object, the bind step ships values as
+    // out-of-band parameters, no concatenation occurs.
     LabelRule {
-        matchers: &["prepare", "bindParam", "bindValue"],
+        matchers: &["prepare", "prepareStatement", "bindParam", "bindValue"],
+        label: DataLabel::Sanitizer(Cap::SQL_QUERY),
+        case_sensitive: false,
+    },
+    // Phase 15 — `mysqli_real_escape_string($conn, $s)` and
+    // `pg_escape_string($s)` apply driver-side escaping for legacy
+    // string-concat shapes.  Treat as SQL_QUERY sanitizers so the
+    // value-replacement clears the cap on the call return.
+    // `addslashes` is intentionally excluded — it does NOT cover
+    // multibyte / charset-aware injection vectors.
+    LabelRule {
+        matchers: &[
+            "mysqli_real_escape_string",
+            "pg_escape_string",
+            "pg_escape_literal",
+            "pg_escape_identifier",
+        ],
         label: DataLabel::Sanitizer(Cap::SQL_QUERY),
         case_sensitive: false,
     },
@@ -121,9 +141,38 @@ pub static RULES: &[LabelRule] = &[
             "pdo.query",
             "mysqli.real_query",
             "mysqli_real_query",
+            // Phase 15 — `PDOStatement::execute` (with no args) executes a
+            // prepared statement; when prepared from a tainted string the
+            // bind step does NOT prevent injection (the SQL was already
+            // built unsafely).  The receiver-text suffix is `stmt.execute`.
+            // Distinct from the bare `execute` matcher (already on the
+            // generic SQL_QUERY rule via `query` matcher) because the
+            // OOP `$stmt->execute()` shape skips the SQL-string arg.
+            "stmt.execute",
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — Doctrine ORM raw-SQL passthrough APIs.  Doctrine's
+    // `EntityManager::createQuery($dql)` accepts a DQL string;
+    // `createNativeQuery($sql, $rsm)` accepts a native SQL string;
+    // `getConnection()->executeQuery($sql)` /
+    // `getConnection()->executeStatement($sql)` are the low-level
+    // Connection passthroughs that route to the underlying driver
+    // verbatim.  Suffix-matching covers both bound-receiver shapes
+    // (`$em->createQuery($dql)`) and the documentation-style
+    // class-qualified call form (`EntityManager.createQuery`).
+    LabelRule {
+        matchers: &[
+            "EntityManager.createQuery",
+            "EntityManager.createNativeQuery",
+            "createQuery",
+            "createNativeQuery",
+            "executeQuery",
+            "executeStatement",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // Laravel Eloquent: raw SQL methods.
     // DB::raw() → scoped_call_expression, callee text "DB.raw".
@@ -132,6 +181,22 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["DB.raw", "whereRaw", "selectRaw", "orderByRaw", "havingRaw"],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — Laravel raw-SQL execution facade methods.  `DB::select`,
+    // `DB::statement`, `DB::insert`, `DB::update`, `DB::delete`,
+    // `DB::unprepared` all accept a literal SQL string; the
+    // `unprepared` form is the explicit no-bind escape hatch.
+    LabelRule {
+        matchers: &[
+            "DB.select",
+            "DB.statement",
+            "DB.insert",
+            "DB.update",
+            "DB.delete",
+            "DB.unprepared",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // NOTE: `file_get_contents` and `fopen` can fetch URLs (SSRF vector) and
     // local files (LFI vector — `file://` scheme).  As a Sink(SSRF) they only
@@ -144,6 +209,32 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["file_get_contents", "curl_exec", "fopen"],
         label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: false,
+    },
+    // Phase 14 — `\GuzzleHttp\Client::request($method, $url, ...)` and the
+    // verb-shorthand methods `$client->get($url)` / `->head($url)` /
+    // `->options($url)`.  The read-shaped verbs carry the URL at arg 0
+    // and have no body argument, so a flat SSRF sink is FP-safe.  The
+    // body-bearing verbs (`post` / `put` / `patch`) live on the
+    // DATA_EXFIL list above; their URL-position SSRF is covered via
+    // `Client.request` (arg 1 is URL) below as a flat sink — Guzzle
+    // does not expose argument-role-aware metadata that would let the
+    // gate distinguish URL from body, but the source-sensitivity gate
+    // already silences plain `$_GET` / `$_POST` flows so the
+    // remaining FP surface is small.
+    LabelRule {
+        matchers: &[
+            "Client.get",
+            "Client.head",
+            "Client.options",
+            "Client.request",
+            "HttpClient.get",
+            "HttpClient.head",
+            "HttpClient.request",
+            "Http.get",
+            "Http.head",
+        ],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: true,
     },
     // ── Cross-boundary data exfiltration ──────────────────────────────────
     //
@@ -337,6 +428,26 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_values: &["CURLOPT_POSTFIELDS", "CURLOPT_COPYPOSTFIELDS"],
         dangerous_prefixes: &[],
         label: DataLabel::Sink(Cap::DATA_EXFIL),
+        case_sensitive: true,
+        payload_args: &[2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // Phase 14 — `curl_setopt($ch, CURLOPT_URL, $url)` is the canonical
+    // pre-`curl_exec` URL bind. Tainted `$url` reaching this option is
+    // SSRF; the `curl_exec($ch)` flat sink above also fires on the
+    // tainted handle but only when the handle's taint propagates
+    // through opaque resource state, which the engine cannot follow
+    // across `curl_setopt` calls.  Activating the SSRF cap directly at
+    // the option-bind site catches the flow at the construction step
+    // independent of the handle-flow analysis.
+    SinkGate {
+        callee_matcher: "curl_setopt",
+        arg_index: 1,
+        dangerous_values: &["CURLOPT_URL"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
         case_sensitive: true,
         payload_args: &[2],
         keyword_name: None,

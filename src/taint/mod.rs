@@ -403,6 +403,86 @@ fn compute_module_aliases_for_summary(
     crate::ssa::const_prop::collect_module_aliases(ssa, &cp.values)
 }
 
+/// Build a per-file cross-package import lookup for Phase 09 cross-file IPA.
+///
+/// For each [`crate::resolve::ImportBinding`] whose resolver verdict
+/// produced a concrete `(resolved_file, exported_name)` pair, builds the
+/// canonical [`FuncKey`] of the imported function in its own file's
+/// scan-root-relative namespace and stores it under the caller-file's
+/// local binding name.
+///
+/// Returns an empty map when the file has no resolved imports (non-JS/TS
+/// files, scans without a `ModuleGraph`, side-effect-only imports, or
+/// builtin/unresolved specifiers). The caller passes `None` to
+/// `SsaTaintTransfer::cross_package_imports` in that case.
+///
+/// `module_graph` aligns the target [`FuncKey::namespace`] with the
+/// package-prefixed form that `FuncSummary::func_key_with_resolver`
+/// produces on the cross-file storage side: when the resolved file lies
+/// inside a discovered package the namespace becomes
+/// `"@scope/name::src/file.ts"`, otherwise it falls back to plain
+/// `normalize_namespace`. Step 0.7 of `resolve_callee_full` looks up
+/// `(lang, namespace, name)` against `GlobalSummaries::ssa_by_key`
+/// where the SSA-side keys are now produced via the same
+/// `namespace_with_package` shape (callers in `crate::ast::ParsedFile`
+/// pre-compute the package-prefixed namespace before invoking
+/// `lower_all_functions_from_bodies`), so the two sides agree even
+/// when two packages share a project-relative file path.
+///
+/// `module_graph = None` (single-package scans, non-JS/TS files, unit
+/// tests, indexed-mode SQLite fallback) collapses to the historical
+/// `normalize_namespace` behaviour, keeping the migration strictly
+/// additive for any consumer that does not opt in.
+///
+/// The constructed key intentionally leaves `container`, `arity`,
+/// `disambig`, and `kind` at their defaults — the resolver verdict only
+/// fixes the `(lang, namespace, name)` triple, and step 0.7 of
+/// `resolve_callee_full` matches against `GlobalSummaries::ssa_by_key`
+/// using only those three fields plus an arity hint when available.
+pub fn build_cross_package_func_keys(
+    resolved_imports: &[crate::resolve::ImportBinding],
+    scan_root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
+    caller_lang: Lang,
+) -> HashMap<String, FuncKey> {
+    let mut out: HashMap<String, FuncKey> = HashMap::new();
+    for binding in resolved_imports {
+        let Some(ref resolved_file) = binding.resolved_file else {
+            continue;
+        };
+        let Some(ref exported_name) = binding.exported_name else {
+            continue;
+        };
+        if exported_name.is_empty()
+            || exported_name == "*"
+            || exported_name == "default"
+            || binding.local_name.is_empty()
+        {
+            // Side-effect / namespace / default imports do not map to a
+            // single named export; step 0.7 needs a concrete leaf name.
+            continue;
+        }
+        let target_lang = resolved_file
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(Lang::from_extension)
+            .unwrap_or(caller_lang);
+        let abs = resolved_file.to_string_lossy();
+        let namespace = crate::symbol::namespace_with_package(&abs, scan_root, module_graph);
+        let key = FuncKey {
+            lang: target_lang,
+            namespace,
+            container: String::new(),
+            name: exported_name.clone(),
+            arity: None,
+            disambig: None,
+            kind: FuncKind::Function,
+        };
+        out.insert(binding.local_name.clone(), key);
+    }
+    out
+}
+
 /// Run taint analysis on all bodies in a file.
 ///
 /// Uses a unified multi-body analysis for all languages:
@@ -432,25 +512,32 @@ pub fn analyse_file(
     ssa_transfer::reset_all_validated_spans();
     // No locator: pass-2 intra-file summaries are transient (not persisted)
     // and behavior depends on SinkSite.cap only, which is always populated.
-    let (ssa_summaries, callee_bodies) = lower_all_functions_from_bodies(
-        file_cfg,
-        caller_lang,
-        caller_namespace,
-        local_summaries,
-        global_summaries,
-        None,
-    );
-    analyse_file_with_lowered(
-        file_cfg,
-        local_summaries,
-        global_summaries,
-        caller_lang,
-        caller_namespace,
-        interop_edges,
-        extra_labels,
-        &ssa_summaries,
-        &callee_bodies,
-    )
+    crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
+        crate::cfg::safe_fields::with_safe_lookup_fields(Some(&file_cfg.safe_lookup_fields), || {
+            let (ssa_summaries, callee_bodies) = lower_all_functions_from_bodies(
+                file_cfg,
+                caller_lang,
+                caller_namespace,
+                local_summaries,
+                global_summaries,
+                None,
+                None,
+                None,
+            );
+            analyse_file_with_lowered(
+                file_cfg,
+                local_summaries,
+                global_summaries,
+                caller_lang,
+                caller_namespace,
+                interop_edges,
+                extra_labels,
+                &ssa_summaries,
+                &callee_bodies,
+                None,
+            )
+        })
+    })
 }
 
 /// Same as [`analyse_file`] but takes pre-lowered SSA summaries + callee
@@ -459,6 +546,10 @@ pub fn analyse_file(
 /// the SSA-artifact extractor; the bare [`analyse_file`] entry-point keeps
 /// its prior signature for any caller that does not have a pre-lowered
 /// result handy.
+///
+/// `cross_package_imports` is the optional Phase-09 lookup map built via
+/// [`build_cross_package_func_keys`]. `None` (the public-API default)
+/// disables cross-package step 0.7 in `resolve_callee_full`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn analyse_file_with_lowered(
     file_cfg: &FileCfg,
@@ -470,9 +561,49 @@ pub(crate) fn analyse_file_with_lowered(
     extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
     ssa_summaries: &std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
     callee_bodies: &std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
+    cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
 ) -> Vec<Finding> {
     let _span = tracing::debug_span!("taint_analyse_file").entered();
 
+    // Publish the per-file local-import view so the ORM TypeKind gate
+    // inside [`crate::ssa::type_facts::constructor_type`] can read it
+    // during downstream `optimize_ssa_with_param_types` passes.  The
+    // outer `analyse_file` already wraps this for its own
+    // `lower_all_functions_from_bodies` pre-pass; wrapping here too
+    // keeps direct callers (e.g. [`crate::ast::analyse_file_fused`])
+    // covered.  Idempotent under nesting — the inner guard restores
+    // the outer value on drop.
+    crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
+        crate::cfg::safe_fields::with_safe_lookup_fields(Some(&file_cfg.safe_lookup_fields), || {
+            analyse_file_with_lowered_inner(
+                file_cfg,
+                local_summaries,
+                global_summaries,
+                caller_lang,
+                caller_namespace,
+                interop_edges,
+                extra_labels,
+                ssa_summaries,
+                callee_bodies,
+                cross_package_imports,
+            )
+        })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyse_file_with_lowered_inner(
+    file_cfg: &FileCfg,
+    local_summaries: &FuncSummaries,
+    global_summaries: Option<&GlobalSummaries>,
+    caller_lang: Lang,
+    caller_namespace: &str,
+    interop_edges: &[InteropEdge],
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
+    ssa_summaries: &std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
+    callee_bodies: &std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
+    cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
+) -> Vec<Finding> {
     // NOTE: the path-safe-suppressed span set is reset by the caller, not
     // here.  Per-parameter probes inside the lowering phase
     // (`lower_all_functions_from_bodies`) can already publish spans via
@@ -551,6 +682,7 @@ pub(crate) fn analyse_file_with_lowered(
         max_iterations,
         import_bindings_ref,
         cross_file_bodies_ref,
+        cross_package_imports,
     );
 
     // 4. Deduplicate findings using a richer key that preserves distinct
@@ -797,6 +929,34 @@ fn inject_external_type_facts(
     }
 }
 
+/// Apply entry-kind-derived overrides to a body's `param_types` vector.
+///
+/// Today only `EntryKind::AppRouteHandler` triggers an override: the first
+/// formal of a Next.js App Router handler always carries a Web `Request`,
+/// regardless of the user's TypeScript annotation. Returns `Some(vec)` when
+/// the override changes the vector, `None` otherwise. Folding the rule into
+/// one helper keeps the two consumers (`analyse_body_with_seed` and
+/// `lower_all_functions_from_bodies_inner`) in lockstep.
+fn entry_kind_param_type_override(
+    entry_kind: Option<&crate::entry_points::EntryKind>,
+    param_types: &[Option<crate::ssa::type_facts::TypeKind>],
+) -> Option<Vec<Option<crate::ssa::type_facts::TypeKind>>> {
+    if matches!(
+        entry_kind,
+        Some(crate::entry_points::EntryKind::AppRouteHandler { .. })
+    ) {
+        let mut pt = param_types.to_vec();
+        if pt.is_empty() {
+            pt.push(Some(crate::ssa::type_facts::TypeKind::Request));
+        } else {
+            pt[0] = Some(crate::ssa::type_facts::TypeKind::Request);
+        }
+        Some(pt)
+    } else {
+        None
+    }
+}
+
 /// Analyse a single body with an optional parent seed.
 ///
 /// Shared logic extracted from `analyse_multi_body` to avoid deep nesting.
@@ -818,6 +978,7 @@ fn analyse_body_with_seed(
     import_bindings: Option<&crate::cfg::ImportBindings>,
     cross_file_bodies: Option<&std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>>,
     parent_var_types: Option<&HashMap<String, crate::ssa::type_facts::TypeKind>>,
+    cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
 ) -> (
     Vec<Finding>,
     Option<HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>>,
@@ -853,10 +1014,156 @@ fn analyse_body_with_seed(
     // so that `cmd -> Runtime.exec(cmd)` picks up `cmd` as a handler param.
     let is_java_lambda =
         lang == Lang::Java && body.meta.kind == crate::cfg::BodyKind::AnonymousFunction;
+    // Java methods tagged with a Spring/JaxRs entry-point annotation need
+    // scoped lowering so the formal parameters (`@RequestParam String name`,
+    // `@PathParam Long id`, ...) materialise as `SsaOp::Param` ops that
+    // the entry-point seeding pass paints as `Source(UserInput)`. Restricted
+    // to Java because (a) JS/TS already use scoped lowering above, (b) Go
+    // and Ruby handlers introduce request-OBJECT formals (`r *http.Request`,
+    // implicit `params`) whose Cap::all() seeding triggers FPs at sinks
+    // that take the bare object (e.g. `http.Redirect(w, r, safe, code)`
+    // where `r` is the request, not the URL), and (c) Python free-name
+    // captures (`request`, `b64decode`) bubble up as synthetic externals
+    // and shift source attribution. Java methods don't have those
+    // free-capture shapes (every reference is via explicit qualification),
+    // so the precision-vs-recall trade lands on the precision side.
+    let is_java_entry_method = lang == Lang::Java
+        && body.meta.kind == crate::cfg::BodyKind::NamedFunction
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries
+                .and_then(|m| m.get(&k))
+                .is_some_and(|s| s.entry_kind.is_some())
+        });
+    // Rust framework handlers (axum, actix-web, Rocket) need scoped
+    // lowering so the typed-extractor formals (`Query<T>`, `Json<T>`,
+    // `Form<T>`, `Path<T>`) materialise as `SsaOp::Param` ops that the
+    // entry-point seeding pass paints as `Source(UserInput)`.  The
+    // per-formal seed decision is gated on a recovered `TypeKind` from
+    // `BodyMeta.param_types`: extractor-wrapped formals get
+    // `Some(TypeKind::Int|String|Bool|...)` (or a DTO type) via
+    // `rust_type_to_kind`, while denylist wrappers (`State<T>`,
+    // `Extension<T>`, `Pool<T>`, ...) and bare primitives stay `None`
+    // and are skipped at seed time.  This keeps DI handles
+    // server-side without painting the database pool as adversary input.
+    let is_rust_entry_method = lang == Lang::Rust
+        && body.meta.kind == crate::cfg::BodyKind::NamedFunction
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries.and_then(|m| m.get(&k)).is_some_and(|s| {
+                matches!(
+                    s.entry_kind,
+                    Some(crate::entry_points::EntryKind::AxumHandler)
+                        | Some(crate::entry_points::EntryKind::ActixHandler)
+                        | Some(crate::entry_points::EntryKind::RocketRoute)
+                )
+            })
+        });
+    // Python Flask handlers need scoped lowering so the route-bound formal
+    // parameters (`@app.route("/users/<name>")` + `def view(name):`)
+    // materialise as `SsaOp::Param` ops the entry-point seeding pass paints
+    // as `Source(UserInput)`. The per-formal seed decision is gated against
+    // `BodyMeta.param_route_capture`, so only formals whose names appear as
+    // path captures in the routing decorator are painted; implicit globals
+    // (`request`, `g`, `session`) and DI-injected formals stay un-seeded.
+    // Restricted to Flask (`FlaskRoute`) here because FastAPI / Django
+    // free-name capture shapes (`request`, `b64decode`) bubble up as
+    // synthetic externals under scoped lowering and shift source
+    // attribution, while Flask handlers have all formals = path captures
+    // (precision lands cleanly).
+    let is_python_flask_route = lang == Lang::Python
+        && body.meta.kind == crate::cfg::BodyKind::NamedFunction
+        && body
+            .meta
+            .param_route_capture
+            .iter()
+            .any(|captured| *captured)
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries.and_then(|m| m.get(&k)).is_some_and(|s| {
+                matches!(
+                    s.entry_kind,
+                    Some(crate::entry_points::EntryKind::FlaskRoute { .. })
+                )
+            })
+        });
+    // Ruby Sinatra route handlers need scoped lowering so the block
+    // parameters (`get "/u/:name" do |name| ... end`) materialise as
+    // `SsaOp::Param` ops the entry-point seeding pass paints as
+    // `Source(UserInput)`. Sinatra body bodies are anonymous (the
+    // `do_block` AST node has no name field), so `BodyKind` is
+    // `AnonymousFunction`; the gate accepts both anonymous and named.
+    // Per-formal seed decision is gated against
+    // `BodyMeta.param_route_capture`, so only block formals whose
+    // names appear as `:name` segments in the routing path are
+    // painted. Block formals not in the capture set fall back to
+    // existing label rules.
+    let is_ruby_sinatra_route = lang == Lang::Ruby
+        && matches!(
+            body.meta.kind,
+            crate::cfg::BodyKind::NamedFunction | crate::cfg::BodyKind::AnonymousFunction
+        )
+        && body
+            .meta
+            .param_route_capture
+            .iter()
+            .any(|captured| *captured)
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries.and_then(|m| m.get(&k)).is_some_and(|s| {
+                matches!(
+                    s.entry_kind,
+                    Some(crate::entry_points::EntryKind::SinatraRoute { .. })
+                )
+            })
+        });
+    // Python FastAPI / Starlette handlers need scoped lowering so the
+    // route-bound and typed-extractor formals materialise as `SsaOp::Param`
+    // ops that the entry-point seeding pass paints as `Source(UserInput)`.
+    // The per-formal decision in `ssa_transfer` consults BOTH
+    // `BodyMeta.param_route_capture` (for `{name}` brace-segment captures)
+    // and `type_facts.get_type(value)` (for `Annotated[T, Path()/Query()/Body()
+    // /Header()/Cookie()/Form()/File()]` typed extractors). Formals without
+    // either signal — `db: Session = Depends(get_db)`, `request: Request`,
+    // bare `session` — stay un-seeded, matching the Hard Rule 3 policy that
+    // unannotated formals are not adversary input.
+    //
+    // Gated on "at least one formal qualifies" to mirror the Flask gate:
+    // a handler with zero path captures and zero typed extractors gets the
+    // existing label-rule treatment (free-name captures of `request`,
+    // `b64decode`, etc. bubble up as synthetic externals without scoped
+    // lowering shifting attribution).
+    let is_python_fastapi_route = lang == Lang::Python
+        && body.meta.kind == crate::cfg::BodyKind::NamedFunction
+        && (body
+            .meta
+            .param_route_capture
+            .iter()
+            .any(|captured| *captured)
+            || body.meta.param_types.iter().any(|t| t.is_some()))
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries.and_then(|m| m.get(&k)).is_some_and(|s| {
+                matches!(
+                    s.entry_kind,
+                    Some(crate::entry_points::EntryKind::FastApiRoute { .. })
+                )
+            })
+        });
     let use_scoped_lowering = !is_toplevel
         && (matches!(lang, Lang::JavaScript | Lang::TypeScript)
             || has_nonempty_seed
-            || is_java_lambda);
+            || is_java_lambda
+            || is_java_entry_method
+            || is_rust_entry_method
+            || is_python_flask_route
+            || is_python_fastapi_route
+            || is_ruby_sinatra_route);
     let ssa_result = if use_scoped_lowering {
         let func_name = body.meta.name.clone().unwrap_or_else(|| {
             body.meta
@@ -878,11 +1185,28 @@ fn analyse_body_with_seed(
 
     match ssa_result {
         Ok(mut ssa_body) => {
+            // App Router handlers carry a Web `Request` as their first
+            // formal.  Override `param_types[0]` so the type-fact pass tags
+            // the formal as `TypeKind::Request` and receiver-method reads
+            // (`req.json()`, ...) rewrite to `Request.<method>` for
+            // type-qualified label resolution.
+            let body_entry_kind = body.meta.func_key.as_ref().and_then(|k| {
+                let mut k = k.clone();
+                k.namespace = namespace.to_string();
+                ssa_summaries
+                    .and_then(|m| m.get(&k))
+                    .and_then(|s| s.entry_kind.clone())
+            });
+            let overridden_param_types =
+                entry_kind_param_type_override(body_entry_kind.as_ref(), &body.meta.param_types);
+            let param_types_ref = overridden_param_types
+                .as_deref()
+                .unwrap_or(body.meta.param_types.as_slice());
             let mut opt = crate::ssa::optimize_ssa_with_param_types(
                 &mut ssa_body,
                 cfg,
                 Some(lang),
-                &body.meta.param_types,
+                param_types_ref,
             );
             // Forward parent-body type facts onto closure-captured Param ops
             // before any consumer reads `opt.type_facts`.  This is the lever
@@ -965,6 +1289,16 @@ fn analyse_body_with_seed(
                         && body.meta.kind == crate::cfg::BodyKind::AnonymousFunction),
                 cross_file_bodies,
                 pointer_facts: pointer_facts.as_ref(),
+                cross_package_imports,
+                // Phase 10 — Next.js entry-point seeding (looked up
+                // above when overriding `param_types`).
+                entry_kind: body_entry_kind,
+                param_route_capture: if body.meta.param_route_capture.is_empty() {
+                    None
+                } else {
+                    Some(body.meta.param_route_capture.as_slice())
+                },
+                recording_summary: false,
             };
             let (events, block_states) =
                 ssa_transfer::run_ssa_taint_full(&ssa_body, cfg, &transfer);
@@ -1098,6 +1432,7 @@ fn analyse_multi_body(
     max_iterations: usize,
     import_bindings: Option<&crate::cfg::ImportBindings>,
     cross_file_bodies: Option<&std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>>,
+    cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
 ) -> Vec<Finding> {
     let order = containment_order(&file_cfg.bodies);
     let mut all_findings: Vec<Finding> = Vec::new();
@@ -1144,6 +1479,7 @@ fn analyse_multi_body(
             import_bindings,
             cross_file_bodies,
             parent_var_types,
+            cross_package_imports,
         );
         tracing::debug!(
             body_id = body.meta.id.0,
@@ -1340,6 +1676,7 @@ fn analyse_multi_body(
                     import_bindings,
                     cross_file_bodies,
                     parent_var_types,
+                    cross_package_imports,
                 );
                 // Phase-B: replace (not append) this body's findings
                 // in the cache.  Previous rounds' findings for this
@@ -1688,6 +2025,7 @@ pub(crate) fn extract_intra_file_ssa_summaries(
 /// resistant identity we have: same-name methods on different classes, same-
 /// name overloads with different arity, and anonymous bodies at distinct
 /// source spans all get distinct keys.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_all_functions_from_bodies(
     file_cfg: &FileCfg,
     lang: Lang,
@@ -1695,12 +2033,61 @@ pub(crate) fn lower_all_functions_from_bodies(
     local_summaries: &FuncSummaries,
     global_summaries: Option<&GlobalSummaries>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
+    scan_root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
+) -> (
+    std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
+    std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
+) {
+    crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
+        crate::cfg::safe_fields::with_safe_lookup_fields(Some(&file_cfg.safe_lookup_fields), || {
+            lower_all_functions_from_bodies_inner(
+                file_cfg,
+                lang,
+                namespace,
+                local_summaries,
+                global_summaries,
+                locator,
+                scan_root,
+                module_graph,
+            )
+        })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_all_functions_from_bodies_inner(
+    file_cfg: &FileCfg,
+    lang: Lang,
+    namespace: &str,
+    local_summaries: &FuncSummaries,
+    global_summaries: Option<&GlobalSummaries>,
+    locator: Option<&crate::summary::SinkSiteLocator<'_>>,
+    scan_root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
 ) -> (
     std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
     std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
 ) {
     let mut summaries = std::collections::HashMap::new();
     let mut bodies = std::collections::HashMap::new();
+
+    // Build the file's cross-package import map once and share it
+    // across every body produced from this file. The map mirrors what
+    // `analyse_file_with_lowered` builds at pass-2 entry, but storing
+    // it on each `CalleeSsaBody` lets the inline-analysis frame inside
+    // another file resolve the callee's local import names against
+    // the callee's own package boundary (Phase 09 step 0.7) instead of
+    // skipping the lookup entirely.
+    let cross_package_imports_arc = {
+        let map = build_cross_package_func_keys(
+            &file_cfg.resolved_imports,
+            scan_root,
+            module_graph,
+            lang,
+        );
+        std::sync::Arc::new(map)
+    };
 
     for body in file_cfg.function_bodies() {
         let _t_misc = std::time::Instant::now();
@@ -1797,6 +2184,15 @@ pub(crate) fn lower_all_functions_from_bodies(
                 param_types_ref,
             );
 
+            // Phase 10 — annotate entry-point summaries.  The pass-2
+            // taint engine reads `entry_kind` to seed the function's
+            // formals as `TaintOrigin::Source` at SSA entry, mirroring
+            // an HTTP handler's adversary-controlled inputs.  Always
+            // recorded even on empty summaries so caller-side resolution
+            // sees the entry classification through cross-file lookups.
+            let mut summary = summary;
+            summary.entry_kind = file_cfg.entry_kinds.get(&body.meta.span).cloned();
+
             // Always insert the summary, even when all fields are empty/default.
             // An empty summary tells resolve_callee "this function exists and has
             // no taint effects", preventing fallthrough to the less precise old
@@ -1804,18 +2200,34 @@ pub(crate) fn lower_all_functions_from_bodies(
             // For zero-param functions we only insert when the summary carries
             // the fresh-container signal (the only observable effect worth
             // persisting for a parameter-less body).
-            if param_count > 0 || summary.points_to.returns_fresh_alloc {
+            //
+            // An entry-kind tag also keeps the summary in the map even
+            // for zero-param entry points so cross-file resolvers see it.
+            if param_count > 0
+                || summary.points_to.returns_fresh_alloc
+                || summary.entry_kind.is_some()
+            {
                 summaries.insert(key.clone(), summary);
             }
             perf_lower_record(1, _t_extract.elapsed().as_micros());
         }
 
         let _t_opt = std::time::Instant::now();
+        // Override `param_types[0]` for entry-kind-tagged formals (e.g. App
+        // Router handlers receive a Web `Request`).  Other entry kinds keep
+        // the ambient param-type vector unchanged.  See
+        // `entry_kind_param_type_override` for the full rule set.
+        let entry_kind_for_body = file_cfg.entry_kinds.get(&body.meta.span);
+        let overridden_param_types =
+            entry_kind_param_type_override(entry_kind_for_body, &body.meta.param_types);
+        let param_types_ref = overridden_param_types
+            .as_deref()
+            .unwrap_or(body.meta.param_types.as_slice());
         let opt = crate::ssa::optimize_ssa_with_param_types(
             &mut func_ssa,
             &body.graph,
             Some(lang),
-            &body.meta.param_types,
+            param_types_ref,
         );
         perf_lower_record(2, _t_opt.elapsed().as_micros());
 
@@ -1857,6 +2269,7 @@ pub(crate) fn lower_all_functions_from_bodies(
                 param_count,
                 node_meta: std::collections::HashMap::new(),
                 body_graph: Some(body.graph.clone()),
+                cross_package_imports: std::sync::Arc::clone(&cross_package_imports_arc),
             },
         );
         perf_lower_record(6, _t_misc2.elapsed().as_micros());
@@ -2256,6 +2669,10 @@ fn augment_summaries_with_child_sinks(
                 auto_seed_handler_params: false,
                 cross_file_bodies: None,
                 pointer_facts: None,
+                cross_package_imports: None,
+                entry_kind: None,
+                param_route_capture: None,
+                recording_summary: false,
             };
 
             let (_parent_events, parent_block_states) =
@@ -2320,6 +2737,10 @@ fn augment_summaries_with_child_sinks(
                     auto_seed_handler_params: false,
                     cross_file_bodies: None,
                     pointer_facts: None,
+                    cross_package_imports: None,
+                    entry_kind: None,
+                    param_route_capture: None,
+                    recording_summary: false,
                 };
 
                 let (child_events, _child_block_states) =
@@ -2448,6 +2869,7 @@ type EligibleCalleeBodies = Vec<(FuncKey, ssa_transfer::CalleeSsaBody)>;
 /// entry) and lowers each body's graph with its recorded entry/params. This
 /// path is equivalent to what `analyse_file` uses at taint time, so the SSA
 /// summaries produced here line up exactly with what pass 2 will consult.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_ssa_artifacts_from_file_cfg(
     file_cfg: &FileCfg,
     lang: Lang,
@@ -2455,6 +2877,8 @@ pub(crate) fn extract_ssa_artifacts_from_file_cfg(
     local_summaries: &FuncSummaries,
     global_summaries: Option<&GlobalSummaries>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
+    scan_root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
 ) -> (SsaArtifactSummaries, EligibleCalleeBodies) {
     let (summaries, bodies) = lower_all_functions_from_bodies(
         file_cfg,
@@ -2463,6 +2887,8 @@ pub(crate) fn extract_ssa_artifacts_from_file_cfg(
         local_summaries,
         global_summaries,
         locator,
+        scan_root,
+        module_graph,
     );
     let eligible_bodies = build_eligible_bodies(file_cfg, bodies);
     (summaries, eligible_bodies)

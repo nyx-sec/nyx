@@ -1,5 +1,6 @@
 use crate::labels::{
-    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+    Cap, DataLabel, GateActivation, GatedLabelRule, Kind, LabelGate, LabelRule, ParamConfig,
+    RuntimeLabelRule, SinkGate,
 };
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
@@ -28,6 +29,21 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
+    },
+    // Phase 10 — Web `Request` receiver-method reads.  Triggered when
+    // the SSA receiver carries `TypeKind::Request` and the
+    // type-qualified resolver rewrites `req.json()` → `Request.json`
+    // etc.  Mirrors the matching list in `labels/typescript.rs`.
+    LabelRule {
+        matchers: &[
+            "Request.json",
+            "Request.formData",
+            "Request.text",
+            "Request.url",
+            "Request.headers.get",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
     },
     // ───────── Sanitizers ──────────
     LabelRule {
@@ -253,6 +269,40 @@ pub static RULES: &[LabelRule] = &[
             "fs.unlinkSync",
             "fs.readdir",
             "fs.readdirSync",
+            // Phase 05 — `node:fs/promises` member-access forms covered
+            // here. Bare-name forms (`readFile`, `open`, ...) and
+            // `fsp.readFile` namespace-import forms ride the gated
+            // matcher in `GATED_LABEL_RULES`. Receiver-type fallback
+            // synthesises `FileSystemPromisesNs.<method>` (handled
+            // below).
+            "fs.promises.readFile",
+            "fs.promises.writeFile",
+            "fs.promises.unlink",
+            "fs.promises.open",
+            "fs.promises.stat",
+            "fs.promises.readdir",
+            "fs.promises.mkdir",
+            "fs.promises.rmdir",
+            "fs.promises.rm",
+            "fs.promises.appendFile",
+            "fs.promises.copyFile",
+            "fs.promises.rename",
+            "fs.promises.truncate",
+            "fs.promises.chmod",
+            "FileSystemPromisesNs.readFile",
+            "FileSystemPromisesNs.writeFile",
+            "FileSystemPromisesNs.unlink",
+            "FileSystemPromisesNs.open",
+            "FileSystemPromisesNs.stat",
+            "FileSystemPromisesNs.readdir",
+            "FileSystemPromisesNs.mkdir",
+            "FileSystemPromisesNs.rmdir",
+            "FileSystemPromisesNs.rm",
+            "FileSystemPromisesNs.appendFile",
+            "FileSystemPromisesNs.copyFile",
+            "FileSystemPromisesNs.rename",
+            "FileSystemPromisesNs.truncate",
+            "FileSystemPromisesNs.chmod",
         ],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
@@ -307,6 +357,31 @@ pub static RULES: &[LabelRule] = &[
     // interface is non-positional in those APIs, so they stay flat for now.
     LabelRule {
         matchers: &["sequelize.query", "knex.raw", "$queryRaw", "$executeRaw"],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+    },
+    // ── Phase 07 — ORM query-builder receiver-typed sinks ──
+    //
+    // Each rule here matches a callee text constructed by
+    // `resolve_type_qualified_labels` when a value's inferred TypeKind has a
+    // `label_prefix()`.  The matcher form `<TypePrefix>.<method>` is the
+    // wire shape produced by that helper.  The receiver TypeKinds
+    // themselves are populated by [`crate::ssa::type_facts::constructor_type`]
+    // (TS/JS branch): `new Sequelize(...)` → `Sequelize`,
+    // `getRepository(Entity)` → `TypeOrmRepo`,
+    // `getManager()` → `TypeOrmManager`,
+    // `createEntityManager()` → `MikroOrmEm`.  Without a typed receiver the
+    // qualified callee text is never built, so these rules cannot misfire on
+    // unrelated `.literal()` / `.query()` / `.execute()` methods.
+    LabelRule {
+        matchers: &[
+            "Sequelize.literal",
+            "TypeOrmRepo.query",
+            "TypeOrmRepo.createQueryBuilder",
+            "TypeOrmManager.query",
+            "TypeOrmManager.createQueryBuilder",
+            "MikroOrmEm.execute",
+        ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
@@ -525,6 +600,75 @@ pub static EXCLUDES: &[&str] = &[
     // [analysis.languages.javascript] custom rules.
     "container.exec",
     "exec.start",
+];
+
+/// Phase 05 — `node:fs/promises` path-traversal sinks. The matcher list
+/// holds the bare-name and `<ns>.<method>` member-access shapes; the
+/// [`LabelGate::ImportedFromModule`] gate suppresses bare-name matches
+/// unless the file actually imports the method from `node:fs/promises`
+/// or `fs/promises`. Bare-name only — `fs.promises.readFile`-style
+/// member-access forms continue to fire via the flat FILE_IO matcher
+/// list (no gate needed because the `fs.promises.` prefix is itself
+/// witness to the resolution).
+pub static GATED_LABEL_RULES: &[GatedLabelRule] = &[
+    GatedLabelRule {
+        matchers: &[
+            "readFile",
+            "writeFile",
+            "unlink",
+            "open",
+            "stat",
+            "readdir",
+            "mkdir",
+            "rmdir",
+            "rm",
+            "appendFile",
+            "copyFile",
+            "rename",
+            "truncate",
+            "chmod",
+        ],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: false,
+        gate: LabelGate::ImportedFromModule(&["node:fs/promises", "fs/promises"]),
+    },
+    // Phase 07 — Knex bare-name raw-SQL escape hatches. The receiver in
+    // `db.whereRaw(sql)` shape is an arbitrary local binding (`db`, `qb`,
+    // `users`, ...) so leading-identifier gating cannot witness the
+    // import. Phase 07 deferred-item 10 tightening: require the file to
+    // bind the conventional value-import name `knex` (lowercase) so that
+    // type-only shapes like `import { Knex } from 'knex'` (for
+    // `Knex.QueryBuilder` type annotations) do not over-fire the gate.
+    GatedLabelRule {
+        matchers: &["whereRaw", "orderByRaw", "havingRaw"],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        gate: LabelGate::FileImportsModuleAsLocalName {
+            modules: &["knex"],
+            local_names: &["knex"],
+        },
+    },
+    // Phase 07 — Drizzle `sql` template-tag builder.  Two shapes:
+    //   - `sql.raw(x)`              → callee text "sql.raw" (member call)
+    //   - `sql\`SELECT ${x}\``       → callee text "sql"      (tag call)
+    // Both leading-identifier-gate against the imported `sql` symbol from
+    // `drizzle-orm`. `=sql` is exact-only so unrelated `.sql()` methods do
+    // not collide; `sql.raw` carries its own member-access matcher.
+    GatedLabelRule {
+        matchers: &["=sql", "sql.raw"],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        gate: LabelGate::ImportedFromModule(&["drizzle-orm"]),
+    },
+    // Phase 10 — Next.js `cookies()` / `headers()` from `next/headers`
+    // return adversary-controlled request-bound state.  Mirrors the
+    // entry in `labels/typescript.rs::GATED_LABEL_RULES`.
+    GatedLabelRule {
+        matchers: &["cookies", "headers"],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
+        gate: LabelGate::ImportedFromModule(&["next/headers"]),
+    },
 ];
 
 pub static GATED_SINKS: &[SinkGate] = &[
@@ -1316,6 +1460,8 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
     "variable_declaration"  => Kind::CallWrapper,
     "lexical_declaration"   => Kind::CallWrapper,
     "expression_statement"  => Kind::CallWrapper,
+    "await_expression"      => Kind::AwaitForward,
+    "jsx_attribute"         => Kind::JsxAttr,
 
     // trivia
     "comment"               => Kind::Trivia,

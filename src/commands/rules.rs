@@ -215,7 +215,7 @@ fn print_label_row(r: &RuleInfo) {
         String::new()
     } else {
         let joined = r.matchers.join(", ");
-        format!(" — {joined}")
+        format!("  {joined}")
     };
     println!(
         "    {} {:<10} {:<10} {:<14}{}{}",

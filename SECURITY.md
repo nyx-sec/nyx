@@ -39,9 +39,9 @@ Out of scope:
 
 | Version | Status                |
 |---------|-----------------------|
-| 0.6.x   | Supported             |
-| 0.5.x   | Critical fixes only   |
-| < 0.5   | End of life           |
+| 0.7.x   | Supported             |
+| 0.6.x   | Critical fixes only   |
+| < 0.6   | End of life           |
 
 The project follows [Semantic Versioning](https://semver.org) once it reaches 1.0.0. Until then, breaking changes can land in any minor release.
 

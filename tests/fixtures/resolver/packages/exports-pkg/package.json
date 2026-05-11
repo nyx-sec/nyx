@@ -1,0 +1,15 @@
+{
+  "name": "@scope/exports-pkg",
+  "version": "0.0.0",
+  "private": true,
+  "main": "src/legacy-main.ts",
+  "exports": {
+    ".": {
+      "import": "./src/main.ts",
+      "default": "./src/fallback.ts"
+    },
+    "./sub": "./src/sub.ts",
+    "./feat/*": "./src/feat/*.ts",
+    "./blocked": null
+  }
+}

@@ -245,6 +245,25 @@ pub(crate) fn ensure_framework_ctx(root: &Path, cfg: &Config) -> Option<Config> 
     Some(c)
 }
 
+/// Build a [`crate::resolve::ModuleGraph`] for `root` and stash it on a
+/// clone of `cfg`. Returns `None` when the cfg already carries one or
+/// when the build produced an empty graph.
+///
+/// Mirrors `ensure_framework_ctx`'s lifecycle: scan-path entry points
+/// call this once between the file walk and pass 1, the graph is shared
+/// across all per-file analysis via `Config::module_graph`. Building is
+/// best-effort, errors during fs walk land as missing entries rather
+/// than aborts.
+pub(crate) fn ensure_module_graph(root: &Path, cfg: &Config) -> Option<Config> {
+    if cfg.module_graph.is_some() {
+        return None;
+    }
+    let graph = crate::resolve::build_module_graph(&[root.to_path_buf()]);
+    let mut c = cfg.clone();
+    c.module_graph = Some(std::sync::Arc::new(graph));
+    Some(c)
+}
+
 /// Does `path` belong to a Preview-tier language (C or C++)?
 ///
 /// Drives the one-time `preview-tier scan` banner in `handle()`.  Tracks
@@ -1085,6 +1104,7 @@ fn run_topo_batches(
                     .collect();
 
                 let mut ssa_count: usize = 0;
+                let mg = cfg.module_graph.as_deref();
                 for (path, diags, summaries, ssa_summaries, _ssa_bodies) in batch_results {
                     // Phase-B: replace (not append) this file's diags
                     // so the cache always reflects the latest
@@ -1093,7 +1113,7 @@ fn run_topo_batches(
                     diags_by_file.insert(path, diags);
 
                     for s in summaries {
-                        let key = s.func_key(root_str_ref);
+                        let key = s.func_key_with_resolver(root_str_ref, mg);
                         global_summaries.insert(key, s);
                     }
 
@@ -1143,7 +1163,7 @@ fn run_topo_batches(
                     .iter()
                     .filter(|p| {
                         let abs = p.to_string_lossy();
-                        let rel = crate::symbol::normalize_namespace(&abs, root_str_ref);
+                        let rel = crate::symbol::namespace_with_package(&abs, root_str_ref, mg);
                         namespaces_needing_reanalysis.contains(&rel)
                     })
                     .map(|p| (*p).clone())
@@ -1182,7 +1202,7 @@ fn run_topo_batches(
                         batch = batch_idx,
                         dirty = dirty_files.len(),
                         "SCC converged by snapshot but dirty_files non-empty; \
-                         call graph disagrees with summary diff — accepting \
+                         call graph disagrees with summary diff, accepting \
                          snapshot as authoritative"
                     );
                     converged = true;
@@ -1230,7 +1250,7 @@ fn run_topo_batches(
                     cap = scc_cap,
                     cross_file = cross_file_scc,
                     reason = reason.tag(),
-                    "SCC batch did not converge within safety cap — results \
+                    "SCC batch did not converge within safety cap, results \
                      may be imprecise. This usually indicates a very large \
                      mutually-recursive region or a non-monotone summary \
                      refinement; please file a bug with a reproducer."
@@ -1376,12 +1396,13 @@ fn run_topo_batches(
             let mut refined_ssa: usize = 0;
             let mut refined_bodies: usize = 0;
             let mut refined_auth: usize = 0;
+            let mg = cfg.module_graph.as_deref();
             for (_path, diags, summaries, ssa_summaries, ssa_bodies, auth_summaries) in
                 batch_results
             {
                 batch_diags.extend(diags);
                 for s in summaries {
-                    let key = s.func_key(root_str_ref);
+                    let key = s.func_key_with_resolver(root_str_ref, mg);
                     global_summaries.insert(key, s);
                     refined_summaries += 1;
                 }
@@ -1568,6 +1589,15 @@ pub(crate) fn scan_filesystem_with_observer(
     };
     tracing::info!(file_count = all_paths.len(), "file walk complete");
 
+    // ── Build TS/JS module graph once for the scan root ──────────────────
+    // Phase 04: resolver foundation. The graph is built between walk and
+    // pass 1 so every per-file analysis (CFG-time import classification,
+    // pass-2 cross-file lookup) sees the same view. Build cost is bounded
+    // (no AST parsing, manifests only) and the result lives behind an
+    // `Arc` on `Config::module_graph`.
+    let owned_cfg_with_graph = ensure_module_graph(root, cfg);
+    let cfg = owned_cfg_with_graph.as_ref().unwrap_or(cfg);
+
     if let Some(flag) = preview_tier_seen {
         if all_paths.iter().any(|p| is_preview_tier_path(p)) {
             flag.store(true, Ordering::Relaxed);
@@ -1704,6 +1734,7 @@ pub(crate) fn scan_filesystem_with_observer(
             show_progress,
         );
         let root_str = root.to_string_lossy();
+        let mg = cfg.module_graph.as_deref();
 
         let gs = all_paths
             .par_iter()
@@ -1720,7 +1751,7 @@ pub(crate) fn scan_filesystem_with_observer(
                             let first_lang = r.summaries.first().map(|s| s.lang.clone());
 
                             for s in r.summaries {
-                                let key = s.func_key(Some(&root_str));
+                                let key = s.func_key_with_resolver(Some(&root_str), mg);
                                 local_gs.insert(key, s);
                             }
 
@@ -1752,6 +1783,16 @@ pub(crate) fn scan_filesystem_with_observer(
                             // execution-API auth shape.
                             if let Some((module_id, facts)) = r.router_facts {
                                 local_gs.insert_router_facts(module_id, facts);
+                            }
+
+                            // Phase-09 indexed-mode parity: cache the
+                            // file's cross-package import map by namespace
+                            // so an inlined callee body loaded from SQLite
+                            // (where the body's own Arc is stripped by
+                            // `#[serde(skip)]`) can recover its package
+                            // boundary at step 0.7.
+                            if let Some((ns, map)) = r.cross_package_imports {
+                                local_gs.insert_cross_package_imports(ns, map);
                             }
 
                             // Record language for progress
@@ -2057,6 +2098,12 @@ pub fn scan_with_index_parallel_observer(
         );
     }
 
+    // Phase 04: build the TS/JS module graph between fs walk and pass 1
+    // so the indexed scan path sees the same resolver state as the
+    // non-indexed path (`scan_filesystem_with_observer`).
+    let owned_cfg_with_graph = ensure_module_graph(scan_root, cfg);
+    let cfg = owned_cfg_with_graph.as_ref().unwrap_or(cfg);
+
     let current_files: HashSet<PathBuf> = files.iter().cloned().collect();
     let removed_files: Vec<PathBuf> = indexed_files
         .into_iter()
@@ -2139,7 +2186,7 @@ pub fn scan_with_index_parallel_observer(
                                 )
                             },
                         ) {
-                            Ok((func_sums, ssa_sums, ssa_bodies, auth_sums)) => {
+                            Ok((func_sums, ssa_sums, ssa_bodies, auth_sums, cross_pkg_imports)) => {
                                 if let Some(p) = &progress_ref {
                                     p.inc_parsed(1);
                                     if let Some(lang) = func_sums.first().map(|s| s.lang.as_str()) {
@@ -2193,8 +2240,12 @@ pub fn scan_with_index_parallel_observer(
                                     .collect();
                                 // Single transaction for all four caches:
                                 // one fsync per file instead of four.
+                                let cpi_arg = cross_pkg_imports
+                                    .as_ref()
+                                    .map(|(ns, map)| (ns.as_str(), map.as_ref()));
                                 if let Err(e) = idx.replace_all_for_file(
                                     path, &hash, &func_sums, &ssa_rows, &body_rows, &auth_rows,
+                                    cpi_arg,
                                 ) {
                                     record_persist_error(
                                         &persist_errors_ref,
@@ -2268,7 +2319,11 @@ pub fn scan_with_index_parallel_observer(
                     crate::symbol::Lang::from_slug(&lang_str).unwrap_or(crate::symbol::Lang::Rust);
                 // Use persisted namespace; fall back to normalized file_path
                 let ns = if namespace.is_empty() {
-                    crate::symbol::normalize_namespace(&file_path, Some(&root_str))
+                    crate::symbol::namespace_with_package(
+                        &file_path,
+                        Some(&root_str),
+                        cfg.module_graph.as_deref(),
+                    )
                 } else {
                     namespace
                 };
@@ -2286,6 +2341,23 @@ pub fn scan_with_index_parallel_observer(
                     kind,
                 };
                 gs.insert_ssa(key, ssa_sum);
+            }
+        }
+
+        // Load Phase-09 cross-package import maps so an inlined callee
+        // body loaded from SQLite (where the body's own Arc is stripped
+        // by `#[serde(skip)]`) can recover its package boundary at
+        // step 0.7.  Indexed-mode parity with `scan_filesystem`.
+        match idx.load_all_cross_package_imports() {
+            Ok(rows) => {
+                for (_file_path, namespace, map) in rows {
+                    if !map.is_empty() {
+                        gs.insert_cross_package_imports(namespace, std::sync::Arc::new(map));
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("failed to load cross_package_imports from DB: {e}");
             }
         }
 
@@ -2309,7 +2381,11 @@ pub fn scan_with_index_parallel_observer(
                         let lang = crate::symbol::Lang::from_slug(&lang_str)
                             .unwrap_or(crate::symbol::Lang::Rust);
                         let ns = if namespace.is_empty() {
-                            crate::symbol::normalize_namespace(&file_path, Some(&root_str))
+                            crate::symbol::namespace_with_package(
+                                &file_path,
+                                Some(&root_str),
+                                cfg.module_graph.as_deref(),
+                            )
                         } else {
                             namespace
                         };
@@ -2363,7 +2439,11 @@ pub fn scan_with_index_parallel_observer(
                 let lang =
                     crate::symbol::Lang::from_slug(&lang_str).unwrap_or(crate::symbol::Lang::Rust);
                 let ns = if namespace.is_empty() {
-                    crate::symbol::normalize_namespace(&file_path, Some(&root_str))
+                    crate::symbol::namespace_with_package(
+                        &file_path,
+                        Some(&root_str),
+                        cfg.module_graph.as_deref(),
+                    )
                 } else {
                     namespace
                 };

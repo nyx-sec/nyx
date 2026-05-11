@@ -1,0 +1,24 @@
+{
+  "required_findings": [
+    {
+      "id_prefix": "taint-open-redirect",
+      "min_count": 1
+    }
+  ],
+  "forbidden_findings": [
+    {
+      "id_prefix": "taint-open-redirect",
+      "file_glob": "**/server.go"
+    }
+  ],
+  "noise_budget": {
+    "max_total_findings": 8,
+    "max_high_findings": 2
+  },
+  "performance_expectations": {
+    "max_ms_no_index": 1500,
+    "max_ms_index_cold": 2000,
+    "max_ms_index_warm": 1000,
+    "ci_mode": "lenient"
+  }
+}

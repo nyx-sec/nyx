@@ -73,6 +73,27 @@ pub static RULES: &[LabelRule] = &[
             "db.Exec",
             "db.QueryRow",
             "db.Prepare",
+            // Phase 15 — GORM `db.Raw(sql)` raw-SQL passthrough.  GORM's
+            // `*gorm.DB` is conventionally bound to a `db`-named receiver,
+            // so the suffix `db.Raw` carries the GORM semantic without
+            // colliding with stdlib `*sql.DB` (which has no `Raw` method).
+            // The `GormDb.Raw` type-qualified variant in the receiver-typed
+            // rule list below covers receivers tagged from `gorm.Open(...)`
+            // with non-`db` names.
+            "db.Raw",
+            // Phase 15 — `database/sql`-context variants.  `db.QueryContext`,
+            // `db.ExecContext`, `db.QueryRowContext`, `db.PrepareContext`
+            // accept the SQL string at arg 1 (after `ctx`).  Receivers
+            // typed as `*sql.DB` / `*sql.Tx` / `*sql.Stmt` resolve via
+            // suffix-matching on `db.<verb>`; calls on differently-named
+            // bound receivers (`tx.QueryContext(...)`) only suffix-match
+            // when the receiver text ends with `db` (covers `userDb`,
+            // `pgDb`, etc.).  More-precise receiver typing is in scope
+            // for `DatabaseConnection.<verb>` rules below.
+            "db.QueryContext",
+            "db.ExecContext",
+            "db.QueryRowContext",
+            "db.PrepareContext",
             // goqu raw SQL literal builders: `goqu.L(s)` and the alias
             // `goqu.Lit(s)` insert `s` verbatim into the generated SQL with no
             // parameterisation.  CVE-2026-41422 (daptin) loops a user-controlled
@@ -87,6 +108,36 @@ pub static RULES: &[LabelRule] = &[
         ],
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: false,
+    },
+    // Phase 15 — receiver-typed Go ORM/raw-SQL sinks.  `*gorm.DB` (set by
+    // `constructor_type` for `gorm.Open(...)`) exposes `Raw(sql)` and
+    // `Exec(sql)` as raw-SQL passthrough; the type-qualified resolver
+    // rewrites `db.Raw(...)` → `GormDb.Raw`.  `*sqlx.DB` likewise gets
+    // `NamedExec` / `NamedQuery` / `Select` / `Get` rewriting via
+    // `SqlxDb.<verb>`.  `DatabaseConnection.<verb>` covers the stdlib
+    // `*sql.DB` / `*sql.Tx` receivers tagged by the existing
+    // `sql.Open` / `sql.OpenDB` constructor mapping — currently the
+    // chained QueryContext shape suffix-matches `db.QueryContext` above,
+    // so `DatabaseConnection.QueryContext` is here for receivers whose
+    // identifier text doesn't end in `db`.
+    LabelRule {
+        matchers: &[
+            "GormDb.Raw",
+            "GormDb.Exec",
+            "SqlxDb.NamedExec",
+            "SqlxDb.NamedQuery",
+            "SqlxDb.Select",
+            "SqlxDb.Get",
+            "SqlxDb.MustExec",
+            "DatabaseConnection.QueryContext",
+            "DatabaseConnection.ExecContext",
+            "DatabaseConnection.QueryRowContext",
+            "DatabaseConnection.Query",
+            "DatabaseConnection.Exec",
+            "DatabaseConnection.QueryRow",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
     },
     // fmt.Printf/Sprintf write to stdout or build strings in memory, not
     // security sinks.  fmt.Fprintf writes to an io.Writer (often http.ResponseWriter)
@@ -570,6 +621,363 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::DATA_EXFIL),
         case_sensitive: false,
         payload_args: &[1, 2, 3],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── SQL execute payload-arg gating (Phase 15 deferred fix, Go) ────────
+    //
+    // Mirrors the Python resolution recorded in `python::GATED_SINKS`.  The
+    // flat rules above already classify these callees as `Sink(SQL_QUERY)`
+    // on every argument.  `database/sql` and the Go ORM/raw-SQL ecosystem
+    // (GORM, sqlx, goqu) follow the convention that the SQL string is at
+    // arg 0 (or arg 1 for the `*Context` variants whose first arg is a
+    // `context.Context`); subsequent positional arguments are bind values
+    // sent through the driver's parameterised path.  Tainted bind values
+    // are SAFE; tainted SQL is the SQLi vector.
+    //
+    // Destination-activation gates carry the same `Sink(SQL_QUERY)` label
+    // as the flat rule (cap dedupes against the flat label) and propagate
+    // `payload_args: &[0]` (or `&[1]` for `*Context` shapes) into
+    // `sink_payload_args`, narrowing the SSA sink scan to the SQL position.
+    SinkGate {
+        callee_matcher: "db.Query",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.Exec",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.QueryRow",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.Prepare",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.Raw",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `*Context` variants take `ctx` at arg 0 and the SQL string at arg 1.
+    SinkGate {
+        callee_matcher: "db.QueryContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.ExecContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.QueryRowContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "db.PrepareContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // goqu raw SQL literal builders.  Single arg, payload at 0.
+    SinkGate {
+        callee_matcher: "goqu.L",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "goqu.Lit",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Receiver-typed (case-sensitive, matching the flat rule): GORM / sqlx
+    // / `*sql.DB` typed via `constructor_type`.  All take SQL at arg 0
+    // EXCEPT the `*Context` variants on `DatabaseConnection`, which take
+    // SQL at arg 1.
+    SinkGate {
+        callee_matcher: "GormDb.Raw",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "GormDb.Exec",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlxDb.NamedExec",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlxDb.NamedQuery",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlxDb.Select",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlxDb.Get",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "SqlxDb.MustExec",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.Query",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.Exec",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.QueryRow",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.QueryContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.ExecContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "DatabaseConnection.QueryRowContext",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+        payload_args: &[1],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {

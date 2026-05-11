@@ -87,6 +87,7 @@ mod cross_file_tests {
                 field_writes: std::collections::HashMap::new(),
 
                 synthetic_externals: std::collections::HashSet::new(),
+                slot_scoped_assigns: std::collections::HashSet::new(),
             },
             opt: crate::ssa::OptimizeResult {
                 const_values: std::collections::HashMap::new(),
@@ -105,6 +106,7 @@ mod cross_file_tests {
             param_count: 0,
             node_meta: std::collections::HashMap::new(),
             body_graph: None,
+            cross_package_imports: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }
 
@@ -838,6 +840,7 @@ mod primary_sink_location_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         }
     }
 
@@ -862,6 +865,7 @@ mod primary_sink_location_tests {
             col: 10,
             snippet: "Command::new(cmd).status()".into(),
             cap: Cap::SHELL_ESCAPE,
+            from_chain: false,
         };
         let summary = SsaFuncSummary {
             param_to_sink: vec![(0usize, smallvec![site.clone()])],
@@ -886,6 +890,8 @@ mod primary_sink_location_tests {
             &tainted,
             Cap::SHELL_ESCAPE,
             &summary.param_to_sink,
+            "caller.rs",
+            false,
         );
         assert_eq!(
             primary_sites.len(),
@@ -971,6 +977,7 @@ mod goto_succ_propagation_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let cfg: Cfg = Graph::new();
@@ -1009,6 +1016,10 @@ mod goto_succ_propagation_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
 
         // A non-bottom exit state, the test only cares that *every* succ
@@ -1065,6 +1076,7 @@ mod goto_succ_propagation_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
         let cfg: Cfg = Graph::new();
         let interner = SymbolInterner::new();
@@ -1101,6 +1113,10 @@ mod goto_succ_propagation_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
         let exit_state = SsaTaintState::initial();
 
@@ -1128,6 +1144,7 @@ mod goto_succ_propagation_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         }
     }
 
@@ -1390,6 +1407,7 @@ mod goto_succ_propagation_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         }
     }
 
@@ -1517,6 +1535,7 @@ mod receiver_candidates_field_proj_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         }
     }
 
@@ -1604,6 +1623,7 @@ mod receiver_candidates_field_proj_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
         let cands =
             super::super::receiver_candidates_for_type_lookup(SsaValue(0), Some(&body), Lang::Go);
@@ -1739,6 +1759,7 @@ mod fanout_merge_tests {
             col: 5,
             snippet: "exec(q)".into(),
             cap: Cap::from_bits(0b0001).unwrap(),
+            from_chain: false,
         };
         let unique_a = SinkSite {
             file_rel: "src/a.rs".into(),
@@ -1746,6 +1767,7 @@ mod fanout_merge_tests {
             col: 3,
             snippet: "do_a(q)".into(),
             cap: Cap::from_bits(0b0001).unwrap(),
+            from_chain: false,
         };
         let unique_b = SinkSite {
             file_rel: "src/b.rs".into(),
@@ -1753,6 +1775,7 @@ mod fanout_merge_tests {
             col: 7,
             snippet: "do_b(q)".into(),
             cap: Cap::from_bits(0b0001).unwrap(),
+            from_chain: false,
         };
         let mut a = empty();
         a.param_to_sink_sites = vec![(0, smallvec![shared.clone(), unique_a.clone()])];
@@ -2008,6 +2031,7 @@ mod field_write_tests {
             field_interner,
             field_writes,
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         (body, cache_id)
     }
@@ -2056,6 +2080,10 @@ mod field_write_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(pf),
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2140,6 +2168,10 @@ mod field_write_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
         let mut state = SsaTaintState::initial();
         for inst in &body.blocks[0].body {
@@ -2208,6 +2240,10 @@ mod field_write_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(&pf),
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
 
         // Pre-seed `validated_must` on `src` so the synth Assign
@@ -2312,6 +2348,7 @@ mod field_write_tests {
                 m
             },
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(0));
         // v0 is Const → empty pt, the hook should not insert anything.
@@ -2354,6 +2391,10 @@ mod field_write_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(&pf),
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2452,6 +2493,10 @@ mod container_elem_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(pf),
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
 
         let mut state = SsaTaintState::initial();
@@ -2549,6 +2594,7 @@ mod container_elem_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
 
         // Run pointer analysis first to confirm the result of `shift()`
@@ -2689,6 +2735,7 @@ mod container_elem_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
 
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(7));
@@ -2731,6 +2778,10 @@ mod container_elem_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(&pf),
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
 
         // Seed `src` as validated_must before the push fires.
@@ -2833,6 +2884,7 @@ mod container_elem_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
 
         let interner = SymbolInterner::new();
@@ -2869,6 +2921,10 @@ mod container_elem_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: None,
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
         let mut state = SsaTaintState::initial();
         for inst in &body.blocks[0].body {
@@ -2960,6 +3016,7 @@ mod cross_call_field_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(7));
         (body, cache_id, pf)
@@ -3334,6 +3391,7 @@ mod field_taint_origin_cap_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         (body, cache_id, cfg, n_proj)
     }
@@ -3425,6 +3483,10 @@ mod field_taint_origin_cap_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(&pf),
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         };
         for inst in &body.blocks[0].body {
             transfer_inst(inst, &cfg, &body, &transfer, &mut state);
@@ -3660,6 +3722,7 @@ mod pointer_lattice_worklist_tests {
             field_interner,
             field_writes,
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
 
         let mut interner = SymbolInterner::new();
@@ -3713,6 +3776,10 @@ mod pointer_lattice_worklist_tests {
             auto_seed_handler_params: false,
             cross_file_bodies: None,
             pointer_facts: Some(pf),
+            cross_package_imports: None,
+            entry_kind: None,
+            param_route_capture: None,
+            recording_summary: false,
         }
     }
 

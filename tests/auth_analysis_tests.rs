@@ -971,64 +971,56 @@ fn auth_analysis_does_not_run_in_cfg_mode() {
         diags.iter().all(|diag| !diag.id.starts_with("rs.auth.")),
         "CFG mode should not emit rs.auth findings"
     );
-    assert!(
+    // Per-file checks: CFG mode must not produce any *.auth.* finding on
+    // each fixture file. We filter by id prefix (not path-only) so that
+    // genuine taint flows the engine catches in CFG mode (e.g.
+    // `ctx.body = { project }` data exfil after a query) don't trip the
+    // assertion. The earlier global asserts above already cover the auth
+    // rule prefixes; these per-file checks pin the intent that auth
+    // analysis is fully gated on AST mode.
+    let auth_in_file = |needle: &str| {
         diags
             .iter()
-            .all(|diag| !diag.path.contains("koa_scoped_read_missing.js")),
+            .any(|d| d.path.contains(needle) && d.id.contains(".auth."))
+    };
+    assert!(
+        !auth_in_file("koa_scoped_read_missing.js"),
         "CFG mode should not emit Koa auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("fastify_scoped_write_missing.js")),
+        !auth_in_file("fastify_scoped_write_missing.js"),
         "CFG mode should not emit Fastify auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("flask_scoped_write_missing.py")),
+        !auth_in_file("flask_scoped_write_missing.py"),
         "CFG mode should not emit Flask auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("django_cbv_scoped_write_missing.py")),
+        !auth_in_file("django_cbv_scoped_write_missing.py"),
         "CFG mode should not emit Django auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("rails_scoped_write_missing.rb")),
+        !auth_in_file("rails_scoped_write_missing.rb"),
         "CFG mode should not emit Rails auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("sinatra_scoped_read_missing.rb")),
+        !auth_in_file("sinatra_scoped_read_missing.rb"),
         "CFG mode should not emit Sinatra auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("gin_admin_route_missing.go")),
+        !auth_in_file("gin_admin_route_missing.go"),
         "CFG mode should not emit Gin auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("echo_partial_batch.go")),
+        !auth_in_file("echo_partial_batch.go"),
         "CFG mode should not emit Echo auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("spring_scoped_read_missing.java")),
+        !auth_in_file("spring_scoped_read_missing.java"),
         "CFG mode should not emit Spring auth-analysis findings"
     );
     assert!(
-        diags
-            .iter()
-            .all(|diag| !diag.path.contains("actix_scoped_write_missing.rs")),
+        !auth_in_file("actix_scoped_write_missing.rs"),
         "CFG mode should not emit Rust auth-analysis findings"
     );
 }

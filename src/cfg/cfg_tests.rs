@@ -1202,6 +1202,8 @@ fn clone_preserves_all_sub_structs() {
             defines: Some("r".into()),
             uses: vec!["a".into(), "b".into()],
             extra_defines: vec!["c".into()],
+            array_pattern_indices: smallvec::SmallVec::new(),
+            rhs_array_elements: smallvec::SmallVec::new(),
         },
         ast: AstMeta {
             span: (10, 100),
@@ -1499,6 +1501,105 @@ fn rust_println_macro_named_arg_lifted() {
         }
     }
     assert!(found, "no println! macro_invocation node found");
+}
+
+/// `format!(URL_FMT, path)` where `URL_FMT` resolves to a top-level
+/// `const &str` literal must seed a `string_prefix` on the let-binding
+/// node so `is_string_safe_for_ssrf` can lock the host the same way
+/// `format!("https://api/{}", path)` does. The bridge fires only when
+/// the first non-string token in the macro is an identifier whose
+/// matching `const_item` has a string-literal value.
+#[test]
+fn rust_format_macro_const_first_arg_seeds_string_prefix() {
+    let src = b"const URL_FMT: &str = \"https://api.example.com/users/{}\";\n\
+                fn f(path: String) { let u = format!(URL_FMT, path); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    let mut prefix: Option<String> = None;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("u")
+            && let Some(p) = info.string_prefix.as_deref()
+        {
+            prefix = Some(p.to_string());
+        }
+    }
+    assert_eq!(
+        prefix.as_deref(),
+        Some("https://api.example.com/users/"),
+        "expected URL_FMT const to bridge into the format!() string_prefix",
+    );
+}
+
+/// Counter-test: when the named const has no string-literal initializer
+/// (e.g. `const X: usize = 4;`), the bridge must not fabricate a
+/// prefix from a non-string value.
+#[test]
+fn rust_format_macro_const_first_arg_non_string_skipped() {
+    let src = b"const N: usize = 4;\n\
+                fn f(path: String) { let u = format!(N, path); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("u") {
+            assert!(
+                info.string_prefix.is_none(),
+                "non-string const must not seed a prefix; got {:?}",
+                info.string_prefix
+            );
+        }
+    }
+}
+
+/// `static NAME: &str = "...";` declarations participate alongside
+/// `const_item`: both shapes carry a `name` field and a string-literal
+/// `value` so the bridge resolves either form identically.
+#[test]
+fn rust_format_macro_static_first_arg_seeds_string_prefix() {
+    let src = b"static API_BASE: &str = \"https://api.example.com/users/{}\";\n\
+                fn f(path: String) { let u = format!(API_BASE, path); }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    let mut prefix: Option<String> = None;
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("u")
+            && let Some(p) = info.string_prefix.as_deref()
+        {
+            prefix = Some(p.to_string());
+        }
+    }
+    assert_eq!(
+        prefix.as_deref(),
+        Some("https://api.example.com/users/"),
+        "expected static API_BASE to bridge into the format!() string_prefix",
+    );
+}
+
+/// A const declared inside a function body must not bridge: only
+/// file-level `const_item` declarations participate to keep the
+/// lookup deterministic. (The macro's first arg can shadow a
+/// file-level const with an inner-fn const, but inner consts are
+/// off-scope for the AST-time prefix bridge.)
+#[test]
+fn rust_format_macro_inner_const_not_bridged() {
+    let src = b"fn f(path: String) {\n\
+                  const URL_FMT: &str = \"https://api/{}\";\n\
+                  let u = format!(URL_FMT, path);\n\
+                }";
+    let ts_lang = Language::from(tree_sitter_rust::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "rust", ts_lang);
+    for n in cfg.node_indices() {
+        let info = &cfg[n];
+        if info.taint.defines.as_deref() == Some("u") {
+            assert!(
+                info.string_prefix.is_none(),
+                "inner-fn const must not bridge; got {:?}",
+                info.string_prefix
+            );
+        }
+    }
 }
 
 #[test]
@@ -2352,6 +2453,29 @@ fn py_subscript_write_lowers_to_index_set_call() {
         assert_eq!(node.call.arg_uses.len(), 2);
         assert_eq!(node.call.arg_uses[1], vec!["v"]);
     });
+}
+
+#[test]
+fn go_selector_expression_call_sets_receiver() {
+    // Regression for Phase 15 deferred GORM tuple-return case.
+    // Go's `userDb.Raw(sql)` parses as `call_expression` whose `function`
+    // field is a `selector_expression` (operand=userDb, field=Raw).
+    // The CFG-side `Kind::CallFn` arm must extract `userDb` as the
+    // receiver so type-qualified resolution can rewrite `userDb.Raw` →
+    // `GormDb.Raw` once `userDb`'s SSA value is tagged via
+    // `constructor_type(Lang::Go, "gorm.Open")`.  Pre-fix the arm only
+    // recognised JS/TS `member_expression`, Python `attribute`, and Rust
+    // `field_expression`; Go fell through to receiver=None.
+    let src = br#"package main
+func f(userDb int) {
+    userDb.Raw("SELECT 1")
+}
+"#;
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "go", ts_lang);
+    let node =
+        find_node_with_callee(&cfg, "userDb.Raw").expect("go: userDb.Raw node should be present");
+    assert_eq!(node.call.receiver.as_deref(), Some("userDb"));
 }
 
 #[test]
@@ -3216,4 +3340,621 @@ fn js_ternary_branch_subscript_source_classified() {
         found_source_branch,
         "expected ternary subscript branch defining `x` to carry a Source label"
     );
+}
+
+/// Regression: Go's `switch` with no `default` arm and an only-case body
+/// that returns must keep post-switch statements reachable from entry.
+///
+/// `expression_case` / `default_case` / `type_case` / `communication_case`
+/// all map to `Kind::Block` so the case body is iterated by the Block
+/// handler, but `build_switch`'s container fallback ("first Block child")
+/// would latch onto the FIRST case as the container.  Walking the case's
+/// interior for case-like children finds nothing, the empty-cases early
+/// return fires, and the dispatch If has no False edge: every post-switch
+/// statement becomes unreachable, lighting up `cfg-unreachable-sanitizer`
+/// on real code (gin's `binding/form_mapping.go::setTimeField`, line 469
+/// `if isUTC, _ := strconv.ParseBool(...); isUTC` after a no-default
+/// `switch tf := strings.ToLower(timeFormat); tf` on the unix epoch
+/// formats).
+#[test]
+fn go_switch_no_default_keeps_post_switch_reachable() {
+    use petgraph::visit::Bfs;
+    use std::collections::HashSet;
+    let src = br#"package p
+func f(x string) bool {
+    switch tf := x; tf {
+    case "unix":
+        return false
+    }
+    after()
+    return true
+}
+"#;
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let (cfg, entry) = parse_and_build(src, "go", ts_lang);
+
+    let mut reachable: HashSet<NodeIndex> = HashSet::new();
+    let mut bfs = Bfs::new(&cfg, entry);
+    while let Some(n) = bfs.next(&cfg) {
+        reachable.insert(n);
+    }
+
+    let after = cfg
+        .node_indices()
+        .find(|&n| cfg[n].call.callee.as_deref() == Some("after"))
+        .expect("expected after() Call node");
+    assert!(
+        reachable.contains(&after),
+        "post-switch `after()` must be reachable from entry; got reachable={:?}",
+        reachable
+    );
+}
+
+/// `qs = User.objects` at module/function level lowers as a Python
+/// `expression_statement` wrapping an `assignment`.  The CFG-level
+/// `member_field` detector must unwrap the wrapper and pick up
+/// `Some("objects")` from the inner RHS so the type-fact pass can tag
+/// the bound value as `DjangoQuerySet`.
+#[test]
+fn python_member_field_assignment_detected_for_bare_objects() {
+    let src = b"def view(req):\n    qs = User.objects\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "python", ts_lang);
+    let detected: Vec<Option<String>> = cfg
+        .node_indices()
+        .filter_map(|n| {
+            let info = &cfg[n];
+            if info.taint.defines.as_deref() == Some("qs") {
+                Some(info.member_field.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        detected.iter().any(|m| m.as_deref() == Some("objects")),
+        "expected at least one `qs = ...` CFG node with member_field=Some(\"objects\"); got {:?}",
+        detected
+    );
+}
+
+/// Negative shape: `qs = User.something_else` must NOT set
+/// `member_field == Some("objects")`.  Guards against the unwrap
+/// accidentally picking up the wrong field name.
+#[test]
+fn python_member_field_assignment_non_objects_does_not_match() {
+    let src = b"def view(req):\n    qs = User.profile\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "python", ts_lang);
+    let detected: Vec<Option<String>> = cfg
+        .node_indices()
+        .filter_map(|n| {
+            let info = &cfg[n];
+            if info.taint.defines.as_deref() == Some("qs") {
+                Some(info.member_field.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        detected.iter().any(|m| m.as_deref() == Some("profile")),
+        "expected `qs = User.profile` to detect member_field=Some(\"profile\"); got {:?}",
+        detected
+    );
+    assert!(
+        detected.iter().all(|m| m.as_deref() != Some("objects")),
+        "must not falsely tag non-`objects` field; got {:?}",
+        detected
+    );
+}
+
+/// Phase 15 chained-shape closure: a Java local of the form
+/// `Session sess = sf.openSession();` registers `(fn_start, "sess")`
+/// → `TypeKind::HibernateSession` in the per-file local-receiver-types
+/// map, so `find_classifiable_inner_call` can rewrite the chained
+/// inner `sess.createNativeQuery(...)` to
+/// `HibernateSession.createNativeQuery` when the legacy literal-
+/// receiver classify misses.
+#[test]
+fn java_hibernate_session_open_registers_local_receiver_type() {
+    let src = br#"
+class Foo {
+    void bar(SessionFactory sf, String sql) {
+        Session sess = sf.openSession();
+        sess.createNativeQuery(sql).getResultList();
+    }
+}
+"#;
+    let ts_lang = Language::from(tree_sitter_java::LANGUAGE);
+    let _ = parse_to_file_cfg(src, "java", ts_lang);
+    // The TLS map is cleared at the end of `build_cfg`, but the
+    // public lookup helper consults it during construction.  Re-run
+    // population manually for the assertion.
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&Language::from(tree_sitter_java::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src.as_slice(), None).unwrap();
+    super::populate_local_receiver_types(&tree, "java", src);
+    // Walk to find the function body's start_byte.
+    fn find_method_start(node: tree_sitter::Node<'_>) -> Option<usize> {
+        if node.kind() == "method_declaration" {
+            return Some(node.start_byte());
+        }
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            if let Some(s) = find_method_start(child) {
+                return Some(s);
+            }
+        }
+        None
+    }
+    let fn_start = find_method_start(tree.root_node()).expect("method_declaration in fixture");
+    let got = super::lookup_local_receiver_type(fn_start, "sess");
+    assert_eq!(
+        got,
+        Some(crate::ssa::type_facts::TypeKind::HibernateSession),
+        "local `Session sess = sf.openSession()` should bind to HibernateSession"
+    );
+    // Cleanup so the TLS state doesn't leak into other tests.
+    super::LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+}
+
+/// Same Java per-file map: a local whose RHS is unrelated (no
+/// `constructor_type` match) must NOT register.  Confirms the
+/// recogniser is anchored on `constructor_type`'s callee classifier
+/// rather than the declared receiver type, so a generic
+/// `Session foo = computeFoo()` doesn't bleed an unrelated method
+/// into the type-qualified pool.
+#[test]
+fn java_unrecognised_rhs_does_not_register_local_receiver_type() {
+    let src = br#"
+class Foo {
+    void bar() {
+        Session sess = computeSomethingUnrelated();
+        sess.doSomething();
+    }
+}
+"#;
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&Language::from(tree_sitter_java::LANGUAGE))
+        .unwrap();
+    let tree = parser.parse(src.as_slice(), None).unwrap();
+    super::populate_local_receiver_types(&tree, "java", src);
+    fn find_method_start(node: tree_sitter::Node<'_>) -> Option<usize> {
+        if node.kind() == "method_declaration" {
+            return Some(node.start_byte());
+        }
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            if let Some(s) = find_method_start(child) {
+                return Some(s);
+            }
+        }
+        None
+    }
+    let fn_start = find_method_start(tree.root_node()).expect("method_declaration in fixture");
+    let got = super::lookup_local_receiver_type(fn_start, "sess");
+    assert_eq!(
+        got, None,
+        "unrecognised RHS `computeSomethingUnrelated()` must not register a receiver-type"
+    );
+    super::LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
+}
+
+/// `collect_array_pattern_bindings_indexed` walks JS/TS `array_pattern`
+/// children in source order and records `(name, position)` for each
+/// simple-identifier binding. Skip slots (commas with no binding
+/// between) advance the position counter without emitting a binding,
+/// so `const [, b]` produces `[("b", 1)]` and `const [a, ,]` produces
+/// `[("a", 0)]`. Complex sub-patterns (`assignment_pattern`,
+/// `rest_pattern`, nested `array_pattern`) cause the helper to return
+/// an empty vec so the lowering rewrite falls back to scalar union.
+#[test]
+fn array_pattern_indexed_bindings_recognise_skip_slots() {
+    use super::helpers::collect_array_pattern_bindings_indexed;
+    fn first_array_pattern<'t>(n: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
+        if n.kind() == "array_pattern" {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = first_array_pattern(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn parse_first(src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_javascript::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+    fn run_case(src: &[u8]) -> Vec<(String, usize)> {
+        let (tree, bytes) = parse_first(src);
+        let pat = first_array_pattern(tree.root_node()).expect("array_pattern in fixture");
+        collect_array_pattern_bindings_indexed(pat, &bytes)
+            .into_iter()
+            .collect()
+    }
+    assert_eq!(
+        run_case(b"const [a, b] = x;"),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(run_case(b"const [, b] = x;"), vec![("b".into(), 1)]);
+    assert_eq!(run_case(b"const [a, ,] = x;"), vec![("a".into(), 0)]);
+    assert_eq!(
+        run_case(b"const [a, , c] = x;"),
+        vec![("a".into(), 0), ("c".into(), 2)],
+    );
+    // Rest patterns bail to empty so callers fall back to scalar union.
+    assert!(run_case(b"const [a, ...rest] = x;").is_empty());
+    // Default value patterns also bail.
+    assert!(run_case(b"const [a = 1, b] = x;").is_empty());
+    // Nested array patterns bail.
+    assert!(run_case(b"const [[a, b], c] = x;").is_empty());
+}
+
+/// Rust `tuple_pattern` shares the helper. The `_` wildcard
+/// (`_pattern` node) advances the position counter without binding,
+/// mirroring JS skip-slot semantics. Other complex sub-patterns
+/// (tuple-struct, parenthesized) bail to empty.
+#[test]
+fn tuple_pattern_indexed_bindings_recognise_rust_wildcards() {
+    use super::helpers::collect_array_pattern_bindings_indexed;
+    fn first_tuple_pattern<'t>(n: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
+        if n.kind() == "tuple_pattern" {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = first_tuple_pattern(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn parse_first_rust(src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_rust::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+    fn run_case(src: &[u8]) -> Vec<(String, usize)> {
+        let (tree, bytes) = parse_first_rust(src);
+        let pat = first_tuple_pattern(tree.root_node()).expect("tuple_pattern in fixture");
+        collect_array_pattern_bindings_indexed(pat, &bytes)
+            .into_iter()
+            .collect()
+    }
+    assert_eq!(
+        run_case(b"fn f() { let (a, b) = (1, 2); }"),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"fn f() { let (_, b) = (1, 2); }"),
+        vec![("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"fn f() { let (a, _) = (1, 2); }"),
+        vec![("a".into(), 0)],
+    );
+    assert_eq!(
+        run_case(b"fn f() { let (a, _, c) = (1, 2, 3); }"),
+        vec![("a".into(), 0), ("c".into(), 2)],
+    );
+}
+
+/// Python `pattern_list` (bare `a, b = ...`) and `tuple_pattern`
+/// (parenthesised `(a, b) = ...`) share the helper.  Python's `_` is
+/// a normal identifier binding (not a wildcard), so every identifier
+/// child emits a `(name, position)` entry — `_` lands at its source
+/// position alongside any other names.  `list_splat_pattern`
+/// (`a, *rest`) bails to empty so callers fall back to scalar union.
+#[test]
+fn pattern_list_indexed_bindings_recognise_python_destructure() {
+    use super::helpers::collect_array_pattern_bindings_indexed;
+    fn first_pattern<'t>(
+        n: tree_sitter::Node<'t>,
+        kinds: &[&str],
+    ) -> Option<tree_sitter::Node<'t>> {
+        if kinds.contains(&n.kind()) {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = first_pattern(child, kinds) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn parse_first_python(src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+    fn run_case(src: &[u8], kinds: &[&str]) -> Vec<(String, usize)> {
+        let (tree, bytes) = parse_first_python(src);
+        let pat = first_pattern(tree.root_node(), kinds)
+            .unwrap_or_else(|| panic!("no {kinds:?} in fixture"));
+        collect_array_pattern_bindings_indexed(pat, &bytes)
+            .into_iter()
+            .collect()
+    }
+    // Bare comma-list `a, b = ...` is `pattern_list`.
+    assert_eq!(
+        run_case(b"a, b = (1, 2)\n", &["pattern_list"]),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    // Three-binding bare comma list.
+    assert_eq!(
+        run_case(b"a, b, c = (1, 2, 3)\n", &["pattern_list"]),
+        vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 2)],
+    );
+    // Underscore is a regular identifier binding in Python.
+    assert_eq!(
+        run_case(b"_, b = (1, 2)\n", &["pattern_list"]),
+        vec![("_".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"a, _ = (1, 2)\n", &["pattern_list"]),
+        vec![("a".into(), 0), ("_".into(), 1)],
+    );
+    // Parenthesised destructure surfaces as `tuple_pattern`.
+    assert_eq!(
+        run_case(b"(a, b) = (1, 2)\n", &["tuple_pattern"]),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    // Splat / rest bindings bail because positional mapping breaks.
+    assert!(run_case(b"a, *rest = (1, 2, 3)\n", &["pattern_list"]).is_empty());
+    // Nested destructure bails — recogniser doesn't recurse into
+    // sub-patterns to preserve flat-binding-only semantics.
+    assert!(run_case(b"(a, b), c = ((1, 2), 3)\n", &["pattern_list"]).is_empty());
+}
+
+/// Ruby `left_assignment_list` is the LHS node tree-sitter-ruby produces
+/// for `a, b = ...`.  The helper walks comma-separated identifier
+/// children in source order, emitting `(name, position)` for each.
+/// Ruby `_` is a normal identifier (matches Python convention).
+/// `rest_assignment` (`*rest`) and `destructured_left_assignment`
+/// (parenthesised nested destructure) hit the bail branch so callers
+/// fall back to scalar union for those advanced shapes.
+#[test]
+fn left_assignment_list_indexed_bindings_recognise_ruby_destructure() {
+    use super::helpers::collect_array_pattern_bindings_indexed;
+    fn first_left_assignment_list<'t>(n: tree_sitter::Node<'t>) -> Option<tree_sitter::Node<'t>> {
+        if n.kind() == "left_assignment_list" {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = first_left_assignment_list(child) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn parse_first_ruby(src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_ruby::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+    fn run_case(src: &[u8]) -> Vec<(String, usize)> {
+        let (tree, bytes) = parse_first_ruby(src);
+        let pat =
+            first_left_assignment_list(tree.root_node()).expect("left_assignment_list in fixture");
+        collect_array_pattern_bindings_indexed(pat, &bytes)
+            .into_iter()
+            .collect()
+    }
+    assert_eq!(
+        run_case(b"a, b = [x, y]\n"),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"a, b, c = [x, y, z]\n"),
+        vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 2)],
+    );
+    // Underscore is a regular identifier binding in Ruby (idiomatic
+    // "unused" marker, but still resolvable in scope).
+    assert_eq!(
+        run_case(b"_, b = [x, y]\n"),
+        vec![("_".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"a, _ = [x, y]\n"),
+        vec![("a".into(), 0), ("_".into(), 1)],
+    );
+    // Call return value, helper walks LHS regardless of RHS shape.
+    assert_eq!(
+        run_case(b"a, b = func()\n"),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    // Splat tail bails because rest_assignment is a complex sub-pattern.
+    assert!(run_case(b"a, *rest = [x, y, z]\n").is_empty());
+    // Parenthesised nested destructure bails because
+    // destructured_left_assignment isn't in the simple-identifier
+    // whitelist.
+    assert!(run_case(b"(a, b) = [x, y]\n").is_empty());
+}
+
+/// Helper for `src/ssa/lower.rs` bare-array destructure rewrite.
+/// Walks the RHS of a destructure assignment and emits one slot per
+/// source-order element. Each slot is `Ident(name)`, `Literal`, or
+/// `Complex(inner_uses)`. Bails (empty) on shapes that shift index
+/// alignment (spread / list splat).
+#[test]
+fn rhs_array_literal_elements_recognise_per_language_shapes() {
+    use super::RhsArraySlot;
+    use super::helpers::collect_rhs_array_literal_elements;
+
+    fn parse(lang_label: &str, src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = match lang_label {
+            "javascript" => Language::from(tree_sitter_javascript::LANGUAGE),
+            "typescript" => Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+            "python" => Language::from(tree_sitter_python::LANGUAGE),
+            "ruby" => Language::from(tree_sitter_ruby::LANGUAGE),
+            "rust" => Language::from(tree_sitter_rust::LANGUAGE),
+            other => panic!("unsupported lang: {}", other),
+        };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+
+    fn find_first<'t>(n: tree_sitter::Node<'t>, kinds: &[&str]) -> Option<tree_sitter::Node<'t>> {
+        if kinds.iter().any(|k| *k == n.kind()) {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = find_first(child, kinds) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn run(lang: &str, src: &[u8], rhs_kinds: &[&str]) -> Vec<RhsArraySlot> {
+        let (tree, bytes) = parse(lang, src);
+        let rhs = find_first(tree.root_node(), rhs_kinds).expect("rhs in fixture");
+        collect_rhs_array_literal_elements(rhs, lang, &bytes, None)
+            .into_iter()
+            .collect()
+    }
+
+    fn ident(name: &str) -> RhsArraySlot {
+        RhsArraySlot::Ident(name.to_string())
+    }
+    fn complex(uses: &[&str]) -> RhsArraySlot {
+        RhsArraySlot::Complex {
+            uses: uses.iter().map(|s| s.to_string()).collect(),
+            source_cap: crate::labels::Cap::empty(),
+        }
+    }
+    fn complex_source(uses: &[&str]) -> RhsArraySlot {
+        RhsArraySlot::Complex {
+            uses: uses.iter().map(|s| s.to_string()).collect(),
+            source_cap: crate::labels::Cap::all(),
+        }
+    }
+
+    // JS/TS `array` literal: two bare idents.
+    assert_eq!(
+        run("javascript", b"const _ = [safe, tainted];\n", &["array"]),
+        vec![ident("safe"), ident("tainted")],
+    );
+    // JS/TS `array` mixed ident + string literal.
+    assert_eq!(
+        run("javascript", b"const _ = [tainted, \"ok\"];\n", &["array"]),
+        vec![ident("tainted"), RhsArraySlot::Literal],
+    );
+    // JS/TS now classifies a call as `Complex` carrying inner idents
+    // rather than bailing. `collect_idents_with_paths` lifts both paths
+    // and bare idents, so a member access surfaces as the dotted path
+    // (e.g. `req.query.x`) followed by its component idents.
+    assert_eq!(
+        run("javascript", b"const _ = [fn(x), 'lit'];\n", &["array"]),
+        vec![complex(&["fn", "x"]), RhsArraySlot::Literal],
+    );
+    // JS/TS member access becomes Complex; dotted path + component idents.
+    // Per-slot Source classification fires when the slot's subtree carries
+    // a member-expression that strip-and-retry-classifies as Source
+    // (`req.query.x` → strip `.x` → `req.query` matches the JS Source rule).
+    assert_eq!(
+        run(
+            "javascript",
+            b"const _ = [req.query.x, 'lit'];\n",
+            &["array"],
+        ),
+        vec![
+            complex_source(&["req.query.x", "req", "query", "x"]),
+            RhsArraySlot::Literal,
+        ],
+    );
+    // Sibling-precision: a Source-classified Complex slot ALONGSIDE a
+    // Complex slot whose subtree does NOT classify as Source. Pre-session
+    // 0047 every Complex slot was conservatively re-emitted as Source by
+    // the outer-node fallback in `src/ssa/lower.rs`; with per-slot
+    // classification the safe sibling stays empty so the SSA lowering can
+    // emit `Assign(safe)` instead.
+    assert_eq!(
+        run(
+            "javascript",
+            b"const _ = [process.env.X, helper(local)];\n",
+            &["array"],
+        ),
+        vec![
+            complex_source(&["process.env.X", "process", "env", "X"]),
+            complex(&["helper", "local"]),
+        ],
+    );
+    // JS/TS spread bails entirely (index alignment shifts).
+    assert!(run("javascript", b"const _ = [...arr, b];\n", &["array"]).is_empty());
+    // JS/TS binary expression becomes Complex with the inner ident.
+    assert_eq!(
+        run(
+            "javascript",
+            b"const _ = ['log-' + x, 'lit'];\n",
+            &["array"],
+        ),
+        vec![complex(&["x"]), RhsArraySlot::Literal],
+    );
+
+    // Python `list` shape.
+    assert_eq!(
+        run("python", b"a = [safe, tainted]\n", &["list"]),
+        vec![ident("safe"), ident("tainted")],
+    );
+    // Python `expression_list` (bare commas RHS in `a, b = x, y`).
+    assert_eq!(
+        run("python", b"a, b = safe, tainted\n", &["expression_list"]),
+        vec![ident("safe"), ident("tainted")],
+    );
+    // Python `tuple` (parenthesised).
+    assert_eq!(
+        run("python", b"x = (safe, 42)\n", &["tuple"]),
+        vec![ident("safe"), RhsArraySlot::Literal],
+    );
+    // Python list-splat bails.
+    assert!(run("python", b"x = [*a, b]\n", &["list"]).is_empty());
+
+    // Ruby `array`.
+    assert_eq!(
+        run("ruby", b"a, b = [safe, tainted]\n", &["array"]),
+        vec![ident("safe"), ident("tainted")],
+    );
+    // Ruby `array` with literal + ident.
+    assert_eq!(
+        run("ruby", b"a, b = [tainted, \"safe\"]\n", &["array"]),
+        vec![ident("tainted"), RhsArraySlot::Literal],
+    );
+
+    // Rust `tuple_expression`.
+    assert_eq!(
+        run(
+            "rust",
+            b"fn f(safe: &str, tainted: &str) { let _ = (safe, tainted); }\n",
+            &["tuple_expression"]
+        ),
+        vec![ident("safe"), ident("tainted")],
+    );
+
+    // Non-array-shape node returns empty (defensive guard).
+    assert!(run("javascript", b"const x = tainted;\n", &["identifier"]).is_empty());
 }

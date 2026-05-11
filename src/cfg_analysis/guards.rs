@@ -12,8 +12,10 @@ use crate::patterns::Severity;
 use crate::ssa::const_prop::ConstLattice;
 use crate::ssa::type_facts::TypeFactResult;
 use crate::ssa::{SsaOp, SsaValue};
+use crate::symbol::Lang;
 use crate::taint::path_state::{PredicateKind, classify_condition};
 use petgraph::graph::NodeIndex;
+use smallvec::SmallVec;
 use std::collections::HashSet;
 
 pub struct UnguardedSink;
@@ -85,6 +87,17 @@ fn is_all_args_constant(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
                     return true;
                 }
             }
+        }
+        // Class-level constant scalar: Java `static final TYPE NAME = LIT;`
+        // field references are compile-time constants that the per-function
+        // CFG one-hop trace can't see (fields live outside any function
+        // body) and that SSA const-prop doesn't surface either (the per-
+        // function lowering treats the cross-scope reference as a free
+        // identifier).
+        if let Some(map) = ctx.class_constant_scalars
+            && map.contains_key(u.as_str())
+        {
+            return true;
         }
         false
     }) || ssa_all_sink_operands_constant(ctx, sink, callee_desc, &callee_parts, &outer_parts)
@@ -511,6 +524,1202 @@ fn sink_args_jpa_criteria_query_safe(
         }
     }
     crate::ssa::type_facts::is_safe_query_object_arg(&values, sink_caps, type_facts)
+}
+
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the call site is
+/// a zero-positional-argument query-builder execute / create verb.
+///
+/// Doctrine DBAL `QueryBuilder` (`$qb->select(...)->from(...)->executeQuery()`),
+/// JPA / Hibernate `CriteriaBuilder` (`cb.createQuery()` returning the
+/// query-object factory), and any chained-builder pattern share the shape:
+/// the SQL string is bound earlier on the receiver chain via parameterized
+/// API calls (`->select`, `->from`, `->where(... param ...)`), and the
+/// terminal verb that fires on the sink list (`executeQuery`,
+/// `executeStatement`, `executeUpdate`, `createQuery`, `createNativeQuery`)
+/// takes zero positional args, no SQL string ever flows through the call
+/// site itself.
+///
+/// vs. the dangerous flat shape:
+/// `$conn->executeQuery($sql, $params)` — arg 0 carries the SQL string,
+/// the structural finding is correctly preserved.
+///
+/// Restricted to verb names where JDBC / Doctrine / JPA expose a
+/// receiver-built (zero-arg) overload.  PHP `stmt.execute` is excluded
+/// because PDOStatement::execute() can be reached via a tainted
+/// `prepare($sql)` chain where the SQL was already built unsafely;
+/// the receiver-side taint check is the only thing that fires there.
+fn sink_is_zero_arg_query_builder(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
+    if !sink_caps.intersects(Cap::SQL_QUERY) {
+        return false;
+    }
+    // Only suppress when the sink's caps are SQL_QUERY-only.  Multi-cap
+    // sinks may carry a non-SQL injection vector through the same call.
+    if sink_caps != Cap::SQL_QUERY {
+        return false;
+    }
+    // Restrict to PHP.  Java / Kotlin / JVM langs already cover the
+    // safe prepared-statement shape via the `prepareStatement` Sanitizer
+    // rule that dominates `pstmt.executeUpdate()` / `pstmt.executeQuery()`
+    // at the structural finding site.  PHP's Doctrine DBAL `QueryBuilder`
+    // and Drupal `Connection::prepareStatement` shapes need explicit
+    // structural support because the receiver isn't always sanitized in
+    // a way the dominator-Sanitizer scan recognises (chain receiver,
+    // closure-captured helper, etc.).
+    if ctx.lang != Lang::Php {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+    let callee = match info.call.callee.as_deref() {
+        Some(c) => c,
+        None => return false,
+    };
+    let suffix = callee.rsplit('.').next().unwrap_or(callee);
+    let is_builder_verb = matches!(suffix, "executeQuery" | "executeStatement" | "createQuery");
+    if !is_builder_verb {
+        return false;
+    }
+    // Restrict to receivers that name a known query-builder.  The
+    // root-receiver text is the leftmost segment of the callee chain;
+    // for `$qb->...->executeQuery()` the root is `qb`, for
+    // `$deleteQuery->executeStatement()` it is `deleteQuery`, etc.
+    // Patterns canvassed from Doctrine DBAL / Drupal Database / Nextcloud
+    // dav / lib idioms:
+    //   * canonical names: qb, query, queryBuilder, builder, q
+    //   * verb-bound builders: deleteQuery, insertQuery, selectTagQuery,
+    //     calendarObjectIdQuery, deleteQb, qbDeleteCalendarObjectProps
+    //   * action-named builders: insert, update, delete, select, upsert,
+    //     forUpdate, restoreUpdate
+    // Receivers named after the SQL connection (`conn`, `connection`,
+    // `dbc`, `db`) or entity-manager (`em`, `entityManager`) are
+    // excluded since their `executeQuery` / `executeStatement` overloads
+    // accept a SQL string arg.
+    let root_receiver = match callee.split('.').next() {
+        Some(r) if !r.is_empty() => r,
+        _ => return false,
+    };
+    let receiver_lower = root_receiver.to_ascii_lowercase();
+    let is_builder_receiver_by_name = receiver_lower == "qb"
+        || receiver_lower == "q"
+        || receiver_lower == "query"
+        || receiver_lower == "querybuilder"
+        || receiver_lower == "builder"
+        || receiver_lower == "insert"
+        || receiver_lower == "update"
+        || receiver_lower == "delete"
+        || receiver_lower == "select"
+        || receiver_lower == "upsert"
+        || receiver_lower.starts_with("qb")
+        || receiver_lower.starts_with("querybuilder")
+        || receiver_lower.ends_with("qb")
+        || receiver_lower.ends_with("query")
+        || receiver_lower.ends_with("builder");
+    let is_builder_receiver_by_def = receiver_defined_by_builder_factory(ctx, sink, root_receiver);
+    if !is_builder_receiver_by_name && !is_builder_receiver_by_def {
+        return false;
+    }
+    // Once the receiver is proven to be a builder via def-call lookup, the
+    // call is the builder-variant of `executeQuery` / `executeStatement`
+    // regardless of argument count (Doctrine DBAL `QueryBuilder::executeQuery`
+    // accepts only an optional `?Connection`, never a SQL string).  When the
+    // receiver was identified solely by its NAME, fall back to the byte-level
+    // zero-arg check that guards the closure-captured shape so an unfamiliar
+    // verb-named local (`$insert = "DROP TABLE..."`-bound mistake) doesn't
+    // unconditionally suppress.
+    if !is_builder_receiver_by_def && !callee_span_has_zero_args(info, ctx.source_bytes) {
+        return false;
+    }
+    true
+}
+
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the sink call's first
+/// positional argument is the result of a Doctrine DBAL safe-SQL accessor —
+/// either `<builder>.getSQL()` (parameterised SQL from a QueryBuilder chain)
+/// or a `Platform::get*SQL(...)` factory (`getTruncateTableSQL`,
+/// `getCreateTableSQL`, etc., which return DDL with no user-controlled bytes).
+///
+/// Two paths:
+///  1. Direct arg: `arg_callees[0]` names a recognised accessor.  Catches
+///     `$conn->executeStatement($builder->getSQL(), ...)` and
+///     `$conn->executeStatement($platform->getTruncateTableSQL('t', false))`.
+///  2. Indirect via local var: the arg is a bare identifier `$sql` whose
+///     most-recent same-function defining Call has a recognised accessor as
+///     its callee.  Catches the migration shape
+///     `$sql = $this->dbc->getDatabasePlatform()->getTruncateTableSQL(...);
+///      $this->dbc->executeStatement($sql);`
+///
+/// PHP-only: other languages have their own builder conventions (Java JPA's
+/// `CriteriaQuery` is already covered by `sink_args_jpa_criteria_query_safe`).
+fn sink_first_arg_is_builder_get_sql(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    if !sink_caps.intersects(Cap::SQL_QUERY) {
+        return false;
+    }
+    if sink_caps != Cap::SQL_QUERY {
+        return false;
+    }
+    if ctx.lang != Lang::Php {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+
+    // Path 1: direct method-call arg.
+    if let Some(Some(arg_callee)) = info.arg_callees.first() {
+        let suffix = arg_callee.rsplit('.').next().unwrap_or(arg_callee);
+        if is_dbal_safe_sql_accessor(suffix) {
+            return true;
+        }
+    }
+
+    // Path 2: bare-identifier arg defined earlier by a recognised accessor.
+    // Use `arg_uses[0]` (the first positional argument's identifier set) to
+    // pick the candidate variable name.  When `arg_uses` is empty (e.g. the
+    // arg is a literal, an arithmetic expression, or a complex chain), no
+    // back-walk is performed.
+    let first_arg_use = info
+        .call
+        .arg_uses
+        .first()
+        .and_then(|grp| grp.first())
+        .map(|s| s.as_str());
+    let var_name = match first_arg_use {
+        Some(n) if !n.is_empty() => n,
+        _ => return false,
+    };
+    let sink_func = info.ast.enclosing_func.as_deref();
+    let sink_span_start = info.ast.span.0;
+    let mut best: Option<(usize, String)> = None;
+    for nidx in ctx.cfg.node_indices() {
+        let n = &ctx.cfg[nidx];
+        if n.kind != crate::cfg::StmtKind::Call {
+            continue;
+        }
+        if n.taint.defines.as_deref() != Some(var_name) {
+            continue;
+        }
+        if n.ast.enclosing_func.as_deref() != sink_func {
+            continue;
+        }
+        let span_start = n.ast.span.0;
+        if span_start >= sink_span_start {
+            continue;
+        }
+        let Some(callee) = n.call.callee.as_deref() else {
+            continue;
+        };
+        match best {
+            Some((s, _)) if s >= span_start => {}
+            _ => best = Some((span_start, callee.to_string())),
+        }
+    }
+    if let Some((_, callee)) = best {
+        let suffix = callee.rsplit('.').next().unwrap_or(&callee);
+        if is_dbal_safe_sql_accessor(suffix) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recognise method names that Doctrine DBAL exposes as safe-SQL accessors.
+/// `getSQL` is the QueryBuilder accessor; `get*SQL` (case-sensitive `SQL`
+/// suffix) is the Platform-specific DDL builder convention used across the
+/// `Doctrine\DBAL\Platforms\*` hierarchy (`getTruncateTableSQL`,
+/// `getCreateTableSQL`, `getDropTableSQL`, etc.).  All such methods receive
+/// schema identifiers and emit DBMS-specific DDL, never weaving user payload.
+fn is_dbal_safe_sql_accessor(name: &str) -> bool {
+    if name == "getSQL" {
+        return true;
+    }
+    name.starts_with("get") && name.len() > 5 && name.ends_with("SQL")
+}
+
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the sink's first
+/// positional argument *composes* a Doctrine DBAL safe-SQL accessor with
+/// constant string-shaping ops.  Two real-world shapes from nextcloud:
+///   (a) `$conn->executeStatement(preg_replace('/^INSERT/i', 'INSERT IGNORE',
+///        $builder->getSQL()), ...)`
+///   (b) `$conn->executeStatement($builder->getSQL() . ' ON CONFLICT DO
+///        NOTHING', ...)`
+///
+/// Strategy (byte-level, conservative):
+///   1. Lang-gate to PHP.  Cap-gate to SQL_QUERY-only.
+///   2. Extract the sink's first-positional-arg source bytes by balanced-paren
+///      walk inside the call's `ast.span`, with single/double-quoted-string
+///      awareness.
+///   3. Scan arg-0 bytes for every PHP variable token `$<name>`.  Every var
+///      must be bound by a query-builder factory (`getQueryBuilder` /
+///      `createQueryBuilder` / `*queryBuilder`).  Bypasses `arg_uses` because
+///      `collect_idents_with_paths` also surfaces method names (`getSQL`,
+///      `getParameters`) that are not variable references in PHP.
+///   4. At least one var must appear in arg-0 bytes as the receiver of a DBAL
+///      safe-SQL accessor call (`$<recv>->getSQL(` or `$<recv>->get*SQL(`).
+///
+/// The taint engine has already cleared this flow (gate is `!has_taint`),
+/// so the suppression's job is to silence the structural cfg-unguarded-sink
+/// over-fire on builder-composed SQL.  PHP-only.
+fn sink_first_arg_composes_safe_dbal_sql(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    if sink_caps != Cap::SQL_QUERY {
+        return false;
+    }
+    if ctx.lang != Lang::Php {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+    let Some(arg0_bytes) = first_positional_arg_bytes(info, ctx.source_bytes) else {
+        return false;
+    };
+    if arg0_bytes.is_empty() {
+        return false;
+    }
+    let vars = extract_php_variables(arg0_bytes);
+    if vars.is_empty() {
+        return false;
+    }
+    let mut accessor_seen = false;
+    for name in &vars {
+        if !receiver_defined_by_builder_factory(ctx, sink, name) {
+            return false;
+        }
+        if arg_bytes_call_dbal_accessor_on(arg0_bytes, name) {
+            accessor_seen = true;
+        }
+    }
+    accessor_seen
+}
+
+/// Extract the unique PHP variable identifiers appearing as `$<name>` tokens
+/// in `bytes`.  Skips the `$` sigil; variables tokens are alphanumeric +
+/// underscore.  Order-stable (insertion order, with deduplication), so the
+/// caller's any-failure-bails loop deterministically rejects the first
+/// non-builder-bound var.
+fn extract_php_variables(bytes: &[u8]) -> Vec<String> {
+    let mut result: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        let mut e = i + 1;
+        while e < bytes.len() && (bytes[e].is_ascii_alphanumeric() || bytes[e] == b'_') {
+            e += 1;
+        }
+        if e > i + 1 {
+            if let Ok(name) = std::str::from_utf8(&bytes[i + 1..e]) {
+                if !result.iter().any(|n| n == name) {
+                    result.push(name.to_string());
+                }
+            }
+        }
+        i = e.max(i + 1);
+    }
+    result
+}
+
+/// Extract the source bytes of the sink call's first positional argument.
+///
+/// Scans `info.ast.span` for the first `(` (outer args opener), then
+/// balance-walks parens with single/double-quoted-string awareness, returning
+/// the slice up to the first depth-1 `,` or the matching closing `)`.
+/// PHP-shaped: handles `'...'` and `"..."` with backslash escapes; ignores
+/// heredoc/nowdoc, which don't appear inside DBAL call-site argument lists
+/// in practice.  `callee_span` is intentionally ignored because the upstream
+/// CFG narrowing path may set it to the *whole* call span (e.g. when a
+/// `return $this->conn->executeStatement(...)` is lowered: `inner_text_span`
+/// records the call's span via `first_call_ident_with_span`).  Searching
+/// from `ast.span.0` and matching the first `(` is robust across both
+/// direct-call and statement-wrapped shapes.
+///
+/// Returns `None` if no `(` is found or the walk runs off the end of
+/// `ast.span` without closing.
+fn first_positional_arg_bytes<'a>(
+    info: &crate::cfg::NodeInfo,
+    bytes: &'a [u8],
+) -> Option<&'a [u8]> {
+    let span = info.ast.span;
+    if span.1 > bytes.len() || span.0 >= span.1 {
+        return None;
+    }
+    let mut i = span.0;
+    while i < span.1 && bytes[i] != b'(' {
+        i += 1;
+    }
+    if i >= span.1 {
+        return None;
+    }
+    let arg_start = i + 1;
+    let mut j = arg_start;
+    let mut depth: i32 = 1;
+    let mut quote: Option<u8> = None;
+    while j < span.1 {
+        let b = bytes[j];
+        if let Some(q) = quote {
+            if b == b'\\' && j + 1 < span.1 {
+                j += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+            j += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => {
+                quote = Some(b);
+                j += 1;
+            }
+            b'(' => {
+                depth += 1;
+                j += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&bytes[arg_start..j]);
+                }
+                j += 1;
+            }
+            b',' if depth == 1 => {
+                return Some(&bytes[arg_start..j]);
+            }
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Return true if `arg0` contains a method-call against `recv_name` whose
+/// method matches [`is_dbal_safe_sql_accessor`].  Recognises the PHP
+/// member-access shape `$<recv>-><method>(`.  The backward walk stops at
+/// the first non-identifier byte; the immediately preceding byte must be
+/// the `$` sigil so `mybuilder->getSQL` does not match `recv = "builder"`.
+fn arg_bytes_call_dbal_accessor_on(arg0: &[u8], recv_name: &str) -> bool {
+    if recv_name.is_empty() {
+        return false;
+    }
+    let recv_bytes = recv_name.as_bytes();
+    let mut i = 0usize;
+    while i + 1 < arg0.len() {
+        if arg0[i] != b'-' || arg0[i + 1] != b'>' {
+            i += 1;
+            continue;
+        }
+        // Walk backward to capture the receiver identifier ending at i.
+        let mut s = i;
+        while s > 0 {
+            let c = arg0[s - 1];
+            if c.is_ascii_alphanumeric() || c == b'_' {
+                s -= 1;
+            } else {
+                break;
+            }
+        }
+        if s == i || s == 0 || arg0[s - 1] != b'$' || &arg0[s..i] != recv_bytes {
+            i += 2;
+            continue;
+        }
+        // Walk forward to capture the method identifier following `->`.
+        let mut e = i + 2;
+        while e < arg0.len() {
+            let c = arg0[e];
+            if c.is_ascii_alphanumeric() || c == b'_' {
+                e += 1;
+            } else {
+                break;
+            }
+        }
+        // Must be followed by `(`.
+        if e < arg0.len() && arg0[e] == b'(' {
+            if let Ok(method) = std::str::from_utf8(&arg0[i + 2..e]) {
+                if is_dbal_safe_sql_accessor(method) {
+                    return true;
+                }
+            }
+        }
+        i += 2;
+    }
+    false
+}
+
+/// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the sink's first
+/// positional argument interpolates only PHP variables that are bound by a
+/// `foreach` over a literal-keyed array within the same function body.
+/// Real-world shape from nextcloud `lib/private/DB/MySqlTools.php:27`:
+///   ```php
+///   $variables = ['innodb_file_per_table' => 'ON'];
+///   if (...) { $variables['innodb_file_format'] = 'Barracuda'; }
+///   foreach ($variables as $var => $val) {
+///       $connection->executeQuery("SHOW VARIABLES LIKE '$var'");
+///   }
+///   ```
+/// The foreach-key `$var` ranges over `{innodb_file_per_table,
+/// innodb_file_format, innodb_large_prefix}`, all metachar-free, so the
+/// interpolated SQL is bounded.
+///
+/// Strategy (byte-level, conservative):
+///   1. Lang-gate to PHP.  Cap-gate to SQL_QUERY-only.
+///   2. Extract the sink's first-positional-arg source bytes; collect every
+///      `$<name>` interpolation token.
+///   3. For every var, walk the enclosing function bytes.  Find the
+///      innermost `foreach ($X as $name => $...)` or `foreach ($X as $name)`
+///      pattern whose body contains the sink span, with `$name` matching
+///      the use site.
+///   4. Find every assignment of `$X` in the function body.  Each must be
+///      either an array literal `['LIT' => 'LIT', ...]` (key-arrow form) or
+///      a subscript-set `$X['LIT'] = 'LIT';`.  Every key/value involved
+///      must be metachar-free (alphanumeric + `_`, `-`, `.`).
+///   5. Whether the use site reads the foreach-key (`$key` slot) or
+///      foreach-value (`$val` slot), the corresponding literal set must be
+///      proven safe.
+///
+/// PHP-only.  Limited to the simple foreach + literal-array shape; bare-
+/// reference / by-reference foreach variants and dynamic array sources
+/// fall through to the structural finding.
+fn sink_arg_uses_safe_foreach_key(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
+    if sink_caps != Cap::SQL_QUERY {
+        return false;
+    }
+    if ctx.lang != Lang::Php {
+        return false;
+    }
+    let info = &ctx.cfg[sink];
+    let Some(arg0_bytes) = first_positional_arg_bytes(info, ctx.source_bytes) else {
+        return false;
+    };
+    if arg0_bytes.is_empty() {
+        return false;
+    }
+    let vars = extract_php_variables(arg0_bytes);
+    if vars.is_empty() {
+        return false;
+    }
+    let Some(func_scope) = enclosing_func_byte_scope(ctx, sink) else {
+        return false;
+    };
+    for name in &vars {
+        if !php_var_safe_via_foreach_literal_array(
+            ctx.source_bytes,
+            func_scope,
+            info.ast.span.0,
+            name,
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Extent of the enclosing function body.  Returns `None` when the sink
+/// has no `enclosing_func` (e.g. file-level top-level statement) or no
+/// matching CFG nodes.  The byte range is `(min_span.0, max_span.1)` over
+/// the function's CFG nodes, conservative against multi-statement bodies.
+fn enclosing_func_byte_scope(ctx: &AnalysisContext, sink: NodeIndex) -> Option<(usize, usize)> {
+    let sink_func = ctx.cfg[sink].ast.enclosing_func.as_deref()?;
+    let mut lo = usize::MAX;
+    let mut hi = 0usize;
+    for n in ctx.cfg.node_indices() {
+        let info = &ctx.cfg[n];
+        if info.ast.enclosing_func.as_deref() != Some(sink_func) {
+            continue;
+        }
+        if info.ast.span.0 < lo {
+            lo = info.ast.span.0;
+        }
+        if info.ast.span.1 > hi {
+            hi = info.ast.span.1;
+        }
+    }
+    if lo == usize::MAX || hi == 0 || lo >= hi {
+        return None;
+    }
+    Some((lo, hi))
+}
+
+/// Walk `source[func_scope]` for `foreach (...)` blocks containing
+/// `sink_span_start` in their body.  Match the iteration pattern shape and
+/// (when found) verify every assignment of the iterated identifier in the
+/// function body is a literal-keyed array or a subscript-set with literal
+/// key, with all keys/values metachar-free.  Returns true only when *every*
+/// candidate foreach proves safe; bails (returns false) on the first
+/// failure to keep the suppression conservative.
+fn php_var_safe_via_foreach_literal_array(
+    source: &[u8],
+    func_scope: (usize, usize),
+    sink_span_start: usize,
+    name: &str,
+) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    if func_scope.0 >= func_scope.1 || func_scope.1 > source.len() {
+        return false;
+    }
+    let scope = &source[func_scope.0..func_scope.1];
+    let sink_offset = if sink_span_start >= func_scope.0 {
+        sink_span_start - func_scope.0
+    } else {
+        return false;
+    };
+    let needle = b"foreach";
+    let mut cursor = 0usize;
+    let mut matched_any = false;
+    while cursor + needle.len() <= scope.len() {
+        let Some(rel) = find_subslice(&scope[cursor..], needle) else {
+            break;
+        };
+        let pos = cursor + rel;
+        cursor = pos + needle.len();
+        // Require word boundary: prev byte (if any) must not be alnum/`_`.
+        if pos > 0 {
+            let prev = scope[pos - 1];
+            if prev.is_ascii_alphanumeric() || prev == b'_' {
+                continue;
+            }
+        }
+        // Skip whitespace; require `(`.
+        let mut p = pos + needle.len();
+        while p < scope.len() && matches!(scope[p], b' ' | b'\t' | b'\n' | b'\r') {
+            p += 1;
+        }
+        if p >= scope.len() || scope[p] != b'(' {
+            continue;
+        }
+        // Balanced walk to closing `)`.
+        let header_open = p;
+        let mut depth = 1i32;
+        let mut q = p + 1;
+        let mut quote: Option<u8> = None;
+        while q < scope.len() && depth > 0 {
+            let b = scope[q];
+            if let Some(c) = quote {
+                if b == b'\\' && q + 1 < scope.len() {
+                    q += 2;
+                    continue;
+                }
+                if b == c {
+                    quote = None;
+                }
+                q += 1;
+                continue;
+            }
+            match b {
+                b'\'' | b'"' => quote = Some(b),
+                b'(' => depth += 1,
+                b')' => depth -= 1,
+                _ => {}
+            }
+            q += 1;
+        }
+        if depth != 0 {
+            continue;
+        }
+        let header_close = q - 1;
+        // Skip whitespace; require `{`.
+        let mut bp = header_close + 1;
+        while bp < scope.len() && matches!(scope[bp], b' ' | b'\t' | b'\n' | b'\r') {
+            bp += 1;
+        }
+        if bp >= scope.len() || scope[bp] != b'{' {
+            continue;
+        }
+        // Balanced walk to closing `}`.
+        let body_open = bp;
+        let mut bdepth = 1i32;
+        let mut bq = bp + 1;
+        let mut bquote: Option<u8> = None;
+        while bq < scope.len() && bdepth > 0 {
+            let b = scope[bq];
+            if let Some(c) = bquote {
+                if b == b'\\' && bq + 1 < scope.len() {
+                    bq += 2;
+                    continue;
+                }
+                if b == c {
+                    bquote = None;
+                }
+                bq += 1;
+                continue;
+            }
+            match b {
+                b'\'' | b'"' => bquote = Some(b),
+                b'{' => bdepth += 1,
+                b'}' => bdepth -= 1,
+                _ => {}
+            }
+            bq += 1;
+        }
+        if bdepth != 0 {
+            continue;
+        }
+        let body_end = bq - 1;
+        // Sink position must lie inside the body.
+        if sink_offset < body_open || sink_offset > body_end {
+            continue;
+        }
+        let header = &scope[header_open + 1..header_close];
+        let Some((iter_var, key_var, val_var)) = parse_foreach_header(header) else {
+            return false;
+        };
+        let used_as_key = key_var.as_deref() == Some(name);
+        let used_as_val = val_var.as_str() == name;
+        if !used_as_key && !used_as_val {
+            // The use site references some other variable; not bound by
+            // this foreach.  Continue scanning (might be a nested foreach).
+            continue;
+        }
+        if !php_iter_var_assigns_safe_literals(scope, &iter_var, used_as_key, used_as_val) {
+            return false;
+        }
+        matched_any = true;
+    }
+    matched_any
+}
+
+/// Parse a foreach header text (the bytes between `(` and `)`).  Returns
+/// `(iter_var, key_var, value_var)`.  Recognises `$X as $V` and
+/// `$X as $K => $V` shapes; bails (returns `None`) on by-reference
+/// (`& $V`), expressions (`call() as $V`), or any unexpected token.
+fn parse_foreach_header(header: &[u8]) -> Option<(String, Option<String>, String)> {
+    let text = std::str::from_utf8(header).ok()?.trim();
+    let lower = text;
+    let as_pos = find_word(lower.as_bytes(), b"as")?;
+    let iter_part = lower[..as_pos].trim();
+    let body_part = lower[as_pos + 2..].trim();
+    let iter_var = parse_simple_var(iter_part)?;
+    if body_part.contains("=>") {
+        let mut split = body_part.splitn(2, "=>");
+        let k = split.next()?.trim();
+        let v = split.next()?.trim();
+        let key_var = parse_simple_var(k)?;
+        let val_var = parse_simple_var(v)?;
+        Some((iter_var, Some(key_var), val_var))
+    } else {
+        let val_var = parse_simple_var(body_part)?;
+        Some((iter_var, None, val_var))
+    }
+}
+
+/// Parse a `$<name>` token, rejecting any extra tokens (whitespace OK).
+/// By-reference (`&$x`), splat (`...$x`), or list-destructuring shapes
+/// produce `None` so the suppression bails conservatively.
+fn parse_simple_var(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let bytes = trimmed.as_bytes();
+    if bytes.first() != Some(&b'$') {
+        return None;
+    }
+    let rest = &trimmed[1..];
+    if rest.is_empty() {
+        return None;
+    }
+    if !rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    Some(rest.to_string())
+}
+
+/// Find a whole-word match of `word` inside `text`.  Word boundaries are
+/// non-alnum/non-`_` bytes (or the buffer edges).  Returns the byte offset
+/// of the first match.
+fn find_word(text: &[u8], word: &[u8]) -> Option<usize> {
+    let mut cursor = 0usize;
+    while cursor + word.len() <= text.len() {
+        let rel = find_subslice(&text[cursor..], word)?;
+        let pos = cursor + rel;
+        let prev_ok = pos == 0 || {
+            let p = text[pos - 1];
+            !(p.is_ascii_alphanumeric() || p == b'_')
+        };
+        let next = pos + word.len();
+        let next_ok = next == text.len() || {
+            let p = text[next];
+            !(p.is_ascii_alphanumeric() || p == b'_')
+        };
+        if prev_ok && next_ok {
+            return Some(pos);
+        }
+        cursor = pos + 1;
+    }
+    None
+}
+
+/// For every assignment of `$<iter_var>` inside `scope` (the enclosing
+/// function bytes), require every key/value referenced is a metachar-free
+/// string literal (alphanumeric, `_`, `-`, `.`, space).  Recognises:
+///   * `$<iter_var> = ['LIT' => 'LIT', ...];` (key-arrow array literal)
+///   * `$<iter_var>['LIT'] = 'LIT';` (subscript-set with literal key)
+///
+/// Conservative: any other assignment shape, missing literals, or empty
+/// array set returns false.  When `used_as_key` is true, the literal keys
+/// must be safe; when `used_as_val` is true, the literal values must be
+/// safe; both flags can be true at once.
+fn php_iter_var_assigns_safe_literals(
+    scope: &[u8],
+    iter_var: &str,
+    used_as_key: bool,
+    used_as_val: bool,
+) -> bool {
+    if iter_var.is_empty() {
+        return false;
+    }
+    let needle: Vec<u8> = std::iter::once(b'$').chain(iter_var.bytes()).collect();
+    let mut cursor = 0usize;
+    let mut saw_init = false;
+    while cursor + needle.len() <= scope.len() {
+        let Some(rel) = find_subslice(&scope[cursor..], &needle) else {
+            break;
+        };
+        let pos = cursor + rel;
+        cursor = pos + 1;
+        // Word-boundary on the trailing side: the next byte must not be
+        // alnum/`_` (no `$variables_extra`).
+        let after = pos + needle.len();
+        if after < scope.len() {
+            let b = scope[after];
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                continue;
+            }
+        }
+        // Skip trailing whitespace.
+        let mut p = after;
+        while p < scope.len() && matches!(scope[p], b' ' | b'\t' | b'\n' | b'\r') {
+            p += 1;
+        }
+        if p >= scope.len() {
+            continue;
+        }
+        match scope[p] {
+            b'=' => {
+                // Direct assignment: `$X = ['k' => 'v', ...];`
+                if p + 1 < scope.len() && scope[p + 1] == b'=' {
+                    continue; // comparison
+                }
+                if !php_check_array_literal_assignment(scope, p + 1, used_as_key, used_as_val) {
+                    return false;
+                }
+                saw_init = true;
+            }
+            b'['
+                // Subscript-set: `$X['LIT'] = 'LIT';`
+                if !php_check_subscript_set(scope, p, used_as_key, used_as_val) =>
+            {
+                return false;
+            }
+            _ => {
+                // Other usage (foreach iter, function arg, member access).
+                // Doesn't add to the literal set; allowed as long as no
+                // unrecognised assignment shape appears.
+            }
+        }
+    }
+    saw_init
+}
+
+/// Validate an array-literal assignment after `$X =` (cursor points at
+/// the byte just after `=`).  Allowed: optional whitespace, then `[ ... ];`
+/// where every element is `'LIT' => 'LIT'` with metachar-free literals.
+fn php_check_array_literal_assignment(
+    scope: &[u8],
+    after_eq: usize,
+    used_as_key: bool,
+    used_as_val: bool,
+) -> bool {
+    let mut p = after_eq;
+    while p < scope.len() && matches!(scope[p], b' ' | b'\t' | b'\n' | b'\r') {
+        p += 1;
+    }
+    if p >= scope.len() || scope[p] != b'[' {
+        return false;
+    }
+    let body_open = p + 1;
+    let mut depth = 1i32;
+    let mut q = body_open;
+    let mut quote: Option<u8> = None;
+    while q < scope.len() && depth > 0 {
+        let b = scope[q];
+        if let Some(c) = quote {
+            if b == b'\\' && q + 1 < scope.len() {
+                q += 2;
+                continue;
+            }
+            if b == c {
+                quote = None;
+            }
+            q += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'[' => depth += 1,
+            b']' => depth -= 1,
+            _ => {}
+        }
+        q += 1;
+    }
+    if depth != 0 {
+        return false;
+    }
+    let body_close = q - 1;
+    let elements = &scope[body_open..body_close];
+    php_check_kv_array_literal(elements, used_as_key, used_as_val)
+}
+
+/// Walk an array-literal body (between `[` and `]`).  Each element must
+/// be `'LIT' => 'LIT'`.  All keys/values used by the consumer must be
+/// metachar-free.
+fn php_check_kv_array_literal(elements: &[u8], used_as_key: bool, used_as_val: bool) -> bool {
+    if elements.iter().all(|b| b.is_ascii_whitespace()) {
+        return false;
+    }
+    // Split by `,` at depth 0.
+    let mut start = 0usize;
+    let mut quote: Option<u8> = None;
+    let mut depth = 0i32;
+    let mut any_pair = false;
+    let mut i = 0usize;
+    while i < elements.len() {
+        let b = elements[i];
+        if let Some(c) = quote {
+            if b == b'\\' && i + 1 < elements.len() {
+                i += 2;
+                continue;
+            }
+            if b == c {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'[' | b'(' => depth += 1,
+            b']' | b')' => depth -= 1,
+            b',' if depth == 0 => {
+                if !php_check_arrow_pair(&elements[start..i], used_as_key, used_as_val) {
+                    return false;
+                }
+                any_pair = true;
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let tail = &elements[start..];
+    if tail.iter().any(|b| !b.is_ascii_whitespace()) {
+        if !php_check_arrow_pair(tail, used_as_key, used_as_val) {
+            return false;
+        }
+        any_pair = true;
+    }
+    any_pair
+}
+
+/// Validate one `'LIT' => 'LIT'` pair.  Both literals must be string
+/// literals (`'...'` or `"..."`) with metachar-free contents per
+/// `is_metachar_free_literal`.
+fn php_check_arrow_pair(pair: &[u8], used_as_key: bool, used_as_val: bool) -> bool {
+    let text = std::str::from_utf8(pair).map(str::trim).unwrap_or("");
+    let mut split = text.splitn(2, "=>");
+    let k = match split.next() {
+        Some(s) => s.trim(),
+        None => return false,
+    };
+    let v = match split.next() {
+        Some(s) => s.trim(),
+        None => return false,
+    };
+    if used_as_key && !is_metachar_free_string_literal(k.as_bytes()) {
+        return false;
+    }
+    if used_as_val && !is_metachar_free_string_literal(v.as_bytes()) {
+        return false;
+    }
+    true
+}
+
+/// Validate a subscript-set assignment `$X[...] = ...;` starting at the
+/// `[` byte.  Both the subscript key (when `used_as_key`) and the
+/// assigned value (when `used_as_val`) must be metachar-free string
+/// literals.
+fn php_check_subscript_set(
+    scope: &[u8],
+    open_bracket: usize,
+    used_as_key: bool,
+    used_as_val: bool,
+) -> bool {
+    let mut depth = 1i32;
+    let mut q = open_bracket + 1;
+    let mut quote: Option<u8> = None;
+    while q < scope.len() && depth > 0 {
+        let b = scope[q];
+        if let Some(c) = quote {
+            if b == b'\\' && q + 1 < scope.len() {
+                q += 2;
+                continue;
+            }
+            if b == c {
+                quote = None;
+            }
+            q += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'[' => depth += 1,
+            b']' => depth -= 1,
+            _ => {}
+        }
+        q += 1;
+    }
+    if depth != 0 {
+        return false;
+    }
+    let close_bracket = q - 1;
+    let key_bytes = &scope[open_bracket + 1..close_bracket];
+    if used_as_key && !is_metachar_free_string_literal(key_bytes.trim_ascii()) {
+        return false;
+    }
+    // Skip whitespace; require `=`, not `==`.
+    let mut p = close_bracket + 1;
+    while p < scope.len() && matches!(scope[p], b' ' | b'\t' | b'\n' | b'\r') {
+        p += 1;
+    }
+    if p >= scope.len() || scope[p] != b'=' {
+        return false;
+    }
+    if p + 1 < scope.len() && scope[p + 1] == b'=' {
+        return false;
+    }
+    // Read the RHS up to the next `;` at depth 0 (no string awareness needed
+    // beyond `;` because PHP statement separator).
+    let mut q = p + 1;
+    let mut quote: Option<u8> = None;
+    let mut depth = 0i32;
+    while q < scope.len() {
+        let b = scope[q];
+        if let Some(c) = quote {
+            if b == b'\\' && q + 1 < scope.len() {
+                q += 2;
+                continue;
+            }
+            if b == c {
+                quote = None;
+            }
+            q += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b';' if depth == 0 => break,
+            _ => {}
+        }
+        q += 1;
+    }
+    let rhs = &scope[p + 1..q];
+    if used_as_val && !is_metachar_free_string_literal(rhs.trim_ascii()) {
+        return false;
+    }
+    true
+}
+
+/// `true` when `bytes` form a single-quoted or double-quoted string
+/// literal whose contents are alphanumeric, `_`, `-`, `.`, or space —
+/// safe for SQL pattern literal interpolation.  Rejects empty string,
+/// any escape sequences, control characters, quotes, semicolons, or
+/// shell/SQL metacharacters.
+fn is_metachar_free_string_literal(bytes: &[u8]) -> bool {
+    if bytes.len() < 2 {
+        return false;
+    }
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    if first != last || (first != b'\'' && first != b'"') {
+        return false;
+    }
+    let inner = &bytes[1..bytes.len() - 1];
+    if inner.is_empty() {
+        return false;
+    }
+    inner
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.' | b' '))
+}
+
+/// Check whether the source bytes inside the sink's `callee_span` end with a
+/// zero-argument call form: trailing `)` preceded by `(` with only whitespace
+/// in between.  Used to identify `qb.executeQuery()` / `qb.executeStatement()`
+/// where the SQL was bound earlier on the receiver chain.
+fn callee_span_has_zero_args(info: &crate::cfg::NodeInfo, bytes: &[u8]) -> bool {
+    let span = info.call.callee_span.unwrap_or(info.ast.span);
+    if span.0 >= span.1 || span.1 > bytes.len() {
+        return false;
+    }
+    let slice = &bytes[span.0..span.1];
+    let mut end = slice.len();
+    while end > 0 && matches!(slice[end - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        end -= 1;
+    }
+    if end == 0 || slice[end - 1] != b')' {
+        return false;
+    }
+    end -= 1;
+    while end > 0 && matches!(slice[end - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        end -= 1;
+    }
+    end > 0 && slice[end - 1] == b'('
+}
+
+/// Detect that `receiver_name` was bound earlier in the same function by a
+/// query-builder factory call.  Two paths:
+///  1. CFG def-call: a same-function Call node defines `receiver_name` with a
+///     callee ending in `getQueryBuilder` / `createQueryBuilder`.
+///  2. Source-text scan: between the enclosing function's first byte and the
+///     sink's byte offset, the source contains
+///     `$<receiver_name> = ... ->getQueryBuilder(...)` (or `createQueryBuilder`).
+///     Picks up assignment nodes whose CFG kind/callee text doesn't surface a
+///     leaf factory name (multi-line chains, `for`/`try` block nesting,
+///     unusual lowering paths).
+fn receiver_defined_by_builder_factory(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    receiver_name: &str,
+) -> bool {
+    if receiver_name.is_empty() {
+        return false;
+    }
+    let sink_info = &ctx.cfg[sink];
+    let sink_func = sink_info.ast.enclosing_func.as_deref();
+    let sink_span_start = sink_info.ast.span.0;
+
+    // Path 1: CFG-level def lookup.
+    let mut best: Option<(usize, String)> = None;
+    for nidx in ctx.cfg.node_indices() {
+        let n = &ctx.cfg[nidx];
+        if n.kind != crate::cfg::StmtKind::Call {
+            continue;
+        }
+        if n.taint.defines.as_deref() != Some(receiver_name) {
+            continue;
+        }
+        if n.ast.enclosing_func.as_deref() != sink_func {
+            continue;
+        }
+        let span_start = n.ast.span.0;
+        if span_start >= sink_span_start {
+            continue;
+        }
+        let Some(callee) = n.call.callee.as_deref() else {
+            continue;
+        };
+        match best {
+            Some((s, _)) if s >= span_start => {}
+            _ => best = Some((span_start, callee.to_string())),
+        }
+    }
+    if let Some((_, callee)) = best {
+        let suffix = callee.rsplit('.').next().unwrap_or(&callee);
+        let suffix_lower = suffix.to_ascii_lowercase();
+        if matches!(
+            suffix_lower.as_str(),
+            "getquerybuilder" | "createquerybuilder" | "getqb" | "createqb"
+        ) || suffix_lower.ends_with("querybuilder")
+        {
+            return true;
+        }
+    }
+
+    // Path 2: source-text scan over the enclosing function's body.  Some
+    // builder assignments (multi-line chains, deeply nested in `try`/`for`
+    // bodies) bind `defines` to a synthesised name that doesn't match
+    // `receiver_name` exactly.  A direct byte scan for an assignment shape
+    // catches these without depending on CFG synthesis details.
+    let func_start = ctx
+        .cfg
+        .node_indices()
+        .filter_map(|i| {
+            let n = &ctx.cfg[i];
+            if n.ast.enclosing_func.as_deref() == sink_func {
+                Some(n.ast.span.0)
+            } else {
+                None
+            }
+        })
+        .min()
+        .unwrap_or(0);
+    let bytes = ctx.source_bytes;
+    let lo = func_start.min(bytes.len());
+    let hi = sink_span_start.min(bytes.len());
+    if lo >= hi {
+        return false;
+    }
+    let scope = &bytes[lo..hi];
+    text_contains_builder_factory_assignment(scope, receiver_name)
+}
+
+/// Search `scope` for `$<name> = ... <factory>(...)` where `<factory>` ends
+/// with `getQueryBuilder` / `createQueryBuilder` (case-insensitive).  Used as a
+/// byte-level fallback for CFG def-lookup that misses multi-line chained
+/// assignments inside nested `try` / `for` bodies.
+fn text_contains_builder_factory_assignment(scope: &[u8], name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let needle: Vec<u8> = std::iter::once(b'$').chain(name.bytes()).collect();
+    let mut start = 0usize;
+    while start + needle.len() <= scope.len() {
+        let Some(rel) = find_subslice(&scope[start..], &needle) else {
+            return false;
+        };
+        let mut cursor = start + rel + needle.len();
+        // Require an immediate `=` (allow whitespace before).
+        while cursor < scope.len() && matches!(scope[cursor], b' ' | b'\t' | b'\n' | b'\r') {
+            cursor += 1;
+        }
+        if cursor < scope.len()
+            && scope[cursor] == b'='
+            && (cursor + 1 == scope.len() || scope[cursor + 1] != b'=')
+        {
+            // Find the next `;` (statement terminator) without crossing a
+            // closing brace boundary, the assignment expression spans up to it.
+            let mut end = cursor + 1;
+            while end < scope.len() {
+                let b = scope[end];
+                if b == b';' || b == b'\n' && end + 1 < scope.len() && scope[end + 1] == b'\n' {
+                    break;
+                }
+                end += 1;
+            }
+            let rhs_lower: Vec<u8> = scope[cursor + 1..end]
+                .iter()
+                .map(|b| b.to_ascii_lowercase())
+                .collect();
+            if find_subslice(&rhs_lower, b"getquerybuilder").is_some()
+                || find_subslice(&rhs_lower, b"createquerybuilder").is_some()
+            {
+                return true;
+            }
+        }
+        start = start + rel + 1;
+    }
+    false
+}
+
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Walk the sink's Call SSA arguments and check whether every real argument
@@ -1068,8 +2277,381 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         return false; // can't determine params
     }
 
-    // Check if ALL sink uses are parameters
-    sink_uses.iter().all(|u| param_names.contains(&u.as_str()))
+    // The sink's `taint.uses` includes pseudo-uses for callee-chain segments
+    // when the chain is rooted at a self-pseudo-receiver (`this`, `self`,
+    // `static`, `parent`).  In that case every segment of the chain is part
+    // of the dotted callee path that tree-sitter records as identifier
+    // children of the call expression, not a real argument.  This shape
+    // covers thin method wrappers like
+    // `function wrap($sql) { return $this->inner->execute($sql); }` so the
+    // sink is recognised as parameter-only despite `this` / `inner` /
+    // `execute` showing up in `taint.uses`.
+    //
+    // For other callee chains (e.g. Python `cursor.execute(name)` where
+    // `cursor` is a local variable from `connection.cursor()`), only the
+    // method name itself (`execute`) is filtered.  `cursor` is a real
+    // identifier value — a non-param local — and must not be filtered,
+    // otherwise wrappers around external receivers get suppressed
+    // incorrectly.
+    //
+    // PHP variable receivers carry a leading `$` (`$this->inner->execute`)
+    // and use `->` between the receiver and member, so split on the full
+    // set of separators and strip a leading `$` so identifier-shaped
+    // fragments line up with bare identifier names in `taint.uses`.
+    //
+    // Each segment carries an `is_call` flag so chain pieces that are
+    // themselves method invocations (`getSession()` in
+    // `getSession().createQuery(qs)`) can be recognised as pseudo-uses
+    // alongside the terminal method name.  Variable-receiver chains like
+    // `cursor.execute(name)` keep `cursor` as a real identifier and stay
+    // out of the param-only filter.
+    let callee_desc = sink_info.call.callee.as_deref().unwrap_or("");
+    let outer_callee = sink_info.call.outer_callee.as_deref().unwrap_or("");
+    fn split_chain_with_flags(s: &str) -> SmallVec<[(&str, bool); 8]> {
+        let mut out: SmallVec<[(&str, bool); 8]> = SmallVec::new();
+        for piece in s.split(['.', ':', '>', '-']) {
+            let stripped = piece.trim_start_matches('$').trim();
+            if stripped.is_empty() {
+                continue;
+            }
+            let (name, is_call) = match stripped.find('(') {
+                Some(idx) => (stripped[..idx].trim(), true),
+                None => (stripped, false),
+            };
+            if !name.is_empty() {
+                out.push((name, is_call));
+            }
+        }
+        out
+    }
+    fn is_self_root(seg: &str) -> bool {
+        matches!(seg, "this" | "self" | "static" | "parent" | "cls")
+    }
+    let mut callee_fragments: SmallVec<[&str; 8]> = SmallVec::new();
+    for src in [callee_desc, outer_callee] {
+        let segs = split_chain_with_flags(src);
+        let Some(&(first_name, _)) = segs.first() else {
+            continue;
+        };
+        let last_idx = segs.len() - 1;
+        if is_self_root(first_name) {
+            // Whole chain is callee path: `$this->inner->execute` →
+            // every segment is a pseudo-use.
+            for &(name, _) in &segs {
+                if !callee_fragments.contains(&name) {
+                    callee_fragments.push(name);
+                }
+            }
+        } else {
+            // The terminal method name is a pseudo-use.  Any non-last
+            // segment that is itself a method call (`getSession()` in
+            // `getSession().createQuery(qs)`) is also a pseudo-use, since
+            // the segment text in the chain refers to a method name, not
+            // a local variable.  Bare-identifier receivers like `cursor`
+            // in `cursor.execute(name)` carry no `(` and stay as real
+            // local-variable values.
+            for (i, &(name, is_call)) in segs.iter().enumerate() {
+                if (is_call || i == last_idx) && !callee_fragments.contains(&name) {
+                    callee_fragments.push(name);
+                }
+            }
+        }
+    }
+
+    // Source-text scan: `callee_desc` collapses chains via `root_receiver_text`,
+    // so `getSession().getCriteriaBuilder().createQuery(qs)` reduces to
+    // `"getSession().createQuery"` and the intermediate `getCriteriaBuilder`
+    // is missing.  Walk the sink's source bytes up to the outermost args
+    // opener and lift every `IDENT(` pattern as a method-call pseudo-use.
+    // Identifiers nested inside earlier `()` groups (which open at depth 0
+    // for sibling method calls in a chain) are picked up too, so every
+    // chain hop contributes its method name.
+    let span = sink_info.classification_span();
+    let (start, end) = span;
+    if start < ctx.source_bytes.len() && end <= ctx.source_bytes.len() && start < end {
+        let span_bytes = &ctx.source_bytes[start..end];
+        if let Ok(span_text) = std::str::from_utf8(span_bytes) {
+            let bytes = span_text.as_bytes();
+            // Find the outermost args-opener: the last `(` at depth 0.
+            let mut depth: i32 = 0;
+            let mut last_open_at_zero: Option<usize> = None;
+            for (i, &b) in bytes.iter().enumerate() {
+                match b {
+                    b'(' => {
+                        if depth == 0 {
+                            last_open_at_zero = Some(i);
+                        }
+                        depth += 1;
+                    }
+                    b')' => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+            let chain_end = last_open_at_zero.unwrap_or(bytes.len());
+            // Walk the chain prefix and lift every identifier directly followed
+            // by `(` as a method-call pseudo-use.
+            let mut i = 0;
+            while i < chain_end {
+                let b = bytes[i];
+                let is_ident_start = b.is_ascii_alphabetic() || b == b'_';
+                if !is_ident_start {
+                    i += 1;
+                    continue;
+                }
+                let id_start = i;
+                while i < chain_end {
+                    let c = bytes[i];
+                    if c.is_ascii_alphanumeric() || c == b'_' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if i < chain_end && bytes[i] == b'(' {
+                    let name = &span_text[id_start..i];
+                    if !callee_fragments.contains(&name) {
+                        callee_fragments.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    // Strict parameter set scoped to the sink's enclosing function only.
+    // Used for the local-trace fallback below to prevent over-suppression
+    // when sibling functions in the same file happen to share param names
+    // with the current scope (e.g. a constructor's `dbConn` param leaking
+    // into the `param_names` view of an unrelated `logAuditEvent` body).
+    // The existing broad `param_names` view is preserved for the direct
+    // in-list check above so legacy suppression behaviour is unchanged.
+    let strict_param_names: SmallVec<[&str; 8]> = ctx
+        .func_summaries
+        .iter()
+        .filter(|(key, _)| sink_func.is_some_and(|name| key.name.as_str() == name))
+        .flat_map(|(_, s)| s.param_names.iter().map(|p| p.as_str()))
+        .collect();
+    sink_uses.iter().all(|u| {
+        if callee_fragments.contains(&u.as_str()) || u == callee_desc {
+            return true;
+        }
+        if param_names.contains(&u.as_str()) {
+            return true;
+        }
+        // One-hop transitive local trace: when a sink use names a body
+        // local whose every definition resolves to parameter-derived
+        // data (e.g. `Statement stmt = connection.createStatement();
+        // stmt.executeQuery(sql);` where `connection` is a param), the
+        // local is wrapper plumbing.  Receiver-variable shapes whose
+        // definitions reach a free (non-param, non-local) identifier or
+        // a Source label fail the trace and keep the structural finding.
+        if strict_param_names.is_empty() {
+            return false;
+        }
+        let mut seen: SmallVec<[&str; 4]> = SmallVec::new();
+        local_is_param_derived(
+            ctx,
+            sink_func,
+            &strict_param_names,
+            &callee_fragments,
+            u.as_str(),
+            3,
+            &mut seen,
+        )
+    })
+}
+
+/// Recursive trace, return true iff every definition of `name` inside
+/// `sink_func` has its right-hand-side fully resolvable to parameter
+/// names, callee fragments, or other already-cleared body locals.  Bounded
+/// by `depth` to prevent runaway on pathological CFGs and uses `seen` to
+/// short-circuit cycles (a local whose definition mentions itself does
+/// not clear).  Called from `sink_arg_is_parameter_only` once the simple
+/// param / callee-fragment / source-text check has failed.
+fn local_is_param_derived<'a>(
+    ctx: &'a AnalysisContext,
+    sink_func: Option<&str>,
+    param_names: &[&'a str],
+    callee_fragments: &[&'a str],
+    name: &'a str,
+    depth: u8,
+    seen: &mut SmallVec<[&'a str; 4]>,
+) -> bool {
+    if depth == 0 || seen.contains(&name) {
+        return false;
+    }
+    seen.push(name);
+    let mut found_def = false;
+    let mut all_def_clear = true;
+    for idx in ctx.cfg.node_indices() {
+        let info = &ctx.cfg[idx];
+        if info.ast.enclosing_func.as_deref() != sink_func {
+            continue;
+        }
+        if info.taint.defines.as_deref() != Some(name) {
+            continue;
+        }
+        found_def = true;
+        if info
+            .taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_)))
+        {
+            all_def_clear = false;
+            break;
+        }
+        // Compute the defining node's own callee fragments so method-name
+        // segments (e.g. `createStatement` in `statement =
+        // connection.createStatement();`) are recognised as pseudo-uses
+        // alongside the receiver variable.  Without this, the trace
+        // wrongly rejects every chained method initialisation.  The
+        // source-text scan below also lifts intermediate method calls
+        // (`unwrap` in `connection.unwrap().createStatement`) that the
+        // collapsed `info.call.callee` drops.
+        let def_fragments = chain_callee_fragments_with_text(
+            info.call.callee.as_deref().unwrap_or(""),
+            info.call.outer_callee.as_deref().unwrap_or(""),
+            ctx.source_bytes,
+            info.classification_span(),
+        );
+        let clear = info.taint.uses.iter().all(|u| {
+            param_names.contains(&u.as_str())
+                || callee_fragments.contains(&u.as_str())
+                || def_fragments.contains(&u.as_str())
+                || local_is_param_derived(
+                    ctx,
+                    sink_func,
+                    param_names,
+                    callee_fragments,
+                    u.as_str(),
+                    depth - 1,
+                    seen,
+                )
+        });
+        if !clear {
+            all_def_clear = false;
+            break;
+        }
+    }
+    seen.pop();
+    found_def && all_def_clear
+}
+
+/// Split a callee chain like `getSession().createQuery` or
+/// `connection.createStatement` into method-name segments treated as
+/// pseudo-uses.  Also walks `source_bytes[span]` up to the outermost
+/// args-opener and lifts every `IDENT(` pattern, recovering intermediate
+/// method-call segments that the collapsed `info.call.callee` text drops
+/// (e.g. `unwrap` in `connection.unwrap().createStatement()`).  Mirrors
+/// the in-place chain split inside `sink_arg_is_parameter_only` so trace
+/// nodes get the same recognition as the sink itself.  Self-rooted
+/// chains (`this->...`, `self.foo`) surface every segment; other chains
+/// surface only the terminal method name plus any inner method-call
+/// segments.
+fn chain_callee_fragments_with_text<'a>(
+    callee: &'a str,
+    outer: &'a str,
+    source_bytes: &'a [u8],
+    span: (usize, usize),
+) -> SmallVec<[&'a str; 8]> {
+    fn split_chain<'b>(s: &'b str) -> SmallVec<[(&'b str, bool); 8]> {
+        let mut out: SmallVec<[(&'b str, bool); 8]> = SmallVec::new();
+        for piece in s.split(['.', ':', '>', '-']) {
+            let stripped = piece.trim_start_matches('$').trim();
+            if stripped.is_empty() {
+                continue;
+            }
+            let (name, is_call) = match stripped.find('(') {
+                Some(idx) => (stripped[..idx].trim(), true),
+                None => (stripped, false),
+            };
+            if !name.is_empty() {
+                out.push((name, is_call));
+            }
+        }
+        out
+    }
+    fn is_self_root(seg: &str) -> bool {
+        matches!(seg, "this" | "self" | "static" | "parent" | "cls")
+    }
+    let mut frags: SmallVec<[&str; 8]> = SmallVec::new();
+    for src in [callee, outer] {
+        let segs = split_chain(src);
+        let Some(&(first_name, _)) = segs.first() else {
+            continue;
+        };
+        let last_idx = segs.len() - 1;
+        if is_self_root(first_name) {
+            for &(name, _) in &segs {
+                if !frags.contains(&name) {
+                    frags.push(name);
+                }
+            }
+        } else {
+            for (i, &(name, is_call)) in segs.iter().enumerate() {
+                if (is_call || i == last_idx) && !frags.contains(&name) {
+                    frags.push(name);
+                }
+            }
+        }
+    }
+    let (start, end) = span;
+    if start < source_bytes.len() && end <= source_bytes.len() && start < end {
+        let span_bytes = &source_bytes[start..end];
+        if let Ok(span_text) = std::str::from_utf8(span_bytes) {
+            let bytes = span_text.as_bytes();
+            let mut depth: i32 = 0;
+            let mut last_open_at_zero: Option<usize> = None;
+            for (i, &b) in bytes.iter().enumerate() {
+                match b {
+                    b'(' => {
+                        if depth == 0 {
+                            last_open_at_zero = Some(i);
+                        }
+                        depth += 1;
+                    }
+                    b')' => {
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+            let chain_end = last_open_at_zero.unwrap_or(bytes.len());
+            let mut i = 0;
+            while i < chain_end {
+                let b = bytes[i];
+                let is_ident_start = b.is_ascii_alphabetic() || b == b'_';
+                if !is_ident_start {
+                    i += 1;
+                    continue;
+                }
+                let id_start = i;
+                while i < chain_end {
+                    let c = bytes[i];
+                    if c.is_ascii_alphanumeric() || c == b'_' {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if i < chain_end && bytes[i] == b'(' {
+                    let name = &span_text[id_start..i];
+                    let abs_start = start + id_start;
+                    let abs_end = start + i;
+                    if abs_start < source_bytes.len() && abs_end <= source_bytes.len() {
+                        let name_slice =
+                            std::str::from_utf8(&source_bytes[abs_start..abs_end]).unwrap_or(name);
+                        if !frags.contains(&name_slice) {
+                            frags.push(name_slice);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    frags
 }
 
 /// Check if the source bytes at a given span contain a redirect call whose
@@ -1271,6 +2853,46 @@ impl CfgAnalysis for UnguardedSink {
                 continue;
             }
 
+            // Zero-arg query-builder verbs: Doctrine DBAL `QueryBuilder`,
+            // JPA `CriteriaBuilder`, and similar chain-builder shapes
+            // execute a query that was bound earlier on the receiver via
+            // parameterised API calls.  No SQL string is concatenated at
+            // the terminal call site.  Closes the nextcloud apps/dav and
+            // lib/private/DB cluster (`$qb->executeQuery()` /
+            // `$qb->executeStatement()` after `select`/`from`/`where`/
+            // `setParameter` chains).
+            if !has_taint && sink_is_zero_arg_query_builder(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // Builder.getSQL() arg suppression: the dangerous flat shape is
+            // `$conn->executeStatement($sql)` where `$sql` is user-controlled
+            // SQL.  When `$sql` is itself the return of `<builder>.getSQL()`,
+            // the SQL is parameterised by construction (Doctrine DBAL),
+            // independent of which receiver fires the terminal verb.
+            if !has_taint && sink_first_arg_is_builder_get_sql(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // Composition: `<builder>.getSQL()` wrapped by string-shaping ops
+            // (`preg_replace('/^INSERT/i', 'INSERT IGNORE', $b->getSQL())`,
+            // `$b->getSQL() . ' ON CONFLICT DO NOTHING'`).  Closes the
+            // remaining nextcloud `AdapterMySQL.php` / `AdapterSqlite.php`
+            // FPs after the direct accessor recognition above.
+            if !has_taint && sink_first_arg_composes_safe_dbal_sql(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // PHP foreach-key string interpolation: arg-0 is a SQL string
+            // whose interpolated `$<var>` is bound by a `foreach ($X as $var)`
+            // (or `as $key => $var`) over a literal-keyed array assigned
+            // earlier in the same function.  The literal set is finite and
+            // metachar-free, so the interpolated SQL is bounded.  Closes the
+            // nextcloud `lib/private/DB/MySqlTools.php:27` FP.
+            if !has_taint && sink_arg_uses_safe_foreach_key(ctx, *sink, sink_caps) {
+                continue;
+            }
+
             // Static-map suppression: the SSA value flowing into the sink is
             // proved by the static-HashMap-lookup idiom detector to be a
             // finite set of literals free of shell metacharacters.  Mirrors
@@ -1365,5 +2987,67 @@ impl CfgAnalysis for UnguardedSink {
         }
 
         findings
+    }
+}
+
+#[cfg(test)]
+mod chain_fragments_tests {
+    use super::chain_callee_fragments_with_text;
+
+    fn frags(callee: &str, outer: &str, source: &str) -> Vec<String> {
+        chain_callee_fragments_with_text(callee, outer, source.as_bytes(), (0, source.len()))
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn java_chained_init_lifts_inner_call() {
+        // `Statement stmt = connection.unwrap().createStatement();`
+        // The collapsed `info.call.callee` drops the inner method call,
+        // so the source-text scan has to recover `unwrap` on top of the
+        // structural split's `createStatement`.
+        let src = "Statement stmt = connection.unwrap().createStatement()";
+        let got = frags("connection.createStatement", "", src);
+        assert!(got.contains(&"createStatement".to_string()));
+        assert!(got.contains(&"unwrap".to_string()));
+        assert!(!got.contains(&"connection".to_string()));
+        assert!(!got.contains(&"stmt".to_string()));
+    }
+
+    #[test]
+    fn flat_method_invocation_terminal_only() {
+        // `connection.createStatement()` — receiver `connection` stays a
+        // real local-variable use, only the terminal method counts as a
+        // pseudo-use.
+        let src = "connection.createStatement()";
+        let got = frags("connection.createStatement", "", src);
+        assert!(got.contains(&"createStatement".to_string()));
+        assert!(!got.contains(&"connection".to_string()));
+    }
+
+    #[test]
+    fn self_rooted_chain_lifts_every_segment() {
+        // `$this->inner->execute($sql)` — every chain segment belongs to
+        // the callee path because the chain is rooted at a self
+        // pseudo-receiver.
+        let src = "$this->inner->execute($sql)";
+        let got = frags("this->inner->execute", "", src);
+        assert!(got.contains(&"this".to_string()));
+        assert!(got.contains(&"inner".to_string()));
+        assert!(got.contains(&"execute".to_string()));
+    }
+
+    #[test]
+    fn source_scan_skips_inside_args() {
+        // The scan stops at the outermost args opener, so identifiers
+        // nested inside the arguments are NOT lifted as pseudo-uses.
+        // `db.exec(transform(raw))` still treats `transform` as a real
+        // local reference, not a chain segment.
+        let src = "db.exec(transform(raw))";
+        let got = frags("db.exec", "", src);
+        assert!(got.contains(&"exec".to_string()));
+        assert!(!got.contains(&"transform".to_string()));
+        assert!(!got.contains(&"raw".to_string()));
     }
 }

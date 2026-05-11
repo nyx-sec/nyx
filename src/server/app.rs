@@ -137,7 +137,7 @@ mod tests {
         AppState {
             scan_root: scan_root.clone(),
             config_dir: scan_root.clone(),
-            database_dir: scan_root.clone(),
+            database_dir: scan_root,
             security: LocalServerSecurity::new(port),
             config: Arc::new(RwLock::new(Config::default())),
             job_manager: Arc::new(JobManager::new(4, 8 * 1024 * 1024)),

@@ -76,13 +76,17 @@ fn diags_for_file(dir: &Path, file_suffix: &str) -> Vec<Diag> {
 }
 
 fn assert_unsafe(lang: &str, file_suffix: &str) {
+    assert_unsafe_with_count(lang, file_suffix, 1);
+}
+
+fn assert_unsafe_with_count(lang: &str, file_suffix: &str, expected: usize) {
     let dir = ldap_fixture_dir(lang);
     let diags = diags_for_file(&dir, file_suffix);
     let count = count_by_prefix(&diags, RULE_PREFIX);
     assert_eq!(
         count,
-        1,
-        "{lang}/{file_suffix}: expected exactly 1 {RULE_PREFIX} finding, got {count}.\n\
+        expected,
+        "{lang}/{file_suffix}: expected exactly {expected} {RULE_PREFIX} finding(s), got {count}.\n\
          All diags: {:#?}",
         diags
             .iter()
@@ -101,8 +105,8 @@ fn assert_unsafe(lang: &str, file_suffix: &str) {
         .count();
     assert_eq!(
         high,
-        1,
-        "{lang}/{file_suffix}: expected exactly 1 HIGH-severity {RULE_PREFIX} finding, got {high}.\n\
+        expected,
+        "{lang}/{file_suffix}: expected exactly {expected} HIGH-severity {RULE_PREFIX} finding(s), got {high}.\n\
          All matching: {:#?}",
         diags
             .iter()
@@ -270,7 +274,13 @@ fn ruby_baseline_constant_filter_does_not_fire() {
 
 #[test]
 fn go_ldap_search_request_with_tainted_filter_fires() {
-    assert_unsafe("go", "unsafe_ldap_search.go");
+    // The fixture has two sink emission points along one flow:
+    //   ldap.NewSearchRequest(..., filter, ...)  ── construction-site sink
+    //   conn.Search(req)                          ── execute-site sink
+    // The execute-site fires via type-qualified resolution
+    // (`LdapClient.Search`) once the receiver `conn` is bound from
+    // `ldap.DialURL(...)`.  Both are real sink events on the same flow.
+    assert_unsafe_with_count("go", "unsafe_ldap_search.go", 2);
 }
 
 #[test]
