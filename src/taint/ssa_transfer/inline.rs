@@ -149,7 +149,7 @@ pub struct CalleeSsaBody {
     /// [`crate::cfg::FileCfg::resolved_imports`] in scope.  Forwarded into
     /// the inline-analysis child transfer so transitive cross-package
     /// resolution inside an inlined frame can land in
-    /// [`crate::summary::GlobalSummaries::ssa_by_key`] using the callee's
+    /// `crate::summary::GlobalSummaries::ssa_by_key` using the callee's
     /// own import view rather than the caller's (which would mis-resolve
     /// names against the caller's package boundary).
     ///

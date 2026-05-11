@@ -44,7 +44,7 @@ mod tests;
 /// `manifest_main` carries the legacy `main` / `module` / `types` field
 /// (preserved verbatim, in spec-priority order). `exports` carries the
 /// raw `"exports"` JSON value when present, parsed lazily by
-/// [`resolve_exports_to_relpath`] each time a specifier asks for it.
+/// `resolve_exports_to_relpath` each time a specifier asks for it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PackageEntry {
     pub name: String,
@@ -436,7 +436,7 @@ pub fn extract_resolved_imports(
 /// One raw JS/TS import binding lifted from a top-level
 /// `import_statement` / `lexical_declaration` / `variable_declaration`,
 /// pre-resolution. Both [`extract_resolved_imports`] (which adds the
-/// resolver verdict) and [`crate::cfg::imports::extract_local_import_view`]
+/// resolver verdict) and `crate::cfg::imports::extract_local_import_view`
 /// (which only needs `local` → `source_spec`) consume this.
 ///
 /// `local` is empty for side-effect-only `import 'mod'` shapes; consumers

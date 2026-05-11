@@ -1483,7 +1483,7 @@ fn classify_gated_into(
 /// resolver synthesises one of these callees, this lookup returns the
 /// payload positions to which sink-taint checks must be restricted.
 ///
-/// Sequelize.literal(sql) is single-arg, so &[0] is also correct
+/// Sequelize.literal(sql) is single-arg, so `&[0]` is also correct
 /// (no precision loss vs the unconditional flat rule).
 pub fn type_qualified_sink_payload_args(qualified_callee: &str) -> Option<&'static [usize]> {
     match qualified_callee {

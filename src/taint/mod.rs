@@ -414,19 +414,19 @@ fn compute_module_aliases_for_summary(
 /// Returns an empty map when the file has no resolved imports (non-JS/TS
 /// files, scans without a `ModuleGraph`, side-effect-only imports, or
 /// builtin/unresolved specifiers). The caller passes `None` to
-/// [`SsaTaintTransfer::cross_package_imports`] in that case.
+/// `SsaTaintTransfer::cross_package_imports` in that case.
 ///
 /// `module_graph` aligns the target [`FuncKey::namespace`] with the
-/// package-prefixed form that [`FuncSummary::func_key_with_resolver`]
+/// package-prefixed form that `FuncSummary::func_key_with_resolver`
 /// produces on the cross-file storage side: when the resolved file lies
 /// inside a discovered package the namespace becomes
 /// `"@scope/name::src/file.ts"`, otherwise it falls back to plain
 /// `normalize_namespace`. Step 0.7 of `resolve_callee_full` looks up
-/// `(lang, namespace, name)` against [`GlobalSummaries::ssa_by_key`]
+/// `(lang, namespace, name)` against `GlobalSummaries::ssa_by_key`
 /// where the SSA-side keys are now produced via the same
-/// `namespace_with_package` shape (callers in [`crate::ast::ParsedFile`]
+/// `namespace_with_package` shape (callers in `crate::ast::ParsedFile`
 /// pre-compute the package-prefixed namespace before invoking
-/// [`lower_all_functions_from_bodies`]), so the two sides agree even
+/// `lower_all_functions_from_bodies`), so the two sides agree even
 /// when two packages share a project-relative file path.
 ///
 /// `module_graph = None` (single-package scans, non-JS/TS files, unit
@@ -438,7 +438,7 @@ fn compute_module_aliases_for_summary(
 /// `disambig`, and `kind` at their defaults — the resolver verdict only
 /// fixes the `(lang, namespace, name)` triple, and step 0.7 of
 /// `resolve_callee_full` matches against `GlobalSummaries::ssa_by_key`
-/// using just those three fields plus an arity hint when available.
+/// using only those three fields plus an arity hint when available.
 pub fn build_cross_package_func_keys(
     resolved_imports: &[crate::resolve::ImportBinding],
     scan_root: Option<&str>,

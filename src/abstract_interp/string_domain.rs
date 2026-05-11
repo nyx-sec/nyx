@@ -355,7 +355,7 @@ impl StringFact {
     /// literal origin (`https://api.example.com`).  The result behaves as
     /// `base ++ path`, the locked-host prefix survives even when the path
     /// component carries arbitrary taint, and the fact's `prefix` is what
-    /// [`is_string_safe_for_ssrf`] consults to suppress the SSRF sink.
+    /// `is_string_safe_for_ssrf` consults to suppress the SSRF sink.
     ///
     /// `path` carries any string knowledge for the path component (typically
     /// `StringFact::top()`).  When the base already ends in `/`, the helper

@@ -182,7 +182,7 @@ pub enum TypeKind {
     /// matcher list covers without an [`crate::labels::LabelGate`]
     /// (the receiver type is itself the import witness). The TypeKind
     /// is reached today via the gated-import path in
-    /// [`crate::cfg::apply_gated_label_rules`]; SSA-time tagging from
+    /// `crate::cfg::apply_gated_label_rules`; SSA-time tagging from
     /// `constructor_type` is intentionally not wired (member-of-call
     /// shapes like `fs.promises` decompose into Call + FieldProj ops,
     /// so the full expression text never reaches the constructor table).

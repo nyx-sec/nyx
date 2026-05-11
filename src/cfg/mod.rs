@@ -954,7 +954,7 @@ pub struct FileCfg {
     pub hierarchy_edges: Vec<(String, String)>,
     /// Phase-04 resolver output: per-file import bindings resolved
     /// against the project [`crate::resolve::ModuleGraph`]. Populated
-    /// post-`build_cfg` by [`crate::ast::ParsedFile::from_source`] when
+    /// post-`build_cfg` by `crate::ast::ParsedFile::from_source` when
     /// a [`crate::resolve::ModuleGraph`] is available on the active
     /// `Config`. Empty for non-JS/TS files, scans without a configured
     /// resolver, and unit tests that build a CFG directly.
@@ -968,7 +968,7 @@ pub struct FileCfg {
     /// Per-file local import view: local-name → source-module specifier.
     /// Built once during JS/TS CFG construction (empty for other langs).
     /// Consumed by gated label rules and by the ORM TypeKind import gate
-    /// in [`crate::ssa::type_facts::constructor_type`] (via the
+    /// in `crate::ssa::type_facts::constructor_type` (via the
     /// `FILE_IMPORTS_TLS` thread-local set around per-body SSA passes).
     pub local_imports: HashMap<String, String>,
     /// Class fields whose `.get(...)` lookups are bounded to a finite

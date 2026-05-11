@@ -244,9 +244,9 @@ pub struct SsaTaintTransfer<'a> {
     /// pass-2 emission gates the same sites against the
     /// `from_chain || file_rel != caller_namespace` predicate so single-hop
     /// intra-file helpers keep call-site emission.  Probes set this flag
-    /// so [`pick_primary_sink_sites`] always promotes a deeper-callee site
+    /// so `pick_primary_sink_sites` always promotes a deeper-callee site
     /// into `event.primary_sink_site`, regardless of file boundary, so
-    /// [`crate::taint::ssa_transfer::summary_extract`] can flip
+    /// `crate::taint::ssa_transfer::summary_extract` can flip
     /// `from_chain=true` and persist the chain hop.  Default: false.
     pub recording_summary: bool,
 }
