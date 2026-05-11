@@ -1015,6 +1015,7 @@ mod goto_succ_propagation_tests {
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
 
@@ -1110,6 +1111,7 @@ mod goto_succ_propagation_tests {
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
         let exit_state = SsaTaintState::initial();
@@ -2071,6 +2073,7 @@ mod field_write_tests {
             pointer_facts: Some(pf),
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
 
@@ -2158,6 +2161,7 @@ mod field_write_tests {
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
         let mut state = SsaTaintState::initial();
@@ -2229,6 +2233,7 @@ mod field_write_tests {
             pointer_facts: Some(&pf),
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
 
@@ -2378,6 +2383,7 @@ mod field_write_tests {
             pointer_facts: Some(&pf),
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
 
@@ -2479,6 +2485,7 @@ mod container_elem_tests {
             pointer_facts: Some(pf),
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
 
@@ -2761,6 +2768,7 @@ mod container_elem_tests {
             pointer_facts: Some(&pf),
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
 
@@ -2902,6 +2910,7 @@ mod container_elem_tests {
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
         let mut state = SsaTaintState::initial();
@@ -3461,6 +3470,7 @@ mod field_taint_origin_cap_tests {
             pointer_facts: Some(&pf),
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         };
         for inst in &body.blocks[0].body {
@@ -3752,6 +3762,7 @@ mod pointer_lattice_worklist_tests {
             pointer_facts: Some(pf),
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: false,
         }
     }

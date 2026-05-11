@@ -1068,12 +1068,42 @@ fn analyse_body_with_seed(
                 )
             })
         });
+    // Python Flask handlers need scoped lowering so the route-bound formal
+    // parameters (`@app.route("/users/<name>")` + `def view(name):`)
+    // materialise as `SsaOp::Param` ops the entry-point seeding pass paints
+    // as `Source(UserInput)`. The per-formal seed decision is gated against
+    // `BodyMeta.param_route_capture`, so only formals whose names appear as
+    // path captures in the routing decorator are painted; implicit globals
+    // (`request`, `g`, `session`) and DI-injected formals stay un-seeded.
+    // Restricted to Flask (`FlaskRoute`) here because FastAPI / Django
+    // free-name capture shapes (`request`, `b64decode`) bubble up as
+    // synthetic externals under scoped lowering and shift source
+    // attribution, while Flask handlers have all formals = path captures
+    // (precision lands cleanly).
+    let is_python_flask_route = lang == Lang::Python
+        && body.meta.kind == crate::cfg::BodyKind::NamedFunction
+        && body
+            .meta
+            .param_route_capture
+            .iter()
+            .any(|captured| *captured)
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries.and_then(|m| m.get(&k)).is_some_and(|s| {
+                matches!(
+                    s.entry_kind,
+                    Some(crate::entry_points::EntryKind::FlaskRoute { .. })
+                )
+            })
+        });
     let use_scoped_lowering = !is_toplevel
         && (matches!(lang, Lang::JavaScript | Lang::TypeScript)
             || has_nonempty_seed
             || is_java_lambda
             || is_java_entry_method
-            || is_rust_entry_method);
+            || is_rust_entry_method
+            || is_python_flask_route);
     let ssa_result = if use_scoped_lowering {
         let func_name = body.meta.name.clone().unwrap_or_else(|| {
             body.meta
@@ -1205,6 +1235,11 @@ fn analyse_body_with_seed(
                 // Phase 10 — Next.js entry-point seeding (looked up
                 // above when overriding `param_types`).
                 entry_kind: body_entry_kind,
+                param_route_capture: if body.meta.param_route_capture.is_empty() {
+                    None
+                } else {
+                    Some(body.meta.param_route_capture.as_slice())
+                },
                 recording_summary: false,
             };
             let (events, block_states) =
@@ -2581,6 +2616,7 @@ fn augment_summaries_with_child_sinks(
                 pointer_facts: None,
                 cross_package_imports: None,
                 entry_kind: None,
+                param_route_capture: None,
                 recording_summary: false,
             };
 
@@ -2648,6 +2684,7 @@ fn augment_summaries_with_child_sinks(
                     pointer_facts: None,
                     cross_package_imports: None,
                     entry_kind: None,
+                    param_route_capture: None,
                     recording_summary: false,
                 };
 

@@ -65,6 +65,7 @@ fn ssa_analyse_rust(src: &[u8]) -> Vec<Finding> {
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        param_route_capture: None,
         recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, cfg, &transfer);
@@ -3794,6 +3795,7 @@ fn assert_ssa_integration(src: &[u8]) {
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        param_route_capture: None,
         recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);
@@ -3935,6 +3937,7 @@ fn integ_php_echo_simple_var() {
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        param_route_capture: None,
         recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);
@@ -4008,6 +4011,7 @@ fn integ_c_curl_handle_ssrf() {
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        param_route_capture: None,
         recording_summary: false,
     };
     let events = ssa_transfer::run_ssa_taint(&ssa, the_cfg, &ssa_xfer);

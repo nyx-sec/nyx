@@ -1579,6 +1579,7 @@ pub fn analyse_function_taint(
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
+        param_route_capture: None,
         recording_summary: false,
     };
 

@@ -266,6 +266,7 @@ pub fn extract_ssa_func_summary_full(
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: true,
         };
 
@@ -841,6 +842,7 @@ pub fn extract_ssa_func_summary_full(
             pointer_facts: None,
             cross_package_imports: None,
             entry_kind: None,
+            param_route_capture: None,
             recording_summary: true,
         };
         detect_source_to_callback_from_states(

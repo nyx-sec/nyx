@@ -56,7 +56,7 @@ use conditions::{
     detect_rust_let_match_guard, emit_rust_match_guard_if, find_ternary_rhs_wrapper,
     is_boolean_operator, unwrap_parens,
 };
-use decorators::extract_auth_decorators;
+use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
     collect_idents, collect_idents_with_paths, find_constructor_type_child, first_call_ident,
     has_call_descendant, member_expr_text, root_receiver_text, text_of,
@@ -822,6 +822,16 @@ pub struct BodyMeta {
     /// machine consumes this to seed the entry `AuthLevel` for privileged-sink
     /// checks. Empty for top-level and for functions without auth markers.
     pub auth_decorators: Vec<String>,
+    /// Per-formal route-capture flag. Same length as `params`. `true` at
+    /// position `i` iff the formal name appears as a path capture in a
+    /// framework routing decorator on this function (Flask
+    /// `@app.route("/users/<name>")`, blueprint-prefixed `@bp.get("/u/<int:id>")`,
+    /// FastAPI / Starlette verb decorators). Today populated only for Python.
+    /// The entry-kind seeding pass consults this for `FlaskRoute` so only
+    /// path-bound formals (not implicit globals or DI handles) are painted
+    /// as adversary input. Empty for top-level and for functions without
+    /// matching decorators.
+    pub param_route_capture: Vec<bool>,
 }
 
 /// A single executable body's CFG plus metadata.
@@ -5728,6 +5738,18 @@ pub(super) fn build_sub<'a>(
 
             // ── 6) Push BodyCfg ───────────────────────────────────────────────
             let auth_decorators = extract_auth_decorators(ast, lang, code);
+            let route_captures = extract_route_path_captures(ast, lang, code);
+            let param_route_capture: Vec<bool> = if route_captures.is_empty() {
+                vec![false; param_names.len()]
+            } else {
+                param_names
+                    .iter()
+                    .map(|n| {
+                        let lc = n.to_ascii_lowercase();
+                        route_captures.iter().any(|c| c == &lc)
+                    })
+                    .collect()
+            };
             bodies.push(BodyCfg {
                 meta: BodyMeta {
                     id: fn_body_id,
@@ -5745,6 +5767,7 @@ pub(super) fn build_sub<'a>(
                     parent_body_id: Some(current_body_id),
                     func_key: Some(body_func_key),
                     auth_decorators,
+                    param_route_capture,
                 },
                 graph: fn_graph,
                 entry: fn_entry,
@@ -6333,6 +6356,7 @@ pub(crate) fn build_cfg<'a>(
             parent_body_id: None,
             func_key: None,
             auth_decorators: Vec::new(),
+            param_route_capture: Vec::new(),
         },
         graph: g,
         entry,

@@ -554,3 +554,206 @@ fn collect_ruby_symbol_list(node: Node<'_>, code: &[u8], out: &mut Vec<String>) 
         _ => {}
     }
 }
+
+/// Extract route-path capture variable names from framework routing decorators
+/// on a function AST node.
+///
+/// Today only Python is supported. The recogniser walks Flask-style
+/// `@app.route("/users/<name>")`, blueprint-prefixed `@bp.get("/u/<int:id>")`,
+/// and verb-shaped `@router.post("/<path:slug>")` decorators. Returns the
+/// inner names extracted from `<name>` / `<conv:name>` brace-segments.
+///
+/// Non-Python and functions without a decorator pattern return an empty
+/// `Vec`. Strict additive: downstream consumers gate the result via
+/// `param.contains(name)` so empty captures preserve today's behaviour.
+pub(super) fn extract_route_path_captures<'a>(
+    func_node: Node<'a>,
+    lang: &str,
+    code: &'a [u8],
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if lang != "python" {
+        return out;
+    }
+    let Some(parent) = func_node.parent() else {
+        return out;
+    };
+    if parent.kind() != "decorated_definition" {
+        return out;
+    }
+    let mut w = parent.walk();
+    for ch in parent.children(&mut w) {
+        if ch.kind() != "decorator" {
+            continue;
+        }
+        let mut dw = ch.walk();
+        let Some(expr) = ch.children(&mut dw).find(|c| c.kind() != "@") else {
+            continue;
+        };
+        if expr.kind() != "call" {
+            continue;
+        }
+        let Some(target) = expr.child_by_field_name("function") else {
+            continue;
+        };
+        if target.kind() != "attribute" {
+            continue;
+        }
+        let Some(attr) = target.child_by_field_name("attribute") else {
+            continue;
+        };
+        let Some(attr_text) = text_of(attr, code) else {
+            continue;
+        };
+        let attr_lower = attr_text.to_ascii_lowercase();
+        let is_route_verb = matches!(
+            attr_lower.as_str(),
+            "route" | "get" | "post" | "put" | "patch" | "delete" | "head" | "options"
+        );
+        if !is_route_verb {
+            continue;
+        }
+        let Some(args) = expr.child_by_field_name("arguments") else {
+            continue;
+        };
+        let Some(pattern) = first_positional_string_arg(args, code) else {
+            continue;
+        };
+        collect_flask_path_captures(&pattern, &mut out);
+    }
+    out
+}
+
+/// Return the literal text of the first positional string argument inside a
+/// Python `argument_list`. Skips keyword args and non-string positionals.
+fn first_positional_string_arg(args: Node<'_>, code: &[u8]) -> Option<String> {
+    let mut cursor = args.walk();
+    for arg in args.children(&mut cursor) {
+        match arg.kind() {
+            "(" | ")" | "," => continue,
+            "keyword_argument" => continue,
+            "string" => {
+                return python_string_text(arg, code);
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Strip Python string-literal quoting from a `string` AST node. Rejects
+/// f-strings (interpolation children present) because the captured pattern
+/// is not statically known.
+fn python_string_text(node: Node<'_>, code: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    for ch in node.children(&mut cursor) {
+        if ch.kind() == "interpolation" {
+            return None;
+        }
+    }
+    let raw = text_of(node, code)?;
+    let trimmed = raw.trim();
+    let trimmed = trimmed
+        .trim_start_matches(['r', 'R', 'b', 'B', 'u', 'U', 'f', 'F']);
+    let stripped = trimmed
+        .strip_prefix("\"\"\"")
+        .and_then(|s| s.strip_suffix("\"\"\""))
+        .or_else(|| trimmed.strip_prefix("'''").and_then(|s| s.strip_suffix("'''")))
+        .or_else(|| trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+        .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))?;
+    Some(stripped.to_string())
+}
+
+/// Parse Flask-style `<conv:name>` / `<name>` capture segments out of a
+/// route pattern. Pushes the inner name (lowercased) into `out`. Skips
+/// malformed segments (no closing `>`, empty name).
+fn collect_flask_path_captures(pattern: &str, out: &mut Vec<String>) {
+    let bytes = pattern.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != b'>' {
+                j += 1;
+            }
+            if j >= bytes.len() {
+                break;
+            }
+            let inner = &pattern[i + 1..j];
+            let name = match inner.rsplit_once(':') {
+                Some((_, n)) => n,
+                None => inner,
+            };
+            let name = name.trim();
+            if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                let lower = name.to_ascii_lowercase();
+                if !out.iter().any(|existing| existing == &lower) {
+                    out.push(lower);
+                }
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod path_capture_tests {
+    use super::*;
+
+    fn collect_for(pat: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_flask_path_captures(pat, &mut out);
+        out
+    }
+
+    #[test]
+    fn extracts_bare_capture() {
+        assert_eq!(collect_for("/users/<name>"), vec!["name".to_string()]);
+    }
+
+    #[test]
+    fn extracts_converter_capture() {
+        assert_eq!(
+            collect_for("/items/<int:item_id>"),
+            vec!["item_id".to_string()]
+        );
+    }
+
+    #[test]
+    fn extracts_path_converter() {
+        assert_eq!(collect_for("/x/<path:slug>"), vec!["slug".to_string()]);
+    }
+
+    #[test]
+    fn extracts_multiple_captures() {
+        assert_eq!(
+            collect_for("/u/<uid>/post/<int:pid>"),
+            vec!["uid".to_string(), "pid".to_string()]
+        );
+    }
+
+    #[test]
+    fn dedupes_repeated_names() {
+        let mut out = Vec::new();
+        collect_flask_path_captures("/<a>/<a>", &mut out);
+        assert_eq!(out, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn rejects_unclosed_brace() {
+        assert_eq!(collect_for("/<oops"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn rejects_non_ident_chars() {
+        assert_eq!(collect_for("/<bad name>"), Vec::<String>::new());
+        assert_eq!(collect_for("/<name!>"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn empty_when_no_captures() {
+        assert_eq!(collect_for("/static/path"), Vec::<String>::new());
+    }
+}

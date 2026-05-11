@@ -228,6 +228,15 @@ pub struct SsaTaintTransfer<'a> {
     /// preserves today's per-callsite seeding (`global_seed`,
     /// `param_seed`, `auto_seed_handler_params`).
     pub entry_kind: Option<crate::entry_points::EntryKind>,
+    /// Per-formal route-capture flag, indexed by `SsaOp::Param.index`.
+    /// Used by the entry-kind seeding pass for Python `FlaskRoute`
+    /// (and any future per-formal-name framework gate) to restrict
+    /// `Source(UserInput)` painting to formals whose names appear as
+    /// path captures in the routing decorator.  Out-of-range indices
+    /// default to `false` and skip seeding.  `None` preserves today's
+    /// "seed every Param" behaviour for entry kinds without per-formal
+    /// gating (Spring, JaxRs, Sinatra, Express, Gin, AppRoute, ...).
+    pub param_route_capture: Option<&'a [bool]>,
     /// True when the transfer is driving a per-parameter probe inside
     /// [`crate::taint::ssa_transfer::summary_extract::extract_ssa_func_summary`]
     /// rather than the pass-2 emission path.  The probes record chain-hop
@@ -416,6 +425,28 @@ fn run_ssa_taint_internal(
                     .and_then(|tf| tf.get_type(inst.value))
                     .is_some_and(|t| !matches!(t, crate::ssa::type_facts::TypeKind::Unknown));
                 if !seed_extractor {
+                    continue;
+                }
+            }
+            if !is_self && matches!(entry_kind, EntryKind::FlaskRoute { .. }) {
+                // Python Flask handlers carry path-bound captures
+                // (`@app.route("/u/<name>")` + `def view(name):`) alongside
+                // implicit globals (`request`, `g`) and DI-injected
+                // formals (webargs, dependency injection). Only the
+                // path-bound captures qualify as adversary input.
+                // `BodyMeta.param_route_capture` is populated at CFG
+                // construction time from `extract_route_path_captures`;
+                // formals not in the capture set fall back to existing
+                // label rules (`request.json()`, `request.args.get`, ...)
+                // for source attribution.
+                let seed_capture = param_index
+                    .and_then(|idx| {
+                        transfer
+                            .param_route_capture
+                            .and_then(|m| m.get(idx).copied())
+                    })
+                    .unwrap_or(false);
+                if !seed_capture {
                     continue;
                 }
             }
@@ -2596,6 +2627,7 @@ fn inline_analyse_callee_with_seeds(
                 .map(|arc| arc.as_ref())
         },
         entry_kind: None,
+        param_route_capture: None,
         recording_summary: transfer.recording_summary,
     };
 

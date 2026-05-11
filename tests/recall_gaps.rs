@@ -1116,6 +1116,61 @@ fn rust_entry_kind_typed_extractor_seeding() {
     );
 }
 
+/// Python entry-kind seeding precision for `FlaskRoute`: path-bound
+/// formals (`@app.route("/u/<name>")` + `def view(name):`) get painted
+/// as `Source(UserInput)`, while routes without path captures stay
+/// un-seeded.  Without per-formal route-capture gating, Python handlers
+/// fell back to `cfg-unguarded-sink` for path-bound flows.  The
+/// positive shape asserts the rule_id is specifically
+/// `taint-unsanitised-flow` (not `cfg-unguarded-sink`), so a future
+/// regression that drops entry-kind seeding is forcing-function
+/// caught.  The negative shape pins the absence of taint findings on a
+/// no-capture route (no formals, no seed, no flow).
+#[test]
+fn python_flask_route_path_capture_seeding() {
+    let findings = scan_fixture("entry_points_xlang_python");
+    let positives = [
+        ("flask_path_capture.py", 14usize),
+        ("flask_converter_capture.py", 14usize),
+    ];
+    for (file, sink_line) in positives {
+        let hit = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && f.id.starts_with("taint-unsanitised-flow")
+                && f.line == sink_line
+        });
+        assert!(
+            hit,
+            "Python Flask path-capture handler {file}:{sink_line} must fire \
+             `taint-unsanitised-flow`; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    // Negative: a Flask route with no path captures and a literal
+    // sink argument must not surface `taint-unsanitised-flow`.
+    let no_capture_taint: Vec<&_> = findings
+        .iter()
+        .filter(|f| {
+            f.path.ends_with("flask_no_capture.py")
+                && f.id.starts_with("taint-unsanitised-flow")
+        })
+        .collect();
+    assert!(
+        no_capture_taint.is_empty(),
+        "Flask route without path captures must not paint formals as Source; got:\n{}",
+        no_capture_taint
+            .iter()
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
 /// Phase 11 + 17 acceptance: every per-target baseline JSON in
 /// `tests/recall_targets/` (Phase 11 JS targets) and
 /// `tests/recall_targets/xlang/<lang>/` (Phase 17 cross-lang targets)
