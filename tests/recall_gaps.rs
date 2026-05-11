@@ -301,6 +301,39 @@ fn promise_all_destruct_per_index() {
                 .join("\n"),
         );
     }
+
+    // Python `asyncio.gather` destructure: `pattern_list` + `tuple_pattern`
+    // share the same per-index rewrite as JS/TS arrays. Positives at lines
+    // 32 / 40 / 50 (tainted-aligned bindings) must fire; negatives at lines
+    // 33 / 41 / 51 (safe-aligned bindings) must NOT fire.
+    for sink_line in [32usize, 40, 50] {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: "asyncio_gather_destruct_fp.py",
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
+    for forbidden_line in [33usize, 41, 51] {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with("asyncio_gather_destruct_fp.py")
+                && f.line == forbidden_line
+                && f.id.starts_with("taint-unsanitised-flow")
+        });
+        assert!(
+            !leak,
+            "Python asyncio.gather binding at line {forbidden_line} must not carry request.args taint; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with("asyncio_gather_destruct_fp.py"))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
 }
 
 /// Phase 03 recall-gap: `for await (const x of iter)` taints `x` from the

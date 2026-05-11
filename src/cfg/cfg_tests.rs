@@ -3646,3 +3646,74 @@ fn tuple_pattern_indexed_bindings_recognise_rust_wildcards() {
         vec![("a".into(), 0), ("c".into(), 2)],
     );
 }
+
+/// Python `pattern_list` (bare `a, b = ...`) and `tuple_pattern`
+/// (parenthesised `(a, b) = ...`) share the helper.  Python's `_` is
+/// a normal identifier binding (not a wildcard), so every identifier
+/// child emits a `(name, position)` entry — `_` lands at its source
+/// position alongside any other names.  `list_splat_pattern`
+/// (`a, *rest`) bails to empty so callers fall back to scalar union.
+#[test]
+fn pattern_list_indexed_bindings_recognise_python_destructure() {
+    use super::helpers::collect_array_pattern_bindings_indexed;
+    fn first_pattern<'t>(
+        n: tree_sitter::Node<'t>,
+        kinds: &[&str],
+    ) -> Option<tree_sitter::Node<'t>> {
+        if kinds.contains(&n.kind()) {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = first_pattern(child, kinds) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    fn parse_first_python(src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&Language::from(tree_sitter_python::LANGUAGE))
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+    fn run_case(src: &[u8], kinds: &[&str]) -> Vec<(String, usize)> {
+        let (tree, bytes) = parse_first_python(src);
+        let pat = first_pattern(tree.root_node(), kinds)
+            .unwrap_or_else(|| panic!("no {kinds:?} in fixture"));
+        collect_array_pattern_bindings_indexed(pat, &bytes)
+            .into_iter()
+            .collect()
+    }
+    // Bare comma-list `a, b = ...` is `pattern_list`.
+    assert_eq!(
+        run_case(b"a, b = (1, 2)\n", &["pattern_list"]),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    // Three-binding bare comma list.
+    assert_eq!(
+        run_case(b"a, b, c = (1, 2, 3)\n", &["pattern_list"]),
+        vec![("a".into(), 0), ("b".into(), 1), ("c".into(), 2)],
+    );
+    // Underscore is a regular identifier binding in Python.
+    assert_eq!(
+        run_case(b"_, b = (1, 2)\n", &["pattern_list"]),
+        vec![("_".into(), 0), ("b".into(), 1)],
+    );
+    assert_eq!(
+        run_case(b"a, _ = (1, 2)\n", &["pattern_list"]),
+        vec![("a".into(), 0), ("_".into(), 1)],
+    );
+    // Parenthesised destructure surfaces as `tuple_pattern`.
+    assert_eq!(
+        run_case(b"(a, b) = (1, 2)\n", &["tuple_pattern"]),
+        vec![("a".into(), 0), ("b".into(), 1)],
+    );
+    // Splat / rest bindings bail because positional mapping breaks.
+    assert!(run_case(b"a, *rest = (1, 2, 3)\n", &["pattern_list"]).is_empty());
+    // Nested destructure bails — recogniser doesn't recurse into
+    // sub-patterns to preserve flat-binding-only semantics.
+    assert!(run_case(b"(a, b), c = ((1, 2), 3)\n", &["pattern_list"]).is_empty());
+}

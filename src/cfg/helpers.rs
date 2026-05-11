@@ -764,10 +764,15 @@ pub(crate) fn collect_idents_with_paths(
 ///     advance the position counter without emitting a binding.
 ///   * Rust `tuple_pattern` — `let (a, _, b) = ...`. `_pattern` (wildcard)
 ///     advances the position counter without emitting a binding.
+///   * Python `pattern_list` / `tuple_pattern` — `a, b = ...` and
+///     `(a, b) = ...`. Python `_` is a normal identifier binding (not a
+///     wildcard), so every `identifier` child emits a (name, position)
+///     entry.
 ///
 /// Returns an empty `SmallVec` when the pattern is not one of the above
 /// kinds OR contains complex sub-patterns (`assignment_pattern` for
-/// `[a = 1, b]`, `rest_pattern` for `[a, ...rest]`, nested
+/// `[a = 1, b]`, `rest_pattern` for `[a, ...rest]`, Python
+/// `list_splat_pattern` for `a, *rest = ...`, nested
 /// `array_pattern`, `object_pattern`). Callers treat the empty return as
 /// "no position-aware rewrite available; fall back to scalar union".
 pub(crate) fn collect_array_pattern_bindings_indexed(
@@ -776,7 +781,7 @@ pub(crate) fn collect_array_pattern_bindings_indexed(
 ) -> SmallVec<[(String, usize); 4]> {
     let mut out: SmallVec<[(String, usize); 4]> = SmallVec::new();
     let kind = pat.kind();
-    if !matches!(kind, "array_pattern" | "tuple_pattern") {
+    if !matches!(kind, "array_pattern" | "tuple_pattern" | "pattern_list") {
         return out;
     }
     let mut cursor = pat.walk();

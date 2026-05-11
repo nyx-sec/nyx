@@ -2405,16 +2405,38 @@ pub(super) fn def_use(
             (defs, uses, extra_defs, pattern_indices)
         }
 
-        // Plain assignment `x = y`
+        // Plain assignment `x = y` or destructuring assignment such as
+        // Python `a, b = await asyncio.gather(...)` whose LHS surfaces as
+        // a `pattern_list` / `tuple_pattern`. When the LHS is a
+        // destructure pattern that the indexed helper recognises, the
+        // primary binding lands in `defs`, the rest land in `extra_defs`,
+        // and `pattern_indices` carries source-order positions so the
+        // SSA lowering's destructure-promise rewrite can paint each
+        // binding from the matching combinator argument.
         Kind::Assignment => {
             let mut defs = None;
+            let mut extra_defs = Vec::new();
+            let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
             let mut uses = Vec::new();
             if let Some(lhs) = ast.child_by_field_name("left") {
-                let mut idents = Vec::new();
-                let mut paths = Vec::new();
-                collect_idents_with_paths(lhs, code, &mut idents, &mut paths);
-                // Prefer dotted path (member expression) over last ident
-                defs = paths.pop().or_else(|| idents.pop());
+                let bindings = collect_array_pattern_bindings_indexed(lhs, code);
+                if !bindings.is_empty() {
+                    let mut iter = bindings.into_iter();
+                    if let Some((first_name, first_idx)) = iter.next() {
+                        defs = Some(first_name);
+                        pattern_indices.push(first_idx);
+                    }
+                    for (name, idx) in iter {
+                        extra_defs.push(name);
+                        pattern_indices.push(idx);
+                    }
+                } else {
+                    let mut idents = Vec::new();
+                    let mut paths = Vec::new();
+                    collect_idents_with_paths(lhs, code, &mut idents, &mut paths);
+                    // Prefer dotted path (member expression) over last ident
+                    defs = paths.pop().or_else(|| idents.pop());
+                }
             }
             if let Some(rhs) = ast.child_by_field_name("right") {
                 let mut idents = Vec::new();
@@ -2424,7 +2446,7 @@ pub(super) fn def_use(
                 uses.extend(idents);
                 uses.extend(extract_rust_format_macro_named_idents_in(rhs, code));
             }
-            (defs, uses, vec![], SmallVec::new())
+            (defs, uses, extra_defs, pattern_indices)
         }
 
         // if‑let / while‑let, the `let_condition` binds a variable from
