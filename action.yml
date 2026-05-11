@@ -12,9 +12,9 @@ inputs:
     required: false
     default: '.'
   version:
-    description: 'Nyx release tag (e.g. v0.6.0). "latest" is accepted but discouraged, pinning to a specific tag protects against upstream compromise.'
+    description: 'Nyx release tag (e.g. v0.7.0). "latest" is accepted but discouraged, pinning to a specific tag protects against upstream compromise.'
     required: false
-    default: 'v0.6.0'
+    default: 'v0.7.0'
   format:
     description: 'Output format: sarif, json, or console'
     required: false

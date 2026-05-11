@@ -177,7 +177,7 @@ Or re-classify the source itself with a custom Source rule whose name matches on
 
 ## DATA_EXFIL suppression layers
 
-Three knobs ship out of the box so projects can match the cap to their architecture without per-call suppressions.
+Three suppression knobs ship by default so projects can match the cap to their architecture without per-call suppressions.
 
 ### 1. Forwarding-wrapper sanitizer convention
 

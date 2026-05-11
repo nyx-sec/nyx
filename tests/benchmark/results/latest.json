@@ -1,7 +1,7 @@
 {
   "benchmark_version": "1.0",
   "timestamp": "2026-05-11T15:19:43Z",
-  "scanner_version": "0.6.1",
+  "scanner_version": "0.7.0",
   "scanner_config": {
     "analysis_mode": "Full",
     "taint_enabled": true,

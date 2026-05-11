@@ -76,7 +76,7 @@ nyx scan --engine-profile deep
 ### GitHub Action
 
 ```yaml
-- uses: elicpeter/nyx@v0.6.1
+- uses: elicpeter/nyx@v0.7.0
   with:
     format: sarif
     fail-on: MEDIUM

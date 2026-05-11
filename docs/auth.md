@@ -1,6 +1,6 @@
 # Auth analysis
 
-**Rust today.** Other languages have rule scaffolding in [`src/auth_analysis/config.rs`](https://github.com/elicpeter/nyx/blob/master/src/auth_analysis/config.rs) (Python, Ruby, Go, Java, JavaScript, TypeScript), but only Rust has benchmark corpus coverage and the precision work to back it. Treat findings on other languages as preview; the rule prefix (`py.auth.*`, `js.auth.*`, `rb.auth.*`, `go.auth.*`, `java.auth.*`) is reserved but the matchers haven't been validated against real codebases yet.
+**Rust is the stable target.** Python and Go have shipped precision work as of 0.7.0 (FastAPI cross-file dependencies, Go DAO-helper filtering, same-file caller-scope IPA) and are usable on real codebases. Ruby, Java, JavaScript, and TypeScript have rule scaffolding in [`src/auth_analysis/config.rs`](https://github.com/elicpeter/nyx/blob/master/src/auth_analysis/config.rs) but no benchmark corpus yet; treat findings there as preview.
 
 ## What it catches
 
@@ -30,6 +30,32 @@ In Rust, the `context_inputs` and param-name arms of the user-input heuristic ar
 - `None`: no detection ran (single-file scan with no project root). Heuristics on; behavior unchanged.
 
 This avoids a class of FPs in non-web Rust crates where a debug-session handle named `session` would trip on `session.update(cx, …)`-style desktop-app code. Other languages keep prior behavior; the gate is currently Rust-only.
+
+## Python: FastAPI cross-file dependencies
+
+FastAPI's `include_router` chain is resolved across files. A child router declared in `routes/task_instances.py` and attached on a parent in `routes/__init__.py` inherits the parent's `dependencies=[...]`.
+
+- Module-level `router = APIRouter(dependencies=[Security(...)])` is pre-walked once per file and merged onto every `@<router>.<verb>(...)` route attached in the same file.
+- `<parent>.include_router(<child_module>.<child_var>)` edges are captured per file in pass 1, persisted into `GlobalSummaries::router_facts_by_module`, and lifted onto the active file's `AuthorizationModel::cross_file_router_deps` at pass 2 entry. Transitive lifts (grandparent to parent to child) iterate to fixpoint.
+- `Security(callable, scopes=[...])` is recognised distinctly from `Depends(callable)` and promotes the synthetic `AuthCheck` to `AuthCheckKind::Other` (route-level scope-checked authorization). Bare `Depends(callable)` is still a Login-only check.
+
+Module identity is the file basename without `.py`. This is sufficient for airflow-style `task_instances.router` naming; a project with two files of the same name in different subtrees will currently collide.
+
+## Go: DAO-helper id-scalar precision pass
+
+For non-route Go units, a parameter whose declared type is a bounded primitive scalar (`int64`, `uint32`, `string`, `bool`, `byte`, `rune`, `float64`, etc.) and whose name is id-shaped (`id`, `*Id`, `*_id`, `*ids`) is dropped from `unit.params` before ownership-check evaluation.
+
+Real Go HTTP handlers always carry a framework-request-typed param (`*http.Request`, `*gin.Context`, `echo.Context`, `*fiber.Ctx`); per-framework route extractors set `include_id_like_typed=true` so id-shaped path params survive on real routes. The filter only fires when the unit was not classified as a route handler, so helpers like `func GetRunByRepoAndID(ctx, repoID, runID int64)` are recognised as DAO callees and the ownership check is expected at the calling route handler, not inside the helper.
+
+## Same-file caller-scope IPA
+
+When a private helper is called only from authorized route handlers in the same file, the caller's auth checks lift onto the helper as synthetic `is_route_level=true` `AuthCheck` entries.
+
+- Iterated to a small fixpoint so transitive chains (route to mid_helper to leaf_helper) are covered.
+- Refuses to authorize helpers with no in-file caller, helpers called from a mix of authorized and unauthorized callers, and helpers called only from un-lifted helpers.
+- Cross-file equivalent is deferred.
+
+This closes the FastAPI / Django / Flask shape where a route authenticates via decorator or dependency, then delegates to a private helper that performs the sink.
 
 ## Sink classification
 

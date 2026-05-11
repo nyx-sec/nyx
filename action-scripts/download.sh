@@ -27,7 +27,7 @@ esac
 
 # ── Resolve "latest" to an actual release tag ────────────────────────────────
 if [[ "$VERSION" == "latest" ]]; then
-  echo "::warning::version: latest follows a mutable tag. Pin to a specific release (e.g. v0.6.0) for supply-chain safety."
+  echo "::warning::version: latest follows a mutable tag. Pin to a specific release (e.g. v0.7.0) for supply-chain safety."
   API_URL="https://api.github.com/repos/${REPO}/releases/latest"
   CURL_ARGS=(-fsSL)
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
