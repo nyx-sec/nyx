@@ -1,5 +1,5 @@
 {
-  "_doc": "Phase 11 recall-validation baseline for cal.com. Pinned commit + captured findings live in this file. Re-capture by running scripts/validate_recall.sh cal_com <clone_path> --capture against a fresh checkout. Baseline location is tests/recall_targets/ (relocated out of .pitboss/ per the Phase 01 precedent \u2014 pitboss implementer agents must not write under .pitboss/).",
+  "_doc": "Phase 11 recall-validation baseline for cal.com. Pinned commit + captured findings live in this file. Re-capture by running scripts/validate_recall.sh cal_com <clone_path> --capture against a fresh checkout. Baseline location is tests/recall_targets/ (relocated out of .pitboss/ per the Phase 01 precedent — pitboss implementer agents must not write under .pitboss/).",
   "target": "cal_com",
   "clone_url": "https://github.com/calcom/cal.com",
   "exercises_recall_items": [
@@ -9,21 +9,37 @@
     7
   ],
   "captured_against": "real-scan @ d278d6c9bc535bf3f2c6ba0607654f78dd74d6ee",
-  "captured_on": "2026-05-08",
+  "captured_on": "2026-05-11",
   "pinned_commit": "d278d6c9bc535bf3f2c6ba0607654f78dd74d6ee",
   "findings": [
     {
-      "rule_id": "taint-prototype-pollution",
-      "path_suffix": "packages/embeds/embed-core/src/embed.ts",
-      "line": 1509,
+      "rule_id": "taint-header-injection",
+      "path_suffix": "apps/web/proxy.ts",
+      "line": 136,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "@calcom/trpc::packages/trpc/server/routers/viewer/slots/reserveSlot.handler.ts",
+      "line": 115,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "taint-prototype-pollution",
-      "path_suffix": "packages/embeds/embed-core/src/embed.ts",
-      "line": 1509,
+      "path_suffix": "@calcom/embed-core::packages/embeds/embed-core/src/lib/utils.ts",
+      "line": 46,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "@calcom/embed-core::packages/embeds/embed-core/src/lib/utils.ts",
+      "line": 46,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -32,6 +48,38 @@
       "rule_id": "taint-prototype-pollution",
       "path_suffix": "packages/trpc/server/routers/viewer/slots/util.ts",
       "line": 208,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 235,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "@calcom/features::packages/features/availability/lib/getUserAvailability.ts",
+      "line": 711,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 253,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-04-15/controllers/bookings.controller.ts",
+      "line": 261,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -62,8 +110,32 @@
     },
     {
       "rule_id": "taint-prototype-pollution",
-      "path_suffix": "packages/features/bookings/lib/handleCancelBooking.ts",
-      "line": 535,
+      "path_suffix": "@calcom/features::packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 317,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "@calcom/features::packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 317,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "@calcom/features::packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 317,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "@calcom/features::packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 317,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -85,9 +157,25 @@
       "note": "captured by validate_recall.sh --capture"
     },
     {
-      "rule_id": "taint-template-injection",
-      "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
-      "line": 131,
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "@calcom/features::packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 317,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "@calcom/features::packages/features/feature-opt-in/services/FeatureOptInService.ts",
+      "line": 317,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "@calcom/features::packages/features/users/repositories/UserRepository.ts",
+      "line": 283,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -112,6 +200,14 @@
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "packages/features/eventtypes/lib/getEventTypesPublic.ts",
       "line": 13,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/features/webhooks/lib/service/WebhookService.ts",
+      "line": 153,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -158,14 +254,6 @@
     },
     {
       "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "packages/app-store/giphy/api/search.ts",
-      "line": 36,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "taint-unsanitised-flow",
       "path_suffix": "packages/features/flags/features.repository.ts",
       "line": 238,
       "severity": "High",
@@ -182,24 +270,16 @@
     },
     {
       "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "@calcom/features::packages/features/webhooks/lib/sendPayload.ts",
+      "line": 255,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
       "path_suffix": "packages/app-store/giphy/api/get.ts",
       "line": 32,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "packages/app-store/giphy/api/get.ts",
-      "line": 37,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "packages/app-store/paypal/api/webhook.ts",
-      "line": 55,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -256,6 +336,14 @@
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "apps/web/pages/api/integrations/[...args].ts",
       "line": 78,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/office365calendar/api/callback.ts",
+      "line": 88,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -333,6 +421,30 @@
       "note": "captured by validate_recall.sh --capture"
     },
     {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "apps/api/v2/src/lib/throttler-guard.ts",
+      "line": 61,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "apps/api/v2/src/lib/throttler-guard.ts",
+      "line": 65,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "apps/api/v2/src/lib/throttler-guard.ts",
+      "line": 67,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
       "rule_id": "taint-prototype-pollution",
       "path_suffix": "packages/features/auth/lib/next-auth-options.ts",
       "line": 204,
@@ -381,6 +493,78 @@
       "note": "captured by validate_recall.sh --capture"
     },
     {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-08-13/services/input.service.ts",
+      "line": 259,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-08-13/services/input.service.ts",
+      "line": 265,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-04-15/controllers/bookings.controller.ts",
+      "line": 549,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-08-13/services/input.service.ts",
+      "line": 801,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-08-13/services/input.service.ts",
+      "line": 807,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-08-13/services/input.service.ts",
+      "line": 119,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "apps/api/v2/src/platform/bookings/2024-08-13/services/input.service.ts",
+      "line": 126,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/zoho-bigin/lib/CrmService.ts",
+      "line": 265,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/app-store/zoho-bigin/lib/CrmService.ts",
+      "line": 280,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "packages/features/auth/signup/utils/prefillAvatar.ts",
       "line": 35,
@@ -392,6 +576,14 @@
       "rule_id": "taint-unsanitised-flow",
       "path_suffix": "packages/features/url-shortener/providers/SinkClient.ts",
       "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "@calcom/embed-core::packages/embeds/embed-core/src/embed.ts",
+      "line": 1130,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -414,8 +606,8 @@
     },
     {
       "rule_id": "taint-prototype-pollution",
-      "path_suffix": "packages/embeds/embed-core/src/embed.ts",
-      "line": 1206,
+      "path_suffix": "@calcom/embed-core::packages/embeds/embed-core/src/lib/utils.ts",
+      "line": 46,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -432,6 +624,14 @@
       "rule_id": "cfg-unguarded-sink",
       "path_suffix": "apps/web/cron-tester.ts",
       "line": 9,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/app-store/jelly/api/callback.ts",
+      "line": 21,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -507,14 +707,6 @@
       "severity": "High",
       "verdict": "FP",
       "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "apps/web/app/(use-page-wrapper)/settings/(settings-layout)/developer/webhooks/[id]/page.tsx",
-      "line": 39,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
@@ -822,14 +1014,6 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "apps/web/lib/reschedule/[uid]/getServerSideProps.ts",
-      "line": 166,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/lib/video/[uid]/getServerSideProps.ts",
       "line": 112,
       "severity": "High",
@@ -968,14 +1152,6 @@
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "apps/web/modules/users/components/UserTable/UserListTable.tsx",
       "line": 603,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "apps/web/pages/api/book/recurring-event.ts",
-      "line": 47,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -1414,22 +1590,6 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/app-store/feishucalendar/api/callback.ts",
-      "line": 80,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/app-store/feishucalendar/api/callback.ts",
-      "line": 108,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/giphy/api/get.ts",
       "line": 37,
       "severity": "High",
@@ -1552,22 +1712,6 @@
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/intercom/lib/configure/link.ts",
       "line": 75,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/app-store/larkcalendar/api/callback.ts",
-      "line": 80,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/app-store/larkcalendar/api/callback.ts",
-      "line": 108,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -1736,14 +1880,6 @@
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/app-store/stripepayment/lib/customer.ts",
       "line": 101,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/app-store/vital/api/token.ts",
-      "line": 36,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3206,30 +3342,6 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/loggedInViewer/addNotificationsSubscription.handler.ts",
-      "line": 51,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/loggedInViewer/connectAndJoin.handler.ts",
-      "line": 103,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/loggedInViewer/eventTypeOrder.handler.ts",
-      "line": 18,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/loggedInViewer/removeNotificationsSubscription.handler.ts",
       "line": 24,
       "severity": "High",
@@ -3262,24 +3374,8 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/admin/watchlist/delete.handler.ts",
-      "line": 22,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/apps/appById.handler.ts",
       "line": 22,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/apps/appCredentialsByType.handler.ts",
-      "line": 23,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3295,23 +3391,7 @@
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/apps/updateAppCredentials.handler.ts",
-      "line": 43,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/apps/updateAppCredentials.handler.ts",
       "line": 59,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/availability/calendarOverlay.handler.ts",
-      "line": 33,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3326,14 +3406,6 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/bulkUpdateDefaultAvailability.handler.ts",
-      "line": 29,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/create.handler.ts",
       "line": 22,
       "severity": "High",
@@ -3342,48 +3414,8 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/create.handler.ts",
-      "line": 66,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
       "line": 20,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
-      "line": 35,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
-      "line": 50,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
-      "line": 52,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/delete.handler.ts",
-      "line": 61,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3400,14 +3432,6 @@
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/duplicate.handler.ts",
       "line": 22,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/availability/schedule/get.handler.ts",
-      "line": 16,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3582,40 +3606,8 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/bookings/getBookingDetails.handler.ts",
-      "line": 17,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/bookings/getBookingHistory.handler.ts",
-      "line": 56,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/bookings/reportBooking.handler.ts",
       "line": 59,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/bookings/reportBooking.handler.ts",
-      "line": 106,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/bookings/requestReschedule.handler.ts",
-      "line": 80,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3630,24 +3622,8 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/bookings/requestReschedule.handler.ts",
-      "line": 220,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/bookings/updateWrongAssignmentReportStatus.handler.ts",
       "line": 25,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/bookings/updateWrongAssignmentReportStatus.handler.ts",
-      "line": 35,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3695,14 +3671,6 @@
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getActiveOnOptions.handler.ts",
-      "line": 214,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getActiveOnOptions.handler.ts",
       "line": 223,
       "severity": "High",
       "verdict": "needs_review",
@@ -3712,38 +3680,6 @@
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getChildrenForAssignment.handler.ts",
       "line": 24,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getEventTypesFromGroup.handler.ts",
-      "line": 59,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getEventTypesFromGroup.handler.ts",
-      "line": 81,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getEventTypesFromGroup.handler.ts",
-      "line": 156,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/getEventTypesFromGroup.handler.ts",
-      "line": 172,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3816,22 +3752,6 @@
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/duplicate.handler.ts",
       "line": 29,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/duplicate.handler.ts",
-      "line": 68,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/eventTypes/heavy/duplicate.handler.ts",
-      "line": 148,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -3958,14 +3878,6 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/filterSegments/delete.handler.ts",
-      "line": 15,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/me/checkForInvalidAppCredentials.ts",
       "line": 30,
       "severity": "High",
@@ -4039,14 +3951,6 @@
     {
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
-      "line": 204,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/me/updateProfile.handler.ts",
       "line": 300,
       "severity": "High",
       "verdict": "needs_review",
@@ -4096,14 +4000,6 @@
       "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/trpc/server/routers/viewer/oAuth/deleteClient.handler.ts",
       "line": 34,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/oAuth/getClientForAuthorization.handler.ts",
-      "line": 24,
       "severity": "High",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -4318,14 +4214,6 @@
     },
     {
       "rule_id": "js.auth.missing_ownership_check",
-      "path_suffix": "packages/trpc/server/routers/viewer/webhook/list.handler.ts",
-      "line": 16,
-      "severity": "High",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
-    },
-    {
-      "rule_id": "js.auth.missing_ownership_check",
       "path_suffix": "packages/ui/components/file-uploader/FileUploader.tsx",
       "line": 178,
       "severity": "High",
@@ -4345,6 +4233,14 @@
       "path_suffix": "apps/web/app/api/auth/signup/handlers/selfHostedHandler.ts",
       "line": 177,
       "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "@calcom/api-v2::apps/api/v2/src/modules/oauth-clients/controllers/oauth-flow/oauth-flow.controller.ts",
+      "line": 80,
+      "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
     },
@@ -4392,6 +4288,14 @@
       "rule_id": "taint-open-redirect",
       "path_suffix": "packages/app-store/stripepayment/api/paymentCallback.ts",
       "line": 141,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "path_suffix": "apps/web/lib/pages/auth/verify-email.ts",
+      "line": 161,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -4534,8 +4438,8 @@
     },
     {
       "rule_id": "taint-unsanitised-flow",
-      "path_suffix": "apps/web/modules/apps/installation/[[...step]]/step-view.tsx",
-      "line": 166,
+      "path_suffix": "@calcom/app-store::packages/app-store/_utils/useAddAppMutation.ts",
+      "line": 32,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -4656,6 +4560,46 @@
       "rule_id": "taint-data-exfiltration",
       "path_suffix": "packages/platform/examples/base/src/pages/api/refresh.ts",
       "line": 57,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/embeds/embed-core/src/embed.ts",
+      "line": 1130,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/app-store/tandemvideo/lib/VideoApiAdapter.ts",
+      "line": 133,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/app-store/tandemvideo/lib/VideoApiAdapter.ts",
+      "line": 164,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/lib/domainManager/deploymentServices/cloudflare.ts",
+      "line": 42,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "packages/features/url-shortener/providers/SinkClient.ts",
+      "line": 56,
       "severity": "Medium",
       "verdict": "needs_review",
       "note": "captured by validate_recall.sh --capture"
@@ -5173,6 +5117,14 @@
       "note": "Test scaffold / mock / fixture infrastructure. Not a request-reachable handler."
     },
     {
+      "rule_id": "js.crypto.weak_hash",
+      "path_suffix": "apps/web/scripts/copy-app-store-static.js",
+      "line": 35,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
       "rule_id": "ts.crypto.math_random",
       "path_suffix": "apps/web/playwright/fixtures/bookings.ts",
       "line": 45,
@@ -5253,6 +5205,14 @@
       "note": "captured by validate_recall.sh --capture"
     },
     {
+      "rule_id": "ts.crypto.weak_hash",
+      "path_suffix": "packages/trpc/server/routers/viewer/me/get.handler.ts",
+      "line": 122,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
       "rule_id": "ts.secrets.fallback_secret",
       "path_suffix": "scripts/seed.ts",
       "line": 1034,
@@ -5283,22 +5243,6 @@
       "severity": "Low",
       "verdict": "FP",
       "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
-    },
-    {
-      "rule_id": "ts.secrets.hardcoded_secret",
-      "path_suffix": "apps/web/playwright/payment-apps.e2e.ts",
-      "line": 151,
-      "severity": "Low",
-      "verdict": "FP",
-      "note": "Test scaffold / playwright fixture / seed script. The flagged shape is in test or seeding code, not a request-reachable handler."
-    },
-    {
-      "rule_id": "ts.secrets.hardcoded_secret",
-      "path_suffix": "packages/app-store/basecamp3/lib/CalendarService.ts",
-      "line": 133,
-      "severity": "Low",
-      "verdict": "needs_review",
-      "note": "captured by validate_recall.sh --capture"
     }
   ]
 }

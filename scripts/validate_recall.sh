@@ -239,17 +239,43 @@ fi
 
 if [ "$CAPTURE" -eq 1 ]; then
     PIN="$(cd "$CLONE_ABS" && git log -1 --format=%H 2>/dev/null || echo "unknown")"
+    # Preserve any verdict / note labels from the prior baseline whose
+    # (rule_id, path_suffix, line) tuple still appears in the current
+    # scan. New findings get the placeholder verdict; vanished findings
+    # are dropped.
+    PRIOR_FINDINGS="$(jq '.findings // []' "$BASELINE")"
     UPDATED="$(jq --argjson findings "$CURRENT" \
+                  --argjson prior "$PRIOR_FINDINGS" \
                   --arg pin "$PIN" \
                   --arg captured_on "$(date -u +%Y-%m-%d)" \
-                  '. + {
-                       captured_against: ("real-scan @ " + $pin),
-                       captured_on: $captured_on,
-                       pinned_commit: $pin,
-                       findings: ($findings | map(. + {verdict: "needs_review", note: "captured by validate_recall.sh --capture"}))
-                   }' "$BASELINE")"
+                  '
+                  def key(f): [f.rule_id, f.path_suffix, f.line];
+                  def prior_idx:
+                      reduce $prior[] as $f ({}; .[(key($f) | tojson)] = $f);
+                  prior_idx as $pidx
+                  | . + {
+                        captured_against: ("real-scan @ " + $pin),
+                        captured_on: $captured_on,
+                        pinned_commit: $pin,
+                        findings: ($findings | map(
+                            . as $f
+                            | ($pidx[(key($f) | tojson)] // null) as $prev
+                            | if $prev != null and ($prev.verdict // "needs_review") != "needs_review"
+                              then . + {
+                                  verdict: $prev.verdict,
+                                  note: ($prev.note // "carried from prior baseline")
+                              }
+                              else . + {
+                                  verdict: "needs_review",
+                                  note: "captured by validate_recall.sh --capture"
+                              }
+                              end
+                        ))
+                    }
+                  ' "$BASELINE")"
     printf '%s\n' "$UPDATED" >"$BASELINE"
-    echo "[validate_recall] wrote $(echo "$CURRENT" | jq 'length') findings to $BASELINE" >&2
+    KEPT_LABELS="$(echo "$UPDATED" | jq '[.findings[] | select((.verdict // "needs_review") != "needs_review")] | length')"
+    echo "[validate_recall] wrote $(echo "$CURRENT" | jq 'length') findings to $BASELINE (preserved $KEPT_LABELS prior verdicts)" >&2
     exit 0
 fi
 

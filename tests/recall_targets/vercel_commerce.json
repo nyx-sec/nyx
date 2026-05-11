@@ -2,9 +2,22 @@
   "_doc": "Phase 11 recall-validation baseline for vercel/commerce. Pinned commit + captured findings live in this file. Re-capture by running scripts/validate_recall.sh vercel_commerce <clone_path> --capture against a fresh checkout. Baseline location is tests/recall_targets/ (relocated out of .pitboss/ per the Phase 01 precedent — pitboss implementer agents must not write under .pitboss/).",
   "target": "vercel_commerce",
   "clone_url": "https://github.com/vercel/commerce",
-  "exercises_recall_items": [1, 4, 7],
-  "captured_against": "placeholder — needs --capture run against a real clone",
-  "captured_on": "2026-05-08",
-  "pinned_commit": "unknown",
-  "findings": []
+  "exercises_recall_items": [
+    1,
+    4,
+    7
+  ],
+  "captured_against": "real-scan @ 1df2cf6f6c935f4782eed27351fa18f276917a4d",
+  "captured_on": "2026-05-11",
+  "pinned_commit": "1df2cf6f6c935f4782eed27351fa18f276917a4d",
+  "findings": [
+    {
+      "rule_id": "taint-data-exfiltration",
+      "path_suffix": "lib/shopify/index.ts",
+      "line": 85,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
 }

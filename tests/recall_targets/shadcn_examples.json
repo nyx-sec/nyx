@@ -2,9 +2,797 @@
   "_doc": "Phase 11 recall-validation baseline for shadcn-ui/ui examples. Pinned commit + captured findings live in this file. Re-capture by running scripts/validate_recall.sh shadcn_examples <clone_path> --capture against a fresh checkout. Baseline location is tests/recall_targets/ (relocated out of .pitboss/ per the Phase 01 precedent — pitboss implementer agents must not write under .pitboss/).",
   "target": "shadcn_examples",
   "clone_url": "https://github.com/shadcn-ui/ui",
-  "exercises_recall_items": [4, 7],
-  "captured_against": "placeholder — needs --capture run against a real clone",
-  "captured_on": "2026-05-08",
-  "pinned_commit": "unknown",
-  "findings": []
+  "exercises_recall_items": [
+    4,
+    7
+  ],
+  "captured_against": "real-scan @ 8ca30ed32cc1d8971bc0902ccf3b14abe71abbb9",
+  "captured_on": "2026-05-11",
+  "pinned_commit": "8ca30ed32cc1d8971bc0902ccf3b14abe71abbb9",
+  "findings": [
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/shadcn/src/preset/resolve.ts",
+      "line": 574,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/app/(app)/llm/[[...slug]]/route.ts",
+      "line": 39,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/utils/scaffold.test.ts",
+      "line": 266,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/utils/scaffold.test.ts",
+      "line": 402,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/utils/scaffold.test.ts",
+      "line": 441,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/utils/scaffold.test.ts",
+      "line": 483,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/utils/scaffold.test.ts",
+      "line": 522,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/registry/bases/base/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/registry/bases/radix/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/registry/new-york-v4/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/base-luma/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/base-lyra/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/base-maia/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/base-mira/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/base-nova/ui-rtl/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/base-nova/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/base-sera/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/base-vega/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/radix-luma/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/radix-lyra/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/radix-maia/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/radix-mira/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/radix-nova/ui-rtl/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/radix-nova/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/radix-sera/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/styles/radix-vega/ui/chart.tsx",
+      "line": 96,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/registries.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/registries.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/utils/registries.ts",
+      "line": 89,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/updaters/update-css-vars.ts",
+      "line": 57,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/updaters/update-css.ts",
+      "line": 74,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/registry/resolver.test.ts",
+      "line": 391,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/registry/resolver.test.ts",
+      "line": 463,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "apps/v4/app/(app)/create/lib/v0.ts",
+      "line": 567,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "shadcn::packages/shadcn/src/commands/init.ts",
+      "line": 739,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/shadcn/src/registry/fetcher.ts",
+      "line": 40,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-header-injection",
+      "path_suffix": "packages/shadcn/src/registry/fetcher.ts",
+      "line": 50,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/registries.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/dry-run.ts",
+      "line": 117,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/update-app-index.ts",
+      "line": 23,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/shadcn/src/commands/init.ts",
+      "line": 733,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "packages/shadcn/src/commands/init.ts",
+      "line": 739,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/get-config.ts",
+      "line": 246,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/registries.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/get-monorepo-info.ts",
+      "line": 53,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/commands/init.ts",
+      "line": 756,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "shadcn::packages/shadcn/src/utils/create-project.ts",
+      "line": 81,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-prototype-pollution",
+      "path_suffix": "shadcn::packages/shadcn/src/commands/init.ts",
+      "line": 739,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/commands/diff.ts",
+      "line": 202,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/commands/diff.ts",
+      "line": 112,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/commands/diff.ts",
+      "line": 154,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/shadcn/src/utils/registries.ts",
+      "line": 56,
+      "severity": "High",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/utils/setup.ts",
+      "line": 55,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/utils/setup.ts",
+      "line": 43,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/test/utils/registries.test.ts",
+      "line": 72,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/apply.test.ts",
+      "line": 240,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/apply.test.ts",
+      "line": 250,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/apply.test.ts",
+      "line": 267,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/apply.test.ts",
+      "line": 292,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/apply.test.ts",
+      "line": 432,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/apply.test.ts",
+      "line": 495,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/init.test.ts",
+      "line": 540,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/add.test.ts",
+      "line": 348,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/add.test.ts",
+      "line": 643,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/add.test.ts",
+      "line": 659,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/tests/src/tests/add.test.ts",
+      "line": 723,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 1282,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 1343,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 1362,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 504,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 521,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 610,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 614,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 614,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 1305,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-error-fallthrough",
+      "path_suffix": "packages/shadcn/src/registry/api.test.ts",
+      "line": 1382,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/shadcn/test/fixtures/frameworks/remix-indie-stack/app/models/note.server.ts",
+      "line": 32,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "path_suffix": "packages/shadcn/test/fixtures/frameworks/remix-indie-stack/app/utils.ts",
+      "line": 41,
+      "severity": "Medium",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/shadcn/test/fixtures/frameworks/remix-indie-stack/cypress/support/commands.ts",
+      "line": 52,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "path_suffix": "packages/shadcn/test/fixtures/frameworks/remix-indie-stack/remix.init/index.js",
+      "line": 12,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/app/(app)/create/hooks/use-random.tsx",
+      "line": 28,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/registry/bases/base/blocks/preview/cards/bar-visualizer.tsx",
+      "line": 361,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/registry/bases/base/blocks/sidebar-09/components/app-sidebar.tsx",
+      "line": 243,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/registry/bases/base/ui/sidebar.tsx",
+      "line": 618,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/registry/bases/radix/blocks/preview/cards/bar-visualizer.tsx",
+      "line": 331,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/registry/bases/radix/blocks/sidebar-09/components/app-sidebar.tsx",
+      "line": 243,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/registry/bases/radix/ui/sidebar.tsx",
+      "line": 601,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/registry/new-york-v4/blocks/sidebar-09/components/app-sidebar.tsx",
+      "line": 196,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/registry/new-york-v4/ui/sidebar.tsx",
+      "line": 611,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.crypto.math_random",
+      "path_suffix": "apps/v4/styles/base-luma/ui/sidebar.tsx",
+      "line": 612,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/v4/examples/base/card-rtl.tsx",
+      "line": 31,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/v4/examples/base/input-rtl.tsx",
+      "line": 20,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/v4/examples/radix/card-rtl.tsx",
+      "line": 31,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/v4/examples/radix/input-rtl.tsx",
+      "line": 20,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "apps/v4/registry/new-york-v4/examples/form-rhf-password.tsx",
+      "line": 82,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "packages/shadcn/test/fixtures/frameworks/remix-indie-stack/app/routes/join.tsx",
+      "line": 35,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.secrets.hardcoded_secret",
+      "path_suffix": "packages/shadcn/test/fixtures/frameworks/remix-indie-stack/app/routes/login.tsx",
+      "line": 36,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    },
+    {
+      "rule_id": "ts.xss.cookie_write",
+      "path_suffix": "apps/v4/styles/base-lyra/ui/sidebar.tsx",
+      "line": 86,
+      "severity": "Low",
+      "verdict": "needs_review",
+      "note": "captured by validate_recall.sh --capture"
+    }
+  ]
 }
