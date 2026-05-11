@@ -712,6 +712,8 @@ pub fn build_function_unit_with_meta(
         .cloned()
         .collect();
 
+    let is_nextauth_options_factory = body_returns_nextauth_options(node, bytes);
+
     AnalysisUnit {
         kind,
         name,
@@ -734,7 +736,120 @@ pub fn build_function_unit_with_meta(
         typed_bounded_vars: preseeded_bounded,
         typed_bounded_dto_fields: std::collections::HashMap::new(),
         self_scoped_session_bases: state.self_scoped_session_bases,
+        is_nextauth_options_factory,
     }
+}
+
+/// True when the function body at `node` contains an object literal
+/// with a `callbacks: { ... }` property whose nested entries name at
+/// least one canonical NextAuth callback (`signIn`, `session`, `jwt`,
+/// `redirect`, `authorize`, `authorized`).  Recognises the cal.com
+/// idiom `export const getOptions = (...) => ({ callbacks: { ... } })`
+/// where the top-level unit-creation pass attributes every operation
+/// from the inner callback methods to the OUTER arrow's unit (object
+/// method shorthands are not enumerated as separate units).  Without
+/// this flag the outer unit's name is `getOptions`, not `jwt`, so
+/// `is_nextauth_callback_unit` cannot suppress the cluster.
+///
+/// JS/TS-only by construction (matches `object` / `pair` /
+/// `method_definition` node kinds).  Returns false on other languages.
+fn body_returns_nextauth_options(node: Node<'_>, bytes: &[u8]) -> bool {
+    fn scan(node: Node<'_>, bytes: &[u8]) -> bool {
+        if matches!(node.kind(), "object" | "object_expression")
+            && object_has_nextauth_callbacks_property(node, bytes)
+        {
+            return true;
+        }
+        for child in named_children(node) {
+            if scan(child, bytes) {
+                return true;
+            }
+        }
+        false
+    }
+    scan(node, bytes)
+}
+
+fn object_has_nextauth_callbacks_property(node: Node<'_>, bytes: &[u8]) -> bool {
+    for entry in named_children(node) {
+        let Some((key_text, value_node)) = object_entry_key_value(entry, bytes) else {
+            continue;
+        };
+        if key_text != "callbacks" {
+            continue;
+        }
+        if matches!(value_node.kind(), "object" | "object_expression")
+            && object_contains_nextauth_callback_method(value_node, bytes)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn object_contains_nextauth_callback_method(node: Node<'_>, bytes: &[u8]) -> bool {
+    for entry in named_children(node) {
+        if entry.kind() == "method_definition" {
+            if let Some(name_node) = entry.child_by_field_name("name") {
+                let name = text(name_node, bytes);
+                if is_nextauth_callback_name(&name) {
+                    return true;
+                }
+            }
+            continue;
+        }
+        if let Some((key_text, _value_node)) = object_entry_key_value(entry, bytes)
+            && is_nextauth_callback_name(&key_text)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn object_entry_key_value<'a>(
+    entry: Node<'a>,
+    bytes: &[u8],
+) -> Option<(String, Node<'a>)> {
+    match entry.kind() {
+        "pair" => {
+            let key = entry.child_by_field_name("key")?;
+            let value = entry.child_by_field_name("value")?;
+            Some((object_key_text(key, bytes), value))
+        }
+        "method_definition" => {
+            let name = entry.child_by_field_name("name")?;
+            Some((text(name, bytes), entry))
+        }
+        _ => None,
+    }
+}
+
+fn object_key_text(node: Node<'_>, bytes: &[u8]) -> String {
+    match node.kind() {
+        "property_identifier" | "identifier" | "shorthand_property_identifier" => {
+            text(node, bytes)
+        }
+        "string" | "string_literal" => {
+            let raw = text(node, bytes);
+            raw.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string()
+        }
+        "computed_property_name" => {
+            if let Some(inner) = node.named_child(0) {
+                object_key_text(inner, bytes)
+            } else {
+                String::new()
+            }
+        }
+        _ => text(node, bytes),
+    }
+}
+
+fn is_nextauth_callback_name(name: &str) -> bool {
+    matches!(
+        name,
+        "signIn" | "session" | "jwt" | "redirect" | "authorize" | "authorized"
+    )
 }
 
 #[derive(Default)]

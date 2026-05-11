@@ -938,17 +938,35 @@ fn unit_is_auth_helper(unit: &AnalysisUnit) -> bool {
     is_nextauth_callback_unit(unit)
 }
 
-/// True when this unit looks like a NextAuth (next-auth) callback
-/// definition: `signIn` / `session` / `jwt` / `redirect` / `authorize` /
-/// `authorized`. NextAuth callbacks ARE the authentication boundary;
-/// operations on `user.id` / `existingUser.id` inside them resolve the
-/// authenticated identity, they do not look up a tenant-scoped resource
-/// based on untrusted input. The name alone is too common
-/// (`function authorize(...)` shows up in non-NextAuth code), so we also
-/// require at least one canonical callback parameter
-/// (`user` / `token` / `account` / `profile` / `credentials` / `session`)
-/// to be present in the destructured params list.
+/// True when this unit IS, or LEXICALLY CONTAINS, a NextAuth
+/// (next-auth) callback definition.
+///
+/// Two shapes are recognised:
+///   * A unit whose name is `signIn` / `session` / `jwt` / `redirect` /
+///     `authorize` / `authorized` AND whose destructured params include
+///     a canonical NextAuth formal (`user` / `token` / `account` /
+///     `profile` / `credentials` / `session` / `trigger`).  Matches the
+///     flat `export const authOptions = { callbacks: { ... } }` shape
+///     where the top-level unit-creation pass walks into the object
+///     literal and produces one unit per method.
+///   * A unit whose body contains an object literal with a
+///     `callbacks: { ... }` property naming at least one NextAuth
+///     callback (set by `body_returns_nextauth_options` at extract
+///     time).  Matches the `export const getOptions = (...) =>
+///     ({ callbacks: { ... } })` shape where the inner callback
+///     methods do not become their own units — operations from their
+///     bodies get accumulated under the outer arrow's unit, so the
+///     outer unit's name (`getOptions`) is the only handle the
+///     suppressor can latch onto.
+///
+/// NextAuth callbacks ARE the authentication boundary; operations on
+/// `user.id` / `existingUser.id` inside them resolve the authenticated
+/// identity, they do not look up a tenant-scoped resource based on
+/// untrusted input.
 fn is_nextauth_callback_unit(unit: &AnalysisUnit) -> bool {
+    if unit.is_nextauth_options_factory {
+        return true;
+    }
     let Some(name) = unit.name.as_deref() else {
         return false;
     };
@@ -1197,6 +1215,7 @@ mod tests {
             typed_bounded_vars: HashSet::new(),
             typed_bounded_dto_fields: HashMap::new(),
             self_scoped_session_bases: HashSet::new(),
+            is_nextauth_options_factory: false,
         }
     }
 
