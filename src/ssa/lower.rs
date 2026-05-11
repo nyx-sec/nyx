@@ -1509,6 +1509,27 @@ fn rename_variables(
                 .iter()
                 .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
 
+            // Per-slot Source classification (see `RhsArraySlot::Complex.source_cap`):
+            // when at least one Complex slot's own subtree classified as
+            // Source, we know which slot(s) carried the source pattern, so
+            // sibling Complex slots without their own source_cap stay
+            // slot-scoped (Assign / Const).  Otherwise (the outer node
+            // matched but no per-slot classifier fired — typical of subscript
+            // chains and other shapes whose source flows via reaching-def
+            // rather than static text), fall back to the conservative
+            // "all-Complex-are-Source" emission for legacy preservation.
+            use crate::cfg::RhsArraySlot;
+            let any_slot_has_source_cap =
+                info.taint.rhs_array_elements.iter().any(|s| {
+                    matches!(
+                        s,
+                        RhsArraySlot::Complex { source_cap, .. }
+                            if !source_cap.is_empty()
+                    )
+                });
+            let effective_outer_fallback =
+                outer_is_source && !any_slot_has_source_cap;
+
             let bare_array_ops: Option<SmallVec<[SsaOp; 4]>> = if !info
                 .taint
                 .rhs_array_elements
@@ -1521,7 +1542,6 @@ fn rename_variables(
                 if info.taint.rhs_array_elements.len() < needed {
                     None
                 } else {
-                    use crate::cfg::RhsArraySlot;
                     let mut per_pos: SmallVec<[SsaOp; 4]> = SmallVec::new();
                     let mut bail = false;
                     for slot in info.taint.rhs_array_elements.iter().take(needed) {
@@ -1539,7 +1559,7 @@ fn rename_variables(
                                 }
                             }
                             RhsArraySlot::Literal => SsaOp::Const(None),
-                            RhsArraySlot::Complex(inner_uses) => {
+                            RhsArraySlot::Complex { uses: inner_uses, source_cap } => {
                                 let mut mapped: SmallVec<[SsaValue; 4]> = SmallVec::new();
                                 for ident in inner_uses.iter() {
                                     if let Some(sv) = var_stacks
@@ -1551,14 +1571,33 @@ fn rename_variables(
                                         }
                                     }
                                 }
-                                if outer_is_source {
-                                    // Conservative: a Complex slot may
-                                    // contain the source-matching pattern
-                                    // whose classification landed on the
-                                    // outer node. Re-emit Source for this
-                                    // slot so the binding inherits the
-                                    // outer label without painting Literal
-                                    // siblings.
+                                if !source_cap.is_empty() {
+                                    // Per-slot classification found a Source
+                                    // pattern (e.g. `req.body.cmd`) inside
+                                    // THIS slot's subtree.  Emit Source so the
+                                    // binding inherits the outer-node Source
+                                    // caps for this slot's index.
+                                    SsaOp::Source
+                                } else if outer_is_source && any_slot_has_source_cap {
+                                    // Some OTHER slot's subtree classified as
+                                    // Source; this slot did NOT.  Suppress
+                                    // outer-node Source pickup by emitting
+                                    // Const(None) so the SSA Assign arm in
+                                    // `taint/ssa_transfer/mod.rs` does not
+                                    // union the cfg_node's Source label into
+                                    // this binding.
+                                    //
+                                    // Strict precision improvement over the
+                                    // legacy `outer_is_source → emit Source`
+                                    // path which painted every Complex slot
+                                    // regardless of its subtree contents.
+                                    SsaOp::Const(None)
+                                } else if effective_outer_fallback {
+                                    // Outer-node Source label but no
+                                    // per-slot classifier fired on any slot
+                                    // (typical of subscript-on-tainted-local
+                                    // shapes). Preserve legacy conservative
+                                    // emission for unrecognised shapes.
                                     SsaOp::Source
                                 } else if mapped.is_empty() {
                                     SsaOp::Const(None)

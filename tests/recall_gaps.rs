@@ -441,6 +441,41 @@ fn promise_all_destruct_per_index() {
                 .join("\n"),
         );
     }
+
+    // Per-slot Source classification: when two Complex slots sit next to
+    // each other and ONLY one slot's subtree contains a Source-classified
+    // member-expression, the safe Complex sibling stays slot-scoped instead
+    // of inheriting the outer-node Source.  Pre-session 0047 the legacy
+    // outer-node fallback painted both slots, producing a FP on the safe
+    // sibling's binding.
+    for sink_line in [27usize, 34, 41] {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: "complex_complex_per_slot_fp.ts",
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
+    for forbidden_line in [28usize, 35, 42] {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with("complex_complex_per_slot_fp.ts")
+                && f.line == forbidden_line
+                && f.id.starts_with("taint-unsanitised-flow")
+        });
+        assert!(
+            !leak,
+            "safe Complex sibling at line {forbidden_line} must not inherit per-slot Source; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with("complex_complex_per_slot_fp.ts"))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
 }
 
 /// Phase 03 recall-gap: `for await (const x of iter)` taints `x` from the

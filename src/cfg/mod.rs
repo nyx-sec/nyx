@@ -623,10 +623,19 @@ pub enum RhsArraySlot {
     Literal,
     /// Complex expression (call, binary, subscript, member access, nested
     /// array literal). Carries the inner identifier uses harvested from the
-    /// slot's subtree. The SSA lowering emits an `Assign` over the reaching
-    /// defs of those idents — slot-scoped scalar union instead of the
-    /// whole-RHS union the legacy path produced.
-    Complex(SmallVec<[String; 4]>),
+    /// slot's subtree plus a per-slot `source_cap` recognised by classifying
+    /// the slot's own subtree (via `first_member_label`).
+    ///
+    /// When `source_cap` is non-empty the SSA lowering knows the source
+    /// pattern lives in THIS slot and emits `SsaOp::Source` for the binding.
+    /// Sibling Complex slots whose `source_cap` is empty fall through to the
+    /// slot-scoped `Assign(inner reaching defs)` path, so a safe Complex
+    /// sibling stops inheriting the outer node's Source label.
+    Complex {
+        uses: SmallVec<[String; 4]>,
+        #[serde(default, skip_serializing_if = "crate::labels::Cap::is_empty")]
+        source_cap: crate::labels::Cap,
+    },
 }
 
 
@@ -3108,7 +3117,7 @@ pub(super) fn push_node<'a>(
     /* ── 3.  GRAPH INSERTION + DEBUG ──────────────────────────────────── */
 
     let (defines, uses, extra_defines, array_pattern_indices, rhs_array_elements) =
-        def_use(ast, lang, code);
+        def_use(ast, lang, code, extra);
 
     // Capture constant text for SSA constant propagation: when this node
     // defines a variable from a syntactic literal (no identifier uses),

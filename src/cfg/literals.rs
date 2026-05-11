@@ -2258,6 +2258,7 @@ pub(super) fn def_use(
     ast: Node,
     lang: &str,
     code: &[u8],
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
 ) -> (
     Option<String>,
     Vec<String>,
@@ -2334,7 +2335,7 @@ pub(super) fn def_use(
                     // map each binding to its specific RHS slot.
                     if !pattern_indices.is_empty() {
                         rhs_array_elements =
-                            collect_rhs_array_literal_elements(val, code);
+                            collect_rhs_array_literal_elements(val, lang, code, extra_labels);
                     }
                 }
             } else {
@@ -2410,7 +2411,7 @@ pub(super) fn def_use(
                                 && rhs_array_elements.is_empty()
                             {
                                 rhs_array_elements =
-                                    collect_rhs_array_literal_elements(val_node, code);
+                                    collect_rhs_array_literal_elements(val_node, lang, code, extra_labels);
                             }
                         }
                     }
@@ -2477,7 +2478,7 @@ pub(super) fn def_use(
                 // idents so the SSA destructure rewrite can map each
                 // binding to its specific RHS slot.
                 if !pattern_indices.is_empty() {
-                    rhs_array_elements = collect_rhs_array_literal_elements(rhs, code);
+                    rhs_array_elements = collect_rhs_array_literal_elements(rhs, lang, code, extra_labels);
                 }
             }
             (defs, uses, extra_defs, pattern_indices, rhs_array_elements)

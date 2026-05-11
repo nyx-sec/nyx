@@ -847,9 +847,28 @@ pub(crate) fn collect_array_pattern_bindings_indexed(
 /// scalar union".
 pub(crate) fn collect_rhs_array_literal_elements(
     rhs: Node,
+    lang: &str,
     code: &[u8],
+    extra_labels: Option<&[crate::labels::RuntimeLabelRule]>,
 ) -> SmallVec<[crate::cfg::RhsArraySlot; 4]> {
     use crate::cfg::RhsArraySlot;
+    use crate::labels::{Cap, DataLabel};
+
+    // Per-slot source classification: when a slot's own subtree carries a
+    // Source-labeled member-expression / subscript, capture the Cap so the
+    // SSA destructure rewrite emits Source for THIS slot specifically and
+    // lets sibling Complex slots stay slot-scoped Assign. Falls back to
+    // Cap::empty() when no per-slot source is recognised; the lowering
+    // path then consults the outer-node Source flag for conservative
+    // preservation of legacy behavior on shapes whose source pattern
+    // doesn't text-classify (e.g. a subscript on a tainted local).
+    let slot_source_cap = |slot: Node| -> Cap {
+        match first_member_label(slot, lang, code, extra_labels) {
+            Some(DataLabel::Source(c)) => c,
+            _ => Cap::empty(),
+        }
+    };
+
     let mut out: SmallVec<[RhsArraySlot; 4]> = SmallVec::new();
     let kind = rhs.kind();
     if !matches!(
@@ -946,7 +965,8 @@ pub(crate) fn collect_rhs_array_literal_elements(
                         uses.push(ident);
                     }
                 }
-                out.push(RhsArraySlot::Complex(uses));
+                let source_cap = slot_source_cap(child);
+                out.push(RhsArraySlot::Complex { uses, source_cap });
             }
             // Everything else (call, member access, binary, subscript,
             // unary, ternary, nested array literal, etc.) is a "complex"
@@ -966,7 +986,8 @@ pub(crate) fn collect_rhs_array_literal_elements(
                         uses.push(ident);
                     }
                 }
-                out.push(RhsArraySlot::Complex(uses));
+                let source_cap = slot_source_cap(child);
+                out.push(RhsArraySlot::Complex { uses, source_cap });
             }
         }
     }

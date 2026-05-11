@@ -3832,7 +3832,7 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
     fn run(lang: &str, src: &[u8], rhs_kinds: &[&str]) -> Vec<RhsArraySlot> {
         let (tree, bytes) = parse(lang, src);
         let rhs = find_first(tree.root_node(), rhs_kinds).expect("rhs in fixture");
-        collect_rhs_array_literal_elements(rhs, &bytes)
+        collect_rhs_array_literal_elements(rhs, lang, &bytes, None)
             .into_iter()
             .collect()
     }
@@ -3841,7 +3841,16 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
         RhsArraySlot::Ident(name.to_string())
     }
     fn complex(uses: &[&str]) -> RhsArraySlot {
-        RhsArraySlot::Complex(uses.iter().map(|s| s.to_string()).collect())
+        RhsArraySlot::Complex {
+            uses: uses.iter().map(|s| s.to_string()).collect(),
+            source_cap: crate::labels::Cap::empty(),
+        }
+    }
+    fn complex_source(uses: &[&str]) -> RhsArraySlot {
+        RhsArraySlot::Complex {
+            uses: uses.iter().map(|s| s.to_string()).collect(),
+            source_cap: crate::labels::Cap::all(),
+        }
     }
 
     // JS/TS `array` literal: two bare idents.
@@ -3863,6 +3872,9 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
         vec![complex(&["fn", "x"]), RhsArraySlot::Literal],
     );
     // JS/TS member access becomes Complex; dotted path + component idents.
+    // Per-slot Source classification fires when the slot's subtree carries
+    // a member-expression that strip-and-retry-classifies as Source
+    // (`req.query.x` → strip `.x` → `req.query` matches the JS Source rule).
     assert_eq!(
         run(
             "javascript",
@@ -3870,8 +3882,25 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
             &["array"],
         ),
         vec![
-            complex(&["req.query.x", "req", "query", "x"]),
+            complex_source(&["req.query.x", "req", "query", "x"]),
             RhsArraySlot::Literal,
+        ],
+    );
+    // Sibling-precision: a Source-classified Complex slot ALONGSIDE a
+    // Complex slot whose subtree does NOT classify as Source. Pre-session
+    // 0047 every Complex slot was conservatively re-emitted as Source by
+    // the outer-node fallback in `src/ssa/lower.rs`; with per-slot
+    // classification the safe sibling stays empty so the SSA lowering can
+    // emit `Assign(safe)` instead.
+    assert_eq!(
+        run(
+            "javascript",
+            b"const _ = [process.env.X, helper(local)];\n",
+            &["array"],
+        ),
+        vec![
+            complex_source(&["process.env.X", "process", "env", "X"]),
+            complex(&["helper", "local"]),
         ],
     );
     // JS/TS spread bails entirely (index alignment shifts).
