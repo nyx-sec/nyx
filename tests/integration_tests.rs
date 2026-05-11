@@ -1182,6 +1182,25 @@ fn fp_guard_ast_layer_a_crypto_carve_out_py() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, resource-method summary builder must not propagate an
+/// Acquire effect onto callers when the method's acquire is inside a
+/// managed cleanup scope (Python `with`, Java try-with-resources, Ruby
+/// File.open block).  Pre-fix, every method body containing an `open(...)`
+/// (or `FileInputStream(...)`) callee produced a method-name Acquire
+/// summary regardless of whether the handle escaped receiver state;
+/// callers like `obj.method()` were then marked OPEN forever, surfacing
+/// `state-resource-leak subject=self` (58 findings on airflow) and the
+/// caller-side `obj` leak.  The fix gates the summary on
+/// `info.managed_resource == false` and on `info.taint.defines.is_some()`
+/// so anonymous (`return open(...)`) and managed-scope acquires no
+/// longer poison receiver state.
+#[test]
+fn fp_guard_state_resource_method_summary_managed_xlang() {
+    let dir = fixture_path("fp_guards/state_resource_method_summary_managed_xlang");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Drupal Database Query subclasses use
 /// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
 /// statement object then bind values out of band via

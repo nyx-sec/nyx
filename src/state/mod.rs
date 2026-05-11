@@ -298,6 +298,16 @@ pub fn build_resource_method_summaries(
             ) {
                 continue;
             }
+            // Skip acquires whose lifetime is bounded by a managed cleanup
+            // scope (Python `with`, Java try-with-resources, Ruby
+            // File.open-with-block, Rust RAII).  The acquired handle is
+            // released before the method returns, so propagating an
+            // Acquire effect onto the caller's receiver creates an FP
+            // class where callers of `def foo(self): with open(...): ...`
+            // are flagged as leaking the receiver.
+            if info.managed_resource {
+                continue;
+            }
             let callee = match &info.call.callee {
                 Some(c) => c.to_ascii_lowercase(),
                 None => continue,
@@ -308,6 +318,20 @@ pub fn build_resource_method_summaries(
                     .iter()
                     .any(|a| transfer::callee_matches_pub(&callee, a))
                 {
+                    // The receiver-proxy mechanism (state/transfer.rs)
+                    // matches a method-name summary against `recv.method()`
+                    // call sites and marks the receiver as OPEN.  This is
+                    // only meaningful when the acquire actually binds a
+                    // resource into receiver state (`self.fd = open(...)`,
+                    // `this.fd = fs.openSync(...)`).  Acquires with no
+                    // binding (`return open(...)`) or with a local-only
+                    // binding (`f = open(...); f.close()`) do not transfer
+                    // ownership onto the caller's receiver.  Gate the
+                    // summary on a defines field so anonymous and local-
+                    // only acquires no longer leak through this path.
+                    if info.taint.defines.is_none() {
+                        continue;
+                    }
                     summaries.push(transfer::ResourceMethodSummary {
                         method_name: method_name.clone(),
                         effect: transfer::ResourceEffect::Acquire,
