@@ -64,7 +64,7 @@ export function OverviewPage() {
 
   const categoryItems = (overview.issue_categories || [])
     .slice(0, 8)
-    .map((b) => ({ label: b.label, value: b.count, color: '#5856d6' }));
+    .map((b) => ({ label: b.label, value: b.count, color: 'var(--accent)' }));
 
   const trendData = (trends || []).map((t) => ({
     label: t.timestamp,
@@ -74,11 +74,7 @@ export function OverviewPage() {
   const hotSinks = overview.hot_sinks || [];
 
   return (
-    <>
-      <div className="page-header">
-        <h2>Overview</h2>
-      </div>
-
+    <div className="overview-page page-shell">
       {/* Baseline strip */}
       <BaselinePinControl
         baseline={overview.baseline}
@@ -117,7 +113,7 @@ export function OverviewPage() {
         </div>
       )}
 
-      {/* Stat cards — kept lean: 5 cards, severity stacks live in Top Files
+      {/* Stat cards kept lean: 5 cards, severity stacks live in Top Files
           and Per-Language. Cross-file / Symex moved into Scanner Quality. */}
       <div className="overview-stat-grid overview-stat-grid-5">
         <StatCard
@@ -145,7 +141,7 @@ export function OverviewPage() {
         />
       </div>
 
-      {/* Charts */}
+      {/* Charts — 3-col: Findings (col1 span2) | OWASP+Confidence (col2) | Categories (col3 span2) */}
       <div className="overview-chart-grid">
         <div className="card">
           <div className="card-header">Findings Over Time</div>
@@ -158,14 +154,8 @@ export function OverviewPage() {
           )}
         </div>
         <div className="card">
-          <div className="card-header">OWASP Top 10 (2021)</div>
-          {overview.owasp_buckets && overview.owasp_buckets.length > 0 ? (
-            <OwaspChart buckets={overview.owasp_buckets} />
-          ) : (
-            <div className="empty-state" style={{ padding: 16 }}>
-              <p>No OWASP-mapped findings.</p>
-            </div>
-          )}
+          <div className="card-header">Issue Categories</div>
+          <HorizontalBarChart items={categoryItems} />
         </div>
         <div className="card">
           <div className="card-header">Confidence Distribution</div>
@@ -180,8 +170,14 @@ export function OverviewPage() {
           )}
         </div>
         <div className="card">
-          <div className="card-header">Issue Categories</div>
-          <HorizontalBarChart items={categoryItems} />
+          <div className="card-header">OWASP Top 10 (2021)</div>
+          {overview.owasp_buckets && overview.owasp_buckets.length > 0 ? (
+            <OwaspChart buckets={overview.owasp_buckets} />
+          ) : (
+            <div className="empty-state" style={{ padding: 16 }}>
+              <p>No OWASP-mapped findings.</p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -289,7 +285,7 @@ export function OverviewPage() {
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 

@@ -70,8 +70,8 @@ use literals::{
     extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
     extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
     find_call_node, find_call_node_deep, find_chained_inner_call, has_keyword_arg,
-    has_object_arg_property, has_only_literal_args, is_parameterized_query_call,
-    java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
+    has_object_arg_property, has_only_literal_args, is_object_create_null_call,
+    is_parameterized_query_call, java_chain_arg0_kind_for_method, js_chain_arg0_kind_for_method,
     js_chain_outer_method_for_inner, ruby_chain_arg0_for_method, walk_chain_inner_call_args,
 };
 use params::{
@@ -359,6 +359,14 @@ pub struct CallMeta {
     /// must not survive into the constructed object.
     #[serde(default)]
     pub is_constructor: bool,
+    /// True when this call is `Object.create(null)` (or alias). The returned
+    /// value has no prototype chain.  Consumed by TypeFacts to tag the
+    /// SsaValue with [`crate::ssa::type_facts::TypeKind::NullPrototypeObject`]
+    /// so PROTOTYPE_POLLUTION suppression can fire flow-sensitively at the
+    /// synthetic `__index_set__` sink.  Set during CFG node construction so
+    /// SSA does not need to re-walk the AST.
+    #[serde(default)]
+    pub produces_null_proto: bool,
 }
 
 /// One gate's contribution at a call site whose callee matches multiple
@@ -601,8 +609,7 @@ pub struct BodyMeta {
     /// decorators / annotations / static type text at CFG construction
     /// time.  Same length as `params`; positions with no recoverable
     /// type info are `None`.  Strictly additive, when every entry is
-    /// `None`, downstream behaviour is identical to the pre-Phase-1
-    /// engine.
+    /// `None`, downstream behaviour is identical to the type-unaware path.
     pub param_types: Vec<Option<crate::ssa::type_facts::TypeKind>>,
     /// Per-parameter destructured-binding sibling names.  Same length
     /// as `params`; entry `i` lists field names bound by the same
@@ -1811,6 +1818,31 @@ pub(super) fn push_node<'a>(
                     labels.push(l);
                 }
             }
+            // Subscript-set form: `response.headers["X-Foo"] = bar`
+            // (Ruby `element_reference`, JS/TS `subscript_expression`,
+            // Python `subscript`).  The LHS has no `property` field, so
+            // walk into the subscript's `object` and try classifying its
+            // member-expression text (e.g. `response.headers`).  This
+            // lets header-injection sinks fire on the bare bracket form
+            // alongside the `set_header` / `headers_mut.insert` method
+            // shapes already covered above.
+            if labels.is_empty()
+                && matches!(
+                    lhs.kind(),
+                    "subscript_expression" | "subscript" | "element_reference"
+                )
+            {
+                let obj = lhs
+                    .child_by_field_name("object")
+                    .or_else(|| lhs.child_by_field_name("value"))
+                    .or_else(|| lhs.child(0));
+                if let Some(obj_node) = obj
+                    && let Some(obj_text) = member_expr_text(obj_node, code)
+                    && let Some(l) = classify(lang, &obj_text, extra)
+                {
+                    labels.push(l);
+                }
+            }
         }
     }
 
@@ -1933,18 +1965,45 @@ pub(super) fn push_node<'a>(
     {
         let gate_call = call_ast.or_else(|| find_call_node_deep(ast, lang, 4));
         if let Some(cn) = gate_call {
-            let gate_callee_text = if call_ast.is_some() {
+            // Derive the gate's callee text from the call's
+            // `function`/`method`/`name` field, falling back to `text`.
+            //
+            // The default is `text`, which by this point reflects the
+            // qualified callee for method calls (`Velocity.evaluate`,
+            // `$smarty->fetch`) reconstructed in the `Kind::CallMethod`
+            // arm.  When `first_member_label` rewrites `text` to a member
+            // Source like `req.body` (because the wrapper carries one as
+            // an argument), the rewrite is correct for source attribution
+            // but defeats gate matching against a bare callee
+            // (`setValue(target, req.body, …)` would gate-match
+            // `req.body` instead of `setValue`).
+            //
+            // Detect that case structurally: a Source label is present AND
+            // the call's function-field text differs from `text`.  The
+            // function field carries the actual callee identifier; when it
+            // disagrees with `text`, `text` was clobbered by a member-source
+            // override and the function field is the right gate target.
+            // Whitespace is stripped to mirror `find_chained_inner_call`
+            // so multi-line chains (`http\n  .get(...)`) still match flat
+            // gate matchers like `http.get`.
+            let function_field_text: Option<String> = cn
+                .child_by_field_name("function")
+                .or_else(|| cn.child_by_field_name("method"))
+                .or_else(|| cn.child_by_field_name("name"))
+                .and_then(|f| text_of(f, code))
+                .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect::<String>());
+            let has_source_label = labels
+                .iter()
+                .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
+            let gate_callee_text = if let Some(ff) = function_field_text.as_deref()
+                && has_source_label
+                && ff != text.as_str()
+            {
+                ff.to_string()
+            } else if call_ast.is_some() {
                 text.clone()
             } else {
-                // Inner call reached via wrapper, use the call-expression's
-                // function name directly. Falls back to `text` so non-call-
-                // expression kinds (method calls, Ruby `call` nodes, macros)
-                // still have a usable callee string.
-                cn.child_by_field_name("function")
-                    .or_else(|| cn.child_by_field_name("method"))
-                    .or_else(|| cn.child_by_field_name("name"))
-                    .and_then(|f| text_of(f, code))
-                    .unwrap_or_else(|| text.clone())
+                function_field_text.unwrap_or_else(|| text.clone())
             };
             let matches = classify_gated_sink(
                 lang,
@@ -1953,12 +2012,15 @@ pub(super) fn push_node<'a>(
                     extract_const_string_arg(cn, idx, code).or_else(|| {
                         // C/C++ preprocessor macros and PHP `define`d constants
                         // surface as identifier nodes, not string literals.
-                        // Falling back to the macro-arg extractor for those
-                        // languages lets gates like `curl_easy_setopt` /
-                        // `curl_setopt` activate on a `CURLOPT_POSTFIELDS`
-                        // ident match instead of firing conservatively on
-                        // every positional arg.
-                        if matches!(lang, "c" | "cpp" | "c++" | "php") {
+                        // Ruby option constants (e.g.
+                        // `Nokogiri::XML::ParseOptions::NOENT`) surface as
+                        // `scope_resolution` / `constant` nodes.  Falling back
+                        // to the macro-arg extractor for those languages lets
+                        // gates like `curl_easy_setopt` / `curl_setopt` /
+                        // `Nokogiri::XML` activate on a bare-leaf identifier
+                        // match instead of firing conservatively on every
+                        // positional arg.
+                        if matches!(lang, "c" | "cpp" | "c++" | "php" | "ruby" | "rb") {
                             extract_const_macro_arg(cn, idx, code)
                         } else {
                             None
@@ -2656,6 +2718,13 @@ pub(super) fn push_node<'a>(
         || call_ast
             .is_some_and(|cn| matches!(cn.kind(), "new_expression" | "object_creation_expression"));
 
+    // Detect `Object.create(null)` so TypeFacts can tag the returned
+    // SsaValue with `NullPrototypeObject` for flow-sensitive
+    // prototype-pollution suppression.  Restricted to JS/TS where
+    // `Object.create` is the idiomatic null-prototype constructor.
+    let produces_null_proto = matches!(lang, "javascript" | "typescript")
+        && call_ast.is_some_and(|cn| is_object_create_null_call(cn, code));
+
     let idx = g.add_node(NodeInfo {
         kind,
         call: CallMeta {
@@ -2672,6 +2741,7 @@ pub(super) fn push_node<'a>(
             destination_uses,
             gate_filters,
             is_constructor,
+            produces_null_proto,
         },
         taint: TaintMeta {
             labels,
@@ -2860,6 +2930,31 @@ fn try_lower_subscript_write(
     *call_ordinal += 1;
     let mut uses_all: Vec<String> = vec![arr_text.clone(), idx_text.clone()];
     uses_all.extend(rhs_uses.iter().cloned());
+
+    // Prototype pollution sink classification on the synthetic
+    // `__index_set__` node for JS/TS.  Tainted *key* in `obj[key] = val`
+    // is the pollution channel (a `__proto__` / `constructor` literal flowing
+    // through `key` mutates `Object.prototype` globally), so the gate's
+    // payload arg list is `[0]` (the key only — the value at index 1 is
+    // benign on its own).  Sanitizer recognition is structural (no taint
+    // engine plumbing) and runs before label attachment, so suppressed
+    // shapes never enter the SSA sink scan:
+    //   * constant string key whose literal value is not in the dangerous
+    //     set (`__proto__` / `constructor` / `prototype`),
+    //   * receiver was assigned `Object.create(null)` in this function
+    //     (no prototype chain to pollute),
+    //   * the assignment is dominated by an `if` whose condition rejects
+    //     dangerous keys with an early `return` / `throw` / `break`, or
+    //     that allowlists the key against safe constants on its true arm.
+    let mut pp_labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
+    let mut pp_payload_args: Option<Vec<usize>> = None;
+    if matches!(lang, "javascript" | "typescript" | "js" | "ts")
+        && !pp_should_suppress_index_set(assign_ast, subscript_node, &arr_text, &idx_text, code)
+    {
+        pp_labels.push(DataLabel::Sink(Cap::PROTOTYPE_POLLUTION));
+        pp_payload_args = Some(vec![0]);
+    }
+
     let n = g.add_node(NodeInfo {
         kind: StmtKind::Call,
         call: CallMeta {
@@ -2867,9 +2962,11 @@ fn try_lower_subscript_write(
             receiver: Some(arr_text.clone()),
             arg_uses: vec![vec![idx_text.clone()], rhs_uses.clone()],
             call_ordinal: ord,
+            sink_payload_args: pp_payload_args,
             ..Default::default()
         },
         taint: TaintMeta {
+            labels: pp_labels,
             uses: uses_all,
             ..Default::default()
         },
@@ -2881,6 +2978,477 @@ fn try_lower_subscript_write(
     });
     connect_all(g, preds, n, EdgeKind::Seq);
     Some(n)
+}
+
+/// Spring MVC controller-return open-redirect recogniser.  Detects the
+/// shape `return "redirect:" + tainted` (Java string concatenation) and
+/// emits a synthetic `__spring_redirect__` Call sink with
+/// `Sink(OPEN_REDIRECT)` so the existing taint pipeline propagates the
+/// concatenated suffix through the OPEN_REDIRECT cap.  The synthetic
+/// node sequences between `preds` and the eventual Return node.
+///
+/// Returns `Some(synthetic_idx)` when matched, otherwise `None`.
+/// Java only — Spring's `redirect:` view-name convention has no
+/// counterpart in the other supported languages, and matching the
+/// literal across non-Spring code would over-fire.
+fn try_lower_spring_redirect_return(
+    ast: Node,
+    preds: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &[u8],
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+) -> Option<NodeIndex> {
+    if lang != "java" {
+        return None;
+    }
+    // `return EXPR ;` — find the returned expression.  tree-sitter-java
+    // wraps the value in a `return_statement` whose first named child
+    // is the expression.
+    let expr = ast.named_child(0)?;
+    // Strip parentheses.
+    let mut cur = expr;
+    while cur.kind() == "parenthesized_expression" {
+        cur = cur.named_child(0)?;
+    }
+    if cur.kind() != "binary_expression" {
+        return None;
+    }
+    let op = cur.child_by_field_name("operator")?;
+    let op_text = text_of(op, code)?;
+    if op_text != "+" {
+        return None;
+    }
+    // Walk leftmost descent through left-associated `+` chains so that
+    // `"redirect:" + a + b` still matches (the AST nests as
+    // `(("redirect:" + a) + b)`).
+    let mut leftmost = cur;
+    loop {
+        let left = leftmost.child_by_field_name("left")?;
+        let mut left_inner = left;
+        while left_inner.kind() == "parenthesized_expression" {
+            left_inner = left_inner.named_child(0)?;
+        }
+        if left_inner.kind() == "binary_expression" {
+            let op_l = left_inner.child_by_field_name("operator")?;
+            if text_of(op_l, code).as_deref() == Some("+") {
+                leftmost = left_inner;
+                continue;
+            }
+        }
+        // `left_inner` is the leftmost atom — must be a string literal
+        // whose constant value starts with `redirect:`.
+        if !matches!(left_inner.kind(), "string_literal" | "string") {
+            return None;
+        }
+        let lit = text_of(left_inner, code)?;
+        if lit.len() < 2 {
+            return None;
+        }
+        let inner = &lit[1..lit.len() - 1];
+        if !inner.starts_with("redirect:") {
+            return None;
+        }
+        break;
+    }
+
+    // Collect identifiers referenced anywhere in the original concat
+    // expression — the tainted URL piece is one of them.  Receiver-style
+    // method calls (`view.toString()`) are intentionally captured via
+    // the bare identifier; precision improvements are deferred to the
+    // SSA / abstract-string layer.
+    let mut concat_uses: Vec<String> = Vec::new();
+    collect_idents(cur, code, &mut concat_uses);
+    if concat_uses.is_empty() {
+        return None;
+    }
+
+    let span = (ast.start_byte(), ast.end_byte());
+    let ord = *call_ordinal;
+    *call_ordinal += 1;
+
+    let mut labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
+    labels.push(DataLabel::Sink(Cap::OPEN_REDIRECT));
+
+    let n = g.add_node(NodeInfo {
+        kind: StmtKind::Call,
+        call: CallMeta {
+            callee: Some("__spring_redirect__".to_string()),
+            arg_uses: vec![concat_uses.clone()],
+            call_ordinal: ord,
+            sink_payload_args: Some(vec![0]),
+            ..Default::default()
+        },
+        taint: TaintMeta {
+            labels,
+            uses: concat_uses,
+            ..Default::default()
+        },
+        ast: AstMeta {
+            span,
+            enclosing_func: enclosing_func.map(|s| s.to_string()),
+        },
+        ..Default::default()
+    });
+    connect_all(g, preds, n, EdgeKind::Seq);
+    Some(n)
+}
+
+/// Prototype-pollution suppression decisions for the synthetic
+/// `__index_set__` node emitted by `try_lower_subscript_write`.
+///
+/// Returns `true` when the assignment is provably safe and the
+/// `Cap::PROTOTYPE_POLLUTION` sink label should be elided.  The three
+/// CFG-layer recognised shapes are flow-insensitive AST patterns:
+///
+/// 1. Constant string key whose value is not one of the dangerous
+///    keys (`__proto__`, `constructor`, `prototype`).  A literal-keyed
+///    write cannot pollute even if the value is tainted.
+/// 2. Reject pattern `if (idx === "__proto__" || idx === "constructor"
+///    || idx === "prototype") <return/throw/break>` enclosing the
+///    assignment.  The dangerous-key path terminates before reaching
+///    the synthesised store.
+/// 3. Allowlist pattern `if (idx === "name" || idx === "id") { obj[idx]
+///    = v }`.  The assignment only executes when `idx` is one of a
+///    small set of known-safe constants.
+///
+/// The null-prototype receiver suppression (`Object.create(null)`) is
+/// handled flow-sensitively in the SSA taint engine via
+/// `TypeKind::NullPrototypeObject`, since AST scans cannot honour
+/// branch-local re-bindings or phi joins.
+///
+/// Conservative: any unrecognised shape returns `false` so the sink
+/// label is attached and the SSA layer decides on taint reachability.
+fn pp_should_suppress_index_set(
+    assign_ast: Node,
+    subscript_node: Node,
+    _arr_text: &str,
+    idx_text: &str,
+    code: &[u8],
+) -> bool {
+    // 1. Constant-key fold.
+    if let Some(idx_node) = subscript_node
+        .child_by_field_name("index")
+        .or_else(|| subscript_node.child_by_field_name("subscript"))
+        .or_else(|| {
+            let mut cur = subscript_node.walk();
+            subscript_node.named_children(&mut cur).nth(1)
+        })
+    {
+        if let Some(literal) = pp_string_literal_value(idx_node, code) {
+            return !pp_is_dangerous_proto_key(&literal);
+        }
+    }
+
+    // 2 + 3. Dominator-style guard ancestors (reject + allowlist).
+    if pp_is_guarded_by_proto_check(assign_ast, idx_text, code) {
+        return true;
+    }
+
+    false
+}
+
+/// Dangerous prototype-pollution key strings.  Matches the literal
+/// values that JS engines treat as references into the prototype chain.
+fn pp_is_dangerous_proto_key(s: &str) -> bool {
+    matches!(s, "__proto__" | "constructor" | "prototype")
+}
+
+/// Extract the value of a JS/TS string literal node, stripping the
+/// outer quote bytes (single, double, or backtick).  Returns `None`
+/// for non-literal nodes, template literals containing interpolation,
+/// or anything that doesn't resemble a single-segment string.
+fn pp_string_literal_value(n: Node, code: &[u8]) -> Option<String> {
+    let kind = n.kind();
+    if !matches!(kind, "string" | "string_literal" | "template_string") {
+        return None;
+    }
+    let raw = std::str::from_utf8(&code[n.start_byte()..n.end_byte()]).ok()?;
+    if raw.len() < 2 {
+        return None;
+    }
+    let bytes = raw.as_bytes();
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    if !matches!(first, b'"' | b'\'' | b'`') || first != last {
+        return None;
+    }
+    let inner = &raw[1..raw.len() - 1];
+    // Reject template literals carrying `${...}` interpolation — we
+    // can't fold those to a single concrete value.
+    if first == b'`' && inner.contains("${") {
+        return None;
+    }
+    Some(inner.to_string())
+}
+
+/// Walk up from the assignment node looking for two structural guard
+/// shapes:
+///
+/// * **Reject pattern** — a *previous sibling* `if_statement` in any
+///   enclosing block whose condition is `idx === DANGEROUS [|| …]` and
+///   whose consequence terminates control flow (`return` / `throw` /
+///   `break` / `continue`).  The dangerous-key path never reaches the
+///   subsequent assignment.
+/// * **Allowlist pattern** — an *ancestor* `if_statement` whose
+///   condition is `idx === SAFE [|| …]` and through whose consequence
+///   the descendant flows.  Only the safe-key arm reaches the
+///   assignment.
+///
+/// Both shapes must compare against the same key variable as the
+/// synthetic `__index_set__` node.  Stops at the enclosing function so
+/// guards in an outer scope around a closure passed elsewhere don't
+/// accidentally suppress inner assignments.
+fn pp_is_guarded_by_proto_check(from: Node, idx_text: &str, code: &[u8]) -> bool {
+    let mut cur = from;
+    while let Some(parent) = cur.parent() {
+        match parent.kind() {
+            "function_declaration"
+            | "function"
+            | "function_expression"
+            | "arrow_function"
+            | "method_definition"
+            | "generator_function_declaration"
+            | "program"
+            | "source_file" => return false,
+            "if_statement" => {
+                if let Some(cond) = parent.child_by_field_name("condition") {
+                    let consequence = parent.child_by_field_name("consequence");
+                    if let Some(verdict) =
+                        pp_classify_proto_guard(cond, consequence, cur, idx_text, code)
+                    {
+                        return verdict;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Reject pattern: scan previous siblings in the parent block
+        // for `if (idx === DANGEROUS [|| …]) { return; }` shapes that
+        // dominate the assignment via early-return.
+        let mut sibling_cursor = parent.walk();
+        for sibling in parent.named_children(&mut sibling_cursor) {
+            if sibling.start_byte() >= cur.start_byte() {
+                break;
+            }
+            if sibling.kind() != "if_statement" {
+                continue;
+            }
+            if pp_is_reject_pattern(sibling, idx_text, code) {
+                return true;
+            }
+        }
+
+        cur = parent;
+    }
+    false
+}
+
+/// True when `if_node` is `if (idx === DANGEROUS [|| idx === DANGEROUS]
+/// …) { return; / throw …; / break; }` shaped — every disjunct
+/// compares the named key variable to a dangerous prototype key, and
+/// the consequence terminates control flow.
+fn pp_is_reject_pattern(if_node: Node, idx_text: &str, code: &[u8]) -> bool {
+    let Some(cond) = if_node.child_by_field_name("condition") else {
+        return false;
+    };
+    let consequence = if_node.child_by_field_name("consequence");
+    let clauses = pp_split_or_clauses(cond);
+    if clauses.is_empty() {
+        return false;
+    }
+    for clause in &clauses {
+        let Some((var, lit)) = pp_extract_eq_compare(*clause, code) else {
+            return false;
+        };
+        if var != idx_text || !pp_is_dangerous_proto_key(&lit) {
+            return false;
+        }
+    }
+    consequence.map(pp_block_terminates).unwrap_or(false)
+}
+
+/// Decide whether an enclosing `if` clause around an `__index_set__`
+/// statement constitutes a prototype-pollution guard.
+///
+/// `cond` is the if's condition expression, `consequence` is the
+/// optional consequence block, and `descendant` is the node on the
+/// path from the if-statement down to the assignment (used to
+/// distinguish "assignment lives inside the consequence" from
+/// "assignment lives after the if").  `idx_text` is the textual key
+/// variable used by the synthetic `__index_set__`.
+///
+/// Returns `Some(true)` to suppress, `Some(false)` to keep the gate
+/// (e.g. an unrelated guard), and `None` when the if-statement is
+/// not a recognised guard so the walker continues outward.
+fn pp_classify_proto_guard(
+    cond: Node,
+    consequence: Option<Node>,
+    descendant: Node,
+    idx_text: &str,
+    code: &[u8],
+) -> Option<bool> {
+    let cond_clauses = pp_split_or_clauses(cond);
+    if cond_clauses.is_empty() {
+        return None;
+    }
+
+    let mut all_against_idx = true;
+    let mut all_dangerous = true;
+    let mut all_safe = true;
+    for clause in &cond_clauses {
+        let (var, lit) = pp_extract_eq_compare(*clause, code)?;
+        if var != idx_text {
+            all_against_idx = false;
+            break;
+        }
+        let dangerous = pp_is_dangerous_proto_key(&lit);
+        if dangerous {
+            all_safe = false;
+        } else {
+            all_dangerous = false;
+        }
+    }
+    if !all_against_idx {
+        return None;
+    }
+
+    let consequence_contains_descendant = consequence
+        .map(|c| pp_subtree_contains(c, descendant))
+        .unwrap_or(false);
+
+    // Allowlist pattern: every clause is `idx === SAFE` and the
+    // assignment lives inside the consequence (true arm).
+    if all_safe && consequence_contains_descendant {
+        return Some(true);
+    }
+
+    // Reject pattern: every clause is `idx === DANGEROUS` and the
+    // consequence terminates control flow before reaching the
+    // assignment.  Only suppress when the assignment is *outside* the
+    // consequence (i.e., follows the if).
+    if all_dangerous
+        && !consequence_contains_descendant
+        && consequence.map(pp_block_terminates).unwrap_or(false)
+    {
+        return Some(true);
+    }
+
+    None
+}
+
+/// True when `descendant` is identical to or transitively a child of
+/// `root`.  Identity is checked via byte-range equality because
+/// tree-sitter `Node` doesn't implement `Eq` directly.
+fn pp_subtree_contains(root: Node, descendant: Node) -> bool {
+    let dr = (descendant.start_byte(), descendant.end_byte());
+    let rr = (root.start_byte(), root.end_byte());
+    dr.0 >= rr.0 && dr.1 <= rr.1
+}
+
+/// True when `block` (typically an `if` consequence) terminates
+/// control flow on every path: the last meaningful statement is a
+/// return / throw / break / continue.  Conservative — falls back to
+/// `false` for empty blocks or anything non-trivial.
+fn pp_block_terminates(block: Node) -> bool {
+    // Bare statement consequence (no braces): the if's consequence is
+    // the terminator itself.
+    if pp_is_terminator(block) {
+        return true;
+    }
+    if !matches!(block.kind(), "statement_block" | "block") {
+        return false;
+    }
+    let mut cursor = block.walk();
+    let last_stmt = block.named_children(&mut cursor).last();
+    match last_stmt {
+        Some(s) => pp_is_terminator(s),
+        None => false,
+    }
+}
+
+/// True when `n` is a control-flow-ending statement: return / throw /
+/// break / continue.
+fn pp_is_terminator(n: Node) -> bool {
+    matches!(
+        n.kind(),
+        "return_statement" | "throw_statement" | "break_statement" | "continue_statement"
+    )
+}
+
+/// Split an expression by top-level `||` operators.  Returns the
+/// individual disjunct sub-expressions.  Single (non-OR) expressions
+/// yield a one-element vector.  Walks `binary_expression` nodes whose
+/// `operator` field is `||` and recurses into both sides.
+fn pp_split_or_clauses<'a>(expr: Node<'a>) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    pp_collect_or_clauses(expr, &mut out);
+    out
+}
+
+fn pp_collect_or_clauses<'a>(expr: Node<'a>, out: &mut Vec<Node<'a>>) {
+    let stripped = pp_unwrap_paren(expr);
+    if matches!(stripped.kind(), "binary_expression") {
+        let op = stripped
+            .child_by_field_name("operator")
+            .map(|o| o.kind())
+            .unwrap_or("");
+        if op == "||" {
+            if let Some(l) = stripped.child_by_field_name("left") {
+                pp_collect_or_clauses(l, out);
+            }
+            if let Some(r) = stripped.child_by_field_name("right") {
+                pp_collect_or_clauses(r, out);
+            }
+            return;
+        }
+    }
+    out.push(stripped);
+}
+
+fn pp_unwrap_paren(n: Node) -> Node {
+    let mut cur = n;
+    while matches!(cur.kind(), "parenthesized_expression") {
+        match cur.named_child(0) {
+            Some(inner) => cur = inner,
+            None => break,
+        }
+    }
+    cur
+}
+
+/// Extract `(var_text, literal_value)` from an equality comparison
+/// `var === "literal"` / `var == "literal"` (and reversed forms).
+/// Returns `None` for any other shape.
+fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
+    let stripped = pp_unwrap_paren(expr);
+    if !matches!(stripped.kind(), "binary_expression") {
+        return None;
+    }
+    let op = stripped
+        .child_by_field_name("operator")
+        .map(|o| o.kind())
+        .unwrap_or("");
+    if !matches!(op, "===" | "==") {
+        return None;
+    }
+    let left = stripped.child_by_field_name("left")?;
+    let right = stripped.child_by_field_name("right")?;
+    let left = pp_unwrap_paren(left);
+    let right = pp_unwrap_paren(right);
+    if let (Some(lv), Some(rs)) = (text_of(left, code), pp_string_literal_value(right, code)) {
+        if matches!(left.kind(), "identifier" | "shorthand_property_identifier") {
+            return Some((lv, rs));
+        }
+    }
+    if let (Some(rv), Some(ls)) = (text_of(right, code), pp_string_literal_value(left, code)) {
+        if matches!(right.kind(), "identifier" | "shorthand_property_identifier") {
+            return Some((rv, ls));
+        }
+    }
+    None
 }
 
 /// Step 1 (`pre_emit_arg_source_nodes`): scan the AST, create Source nodes,
@@ -3682,6 +4250,21 @@ pub(super) fn build_sub<'a>(
 
                 Vec::new()
             } else {
+                // Spring MVC `return "redirect:" + url` open-redirect
+                // synthetic-sink emission.  When matched the synthetic
+                // call sequences between `preds` and the Return node.
+                let mut effective_preds: Vec<NodeIndex> = preds.to_vec();
+                if let Some(synth) = try_lower_spring_redirect_return(
+                    ast,
+                    &effective_preds,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                ) {
+                    effective_preds = vec![synth];
+                }
                 let ret = push_node(
                     g,
                     StmtKind::Return,
@@ -3692,7 +4275,7 @@ pub(super) fn build_sub<'a>(
                     0,
                     analysis_rules,
                 );
-                connect_all(g, preds, ret, EdgeKind::Seq);
+                connect_all(g, &effective_preds, ret, EdgeKind::Seq);
                 Vec::new() // terminates this path
             }
         }

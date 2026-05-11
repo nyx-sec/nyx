@@ -11,7 +11,7 @@ nyx serve --no-browser            # don't auto-open
 
 Persistent settings live under `[server]` in `nyx.conf` / `nyx.local`.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-overview.png" alt="Nyx UI overview: total findings, severity breakdown, language and category distribution, top affected files" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-overview.png" alt="Nyx UI overview: total findings, severity breakdown, language and category distribution, top affected files" width="900"/></p>
 
 ## What it serves, and what it doesn't
 
@@ -88,11 +88,11 @@ Ceilings are calibrated for the current scanner false-positive rates. As symex c
 
 The findings list is filterable by severity, confidence, category, language, rule ID, and triage state.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-findings-list.png" alt="Nyx findings list: 13 findings filtered by severity/confidence/rule, with status badges, file paths, and language tags" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-findings-list.png" alt="Nyx findings list: 13 findings filtered by severity/confidence/rule, with status badges, file paths, and language tags" width="900"/></p>
 
 Clicking through opens the **flow visualiser**: a numbered walk from source to sink with the snippet at each step, cross-file markers when the path leaves the current file, the rule's "How to fix" guidance, and the engine's evidence object inline.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: HIGH taint-unsanitised-flow showing source → call → sink steps, How to fix guidance, and evidence panel" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-finding-detail.png" alt="Nyx finding detail: HIGH taint-unsanitised-flow showing source → call → sink steps, How to fix guidance, and evidence panel" width="900"/></p>
 
 Engine notes call out when precision was bounded for that finding (`OriginsTruncated`, `PointsToTruncated`, `PathWidened`, `ForwardBailed`, etc.). Anything tagged `under-report` means the emitted flow is real and the result set is a lower bound; `over-report` means widening or bail. `--require-converged` in the CLI drops the over-report ones for strict gates.
 
@@ -100,7 +100,7 @@ Engine notes call out when precision was bounded for that finding (`OriginsTrunc
 
 Each finding carries a triage state: `open`, `investigating`, `false_positive`, `accepted_risk`, `suppressed`, or `fixed`. The triage page bulk-updates them and shows the audit trail.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-triage.png" alt="Nyx triage page: 13 findings need attention, severity breakdown, Findings/Suppression rules/Audit log tabs, rule chips, Investigate buttons" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-triage.png" alt="Nyx triage page: 13 findings need attention, severity breakdown, Findings/Suppression rules/Audit log tabs, rule chips, Investigate buttons" width="900"/></p>
 
 State writes are persisted to SQLite immediately, and (when `[server].triage_sync = true`, default on) mirrored to `.nyx/triage.json` in the project root. Commit that file:
 
@@ -114,7 +114,7 @@ It carries decisions across machines so a teammate's local scan reflects yours. 
 
 A file tree with per-file finding counts, syntax-highlighted source, and a right rail with the file's symbols and findings. Useful for "what's wrong with this module" rather than "what's wrong with this finding".
 
-<p align="center"><img src="../assets/screenshots/docs/serve-explorer.png" alt="Nyx explorer: file tree with per-file finding counts, syntax-highlighted Python source with red sink marker on the os.system line, file-summary right rail with findings" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-explorer.png" alt="Nyx explorer: file tree with per-file finding counts, syntax-highlighted Python source with red sink marker on the os.system line, file-summary right rail with findings" width="900"/></p>
 
 The path query string preselects a file: `/explorer?file=src/handler.rs`.
 
@@ -122,11 +122,11 @@ The path query string preselects a file: `/explorer?file=src/handler.rs`.
 
 Past runs are persisted when `[runs].persist = true` (off by default to avoid disk growth on heavy users). When persistence is on, `/scans` lists historical runs.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-scans.png" alt="Nyx scans list: completed scan run with root, duration, finding count, languages, and started timestamp" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-scans.png" alt="Nyx scans list: completed scan run with root, duration, finding count, languages, and started timestamp" width="900"/></p>
 
 Each run drills into a detail page with files scanned, findings count, duration, languages, and a per-pass timing breakdown.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-scan-detail.png" alt="Nyx scan detail: Summary tab with files scanned, findings, duration, languages; Details panel with Scan ID, Root, Engine version, started/finished timestamps; Timing breakdown bar showing Walk/Pass 1/Call Graph/Pass 2/Post" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-scan-detail.png" alt="Nyx scan detail: Summary tab with files scanned, findings, duration, languages; Details panel with Scan ID, Root, Engine version, started/finished timestamps; Timing breakdown bar showing Walk/Pass 1/Call Graph/Pass 2/Post" width="900"/></p>
 
 Pick two scans to diff and see what got introduced, fixed, or rediscovered between runs. The retention cap is `[runs].max_runs` (default 100). Each run can also optionally save its log and stdout (`save_logs`, `save_stdout`); both are off by default. Code snippets are saved (`save_code_snippets = true`); turn off if storage is tight.
 
@@ -134,7 +134,7 @@ Pick two scans to diff and see what got introduced, fixed, or rediscovered betwe
 
 Every rule the engine knows about, built-in plus user-added. Each row shows the matchers, kind (source / sanitiser / sink), capability, language, and how many findings it produced in the latest scan. Filter by language, by kind, or by free text.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-rules.png" alt="Nyx rules page: 218 rules with language/kind dropdowns and a matcher search; rows showing rule title, language, kind (SOURCE/SANITIZER/SINK), cap, and finding count" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-rules.png" alt="Nyx rules page: 218 rules with language/kind dropdowns and a matcher search; rows showing rule title, language, kind (SOURCE/SANITIZER/SINK), cap, and finding count" width="900"/></p>
 
 User-added rules can be deleted from this page; built-ins are immutable. Built-ins live in `src/labels/<lang>.rs` and `src/patterns/<lang>.rs`; user-added entries write to `nyx.local`.
 
@@ -142,7 +142,7 @@ User-added rules can be deleted from this page; built-ins are immutable. Built-i
 
 A live config editor. Reads the merged config (`nyx.conf` + `nyx.local`), lets you flip switches and add custom source / sanitizer / sink rules, and writes back to `nyx.local`. Changes apply to the next scan; the running server uses its initial config snapshot.
 
-<p align="center"><img src="../assets/screenshots/docs/serve-config.png" alt="Nyx config page: General settings (analysis mode, max file size, excluded extensions, attack-surface ranking), Triage Sync toggle, Sources section with language/matcher/capability dropdowns and a per-language matcher table" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-config.png" alt="Nyx config page: General settings (analysis mode, max file size, excluded extensions, attack-surface ranking), Triage Sync toggle, Sources section with language/matcher/capability dropdowns and a per-language matcher table" width="900"/></p>
 
 The custom-rule form picks a language, a matcher (function or property name), and a capability. The capability list matches the `Cap` bitflags the taint engine uses; see [rules.md](rules.md#capability-list-for-custom-rules) for what each one means.
 

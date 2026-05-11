@@ -93,6 +93,8 @@ mod cross_file_tests {
                 type_facts: crate::ssa::type_facts::TypeFactResult {
                     facts: std::collections::HashMap::new(),
                 },
+                xml_parser_config: crate::ssa::xml_config::XmlParserConfigResult::default(),
+                xpath_config: crate::ssa::xpath_config::XPathConfigResult::default(),
                 alias_result: crate::ssa::alias::BaseAliasResult::empty(),
                 points_to: crate::ssa::heap::PointsToResult::empty(),
                 module_aliases: std::collections::HashMap::new(),
@@ -251,7 +253,7 @@ mod inline_cache_epoch_tests {
         ArgTaintSig(SmallVec::new())
     }
 
-    fn shape(caps_bits: u16) -> CachedInlineShape {
+    fn shape(caps_bits: u32) -> CachedInlineShape {
         CachedInlineShape(Some(ReturnShape {
             caps: Cap::from_bits_retain(caps_bits),
             internal_origins: SmallVec::new(),
@@ -448,7 +450,7 @@ mod binding_key_tests {
 
     // ── seed_lookup ────────────────────────────────────────────────────
 
-    fn taint(caps: u16) -> VarTaint {
+    fn taint(caps: u32) -> VarTaint {
         VarTaint {
             caps: Cap::from_bits_truncate(caps),
             origins: smallvec![],
@@ -989,6 +991,8 @@ mod goto_succ_propagation_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -1079,6 +1083,8 @@ mod goto_succ_propagation_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -1516,10 +1522,10 @@ mod receiver_candidates_field_proj_tests {
 
     #[test]
     fn field_proj_receiver_walks_to_typed_root_in_go() {
-        // Go is not Rust, so pre-Phase-4 the candidate walk would have
-        // returned ONLY the immediate receiver (v2 = FieldProj). With
-        // We walk through FieldProj.receiver to recover v0 (the
-        // typed root `c`).
+        // Go is not Rust, so before the FieldProj walk fix the candidate
+        // walk would have returned ONLY the immediate receiver
+        // (v2 = FieldProj). We now walk through FieldProj.receiver to
+        // recover v0 (the typed root `c`).
         let body = body_with_field_proj_chain();
         let cands =
             super::super::receiver_candidates_for_type_lookup(SsaValue(2), Some(&body), Lang::Go);
@@ -1709,7 +1715,7 @@ mod fanout_merge_tests {
         ];
 
         let m = merge_resolved_summaries_fanout(a, b);
-        let mut sorted: Vec<(usize, u16)> = m
+        let mut sorted: Vec<(usize, u32)> = m
             .param_to_sink
             .iter()
             .map(|(i, c)| (*i, c.bits()))
@@ -2032,6 +2038,8 @@ mod field_write_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -2114,6 +2122,8 @@ mod field_write_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -2180,6 +2190,8 @@ mod field_write_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -2324,6 +2336,8 @@ mod field_write_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -2420,6 +2434,8 @@ mod container_elem_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -2697,6 +2713,8 @@ mod container_elem_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -2833,6 +2851,8 @@ mod container_elem_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -3387,6 +3407,8 @@ mod field_taint_origin_cap_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,
@@ -3673,6 +3695,8 @@ mod pointer_lattice_worklist_tests {
             receiver_seed: None,
             const_values: None,
             type_facts: None,
+            xml_parser_config: None,
+            xpath_config: None,
             ssa_summaries: None,
             extra_labels: None,
             base_aliases: None,

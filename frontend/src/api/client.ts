@@ -5,7 +5,7 @@ let csrfTokenPromise: Promise<string> | null = null;
 export class ApiError extends Error {
   /**
    * Stable machine-readable code (matches backend `ApiError`'s `code` field).
-   * Falls back to a synthetic value when the response wasn't structured —
+   * Falls back to a synthetic value when the response was not structured,
    * `network` for fetch failures, `http_<status>` for plain-text responses.
    */
   public code: string;
@@ -49,7 +49,7 @@ async function errorFromResponse(res: Response): Promise<ApiError> {
       const code = typeof parsed.code === 'string' ? parsed.code : undefined;
       return new ApiError(res.status, msg, code, parsed.detail);
     } catch {
-      // Plain-text body — use as-is.
+      // Plain-text body, use as-is.
       return new ApiError(res.status, text);
     }
   }

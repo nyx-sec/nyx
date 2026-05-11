@@ -14,6 +14,7 @@ import {
 import type { FC } from 'react';
 import type { IconProps } from '../icons/Icons';
 import { useHealth } from '../../api/queries/health';
+import { useOverview } from '../../api/queries/overview';
 import { useSSE } from '../../contexts/SSEContext';
 
 interface NavItem {
@@ -89,17 +90,19 @@ function navLinkClass({ isActive }: { isActive: boolean }) {
 
 export function Sidebar() {
   const { data: health } = useHealth();
+  const { data: overview } = useOverview();
   const { isScanRunning } = useSSE();
 
   const primary = NAV_SECTIONS.filter((n) => n.group === 'primary');
   const secondary = NAV_SECTIONS.filter((n) => n.group === 'secondary');
   const footer = NAV_SECTIONS.filter((n) => n.group === 'footer');
+  const findingsCount =
+    overview && overview.state !== 'empty' ? overview.total_findings : null;
 
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <span className="logo">nyx</span>
-        {health?.version && <span className="version">v{health.version}</span>}
+        <img src="/logo.png" alt="Nyx" className="sidebar-logo-img" />
       </div>
 
       <ul className="nav-list">
@@ -113,12 +116,15 @@ export function Sidebar() {
               <span className="nav-icon">
                 <item.Icon />
               </span>
-              <span>{item.label}</span>
+              <span className="nav-label">{item.label}</span>
+              {item.id === 'findings' && findingsCount != null && (
+                <span className="nav-badge">{findingsCount}</span>
+              )}
             </NavLink>
           </li>
         ))}
 
-        <li className="nav-separator" />
+        <li className="nav-section-header">Tools</li>
 
         {secondary.map((item) => (
           <li key={item.id}>
@@ -126,7 +132,7 @@ export function Sidebar() {
               <span className="nav-icon">
                 <item.Icon />
               </span>
-              <span>{item.label}</span>
+              <span className="nav-label">{item.label}</span>
             </NavLink>
           </li>
         ))}
@@ -140,7 +146,7 @@ export function Sidebar() {
                 <span className="nav-icon">
                   <item.Icon />
                 </span>
-                <span>{item.label}</span>
+                <span className="nav-label">{item.label}</span>
               </NavLink>
             </li>
           ))}

@@ -71,125 +71,127 @@ function SummaryTab({ scan }: { scan: ScanView }) {
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-header">Details</div>
-        <table>
-          <tbody>
-            <tr>
-              <td style={{ color: 'var(--text-secondary)', width: 140 }}>
-                Scan ID
-              </td>
-              <td
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 'var(--text-xs)',
-                }}
-              >
-                {scan.id}
-              </td>
-            </tr>
-            <tr>
-              <td style={{ color: 'var(--text-secondary)' }}>Root</td>
-              <td
-                style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 'var(--text-sm)',
-                }}
-              >
-                {scan.scan_root}
-              </td>
-            </tr>
-            <tr>
-              <td style={{ color: 'var(--text-secondary)' }}>Engine</td>
-              <td>{scan.engine_version || '-'}</td>
-            </tr>
-            <tr>
-              <td style={{ color: 'var(--text-secondary)' }}>Started</td>
-              <td>{fmtDate(scan.started_at)}</td>
-            </tr>
-            <tr>
-              <td style={{ color: 'var(--text-secondary)' }}>Finished</td>
-              <td>{fmtDate(scan.finished_at)}</td>
-            </tr>
-            {scan.error && (
+      <div className="scan-summary-grid">
+        <div className="card scan-detail-card">
+          <div className="card-header">Details</div>
+          <table>
+            <tbody>
               <tr>
-                <td style={{ color: 'var(--text-secondary)' }}>Error</td>
-                <td style={{ color: 'var(--sev-high)' }}>{scan.error}</td>
+                <td style={{ color: 'var(--text-secondary)', width: 140 }}>
+                  Scan ID
+                </td>
+                <td
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                  }}
+                >
+                  {scan.id}
+                </td>
               </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {timing && total > 0 && (
-        <div className="card" style={{ marginTop: 'var(--space-4)' }}>
-          <div className="card-header">Timing Breakdown</div>
-          <div className="timing-bar">
-            <div
-              className="timing-bar-segment walk"
-              style={{ width: `${pct(timing.walk_ms)}%` }}
-              title={`Walk: ${timing.walk_ms}ms`}
-            ></div>
-            <div
-              className="timing-bar-segment pass1"
-              style={{ width: `${pct(timing.pass1_ms)}%` }}
-              title={`Pass 1: ${timing.pass1_ms}ms`}
-            ></div>
-            <div
-              className="timing-bar-segment callgraph"
-              style={{ width: `${pct(timing.call_graph_ms)}%` }}
-              title={`Call Graph: ${timing.call_graph_ms}ms`}
-            ></div>
-            <div
-              className="timing-bar-segment pass2"
-              style={{ width: `${pct(timing.pass2_ms)}%` }}
-              title={`Pass 2: ${timing.pass2_ms}ms`}
-            ></div>
-            <div
-              className="timing-bar-segment postprocess"
-              style={{ width: `${pct(timing.post_process_ms)}%` }}
-              title={`Post-process: ${timing.post_process_ms}ms`}
-            ></div>
-          </div>
-          <div className="timing-legend">
-            <span className="timing-legend-item">
-              <span
-                className="timing-legend-dot"
-                style={{ background: 'var(--sev-low)' }}
-              ></span>{' '}
-              Walk {timing.walk_ms}ms
-            </span>
-            <span className="timing-legend-item">
-              <span
-                className="timing-legend-dot"
-                style={{ background: 'var(--accent)' }}
-              ></span>{' '}
-              Pass 1 {timing.pass1_ms}ms
-            </span>
-            <span className="timing-legend-item">
-              <span
-                className="timing-legend-dot"
-                style={{ background: 'var(--sev-medium)' }}
-              ></span>{' '}
-              Call Graph {timing.call_graph_ms}ms
-            </span>
-            <span className="timing-legend-item">
-              <span
-                className="timing-legend-dot"
-                style={{ background: 'var(--success)' }}
-              ></span>{' '}
-              Pass 2 {timing.pass2_ms}ms
-            </span>
-            <span className="timing-legend-item">
-              <span
-                className="timing-legend-dot"
-                style={{ background: 'var(--text-tertiary)' }}
-              ></span>{' '}
-              Post {timing.post_process_ms}ms
-            </span>
-          </div>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Root</td>
+                <td
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-sm)',
+                  }}
+                >
+                  {scan.scan_root}
+                </td>
+              </tr>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Engine</td>
+                <td>{scan.engine_version || '-'}</td>
+              </tr>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Started</td>
+                <td>{fmtDate(scan.started_at)}</td>
+              </tr>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Finished</td>
+                <td>{fmtDate(scan.finished_at)}</td>
+              </tr>
+              {scan.error && (
+                <tr>
+                  <td style={{ color: 'var(--text-secondary)' }}>Error</td>
+                  <td style={{ color: 'var(--sev-high)' }}>{scan.error}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
-      )}
+
+        {timing && total > 0 && (
+          <div className="card scan-timing-card">
+            <div className="card-header">Timing Breakdown</div>
+            <div className="timing-bar">
+              <div
+                className="timing-bar-segment walk"
+                style={{ width: `${pct(timing.walk_ms)}%` }}
+                title={`Walk: ${timing.walk_ms}ms`}
+              ></div>
+              <div
+                className="timing-bar-segment pass1"
+                style={{ width: `${pct(timing.pass1_ms)}%` }}
+                title={`Pass 1: ${timing.pass1_ms}ms`}
+              ></div>
+              <div
+                className="timing-bar-segment callgraph"
+                style={{ width: `${pct(timing.call_graph_ms)}%` }}
+                title={`Call Graph: ${timing.call_graph_ms}ms`}
+              ></div>
+              <div
+                className="timing-bar-segment pass2"
+                style={{ width: `${pct(timing.pass2_ms)}%` }}
+                title={`Pass 2: ${timing.pass2_ms}ms`}
+              ></div>
+              <div
+                className="timing-bar-segment postprocess"
+                style={{ width: `${pct(timing.post_process_ms)}%` }}
+                title={`Post-process: ${timing.post_process_ms}ms`}
+              ></div>
+            </div>
+            <div className="timing-legend">
+              <span className="timing-legend-item">
+                <span
+                  className="timing-legend-dot"
+                  style={{ background: 'var(--sev-low)' }}
+                ></span>{' '}
+                Walk {timing.walk_ms}ms
+              </span>
+              <span className="timing-legend-item">
+                <span
+                  className="timing-legend-dot"
+                  style={{ background: 'var(--accent)' }}
+                ></span>{' '}
+                Pass 1 {timing.pass1_ms}ms
+              </span>
+              <span className="timing-legend-item">
+                <span
+                  className="timing-legend-dot"
+                  style={{ background: 'var(--sev-medium)' }}
+                ></span>{' '}
+                Call Graph {timing.call_graph_ms}ms
+              </span>
+              <span className="timing-legend-item">
+                <span
+                  className="timing-legend-dot"
+                  style={{ background: 'var(--success)' }}
+                ></span>{' '}
+                Pass 2 {timing.pass2_ms}ms
+              </span>
+              <span className="timing-legend-item">
+                <span
+                  className="timing-legend-dot"
+                  style={{ background: 'var(--text-tertiary)' }}
+                ></span>{' '}
+                Post {timing.post_process_ms}ms
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
     </>
   );
 }
@@ -212,7 +214,7 @@ function FindingsTab({ scanId }: { scanId: string }) {
   }
 
   return (
-    <>
+    <div className="scan-detail-page page-shell">
       <div className="table-wrap">
         <table>
           <thead>
@@ -266,7 +268,7 @@ function FindingsTab({ scanId }: { scanId: string }) {
       >
         Showing {data.findings.length} of {data.total} findings
       </div>
-    </>
+    </div>
   );
 }
 
@@ -416,31 +418,22 @@ export function ScanDetailPage() {
 
   return (
     <>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--space-2)',
-          marginBottom: 'var(--space-4)',
-        }}
-      >
+      <div className="page-action-row">
         <button className="btn btn-sm" onClick={() => navigate('/scans')}>
           Back to Scans
         </button>
         {prevScanId && (
           <button
-            className="btn btn-sm"
-            style={{ marginLeft: 'auto' }}
+            className="btn btn-sm page-action-push"
             onClick={() => navigate(`/scans/compare/${prevScanId}/${id}`)}
           >
             Compare with Previous
           </button>
         )}
-      </div>
-
-      <div className="page-header">
-        <h2>Scan Detail</h2>
-        <span className={`status-badge ${scan.status}`}>
+        <span
+          className={`status-badge ${scan.status}`}
+          style={{ marginLeft: 'auto' }}
+        >
           <span className={`status-dot ${scan.status}`}></span>
           {scan.status}
         </span>

@@ -13,3 +13,6 @@
 .z3-trace
 .pitboss
 .node_modules-target
+node_modules
+__pycache__/
+*.pyc

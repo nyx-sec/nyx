@@ -1,3 +1,4 @@
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import type {
   HealthScore,
@@ -25,8 +26,17 @@ export function HealthScoreCard({
   posture?: PostureSummary;
 }) {
   const gradeClass = `grade-${health.grade.toLowerCase()}`;
+  const gradeAccent =
+    health.grade === 'A' || health.grade === 'B'
+      ? 'var(--green)'
+      : health.grade === 'C'
+        ? 'var(--amber)'
+        : 'var(--red)';
   return (
-    <div className="card health-card">
+    <div
+      className="card health-card"
+      style={{ '--health-accent': gradeAccent } as React.CSSProperties}
+    >
       <div className="health-eyebrow">Health Score</div>
       <div className="health-headline">
         <div className={`health-grade-block ${gradeClass}`}>
@@ -44,12 +54,26 @@ export function HealthScoreCard({
           )}
         </div>
         <div className="health-components">
-          {health.components.map((c) => (
-            <div className="health-component" key={c.label} title={c.detail}>
-              <div className="health-component-score">{c.score}</div>
-              <div className="health-component-label">{c.label}</div>
-            </div>
-          ))}
+          {health.components.map((c) => {
+            const barColor =
+              c.score >= 70
+                ? 'var(--green)'
+                : c.score >= 40
+                  ? 'var(--amber)'
+                  : 'var(--red)';
+            return (
+              <div className="health-component" key={c.label} title={c.detail}>
+                <div className="health-component-label">{c.label}</div>
+                <div className="health-component-bar-track">
+                  <div
+                    className="health-component-fill"
+                    style={{ width: `${c.score}%`, background: barColor }}
+                  />
+                </div>
+                <div className="health-component-score">{c.score}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -113,7 +137,13 @@ export function BacklogCard({ backlog }: { backlog: BacklogStats }) {
 function BucketBar({ buckets }: { buckets: OverviewCount[] }) {
   const total = buckets.reduce((s, b) => s + b.count, 0);
   if (total === 0) return null;
-  const colors = ['#3498db', '#2ecc71', '#f1c40f', '#e67e22', '#e74c3c'];
+  const colors = [
+    'var(--accent)',
+    'var(--green)',
+    'var(--amber)',
+    'var(--red)',
+    'var(--muted)',
+  ];
   return (
     <div
       className="bucket-bar"
@@ -149,10 +179,10 @@ export function ConfidenceDistributionChart({
     );
   }
   const segments = [
-    { label: 'High', value: dist.high, color: '#27ae60' },
-    { label: 'Medium', value: dist.medium, color: '#f39c12' },
-    { label: 'Low', value: dist.low, color: '#95a5a6' },
-    { label: 'None', value: dist.none, color: '#bdc3c7' },
+    { label: 'High', value: dist.high, color: 'var(--green)' },
+    { label: 'Medium', value: dist.medium, color: 'var(--amber)' },
+    { label: 'Low', value: dist.low, color: 'var(--muted)' },
+    { label: 'None', value: dist.none, color: 'var(--subtle)' },
   ];
   return (
     <div className="confidence-dist">
@@ -484,7 +514,7 @@ export function SuppressionHygieneCard({
       <div className="kv-row kv-row-emphasis">
         <dt
           className="kv-label"
-          title="Share of suppressions that are not pinned to a specific finding fingerprint. Lower is better — it means triage is decisive rather than blanket-silencing whole rules or files."
+          title="Share of suppressions that are not pinned to a specific finding fingerprint. Lower is better because triage is decisive rather than blanket-silencing whole rules or files."
         >
           Blanket rate
           <span className="kv-hint">Lower is better</span>

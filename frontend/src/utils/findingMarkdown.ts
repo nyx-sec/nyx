@@ -41,10 +41,10 @@ function formatEvidence(ev: Evidence, lang: string | undefined): string {
   if (hasSpans) {
     const lines: string[] = ['### Evidence'];
     if (ev.source) {
-      lines.push(`**Source** — ${formatSpan(ev.source, lang)}`);
+      lines.push(`**Source**: ${formatSpan(ev.source, lang)}`);
     }
     if (ev.sink) {
-      lines.push(`**Sink** — ${formatSpan(ev.sink, lang)}`);
+      lines.push(`**Sink**: ${formatSpan(ev.sink, lang)}`);
     }
     if (ev.source || ev.sink) {
       if (!ev.guards || ev.guards.length === 0) {
@@ -68,7 +68,7 @@ function formatEvidence(ev: Evidence, lang: string | undefined): string {
       const st = ev.state;
       const subj = st.subject ? ` ${st.subject}:` : '';
       lines.push(
-        `**State**: ${st.machine} —${subj} ${st.from_state} → ${st.to_state}`,
+        `**State**: ${st.machine} -${subj} ${st.from_state} -> ${st.to_state}`,
       );
     }
     parts.push(lines.join('\n'));
@@ -87,7 +87,7 @@ function formatFlow(steps: FlowStep[]): string {
   const lines: string[] = [`### Flow (${steps.length} steps)`];
   for (const s of steps) {
     const segs: string[] = [`${s.step}. **${s.kind}** \`${s.file}:${s.line}\``];
-    if (s.snippet) segs.push(`— \`${s.snippet}\``);
+    if (s.snippet) segs.push(`- \`${s.snippet}\``);
     if (s.variable) segs.push(`(var \`${s.variable}\`)`);
     if (s.callee) segs.push(`(callee \`${s.callee}\`)`);
     if (s.is_cross_file) segs.push(`[cross-file]`);
@@ -117,7 +117,7 @@ function formatRelated(related: RelatedFindingView[]): string {
   const lines: string[] = ['### Related findings'];
   for (const r of related) {
     lines.push(
-      `- \`#${r.index}\` \`${r.rule_id}\` — \`${r.path}:${r.line}\` (${r.severity})`,
+      `- \`#${r.index}\` \`${r.rule_id}\` - \`${r.path}:${r.line}\` (${r.severity})`,
     );
   }
   return lines.join('\n');
@@ -128,7 +128,7 @@ export function findingToMarkdown(f: FindingView): string {
   const heading = firstLine(f.message || '').trim() || f.category;
   const parts: string[] = [];
 
-  parts.push(`## ${f.rule_id} — ${heading}`);
+  parts.push(`## ${f.rule_id} - ${heading}`);
 
   const meta: string[] = [];
   meta.push(`- **Rule**: \`${f.rule_id}\` (category: \`${f.category}\`)`);

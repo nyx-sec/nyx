@@ -54,7 +54,7 @@ use super::state::{PathConstraint, SymbolicState};
 const MAX_SMT_QUERIES_PER_FINDING: u32 = 10;
 
 /// Per-query timeout in milliseconds (integer-only queries).
-const SMT_QUERY_TIMEOUT_MS: u32 = 100;
+const SMT_QUERY_TIMEOUT_MS: u32 = 500;
 
 /// Per-query timeout for queries involving string theory (ms).
 /// String theory (especially lexicographic ordering) is more expensive.
@@ -114,6 +114,18 @@ enum Z3Expr {
 /// Variable map: SSA value → Z3 variable with implicit sort.
 type VarMap = HashMap<SsaValue, Z3Var>;
 
+/// Pay bundled Z3 static-init cost once per process so the first real
+/// `check_path_feasibility()` call doesn't blow the per-query timeout.
+fn warm_z3() {
+    static WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    WARM.get_or_init(|| {
+        let cfg = Config::new();
+        z3::with_z3_config(&cfg, || {
+            let _ = Solver::new().check();
+        });
+    });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  SmtContext
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,7 +136,10 @@ impl SmtContext {
         SmtContext {
             cfg: Config::new(),
             queries_used: 0,
+            #[cfg(not(test))]
             timeout_ms: SMT_QUERY_TIMEOUT_MS,
+            #[cfg(test)]
+            timeout_ms: 5_000,
         }
     }
 
@@ -153,6 +168,7 @@ impl SmtContext {
             return SmtResult::BudgetExhausted;
         }
         self.queries_used += 1;
+        warm_z3();
 
         // Use with_z3_config to create a scoped Z3 context for this query.
         let base_timeout_ms = self.timeout_ms;

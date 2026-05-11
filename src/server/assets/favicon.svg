@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="6" fill="#1a1a2e"/>
-  <text x="16" y="23" font-family="system-ui" font-size="20" font-weight="bold" fill="#e94560" text-anchor="middle">N</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Nyx">
+  <rect width="64" height="64" rx="12" fill="#08090b"/>
+  <path d="M15 34h34" stroke="#72f3d7" stroke-width="5" stroke-linecap="round"/>
+  <path d="M22 24h20" stroke="#93e48b" stroke-width="4" stroke-linecap="round"/>
+  <path d="M25 44h14" stroke="#e9c46a" stroke-width="4" stroke-linecap="round"/>
 </svg>

@@ -7,7 +7,7 @@
 //! Strictly additive: classes whose fields cannot be classified produce
 //! a `DtoFields` with an empty `fields` map, the caller must decide
 //! whether to use that as a "Dto with no inferred fields" or fall back
-//! to the pre-Phase-6 Object/Unknown classification.
+//! to the generic Object/Unknown classification.
 
 use std::collections::{HashMap, HashSet};
 

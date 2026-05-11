@@ -53,6 +53,8 @@ fn build_rule_list(state: &AppState) -> Vec<RuleInfo> {
                 case_sensitive: cr.case_sensitive,
                 is_custom: true,
                 is_gated: false,
+                is_class: false,
+                emission_active: true,
                 enabled,
             });
         }
@@ -89,6 +91,7 @@ async fn list_rules(State(state): State<AppState>) -> Json<Vec<RuleListItem>> {
                 enabled: r.enabled,
                 is_custom: r.is_custom,
                 is_gated: r.is_gated,
+                is_class: r.is_class,
                 case_sensitive: r.case_sensitive,
                 finding_count: count,
                 suppression_rate: rate,
@@ -134,6 +137,7 @@ async fn get_rule(
         enabled: rule.enabled,
         is_custom: rule.is_custom,
         is_gated: rule.is_gated,
+        is_class: rule.is_class,
         finding_count: total,
         suppression_rate: rate,
         example_findings: examples,

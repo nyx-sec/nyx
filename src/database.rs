@@ -225,7 +225,17 @@ pub mod index {
     /// * `"3"`, `ssa_function_bodies.body` changed from JSON TEXT to
     ///   bincode BLOB.  Old JSON payloads cannot be deserialised by the
     ///   new engine, so they are silently rebuilt on open.
-    pub const SCHEMA_VERSION: &str = "3";
+    /// * `"4"`, `Cap` widened from u16 to u32 to accommodate cap bits
+    ///   ≥ 14 (LDAP_INJECTION, XPATH_INJECTION, HEADER_INJECTION,
+    ///   OPEN_REDIRECT, SSTI, XXE, PROTOTYPE_POLLUTION).  The `Cap`
+    ///   deserialiser accepts both u16- and u32-width JSON values, so
+    ///   pre-bump caches load without crashing, but the cached
+    ///   `source_caps` / `sanitizer_caps` / `sink_caps` blobs were
+    ///   produced before any of these caps could appear and would
+    ///   underreport rules that emit them.  Bumping forces a rescan so
+    ///   newly-emitted gates and sinks land in the cache with the wider
+    ///   footprint.
+    pub const SCHEMA_VERSION: &str = "4";
 
     // TODO: ADD CLEANS FOR EACH TABLE BASED ON PROJECT WHICH RUNS ON CLEAN
     // TODO: ADD DROP AND GIVE A CLI PARAMETER FOR DROP
@@ -2899,6 +2909,8 @@ fn make_test_callee_body(
             type_facts: crate::ssa::type_facts::TypeFactResult {
                 facts: std::collections::HashMap::new(),
             },
+            xml_parser_config: crate::ssa::xml_config::XmlParserConfigResult::default(),
+            xpath_config: crate::ssa::xpath_config::XPathConfigResult::default(),
             alias_result: crate::ssa::alias::BaseAliasResult::empty(),
             points_to: crate::ssa::heap::PointsToResult::empty(),
             module_aliases: std::collections::HashMap::new(),
@@ -3765,7 +3777,7 @@ fn metadata_table_survives_clear() {
 /// receiver sentinel (`u32::MAX`), the container-element marker
 /// (`<elem>`), and the `overflow` flag across serialise → store →
 /// load → deserialise.  This is the strict-additive contract for
-/// pre-Phase-5 blobs (default-empty deserialises cleanly) and the
+/// older blobs without field_points_to (default-empty deserialises cleanly) and the
 /// completeness check for the W3 cross-call resolver.
 #[test]
 fn ssa_summaries_round_trip_preserves_field_points_to() {
@@ -3840,15 +3852,15 @@ fn ssa_summaries_round_trip_preserves_field_points_to() {
     assert!(!sum.field_points_to.overflow);
 }
 
-/// Pre-Phase-5 blob compatibility: a summary serialised without
+/// Older blob compatibility: a summary serialised without
 /// `field_points_to` deserialises with the empty default, no
 /// migration needed because the field is `#[serde(default)]`.
 #[test]
-fn ssa_summaries_pre_phase5_blob_decodes_with_empty_field_points_to() {
+fn ssa_summaries_legacy_blob_decodes_with_empty_field_points_to() {
     use crate::summary::ssa_summary::SsaFuncSummary;
 
     // Hand-craft JSON without the `field_points_to` key.
-    let pre_phase5_json = r#"{
+    let legacy_json = r#"{
         "param_to_return": [],
         "param_to_sink": [],
         "source_caps": 0,
@@ -3865,7 +3877,7 @@ fn ssa_summaries_pre_phase5_blob_decodes_with_empty_field_points_to() {
         "return_path_facts": [],
         "typed_call_receivers": []
     }"#;
-    let sum: SsaFuncSummary = serde_json::from_str(pre_phase5_json).unwrap();
+    let sum: SsaFuncSummary = serde_json::from_str(legacy_json).unwrap();
     assert!(
         sum.field_points_to.is_empty(),
         "missing field_points_to must default to empty",

@@ -23,10 +23,10 @@ export function HorizontalBarChart({
     );
   }
 
-  const barH = 22;
-  const gap = 4;
-  const labelW = 110;
-  const valueW = 45;
+  const barH = 32;
+  const gap = 12;
+  const labelW = 120;
+  const valueW = 48;
   const barAreaW = width - labelW - valueW - 16;
   const totalH = items.length * (barH + gap);
   const maxVal = maxValue ?? Math.max(...items.map((i) => i.value), 1);
@@ -49,7 +49,7 @@ export function HorizontalBarChart({
                 x={labelW - 8}
                 y={y + barH / 2 + 4}
                 textAnchor="end"
-                fontSize={11}
+                fontSize={13}
                 fontFamily="var(--font)"
                 fill="var(--text-secondary)"
               >
@@ -68,7 +68,7 @@ export function HorizontalBarChart({
                 x={labelW + barAreaW + 8}
                 y={y + barH / 2 + 4}
                 textAnchor="start"
-                fontSize={11}
+                fontSize={13}
                 fontFamily="var(--font-mono)"
                 fontWeight={600}
                 fill="var(--text)"

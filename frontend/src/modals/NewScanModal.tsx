@@ -18,7 +18,7 @@ interface NewScanModalProps {
 
 const MODE_HINTS: Record<ScanMode, string> = {
   full: 'AST + CFG + taint (default)',
-  ast: 'AST patterns only — fastest',
+  ast: 'AST patterns only. Fastest.',
   cfg: 'CFG structural + taint',
   taint: 'Taint flows only',
 };
@@ -26,7 +26,7 @@ const MODE_HINTS: Record<ScanMode, string> = {
 const PROFILE_HINTS: Record<EngineProfile, string> = {
   fast: 'Basic taint. No abstract-interp / context-sensitive / symex / backwards.',
   balanced: 'Default. Adds abstract-interp + context-sensitive inlining.',
-  deep: 'Adds symex (cross-file + interproc) and demand-driven backwards taint. ~2–3× slower.',
+  deep: 'Adds symex (cross-file + interproc) and demand-driven backwards taint. About 2 to 3x slower.',
 };
 
 export function NewScanModal({ open, onClose }: NewScanModalProps) {
@@ -67,7 +67,7 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
   return (
     <Modal open={open} onClose={onClose} className="scan-modal-overlay">
       <div className="scan-modal">
-        <h3>Start New Scan</h3>
+        <h3>Start new scan</h3>
         <div className="scan-modal-form">
           <div className="form-group">
             <label>Scan Root</label>
@@ -114,7 +114,7 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
               onClick={handleStart}
               disabled={startScan.isPending}
             >
-              {startScan.isPending ? 'Starting...' : 'Start Scan'}
+              {startScan.isPending ? 'Starting...' : 'Start scan'}
             </button>
           </div>
         </div>

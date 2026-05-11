@@ -35,6 +35,16 @@ pub(crate) fn root_receiver_text(n: Node, lang: &str, code: &[u8]) -> Option<Str
                 None => text_of(n, code),
             }
         }
+        // PHP `variable_name` text carries a leading `$` (`$smarty`, `$twig`).
+        // Strip it so chain text built downstream (`{recv}.{method}`) presents
+        // a `.`-only delimiter sequence — required by the suffix-matcher
+        // boundary rule, which only accepts `.`/`:` as chain separators.
+        // Without this strip, gate matchers like `Smarty.fetch` /
+        // `Environment.createTemplate` never fire on idiomatic
+        // `$smarty->fetch(...)` / `$twig->createTemplate(...)` shapes.
+        _ if lang == "php" && n.kind() == "variable_name" => {
+            text_of(n, code).map(|s| s.trim_start_matches('$').to_string())
+        }
         _ => text_of(n, code),
     }
 }

@@ -580,9 +580,19 @@ pub(crate) fn analyse_file_with_lowered(
             f.source.index(),
             !f.path_validated,
             f.path_hash,
+            f.effective_sink_caps.bits(),
         )
     });
-    all_findings.dedup_by_key(|f| (f.body_id, f.sink, f.source, f.path_validated, f.path_hash));
+    all_findings.dedup_by_key(|f| {
+        (
+            f.body_id,
+            f.sink,
+            f.source,
+            f.path_validated,
+            f.path_hash,
+            f.effective_sink_caps.bits(),
+        )
+    });
 
     // 5. Assign stable finding IDs now that `body_id` has been set and
     //    the dedup has picked the final set of distinct flows.  The ID
@@ -679,9 +689,118 @@ fn containment_order(bodies: &[BodyCfg]) -> Vec<usize> {
     order
 }
 
+/// Build a `var_name → TypeKind` map from a body's optimised SSA + type-fact
+/// result.  Used by [`analyse_multi_body`] to forward closure-captured types
+/// from a parent body into its children, so that bound-variable receiver
+/// idioms (`const c = ldap.createClient(...); function f() { c.search(...) }`)
+/// pick up `TypeKind::LdapClient` on the inner reference via the
+/// [`ssa_transfer::resolve_type_qualified_labels`] receiver scan.
+///
+/// Conflict policy: if the same `var_name` reaches multiple SSA values with
+/// distinct `TypeKind`s the entry is dropped — propagating an ambiguous type
+/// into a child body would fabricate facts, while dropping it just falls back
+/// to the existing structural resolution paths.
+fn extract_named_type_facts(
+    ssa: &crate::ssa::SsaBody,
+    type_facts: &crate::ssa::type_facts::TypeFactResult,
+) -> HashMap<String, crate::ssa::type_facts::TypeKind> {
+    use crate::ssa::type_facts::TypeKind;
+    let mut acc: HashMap<String, TypeKind> = HashMap::new();
+    let mut conflicts: HashSet<String> = HashSet::new();
+    for block in &ssa.blocks {
+        for inst in block.phis.iter().chain(block.body.iter()) {
+            let Some(name) = inst.var_name.as_deref() else {
+                continue;
+            };
+            if conflicts.contains(name) {
+                continue;
+            }
+            let Some(kind) = type_facts.get_type(inst.value) else {
+                continue;
+            };
+            if matches!(kind, TypeKind::Unknown) {
+                continue;
+            }
+            match acc.get(name) {
+                Some(existing) if existing != kind => {
+                    acc.remove(name);
+                    conflicts.insert(name.to_string());
+                }
+                Some(_) => {}
+                None => {
+                    acc.insert(name.to_string(), kind.clone());
+                }
+            }
+        }
+    }
+    acc
+}
+
+/// Inject parent-known closure-capture types into a per-body
+/// [`crate::ssa::type_facts::TypeFactResult`].
+///
+/// Scoped lowering ([`crate::ssa::lower_to_ssa_with_params`]) injects a
+/// `SsaOp::Param` (or `SsaOp::SelfParam`) at the entry block for every
+/// free / closure-captured variable read by the body.  The per-body type
+/// analysis can only seed declared formal-parameter types (via
+/// `BodyMeta.param_types`); free variables are left as `TypeKind::Unknown`
+/// because their definition lives in an enclosing body whose SSA is not
+/// in scope.
+///
+/// This pass walks the entry block's synthetic prologue and, for each
+/// external Param whose name resolves in `parent_var_types`, inserts the
+/// matching [`crate::ssa::type_facts::TypeFact`] into `type_facts.facts`.
+/// Strictly additive: existing facts (e.g. a fact already produced by
+/// `BodyMeta.param_types` seeding for a real formal that happens to share
+/// a name) are never overwritten.
+fn inject_external_type_facts(
+    ssa: &crate::ssa::SsaBody,
+    type_facts: &mut crate::ssa::type_facts::TypeFactResult,
+    parent_var_types: &HashMap<String, crate::ssa::type_facts::TypeKind>,
+) {
+    use crate::ssa::ir::SsaOp;
+    use crate::ssa::type_facts::TypeFact;
+    if parent_var_types.is_empty() || ssa.blocks.is_empty() {
+        return;
+    }
+    for inst in ssa.blocks[0].body.iter() {
+        if !matches!(inst.op, SsaOp::Param { .. } | SsaOp::SelfParam) {
+            continue;
+        }
+        if type_facts.facts.contains_key(&inst.value) {
+            // `analyze_types_with_param_types` may have already typed this
+            // value via a non-Unknown entry from BodyMeta.param_types; in
+            // that case the formal-parameter declaration wins.  Note: the
+            // analysis seeds an Unknown placeholder for unparameterised
+            // Param ops, so we still need to override Unknown entries.
+            if !matches!(
+                type_facts.facts.get(&inst.value).map(|f| &f.kind),
+                Some(crate::ssa::type_facts::TypeKind::Unknown)
+            ) {
+                continue;
+            }
+        }
+        let Some(name) = inst.var_name.as_deref() else {
+            continue;
+        };
+        let Some(kind) = parent_var_types.get(name) else {
+            continue;
+        };
+        let nullable = matches!(kind, crate::ssa::type_facts::TypeKind::Null);
+        type_facts.facts.insert(
+            inst.value,
+            TypeFact {
+                kind: kind.clone(),
+                nullable,
+            },
+        );
+    }
+}
+
 /// Analyse a single body with an optional parent seed.
 ///
 /// Shared logic extracted from `analyse_multi_body` to avoid deep nesting.
+#[allow(clippy::type_complexity)]
 fn analyse_body_with_seed(
     body: &BodyCfg,
     lang: Lang,
@@ -698,9 +817,11 @@ fn analyse_body_with_seed(
     seed: Option<&HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>>,
     import_bindings: Option<&crate::cfg::ImportBindings>,
     cross_file_bodies: Option<&std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>>,
+    parent_var_types: Option<&HashMap<String, crate::ssa::type_facts::TypeKind>>,
 ) -> (
     Vec<Finding>,
     Option<HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>>,
+    Option<HashMap<String, crate::ssa::type_facts::TypeKind>>,
 ) {
     let cfg = &body.graph;
     let entry = body.entry;
@@ -757,12 +878,21 @@ fn analyse_body_with_seed(
 
     match ssa_result {
         Ok(mut ssa_body) => {
-            let opt = crate::ssa::optimize_ssa_with_param_types(
+            let mut opt = crate::ssa::optimize_ssa_with_param_types(
                 &mut ssa_body,
                 cfg,
                 Some(lang),
                 &body.meta.param_types,
             );
+            // Forward parent-body type facts onto closure-captured Param ops
+            // before any consumer reads `opt.type_facts`.  This is the lever
+            // that makes bound-variable receiver idioms work in scoped bodies
+            // (`let c = ldap.createClient(...); function f() { c.search(...) }`)
+            // — without it the inner `c` SSA value stays Unknown because the
+            // per-body type-fact pass cannot see the enclosing definition.
+            if let Some(pvt) = parent_var_types {
+                inject_external_type_facts(&ssa_body, &mut opt.type_facts, pvt);
+            }
             if tracing::enabled!(tracing::Level::TRACE) {
                 tracing::trace!(
                     func = body.meta.name.as_deref().unwrap_or("<anon>"),
@@ -811,6 +941,8 @@ fn analyse_body_with_seed(
                 receiver_seed: None,
                 const_values: Some(&opt.const_values),
                 type_facts: Some(&opt.type_facts),
+                xml_parser_config: Some(&opt.xml_parser_config),
+                xpath_config: Some(&opt.xpath_config),
                 ssa_summaries,
                 extra_labels,
                 base_aliases: Some(&opt.alias_result),
@@ -909,7 +1041,16 @@ fn analyse_body_with_seed(
                 &transfer,
                 body_id,
             );
-            (findings, Some(exit_state))
+            // Snapshot named TypeKinds so child bodies can pick up
+            // closure-captured types (e.g. an outer `LdapClient` flowing
+            // into an inner function via free-variable read).
+            let named_types = extract_named_type_facts(&ssa_body, &opt.type_facts);
+            let named_types = if named_types.is_empty() {
+                None
+            } else {
+                Some(named_types)
+            };
+            (findings, Some(exit_state), named_types)
         }
         Err(e) => {
             // SSA lowering produced no analyzable body.  We still surface
@@ -929,7 +1070,7 @@ fn analyse_body_with_seed(
             // Drain the collector so the note does not bleed into the
             // next body (which will call reset on entry, but be explicit).
             let _ = ssa_transfer::take_body_engine_notes();
-            (Vec::new(), None)
+            (Vec::new(), None, None)
         }
     }
 }
@@ -967,6 +1108,14 @@ fn analyse_multi_body(
         HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>,
     > = HashMap::new();
 
+    // Per-body `var_name → TypeKind` snapshots, used to forward closure-
+    // captured types from parent bodies into their children's type-fact
+    // results.  Only populated when a body produces a non-empty set of
+    // typed named values, i.e. it has at least one named SSA value with
+    // a concrete `TypeKind` after optimisation.
+    let mut body_var_types: HashMap<BodyId, HashMap<String, crate::ssa::type_facts::TypeKind>> =
+        HashMap::new();
+
     // ── Pass 1: lexical containment propagation ──────────────────────
     for &idx in &order {
         let body = &file_cfg.bodies[idx];
@@ -975,8 +1124,12 @@ fn analyse_multi_body(
             .meta
             .parent_body_id
             .and_then(|pid| body_exit_states.get(&pid));
+        let parent_var_types = body
+            .meta
+            .parent_body_id
+            .and_then(|pid| body_var_types.get(&pid));
 
-        let (findings, exit_state) = analyse_body_with_seed(
+        let (findings, exit_state, var_types) = analyse_body_with_seed(
             body,
             lang,
             namespace,
@@ -990,6 +1143,7 @@ fn analyse_multi_body(
             parent_seed,
             import_bindings,
             cross_file_bodies,
+            parent_var_types,
         );
         tracing::debug!(
             body_id = body.meta.id.0,
@@ -1002,6 +1156,9 @@ fn analyse_multi_body(
         all_findings.extend(findings);
         if let Some(es) = exit_state {
             body_exit_states.insert(body.meta.id, es);
+        }
+        if let Some(vt) = var_types {
+            body_var_types.insert(body.meta.id, vt);
         }
     }
 
@@ -1163,8 +1320,12 @@ fn analyse_multi_body(
                     .meta
                     .parent_body_id
                     .and_then(|pid| body_exit_states.get(&pid));
+                let parent_var_types = body
+                    .meta
+                    .parent_body_id
+                    .and_then(|pid| body_var_types.get(&pid));
 
-                let (findings, exit_state) = analyse_body_with_seed(
+                let (findings, exit_state, var_types) = analyse_body_with_seed(
                     body,
                     lang,
                     namespace,
@@ -1178,11 +1339,15 @@ fn analyse_multi_body(
                     parent_seed,
                     import_bindings,
                     cross_file_bodies,
+                    parent_var_types,
                 );
                 // Phase-B: replace (not append) this body's findings
                 // in the cache.  Previous rounds' findings for this
                 // body are superseded by the new round's output.
                 findings_by_body.insert(body.meta.id, findings);
+                if let Some(vt) = var_types {
+                    body_var_types.insert(body.meta.id, vt);
+                }
                 if let Some(es) = exit_state {
                     // Phase-C Gauss-Seidel: immediately publish this
                     // body's filtered exit into `current_seed` and
@@ -2073,6 +2238,8 @@ fn augment_summaries_with_child_sinks(
                 receiver_seed: None,
                 const_values: None,
                 type_facts: None,
+                xml_parser_config: None,
+                xpath_config: None,
                 ssa_summaries: Some(summaries),
                 extra_labels: None,
                 base_aliases: None,
@@ -2135,6 +2302,8 @@ fn augment_summaries_with_child_sinks(
                     receiver_seed: None,
                     const_values: None,
                     type_facts: None,
+                    xml_parser_config: None,
+                    xpath_config: None,
                     ssa_summaries: Some(summaries),
                     extra_labels: None,
                     base_aliases: None,

@@ -2,7 +2,7 @@
 
 Nyx uses TOML configuration files. A default config is auto-generated on first run. If you'd rather edit settings and rules from the browser, the [Config page in `nyx serve`](serve.md#config) is a live editor that writes back to `nyx.local`:
 
-<p align="center"><img src="../assets/screenshots/docs/serve-config.png" alt="Nyx config page: General settings, Triage Sync toggle, Sources panel with language/matcher/capability dropdowns and a per-language matcher table" width="900"/></p>
+<p align="center"><img src="assets/screenshots/docs/serve-config.png" alt="Nyx config page: General settings, Triage Sync toggle, Sources panel with language/matcher/capability dropdowns and a per-language matcher table" width="900"/></p>
 
 ## File Locations
 
@@ -253,8 +253,13 @@ cap = "html_escape"       # "env_var" | "html_escape" | "shell_escape" |
                           # "url_encode" | "json_parse" | "file_io" |
                           # "fmt_string" | "sql_query" | "deserialize" |
                           # "ssrf" | "data_exfil" | "code_exec" | "crypto" |
-                          # "unauthorized_id" | "all"
+                          # "unauthorized_id" | "ldap_injection" |
+                          # "xpath_injection" | "header_injection" |
+                          # "open_redirect" | "ssti" | "xxe" |
+                          # "prototype_pollution" | "all"
 ```
+
+Aliases accepted by `parse_cap` and `[..rules].cap`: `data_exfiltration` for `data_exfil`, `ldapi` for `ldap_injection`, `xpathi` for `xpath_injection`, `crlf` and `response_splitting` for `header_injection`, `redirect` for `open_redirect`, `template_injection` for `ssti`, `proto_pollution` for `prototype_pollution`.
 
 ---
 

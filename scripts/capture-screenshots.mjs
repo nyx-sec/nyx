@@ -21,7 +21,7 @@
  *                     two-scan history (overview trend, scans list,
  *                     scan detail) plus the static-ish ones
  *                     (triage, explorer, rules, config)
- *   7. frame        — composite the brand purple gradient around every
+ *   7. frame        — composite the brand mint-cyan gradient around every
  *                     captured PNG via scripts/frame-screenshots.py
  *
  * Prerequisites (script asserts each before starting):
@@ -37,8 +37,12 @@
  *   node scripts/capture-screenshots.mjs --all      # both, in one orchestrated run
  *
  * Output (under assets/screenshots/):
- *   demo.gif                       (~25–30s walkthrough)
+ *   demo.gif                       (~25–30s serve walkthrough)
+ *   demo_raw.gif                   (unframed source — saved before compositing)
+ *   cli-scan.gif                   (~15s CLI scan walkthrough — requires vhs on PATH)
+ *   cli-scan_raw.gif               (unframed source)
  *   overview.png                   (mirror of docs/serve-overview.png; used by README)
+ *   *_raw.png / *_raw.gif          (unframed originals for every captured asset)
  *   docs/serve-overview.png        (overview after scan #2 — trend going down)
  *   docs/serve-findings-list.png   (post-scan-#1 list with multiple highs)
  *   docs/serve-finding-detail.png  (5-hop taint flow visualizer)
@@ -49,16 +53,17 @@
  *   docs/serve-rules.png
  *   docs/serve-config.png
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import process from 'node:process';
 
 const URL_BASE  = process.env.NYX_URL  || 'http://127.0.0.1:9876';
@@ -66,15 +71,19 @@ const SCAN_ROOT = process.env.SCAN_ROOT || '/tmp/nyx-demo-app';
 const OUT_DIR   = process.env.OUT_DIR  || '/Users/elipeter/nyx/assets/screenshots';
 const FRAMER    = process.env.FRAMER   || '/Users/elipeter/nyx/scripts/frame-screenshots.py';
 const NYX_BIN   = process.env.NYX_BIN  || '/Users/elipeter/nyx/target/release/nyx';
-const VIEW = { width: 1440, height: 900 };
+// Sibling marketing site that mirrors a small subset of these assets.
+// Set NYXSCAN_DIR=skip to disable the mirror step.
+const NYXSCAN_DIR = process.env.NYXSCAN_DIR || '/Users/elipeter/nyxscan.dev/assets/screenshots';
+const VIEW = { width: 1600, height: 992 };
 const COLOR_SCHEME = 'light';
 
 const args = new Set(process.argv.slice(2));
 const wantStills = args.has('--stills') || args.has('--all');
 const wantGif    = args.has('--gif')    || args.has('--all');
 const wantCli    = args.has('--cli')    || args.has('--all');
-if (!wantStills && !wantGif && !wantCli) {
-  console.error('usage: capture-screenshots.mjs [--stills|--gif|--cli|--all]');
+const wantCombo  = args.has('--combo')  || args.has('--all');
+if (!wantStills && !wantGif && !wantCli && !wantCombo) {
+  console.error('usage: capture-screenshots.mjs [--stills|--gif|--cli|--combo|--all]');
   process.exit(2);
 }
 
@@ -330,9 +339,9 @@ async function captureGifFrames(page) {
     .waitForSelector('.health-score-card, [class*="health"]', { timeout: 10_000 })
     .catch(() => {});
   await sleep(1800);
-  await page.evaluate(() => window.scrollBy({ top: 360, behavior: 'smooth' }));
+  await page.evaluate(() => window.scrollBy({ top: 480, behavior: 'smooth' }));
   await sleep(1500);
-  await page.evaluate(() => window.scrollBy({ top: 360, behavior: 'smooth' }));
+  await page.evaluate(() => window.scrollBy({ top: 480, behavior: 'smooth' }));
   await sleep(1500);
   await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
   await sleep(800);
@@ -387,18 +396,61 @@ async function captureGifFrames(page) {
   await sleep(1500);
 }
 
+// Combo GIF browser storyboard — data already present from VHS scan phase -----
+
+async function captureGifFramesCombo(page) {
+  console.error('[combo/gif] scene 1: overview with scan data');
+  await page.goto(URL_BASE + '/');
+  await page
+    .waitForSelector('.health-score-card, [class*="health"]', { timeout: 15_000 })
+    .catch(() => {});
+  await sleep(2200);
+  await page.evaluate(() => window.scrollBy({ top: 480, behavior: 'smooth' }));
+  await sleep(1500);
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  await sleep(900);
+
+  console.error('[combo/gif] scene 2: findings list');
+  await page.click('a.nav-link:has-text("Findings"), .sidebar a:has-text("Findings")');
+  await page.waitForURL('**/findings', { timeout: 10_000 });
+  await page.waitForSelector('tbody tr', { timeout: 10_000 });
+  await sleep(1500);
+
+  console.error('[combo/gif] scene 3: 5-hop taint finding detail');
+  const taintRow = await findFirstTaintRow(page);
+  await taintRow.click();
+  await page.waitForURL(/\/findings\/\d+/, { timeout: 10_000 });
+  await sleep(2500);
+  await page.evaluate(() => window.scrollBy({ top: 480, behavior: 'smooth' }));
+  await sleep(1600);
+  await page.evaluate(() => window.scrollBy({ top: 360, behavior: 'smooth' }));
+  await sleep(1600);
+
+  console.error('[combo/gif] scene 4: open Evidence + Analysis Notes');
+  for (const title of ['Evidence', 'Analysis Notes']) {
+    const toggle = page.locator(`.section-toggle:has-text("${title}")`).first();
+    if (await toggle.count()) {
+      await toggle.scrollIntoViewIfNeeded();
+      await sleep(500);
+      await toggle.click();
+      await sleep(1000);
+    }
+  }
+  await sleep(1200);
+}
+
 async function convertWebmToGif(webm, gifOut) {
   const palette = '/tmp/nyx-demo-palette.png';
   console.error('[gif] generating palette');
   execFileSync('ffmpeg', [
     '-y', '-ss', '1.0', '-i', webm,
-    '-vf', 'fps=15,scale=1440:-1:flags=lanczos,palettegen',
+    '-vf', 'fps=15,scale=1280:-1:flags=lanczos,palettegen',
     palette,
   ], { stdio: 'inherit' });
   console.error('[gif] palette → gif');
   execFileSync('ffmpeg', [
     '-y', '-ss', '1.0', '-i', webm, '-i', palette,
-    '-lavfi', 'fps=15,scale=1440:-1:flags=lanczos [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle',
+    '-lavfi', 'fps=15,scale=1280:-1:flags=lanczos [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle',
     gifOut,
   ], { stdio: 'inherit' });
 }
@@ -412,6 +464,8 @@ async function convertWebmToGif(webm, gifOut) {
 // the framer never resamples the captured text.
 
 const CLI_RENDERER = '/Users/elipeter/nyx/scripts/render-cli.py';
+const VHS_BIN      = process.env.VHS_BIN || 'vhs';
+const CLI_GIF      = join(OUT_DIR, 'cli-scan.gif');
 
 function renderCli(shellCommand, outFile) {
   execFileSync(
@@ -449,9 +503,46 @@ function stageDemoConfigHome() {
   writeFileSync(join(cfgDir, 'nyx.local'), DEMO_NYX_LOCAL);
 }
 
+function captureCliGif() {
+  console.error('[cli-gif/setup] writing v1 demo');
+  writeDemo('v1');
+
+  const tapePath = '/tmp/nyx-cli-scan.tape';
+  const innerGif  = '/tmp/nyx-cli-scan.gif';
+
+  // VHS tape: terminal set to exact inner dimensions so frame-screenshots.py
+  // fixed-mode doesn't need to resample — 1600x992 matches INNER_W x INNER_H.
+  const tape = [
+    `Output "${innerGif}"`,
+    '',
+    'Set Shell "bash"',
+    'Set FontSize 22',
+    'Set Width 1600',
+    'Set Height 992',
+    'Set Framerate 15',
+    'Env CLICOLOR_FORCE "1"',
+    '',
+    'Sleep 500ms',
+    `Type "${NYX_BIN} scan ${SCAN_ROOT}"`,
+    'Sleep 300ms',
+    'Enter',
+    'Sleep 12s',
+    'Sleep 3s',
+  ].join('\n');
+
+  writeFileSync(tapePath, tape);
+  console.error('[cli-gif] recording with vhs');
+  execFileSync(VHS_BIN, [tapePath], { stdio: 'inherit' });
+  copyFileSync(innerGif, CLI_GIF);
+  console.error(`[cli-gif] wrote ${CLI_GIF}`);
+}
+
 function captureCli() {
-  // Re-stage v1 so cli-scan output shows the richer set of findings
-  // (the previous --stills phase patched the demo to v2).
+  captureCliGif();
+
+  // Re-stage v1 so static cli-scan output shows the richer set of findings
+  // (captureCliGif already wrote v1; this is a safety re-stage in case
+  // the previous --stills phase patched the demo to v2).
   console.error('[cli/setup] writing v1 demo');
   writeDemo('v1');
 
@@ -492,6 +583,143 @@ function captureCli() {
   // without a much larger fixture; the existing image is left alone.
 }
 
+// Combo GIF ------------------------------------------------------------------
+// Single GIF: CLI scan (VHS terminal) → hard cut → serve UI (Playwright).
+// The VHS portion is a visual recording only — nyx scan (standalone CLI)
+// writes to a separate store that nyx serve does not read.  After VHS we
+// wipe state and trigger a real scan through the serve API so Playwright
+// has live data to explore.
+
+async function captureComboGif() {
+  function wipeState() {
+    rmSync(join(SCAN_ROOT, '.nyx'), { recursive: true, force: true });
+    const homeDir = process.env.HOME || '/Users/elipeter';
+    const sysDbBase = join(homeDir, 'Library/Application Support/nyx/nyx-demo-app.sqlite');
+    for (const suffix of ['', '-wal', '-shm']) {
+      try { unlinkSync(sysDbBase + suffix); } catch {}
+    }
+  }
+
+  // 1. Clean state + write demo.
+  try { execFileSync('pkill', ['-f', 'nyx serve'], { stdio: 'ignore' }); } catch {}
+  await sleep(800);
+  wipeState();
+  writeDemo('v1');
+
+  // 2. VHS: scan → results pause → type nyx serve → see it start.
+  const cliGifPath = '/tmp/nyx-combo-cli.gif';
+  const tapePath   = '/tmp/nyx-combo.tape';
+  const tape = [
+    `Output "${cliGifPath}"`,
+    '',
+    'Set Shell "bash"',
+    'Set FontSize 22',
+    'Set Width 1600',
+    'Set Height 992',
+    'Set Framerate 15',
+    'Env CLICOLOR_FORCE "1"',
+    '',
+    'Sleep 500ms',
+    `Type "${NYX_BIN} scan ${SCAN_ROOT}"`,
+    'Sleep 300ms',
+    'Enter',
+    'Sleep 1500ms',
+    `Type "${NYX_BIN} serve --port 9876 --no-browser ${SCAN_ROOT}"`,
+    'Sleep 300ms',
+    'Enter',
+    'Sleep 2000ms',
+  ].join('\n');
+  writeFileSync(tapePath, tape);
+  console.error('[combo] recording CLI portion with vhs');
+  execFileSync(VHS_BIN, [tapePath], { stdio: 'inherit' });
+
+  // 3. Wipe state again and start a fresh host serve.  The VHS scan wrote
+  //    to standalone storage that nyx serve doesn't read, so we drive a
+  //    real scan through the serve API to populate the browser session.
+  try { execFileSync('pkill', ['-f', 'nyx serve'], { stdio: 'ignore' }); } catch {}
+  await sleep(800);
+  wipeState();
+
+  const serveProc = spawn(NYX_BIN, [
+    'serve', '--port', '9876', '--no-browser', SCAN_ROOT,
+  ], { detached: false, stdio: 'ignore' });
+  serveProc.unref();
+  await waitForServer();
+
+  const comboToken = await csrfToken();
+  const comboBefore = await currentScanId();
+  await startScanViaApi(comboToken);
+  await waitForScanComplete(comboBefore);
+
+  // 4. Playwright: record browser walkthrough against the live scan data.
+  const videoDir = '/tmp/nyx-combo-video';
+  if (existsSync(videoDir)) rmSync(videoDir, { recursive: true });
+  mkdirSync(videoDir, { recursive: true });
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const ctx = await browser.newContext({
+      viewport: VIEW,
+      colorScheme: COLOR_SCHEME,
+      recordVideo: { dir: videoDir, size: VIEW },
+    });
+    await ctx.addInitScript(() => {
+      try { localStorage.setItem('theme', 'light'); } catch {}
+    });
+    const page = await ctx.newPage();
+    await captureGifFramesCombo(page);
+    await page.close();
+    await ctx.close();
+  } finally {
+    await browser.close();
+  }
+
+  try { execFileSync('pkill', ['-f', 'nyx serve'], { stdio: 'ignore' }); } catch {}
+
+  // 5. Find Playwright webm.
+  const webms = readdirSync(videoDir).filter((f) => f.endsWith('.webm'));
+  if (!webms.length) throw new Error('[combo] no webm captured for browser portion');
+  const webmPath = join(videoDir, webms[0]);
+
+  // 6. ffmpeg: three-step to avoid OOM from single-pass concat+palettegen.
+  //    Step A: concat VHS gif + browser webm → intermediate webm.
+  //    Step B: generate global palette from intermediate.
+  //    Step C: palette → final GIF.
+  const comboOut          = join(OUT_DIR, 'demo-combo.gif');
+  const comboIntermediate = '/tmp/nyx-combo-intermediate.mp4';
+  const comboPalette      = '/tmp/nyx-combo-palette.png';
+
+  console.error('[combo] step A: concat → intermediate webm');
+  execFileSync('ffmpeg', [
+    '-y',
+    '-ignore_loop', '1', '-r', '15', '-i', cliGifPath,
+    '-ss', '1.0', '-r', '15', '-i', webmPath,
+    '-filter_complex',
+      '[0:v]scale=1600:992:flags=lanczos,fps=15[cli];' +
+      '[1:v]scale=1600:992:flags=lanczos,fps=15[bro];' +
+      '[cli][bro]concat=n=2:v=1:a=0[out]',
+    '-map', '[out]',
+    '-c:v', 'libx264', '-crf', '28', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+    comboIntermediate,
+  ], { stdio: 'inherit' });
+
+  console.error('[combo] step B: generate palette');
+  execFileSync('ffmpeg', [
+    '-y', '-i', comboIntermediate,
+    '-vf', 'fps=15,palettegen',
+    '-update', '1', '-frames:v', '1',
+    comboPalette,
+  ], { stdio: 'inherit' });
+
+  console.error('[combo] step C: palette → gif');
+  execFileSync('ffmpeg', [
+    '-y', '-i', comboIntermediate, '-i', comboPalette,
+    '-lavfi', 'fps=15 [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle',
+    comboOut,
+  ], { stdio: 'inherit' });
+  console.error(`[combo] wrote ${comboOut}`);
+}
+
 // Frame phase ----------------------------------------------------------------
 
 const STILLS_PNGS = [
@@ -514,14 +742,25 @@ const CLI_PNGS = [
   'docs/cli-configshow.png',
 ];
 
+function saveRawCopies(paths) {
+  for (const p of paths) {
+    if (!existsSync(p)) continue;
+    const ext    = extname(p);
+    const rawPath = p.slice(0, p.length - ext.length) + '_raw' + ext;
+    copyFileSync(p, rawPath);
+    console.error(`[raw] ${rawPath}`);
+  }
+}
+
 function applyFrames(captured, { natural = false } = {}) {
   // Frame only paths captured this run. Re-framing a previously-
   // framed PNG would treat the framed result as the next inner
   // content and produce a frame inside a frame.
   const paths = captured.filter((p) => existsSync(p));
   if (paths.length === 0) return;
+  saveRawCopies(paths);
   const label = natural ? 'natural-size' : 'fixed';
-  console.error(`[frame] applying purple gradient frame (${label}) to ${paths.length} files`);
+  console.error(`[frame] applying mint-led four-corner frame (${label}) to ${paths.length} files`);
   const args = natural ? ['--natural', ...paths] : paths;
   execFileSync('python3', [FRAMER, ...args], { stdio: 'inherit' });
   // Mirror the framed serve-overview.png to the top-level path the
@@ -533,6 +772,46 @@ function applyFrames(captured, { natural = false } = {}) {
   if (paths.includes(ovSrc) && existsSync(ovSrc)) {
     copyFileSync(ovSrc, ovDst);
     console.error(`[frame] mirrored serve-overview.png → overview.png`);
+  }
+}
+
+// Mirror the small subset of assets used by the nyxscan.dev landing site
+// so its screenshots can't drift from the canonical ones in this repo.
+// Mirrors the *_raw originals (unframed) — nyxscan.dev draws its own
+// frame/hero treatment in CSS and does not want the in-repo brand frame.
+// Regenerates webp variants for the PNGs (used by hero <picture>/image-set).
+// Skips silently when NYXSCAN_DIR=skip, the dir is missing, or cwebp is
+// not on PATH; this is a convenience step, not a hard requirement.
+const NYXSCAN_MIRROR = [
+  ['docs/serve-overview_raw.png',       'overview.png'],
+  ['docs/serve-finding-detail_raw.png', 'finding-detail.png'],
+  ['cli-scan_raw.gif',                  'cli-scan.gif'],
+  ['demo-combo.gif',                    'demo-combo.gif'],
+];
+function syncNyxscanDev() {
+  if (NYXSCAN_DIR === 'skip') return;
+  if (!existsSync(NYXSCAN_DIR)) {
+    console.error(`[nyxscan] skip — ${NYXSCAN_DIR} does not exist`);
+    return;
+  }
+  let cwebpAvailable = true;
+  try {
+    execFileSync('cwebp', ['-version'], { stdio: 'ignore' });
+  } catch {
+    cwebpAvailable = false;
+    console.error('[nyxscan] cwebp not on PATH — copying PNGs only, webp will be stale');
+  }
+  for (const [srcRel, dstName] of NYXSCAN_MIRROR) {
+    const src = join(OUT_DIR, srcRel);
+    if (!existsSync(src)) continue;
+    const dst = join(NYXSCAN_DIR, dstName);
+    copyFileSync(src, dst);
+    console.error(`[nyxscan] ${srcRel} -> ${dstName}`);
+    if (cwebpAvailable && dstName.endsWith('.png')) {
+      const webp = dst.slice(0, -4) + '.webp';
+      execFileSync('cwebp', ['-quiet', '-q', '82', dst, '-o', webp], { stdio: 'inherit' });
+      console.error(`[nyxscan] ${dstName.slice(0, -4)}.webp`);
+    }
   }
 }
 
@@ -615,7 +894,11 @@ async function main() {
       captureCli();
     }
 
-    if (wantStills || wantCli || wantGif) {
+    if (wantCombo) {
+      await captureComboGif();
+    }
+
+    if (wantStills || wantCli || wantGif || wantCombo) {
       // Frame phase — only frame what was captured this run so that
       // already-framed PNGs from prior runs aren't framed again.
       // Stills and the GIF use the fixed 1600x992 inner; CLI captures
@@ -623,12 +906,15 @@ async function main() {
       const fixed = [];
       if (wantStills) fixed.push(...STILLS_PNGS.map((p) => join(OUT_DIR, p)));
       if (wantGif)    fixed.push(join(OUT_DIR, 'demo.gif'));
+      if (wantCli)    fixed.push(CLI_GIF);
       if (fixed.length) applyFrames(fixed, { natural: false });
 
       if (wantCli) {
         const cli = CLI_PNGS.map((p) => join(OUT_DIR, p));
         applyFrames(cli, { natural: true });
       }
+
+      syncNyxscanDev();
     }
   } finally {
     if (browser) await browser.close();

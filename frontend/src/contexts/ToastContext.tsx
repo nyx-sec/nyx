@@ -24,7 +24,7 @@ interface ToastContextValue {
     t: Omit<Toast, 'id' | 'durationMs'> & { durationMs?: number },
   ) => number;
   dismiss: (id: number) => void;
-  /** Convenience helpers — call sites read more naturally as toast.error('…'). */
+  /** Convenience helpers so call sites read naturally as toast.error('...'). */
   info: (message: string, title?: string) => number;
   success: (message: string, title?: string) => number;
   warning: (message: string, title?: string) => number;
@@ -37,7 +37,7 @@ const DEFAULT_DURATION: Record<ToastTone, number> = {
   info: 4000,
   success: 4000,
   warning: 6000,
-  // Error toasts stick longer — failures usually need a deliberate read.
+  // Error toasts stick longer because failures usually need a deliberate read.
   error: 8000,
 };
 

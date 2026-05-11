@@ -18,20 +18,20 @@ export interface EdgeStyle {
 }
 
 const FALLBACK_PALETTE: GraphThemePalette = {
-  background: '#ffffff',
-  backgroundSecondary: '#f7f7f8',
-  text: '#1a1a1a',
-  textSecondary: '#6b6b76',
-  textTertiary: '#9b9ba7',
-  border: '#e5e5ea',
-  borderLight: '#f0f0f4',
-  accent: '#5856d6',
-  accentSoft: '#ededfc',
-  success: '#2ecc71',
-  warning: '#e67e22',
-  danger: '#e74c3c',
-  neutral: '#607187',
-  neutralSoft: '#8c99ab',
+  background: '#f9f8f4',
+  backgroundSecondary: '#f2f0ea',
+  text: '#0d0c0a',
+  textSecondary: '#3c3830',
+  textTertiary: '#6c6660',
+  border: '#e5e1d7',
+  borderLight: '#ede9df',
+  accent: '#0b3d2a',
+  accentSoft: '#ecf3ee',
+  success: '#1c5c38',
+  warning: '#8c6310',
+  danger: '#9d2f25',
+  neutral: '#6c6660',
+  neutralSoft: '#9c9690',
 };
 
 function readVar(name: string, fallback: string): string {
@@ -150,14 +150,14 @@ function cfgNodeStyle(
       };
     case 'Loop':
       return {
-        fill: '#4f78c2',
-        stroke: '#3c5f9a',
+        fill: '#6c6660',
+        stroke: '#3c3830',
         textFill: '#ffffff',
         secondaryFill: withAlpha('#ffffff', 0.8),
         shape: 'rect',
         strokeWidth: 2.1,
         accentFill: palette.accent,
-        neighborFill: withAlpha('#4f78c2', 0.74),
+        neighborFill: withAlpha('#6c6660', 0.74),
       };
     case 'Call':
       return {
@@ -200,8 +200,8 @@ function callGraphNodeStyle(
   metadata?: GraphMetadata,
 ): NodeStyle {
   const isRecursive = metadata?.isRecursive === true;
-  const fill = isRecursive ? '#7d6450' : palette.neutral;
-  const stroke = isRecursive ? '#6a5444' : withAlpha(palette.neutral, 0.84);
+  const fill = isRecursive ? '#5a5042' : palette.neutral;
+  const stroke = isRecursive ? '#3c3830' : withAlpha(palette.neutral, 0.84);
 
   return {
     fill,
@@ -245,7 +245,7 @@ export function getEdgeStyle(
     case 'False':
       return { color: palette.danger, width: 1.8, dash: [] };
     case 'Back':
-      return { color: '#4f78c2', width: 1.6, dash: [7, 4] };
+      return { color: palette.textTertiary, width: 1.6, dash: [7, 4] };
     case 'Exception':
       return { color: palette.warning, width: 1.6, dash: [3, 3] };
     default:

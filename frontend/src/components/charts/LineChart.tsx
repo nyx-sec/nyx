@@ -16,7 +16,7 @@ export function LineChart({
   points,
   color = 'var(--accent)',
   width = 400,
-  height = 160,
+  height = 240,
 }: LineChartProps) {
   if (!points || points.length < 2) {
     return (

@@ -20,7 +20,7 @@ function write<T>(key: string, value: T): void {
   try {
     window.localStorage.setItem(storageKey(key), JSON.stringify(value));
   } catch {
-    // Quota exceeded or storage disabled — silently degrade.
+    // Quota exceeded or storage disabled, so silently degrade.
   }
 }
 
@@ -28,7 +28,7 @@ function write<T>(key: string, value: T): void {
  * `useState` that persists to `localStorage` under `nyx:<key>`.
  *
  * Suitable for view preferences (theme, sidebar collapse, default page size).
- * Not suitable for sensitive data — `localStorage` is not encrypted.
+ * Not suitable for sensitive data because `localStorage` is not encrypted.
  *
  * Cross-tab sync is not implemented; if the user opens two tabs they get
  * independent state until next load. That's the common-case ergonomic.

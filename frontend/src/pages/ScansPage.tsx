@@ -174,11 +174,7 @@ export function ScansPage() {
   const showCheckboxes = completedScans.length >= 2;
 
   return (
-    <>
-      <div className="page-header">
-        <h2>Scans</h2>
-      </div>
-
+    <div className="scans-page page-shell">
       {(runningScans.length > 0 || isScanRunning) && scanProgress && (
         <ScanProgress data={scanProgress} />
       )}
@@ -210,90 +206,103 @@ export function ScansPage() {
         </div>
       ) : (
         <div className="table-wrap">
-          <table>
+          <table className="scans-table">
             <thead>
               <tr>
-                {showCheckboxes && <th style={{ width: 32 }}></th>}
-                <th>Status</th>
-                <th>Root</th>
-                <th>Duration</th>
-                <th>Findings</th>
-                <th>Languages</th>
-                <th>Started</th>
-                <th style={{ width: 60 }}></th>
+                {showCheckboxes && <th className="scan-select-col"></th>}
+                <th className="scan-status-col">Status</th>
+                <th className="scan-root-col">Root</th>
+                <th className="scan-duration-col">Duration</th>
+                <th className="scan-findings-col">Findings</th>
+                <th className="scan-languages-col">Languages</th>
+                <th className="scan-started-col">Started</th>
+                <th className="scan-actions-col"></th>
               </tr>
             </thead>
             <tbody>
-              {scans.map((s: ScanView) => (
-                <tr
-                  key={s.id}
-                  className="clickable"
-                  onClick={() => navigate(`/scans/${s.id}`)}
-                >
-                  {showCheckboxes && (
+              {scans.map((s: ScanView) => {
+                const languages = s.languages || [];
+                const visibleLanguages = languages.slice(0, 4);
+                const hiddenLanguageCount =
+                  languages.length - visibleLanguages.length;
+
+                return (
+                  <tr
+                    key={s.id}
+                    className="clickable"
+                    onClick={() => navigate(`/scans/${s.id}`)}
+                  >
+                    {showCheckboxes && (
+                      <td>
+                        {s.status === 'completed' && (
+                          <input
+                            type="checkbox"
+                            className="scan-compare-cb"
+                            checked={selectedScans.has(s.id)}
+                            onClick={(e) => handleCheckbox(e, s.id)}
+                            onChange={() => {}}
+                          />
+                        )}
+                      </td>
+                    )}
                     <td>
-                      {s.status === 'completed' && (
-                        <input
-                          type="checkbox"
-                          className="scan-compare-cb"
-                          checked={selectedScans.has(s.id)}
-                          onClick={(e) => handleCheckbox(e, s.id)}
-                          onChange={() => {}}
-                        />
+                      <span className={`status-badge ${s.status}`}>
+                        <span className={`status-dot ${s.status}`}></span>
+                        {s.status}
+                      </span>
+                    </td>
+                    <td className="scan-root-cell" title={s.scan_root}>
+                      {truncPath(s.scan_root)}
+                    </td>
+                    <td className="scan-number-cell">
+                      {s.duration_secs != null
+                        ? s.duration_secs.toFixed(2) + 's'
+                        : '-'}
+                    </td>
+                    <td className="scan-number-cell">
+                      {s.finding_count ?? '-'}
+                    </td>
+                    <td className="scan-languages-cell">
+                      {languages.length > 0 ? (
+                        <span className="scan-language-list">
+                          {visibleLanguages.map((l) => (
+                            <span key={l} className="lang-badge">
+                              {l}
+                            </span>
+                          ))}
+                          {hiddenLanguageCount > 0 && (
+                            <span className="lang-badge lang-badge-more">
+                              +{hiddenLanguageCount}
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        '-'
                       )}
                     </td>
-                  )}
-                  <td>
-                    <span className={`status-badge ${s.status}`}>
-                      <span className={`status-dot ${s.status}`}></span>
-                      {s.status}
-                    </span>
-                  </td>
-                  <td
-                    style={{
-                      fontFamily: 'var(--font-mono)',
-                      fontSize: '0.82rem',
-                    }}
-                  >
-                    {truncPath(s.scan_root)}
-                  </td>
-                  <td>
-                    {s.duration_secs != null
-                      ? s.duration_secs.toFixed(2) + 's'
-                      : '-'}
-                  </td>
-                  <td>{s.finding_count ?? '-'}</td>
-                  <td>
-                    {(s.languages || []).length > 0
-                      ? (s.languages || []).map((l) => (
-                          <span key={l} className="lang-badge">
-                            {l}
-                          </span>
-                        ))
-                      : '-'}
-                  </td>
-                  <td>{relTime(s.started_at)}</td>
-                  <td>
-                    {s.status !== 'running' && (
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm('Delete this scan?')) {
-                            deleteScan.mutate(s.id);
-                          }
-                        }}
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+                    <td>{relTime(s.started_at)}</td>
+                    <td className="scan-actions-cell">
+                      {s.status !== 'running' && (
+                        <button
+                          className="btn btn-sm btn-danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm('Delete this scan?')) {
+                              deleteScan.mutate(s.id);
+                            }
+                          }}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
-    </>
+    </div>
   );
 }

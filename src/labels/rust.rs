@@ -1,4 +1,6 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig, RuntimeLabelRule};
+use crate::labels::{
+    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+};
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
 
@@ -245,6 +247,89 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::DESERIALIZE),
         case_sensitive: false,
     },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // `http::HeaderMap::insert(name, val)` / `append(...)` write a single
+    // header value.  The canonical idiom is `response.headers_mut().insert(...)`
+    // (axum, actix-web `HttpResponse.headers_mut`, hyper `Response::headers_mut`).
+    // After paren-group stripping the chain text becomes
+    // `response.headers_mut.insert`, so suffix matchers on
+    // `headers_mut.insert` / `headers_mut.append` cover the bound-receiver
+    // form regardless of the response builder's concrete type.  Tainted
+    // strings without CRLF stripping enable response splitting.
+    LabelRule {
+        matchers: &["headers_mut.insert", "headers_mut.append"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["strip_crlf", "escape_header", "sanitize_header"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open redirect sinks ───
+    //
+    // axum / rocket `Redirect::to(url)` / `Redirect::permanent(url)` /
+    // `Redirect::temporary(url)` build a 3xx response with the URL in the
+    // `Location` header.  Without an allowlist check, a tainted `url` is
+    // the canonical Rust open-redirect vector.  Listed unconditionally (not
+    // gated on framework detection) so non-framework helpers / re-exports
+    // still surface; the framework-conditional rules below are
+    // intentionally not duplicating this label.  Actix
+    // `HttpResponse::Found().header("Location", x)` is covered by the
+    // existing `header` HEADER_INJECTION sink and any Location-line
+    // co-tagging is deferred to the abstract-string-domain pattern hook.
+    LabelRule {
+        matchers: &["Redirect::to", "Redirect::permanent", "Redirect::temporary"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+    },
+    LabelRule {
+        matchers: &[
+            "validate_redirect_url",
+            "is_safe_redirect",
+            "strip_scheme",
+            "ensure_relative_url",
+            "assert_relative_path",
+            "is_relative_url",
+        ],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+];
+
+/// Rust gated sinks.  Argument-position-aware classification for callees
+/// where activation depends on a literal arg value rather than the bare
+/// callee name.
+pub static GATED_SINKS: &[SinkGate] = &[
+    // actix-web `HttpResponse::Found().header("Location", url)` (and other
+    // builder variants like `Ok().header(...)`, `MovedPermanently().header(...)`).
+    // After chain normalisation the callee text is e.g.
+    // `HttpResponse.Found.header`; suffix matching on `header` covers every
+    // builder variant.
+    //
+    // Activation: arg 0 case-insensitive equality with `"Location"`.  When
+    // arg 0 is a constant string equal to `Location` the gate fires and
+    // checks payload arg 1 for taint; constants like `"Content-Type"` are
+    // suppressed by the safe-literal branch.  When arg 0 is dynamic the
+    // gate fires conservatively (per the existing `setAttribute` /
+    // `parseFromString` convention).
+    //
+    // Mirrors PHP's `=header` Location gate; the Rust analog is split
+    // across two args (`name`, `value`) instead of PHP's single `Location: ...`
+    // line.
+    SinkGate {
+        callee_matcher: "header",
+        arg_index: 0,
+        dangerous_values: &["Location"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+        payload_args: &[1],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
 ];
 
 pub static KINDS: Map<&'static str, Kind> = phf_map! {
@@ -337,11 +422,8 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: true,
         });
-        rules.push(RuntimeLabelRule {
-            matchers: vec!["Redirect::to".into()],
-            label: DataLabel::Sink(Cap::SSRF),
-            case_sensitive: true,
-        });
+        // `Redirect::to` is declared unconditionally as Sink(OPEN_REDIRECT)
+        // in `RULES` above; no framework-conditional duplicate needed.
     }
 
     if ctx.has(DetectedFramework::ActixWeb) {
@@ -395,11 +477,8 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
             label: DataLabel::Sink(Cap::HTML_ESCAPE),
             case_sensitive: true,
         });
-        rules.push(RuntimeLabelRule {
-            matchers: vec!["Redirect::to".into()],
-            label: DataLabel::Sink(Cap::SSRF),
-            case_sensitive: true,
-        });
+        // `Redirect::to` is declared unconditionally as Sink(OPEN_REDIRECT)
+        // in `RULES` above; no framework-conditional duplicate needed.
     }
 
     rules

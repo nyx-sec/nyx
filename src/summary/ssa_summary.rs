@@ -283,7 +283,7 @@ pub struct SsaFuncSummary {
     ///
     /// Default-empty (most functions don't field-mutate their params)
     /// and elided from serialised output via `skip_serializing_if` so
-    /// pre-Phase-5 summaries deserialise cleanly without migration.
+    /// older summaries without this field deserialise cleanly without migration.
     /// Built by extraction in `summary_extract.rs` when the per-body
     /// [`crate::pointer::PointsToFacts`] are available
     /// (`NYX_POINTER_ANALYSIS=1`); empty otherwise.

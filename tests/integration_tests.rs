@@ -234,7 +234,7 @@ fn dedup_same_line_different_sinks() {
             ))
             .collect::<Vec<_>>()
     );
-    let caps: HashSet<u16> = taint_on_target_line
+    let caps: HashSet<u32> = taint_on_target_line
         .iter()
         .map(|d| d.evidence.as_ref().map(|e| e.sink_caps).unwrap_or(0))
         .collect();

@@ -148,6 +148,97 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::CRYPTO),
         case_sensitive: false,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // go-ldap (`github.com/go-ldap/ldap/v3`): `conn, _ := ldap.DialURL(url);
+    // req := ldap.NewSearchRequest(base, scope, deref, sizeLimit, timeLimit,
+    // typesOnly, filter, attrs, controls)`.  The filter argument (position 6)
+    // is the LDAP-injection vector; passing the request to `conn.Search(req)`
+    // executes the filter.  Type-qualified resolution rewrites `conn.Search`
+    // → `LdapClient.Search` when the receiver was returned by
+    // `ldap.DialURL` / `ldap.Dial` / `ldap.DialTLS` (see
+    // [`crate::ssa::type_facts::constructor_type`]).  We also tag
+    // `ldap.NewSearchRequest` directly so taint reaching the filter argument
+    // surfaces at the construction call (matches the typical FP-free shape
+    // where the request is built once and passed straight to `Search`).
+    LabelRule {
+        matchers: &[
+            "LdapClient.Search",
+            "LdapClient.SearchWithPaging",
+            "ldap.NewSearchRequest",
+        ],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizer ───
+    //
+    // go-ldap exposes `ldap.EscapeFilter(s string) string` (RFC 4515 metachar
+    // escaping).  Treat any call as clearing the LDAP_INJECTION cap.
+    LabelRule {
+        matchers: &["ldap.EscapeFilter"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // `net/http` `ResponseWriter.Header()` returns a `Header` map; calls to
+    // `Set(name, val)` / `Add(name, val)` write a single header value.
+    // After paren-group stripping the chain text becomes
+    // `w.Header.Set` / `w.Header.Add`, so suffix matchers on `Header.Set` /
+    // `Header.Add` cover both the bound-receiver form (`w.Header().Set(...)`)
+    // and the documentation-style class-qualified form (`Header.Set`).
+    // Tainted strings without `\r\n` stripping enable response splitting.
+    LabelRule {
+        matchers: &["Header.Set", "Header.Add"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── Header / CRLF sanitizers ───
+    //
+    // Project-local `stripCRLF` / `escapeHeader` helpers that strip `\r` and
+    // `\n` from a value before it is written to a response header.
+    LabelRule {
+        matchers: &["stripCRLF", "stripCrlf", "escapeHeader", "sanitizeHeader"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Open redirect sinks ───
+    //
+    // `net/http` `http.Redirect(w, r, url, code)` writes a `Location` header
+    // and a 3xx status from the supplied URL.  Without an allowlist check,
+    // a tainted `url` is the canonical Go open-redirect vector.
+    LabelRule {
+        matchers: &["http.Redirect"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &[
+            "validateRedirectUrl",
+            "isSafeRedirect",
+            "stripScheme",
+            "ensureRelativeUrl",
+            "assertRelativePath",
+            "isRelativeUrl",
+        ],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // `text/template` and `html/template` parse a template source string via
+    // `template.New(name).Parse(src)`.  After paren-group stripping the chain
+    // text becomes `template.New.Parse`, so the suffix matcher catches both
+    // packages (`text/template`, `html/template`) regardless of import alias.
+    // `template.ParseFiles` / `ParseGlob` take file paths (path-traversal,
+    // not SSTI) and are intentionally excluded.  `html/template`'s auto-
+    // escaping applies during `Execute`, not `Parse`, so a tainted source
+    // string still yields SSTI.
+    LabelRule {
+        matchers: &["template.New.Parse"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+    },
 ];
 
 /// Argument-role-aware Go sinks.  Two classes coexist on the outbound HTTP

@@ -1,4 +1,6 @@
-use crate::labels::{Cap, DataLabel, Kind, LabelRule, ParamConfig, RuntimeLabelRule};
+use crate::labels::{
+    Cap, DataLabel, GateActivation, Kind, LabelRule, ParamConfig, RuntimeLabelRule, SinkGate,
+};
 use crate::utils::project::{DetectedFramework, FrameworkContext};
 use phf::{Map, phf_map};
 
@@ -226,10 +228,30 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
-    // Open redirect: redirect_to with user-controlled destination.
+    // Open redirect: redirect_to (Rails) / redirect (Sinatra) with
+    // user-controlled destination.  `redirect` is a top-level Sinatra
+    // helper; case-sensitive matching keeps it from over-firing on
+    // unrelated identifiers.  `redirect_to` is the Rails canonical.
     LabelRule {
         matchers: &["redirect_to"],
-        label: DataLabel::Sink(Cap::SSRF),
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["redirect"],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+    },
+    LabelRule {
+        matchers: &[
+            "validate_redirect_url",
+            "is_safe_redirect",
+            "strip_scheme",
+            "ensure_relative_url",
+            "assert_relative_path",
+            "is_relative_url",
+        ],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: false,
     },
     // Path traversal: file serving with user-controlled path.
@@ -243,6 +265,173 @@ pub static RULES: &[LabelRule] = &[
         matchers: &["html_safe", "raw"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
+    },
+    // ─── LDAP injection sinks ───
+    //
+    // `Net::LDAP.new(host:, ...).search(base:, filter:, ...)` is the canonical
+    // ruby-ldap shape.  Type-qualified resolution rewrites `ldap.search` →
+    // `LdapClient.search` when the receiver was constructed via `Net::LDAP.new`
+    // / `Net::LDAP.open` (see [`crate::ssa::type_facts::constructor_type`]).
+    // The chained literal form `Net::LDAP.new(...).search(...)` is also caught
+    // by the suffix matcher `Net::LDAP.search` after `()` stripping (the
+    // post-strip text is `Net::LDAP.new.search`, which ends in `.search`; the
+    // explicit `LDAP.search` keyword form `Net::LDAP.search(filter)` matches
+    // the same matcher directly).
+    LabelRule {
+        matchers: &["LdapClient.search", "Net::LDAP.search"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizer ───
+    //
+    // `Net::LDAP::Filter.escape(value)` applies RFC 4515 escaping; treat any
+    // call as clearing the LDAP_INJECTION cap.
+    LabelRule {
+        matchers: &["Net::LDAP::Filter.escape"],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // `Nokogiri::XML::Node#xpath(expr)`, `at_xpath(expr)`, and `search(expr)`
+    // accept the expression string as arg 0; concatenated user input there is
+    // the canonical Nokogiri XPath-injection vector.  Suffix matching on the
+    // bare method names catches the bound-receiver form (`doc.xpath(expr)`).
+    LabelRule {
+        matchers: &["xpath", "at_xpath"],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // No Nokogiri / stdlib helper escapes XPath metacharacters; project-local
+    // `escape_xpath` / `xpath_escape` are the developer-named equivalents.
+    LabelRule {
+        matchers: &["escape_xpath", "xpath_escape"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // Rack `Response#set_header(name, value)` / `add_header(name, value)`
+    // and `ActionDispatch::Response#headers[]=` write a single header value.
+    // The subscript-set form `response.headers["X-Foo"] = bar` is picked up
+    // via the LHS-subscript classification path in `cfg/mod.rs`: when the
+    // LHS object's member-expression text matches `response.headers` (or a
+    // synonym), the assignment is tagged as a HEADER_INJECTION sink.
+    // Tainted strings without `\r\n` stripping enable response splitting.
+    LabelRule {
+        matchers: &["set_header", "add_header"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["response.headers", "res.headers", "self.response.headers"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    LabelRule {
+        matchers: &["strip_crlf", "escape_header", "sanitize_header"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // `ERB.new(template_source)` and `Liquid::Template.parse(source)` accept
+    // the template *source string* as arg 0; tainted source there yields
+    // arbitrary template execution at the corresponding `result(binding)` /
+    // `render` step.  `=ERB.new` exact-matcher syntax limits the rule to the
+    // direct call (the leading `=` is the same convention used elsewhere in
+    // this file for Kernel-style globals like `=open`).
+    LabelRule {
+        matchers: &["=ERB.new", "Liquid::Template.parse"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: true,
+    },
+    // ─── XXE sinks ───
+    //
+    // `REXML::Document.new(xml)` instantiates the (legacy, default-vulnerable)
+    // pure-Ruby XML parser; an attacker-controlled `xml` is XXE.
+    //
+    // Nokogiri (`Nokogiri::XML(xml)` / `Nokogiri::XML::Document.parse(xml)`)
+    // is XXE-safe by default since 1.10, but resolving external entities
+    // requires explicitly opting in via `Nokogiri::XML::ParseOptions::NOENT`
+    // (or `DTDLOAD` / `DTDATTR`).  Option-flagged detection lives in
+    // `GATED_SINKS` below.
+    LabelRule {
+        matchers: &["REXML::Document.new"],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+    },
+];
+
+/// Ruby gated sinks.  Argument-role-aware classification for callees that
+/// are XXE-safe by default but become unsafe when the caller passes an
+/// option flag that re-enables external-entity resolution.
+///
+/// Activation uses the bare-leaf comparison: scope-qualified constants like
+/// `Nokogiri::XML::ParseOptions::NOENT` are reduced to the rightmost
+/// `name` segment by the `scope_resolution` branch in
+/// `cfg::literals::extract_const_macro_arg`, so the
+/// `dangerous_values` list stays identifier-bare.
+///
+/// Default-arg semantics: Ruby `Nokogiri::XML(xml)` with no options arg
+/// reaches the gate's `None` activation branch (the activation arg
+/// position simply doesn't exist), which falls through to a conservative
+/// fire.  Callers wishing to suppress the gate explicitly should pass a
+/// safe options literal at the activation position (e.g.
+/// `Nokogiri::XML::ParseOptions::DEFAULT_XML`); any non-dangerous
+/// scope-qualified constant disables the gate.
+pub static GATED_SINKS: &[SinkGate] = &[
+    // `Nokogiri::XML(xml, url=nil, encoding=nil, options=NIL)` — top-level
+    // module method.  arg 3 carries the parse-option flag literal.
+    //
+    // tree-sitter-ruby parses `Nokogiri::XML(args)` as a `call` whose
+    // `receiver` field is the `Nokogiri` constant and `method` field is
+    // the `XML` constant (with `::` as the call operator).  `push_node`'s
+    // `CallMethod` path joins these as `{receiver}.{method}` → matchable
+    // suffix `Nokogiri.XML`.
+    SinkGate {
+        callee_matcher: "Nokogiri.XML",
+        arg_index: 3,
+        dangerous_values: &["NOENT", "DTDLOAD", "DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // `Nokogiri::XML::Document.parse(xml, url=nil, encoding=nil, options=NIL)`
+    // — receiver is the scope_resolution `Nokogiri::XML::Document` (text of
+    // the whole receiver is preserved verbatim) and method is `parse`, so
+    // the constructed callee text is `Nokogiri::XML::Document.parse`.
+    SinkGate {
+        callee_matcher: "Nokogiri::XML::Document.parse",
+        arg_index: 3,
+        dangerous_values: &["NOENT", "DTDLOAD", "DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
+    },
+    // `Nokogiri::HTML(html, ..., options)` shares the same option flags as
+    // the XML helper.  Same callee normalization as `Nokogiri.XML`.
+    SinkGate {
+        callee_matcher: "Nokogiri.HTML",
+        arg_index: 3,
+        dangerous_values: &["NOENT", "DTDLOAD", "DTDATTR"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::ValueMatch,
     },
 ];
 

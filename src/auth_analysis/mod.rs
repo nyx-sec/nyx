@@ -206,8 +206,8 @@ pub fn run_auth_analysis_with_model(
     // (when provided) for cross-file helpers that live in other files.
     apply_helper_lifting(&mut model, lang, file_path, scan_root, global_summaries);
 
-    // Phase 1 caller-scope IPA: propagate route-handler-level auth
-    // checks DOWN to callee helper units within the same file.  See
+    // Caller-scope IPA: propagate route-handler-level auth checks DOWN
+    // to callee helper units within the same file.  See
     // [`apply_caller_scope_propagation`] for the propagation rule.
     apply_caller_scope_propagation(&mut model);
 
@@ -547,8 +547,8 @@ fn apply_helper_lifting(
     }
 }
 
-/// Phase 1 caller-scope IPA: propagate route-handler-level auth checks
-/// DOWN to callee helper units within the same file.
+/// Caller-scope IPA: propagate route-handler-level auth checks DOWN to
+/// callee helper units within the same file.
 ///
 /// `apply_helper_lifting` walks UPWARD: a helper that internally
 /// proves ownership / membership / etc. has its summary lifted onto

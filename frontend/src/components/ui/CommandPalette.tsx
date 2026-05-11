@@ -12,7 +12,7 @@ export interface PaletteCommand {
   id: string;
   /** Visible label. */
   label: string;
-  /** Optional secondary line — section, hint, shortcut. */
+  /** Optional secondary line such as section, hint, or shortcut. */
   hint?: string;
   /** Group label for visual separation. */
   group?: string;

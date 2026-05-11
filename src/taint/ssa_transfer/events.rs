@@ -277,7 +277,14 @@ pub fn ssa_events_to_findings(
     ssa: &SsaBody,
     cfg: &Cfg,
 ) -> Vec<crate::taint::Finding> {
-    type FindingDedupKey = (usize, usize, Option<(String, u32, u32)>);
+    // The dedup key includes `cap_bits` so the multi-gate dispatch can
+    // co-emit separate findings for distinct capabilities at the same
+    // (origin, sink) pair (e.g. PHP `header("Location: " . $url)` fires
+    // both HEADER_INJECTION and OPEN_REDIRECT, attributed by the gate
+    // filters' per-cap masks).  Single-cap call sites are unaffected:
+    // every event in that case carries the same `sink_caps`, so the key
+    // collapses identically with or without the extra component.
+    type FindingDedupKey = (usize, usize, Option<(String, u32, u32)>, u32);
     let mut findings = Vec::new();
     let mut seen: HashSet<FindingDedupKey> = HashSet::new();
 
@@ -345,12 +352,14 @@ pub fn ssa_events_to_findings(
             .as_ref()
             .map(|l| (l.file_rel.clone(), l.line, l.col));
         for (val, caps, origins) in &event.tainted_values {
-            let cap_specificity = (*caps & event.sink_caps).bits().count_ones() as u8;
+            let effective_caps = event.sink_caps & *caps;
+            let cap_specificity = effective_caps.bits().count_ones() as u8;
             for origin in origins {
                 if seen.insert((
                     origin.node.index(),
                     event.sink_node.index(),
                     loc_key.clone(),
+                    effective_caps.bits(),
                 )) {
                     let hop_count = block_distance(ssa, origin.node, event.sink_node);
                     let flow_steps = reconstruct_flow_path(*val, origin, event.sink_node, ssa, cfg);

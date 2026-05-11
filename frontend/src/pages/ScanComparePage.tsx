@@ -221,7 +221,7 @@ function CompareByGroup({
   }, [data, groupField]);
 
   return (
-    <>
+    <div className="scan-compare-page page-shell">
       {groups.map(([key, items]) => {
         const counts = { new: 0, fixed: 0, changed: 0, unchanged: 0 };
         items.forEach(
@@ -267,7 +267,7 @@ function CompareByGroup({
           </CollapsibleSection>
         );
       })}
-    </>
+    </div>
   );
 }
 
@@ -300,16 +300,10 @@ export function ScanComparePage() {
 
   return (
     <>
-      <button
-        className="btn btn-sm"
-        style={{ marginBottom: 'var(--space-4)' }}
-        onClick={() => navigate('/scans')}
-      >
-        Back to Scans
-      </button>
-
-      <div className="page-header">
-        <h2>Scan Comparison</h2>
+      <div className="page-action-row">
+        <button className="btn btn-sm" onClick={() => navigate('/scans')}>
+          Back to Scans
+        </button>
       </div>
 
       <div className="compare-header">

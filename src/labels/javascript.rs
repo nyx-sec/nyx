@@ -310,6 +310,178 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
     },
+    // ─── LDAP injection sinks ───
+    //
+    // `ldapjs`: both the bound-variable idiom
+    // `const client = ldap.createClient({...}); client.search(...)` and the
+    // chained idiom `ldap.createClient({...}).search(...)` are covered by
+    // type-qualified receiver resolution.  The receiver of the inner call is
+    // typed `TypeKind::LdapClient` via `ssa::type_facts::constructor_type`,
+    // and (for the bound-variable form) closure-captured types are forwarded
+    // into the per-function type-fact result by
+    // [`crate::taint::inject_external_type_facts`], so the qualified callee
+    // text resolves to `LdapClient.search` in both shapes.
+    LabelRule {
+        matchers: &["LdapClient.search"],
+        label: DataLabel::Sink(Cap::LDAP_INJECTION),
+        case_sensitive: true,
+    },
+    // ─── LDAP-filter sanitizers ───
+    //
+    // The `ldap-escape` package exports `filter` and `dn` tagged-template
+    // helpers (`filter`\`(uid=${input})\``).  After tree-sitter lifts the
+    // template-tag identifier, the callee text is the function name; suffix
+    // matching on `ldapEscape` / `ldapescape` covers `const ldapEscape =
+    // require('ldap-escape')` plus default-import shapes.
+    LabelRule {
+        matchers: &[
+            "ldapEscape",
+            "ldap-escape",
+            "ldapescape.filter",
+            "ldapescape.dn",
+        ],
+        label: DataLabel::Sanitizer(Cap::LDAP_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath injection sinks ───
+    //
+    // `document.evaluate(expr, contextNode, ...)` (DOM) and the npm `xpath`
+    // package's `xpath.select(expr, doc)` / `xpath.evaluate(expr, doc, ...)`
+    // accept the expression string as arg 0; concatenated user input there
+    // is the canonical XPath-injection vector.
+    LabelRule {
+        matchers: &[
+            "document.evaluate",
+            "xpath.select",
+            "xpath.evaluate",
+            "xpath.select1",
+        ],
+        label: DataLabel::Sink(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── XPath escape sanitizers ───
+    //
+    // No standard library helper escapes XPath metacharacters; project-local
+    // `escapeXpath` / `xpathEscape` are the developer-named equivalents.
+    LabelRule {
+        matchers: &["escapeXpath", "xpathEscape", "escape_xpath"],
+        label: DataLabel::Sanitizer(Cap::XPATH_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF injection sinks ───
+    //
+    // Express/Fastify/Node `http` response APIs that write a single header
+    // value: `res.setHeader(name, val)` (case-insensitive verb), `res.set`,
+    // `res.header`, `res.append`.  Tainted strings here without `\r\n`
+    // stripping let an attacker inject extra headers (response splitting).
+    LabelRule {
+        matchers: &["setHeader", "res.set", "res.header", "res.append"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // Subscript-set form: `res.headers["X-Foo"] = bar` /
+    // `response.headers["X-Foo"] = bar`.  The LHS-subscript classification
+    // path in `cfg/mod.rs::push_node` walks into the subscript's `object`
+    // and classifies its member-expression text, so the bare bracket form
+    // fires alongside `setHeader` / `res.set` / `res.header` / `res.append`.
+    LabelRule {
+        matchers: &["res.headers", "response.headers", "self.response.headers"],
+        label: DataLabel::Sink(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Header / CRLF sanitizers ───
+    //
+    // Project-local `stripCRLF` / `escapeHeader` helpers that strip `\r` and
+    // `\n` from a value before it is written to a response header.
+    LabelRule {
+        matchers: &["stripCRLF", "stripCrlf", "escapeHeader", "sanitizeHeader"],
+        label: DataLabel::Sanitizer(Cap::HEADER_INJECTION),
+        case_sensitive: false,
+    },
+    // ─── Prototype pollution sinks (library-mediated) ───
+    //
+    // Recursive merge / deep-assign helpers from lodash / common bundles.
+    // Argument-role gating (target vs src) is enforced via Destination
+    // activation in `GATED_SINKS` below: only taint flowing into the
+    // source-object arguments (positions 1+) activates; tainted-target-
+    // only is benign because writes to a tainted target object don't
+    // pollute `Object.prototype`.  Flat rules here are intentionally
+    // empty for the merge family; see GATED_SINKS for the per-call
+    // gating.  `_.template` is excluded — it is handled separately as
+    // a gated CODE_EXEC sink (Strapi CVE-2023-22621 evaluate:false
+    // suppression).
+    // ─── Open redirect sinks ───
+    //
+    // Express response redirect: `res.redirect(url)`.  Browser-side
+    // navigation: `location.replace` / `location.assign` fire as direct
+    // calls; `window.location = url` / `window.location.href = url` /
+    // `location.href = url` fire as assignment-LHS sinks via the
+    // `member_expr_text` classification path in `cfg::push_node`.
+    // `router.navigate` covers the Angular Router (`Router.navigate`,
+    // `Router.navigateByUrl`) and the React-Router `useNavigate`-returned
+    // `navigate` function; suffix matching catches both the bound-receiver
+    // and direct-call shapes.
+    LabelRule {
+        matchers: &[
+            "res.redirect",
+            "location.replace",
+            "location.assign",
+            "router.navigate",
+            "router.navigateByUrl",
+            "window.location",
+            "window.location.href",
+            "location.href",
+        ],
+        label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── Open-redirect URL allowlist sanitizers ───
+    //
+    // Project-local helpers that allowlist hosts or enforce relative-only
+    // URLs.  `validateRedirectUrl` / `isSafeRedirect` are the canonical
+    // developer-named allowlist helpers; `stripScheme` clears any absolute
+    // scheme and degrades the URL to a relative path.  `ensureRelativeUrl`
+    // / `assertRelativePath` cover the leading-slash / no-scheme idiom.
+    LabelRule {
+        matchers: &[
+            "validateRedirectUrl",
+            "isSafeRedirect",
+            "stripScheme",
+            "ensureRelativeUrl",
+            "assertRelativePath",
+            "isRelativeUrl",
+        ],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
+        case_sensitive: false,
+    },
+    // ─── SSTI sinks ───
+    //
+    // Template-engine entry points that accept the template *source string*
+    // as the first argument: tainted arg 0 lets the attacker drive
+    // arbitrary template execution.  `_.template` is excluded — it has
+    // its own gated CODE_EXEC classifier (Strapi CVE-2023-22621) that
+    // respects the `evaluate:false` opt-out.  `nunjucks.renderString` is
+    // also excluded — see GATED_SINKS below for arg-0-only payload
+    // gating (suppresses tainted-`ctx`-only flows).
+    LabelRule {
+        matchers: &["Handlebars.compile"],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+    },
+    // ─── XXE sinks ───
+    //
+    // libxmljs `parseXmlString` / `parseXml` resolve external entities by
+    // default when called with `{ noent: true }` or
+    // `{ replaceEntities: true }`.  The flat-rule modeling treats any call
+    // as a sink, the safe path requires explicit option suppression.
+    // libxmljs's own default ignores entities so the sink is conservative
+    // here; xml2js / fast-xml-parser are gated below in GATED_SINKS to
+    // suppress the safe-default case.
+    LabelRule {
+        matchers: &["libxmljs.parseXmlString", "libxmljs.parseXml"],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+    },
 ];
 
 /// Callee patterns that must never be classified as source/sanitizer/sink.
@@ -420,6 +592,33 @@ pub static GATED_SINKS: &[SinkGate] = &[
         dangerous_kwargs: &[],
         activation: GateActivation::ValueMatch,
     },
+    // ── XML XXE gates ─────────────────────────────────────────────────────
+    //
+    // `xml2js.parseString(xml, opts, cb)` is XXE-safe by default; opts
+    // `{ explicitChildren: true, charkey: '__cdata' }` are benign, but
+    // resolving entities at the underlying sax-js layer requires user
+    // intent.  The gate fires only when the option object literal carries
+    // an entity-resolution kwarg with a truthy value (or is dynamic).  Only
+    // the XML payload (arg 0) is the protected position.
+    SinkGate {
+        callee_matcher: "xml2js.parseString",
+        arg_index: 1,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::XXE),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[
+            ("processEntities", &["true"]),
+            ("explicitEntities", &["true"]),
+            ("strict", &["false"]),
+        ],
+        activation: GateActivation::ValueMatch,
+    },
+    // Note: `fast-xml-parser` (`new XMLParser({...}).parse(xml)`) is XXE-safe
+    // by default; flagging it would require constructor-option tracking via
+    // TypeFacts (XmlParser type with config carry).  Deferred to Layer 2.
     // ── Outbound HTTP clients (SSRF) ──────────────────────────────────────
     //
     // Policy: SSRF fires only when taint reaches the destination-bearing
@@ -791,6 +990,282 @@ pub static GATED_SINKS: &[SinkGate] = &[
         label: DataLabel::Sink(Cap::SQL_QUERY),
         case_sensitive: true,
         payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `nunjucks.renderString(src, ctx)` — Nunjucks SSTI sink.  Only the
+    // template *source* (arg 0) lets an attacker drive template execution;
+    // the `ctx` data object (arg 1) is rendered via the template's escape
+    // policy and is not itself a code-injection vector.  Gate via
+    // Destination-style activation with `payload_args: &[0]` so taint
+    // flowing only into `ctx` is suppressed.
+    SinkGate {
+        callee_matcher: "nunjucks.renderString",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSTI),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // ── Prototype pollution gates ────────────────────────────────────────
+    //
+    // Library-mediated recursive merge / deep-assign helpers.  Argument-
+    // role gating: `(target, src1, src2, ...)` — only taint reaching a
+    // *source* position (index 1+) can pollute `Object.prototype` via
+    // `__proto__` / `constructor` keys on attacker-controlled input.
+    // Tainted target alone is benign (it just mutates that object).
+    // `payload_args: &[1, 2, 3, 4, 5]` covers the canonical 1-target +
+    // up-to-5-source signatures used by lodash / Object.assign / jQuery
+    // extend; arity beyond 5 is rare in practice and would over-suppress
+    // only at the long tail.
+    SinkGate {
+        callee_matcher: "_.merge",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.mergeWith",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.defaultsDeep",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `_.set(obj, path, value)` — both `path` (arg 1) and `value` (arg 2)
+    // can drive prototype pollution: a tainted path of `__proto__.foo`
+    // mutates `Object.prototype`, and a tainted value into `obj.__proto__`
+    // does the same.  Object (arg 0) is the canonical target.
+    SinkGate {
+        callee_matcher: "_.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "_.setWith",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Generic project-local deep-merge helpers.  Suffix-matched so any
+    // `*.deepMerge` / `*.defaultsDeep` qualified call also resolves.
+    SinkGate {
+        callee_matcher: "deepMerge",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "defaultsDeep",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `Object.assign(target, ...sources)` is safe with constant-literal
+    // sources (`{a: 1, b: 2}`) but dangerous with attacker-controlled
+    // input (`req.body`).  Gate target out of payload_args so tainted-
+    // target alone does not fire.
+    SinkGate {
+        callee_matcher: "Object.assign",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // jQuery / Zepto `$.extend(target, ...sources)` and `jQuery.extend`.
+    // Arg 0 may be a deep-flag boolean (`true`) when the deep-merge form
+    // is in use, in which case sources start at arg 2.  Cover both
+    // shapes by listing arg 1, 2, 3, 4 in `payload_args`: a `true` first
+    // arg never carries taint, so its inclusion is harmless; for the
+    // shallow `$.extend(target, src)` form, src at arg 1 still fires.
+    SinkGate {
+        callee_matcher: "$.extend",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jQuery.extend",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2, 3, 4],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Bare `extend` (suffix-matched) for jQuery's deep form imported as a
+    // bound name: `const { extend } = require('jquery'); extend(true, t, s)`.
+    // Suffix `extend` would over-fire on Backbone's `Model.extend(proto)` /
+    // `View.extend({...})` class-extension idiom, so this gate uses
+    // `LiteralOnly` activation: it fires only when arg 0 is the literal
+    // boolean `true` (the deep-flag form, never used by Backbone subclassing).
+    // Sources start at arg 2 because arg 0 is the flag and arg 1 is the
+    // target; tainting the target alone is benign.
+    SinkGate {
+        callee_matcher: "extend",
+        arg_index: 0,
+        dangerous_values: &["true"],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[2, 3, 4, 5],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::LiteralOnly,
+    },
+    // `set-value` standalone helper: `setValue(obj, key, val)` — historic
+    // CVE-2019-10747 (set-value <2.0.1) and CVE-2021-23440 (set-value <4.0.1)
+    // recursive set-by-path helper that did not block `__proto__` keys.
+    // Suffix-matched so qualified imports (`require('set-value')`) bound to
+    // `setValue` still resolve.
+    SinkGate {
+        callee_matcher: "setValue",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `dot-prop` standalone helper: `dotProp.set(obj, path, val)` —
+    // CVE-2020-8116.  Path is a dotted-string with prototype-key support;
+    // a tainted `path` of `__proto__.x` mutates Object.prototype.
+    SinkGate {
+        callee_matcher: "dotProp.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // `JSONPath` / `jsonpath-plus` `JSONPath({path: p, json: o, callback: fn})`
+    // historically supported a `resultType: 'value'` mode that, combined with
+    // `parent`/`parentProperty` writes inside the callback, can mutate the
+    // prototype chain.  Recognise the `jp.set(obj, path, value)` family
+    // (jsonpath, jsonpath-plus) on the same shape as `_.set`.
+    SinkGate {
+        callee_matcher: "jp.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: true,
+        payload_args: &[1, 2],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "jsonpath.set",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::PROTOTYPE_POLLUTION),
+        case_sensitive: false,
+        payload_args: &[1, 2],
         keyword_name: None,
         dangerous_kwargs: &[],
         activation: GateActivation::Destination {

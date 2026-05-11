@@ -271,20 +271,7 @@ export function RulesPage() {
   if (error) return <ErrorState message={error.message} />;
 
   return (
-    <>
-      <div className="page-header">
-        <h2>Rules</h2>
-        <span
-          style={{
-            color: 'var(--text-secondary)',
-            fontSize: 'var(--text-sm)',
-            marginLeft: 'var(--space-3)',
-          }}
-        >
-          {(rules || []).length} rules
-        </span>
-      </div>
-
+    <div className="rules-page page-shell">
       <div className="rules-layout">
         <div className="rules-list-panel">
           <div className="rules-filters">
@@ -310,14 +297,7 @@ export function RulesPage() {
                 </option>
               ))}
             </select>
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 4,
-                fontSize: 'var(--text-sm)',
-              }}
-            >
+            <label className="rules-custom-toggle">
               <input
                 type="checkbox"
                 checked={customOnly}
@@ -357,6 +337,6 @@ export function RulesPage() {
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
