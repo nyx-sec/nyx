@@ -428,16 +428,28 @@ fn run_ssa_taint_internal(
                     continue;
                 }
             }
-            if !is_self && matches!(entry_kind, EntryKind::FlaskRoute { .. }) {
+            if !is_self
+                && matches!(
+                    entry_kind,
+                    EntryKind::FlaskRoute { .. } | EntryKind::SinatraRoute { .. }
+                )
+            {
                 // Python Flask handlers carry path-bound captures
                 // (`@app.route("/u/<name>")` + `def view(name):`) alongside
                 // implicit globals (`request`, `g`) and DI-injected
                 // formals (webargs, dependency injection). Only the
                 // path-bound captures qualify as adversary input.
+                //
+                // Ruby Sinatra handlers (`get "/u/:name" do |name| ... end`)
+                // share the same per-formal model: the block formal `name`
+                // is path-bound; other formals are unusual but possible
+                // (`do |name, captures| ...`) and must come from a
+                // recognised capture in the route pattern to seed.
+                //
                 // `BodyMeta.param_route_capture` is populated at CFG
                 // construction time from `extract_route_path_captures`;
                 // formals not in the capture set fall back to existing
-                // label rules (`request.json()`, `request.args.get`, ...)
+                // label rules (`request.json()`, `params['x']`, ...)
                 // for source attribution.
                 let seed_capture = param_index
                     .and_then(|idx| {

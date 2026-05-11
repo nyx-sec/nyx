@@ -1097,13 +1097,45 @@ fn analyse_body_with_seed(
                 )
             })
         });
+    // Ruby Sinatra route handlers need scoped lowering so the block
+    // parameters (`get "/u/:name" do |name| ... end`) materialise as
+    // `SsaOp::Param` ops the entry-point seeding pass paints as
+    // `Source(UserInput)`. Sinatra body bodies are anonymous (the
+    // `do_block` AST node has no name field), so `BodyKind` is
+    // `AnonymousFunction`; the gate accepts both anonymous and named.
+    // Per-formal seed decision is gated against
+    // `BodyMeta.param_route_capture`, so only block formals whose
+    // names appear as `:name` segments in the routing path are
+    // painted. Block formals not in the capture set fall back to
+    // existing label rules.
+    let is_ruby_sinatra_route = lang == Lang::Ruby
+        && matches!(
+            body.meta.kind,
+            crate::cfg::BodyKind::NamedFunction | crate::cfg::BodyKind::AnonymousFunction
+        )
+        && body
+            .meta
+            .param_route_capture
+            .iter()
+            .any(|captured| *captured)
+        && body.meta.func_key.as_ref().is_some_and(|k| {
+            let mut k = k.clone();
+            k.namespace = namespace.to_string();
+            ssa_summaries.and_then(|m| m.get(&k)).is_some_and(|s| {
+                matches!(
+                    s.entry_kind,
+                    Some(crate::entry_points::EntryKind::SinatraRoute { .. })
+                )
+            })
+        });
     let use_scoped_lowering = !is_toplevel
         && (matches!(lang, Lang::JavaScript | Lang::TypeScript)
             || has_nonempty_seed
             || is_java_lambda
             || is_java_entry_method
             || is_rust_entry_method
-            || is_python_flask_route);
+            || is_python_flask_route
+            || is_ruby_sinatra_route);
     let ssa_result = if use_scoped_lowering {
         let func_name = body.meta.name.clone().unwrap_or_else(|| {
             body.meta

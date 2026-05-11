@@ -558,13 +558,18 @@ fn collect_ruby_symbol_list(node: Node<'_>, code: &[u8], out: &mut Vec<String>) 
 /// Extract route-path capture variable names from framework routing decorators
 /// on a function AST node.
 ///
-/// Today only Python is supported. The recogniser walks Flask-style
-/// `@app.route("/users/<name>")`, blueprint-prefixed `@bp.get("/u/<int:id>")`,
-/// and verb-shaped `@router.post("/<path:slug>")` decorators. Returns the
-/// inner names extracted from `<name>` / `<conv:name>` brace-segments.
+/// Supported languages:
+/// * Python: walks Flask-style `@app.route("/users/<name>")`,
+///   blueprint-prefixed `@bp.get("/u/<int:id>")`, and verb-shaped
+///   `@router.post("/<path:slug>")` decorators. Returns inner names from
+///   `<name>` / `<conv:name>` brace-segments.
+/// * Ruby: walks Sinatra `get "/u/:name" do |name| ... end`. The
+///   `func_node` is the `do_block`; its parent `call` carries the verb
+///   in the `method` field and the path pattern in the first positional
+///   string argument. Returns inner names from `:name` colon-segments.
 ///
-/// Non-Python and functions without a decorator pattern return an empty
-/// `Vec`. Strict additive: downstream consumers gate the result via
+/// Functions without a recognised routing pattern return an empty `Vec`.
+/// Strict additive: downstream consumers gate the result via
 /// `param.contains(name)` so empty captures preserve today's behaviour.
 pub(super) fn extract_route_path_captures<'a>(
     func_node: Node<'a>,
@@ -572,14 +577,24 @@ pub(super) fn extract_route_path_captures<'a>(
     code: &'a [u8],
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    if lang != "python" {
-        return out;
+    match lang {
+        "python" => extract_python_route_captures(func_node, code, &mut out),
+        "ruby" => extract_ruby_route_captures(func_node, code, &mut out),
+        _ => {}
     }
+    out
+}
+
+fn extract_python_route_captures<'a>(
+    func_node: Node<'a>,
+    code: &'a [u8],
+    out: &mut Vec<String>,
+) {
     let Some(parent) = func_node.parent() else {
-        return out;
+        return;
     };
     if parent.kind() != "decorated_definition" {
-        return out;
+        return;
     }
     let mut w = parent.walk();
     for ch in parent.children(&mut w) {
@@ -619,9 +634,46 @@ pub(super) fn extract_route_path_captures<'a>(
         let Some(pattern) = first_positional_string_arg(args, code) else {
             continue;
         };
-        collect_flask_path_captures(&pattern, &mut out);
+        collect_flask_path_captures(&pattern, out);
     }
-    out
+}
+
+/// Walk up from a Ruby `do_block` / `block` to the enclosing `call`.
+/// If the call's method is a Sinatra-style HTTP verb and its first
+/// positional argument is a static string literal, parse Sinatra
+/// `:name` path captures into `out`.
+fn extract_ruby_route_captures<'a>(
+    func_node: Node<'a>,
+    code: &'a [u8],
+    out: &mut Vec<String>,
+) {
+    let Some(parent) = func_node.parent() else {
+        return;
+    };
+    if parent.kind() != "call" {
+        return;
+    }
+    let Some(method_node) = parent.child_by_field_name("method") else {
+        return;
+    };
+    let Some(verb) = text_of(method_node, code) else {
+        return;
+    };
+    let verb_lc = verb.to_ascii_lowercase();
+    let is_sinatra_verb = matches!(
+        verb_lc.as_str(),
+        "get" | "post" | "put" | "patch" | "delete" | "head" | "options" | "link" | "unlink"
+    );
+    if !is_sinatra_verb {
+        return;
+    }
+    let Some(args) = parent.child_by_field_name("arguments") else {
+        return;
+    };
+    let Some(pattern) = first_positional_string_arg_ruby(args, code) else {
+        return;
+    };
+    collect_sinatra_path_captures(&pattern, out);
 }
 
 /// Return the literal text of the first positional string argument inside a
@@ -662,6 +714,74 @@ fn python_string_text(node: Node<'_>, code: &[u8]) -> Option<String> {
         .or_else(|| trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
         .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))?;
     Some(stripped.to_string())
+}
+
+/// Return the literal text of the first positional string argument inside a
+/// Ruby `argument_list`. Hash literals (`pair`), block arguments,
+/// hash-splat arguments, and non-string positionals all return `None`.
+fn first_positional_string_arg_ruby(args: Node<'_>, code: &[u8]) -> Option<String> {
+    let mut cursor = args.walk();
+    for arg in args.children(&mut cursor) {
+        match arg.kind() {
+            "(" | ")" | "," => continue,
+            "pair" | "hash" | "block_argument" | "hash_splat_argument" => return None,
+            "string" => return ruby_string_text(arg, code),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Strip Ruby string-literal quoting from a `string` AST node. Rejects
+/// strings with `#{...}` interpolation (the captured pattern is not
+/// statically known). Returns the concatenation of `string_content`
+/// children.
+fn ruby_string_text(node: Node<'_>, code: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    let mut content = String::new();
+    let mut had_content = false;
+    for ch in node.children(&mut cursor) {
+        match ch.kind() {
+            "interpolation" => return None,
+            "string_content" => {
+                if let Some(t) = text_of(ch, code) {
+                    content.push_str(&t);
+                    had_content = true;
+                }
+            }
+            _ => continue,
+        }
+    }
+    if had_content { Some(content) } else { None }
+}
+
+/// Parse Sinatra-style `:name` capture segments out of a route pattern.
+/// A capture is a `:` followed by an identifier-ish run of bytes
+/// (`[A-Za-z0-9_]+`). Only fires when `:` is at pattern start or
+/// immediately follows `/`, so `Foo::Bar` style names embedded in a
+/// non-routing string are not mis-parsed as captures.
+fn collect_sinatra_path_captures(pattern: &str, out: &mut Vec<String>) {
+    let bytes = pattern.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let at_segment_boundary = i == 0 || bytes[i - 1] == b'/';
+        if bytes[i] == b':' && at_segment_boundary {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j > i + 1 {
+                let name = &pattern[i + 1..j];
+                let lower = name.to_ascii_lowercase();
+                if !out.iter().any(|existing| existing == &lower) {
+                    out.push(lower);
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
 }
 
 /// Parse Flask-style `<conv:name>` / `<name>` capture segments out of a
@@ -755,5 +875,54 @@ mod path_capture_tests {
     #[test]
     fn empty_when_no_captures() {
         assert_eq!(collect_for("/static/path"), Vec::<String>::new());
+    }
+
+    fn collect_sinatra_for(pat: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_sinatra_path_captures(pat, &mut out);
+        out
+    }
+
+    #[test]
+    fn sinatra_extracts_bare_capture() {
+        assert_eq!(
+            collect_sinatra_for("/users/:name"),
+            vec!["name".to_string()]
+        );
+    }
+
+    #[test]
+    fn sinatra_extracts_multiple_captures() {
+        assert_eq!(
+            collect_sinatra_for("/u/:uid/post/:pid"),
+            vec!["uid".to_string(), "pid".to_string()]
+        );
+    }
+
+    #[test]
+    fn sinatra_extracts_leading_capture() {
+        assert_eq!(collect_sinatra_for(":root"), vec!["root".to_string()]);
+    }
+
+    #[test]
+    fn sinatra_dedupes_repeated_names() {
+        let mut out = Vec::new();
+        collect_sinatra_path_captures("/:a/:a", &mut out);
+        assert_eq!(out, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn sinatra_ignores_double_colon() {
+        assert_eq!(collect_sinatra_for("/Foo::Bar"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn sinatra_ignores_lone_colon() {
+        assert_eq!(collect_sinatra_for("/users/:"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn sinatra_empty_when_no_captures() {
+        assert_eq!(collect_sinatra_for("/static/path"), Vec::<String>::new());
     }
 }

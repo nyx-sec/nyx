@@ -1171,6 +1171,59 @@ fn python_flask_route_path_capture_seeding() {
     );
 }
 
+/// Ruby Sinatra entry-kind seeding precision for `SinatraRoute`:
+/// path-bound block formals (`get "/u/:name" do |name| ... end`)
+/// get painted as `Source(UserInput)`, while routes without path
+/// captures stay un-seeded. Without per-formal route-capture
+/// gating, Sinatra handlers fell back to `cfg-unguarded-sink` for
+/// path-bound flows. The positive shape asserts the rule_id is
+/// specifically `taint-unsanitised-flow`, so a future regression
+/// that drops entry-kind seeding is forcing-function caught. The
+/// negative shape pins the absence of taint findings on a
+/// no-capture route (no block formals, no seed, no flow).
+#[test]
+fn ruby_sinatra_route_path_capture_seeding() {
+    let findings = scan_fixture("entry_points_xlang_ruby");
+    let positives = [
+        ("sinatra_path_capture.rb", 9usize),
+        ("sinatra_multi_capture.rb", 8usize),
+    ];
+    for (file, sink_line) in positives {
+        let hit = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && f.id.starts_with("taint-unsanitised-flow")
+                && f.line == sink_line
+        });
+        assert!(
+            hit,
+            "Ruby Sinatra path-capture handler {file}:{sink_line} must fire \
+             `taint-unsanitised-flow`; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    let no_capture_taint: Vec<&_> = findings
+        .iter()
+        .filter(|f| {
+            f.path.ends_with("sinatra_no_capture.rb")
+                && f.id.starts_with("taint-unsanitised-flow")
+        })
+        .collect();
+    assert!(
+        no_capture_taint.is_empty(),
+        "Sinatra route without path captures must not paint formals as Source; got:\n{}",
+        no_capture_taint
+            .iter()
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
 /// Phase 11 + 17 acceptance: every per-target baseline JSON in
 /// `tests/recall_targets/` (Phase 11 JS targets) and
 /// `tests/recall_targets/xlang/<lang>/` (Phase 17 cross-lang targets)
