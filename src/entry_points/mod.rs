@@ -20,7 +20,7 @@
 //! taint worklist starts.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
@@ -72,10 +72,16 @@ pub enum EntryKind {
     /// A function exported from `app/**/route.{ts,tsx,js,jsx}` whose
     /// name is one of the recognised HTTP methods.
     AppRouteHandler { method: HttpMethod },
-    /// A `<form action={...}>` server-action callee.  Reserved for
-    /// future detection; not produced by [`detect_entries_in_file`]
-    /// today, but the variant is part of the on-disk shape so older
-    /// summaries serialise / deserialise cleanly when this expands.
+    /// A `<form action={...}>` server-action callee.  Detected by
+    /// walking JSX trees for `<form>` opening / self-closing elements
+    /// whose `action` attribute carries a `{NAME}` identifier
+    /// reference (resolved by name to a function in the same file) or
+    /// an inline `arrow_function` / `function_expression` (resolved
+    /// by exact span).  Seeding policy is identical to
+    /// [`EntryKind::UseServerDirective`]: every formal is treated as
+    /// adversary-controlled, which models the framework contract
+    /// that `<form action={fn}>` invokes `fn(formData)` with the
+    /// submitted FormData as the first argument.
     FormAction,
 
     // ── Phase 16 (cross-language) ─────────────────────────────────────
@@ -207,6 +213,11 @@ fn detect_js_ts(
     // call sites and resolve handler identifiers to function definitions.
     let express_handlers = collect_express_handlers(root, bytes);
 
+    // Server actions: collect `<form action={NAME}>` callees so a
+    // function bound as a form action gets the same seeding policy as
+    // a `'use server'`-marked export.
+    let form_actions = collect_form_action_handlers(root, bytes);
+
     walk_functions_js(root, bytes, &mut |node, name| {
         let span = (node.start_byte(), node.end_byte());
 
@@ -233,6 +244,20 @@ fn detect_js_ts(
             return;
         }
 
+        // FormAction: tag named callees (by string lookup) and inline
+        // arrows / function expressions (by span lookup).  Runs before
+        // Express dispatch so a function bound as both a form action
+        // and an `app.get(..., handler)` argument is tagged as the
+        // form action — the form binding is the more specific
+        // entry-point claim and carries the same Pure-Param-only
+        // seeding policy.
+        if form_actions.by_span.contains(&span)
+            || name.is_some_and(|n| form_actions.by_name.contains(n))
+        {
+            entries.entry(span).or_insert(EntryKind::FormAction);
+            return;
+        }
+
         // Express handler resolution: matches by name (named function
         // declaration) OR by exact span (anonymous arrow registered at
         // the call site).
@@ -249,6 +274,115 @@ fn detect_js_ts(
     });
 
     entries
+}
+
+/// Form-action handler resolution.  Built by walking the JSX subtree
+/// for `<form>` elements with an `action={...}` attribute, then
+/// classifying the right-hand-side as either a named identifier
+/// (matched against function declarations / arrow bindings by name)
+/// or an inline arrow / function expression (matched by exact span).
+struct FormActionHandlers {
+    by_name: HashSet<String>,
+    by_span: HashSet<(usize, usize)>,
+}
+
+fn collect_form_action_handlers(root: Node, bytes: &[u8]) -> FormActionHandlers {
+    let mut out = FormActionHandlers {
+        by_name: HashSet::new(),
+        by_span: HashSet::new(),
+    };
+    walk_form_action_recursive(root, bytes, &mut out);
+    out
+}
+
+fn walk_form_action_recursive(node: Node, bytes: &[u8], out: &mut FormActionHandlers) {
+    if matches!(
+        node.kind(),
+        "jsx_opening_element" | "jsx_self_closing_element"
+    ) && jsx_element_tag_is_form(node, bytes)
+        && let Some(action_value) = jsx_element_action_attr_value(node, bytes)
+    {
+        record_form_action_handler(action_value, bytes, out);
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_form_action_recursive(child, bytes, out);
+    }
+}
+
+/// True when the JSX element's tag name is the lowercase host element
+/// `form`.  React renders `<form>` (lowercase) as an HTML form; an
+/// uppercase `<Form>` is a user component and the action prop's
+/// semantics are component-defined, not the framework form-action
+/// contract.  Members like `<my.Form>` are also rejected.
+fn jsx_element_tag_is_form(elem: Node, bytes: &[u8]) -> bool {
+    let Some(name_node) = elem.child_by_field_name("name") else {
+        return false;
+    };
+    if name_node.kind() != "identifier" {
+        return false;
+    }
+    name_node.utf8_text(bytes).ok() == Some("form")
+}
+
+/// Return the `value` field node of an `action="..."` / `action={...}`
+/// attribute on the given JSX opening / self-closing element.
+fn jsx_element_action_attr_value<'a>(elem: Node<'a>, bytes: &[u8]) -> Option<Node<'a>> {
+    let mut cursor = elem.walk();
+    for child in elem.children(&mut cursor) {
+        if child.kind() != "jsx_attribute" {
+            continue;
+        }
+        let name = child
+            .child_by_field_name("name")
+            .or_else(|| child.named_child(0))?;
+        let Ok(text) = name.utf8_text(bytes) else {
+            continue;
+        };
+        if text != "action" {
+            continue;
+        }
+        return child
+            .child_by_field_name("value")
+            .or_else(|| child.named_child(1));
+    }
+    None
+}
+
+/// Classify the right-hand-side of `action=...`.  Identifier
+/// references add to `by_name`; inline arrow / function-expression
+/// definitions add to `by_span`.  String literals (URL form,
+/// `action="/api/submit"`) and other shapes are ignored.
+fn record_form_action_handler(value: Node, bytes: &[u8], out: &mut FormActionHandlers) {
+    let mut cur = value;
+    // Unwrap JSX expression / parenthesized expression wrappers
+    // around the value.  Bounded depth keeps the walk cheap.
+    for _ in 0..4 {
+        match cur.kind() {
+            "jsx_expression" | "parenthesized_expression" => {
+                let mut walker = cur.walk();
+                let Some(next) = cur
+                    .named_children(&mut walker)
+                    .find(|c| c.kind() != "comment")
+                else {
+                    return;
+                };
+                cur = next;
+            }
+            _ => break,
+        }
+    }
+    match cur.kind() {
+        "identifier" => {
+            if let Ok(name) = cur.utf8_text(bytes) {
+                out.by_name.insert(name.to_string());
+            }
+        }
+        "arrow_function" | "function_expression" | "function_declaration" => {
+            out.by_span.insert((cur.start_byte(), cur.end_byte()));
+        }
+        _ => {}
+    }
 }
 
 /// Path-based recogniser for `app/**/route.{ts,tsx,js,jsx}`.
@@ -1205,6 +1339,7 @@ mod tests {
         let language = match lang {
             "javascript" => tree_sitter_javascript::LANGUAGE.into(),
             "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
             "python" => tree_sitter_python::LANGUAGE.into(),
             "java" => tree_sitter_java::LANGUAGE.into(),
             "ruby" => tree_sitter_ruby::LANGUAGE.into(),
@@ -1212,9 +1347,16 @@ mod tests {
             "go" => tree_sitter_go::LANGUAGE.into(),
             _ => panic!("unknown lang"),
         };
+        // The production [`detect_entries_in_file`] dispatch tags `.tsx`
+        // files with `lang_slug = "typescript"`, so the test helper does
+        // the same once the parser is configured with the TSX grammar.
+        let detect_slug = match lang {
+            "tsx" => "typescript",
+            other => other,
+        };
         parser.set_language(&language).unwrap();
         let tree = parser.parse(source, None).unwrap();
-        detect_entries_in_file(&tree, source.as_bytes(), Path::new(path), lang)
+        detect_entries_in_file(&tree, source.as_bytes(), Path::new(path), detect_slug)
     }
 
     #[test]
@@ -1472,6 +1614,99 @@ app.post('/submit', (req, res) => {
                 }
             )),
             "expected ExpressRoute(POST); got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn detects_form_action_named_handler() {
+        let src = r#"
+async function submit(formData) {
+  return formData;
+}
+
+export default function Page() {
+  return <form action={submit}><button>Go</button></form>;
+}
+"#;
+        let entries = detect_lang(src, "tsx", "app/page.tsx");
+        assert!(
+            entries.values().any(|e| matches!(e, EntryKind::FormAction)),
+            "expected FormAction; got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn detects_form_action_inline_arrow() {
+        let src = r#"
+export default function Page() {
+  return <form action={async (formData) => { return formData; }} />;
+}
+"#;
+        let entries = detect_lang(src, "tsx", "app/page.tsx");
+        assert!(
+            entries.values().any(|e| matches!(e, EntryKind::FormAction)),
+            "expected FormAction for inline arrow; got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn ignores_form_action_string_url() {
+        // `<form action="/api/submit">` is a URL form-post target, not
+        // a server-action callee; no function should be tagged.
+        let src = r#"
+async function submit(formData) {
+  return formData;
+}
+
+export default function Page() {
+  return <form action="/api/submit" />;
+}
+"#;
+        let entries = detect_lang(src, "tsx", "app/page.tsx");
+        assert!(
+            !entries.values().any(|e| matches!(e, EntryKind::FormAction)),
+            "string action URL must not tag any function; got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn ignores_component_form_action() {
+        // `<Form action={fn}>` is a user component, not the HTML host
+        // form element; framework semantics for `action` are
+        // component-defined, so the recogniser must not tag `fn`.
+        let src = r#"
+import { Form } from "./form";
+
+async function submit(formData) {
+  return formData;
+}
+
+export default function Page() {
+  return <Form action={submit} />;
+}
+"#;
+        let entries = detect_lang(src, "tsx", "app/page.tsx");
+        assert!(
+            !entries.values().any(|e| matches!(e, EntryKind::FormAction)),
+            "component-form action must not tag any function; got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn ignores_form_without_action_attr() {
+        let src = r#"
+async function submit(formData) {
+  return formData;
+}
+
+export default function Page() {
+  return <form onSubmit={submit} method="post" />;
+}
+"#;
+        let entries = detect_lang(src, "tsx", "app/page.tsx");
+        assert!(
+            !entries.values().any(|e| matches!(e, EntryKind::FormAction)),
+            "form without action attr must not tag any function; got {entries:?}"
         );
     }
 

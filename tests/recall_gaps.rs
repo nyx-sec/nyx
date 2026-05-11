@@ -917,6 +917,9 @@ fn cross_package_ipa() {
 ///   - Function-level `'use server'`
 ///     (`nextjs_use_server_function_level.ts`): only the directive-
 ///     bearing function is treated as a server action.
+///   - `<form action={fn}>` JSX binding (`nextjs_form_action.tsx`):
+///     the named callee is tagged `EntryKind::FormAction` and its
+///     first formal is seeded as adversary input.
 ///   - `next/headers` `cookies()` import-gated source: the gated rule
 ///     fires only when `cookies` is bound from `next/headers`.
 #[test]
@@ -929,6 +932,7 @@ fn nextjs_entrypoints() {
         ("nextjs_server_action.ts", 11usize),
         ("nextjs_use_server_directive.ts", 9usize),
         ("nextjs_use_server_function_level.ts", 8usize),
+        ("nextjs_form_action.tsx", 10usize),
         ("nextjs_cookies_source.ts", 12usize),
     ];
     for (file, sink_line) in positives {
