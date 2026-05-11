@@ -834,6 +834,7 @@ fn orphan_catch_block_triggers_reachability_invariant() {
         field_writes: std::collections::HashMap::new(),
 
         synthetic_externals: std::collections::HashSet::new(),
+        slot_scoped_assigns: std::collections::HashSet::new(),
     };
 
     let err = check_catch_block_reachability(&body)
@@ -897,6 +898,7 @@ fn normally_reachable_catch_block_passes_invariant() {
         field_writes: std::collections::HashMap::new(),
 
         synthetic_externals: std::collections::HashSet::new(),
+        slot_scoped_assigns: std::collections::HashSet::new(),
     };
 
     assert!(check_catch_block_reachability(&body).is_ok());
@@ -952,6 +954,7 @@ fn exception_edge_catch_block_passes_invariant() {
         field_writes: std::collections::HashMap::new(),
 
         synthetic_externals: std::collections::HashSet::new(),
+        slot_scoped_assigns: std::collections::HashSet::new(),
     };
 
     assert!(check_catch_block_reachability(&body).is_ok());

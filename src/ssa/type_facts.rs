@@ -2121,6 +2121,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::from([
@@ -2236,6 +2237,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::new();
@@ -2547,6 +2549,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let consts = HashMap::new();

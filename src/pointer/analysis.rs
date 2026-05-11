@@ -668,6 +668,7 @@ mod tests {
                 field_writes: std::collections::HashMap::new(),
 
                 synthetic_externals: std::collections::HashSet::new(),
+                slot_scoped_assigns: std::collections::HashSet::new(),
             }
         }
     }
@@ -884,6 +885,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
         let facts = analyse_body(&body, body_id());
         assert!(facts.is_trivial());

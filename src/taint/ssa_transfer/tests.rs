@@ -87,6 +87,7 @@ mod cross_file_tests {
                 field_writes: std::collections::HashMap::new(),
 
                 synthetic_externals: std::collections::HashSet::new(),
+                slot_scoped_assigns: std::collections::HashSet::new(),
             },
             opt: crate::ssa::OptimizeResult {
                 const_values: std::collections::HashMap::new(),
@@ -839,6 +840,7 @@ mod primary_sink_location_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         }
     }
 
@@ -975,6 +977,7 @@ mod goto_succ_propagation_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let cfg: Cfg = Graph::new();
@@ -1073,6 +1076,7 @@ mod goto_succ_propagation_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
         let cfg: Cfg = Graph::new();
         let interner = SymbolInterner::new();
@@ -1140,6 +1144,7 @@ mod goto_succ_propagation_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         }
     }
 
@@ -1402,6 +1407,7 @@ mod goto_succ_propagation_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         }
     }
 
@@ -1529,6 +1535,7 @@ mod receiver_candidates_field_proj_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         }
     }
 
@@ -1616,6 +1623,7 @@ mod receiver_candidates_field_proj_tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
         let cands =
             super::super::receiver_candidates_for_type_lookup(SsaValue(0), Some(&body), Lang::Go);
@@ -2023,6 +2031,7 @@ mod field_write_tests {
             field_interner,
             field_writes,
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         (body, cache_id)
     }
@@ -2339,6 +2348,7 @@ mod field_write_tests {
                 m
             },
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(0));
         // v0 is Const → empty pt, the hook should not insert anything.
@@ -2584,6 +2594,7 @@ mod container_elem_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
 
         // Run pointer analysis first to confirm the result of `shift()`
@@ -2724,6 +2735,7 @@ mod container_elem_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
 
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(7));
@@ -2872,6 +2884,7 @@ mod container_elem_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
 
         let interner = SymbolInterner::new();
@@ -3003,6 +3016,7 @@ mod cross_call_field_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         let pf = crate::pointer::analyse_body(&body, crate::cfg::BodyId(7));
         (body, cache_id, pf)
@@ -3377,6 +3391,7 @@ mod field_taint_origin_cap_tests {
             field_writes: HashMap::new(),
 
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
         (body, cache_id, cfg, n_proj)
     }
@@ -3707,6 +3722,7 @@ mod pointer_lattice_worklist_tests {
             field_interner,
             field_writes,
             synthetic_externals: HashSet::new(),
+            slot_scoped_assigns: HashSet::new(),
         };
 
         let mut interner = SymbolInterner::new();

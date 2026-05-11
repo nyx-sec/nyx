@@ -442,6 +442,7 @@ mod tests {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
         let cfg: Cfg = Graph::new();
         let const_values = HashMap::new();

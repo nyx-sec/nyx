@@ -2059,6 +2059,7 @@ async function recentAuditLogs() {
             field_writes: std::collections::HashMap::new(),
 
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let facts = analyse_body(&body, BodyId(0));

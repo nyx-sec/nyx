@@ -257,6 +257,7 @@ fn lower_to_ssa_inner(
         field_interner,
         field_writes,
         synthetic_externals,
+        slot_scoped_assigns,
     ) = rename_variables(
         cfg,
         &blocks_nodes,
@@ -326,6 +327,7 @@ fn lower_to_ssa_inner(
         field_interner,
         field_writes,
         synthetic_externals,
+        slot_scoped_assigns,
     };
 
     // 9. Catch-block reachability invariant.
@@ -957,6 +959,7 @@ fn rename_variables(
     crate::ssa::ir::FieldInterner,
     HashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)>,
     HashSet<SsaValue>,
+    HashSet<SsaValue>,
 ) {
     let num_blocks = blocks_nodes.len();
     let mut next_value: u32 = 0;
@@ -973,6 +976,10 @@ fn rename_variables(
     // Populated below at the synthetic-Assign emission site.  Read by
     // the taint engine to lift the assign into a structural field WRITE.
     let mut field_writes: HashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)> = HashMap::new();
+    // SSA values whose `Assign` comes from a bare-array destructure
+    // slot-scoped kill arm; the taint engine consults this set to skip
+    // outer-node Source label pickup while still unioning operand taint.
+    let mut slot_scoped_assigns: HashSet<SsaValue> = HashSet::new();
 
     // Per-variable rename stacks
     let mut var_stacks: HashMap<String, Vec<SsaValue>> = HashMap::new();
@@ -1041,6 +1048,7 @@ fn rename_variables(
         nop_nodes: &HashSet<NodeIndex>,
         field_interner: &mut crate::ssa::ir::FieldInterner,
         field_writes: &mut HashMap<SsaValue, (SsaValue, crate::ssa::ir::FieldId)>,
+        slot_scoped_assigns: &mut HashSet<SsaValue>,
     ) {
         let block_id = BlockId(block_idx as u32);
 
@@ -1530,7 +1538,7 @@ fn rename_variables(
             let effective_outer_fallback =
                 outer_is_source && !any_slot_has_source_cap;
 
-            let bare_array_ops: Option<SmallVec<[SsaOp; 4]>> = if !info
+            let bare_array_ops: Option<(SmallVec<[SsaOp; 4]>, SmallVec<[bool; 4]>)> = if !info
                 .taint
                 .rhs_array_elements
                 .is_empty()
@@ -1543,8 +1551,10 @@ fn rename_variables(
                     None
                 } else {
                     let mut per_pos: SmallVec<[SsaOp; 4]> = SmallVec::new();
+                    let mut slot_scoped_mask: SmallVec<[bool; 4]> = SmallVec::new();
                     let mut bail = false;
                     for slot in info.taint.rhs_array_elements.iter().take(needed) {
+                        let mut is_slot_scoped = false;
                         let slot_op = match slot {
                             RhsArraySlot::Ident(ident) => {
                                 match var_stacks
@@ -1580,18 +1590,21 @@ fn rename_variables(
                                     SsaOp::Source
                                 } else if outer_is_source && any_slot_has_source_cap {
                                     // Some OTHER slot's subtree classified as
-                                    // Source; this slot did NOT.  Suppress
-                                    // outer-node Source pickup by emitting
-                                    // Const(None) so the SSA Assign arm in
-                                    // `taint/ssa_transfer/mod.rs` does not
-                                    // union the cfg_node's Source label into
-                                    // this binding.
-                                    //
-                                    // Strict precision improvement over the
-                                    // legacy `outer_is_source → emit Source`
-                                    // path which painted every Complex slot
-                                    // regardless of its subtree contents.
-                                    SsaOp::Const(None)
+                                    // Source; this slot did NOT.  Emit
+                                    // Assign(mapped) and mark the slot as
+                                    // slot-scoped so the taint transfer's
+                                    // Assign arm skips outer-node Source
+                                    // label pickup for this binding (without
+                                    // losing transitive taint through inner
+                                    // uses).  When `mapped` is empty, fall
+                                    // back to Const(None) — the binding
+                                    // carries no taint anyway.
+                                    if mapped.is_empty() {
+                                        SsaOp::Const(None)
+                                    } else {
+                                        is_slot_scoped = true;
+                                        SsaOp::Assign(mapped.clone())
+                                    }
                                 } else if effective_outer_fallback {
                                     // Outer-node Source label but no
                                     // per-slot classifier fired on any slot
@@ -1607,8 +1620,9 @@ fn rename_variables(
                             }
                         };
                         per_pos.push(slot_op);
+                        slot_scoped_mask.push(is_slot_scoped);
                     }
-                    if bail { None } else { Some(per_pos) }
+                    if bail { None } else { Some((per_pos, slot_scoped_mask)) }
                 }
             } else {
                 None
@@ -1636,8 +1650,11 @@ fn rename_variables(
                 let primary_idx = binding_indices.first().copied().unwrap_or(0);
                 let pick = args.get(primary_idx).copied().unwrap_or(args[0]);
                 SsaOp::Assign(SmallVec::from_elem(pick, 1))
-            } else if let Some(ref per_pos) = bare_array_ops {
+            } else if let Some((ref per_pos, ref slot_scoped_mask)) = bare_array_ops {
                 let primary_idx = binding_indices.first().copied().unwrap_or(0);
+                if slot_scoped_mask.get(primary_idx).copied().unwrap_or(false) {
+                    slot_scoped_assigns.insert(v);
+                }
                 per_pos.get(primary_idx).cloned().unwrap_or(SsaOp::Const(None))
             } else {
                 op
@@ -1743,10 +1760,13 @@ fn rename_variables(
                         span: info.ast.span,
                     });
                 }
-            } else if let Some(ref per_pos) = bare_array_ops {
+            } else if let Some((ref per_pos, ref slot_scoped_mask)) = bare_array_ops {
                 // Bare-array RHS destructure: each extra emits the op for its
                 // source-order RHS position. Ident slots emit Assign of the
                 // ident's reaching SSA value; literal slots emit Const(None).
+                // Slot-scoped Assigns are registered in
+                // `slot_scoped_assigns` so the taint transfer skips
+                // outer-node Source pickup for those bindings.
                 for (i, extra_def) in info.taint.extra_defines.iter().enumerate() {
                     let ev = SsaValue(*next_value);
                     *next_value += 1;
@@ -1761,6 +1781,9 @@ fn rename_variables(
                         .get(extra_idx)
                         .cloned()
                         .unwrap_or(SsaOp::Const(None));
+                    if slot_scoped_mask.get(extra_idx).copied().unwrap_or(false) {
+                        slot_scoped_assigns.insert(ev);
+                    }
                     ssa_blocks[block_idx].body.push(SsaInst {
                         value: ev,
                         op: op_for_extra,
@@ -2031,6 +2054,7 @@ fn rename_variables(
                 nop_nodes,
                 field_interner,
                 field_writes,
+                slot_scoped_assigns,
             );
         }
 
@@ -2148,6 +2172,7 @@ fn rename_variables(
         nop_nodes,
         &mut field_interner,
         &mut field_writes,
+        &mut slot_scoped_assigns,
     );
 
     // Process orphan blocks (e.g. catch blocks disconnected after exception edge removal).
@@ -2189,6 +2214,7 @@ fn rename_variables(
                     nop_nodes,
                     &mut field_interner,
                     &mut field_writes,
+                    &mut slot_scoped_assigns,
                 );
             }
         }
@@ -2201,6 +2227,7 @@ fn rename_variables(
         field_interner,
         field_writes,
         synthetic_externals,
+        slot_scoped_assigns,
     )
 }
 

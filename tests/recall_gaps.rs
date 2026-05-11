@@ -476,6 +476,44 @@ fn promise_all_destruct_per_index() {
                 .join("\n"),
         );
     }
+
+    // Slot-scoped transitive taint: when the outer destructure node
+    // carries a Source label AND another Complex slot's subtree classifies
+    // as Source, the safe Complex sibling whose own subtree contains an
+    // identifier bound to a tainted local (e.g.
+    // `helper(tainted_local)` where `tainted_local = req.body.cmd`)
+    // must still propagate the inner ident's taint through the slot-scoped
+    // `Assign`.  Pre-session 0048 the kill arm emitted `Const(None)` which
+    // dropped the transitive taint.
+    for sink_line in [29usize, 30, 36] {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: "complex_transitive_taint_fp.ts",
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
+    {
+        let forbidden_line = 37usize;
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with("complex_transitive_taint_fp.ts")
+                && f.line == forbidden_line
+                && f.id.starts_with("taint-unsanitised-flow")
+        });
+        assert!(
+            !leak,
+            "safe Complex sibling at line {forbidden_line} must not inherit outer Source; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with("complex_transitive_taint_fp.ts"))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
 }
 
 /// Phase 03 recall-gap: `for await (const x of iter)` taints `x` from the

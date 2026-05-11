@@ -753,6 +753,7 @@ mod tests {
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         (ssa, cfg)
@@ -843,6 +844,7 @@ mod tests {
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
         let demand = DemandState::new(Cap::all());
         let (step, next) = backward_transfer(&ssa, SsaValue(0), &demand);
@@ -876,6 +878,7 @@ mod tests {
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
         let demand = DemandState::new(Cap::all());
         let (step, _next) = backward_transfer(&ssa, SsaValue(0), &demand);
@@ -964,6 +967,7 @@ mod tests {
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let demand = DemandState::new(Cap::all());
@@ -1053,6 +1057,7 @@ mod tests {
             field_interner: crate::ssa::ir::FieldInterner::default(),
             field_writes: std::collections::HashMap::new(),
             synthetic_externals: std::collections::HashSet::new(),
+            slot_scoped_assigns: std::collections::HashSet::new(),
         };
 
         let ctx = BackwardsCtx::new(&ssa, &cfg, Lang::JavaScript);

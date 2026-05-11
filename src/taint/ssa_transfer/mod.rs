@@ -5601,18 +5601,26 @@ pub(super) fn transfer_inst(
                 }
             }
 
-            // Check for source labels
-            for lbl in &info.taint.labels {
-                if let DataLabel::Source(bits) = lbl {
-                    combined_caps |= *bits;
-                    let callee_str = info.call.callee.as_deref().unwrap_or("");
-                    let source_kind = crate::labels::infer_source_kind(*bits, callee_str);
-                    let origin = TaintOrigin {
-                        node: inst.cfg_node,
-                        source_kind,
-                        source_span: None,
-                    };
-                    push_origin_bounded(&mut combined_origins, origin);
+            // Check for source labels.  Skip outer-node Source pickup when
+            // this Assign was emitted by the bare-array slot-scoped kill arm
+            // in `src/ssa/lower.rs` (per-slot Source classification puts the
+            // SsaValue into `ssa.slot_scoped_assigns`).  Operand union still
+            // ran above, so transitive taint via inner uses propagates.
+            let suppress_node_source =
+                ssa.slot_scoped_assigns.contains(&inst.value);
+            if !suppress_node_source {
+                for lbl in &info.taint.labels {
+                    if let DataLabel::Source(bits) = lbl {
+                        combined_caps |= *bits;
+                        let callee_str = info.call.callee.as_deref().unwrap_or("");
+                        let source_kind = crate::labels::infer_source_kind(*bits, callee_str);
+                        let origin = TaintOrigin {
+                            node: inst.cfg_node,
+                            source_kind,
+                            source_span: None,
+                        };
+                        push_origin_bounded(&mut combined_origins, origin);
+                    }
                 }
             }
 
