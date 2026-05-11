@@ -3387,3 +3387,62 @@ func f(x string) bool {
         reachable
     );
 }
+
+/// `qs = User.objects` at module/function level lowers as a Python
+/// `expression_statement` wrapping an `assignment`.  The CFG-level
+/// `member_field` detector must unwrap the wrapper and pick up
+/// `Some("objects")` from the inner RHS so the type-fact pass can tag
+/// the bound value as `DjangoQuerySet`.
+#[test]
+fn python_member_field_assignment_detected_for_bare_objects() {
+    let src = b"def view(req):\n    qs = User.objects\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "python", ts_lang);
+    let detected: Vec<Option<String>> = cfg
+        .node_indices()
+        .filter_map(|n| {
+            let info = &cfg[n];
+            if info.taint.defines.as_deref() == Some("qs") {
+                Some(info.member_field.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        detected.iter().any(|m| m.as_deref() == Some("objects")),
+        "expected at least one `qs = ...` CFG node with member_field=Some(\"objects\"); got {:?}",
+        detected
+    );
+}
+
+/// Negative shape: `qs = User.something_else` must NOT set
+/// `member_field == Some("objects")`.  Guards against the unwrap
+/// accidentally picking up the wrong field name.
+#[test]
+fn python_member_field_assignment_non_objects_does_not_match() {
+    let src = b"def view(req):\n    qs = User.profile\n";
+    let ts_lang = Language::from(tree_sitter_python::LANGUAGE);
+    let (cfg, _entry) = parse_and_build(src, "python", ts_lang);
+    let detected: Vec<Option<String>> = cfg
+        .node_indices()
+        .filter_map(|n| {
+            let info = &cfg[n];
+            if info.taint.defines.as_deref() == Some("qs") {
+                Some(info.member_field.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        detected.iter().any(|m| m.as_deref() == Some("profile")),
+        "expected `qs = User.profile` to detect member_field=Some(\"profile\"); got {:?}",
+        detected
+    );
+    assert!(
+        detected.iter().all(|m| m.as_deref() != Some("objects")),
+        "must not falsely tag non-`objects` field; got {:?}",
+        detected
+    );
+}

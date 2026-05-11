@@ -1795,6 +1795,37 @@ pub fn analyze_types_with_param_types(
                     continue;
                 }
                 if let SsaOp::Assign(uses) = &inst.op {
+                    // Django ORM manager projection in Assign form.
+                    // `qs = Model.objects` lowers to an Assign whose CFG
+                    // node carries `member_field = Some("objects")`.  The
+                    // FieldProj-chain decomposition only fires when there
+                    // is a trailing method call (e.g. `Model.objects.all()`);
+                    // the bare-projection shape leaves the Assign with
+                    // multiple operands (the path "Model.objects" plus the
+                    // unresolved root identifiers), so neither the len==1
+                    // copy-prop arm nor the len==2 BinOp arm picks up the
+                    // type.  Tag the result as `DjangoQuerySet` directly
+                    // when the CFG node's `member_field` is "objects" and
+                    // the language is Python; mirrors the FieldProj
+                    // second-pass arm above.  Strictly additive: only
+                    // fires when the result fact is still Unknown.
+                    if matches!(lang, Some(Lang::Python))
+                        && cfg
+                            .node_weight(inst.cfg_node)
+                            .and_then(|ni| ni.member_field.as_deref())
+                            == Some("objects")
+                    {
+                        let current_kind = facts
+                            .get(&inst.value)
+                            .map(|f| f.kind.clone())
+                            .unwrap_or(TypeKind::Unknown);
+                        if matches!(current_kind, TypeKind::Unknown) {
+                            let new_fact = TypeFact::from_kind(TypeKind::DjangoQuerySet);
+                            facts.insert(inst.value, new_fact);
+                            changed = true;
+                            continue;
+                        }
+                    }
                     if uses.len() == 1 {
                         // when the RHS is a single member-access
                         // expression and the receiver value carries a

@@ -1593,6 +1593,18 @@ fn detect_member_field_assignment(ast: Node, code: &[u8]) -> Option<String> {
                         .or_else(|| d.child_by_field_name("initializer"))
                 })
         })
+        .or_else(|| {
+            // Python wraps assignment in `expression_statement`; drill into
+            // the inner `assignment` node to reach its `right` field.  Ruby
+            // wraps simple `x = rhs` in `assignment` directly so this arm is
+            // a no-op for Ruby, but the Python case is load-bearing for the
+            // `qs = User.objects` shape where `member_field` drives the
+            // Django ORM type-fact tagging.
+            let mut cursor = ast.walk();
+            ast.named_children(&mut cursor)
+                .find(|c| matches!(c.kind(), "assignment"))
+                .and_then(|a| a.child_by_field_name("right"))
+        })
         .unwrap_or(ast);
     extract_member_field_name(target, code)
 }
