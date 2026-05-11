@@ -1279,6 +1279,48 @@ fn ruby_sinatra_route_path_capture_seeding() {
     );
 }
 
+/// Go entry-kind precision: `GinRoute` (`*gin.Context`,
+/// `echo.Context`, `*fiber.Ctx`, `iris.Context`) and `GoNetHttp`
+/// (`(w http.ResponseWriter, r *http.Request)`) handlers route
+/// adversary bytes through access-path label rules
+/// (`c.Query`, `c.Param`, `c.PostForm`, `r.URL.Query`,
+/// `r.FormValue`, `r.Header.Get`, ...) rather than via flat
+/// formal seeding. Same precedent as the Express
+/// `seed_at_all=false` arm: painting the bare `c` / `r` object
+/// as `Source(Cap::all())` re-fires excluded lifecycle methods
+/// (`c.AbortWithStatus`, `r.Context()`, etc.) as structural
+/// sinks. The positive shapes assert the rule_id is specifically
+/// `taint-unsanitised-flow` (not the OR-cfg-unguarded-sink path
+/// the cross-language `entry_points_xlang` test accepts), so a
+/// future regression that mis-classifies access paths is
+/// forcing-function caught.
+#[test]
+fn go_entry_kind_label_rules_carry_request() {
+    let findings = scan_fixture("entry_points_xlang");
+    let positives = [
+        ("gin_handler.go", 24usize),
+        ("net_http_handler.go", 21usize),
+    ];
+    for (file, sink_line) in positives {
+        let hit = findings.iter().any(|f| {
+            f.path.ends_with(file)
+                && f.id.starts_with("taint-unsanitised-flow")
+                && f.line == sink_line
+        });
+        assert!(
+            hit,
+            "Go handler {file}:{sink_line} must fire \
+             `taint-unsanitised-flow` via access-path label rules; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with(file))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+}
+
 /// Phase 11 + 17 acceptance: every per-target baseline JSON in
 /// `tests/recall_targets/` (Phase 11 JS targets) and
 /// `tests/recall_targets/xlang/<lang>/` (Phase 17 cross-lang targets)

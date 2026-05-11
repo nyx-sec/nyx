@@ -347,8 +347,7 @@ fn run_ssa_taint_internal(
             | EntryKind::SinatraRoute { .. }
             | EntryKind::AxumHandler
             | EntryKind::ActixHandler
-            | EntryKind::RocketRoute
-            | EntryKind::GinRoute => (true, None, true),
+            | EntryKind::RocketRoute => (true, None, true),
             // Class-method shapes — `self` is the controller instance,
             // not adversary input.
             EntryKind::DjangoView { .. } | EntryKind::RailsAction => (true, None, true),
@@ -364,9 +363,30 @@ fn run_ssa_taint_internal(
             // `session_destroy_with_query.js`).  Skip seeding for
             // Express; the existing label rules carry the request.
             EntryKind::ExpressRoute { .. } => (true, Some(0), false),
+            // Gin (`*gin.Context`), echo (`echo.Context`), fiber
+            // (`*fiber.Ctx`), iris (`iris.Context`) — `c.Query` /
+            // `c.Param` / `c.PostForm` / `c.QueryArray` /
+            // `c.PostFormArray` / `c.QueryParam` are classified as
+            // `Source(Cap::all())` by the framework-aware label rules
+            // in `src/labels/go.rs` (gated on `DetectedFramework::Gin`).
+            // The receiver-method calls flow that taint through to
+            // local variables without painting the bare `c` object,
+            // which avoids the FP shape where excluded lifecycle
+            // methods (`c.AbortWithStatus`, `c.Set`, `c.Next`) get
+            // re-classified as sinks consuming an adversary-painted
+            // receiver.  Same precedent as Express above.
+            EntryKind::GinRoute => (true, None, false),
             // net/http `(w http.ResponseWriter, r *http.Request)` —
-            // only `r` carries adversary bytes.
-            EntryKind::GoNetHttp => (true, Some(1), true),
+            // `r.FormValue` / `r.URL.Query` / `r.URL.Query.Get` /
+            // `r.Header.Get` / `r.Header.Values` / `r.Body` /
+            // `r.Cookie` / `r.Cookies` are classified as
+            // `Source(Cap::all())` by the global Go label rules.
+            // The access-path label rules carry every adversary byte
+            // through to local variables.  Painting the bare `r`
+            // object as `Source(Cap::all())` would re-fire excluded
+            // methods like `r.Context()` and `r.WithContext(...)` as
+            // structural sinks, mirroring the Express FP risk.
+            EntryKind::GoNetHttp => (true, Some(1), false),
         };
         let entry_block = &ssa.blocks[ssa.entry.0 as usize];
         for inst in entry_block.phis.iter().chain(entry_block.body.iter()) {
