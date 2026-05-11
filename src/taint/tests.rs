@@ -5495,6 +5495,7 @@ class Worker {
         None,
         None,
         None,
+        None,
     );
 
     // Collect containers of every key named "process".
@@ -5565,6 +5566,7 @@ function helper(x) {
         Lang::JavaScript,
         "test.js",
         &file_cfg.summaries,
+        None,
         None,
         None,
         None,
@@ -5792,6 +5794,7 @@ class Reader {
         None,
         None,
         None,
+        None,
     );
 
     let read_sum = summaries
@@ -5835,6 +5838,7 @@ class Maker {
         Lang::Java,
         "Maker.java",
         &file_cfg.summaries,
+        None,
         None,
         None,
         None,
@@ -6884,6 +6888,7 @@ fn callee_body_carries_file_cross_package_imports() {
         None,
         None,
         None,
+        None,
     );
 
     assert!(
@@ -6931,4 +6936,75 @@ function handler(req, res) {
         !findings.is_empty(),
         "expected taint flow via filter(pickFirst) — pickFirst is not a recognised validator and must not strip taint; got 0 findings",
     );
+}
+
+// ── Phase 09 cross-package namespace migration ─────────────────────────────
+
+/// `build_cross_package_func_keys` produces a package-prefixed
+/// [`FuncKey::namespace`] for files inside a discovered monorepo
+/// package and a plain namespace otherwise.
+///
+/// Locks in the migration done as part of the deferred Phase 09 audit:
+/// SSA summary keys produced by
+/// [`crate::taint::lower_all_functions_from_bodies`] use
+/// `namespace_with_package` for their namespace, so the cross-package
+/// import map's `FuncKey::namespace` must agree for step 0.7 of
+/// `resolve_callee_full` to land hits in
+/// [`crate::summary::GlobalSummaries::ssa_by_key`].
+#[test]
+fn cross_package_func_keys_namespace_uses_resolver_when_available() {
+    use crate::resolve::{ImportBinding, build_module_graph};
+    use std::path::PathBuf;
+
+    let mut fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fixture_root.push("tests/fixtures/resolver");
+    let root = fixture_root
+        .canonicalize()
+        .unwrap_or_else(|_| fixture_root.clone());
+    let graph = build_module_graph(std::slice::from_ref(&root));
+
+    let resolved_file = root.join("packages/util/src/index.ts");
+    let binding = ImportBinding {
+        local_name: "doStuff".to_string(),
+        source_module: "@scope/util".to_string(),
+        resolved_file: Some(resolved_file.clone()),
+        exported_name: Some("doStuff".to_string()),
+    };
+    let scan_root = root.to_string_lossy().to_string();
+
+    let with_resolver = crate::taint::build_cross_package_func_keys(
+        std::slice::from_ref(&binding),
+        Some(&scan_root),
+        Some(&graph),
+        Lang::TypeScript,
+    );
+    let key = with_resolver
+        .get("doStuff")
+        .expect("resolved binding maps to a FuncKey");
+    assert!(
+        key.namespace.starts_with("@scope/util::"),
+        "expected package-prefixed namespace, got {ns}",
+        ns = key.namespace,
+    );
+    assert!(
+        key.namespace.ends_with("packages/util/src/index.ts"),
+        "expected the suffix to remain the scan-root-relative path, got {ns}",
+        ns = key.namespace,
+    );
+
+    let without_resolver = crate::taint::build_cross_package_func_keys(
+        std::slice::from_ref(&binding),
+        Some(&scan_root),
+        None,
+        Lang::TypeScript,
+    );
+    let plain = without_resolver
+        .get("doStuff")
+        .expect("plain binding maps to a FuncKey");
+    assert!(
+        !plain.namespace.contains("::"),
+        "without a resolver the namespace must stay plain, got {ns}",
+        ns = plain.namespace,
+    );
+    assert_eq!(plain.namespace, "packages/util/src/index.ts");
 }

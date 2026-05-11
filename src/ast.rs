@@ -34,7 +34,7 @@ use crate::patterns::{FindingCategory, PatternCategory, Severity};
 use crate::state;
 use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::summary::{FuncSummary, GlobalSummaries};
-use crate::symbol::{Lang, normalize_namespace};
+use crate::symbol::Lang;
 use crate::utils::config::AnalysisMode;
 use crate::utils::ext::lowercase_ext;
 use crate::utils::{Config, query_cache};
@@ -1632,6 +1632,7 @@ impl<'a> ParsedFile<'a> {
         &self,
         global_summaries: Option<&GlobalSummaries>,
         scan_root: Option<&Path>,
+        module_graph: Option<&crate::resolve::ModuleGraph>,
     ) -> (
         Vec<(crate::symbol::FuncKey, SsaFuncSummary)>,
         Vec<(
@@ -1641,7 +1642,11 @@ impl<'a> ParsedFile<'a> {
     ) {
         let caller_lang = Lang::from_slug(self.source.lang_slug).unwrap_or(Lang::Rust);
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
-        let namespace = normalize_namespace(&self.source.file_path_str, scan_root_str.as_deref());
+        let namespace = crate::symbol::namespace_with_package(
+            &self.source.file_path_str,
+            scan_root_str.as_deref(),
+            module_graph,
+        );
 
         // Use the FileCfg path (same one `analyse_file` uses at taint time) so
         // the SSA summaries stored cross-file match exactly what pass 2 will
@@ -1659,6 +1664,7 @@ impl<'a> ParsedFile<'a> {
             global_summaries,
             Some(&locator),
             scan_root_str.as_deref(),
+            module_graph,
         );
 
         (summaries.into_iter().collect(), bodies)
@@ -1697,6 +1703,7 @@ impl<'a> ParsedFile<'a> {
         &self,
         global_summaries: Option<&GlobalSummaries>,
         scan_root: Option<&Path>,
+        module_graph: Option<&crate::resolve::ModuleGraph>,
     ) -> (
         std::collections::HashMap<
             crate::symbol::FuncKey,
@@ -1709,7 +1716,11 @@ impl<'a> ParsedFile<'a> {
     ) {
         let caller_lang = Lang::from_slug(self.source.lang_slug).unwrap_or(Lang::Rust);
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
-        let namespace = normalize_namespace(&self.source.file_path_str, scan_root_str.as_deref());
+        let namespace = crate::symbol::namespace_with_package(
+            &self.source.file_path_str,
+            scan_root_str.as_deref(),
+            module_graph,
+        );
         let locator = crate::summary::SinkSiteLocator {
             tree: &self.source.tree,
             bytes: self.source.bytes,
@@ -1723,6 +1734,7 @@ impl<'a> ParsedFile<'a> {
             global_summaries,
             Some(&locator),
             scan_root_str.as_deref(),
+            module_graph,
         )
     }
 
@@ -1746,7 +1758,8 @@ impl<'a> ParsedFile<'a> {
         // in `analyse_file_fused`.
         crate::taint::ssa_transfer::reset_path_safe_suppressed_spans();
         crate::taint::ssa_transfer::reset_all_validated_spans();
-        let (ssa_summaries, callee_bodies) = self.lower_ssa_for_fused(global_summaries, scan_root);
+        let (ssa_summaries, callee_bodies) =
+            self.lower_ssa_for_fused(global_summaries, scan_root, cfg.module_graph.as_deref());
         self.run_cfg_analyses_with_lowered(
             cfg,
             global_summaries,
@@ -1782,7 +1795,11 @@ impl<'a> ParsedFile<'a> {
         tracing::debug!("Running taint analysis on: {}", self.source.path.display());
         tracing::debug!("Func summaries: {:?}", self.local_summaries());
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
-        let namespace = normalize_namespace(&self.source.file_path_str, scan_root_str.as_deref());
+        let namespace = crate::symbol::namespace_with_package(
+            &self.source.file_path_str,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+        );
         let extra = if self.lang_rules.extra_labels.is_empty() {
             None
         } else {
@@ -2266,7 +2283,7 @@ pub fn perf_stage_breakdown_fused(
 
     let s_lower = Instant::now();
     let (lowered_summaries, lowered_bodies) =
-        parsed.lower_ssa_for_fused(global_summaries, scan_root);
+        parsed.lower_ssa_for_fused(global_summaries, scan_root, cfg.module_graph.as_deref());
     let t_lower = s_lower.elapsed().as_micros();
     let lower_breakdown = crate::taint::perf_lower_timings_take().unwrap_or([0; 7]);
 
@@ -2357,7 +2374,7 @@ pub fn perf_stage_breakdown(
     let t_auth = s_auth.elapsed().as_micros();
 
     let s_ssa = Instant::now();
-    let _ = parsed.extract_ssa_artifacts(global_summaries, scan_root);
+    let _ = parsed.extract_ssa_artifacts(global_summaries, scan_root, cfg.module_graph.as_deref());
     let t_ssa = s_ssa.elapsed().as_micros();
 
     Some([t_parse_cfg, t_taint, t_suppr, t_ast, t_auth, t_ssa])
@@ -2393,7 +2410,8 @@ pub fn extract_all_summaries_from_bytes(
     let lang_slug = source.lang_slug;
     let parsed = ParsedFile::from_source(source, cfg);
     let func_summaries = parsed.export_summaries_with_root(scan_root);
-    let (ssa_summaries, ssa_bodies) = parsed.extract_ssa_artifacts(None, scan_root);
+    let (ssa_summaries, ssa_bodies) =
+        parsed.extract_ssa_artifacts(None, scan_root, cfg.module_graph.as_deref());
     let auth_summaries = auth_analysis::extract_auth_summaries_by_key(
         &parsed.source.tree,
         parsed.source.bytes,
@@ -2406,7 +2424,11 @@ pub fn extract_all_summaries_from_bytes(
         None
     } else {
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
-        let ns = normalize_namespace(&parsed.source.file_path_str, scan_root_str.as_deref());
+        let ns = crate::symbol::namespace_with_package(
+            &parsed.source.file_path_str,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+        );
         let caller_lang = Lang::from_slug(parsed.source.lang_slug).unwrap_or(Lang::Rust);
         let map = crate::taint::build_cross_package_func_keys(
             &parsed.file_cfg.resolved_imports,
@@ -5941,7 +5963,7 @@ pub fn analyse_file_fused(
         crate::taint::ssa_transfer::reset_path_safe_suppressed_spans();
         crate::taint::ssa_transfer::reset_all_validated_spans();
         let (lowered_summaries, lowered_bodies) =
-            parsed.lower_ssa_for_fused(global_summaries, scan_root);
+            parsed.lower_ssa_for_fused(global_summaries, scan_root, cfg.module_graph.as_deref());
         out.extend(parsed.run_cfg_analyses_with_lowered(
             cfg,
             global_summaries,
@@ -6060,7 +6082,11 @@ pub fn analyse_file_fused(
         None
     } else {
         let scan_root_str = scan_root.map(|p| p.to_string_lossy());
-        let ns = normalize_namespace(&parsed.source.file_path_str, scan_root_str.as_deref());
+        let ns = crate::symbol::namespace_with_package(
+            &parsed.source.file_path_str,
+            scan_root_str.as_deref(),
+            cfg.module_graph.as_deref(),
+        );
         let caller_lang = Lang::from_slug(parsed.source.lang_slug).unwrap_or(Lang::Rust);
         let map = crate::taint::build_cross_package_func_keys(
             &parsed.file_cfg.resolved_imports,

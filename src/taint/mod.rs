@@ -416,14 +416,23 @@ fn compute_module_aliases_for_summary(
 /// builtin/unresolved specifiers). The caller passes `None` to
 /// [`SsaTaintTransfer::cross_package_imports`] in that case.
 ///
-/// `_module_graph` is accepted for symmetry with the resolver's
-/// `project_namespace_for` helper but intentionally not consulted: SSA
-/// summary keys produced by [`lower_all_functions_from_bodies`] use the
-/// plain `normalize_namespace` form (caller namespace passed in by
-/// `analyse_file_with_lowered`), so step 0.7's lookup must use the same
-/// shape for hits to land in [`GlobalSummaries::ssa_by_key`].  Adopting
-/// the package-prefixed form here would require a parallel migration on
-/// the SSA-summary storage side.
+/// `module_graph` aligns the target [`FuncKey::namespace`] with the
+/// package-prefixed form that [`FuncSummary::func_key_with_resolver`]
+/// produces on the cross-file storage side: when the resolved file lies
+/// inside a discovered package the namespace becomes
+/// `"@scope/name::src/file.ts"`, otherwise it falls back to plain
+/// `normalize_namespace`. Step 0.7 of `resolve_callee_full` looks up
+/// `(lang, namespace, name)` against [`GlobalSummaries::ssa_by_key`]
+/// where the SSA-side keys are now produced via the same
+/// `namespace_with_package` shape (callers in [`crate::ast::ParsedFile`]
+/// pre-compute the package-prefixed namespace before invoking
+/// [`lower_all_functions_from_bodies`]), so the two sides agree even
+/// when two packages share a project-relative file path.
+///
+/// `module_graph = None` (single-package scans, non-JS/TS files, unit
+/// tests, indexed-mode SQLite fallback) collapses to the historical
+/// `normalize_namespace` behaviour, keeping the migration strictly
+/// additive for any consumer that does not opt in.
 ///
 /// The constructed key intentionally leaves `container`, `arity`,
 /// `disambig`, and `kind` at their defaults — the resolver verdict only
@@ -433,7 +442,7 @@ fn compute_module_aliases_for_summary(
 pub fn build_cross_package_func_keys(
     resolved_imports: &[crate::resolve::ImportBinding],
     scan_root: Option<&str>,
-    _module_graph: Option<&crate::resolve::ModuleGraph>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
     caller_lang: Lang,
 ) -> HashMap<String, FuncKey> {
     let mut out: HashMap<String, FuncKey> = HashMap::new();
@@ -459,7 +468,8 @@ pub fn build_cross_package_func_keys(
             .and_then(Lang::from_extension)
             .unwrap_or(caller_lang);
         let abs = resolved_file.to_string_lossy();
-        let namespace = crate::symbol::normalize_namespace(&abs, scan_root);
+        let namespace =
+            crate::symbol::namespace_with_package(&abs, scan_root, module_graph);
         let key = FuncKey {
             lang: target_lang,
             namespace,
@@ -513,6 +523,7 @@ pub fn analyse_file(
                     caller_namespace,
                     local_summaries,
                     global_summaries,
+                    None,
                     None,
                     None,
                 );
@@ -1895,6 +1906,7 @@ pub(crate) fn extract_intra_file_ssa_summaries(
 /// resistant identity we have: same-name methods on different classes, same-
 /// name overloads with different arity, and anonymous bodies at distinct
 /// source spans all get distinct keys.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_all_functions_from_bodies(
     file_cfg: &FileCfg,
     lang: Lang,
@@ -1903,6 +1915,7 @@ pub(crate) fn lower_all_functions_from_bodies(
     global_summaries: Option<&GlobalSummaries>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
     scan_root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
 ) -> (
     std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
     std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
@@ -1919,12 +1932,14 @@ pub(crate) fn lower_all_functions_from_bodies(
                     global_summaries,
                     locator,
                     scan_root,
+                    module_graph,
                 )
             },
         )
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_all_functions_from_bodies_inner(
     file_cfg: &FileCfg,
     lang: Lang,
@@ -1933,6 +1948,7 @@ fn lower_all_functions_from_bodies_inner(
     global_summaries: Option<&GlobalSummaries>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
     scan_root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
 ) -> (
     std::collections::HashMap<FuncKey, crate::summary::ssa_summary::SsaFuncSummary>,
     std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
@@ -1948,8 +1964,12 @@ fn lower_all_functions_from_bodies_inner(
     // the callee's own package boundary (Phase 09 step 0.7) instead of
     // skipping the lookup entirely.
     let cross_package_imports_arc = {
-        let map =
-            build_cross_package_func_keys(&file_cfg.resolved_imports, scan_root, None, lang);
+        let map = build_cross_package_func_keys(
+            &file_cfg.resolved_imports,
+            scan_root,
+            module_graph,
+            lang,
+        );
         std::sync::Arc::new(map)
     };
 
@@ -2731,6 +2751,7 @@ type EligibleCalleeBodies = Vec<(FuncKey, ssa_transfer::CalleeSsaBody)>;
 /// entry) and lowers each body's graph with its recorded entry/params. This
 /// path is equivalent to what `analyse_file` uses at taint time, so the SSA
 /// summaries produced here line up exactly with what pass 2 will consult.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_ssa_artifacts_from_file_cfg(
     file_cfg: &FileCfg,
     lang: Lang,
@@ -2739,6 +2760,7 @@ pub(crate) fn extract_ssa_artifacts_from_file_cfg(
     global_summaries: Option<&GlobalSummaries>,
     locator: Option<&crate::summary::SinkSiteLocator<'_>>,
     scan_root: Option<&str>,
+    module_graph: Option<&crate::resolve::ModuleGraph>,
 ) -> (SsaArtifactSummaries, EligibleCalleeBodies) {
     let (summaries, bodies) = lower_all_functions_from_bodies(
         file_cfg,
@@ -2748,6 +2770,7 @@ pub(crate) fn extract_ssa_artifacts_from_file_cfg(
         global_summaries,
         locator,
         scan_root,
+        module_graph,
     );
     let eligible_bodies = build_eligible_bodies(file_cfg, bodies);
     (summaries, eligible_bodies)

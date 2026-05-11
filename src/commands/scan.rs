@@ -1163,7 +1163,7 @@ fn run_topo_batches(
                     .iter()
                     .filter(|p| {
                         let abs = p.to_string_lossy();
-                        let rel = crate::symbol::normalize_namespace(&abs, root_str_ref);
+                        let rel = crate::symbol::namespace_with_package(&abs, root_str_ref, mg);
                         namespaces_needing_reanalysis.contains(&rel)
                     })
                     .map(|p| (*p).clone())
@@ -2319,7 +2319,11 @@ pub fn scan_with_index_parallel_observer(
                     crate::symbol::Lang::from_slug(&lang_str).unwrap_or(crate::symbol::Lang::Rust);
                 // Use persisted namespace; fall back to normalized file_path
                 let ns = if namespace.is_empty() {
-                    crate::symbol::normalize_namespace(&file_path, Some(&root_str))
+                    crate::symbol::namespace_with_package(
+                        &file_path,
+                        Some(&root_str),
+                        cfg.module_graph.as_deref(),
+                    )
                 } else {
                     namespace
                 };
@@ -2377,7 +2381,11 @@ pub fn scan_with_index_parallel_observer(
                         let lang = crate::symbol::Lang::from_slug(&lang_str)
                             .unwrap_or(crate::symbol::Lang::Rust);
                         let ns = if namespace.is_empty() {
-                            crate::symbol::normalize_namespace(&file_path, Some(&root_str))
+                            crate::symbol::namespace_with_package(
+                                &file_path,
+                                Some(&root_str),
+                                cfg.module_graph.as_deref(),
+                            )
                         } else {
                             namespace
                         };
@@ -2431,7 +2439,11 @@ pub fn scan_with_index_parallel_observer(
                 let lang =
                     crate::symbol::Lang::from_slug(&lang_str).unwrap_or(crate::symbol::Lang::Rust);
                 let ns = if namespace.is_empty() {
-                    crate::symbol::normalize_namespace(&file_path, Some(&root_str))
+                    crate::symbol::namespace_with_package(
+                        &file_path,
+                        Some(&root_str),
+                        cfg.module_graph.as_deref(),
+                    )
                 } else {
                     namespace
                 };
