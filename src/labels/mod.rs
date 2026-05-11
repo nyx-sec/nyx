@@ -687,10 +687,7 @@ pub fn lookup(lang: &str, raw: &str) -> Kind {
 /// JS/TS only.  `callee_leaf` is expected to be the post-`callee_leaf_name`
 /// short form (e.g. `"then"`, not `"p.then"`).
 pub fn is_promise_callback_method(lang: &str, callee_leaf: &str) -> bool {
-    if !matches!(
-        lang,
-        "javascript" | "js" | "typescript" | "ts" | "tsx"
-    ) {
+    if !matches!(lang, "javascript" | "js" | "typescript" | "ts" | "tsx") {
         return false;
     }
     matches!(callee_leaf, "then" | "catch" | "finally")
@@ -1510,8 +1507,7 @@ pub fn type_qualified_sink_payload_args(qualified_callee: &str) -> Option<&'stat
 /// a textual import witness. Returning an empty slice means the gate
 /// must fall back to the `local_imports` map alone.
 fn receiver_type_prefixes_for_module(module: &str) -> &'static [&'static str] {
-    if module.eq_ignore_ascii_case("node:fs/promises")
-        || module.eq_ignore_ascii_case("fs/promises")
+    if module.eq_ignore_ascii_case("node:fs/promises") || module.eq_ignore_ascii_case("fs/promises")
     {
         &["FileSystemPromisesNs"]
     } else {
@@ -3237,8 +3233,14 @@ mod tests {
 
     #[test]
     fn starts_with_ignore_ascii_case_matches_canonical_shapes() {
-        assert!(starts_with_ignore_ascii_case("FILE://etc/passwd", "file://"));
-        assert!(starts_with_ignore_ascii_case("file://etc/passwd", "FILE://"));
+        assert!(starts_with_ignore_ascii_case(
+            "FILE://etc/passwd",
+            "file://"
+        ));
+        assert!(starts_with_ignore_ascii_case(
+            "file://etc/passwd",
+            "FILE://"
+        ));
         assert!(starts_with_ignore_ascii_case("http://", "http://"));
         assert!(starts_with_ignore_ascii_case("http://", ""));
         assert!(!starts_with_ignore_ascii_case("http", "https"));

@@ -768,10 +768,8 @@ pub fn extract_ssa_func_summary_full(
                     s
                 }
                 None => match locator {
-                    Some(loc) => loc.site_for_span(
-                        cfg[event.sink_node].classification_span(),
-                        event.sink_caps,
-                    ),
+                    Some(loc) => loc
+                        .site_for_span(cfg[event.sink_node].classification_span(), event.sink_caps),
                     None => SinkSite::cap_only(event.sink_caps),
                 },
             };
@@ -1155,7 +1153,9 @@ fn infer_summary_return_type(
         // constructor identifier preserved in `callee_text`.
         if let Some(inst) = block.body.last()
             && let SsaOp::Call {
-                callee, callee_text, ..
+                callee,
+                callee_text,
+                ..
             } = &inst.op
         {
             if let Some(ty) = crate::ssa::type_facts::constructor_type(lang, callee) {

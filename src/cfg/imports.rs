@@ -44,10 +44,7 @@ fn extend_with_promises_alias(tree: &Tree, code: &[u8], out: &mut HashMap<String
     let root = tree.root_node();
     let mut top_cursor = root.walk();
     for child in root.children(&mut top_cursor) {
-        if !matches!(
-            child.kind(),
-            "lexical_declaration" | "variable_declaration"
-        ) {
+        if !matches!(child.kind(), "lexical_declaration" | "variable_declaration") {
             continue;
         }
         let mut decl_cursor = child.walk();
@@ -506,7 +503,11 @@ fn extract_require_module(node: Node, code: &[u8]) -> Option<String> {
 /// and the macro's argument taint is dropped. Conservative: returns `None`
 /// when both `tokio::<name>` and `futures::<name>` are imported (ambiguous)
 /// or when neither is, leaving the bare `join` callee alone.
-pub(super) fn rust_bare_join_crate_prefix(root: Node, code: &[u8], leaf: &str) -> Option<&'static str> {
+pub(super) fn rust_bare_join_crate_prefix(
+    root: Node,
+    code: &[u8],
+    leaf: &str,
+) -> Option<&'static str> {
     if !matches!(leaf, "join" | "try_join") {
         return None;
     }
@@ -542,12 +543,7 @@ pub(super) fn rust_bare_join_crate_prefix(root: Node, code: &[u8], leaf: &str) -
 ///   collide the rewrite is still safe).
 /// * `use tokio::*;` is NOT recognised — wildcard imports are too permissive
 ///   for the bare-leaf rewrite to stay precise.
-fn rust_use_decl_imports_leaf(
-    use_decl: Node,
-    code: &[u8],
-    crate_prefix: &str,
-    leaf: &str,
-) -> bool {
+fn rust_use_decl_imports_leaf(use_decl: Node, code: &[u8], crate_prefix: &str, leaf: &str) -> bool {
     let mut stack = vec![use_decl];
     while let Some(node) = stack.pop() {
         match node.kind() {
@@ -565,9 +561,7 @@ fn rust_use_decl_imports_leaf(
                     .and_then(|p| text_of(p, code))
                     .as_deref()
                     == Some(crate_prefix);
-                if path_ok
-                    && let Some(list) = node.child_by_field_name("list")
-                {
+                if path_ok && let Some(list) = node.child_by_field_name("list") {
                     let mut lc = list.walk();
                     for entry in list.named_children(&mut lc) {
                         match entry.kind() {
@@ -613,12 +607,7 @@ fn rust_use_decl_imports_leaf(
     false
 }
 
-fn scoped_identifier_matches(
-    node: Node,
-    code: &[u8],
-    crate_prefix: &str,
-    leaf: &str,
-) -> bool {
+fn scoped_identifier_matches(node: Node, code: &[u8], crate_prefix: &str, leaf: &str) -> bool {
     let path_text = node
         .child_by_field_name("path")
         .and_then(|p| text_of(p, code));

@@ -2317,7 +2317,15 @@ fn inline_analyse_callee(
     call_inst: &SsaInst,
 ) -> Option<InlineResult> {
     inline_analyse_callee_with_seeds(
-        callee, args, receiver, state, transfer, cfg, caller_ssa, call_inst, &[],
+        callee,
+        args,
+        receiver,
+        state,
+        transfer,
+        cfg,
+        caller_ssa,
+        call_inst,
+        &[],
     )
 }
 
@@ -3996,8 +4004,9 @@ pub(super) fn transfer_inst(
             // before the rest of the Call arm.  Returning early avoids
             // re-classifying these as ordinary calls (no summary, no sink),
             // which would otherwise drop the receiver/element taint flow.
-            if try_apply_promise_callback(inst, info, callee, args, receiver, state, transfer, cfg, ssa)
-            {
+            if try_apply_promise_callback(
+                inst, info, callee, args, receiver, state, transfer, cfg, ssa,
+            ) {
                 return;
             }
             if try_apply_promise_combinator(inst, info, callee, args, state, transfer) {
@@ -4025,10 +4034,7 @@ pub(super) fn transfer_inst(
                                 .as_ref()
                                 .and_then(|env| env.get(rv).types.as_singleton())
                         });
-                    if matches!(
-                        receiver_kind,
-                        Some(crate::ssa::type_facts::TypeKind::Url)
-                    ) {
+                    if matches!(receiver_kind, Some(crate::ssa::type_facts::TypeKind::Url)) {
                         let mut arg_caps = Cap::empty();
                         let mut arg_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
                         let mut arg_uses_summary = false;
@@ -4049,11 +4055,8 @@ pub(super) fn transfer_inst(
                             // SSA value that aliases the URL — `u`,
                             // `u.searchParams`, etc. — picks up the new
                             // taint, not just the immediate set receiver.
-                            let chain = receiver_candidates_for_type_lookup(
-                                rv,
-                                Some(ssa),
-                                transfer.lang,
-                            );
+                            let chain =
+                                receiver_candidates_for_type_lookup(rv, Some(ssa), transfer.lang);
                             for v in chain {
                                 let combined = match state.get(v) {
                                     Some(prev) => {
@@ -4302,14 +4305,12 @@ pub(super) fn transfer_inst(
             // `is_string_safe_for_ssrf`, so propagating the taint here is
             // safe: the prefix-lock fact still suppresses the sink for
             // the two-arg form.
-            if let Some((path_idx, _base_idx)) =
-                crate::ssa::type_facts::url_builder_arg_indices(
-                    transfer.lang,
-                    callee,
-                    info.call.outer_callee.as_deref(),
-                    info.call.is_constructor,
-                )
-            {
+            if let Some((path_idx, _base_idx)) = crate::ssa::type_facts::url_builder_arg_indices(
+                transfer.lang,
+                callee,
+                info.call.outer_callee.as_deref(),
+                info.call.is_constructor,
+            ) {
                 if let Some(path_group) = args.get(path_idx) {
                     for &v in path_group {
                         if let Some(t) = state.get(v) {
@@ -5606,8 +5607,7 @@ pub(super) fn transfer_inst(
             // in `src/ssa/lower.rs` (per-slot Source classification puts the
             // SsaValue into `ssa.slot_scoped_assigns`).  Operand union still
             // ran above, so transitive taint via inner uses propagates.
-            let suppress_node_source =
-                ssa.slot_scoped_assigns.contains(&inst.value);
+            let suppress_node_source = ssa.slot_scoped_assigns.contains(&inst.value);
             if !suppress_node_source {
                 for lbl in &info.taint.labels {
                     if let DataLabel::Source(bits) = lbl {
@@ -6415,8 +6415,8 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                 info.call.is_constructor,
             )
             .expect("guard ensures Some");
-            let base = url_builder_concrete_base(info, args, abs, base_idx)
-                .expect("guard ensures Some");
+            let base =
+                url_builder_concrete_base(info, args, abs, base_idx).expect("guard ensures Some");
             let path_string = args
                 .get(path_idx)
                 .and_then(|g| g.first().copied())
@@ -7157,24 +7157,21 @@ fn collect_block_events(
                         //      via `var_name`.  Falling back to it lets
                         //      Phase 03 promise-callback synthesis resolve
                         //      the named-callback shape.
-                        let arg_callees_name: Option<String> = info
-                            .arg_callees
-                            .get(cb_idx)
-                            .and_then(|ac| ac.clone());
-                        let ssa_var_name: Option<String> = if let SsaOp::Call { args, .. } =
-                            &inst.op
-                        {
-                            args.get(cb_idx).and_then(|grp| {
-                                grp.iter().find_map(|v| {
-                                    ssa.value_defs
-                                        .get(v.0 as usize)
-                                        .and_then(|vd| vd.var_name.clone())
-                                        .filter(|n| !n.contains('.') && !n.is_empty())
+                        let arg_callees_name: Option<String> =
+                            info.arg_callees.get(cb_idx).and_then(|ac| ac.clone());
+                        let ssa_var_name: Option<String> =
+                            if let SsaOp::Call { args, .. } = &inst.op {
+                                args.get(cb_idx).and_then(|grp| {
+                                    grp.iter().find_map(|v| {
+                                        ssa.value_defs
+                                            .get(v.0 as usize)
+                                            .and_then(|vd| vd.var_name.clone())
+                                            .filter(|n| !n.contains('.') && !n.is_empty())
+                                    })
                                 })
-                            })
-                        } else {
-                            None
-                        };
+                            } else {
+                                None
+                            };
                         let cb_callee_owned = arg_callees_name.or(ssa_var_name);
                         if let Some(cb_callee) = cb_callee_owned.as_deref() {
                             // First try the standard summary-based resolution
@@ -9753,11 +9750,7 @@ fn receiver_candidates_for_type_lookup(
                         // fix).
                         SsaOp::Call {
                             receiver: Some(rv), ..
-                        } if matches!(
-                            lang,
-                            Lang::Rust | Lang::JavaScript | Lang::TypeScript
-                        ) =>
-                        {
+                        } if matches!(lang, Lang::Rust | Lang::JavaScript | Lang::TypeScript) => {
                             next_receiver = Some(*rv);
                         }
                         _ => {}
@@ -9816,12 +9809,7 @@ fn method_candidates_from_chain(callee: &str, lang: Lang) -> SmallVec<[String; 4
 ///
 /// These are callees whose suffix matches a broad sink rule but whose
 /// receiver is known to be safe (console output, not HTTP response).
-fn suppress_known_safe_callees(
-    sink_caps: Cap,
-    callee: &str,
-    lang: Lang,
-    info: &NodeInfo,
-) -> Cap {
+fn suppress_known_safe_callees(sink_caps: Cap, callee: &str, lang: Lang, info: &NodeInfo) -> Cap {
     match lang {
         Lang::Java => {
             if callee.starts_with("System.out.") || callee.starts_with("System.err.") {
@@ -9850,7 +9838,10 @@ fn suppress_known_safe_callees(
             let Some(first_arg) = info.call.arg_uses.first() else {
                 return sink_caps;
             };
-            if first_arg.iter().any(|s| is_go_non_response_writer(s.as_str())) {
+            if first_arg
+                .iter()
+                .any(|s| is_go_non_response_writer(s.as_str()))
+            {
                 sink_caps & !Cap::HTML_ESCAPE
             } else {
                 sink_caps
@@ -11288,8 +11279,7 @@ fn resolve_callee_full(
             // name.  Replaces the prior `O(|ssa_by_key|)` scan over
             // every persisted SSA key with a single hash probe plus
             // an iteration over only the matching bucket.
-            let candidates =
-                gs.ssa_keys_by_qualified(target.lang, &target.namespace, &target.name);
+            let candidates = gs.ssa_keys_by_qualified(target.lang, &target.namespace, &target.name);
             let mut hit: Option<&FuncKey> = None;
             let mut ambiguous = false;
             for k in candidates {
@@ -11631,9 +11621,7 @@ fn convert_ssa_to_resolved_for_caller(
             .map(|(idx, sites)| {
                 let filtered: SmallVec<[crate::summary::SinkSite; 1]> = sites
                     .iter()
-                    .filter(|s| {
-                        s.from_chain || s.file_rel.is_empty() || s.file_rel != caller_ns
-                    })
+                    .filter(|s| s.from_chain || s.file_rel.is_empty() || s.file_rel != caller_ns)
                     .cloned()
                     .collect();
                 (*idx, filtered)

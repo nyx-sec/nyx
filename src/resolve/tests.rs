@@ -69,8 +69,7 @@ fn resolves_scoped_package_import() {
     assert_eq!(resolved.package.as_deref(), Some("@scope/util"));
     let file = resolved.file.expect("@scope/util must resolve to a file");
     assert!(
-        file.ends_with("packages/util/src/index.ts")
-            || file.ends_with("packages/util/index.ts"),
+        file.ends_with("packages/util/src/index.ts") || file.ends_with("packages/util/index.ts"),
         "unexpected resolution: {}",
         file.display()
     );
@@ -153,7 +152,10 @@ fn project_namespace_prefixes_when_in_package() {
 
     let outside = std::env::temp_dir().join("nyx-resolver-outside.ts");
     let plain = graph.project_namespace_for(&outside, &r);
-    assert!(!plain.contains("::"), "outside-package namespace must be plain: {plain}");
+    assert!(
+        !plain.contains("::"),
+        "outside-package namespace must be plain: {plain}"
+    );
 }
 
 /// `"exports"."."` conditional map: `import` branch wins over `default`,
@@ -251,7 +253,10 @@ fn module_graph_is_cheap() {
         "build_module_graph added {delta_kib} KiB RSS (>10 MiB ceiling)"
     );
 
-    assert!(!graph.packages().is_empty(), "fixture tree must have packages");
+    assert!(
+        !graph.packages().is_empty(),
+        "fixture tree must have packages"
+    );
 }
 
 /// Parse a TypeScript file with tree-sitter and run
@@ -346,13 +351,11 @@ fn approximate_rss_kib() -> u64 {
         std::fs::read_to_string("/proc/self/status")
             .ok()
             .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("VmRSS:"))
-                    .and_then(|l| {
-                        l.split_whitespace()
-                            .nth(1)
-                            .and_then(|n| n.parse::<u64>().ok())
-                    })
+                s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| {
+                    l.split_whitespace()
+                        .nth(1)
+                        .and_then(|n| n.parse::<u64>().ok())
+                })
             })
             .unwrap_or(0)
     }

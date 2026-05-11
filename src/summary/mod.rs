@@ -665,8 +665,7 @@ pub struct GlobalSummaries {
     /// from SQLite, where the field is `#[serde(skip)]`).  Closes the
     /// indexed-mode parity gap on transitive cross-package IPA inside
     /// inlined frames.
-    cross_package_imports_by_namespace:
-        HashMap<String, std::sync::Arc<HashMap<String, FuncKey>>>,
+    cross_package_imports_by_namespace: HashMap<String, std::sync::Arc<HashMap<String, FuncKey>>>,
     /// Type hierarchy index for runtime virtual-dispatch fan-out.
     ///
     /// Installed by [`Self::install_hierarchy`] after pass 1 from the

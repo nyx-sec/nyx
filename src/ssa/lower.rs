@@ -1426,8 +1426,7 @@ fn rename_variables(
                 };
             let promise_destruct_args: Option<SmallVec<[SsaValue; 4]>> =
                 if is_combinator_rewrite_target && !binding_indices.is_empty() {
-                    let max_index =
-                        binding_indices.iter().copied().max().unwrap_or(0);
+                    let max_index = binding_indices.iter().copied().max().unwrap_or(0);
                     let needed = max_index + 1;
                     // Use `info.call.arg_uses` directly rather than the
                     // build_call_args-derived `args`, which may include an
@@ -1442,7 +1441,11 @@ fn rename_variables(
                                 var_stacks.get(ident).and_then(|s| s.last().copied())
                             })
                             .collect();
-                        if mapped.len() == needed { Some(mapped) } else { None }
+                        if mapped.len() == needed {
+                            Some(mapped)
+                        } else {
+                            None
+                        }
                     };
                     if arg_uses.len() == 1 && arg_uses[0].len() >= needed {
                         // Shape (a): single positional arg whose idents are the
@@ -1459,10 +1462,16 @@ fn rename_variables(
                         let mapped: SmallVec<[SsaValue; 4]> = names
                             .iter()
                             .filter_map(|ident| {
-                                var_stacks.get(ident.as_str()).and_then(|s| s.last().copied())
+                                var_stacks
+                                    .get(ident.as_str())
+                                    .and_then(|s| s.last().copied())
                             })
                             .collect();
-                        if mapped.len() == needed { Some(mapped) } else { None }
+                        if mapped.len() == needed {
+                            Some(mapped)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -1527,106 +1536,109 @@ fn rename_variables(
             // rather than static text), fall back to the conservative
             // "all-Complex-are-Source" emission for legacy preservation.
             use crate::cfg::RhsArraySlot;
-            let any_slot_has_source_cap =
-                info.taint.rhs_array_elements.iter().any(|s| {
-                    matches!(
-                        s,
-                        RhsArraySlot::Complex { source_cap, .. }
-                            if !source_cap.is_empty()
-                    )
-                });
-            let effective_outer_fallback =
-                outer_is_source && !any_slot_has_source_cap;
+            let any_slot_has_source_cap = info.taint.rhs_array_elements.iter().any(|s| {
+                matches!(
+                    s,
+                    RhsArraySlot::Complex { source_cap, .. }
+                        if !source_cap.is_empty()
+                )
+            });
+            let effective_outer_fallback = outer_is_source && !any_slot_has_source_cap;
 
-            let bare_array_ops: Option<(SmallVec<[SsaOp; 4]>, SmallVec<[bool; 4]>)> = if !info
-                .taint
-                .rhs_array_elements
-                .is_empty()
-                && !binding_indices.is_empty()
-                && promise_destruct_args.is_none()
-            {
-                let max_index = binding_indices.iter().copied().max().unwrap_or(0);
-                let needed = max_index + 1;
-                if info.taint.rhs_array_elements.len() < needed {
-                    None
-                } else {
-                    let mut per_pos: SmallVec<[SsaOp; 4]> = SmallVec::new();
-                    let mut slot_scoped_mask: SmallVec<[bool; 4]> = SmallVec::new();
-                    let mut bail = false;
-                    for slot in info.taint.rhs_array_elements.iter().take(needed) {
-                        let mut is_slot_scoped = false;
-                        let slot_op = match slot {
-                            RhsArraySlot::Ident(ident) => {
-                                match var_stacks
-                                    .get(ident.as_str())
-                                    .and_then(|s| s.last().copied())
-                                {
-                                    Some(sv) => SsaOp::Assign(SmallVec::from_elem(sv, 1)),
-                                    None => {
-                                        bail = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            RhsArraySlot::Literal => SsaOp::Const(None),
-                            RhsArraySlot::Complex { uses: inner_uses, source_cap } => {
-                                let mut mapped: SmallVec<[SsaValue; 4]> = SmallVec::new();
-                                for ident in inner_uses.iter() {
-                                    if let Some(sv) = var_stacks
+            let bare_array_ops: Option<(SmallVec<[SsaOp; 4]>, SmallVec<[bool; 4]>)> =
+                if !info.taint.rhs_array_elements.is_empty()
+                    && !binding_indices.is_empty()
+                    && promise_destruct_args.is_none()
+                {
+                    let max_index = binding_indices.iter().copied().max().unwrap_or(0);
+                    let needed = max_index + 1;
+                    if info.taint.rhs_array_elements.len() < needed {
+                        None
+                    } else {
+                        let mut per_pos: SmallVec<[SsaOp; 4]> = SmallVec::new();
+                        let mut slot_scoped_mask: SmallVec<[bool; 4]> = SmallVec::new();
+                        let mut bail = false;
+                        for slot in info.taint.rhs_array_elements.iter().take(needed) {
+                            let mut is_slot_scoped = false;
+                            let slot_op = match slot {
+                                RhsArraySlot::Ident(ident) => {
+                                    match var_stacks
                                         .get(ident.as_str())
                                         .and_then(|s| s.last().copied())
                                     {
-                                        if !mapped.contains(&sv) {
-                                            mapped.push(sv);
+                                        Some(sv) => SsaOp::Assign(SmallVec::from_elem(sv, 1)),
+                                        None => {
+                                            bail = true;
+                                            break;
                                         }
                                     }
                                 }
-                                if !source_cap.is_empty() {
-                                    // Per-slot classification found a Source
-                                    // pattern (e.g. `req.body.cmd`) inside
-                                    // THIS slot's subtree.  Emit Source so the
-                                    // binding inherits the outer-node Source
-                                    // caps for this slot's index.
-                                    SsaOp::Source
-                                } else if outer_is_source && any_slot_has_source_cap {
-                                    // Some OTHER slot's subtree classified as
-                                    // Source; this slot did NOT.  Emit
-                                    // Assign(mapped) and mark the slot as
-                                    // slot-scoped so the taint transfer's
-                                    // Assign arm skips outer-node Source
-                                    // label pickup for this binding (without
-                                    // losing transitive taint through inner
-                                    // uses).  When `mapped` is empty, fall
-                                    // back to Const(None) — the binding
-                                    // carries no taint anyway.
-                                    if mapped.is_empty() {
+                                RhsArraySlot::Literal => SsaOp::Const(None),
+                                RhsArraySlot::Complex {
+                                    uses: inner_uses,
+                                    source_cap,
+                                } => {
+                                    let mut mapped: SmallVec<[SsaValue; 4]> = SmallVec::new();
+                                    for ident in inner_uses.iter() {
+                                        if let Some(sv) = var_stacks
+                                            .get(ident.as_str())
+                                            .and_then(|s| s.last().copied())
+                                        {
+                                            if !mapped.contains(&sv) {
+                                                mapped.push(sv);
+                                            }
+                                        }
+                                    }
+                                    if !source_cap.is_empty() {
+                                        // Per-slot classification found a Source
+                                        // pattern (e.g. `req.body.cmd`) inside
+                                        // THIS slot's subtree.  Emit Source so the
+                                        // binding inherits the outer-node Source
+                                        // caps for this slot's index.
+                                        SsaOp::Source
+                                    } else if outer_is_source && any_slot_has_source_cap {
+                                        // Some OTHER slot's subtree classified as
+                                        // Source; this slot did NOT.  Emit
+                                        // Assign(mapped) and mark the slot as
+                                        // slot-scoped so the taint transfer's
+                                        // Assign arm skips outer-node Source
+                                        // label pickup for this binding (without
+                                        // losing transitive taint through inner
+                                        // uses).  When `mapped` is empty, fall
+                                        // back to Const(None) — the binding
+                                        // carries no taint anyway.
+                                        if mapped.is_empty() {
+                                            SsaOp::Const(None)
+                                        } else {
+                                            is_slot_scoped = true;
+                                            SsaOp::Assign(mapped.clone())
+                                        }
+                                    } else if effective_outer_fallback {
+                                        // Outer-node Source label but no
+                                        // per-slot classifier fired on any slot
+                                        // (typical of subscript-on-tainted-local
+                                        // shapes). Preserve legacy conservative
+                                        // emission for unrecognised shapes.
+                                        SsaOp::Source
+                                    } else if mapped.is_empty() {
                                         SsaOp::Const(None)
                                     } else {
-                                        is_slot_scoped = true;
-                                        SsaOp::Assign(mapped.clone())
+                                        SsaOp::Assign(mapped)
                                     }
-                                } else if effective_outer_fallback {
-                                    // Outer-node Source label but no
-                                    // per-slot classifier fired on any slot
-                                    // (typical of subscript-on-tainted-local
-                                    // shapes). Preserve legacy conservative
-                                    // emission for unrecognised shapes.
-                                    SsaOp::Source
-                                } else if mapped.is_empty() {
-                                    SsaOp::Const(None)
-                                } else {
-                                    SsaOp::Assign(mapped)
                                 }
-                            }
-                        };
-                        per_pos.push(slot_op);
-                        slot_scoped_mask.push(is_slot_scoped);
+                            };
+                            per_pos.push(slot_op);
+                            slot_scoped_mask.push(is_slot_scoped);
+                        }
+                        if bail {
+                            None
+                        } else {
+                            Some((per_pos, slot_scoped_mask))
+                        }
                     }
-                    if bail { None } else { Some((per_pos, slot_scoped_mask)) }
-                }
-            } else {
-                None
-            };
+                } else {
+                    None
+                };
 
             // Clone op for potential extra_defines before moving into SsaInst.
             // For the destructure-promise / bare-array rewrites, the
@@ -1655,7 +1667,10 @@ fn rename_variables(
                 if slot_scoped_mask.get(primary_idx).copied().unwrap_or(false) {
                     slot_scoped_assigns.insert(v);
                 }
-                per_pos.get(primary_idx).cloned().unwrap_or(SsaOp::Const(None))
+                per_pos
+                    .get(primary_idx)
+                    .cloned()
+                    .unwrap_or(SsaOp::Const(None))
             } else {
                 op
             };

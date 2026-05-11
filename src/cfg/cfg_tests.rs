@@ -2473,8 +2473,8 @@ func f(userDb int) {
 "#;
     let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
     let (cfg, _entry) = parse_and_build(src, "go", ts_lang);
-    let node = find_node_with_callee(&cfg, "userDb.Raw")
-        .expect("go: userDb.Raw node should be present");
+    let node =
+        find_node_with_callee(&cfg, "userDb.Raw").expect("go: userDb.Raw node should be present");
     assert_eq!(node.call.receiver.as_deref(), Some("userDb"));
 }
 
@@ -3358,8 +3358,8 @@ fn js_ternary_branch_subscript_source_classified() {
 /// formats).
 #[test]
 fn go_switch_no_default_keeps_post_switch_reachable() {
-    use std::collections::HashSet;
     use petgraph::visit::Bfs;
+    use std::collections::HashSet;
     let src = br#"package p
 func f(x string) bool {
     switch tf := x; tf {
@@ -3472,7 +3472,9 @@ class Foo {
     // public lookup helper consults it during construction.  Re-run
     // population manually for the assertion.
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&Language::from(tree_sitter_java::LANGUAGE)).unwrap();
+    parser
+        .set_language(&Language::from(tree_sitter_java::LANGUAGE))
+        .unwrap();
     let tree = parser.parse(src.as_slice(), None).unwrap();
     super::populate_local_receiver_types(&tree, "java", src);
     // Walk to find the function body's start_byte.
@@ -3516,7 +3518,9 @@ class Foo {
 }
 "#;
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&Language::from(tree_sitter_java::LANGUAGE)).unwrap();
+    parser
+        .set_language(&Language::from(tree_sitter_java::LANGUAGE))
+        .unwrap();
     let tree = parser.parse(src.as_slice(), None).unwrap();
     super::populate_local_receiver_types(&tree, "java", src);
     fn find_method_start(node: tree_sitter::Node<'_>) -> Option<usize> {
@@ -3751,8 +3755,8 @@ fn left_assignment_list_indexed_bindings_recognise_ruby_destructure() {
     }
     fn run_case(src: &[u8]) -> Vec<(String, usize)> {
         let (tree, bytes) = parse_first_ruby(src);
-        let pat = first_left_assignment_list(tree.root_node())
-            .expect("left_assignment_list in fixture");
+        let pat =
+            first_left_assignment_list(tree.root_node()).expect("left_assignment_list in fixture");
         collect_array_pattern_bindings_indexed(pat, &bytes)
             .into_iter()
             .collect()
@@ -3813,10 +3817,7 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
         (tree, src.to_vec())
     }
 
-    fn find_first<'t>(
-        n: tree_sitter::Node<'t>,
-        kinds: &[&str],
-    ) -> Option<tree_sitter::Node<'t>> {
+    fn find_first<'t>(n: tree_sitter::Node<'t>, kinds: &[&str]) -> Option<tree_sitter::Node<'t>> {
         if kinds.iter().any(|k| *k == n.kind()) {
             return Some(n);
         }
@@ -3904,9 +3905,7 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
         ],
     );
     // JS/TS spread bails entirely (index alignment shifts).
-    assert!(
-        run("javascript", b"const _ = [...arr, b];\n", &["array"]).is_empty()
-    );
+    assert!(run("javascript", b"const _ = [...arr, b];\n", &["array"]).is_empty());
     // JS/TS binary expression becomes Complex with the inner ident.
     assert_eq!(
         run(
@@ -3933,9 +3932,7 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
         vec![ident("safe"), RhsArraySlot::Literal],
     );
     // Python list-splat bails.
-    assert!(
-        run("python", b"x = [*a, b]\n", &["list"]).is_empty()
-    );
+    assert!(run("python", b"x = [*a, b]\n", &["list"]).is_empty());
 
     // Ruby `array`.
     assert_eq!(
@@ -3959,7 +3956,5 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
     );
 
     // Non-array-shape node returns empty (defensive guard).
-    assert!(
-        run("javascript", b"const x = tainted;\n", &["identifier"]).is_empty()
-    );
+    assert!(run("javascript", b"const x = tainted;\n", &["identifier"]).is_empty());
 }

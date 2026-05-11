@@ -893,9 +893,7 @@ pub mod index {
                     let entry_kind_sql = s
                         .entry_kind
                         .as_ref()
-                        .map(|ek| {
-                            serde_json::to_string(ek).unwrap_or_else(|_| String::new())
-                        })
+                        .map(|ek| serde_json::to_string(ek).unwrap_or_else(|_| String::new()))
                         .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
@@ -964,9 +962,7 @@ pub mod index {
                     let entry_kind_sql = summary
                         .entry_kind
                         .as_ref()
-                        .map(|ek| {
-                            serde_json::to_string(ek).unwrap_or_else(|_| String::new())
-                        })
+                        .map(|ek| serde_json::to_string(ek).unwrap_or_else(|_| String::new()))
                         .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
@@ -1517,9 +1513,7 @@ pub mod index {
                     let entry_kind_sql = s
                         .entry_kind
                         .as_ref()
-                        .map(|ek| {
-                            serde_json::to_string(ek).unwrap_or_else(|_| String::new())
-                        })
+                        .map(|ek| serde_json::to_string(ek).unwrap_or_else(|_| String::new()))
                         .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
@@ -1560,9 +1554,7 @@ pub mod index {
                     let entry_kind_sql = summary
                         .entry_kind
                         .as_ref()
-                        .map(|ek| {
-                            serde_json::to_string(ek).unwrap_or_else(|_| String::new())
-                        })
+                        .map(|ek| serde_json::to_string(ek).unwrap_or_else(|_| String::new()))
                         .filter(|s| !s.is_empty());
                     stmt.execute(params![
                         self.project,
@@ -3139,8 +3131,7 @@ fn cross_package_imports_round_trip_via_replace_all_for_file() {
     let mut idx = index::Indexer::from_pool("proj", &pool).unwrap();
     let hash = index::Indexer::digest_bytes(b"caller content");
 
-    let mut imports: std::collections::HashMap<String, FuncKey> =
-        std::collections::HashMap::new();
+    let mut imports: std::collections::HashMap<String, FuncKey> = std::collections::HashMap::new();
     imports.insert(
         "escape".to_string(),
         FuncKey {
@@ -3154,16 +3145,8 @@ fn cross_package_imports_round_trip_via_replace_all_for_file() {
         },
     );
 
-    idx.replace_all_for_file(
-        &f,
-        &hash,
-        &[],
-        &[],
-        &[],
-        &[],
-        Some(("caller.ts", &imports)),
-    )
-    .unwrap();
+    idx.replace_all_for_file(&f, &hash, &[], &[], &[], &[], Some(("caller.ts", &imports)))
+        .unwrap();
 
     let loaded = idx.load_all_cross_package_imports().unwrap();
     assert_eq!(loaded.len(), 1);
@@ -3171,7 +3154,9 @@ fn cross_package_imports_round_trip_via_replace_all_for_file() {
     assert_eq!(fp, &f.to_string_lossy().to_string());
     assert_eq!(ns, "caller.ts");
     assert_eq!(map.len(), 1);
-    let key = map.get("escape").expect("escape binding survives round-trip");
+    let key = map
+        .get("escape")
+        .expect("escape binding survives round-trip");
     assert_eq!(key.namespace, "packages/util/src/escape.ts");
     assert_eq!(key.name, "escape");
     assert_eq!(key.lang, Lang::TypeScript);
@@ -3798,7 +3783,9 @@ fn entry_kind_column_added_in_place_without_data_loss() {
         v
     };
     assert!(
-        cols_for("function_summaries").iter().any(|c| c == "entry_kind"),
+        cols_for("function_summaries")
+            .iter()
+            .any(|c| c == "entry_kind"),
         "function_summaries.entry_kind missing after migration"
     );
     assert!(

@@ -823,10 +823,7 @@ fn object_contains_nextauth_callback_method(node: Node<'_>, bytes: &[u8]) -> boo
     false
 }
 
-fn object_entry_key_value<'a>(
-    entry: Node<'a>,
-    bytes: &[u8],
-) -> Option<(String, Node<'a>)> {
+fn object_entry_key_value<'a>(entry: Node<'a>, bytes: &[u8]) -> Option<(String, Node<'a>)> {
     match entry.kind() {
         "pair" => {
             let key = entry.child_by_field_name("key")?;
@@ -843,12 +840,11 @@ fn object_entry_key_value<'a>(
 
 fn object_key_text(node: Node<'_>, bytes: &[u8]) -> String {
     match node.kind() {
-        "property_identifier" | "identifier" | "shorthand_property_identifier" => {
-            text(node, bytes)
-        }
+        "property_identifier" | "identifier" | "shorthand_property_identifier" => text(node, bytes),
         "string" | "string_literal" => {
             let raw = text(node, bytes);
-            raw.trim_matches(|c| c == '"' || c == '\'' || c == '`').to_string()
+            raw.trim_matches(|c| c == '"' || c == '\'' || c == '`')
+                .to_string()
         }
         "computed_property_name" => {
             if let Some(inner) = node.named_child(0) {

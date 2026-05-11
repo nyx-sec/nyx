@@ -942,12 +942,11 @@ pub(crate) fn is_vendored_asset_path(path: &Path) -> bool {
         }
     }
 
-    if has_vendor_component
-        && let Some(ext) = path.extension().and_then(|e| e.to_str())
-    {
+    if has_vendor_component && let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         let ext_lower: String = ext.to_ascii_lowercase();
-        const FRONT_END_EXTS: &[&str] =
-            &["js", "mjs", "cjs", "jsx", "ts", "tsx", "css", "scss", "less"];
+        const FRONT_END_EXTS: &[&str] = &[
+            "js", "mjs", "cjs", "jsx", "ts", "tsx", "css", "scss", "less",
+        ];
         if FRONT_END_EXTS.iter().any(|e| *e == ext_lower) {
             return true;
         }
@@ -1248,9 +1247,7 @@ impl<'a> ParsedSource<'a> {
                     // FP shape on Python test trees.
                     if matches!(
                         cq.meta.id,
-                        "py.deser.pickle_loads"
-                            | "py.deser.yaml_load"
-                            | "py.deser.shelve_open"
+                        "py.deser.pickle_loads" | "py.deser.yaml_load" | "py.deser.shelve_open"
                     ) && self.lang_slug == "python"
                         && is_python_deser_inside_unittest_assertion(cap.node, self.bytes)
                     {
@@ -1266,10 +1263,8 @@ impl<'a> ParsedSource<'a> {
                     // a poisoned blob fails the assertion loudly rather
                     // than leak object-injection side effects out of
                     // the test boundary.
-                    if matches!(
-                        cq.meta.id,
-                        "rb.deser.marshal_load" | "rb.deser.yaml_load"
-                    ) && self.lang_slug == "ruby"
+                    if matches!(cq.meta.id, "rb.deser.marshal_load" | "rb.deser.yaml_load")
+                        && self.lang_slug == "ruby"
                         && is_ruby_deser_inside_test_assertion(cap.node, self.bytes)
                     {
                         continue;
@@ -2401,7 +2396,10 @@ pub fn extract_all_summaries_from_bytes(
         crate::symbol::FuncKey,
         auth_analysis::model::AuthCheckSummary,
     )>,
-    Option<(String, std::sync::Arc<HashMap<String, crate::symbol::FuncKey>>)>,
+    Option<(
+        String,
+        std::sync::Arc<HashMap<String, crate::symbol::FuncKey>>,
+    )>,
 )> {
     let _span = tracing::debug_span!("extract_all_summaries", file = %path.display()).entered();
     let Some(source) = ParsedSource::try_new(bytes, path)? else {
@@ -3160,10 +3158,7 @@ fn is_php_unserialize_magic_method_passthrough(cap_node: tree_sitter::Node, byte
 /// and assertions whose expected value is itself dynamic
 /// (`assertEquals($computed, unserialize($blob))`) keep firing
 /// because the bound is not statically verifiable.
-fn is_php_unserialize_inside_phpunit_assertion(
-    cap_node: tree_sitter::Node,
-    bytes: &[u8],
-) -> bool {
+fn is_php_unserialize_inside_phpunit_assertion(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
     // The pattern captures `@n` (the function name); locate the enclosing
     // function_call_expression.  Mirrors the magic-method recogniser.
     let call_node = if cap_node.kind() == "function_call_expression" {
@@ -3386,10 +3381,7 @@ fn is_php_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> b
 /// - pytest plain `assert` requires the deser to be the asserted
 ///   expression (named_child(0) of `assert_statement`), not the
 ///   optional message at named_child(1).
-fn is_python_deser_inside_unittest_assertion(
-    cap_node: tree_sitter::Node,
-    bytes: &[u8],
-) -> bool {
+fn is_python_deser_inside_unittest_assertion(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
     // Three entry shapes:
     //   (a) unittest AST-pattern: `cap_node` is the `pickle` / `yaml` /
     //       `shelve` identifier under the deser call's `function.object`
@@ -3544,10 +3536,7 @@ fn python_assertion_bounds_deser(
 /// child (the asserted expression, NOT the optional message) is the
 /// chain we walked.  Boolean operators and conditional expressions
 /// break the bound (they can short-circuit past the assertion).
-fn python_pytest_assert_bounds_deser(
-    deser_call: tree_sitter::Node,
-    bytes: &[u8],
-) -> bool {
+fn python_pytest_assert_bounds_deser(deser_call: tree_sitter::Node, bytes: &[u8]) -> bool {
     let mut cur = deser_call;
     for _ in 0..8 {
         let Some(parent) = cur.parent() else {
@@ -3901,10 +3890,7 @@ fn has_python_string_interpolation(node: tree_sitter::Node) -> bool {
 /// - Old-style `.should ==` chains are NOT recognised (they're
 ///   discouraged in modern RSpec and the AST shape parses as a
 ///   `binary` rather than the receiver-method-arguments shape).
-fn is_ruby_deser_inside_test_assertion(
-    cap_node: tree_sitter::Node,
-    bytes: &[u8],
-) -> bool {
+fn is_ruby_deser_inside_test_assertion(cap_node: tree_sitter::Node, bytes: &[u8]) -> bool {
     let enclosing_call = find_enclosing_call(cap_node);
     let Some(deser_call) = enclosing_call else {
         return false;
@@ -3938,10 +3924,7 @@ fn is_ruby_deser_inside_test_assertion(
         || is_ruby_minitest_multi_arg_bounding_verb(name)
         || matches!(
             name,
-            "assert_kind_of"
-                | "assert_instance_of"
-                | "refute_kind_of"
-                | "refute_instance_of"
+            "assert_kind_of" | "assert_instance_of" | "refute_kind_of" | "refute_instance_of"
         )
     {
         return ruby_minitest_assertion_bounds_deser(outer_call, deser_call, bytes);
@@ -4056,10 +4039,7 @@ fn ruby_minitest_assertion_bounds_deser(
 
     if matches!(
         name,
-        "assert_kind_of"
-            | "assert_instance_of"
-            | "refute_kind_of"
-            | "refute_instance_of"
+        "assert_kind_of" | "assert_instance_of" | "refute_kind_of" | "refute_instance_of"
     ) {
         let type_pos = if deser_pos == 0 { 1 } else { 0 };
         if let Some(type_arg) = pos_args.get(type_pos)
@@ -4143,12 +4123,7 @@ fn ruby_rspec_matcher_bounds_deser(args_node: tree_sitter::Node, bytes: &[u8]) -
 fn is_ruby_minitest_single_arg_bounding_verb(name: &str) -> bool {
     matches!(
         name,
-        "assert"
-            | "assert_nil"
-            | "refute"
-            | "refute_nil"
-            | "assert_empty"
-            | "refute_empty"
+        "assert" | "assert_nil" | "refute" | "refute_nil" | "assert_empty" | "refute_empty"
     )
 }
 
@@ -4189,10 +4164,7 @@ fn is_ruby_rspec_bare_matcher(name: &str) -> bool {
 }
 
 fn is_ruby_type_reference(node: tree_sitter::Node) -> bool {
-    matches!(
-        node.kind(),
-        "constant" | "scope_resolution" | "identifier"
-    )
+    matches!(node.kind(), "constant" | "scope_resolution" | "identifier")
 }
 
 /// Recursive Ruby literal classifier.  Strings count when they have no
@@ -4204,9 +4176,8 @@ fn is_ruby_assertion_literal_expected(node: tree_sitter::Node, bytes: &[u8]) -> 
     match node.kind() {
         "string" => !has_ruby_string_interpolation(node),
         "string_array" | "symbol_array" => true,
-        "integer" | "float" | "true" | "false" | "nil"
-        | "simple_symbol" | "hash_key_symbol" | "rational" | "complex"
-        | "regex" => true,
+        "integer" | "float" | "true" | "false" | "nil" | "simple_symbol" | "hash_key_symbol"
+        | "rational" | "complex" | "regex" => true,
         "unary" => node
             .named_child(0)
             .is_some_and(|c| is_ruby_assertion_literal_expected(c, bytes)),
@@ -5892,8 +5863,10 @@ pub struct FusedResult {
     /// callee body's own `cross_package_imports` Arc is empty (the
     /// indexed-mode case where bodies round-trip through SQLite and
     /// the Arc field is `#[serde(skip)]`).
-    pub cross_package_imports:
-        Option<(String, std::sync::Arc<HashMap<String, crate::symbol::FuncKey>>)>,
+    pub cross_package_imports: Option<(
+        String,
+        std::sync::Arc<HashMap<String, crate::symbol::FuncKey>>,
+    )>,
 }
 
 /// Parse the file once, build the CFG once, and produce both function
@@ -6266,12 +6239,8 @@ fn vendored_asset_path_detection() {
     assert!(is_vendored_asset_path(Path::new(
         "src/main/webapp/scripts/jquery-ui.custom.min.js"
     )));
-    assert!(is_vendored_asset_path(Path::new(
-        "core/assets/htmx.min.js"
-    )));
-    assert!(is_vendored_asset_path(Path::new(
-        "public/app.bundle.js"
-    )));
+    assert!(is_vendored_asset_path(Path::new("core/assets/htmx.min.js")));
+    assert!(is_vendored_asset_path(Path::new("public/app.bundle.js")));
     assert!(is_vendored_asset_path(Path::new(
         "dist/transliteration.umd.min.js"
     )));
@@ -6288,9 +6257,7 @@ fn vendored_asset_path_detection() {
     assert!(is_vendored_asset_path(Path::new(
         "core/assets/vendor/jquery/jquery.js"
     )));
-    assert!(is_vendored_asset_path(Path::new(
-        "src/vendors/foo/lib.css"
-    )));
+    assert!(is_vendored_asset_path(Path::new("src/vendors/foo/lib.css")));
     assert!(!is_vendored_asset_path(Path::new(
         "vendor/github.com/foo/bar/lib.go"
     )));
@@ -6300,7 +6267,9 @@ fn vendored_asset_path_detection() {
 
     // Hand-authored production paths must NOT match.
     assert!(!is_vendored_asset_path(Path::new("src/main.js")));
-    assert!(!is_vendored_asset_path(Path::new("app/components/Button.tsx")));
+    assert!(!is_vendored_asset_path(Path::new(
+        "app/components/Button.tsx"
+    )));
     assert!(!is_vendored_asset_path(Path::new("lib/handler.py")));
     // Plain `.js` outside vendor/bower with no `.min` suffix stays in scope
     // even when the directory hints at third-party origin; the engine's
@@ -6779,7 +6748,8 @@ fn php_unserialize_inside_phpunit_assertion_recognises_roundtrip_shapes() {
     );
 
     // Static dispatch: static::assertSame(...).
-    let code = b"<?php\nclass T { public function t() { static::assertSame(['x'], unserialize($b)); } }\n";
+    let code =
+        b"<?php\nclass T { public function t() { static::assertSame(['x'], unserialize($b)); } }\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_php_capture(&tree, code, q);
     assert!(
@@ -6788,7 +6758,8 @@ fn php_unserialize_inside_phpunit_assertion_recognises_roundtrip_shapes() {
     );
 
     // Self dispatch: self::assertEquals(...).
-    let code = b"<?php\nclass T { public function t() { self::assertEquals(['y'], unserialize($b)); } }\n";
+    let code =
+        b"<?php\nclass T { public function t() { self::assertEquals(['y'], unserialize($b)); } }\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_php_capture(&tree, code, q);
     assert!(
@@ -6807,7 +6778,8 @@ fn php_unserialize_inside_phpunit_assertion_recognises_roundtrip_shapes() {
     );
 
     // Single-arg verb: assertIsArray(unserialize($x)).
-    let code = b"<?php\nclass T { public function t() { $this->assertIsArray(unserialize($b)); } }\n";
+    let code =
+        b"<?php\nclass T { public function t() { $this->assertIsArray(unserialize($b)); } }\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_php_capture(&tree, code, q);
     assert!(
@@ -6816,7 +6788,8 @@ fn php_unserialize_inside_phpunit_assertion_recognises_roundtrip_shapes() {
     );
 
     // Case-insensitive method name (PHP semantics).
-    let code = b"<?php\nclass T { public function t() { $this->AssertSame(['z'], unserialize($b)); } }\n";
+    let code =
+        b"<?php\nclass T { public function t() { $this->AssertSame(['z'], unserialize($b)); } }\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_php_capture(&tree, code, q);
     assert!(
@@ -6835,7 +6808,8 @@ fn php_unserialize_inside_phpunit_assertion_recognises_roundtrip_shapes() {
 
     // assertEquals with a NON-literal first arg ($computed) keeps firing —
     // the result is not statically pinned.
-    let code = b"<?php\nclass T { public function t($e) { $this->assertEquals($e, unserialize($b)); } }\n";
+    let code =
+        b"<?php\nclass T { public function t($e) { $this->assertEquals($e, unserialize($b)); } }\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_php_capture(&tree, code, q);
     assert!(
@@ -6936,7 +6910,8 @@ fn python_deser_inside_unittest_assertion_recognises_roundtrip_shapes() {
     );
 
     // Single-arg verb: assertTrue.
-    let code = b"import pickle\nclass T:\n    def t(self, b):\n        self.assertTrue(pickle.loads(b))\n";
+    let code =
+        b"import pickle\nclass T:\n    def t(self, b):\n        self.assertTrue(pickle.loads(b))\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_python_capture(&tree, code, q);
     assert!(
@@ -7096,8 +7071,7 @@ fn python_deser_inside_pytest_assert_recognises_roundtrip_shapes() {
     );
 
     // assert isinstance(deser, dict)
-    let code =
-        b"import pickle\ndef t(b):\n    assert isinstance(pickle.loads(b), dict)\n";
+    let code = b"import pickle\ndef t(b):\n    assert isinstance(pickle.loads(b), dict)\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_python_capture(&tree, code, q);
     assert!(
@@ -7194,7 +7168,8 @@ fn python_deser_inside_pytest_assert_recognises_roundtrip_shapes() {
 
     // Production assignment-then-assert: deser sits in `actual = pickle.loads(b)`,
     // not under the assert.  Must keep firing.
-    let code = b"import pickle\ndef t(b):\n    actual = pickle.loads(b)\n    assert actual == [1]\n";
+    let code =
+        b"import pickle\ndef t(b):\n    actual = pickle.loads(b)\n    assert actual == [1]\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_python_capture(&tree, code, q);
     assert!(
@@ -7260,7 +7235,8 @@ fn ruby_deser_inside_test_assertion_recognises_roundtrip_shapes() {
     );
 
     // RSpec expect(deser).to eq(LITERAL)
-    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to eq([1, 2, 3])\n  end\nend\n";
+    let code =
+        b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to eq([1, 2, 3])\n  end\nend\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_ruby_capture(&tree, code, q);
     assert!(
@@ -7278,7 +7254,8 @@ fn ruby_deser_inside_test_assertion_recognises_roundtrip_shapes() {
     );
 
     // RSpec expect(deser).to be_a(TYPE)
-    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to be_a(Array)\n  end\nend\n";
+    let code =
+        b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to be_a(Array)\n  end\nend\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_ruby_capture(&tree, code, q);
     assert!(
@@ -7287,7 +7264,8 @@ fn ruby_deser_inside_test_assertion_recognises_roundtrip_shapes() {
     );
 
     // RSpec not_to be_nil
-    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).not_to be_nil\n  end\nend\n";
+    let code =
+        b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).not_to be_nil\n  end\nend\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_ruby_capture(&tree, code, q);
     assert!(
@@ -7307,7 +7285,8 @@ fn ruby_deser_inside_test_assertion_recognises_roundtrip_shapes() {
     );
 
     // assert_equal with dynamic expected keeps firing.
-    let code = b"class T\n  def t(b, expected)\n    assert_equal expected, Marshal.load(b)\n  end\nend\n";
+    let code =
+        b"class T\n  def t(b, expected)\n    assert_equal expected, Marshal.load(b)\n  end\nend\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_ruby_capture(&tree, code, q);
     assert!(
@@ -7316,7 +7295,8 @@ fn ruby_deser_inside_test_assertion_recognises_roundtrip_shapes() {
     );
 
     // RSpec expect(deser).to eq(dynamic) keeps firing.
-    let code = b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to eq(expected)\n  end\nend\n";
+    let code =
+        b"describe X do\n  it 'x' do\n    expect(Marshal.load(b)).to eq(expected)\n  end\nend\n";
     let tree = parser.parse(code, None).unwrap();
     let cap = first_ruby_capture(&tree, code, q);
     assert!(

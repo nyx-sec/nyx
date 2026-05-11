@@ -140,21 +140,17 @@ pub(super) fn extract_destination_field_pairs(
                     // interpolation) stay conservative-skip.
                     "computed_property_name" => {
                         let mut inner_cursor = key_node.walk();
-                        let inner = key_node
-                            .named_children(&mut inner_cursor)
-                            .find(|c| {
-                                !matches!(c.kind(), "comment" | "block_comment" | "line_comment")
-                            });
+                        let inner = key_node.named_children(&mut inner_cursor).find(|c| {
+                            !matches!(c.kind(), "comment" | "block_comment" | "line_comment")
+                        });
                         match inner.map(|n| (n.kind(), n)) {
-                            Some(("string" | "string_literal", n)) => {
-                                text_of(n, code).map(|raw| {
-                                    if raw.len() >= 2 {
-                                        raw[1..raw.len() - 1].to_string()
-                                    } else {
-                                        raw
-                                    }
-                                })
-                            }
+                            Some(("string" | "string_literal", n)) => text_of(n, code).map(|raw| {
+                                if raw.len() >= 2 {
+                                    raw[1..raw.len() - 1].to_string()
+                                } else {
+                                    raw
+                                }
+                            }),
                             // Template strings only when no interpolation
                             // (no `template_substitution` children).
                             Some(("template_string", n))
@@ -233,29 +229,28 @@ pub(super) fn extract_destination_kwarg_pairs(
     let mut cursor = args_node.walk();
     for child in args_node.named_children(&mut cursor) {
         let kind = child.kind();
-        let (name_node, value_node) =
-            if kind == "keyword_argument" || kind == "named_argument" {
-                let named_count = child.named_child_count();
-                (
-                    child
-                        .child_by_field_name("name")
-                        .or_else(|| child.named_child(0)),
-                    child
-                        .child_by_field_name("value")
-                        .or_else(|| child.named_child(named_count.saturating_sub(1) as u32)),
-                )
-            } else if kind == "pair" {
-                // Ruby `pair` node sits directly under `argument_list` for
-                // kwarg-style call args (`f(url: x)`).  `key`/`value` fields
-                // are populated; key text is `hash_key_symbol` ("url"),
-                // `simple_symbol` (":url"), or a string literal.
-                (
-                    child.child_by_field_name("key"),
-                    child.child_by_field_name("value"),
-                )
-            } else {
-                continue;
-            };
+        let (name_node, value_node) = if kind == "keyword_argument" || kind == "named_argument" {
+            let named_count = child.named_child_count();
+            (
+                child
+                    .child_by_field_name("name")
+                    .or_else(|| child.named_child(0)),
+                child
+                    .child_by_field_name("value")
+                    .or_else(|| child.named_child(named_count.saturating_sub(1) as u32)),
+            )
+        } else if kind == "pair" {
+            // Ruby `pair` node sits directly under `argument_list` for
+            // kwarg-style call args (`f(url: x)`).  `key`/`value` fields
+            // are populated; key text is `hash_key_symbol` ("url"),
+            // `simple_symbol` (":url"), or a string literal.
+            (
+                child.child_by_field_name("key"),
+                child.child_by_field_name("value"),
+            )
+        } else {
+            continue;
+        };
         let (Some(nn), Some(vn)) = (name_node, value_node) else {
             continue;
         };
@@ -2273,8 +2268,7 @@ pub(super) fn def_use(
             let mut extra_defs = Vec::new();
             let mut uses = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
-            let mut rhs_array_elements: SmallVec<[crate::cfg::RhsArraySlot; 4]> =
-                SmallVec::new();
+            let mut rhs_array_elements: SmallVec<[crate::cfg::RhsArraySlot; 4]> = SmallVec::new();
 
             // Try direct field names first (Rust `let_declaration`, Go `short_var_declaration`)
             let def_node = ast
@@ -2373,8 +2367,7 @@ pub(super) fn def_use(
                         if let Some(name_node) = child_name
                             && defs.is_none()
                         {
-                            let bindings =
-                                collect_array_pattern_bindings_indexed(name_node, code);
+                            let bindings = collect_array_pattern_bindings_indexed(name_node, code);
                             if !bindings.is_empty() {
                                 let mut iter = bindings.into_iter();
                                 if let Some((first_name, first_idx)) = iter.next() {
@@ -2388,9 +2381,7 @@ pub(super) fn def_use(
                             } else {
                                 let mut idents = Vec::new();
                                 let mut paths = Vec::new();
-                                collect_idents_with_paths(
-                                    name_node, code, &mut idents, &mut paths,
-                                );
+                                collect_idents_with_paths(name_node, code, &mut idents, &mut paths);
                                 let first = paths.pop().or_else(|| idents.first().cloned());
                                 for ident in &idents {
                                     if first.as_ref() != Some(ident) {
@@ -2407,11 +2398,13 @@ pub(super) fn def_use(
                             uses.extend(paths);
                             uses.extend(idents);
                             uses.extend(extract_rust_format_macro_named_idents_in(val_node, code));
-                            if !pattern_indices.is_empty()
-                                && rhs_array_elements.is_empty()
-                            {
-                                rhs_array_elements =
-                                    collect_rhs_array_literal_elements(val_node, lang, code, extra_labels);
+                            if !pattern_indices.is_empty() && rhs_array_elements.is_empty() {
+                                rhs_array_elements = collect_rhs_array_literal_elements(
+                                    val_node,
+                                    lang,
+                                    code,
+                                    extra_labels,
+                                );
                             }
                         }
                     }
@@ -2443,8 +2436,7 @@ pub(super) fn def_use(
             let mut defs = None;
             let mut extra_defs = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
-            let mut rhs_array_elements: SmallVec<[crate::cfg::RhsArraySlot; 4]> =
-                SmallVec::new();
+            let mut rhs_array_elements: SmallVec<[crate::cfg::RhsArraySlot; 4]> = SmallVec::new();
             let mut uses = Vec::new();
             if let Some(lhs) = ast.child_by_field_name("left") {
                 let bindings = collect_array_pattern_bindings_indexed(lhs, code);
@@ -2478,7 +2470,8 @@ pub(super) fn def_use(
                 // idents so the SSA destructure rewrite can map each
                 // binding to its specific RHS slot.
                 if !pattern_indices.is_empty() {
-                    rhs_array_elements = collect_rhs_array_literal_elements(rhs, lang, code, extra_labels);
+                    rhs_array_elements =
+                        collect_rhs_array_literal_elements(rhs, lang, code, extra_labels);
                 }
             }
             (defs, uses, extra_defs, pattern_indices, rhs_array_elements)

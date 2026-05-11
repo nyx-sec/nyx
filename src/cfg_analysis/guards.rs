@@ -10,9 +10,9 @@ use crate::cfg::StmtKind;
 use crate::labels::{Cap, DataLabel, RuntimeLabelRule};
 use crate::patterns::Severity;
 use crate::ssa::const_prop::ConstLattice;
-use crate::symbol::Lang;
 use crate::ssa::type_facts::TypeFactResult;
 use crate::ssa::{SsaOp, SsaValue};
+use crate::symbol::Lang;
 use crate::taint::path_state::{PredicateKind, classify_condition};
 use petgraph::graph::NodeIndex;
 use smallvec::SmallVec;
@@ -574,8 +574,7 @@ fn sink_is_zero_arg_query_builder(ctx: &AnalysisContext, sink: NodeIndex, sink_c
         None => return false,
     };
     let suffix = callee.rsplit('.').next().unwrap_or(callee);
-    let is_builder_verb =
-        matches!(suffix, "executeQuery" | "executeStatement" | "createQuery");
+    let is_builder_verb = matches!(suffix, "executeQuery" | "executeStatement" | "createQuery");
     if !is_builder_verb {
         return false;
     }
@@ -614,8 +613,7 @@ fn sink_is_zero_arg_query_builder(ctx: &AnalysisContext, sink: NodeIndex, sink_c
         || receiver_lower.ends_with("qb")
         || receiver_lower.ends_with("query")
         || receiver_lower.ends_with("builder");
-    let is_builder_receiver_by_def =
-        receiver_defined_by_builder_factory(ctx, sink, root_receiver);
+    let is_builder_receiver_by_def = receiver_defined_by_builder_factory(ctx, sink, root_receiver);
     if !is_builder_receiver_by_name && !is_builder_receiver_by_def {
         return false;
     }
@@ -735,9 +733,7 @@ fn is_dbal_safe_sql_accessor(name: &str) -> bool {
     if name == "getSQL" {
         return true;
     }
-    name.starts_with("get")
-        && name.len() > 5
-        && name.ends_with("SQL")
+    name.starts_with("get") && name.len() > 5 && name.ends_with("SQL")
 }
 
 /// Suppress a `cfg-unguarded-sink` SQL_QUERY finding when the sink's first
@@ -987,11 +983,7 @@ fn arg_bytes_call_dbal_accessor_on(arg0: &[u8], recv_name: &str) -> bool {
 /// PHP-only.  Limited to the simple foreach + literal-array shape; bare-
 /// reference / by-reference foreach variants and dynamic array sources
 /// fall through to the structural finding.
-fn sink_arg_uses_safe_foreach_key(
-    ctx: &AnalysisContext,
-    sink: NodeIndex,
-    sink_caps: Cap,
-) -> bool {
+fn sink_arg_uses_safe_foreach_key(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
     if sink_caps != Cap::SQL_QUERY {
         return false;
     }
@@ -1029,10 +1021,7 @@ fn sink_arg_uses_safe_foreach_key(
 /// has no `enclosing_func` (e.g. file-level top-level statement) or no
 /// matching CFG nodes.  The byte range is `(min_span.0, max_span.1)` over
 /// the function's CFG nodes, conservative against multi-statement bodies.
-fn enclosing_func_byte_scope(
-    ctx: &AnalysisContext,
-    sink: NodeIndex,
-) -> Option<(usize, usize)> {
+fn enclosing_func_byte_scope(ctx: &AnalysisContext, sink: NodeIndex) -> Option<(usize, usize)> {
     let sink_func = ctx.cfg[sink].ast.enclosing_func.as_deref()?;
     let mut lo = usize::MAX;
     let mut hi = 0usize;
@@ -1231,10 +1220,7 @@ fn parse_simple_var(text: &str) -> Option<String> {
     if rest.is_empty() {
         return None;
     }
-    if !rest
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    {
+    if !rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         return None;
     }
     Some(rest.to_string())
@@ -1284,9 +1270,7 @@ fn php_iter_var_assigns_safe_literals(
     if iter_var.is_empty() {
         return false;
     }
-    let needle: Vec<u8> = std::iter::once(b'$')
-        .chain(iter_var.bytes())
-        .collect();
+    let needle: Vec<u8> = std::iter::once(b'$').chain(iter_var.bytes()).collect();
     let mut cursor = 0usize;
     let mut saw_init = false;
     while cursor + needle.len() <= scope.len() {
@@ -1691,9 +1675,7 @@ fn text_contains_builder_factory_assignment(scope: &[u8], name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    let needle: Vec<u8> = std::iter::once(b'$')
-        .chain(name.bytes())
-        .collect();
+    let needle: Vec<u8> = std::iter::once(b'$').chain(name.bytes()).collect();
     let mut start = 0usize;
     while start + needle.len() <= scope.len() {
         let Some(rel) = find_subslice(&scope[start..], &needle) else {
@@ -1704,7 +1686,10 @@ fn text_contains_builder_factory_assignment(scope: &[u8], name: &str) -> bool {
         while cursor < scope.len() && matches!(scope[cursor], b' ' | b'\t' | b'\n' | b'\r') {
             cursor += 1;
         }
-        if cursor < scope.len() && scope[cursor] == b'=' && (cursor + 1 == scope.len() || scope[cursor + 1] != b'=') {
+        if cursor < scope.len()
+            && scope[cursor] == b'='
+            && (cursor + 1 == scope.len() || scope[cursor + 1] != b'=')
+        {
             // Find the next `;` (statement terminator) without crossing a
             // closing brace boundary, the assignment expression spans up to it.
             let mut end = cursor + 1;
@@ -1734,9 +1719,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     if needle.is_empty() || needle.len() > haystack.len() {
         return None;
     }
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Walk the sink's Call SSA arguments and check whether every real argument

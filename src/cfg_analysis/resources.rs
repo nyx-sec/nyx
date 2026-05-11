@@ -24,7 +24,11 @@ pub struct ResourceMisuse;
 /// callee-substring-only; this check needs to read argument shape from
 /// the call node.
 fn is_event_handler_register_shape(info: &crate::cfg::NodeInfo) -> bool {
-    let Some(first_literal) = info.call.arg_string_literals.first().and_then(|x| x.as_ref())
+    let Some(first_literal) = info
+        .call
+        .arg_string_literals
+        .first()
+        .and_then(|x| x.as_ref())
     else {
         return false;
     };
@@ -688,10 +692,7 @@ mod tests {
     #[test]
     fn event_handler_shape_rejects_url_first_arg() {
         // engine.connect("postgres://localhost/mydb")
-        let info = call_node(
-            vec![Some("postgres://localhost/mydb".into())],
-            vec![vec![]],
-        );
+        let info = call_node(vec![Some("postgres://localhost/mydb".into())], vec![vec![]]);
         assert!(!is_event_handler_register_shape(&info));
     }
 

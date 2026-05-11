@@ -36,8 +36,10 @@ pub fn with_safe_lookup_fields<R>(
     fields: Option<&HashMap<String, Vec<String>>>,
     f: impl FnOnce() -> R,
 ) -> R {
-    let prev = SAFE_LOOKUP_FIELDS_TLS
-        .with(|cell| cell.borrow_mut().replace(fields.cloned().unwrap_or_default()));
+    let prev = SAFE_LOOKUP_FIELDS_TLS.with(|cell| {
+        cell.borrow_mut()
+            .replace(fields.cloned().unwrap_or_default())
+    });
     let restore_to = if fields.is_some() { prev } else { None };
     struct Guard(Option<HashMap<String, Vec<String>>>);
     impl Drop for Guard {
@@ -115,11 +117,7 @@ pub fn collect_class_constant_scalars(
     out
 }
 
-fn collect_java_constant_scalars(
-    root: Node<'_>,
-    code: &[u8],
-    out: &mut HashMap<String, String>,
-) {
+fn collect_java_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
     walk(root, &mut |node| {
         if node.kind() != "field_declaration" {
             return;
@@ -154,11 +152,7 @@ fn collect_java_constant_scalars(
 /// expression statements are considered; assignments inside function bodies,
 /// class bodies, or other blocks are out of scope (a per-function SSA pass
 /// already sees those).
-fn collect_python_constant_scalars(
-    root: Node<'_>,
-    code: &[u8],
-    out: &mut HashMap<String, String>,
-) {
+fn collect_python_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
     if root.kind() != "module" {
         return;
     }
@@ -196,11 +190,7 @@ fn collect_python_constant_scalars(
 /// including the grouped `const (...)` form.  Iterates direct
 /// `const_declaration` children of the source file, then per-`const_spec`
 /// reads the `name` list and `value` expression list, binding by position.
-fn collect_go_constant_scalars(
-    root: Node<'_>,
-    code: &[u8],
-    out: &mut HashMap<String, String>,
-) {
+fn collect_go_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
     if root.kind() != "source_file" {
         return;
     }
@@ -258,11 +248,7 @@ fn collect_go_const_spec(spec: Node<'_>, code: &[u8], out: &mut HashMap<String, 
 /// Rust: module-level `const NAME: TYPE = LITERAL;` and `static NAME: TYPE =
 /// LITERAL;`.  Only direct children of `source_file` participate so a `const`
 /// defined inside a function body does not bleed across scopes.
-fn collect_rust_constant_scalars(
-    root: Node<'_>,
-    code: &[u8],
-    out: &mut HashMap<String, String>,
-) {
+fn collect_rust_constant_scalars(root: Node<'_>, code: &[u8], out: &mut HashMap<String, String>) {
     if root.kind() != "source_file" {
         return;
     }
@@ -387,12 +373,8 @@ fn go_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
 /// (both unwrappable to a single text run), integer / float / boolean / char.
 fn rust_scalar_literal_text(value: Node<'_>, code: &[u8]) -> Option<String> {
     match value.kind() {
-        "string_literal"
-        | "raw_string_literal"
-        | "integer_literal"
-        | "float_literal"
-        | "char_literal"
-        | "boolean_literal" => text_of(value, code),
+        "string_literal" | "raw_string_literal" | "integer_literal" | "float_literal"
+        | "char_literal" | "boolean_literal" => text_of(value, code),
         // `true` / `false` are leaf identifier-ish nodes in some grammars but
         // tree-sitter-rust gives them the `boolean_literal` kind; defensively
         // accept the leaf form too in case the grammar is upgraded.
@@ -692,7 +674,10 @@ mod tests {
             }
         "#;
         let out = collect_consts(src);
-        assert_eq!(out.get("DRIVER"), Some(&"\"com.mysql.cj.jdbc.Driver\"".to_string()));
+        assert_eq!(
+            out.get("DRIVER"),
+            Some(&"\"com.mysql.cj.jdbc.Driver\"".to_string())
+        );
         assert_eq!(out.get("LIMIT"), Some(&"100".to_string()));
         assert_eq!(out.get("DEBUG"), Some(&"false".to_string()));
     }
@@ -784,7 +769,9 @@ mod tests {
     fn collect_consts_lang(src: &str, lang: &str) -> HashMap<String, String> {
         let mut p = Parser::new();
         match lang {
-            "python" => p.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap(),
+            "python" => p
+                .set_language(&tree_sitter_python::LANGUAGE.into())
+                .unwrap(),
             "go" => p.set_language(&tree_sitter_go::LANGUAGE.into()).unwrap(),
             "rust" => p.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap(),
             _ => unreachable!("unsupported lang in test helper: {lang}"),
@@ -838,7 +825,8 @@ mod tests {
 
     #[test]
     fn go_package_constants_capture_scalars() {
-        let src = "package main\nconst DRIVER = \"postgres\"\nconst LIMIT = 100\nconst FLAG = true\n";
+        let src =
+            "package main\nconst DRIVER = \"postgres\"\nconst LIMIT = 100\nconst FLAG = true\n";
         let out = collect_consts_lang(src, "go");
         assert_eq!(out.get("DRIVER"), Some(&"\"postgres\"".to_string()));
         assert_eq!(out.get("LIMIT"), Some(&"100".to_string()));

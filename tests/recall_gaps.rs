@@ -53,7 +53,7 @@
 
 mod common;
 
-use common::recall::{assert_finding, assert_finding_with_cap, scan_fixture, ExpectedFinding};
+use common::recall::{ExpectedFinding, assert_finding, assert_finding_with_cap, scan_fixture};
 use nyx_scanner::labels::Cap;
 use std::path::Path;
 
@@ -1147,9 +1147,7 @@ fn cross_package_ipa() {
         },
     );
     let safe_hit = findings.iter().any(|f| {
-        f.id.starts_with("taint-unsanitised-flow")
-            && f.path.ends_with("handler.ts")
-            && f.line == 13
+        f.id.starts_with("taint-unsanitised-flow") && f.path.ends_with("handler.ts") && f.line == 13
     });
     assert!(
         !safe_hit,
@@ -1352,8 +1350,7 @@ fn rust_entry_kind_typed_extractor_seeding() {
     let state_taint_findings: Vec<&_> = findings
         .iter()
         .filter(|f| {
-            f.path.ends_with("axum_state_denylist.rs")
-                && f.id.starts_with("taint-unsanitised-flow")
+            f.path.ends_with("axum_state_denylist.rs") && f.id.starts_with("taint-unsanitised-flow")
         })
         .collect();
     assert!(
@@ -1407,8 +1404,7 @@ fn python_flask_route_path_capture_seeding() {
     let no_capture_taint: Vec<&_> = findings
         .iter()
         .filter(|f| {
-            f.path.ends_with("flask_no_capture.py")
-                && f.id.starts_with("taint-unsanitised-flow")
+            f.path.ends_with("flask_no_capture.py") && f.id.starts_with("taint-unsanitised-flow")
         })
         .collect();
     assert!(
@@ -1515,8 +1511,7 @@ fn ruby_sinatra_route_path_capture_seeding() {
     let no_capture_taint: Vec<&_> = findings
         .iter()
         .filter(|f| {
-            f.path.ends_with("sinatra_no_capture.rb")
-                && f.id.starts_with("taint-unsanitised-flow")
+            f.path.ends_with("sinatra_no_capture.rb") && f.id.starts_with("taint-unsanitised-flow")
         })
         .collect();
     assert!(
@@ -1588,9 +1583,16 @@ fn validate_real_world_targets() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recall_targets");
 
     // Phase 11 JS targets — ship at the top level.
-    let js_targets = ["cal_com", "vercel_commerce", "shadcn_examples", "blitz_apps"];
-    let mut paths: Vec<std::path::PathBuf> =
-        js_targets.iter().map(|t| root.join(format!("{t}.json"))).collect();
+    let js_targets = [
+        "cal_com",
+        "vercel_commerce",
+        "shadcn_examples",
+        "blitz_apps",
+    ];
+    let mut paths: Vec<std::path::PathBuf> = js_targets
+        .iter()
+        .map(|t| root.join(format!("{t}.json")))
+        .collect();
 
     // Phase 17 cross-lang targets — under `xlang/<lang>/<target>.json`.
     // Derived from filesystem inspection so adding a new lang/target only
@@ -1621,7 +1623,13 @@ fn validate_real_world_targets() {
         let obj = value
             .as_object()
             .unwrap_or_else(|| panic!("baseline {} must be a JSON object", path.display()));
-        for key in ["target", "clone_url", "captured_against", "captured_on", "pinned_commit"] {
+        for key in [
+            "target",
+            "clone_url",
+            "captured_against",
+            "captured_on",
+            "pinned_commit",
+        ] {
             assert!(
                 obj.contains_key(key),
                 "baseline {} must record `{key}`",
@@ -1637,10 +1645,7 @@ fn validate_real_world_targets() {
                 .get("verdict")
                 .and_then(|v| v.as_str())
                 .unwrap_or_else(|| {
-                    panic!(
-                        "baseline {} finding {i} missing `verdict`",
-                        path.display()
-                    )
+                    panic!("baseline {} finding {i} missing `verdict`", path.display())
                 });
             assert!(
                 matches!(verdict, "TP" | "FP" | "needs_review"),

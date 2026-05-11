@@ -333,8 +333,7 @@ pub(crate) fn find_classifiable_inner_call<'a>(
                 );
                 if parent_is_call
                     && let (Some(recv), Some(method)) = (method_receiver, method_name)
-                    && let Some(prefix) =
-                        crate::cfg::local_receiver_type_prefix(c, &recv, lang)
+                    && let Some(prefix) = crate::cfg::local_receiver_type_prefix(c, &recv, lang)
                 {
                     let alt = format!("{prefix}.{method}");
                     if let Some(lbl) = classify(lang, &alt, extra) {
@@ -873,12 +872,7 @@ pub(crate) fn collect_rhs_array_literal_elements(
     let kind = rhs.kind();
     if !matches!(
         kind,
-        "array"
-            | "array_literal"
-            | "list"
-            | "tuple"
-            | "tuple_expression"
-            | "expression_list"
+        "array" | "array_literal" | "list" | "tuple" | "tuple_expression" | "expression_list"
     ) {
         return out;
     }
@@ -898,11 +892,7 @@ pub(crate) fn collect_rhs_array_literal_elements(
                 }
             },
             "variable_name" => match text_of(child, code) {
-                Some(txt) => {
-                    out.push(RhsArraySlot::Ident(
-                        txt.trim_start_matches('$').to_string(),
-                    ))
-                }
+                Some(txt) => out.push(RhsArraySlot::Ident(txt.trim_start_matches('$').to_string())),
                 None => {
                     out.clear();
                     return out;
@@ -937,22 +927,15 @@ pub(crate) fn collect_rhs_array_literal_elements(
             // Spread / list-splat shift index alignment unpredictably
             // (`[...arr, b]` may expand to N elements at index 0). Bail
             // so callers fall back to scalar union.
-            "spread_element"
-            | "list_splat"
-            | "list_splat_pattern"
-            | "splat_argument"
-            | "unary_splat"
-            | "splat_expression" => {
+            "spread_element" | "list_splat" | "list_splat_pattern" | "splat_argument"
+            | "unary_splat" | "splat_expression" => {
                 out.clear();
                 return out;
             }
             // Interpolated strings carry inner identifier uses. Treat as
             // Complex so the slot picks up the contributions from
             // `${user.id}` etc.
-            "template_string"
-            | "string_interpolation"
-            | "interpolation"
-            | "encapsed_string" => {
+            "template_string" | "string_interpolation" | "interpolation" | "encapsed_string" => {
                 let mut idents = Vec::new();
                 let mut paths = Vec::new();
                 collect_idents_with_paths(child, code, &mut idents, &mut paths);

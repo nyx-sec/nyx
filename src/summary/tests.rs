@@ -4485,8 +4485,7 @@ mod hierarchy_widened_tests {
 fn cross_package_imports_round_trip_via_global_summaries() {
     use crate::symbol::{FuncKey, FuncKind, Lang};
     let mut gs = GlobalSummaries::new();
-    let mut map: std::collections::HashMap<String, FuncKey> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<String, FuncKey> = std::collections::HashMap::new();
     map.insert(
         "escape".to_string(),
         FuncKey {
@@ -4525,8 +4524,7 @@ fn cross_package_imports_merged_across_thread_local_summaries() {
     use crate::symbol::{FuncKey, FuncKind, Lang};
 
     let mut gs_a = GlobalSummaries::new();
-    let mut map_a: std::collections::HashMap<String, FuncKey> =
-        std::collections::HashMap::new();
+    let mut map_a: std::collections::HashMap<String, FuncKey> = std::collections::HashMap::new();
     map_a.insert(
         "escape".to_string(),
         FuncKey {
@@ -4545,8 +4543,7 @@ fn cross_package_imports_merged_across_thread_local_summaries() {
     );
 
     let mut gs_b = GlobalSummaries::new();
-    let mut map_b: std::collections::HashMap<String, FuncKey> =
-        std::collections::HashMap::new();
+    let mut map_b: std::collections::HashMap<String, FuncKey> = std::collections::HashMap::new();
     map_b.insert(
         "format".to_string(),
         FuncKey {

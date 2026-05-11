@@ -468,8 +468,7 @@ pub fn build_cross_package_func_keys(
             .and_then(Lang::from_extension)
             .unwrap_or(caller_lang);
         let abs = resolved_file.to_string_lossy();
-        let namespace =
-            crate::symbol::namespace_with_package(&abs, scan_root, module_graph);
+        let namespace = crate::symbol::namespace_with_package(&abs, scan_root, module_graph);
         let key = FuncKey {
             lang: target_lang,
             namespace,
@@ -514,33 +513,30 @@ pub fn analyse_file(
     // No locator: pass-2 intra-file summaries are transient (not persisted)
     // and behavior depends on SinkSite.cap only, which is always populated.
     crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
-        crate::cfg::safe_fields::with_safe_lookup_fields(
-            Some(&file_cfg.safe_lookup_fields),
-            || {
-                let (ssa_summaries, callee_bodies) = lower_all_functions_from_bodies(
-                    file_cfg,
-                    caller_lang,
-                    caller_namespace,
-                    local_summaries,
-                    global_summaries,
-                    None,
-                    None,
-                    None,
-                );
-                analyse_file_with_lowered(
-                    file_cfg,
-                    local_summaries,
-                    global_summaries,
-                    caller_lang,
-                    caller_namespace,
-                    interop_edges,
-                    extra_labels,
-                    &ssa_summaries,
-                    &callee_bodies,
-                    None,
-                )
-            },
-        )
+        crate::cfg::safe_fields::with_safe_lookup_fields(Some(&file_cfg.safe_lookup_fields), || {
+            let (ssa_summaries, callee_bodies) = lower_all_functions_from_bodies(
+                file_cfg,
+                caller_lang,
+                caller_namespace,
+                local_summaries,
+                global_summaries,
+                None,
+                None,
+                None,
+            );
+            analyse_file_with_lowered(
+                file_cfg,
+                local_summaries,
+                global_summaries,
+                caller_lang,
+                caller_namespace,
+                interop_edges,
+                extra_labels,
+                &ssa_summaries,
+                &callee_bodies,
+                None,
+            )
+        })
     })
 }
 
@@ -578,23 +574,20 @@ pub(crate) fn analyse_file_with_lowered(
     // covered.  Idempotent under nesting — the inner guard restores
     // the outer value on drop.
     crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
-        crate::cfg::safe_fields::with_safe_lookup_fields(
-            Some(&file_cfg.safe_lookup_fields),
-            || {
-                analyse_file_with_lowered_inner(
-                    file_cfg,
-                    local_summaries,
-                    global_summaries,
-                    caller_lang,
-                    caller_namespace,
-                    interop_edges,
-                    extra_labels,
-                    ssa_summaries,
-                    callee_bodies,
-                    cross_package_imports,
-                )
-            },
-        )
+        crate::cfg::safe_fields::with_safe_lookup_fields(Some(&file_cfg.safe_lookup_fields), || {
+            analyse_file_with_lowered_inner(
+                file_cfg,
+                local_summaries,
+                global_summaries,
+                caller_lang,
+                caller_namespace,
+                interop_edges,
+                extra_labels,
+                ssa_summaries,
+                callee_bodies,
+                cross_package_imports,
+            )
+        })
     })
 }
 
@@ -1204,10 +1197,8 @@ fn analyse_body_with_seed(
                     .and_then(|m| m.get(&k))
                     .and_then(|s| s.entry_kind.clone())
             });
-            let overridden_param_types = entry_kind_param_type_override(
-                body_entry_kind.as_ref(),
-                &body.meta.param_types,
-            );
+            let overridden_param_types =
+                entry_kind_param_type_override(body_entry_kind.as_ref(), &body.meta.param_types);
             let param_types_ref = overridden_param_types
                 .as_deref()
                 .unwrap_or(body.meta.param_types.as_slice());
@@ -2049,21 +2040,18 @@ pub(crate) fn lower_all_functions_from_bodies(
     std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>,
 ) {
     crate::ssa::type_facts::with_file_imports(Some(&file_cfg.local_imports), || {
-        crate::cfg::safe_fields::with_safe_lookup_fields(
-            Some(&file_cfg.safe_lookup_fields),
-            || {
-                lower_all_functions_from_bodies_inner(
-                    file_cfg,
-                    lang,
-                    namespace,
-                    local_summaries,
-                    global_summaries,
-                    locator,
-                    scan_root,
-                    module_graph,
-                )
-            },
-        )
+        crate::cfg::safe_fields::with_safe_lookup_fields(Some(&file_cfg.safe_lookup_fields), || {
+            lower_all_functions_from_bodies_inner(
+                file_cfg,
+                lang,
+                namespace,
+                local_summaries,
+                global_summaries,
+                locator,
+                scan_root,
+                module_graph,
+            )
+        })
     })
 }
 

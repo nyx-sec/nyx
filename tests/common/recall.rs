@@ -24,11 +24,7 @@ pub fn scan_fixture(rel_path: &str) -> Vec<Finding> {
     let src: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/realistic")
         .join(rel_path);
-    assert!(
-        src.exists(),
-        "recall fixture not found: {}",
-        src.display()
-    );
+    assert!(src.exists(), "recall fixture not found: {}", src.display());
     let tmp = tempfile::tempdir().expect("tempdir for recall fixture");
     if src.is_file() {
         let name = src
@@ -76,7 +72,13 @@ pub fn assert_finding(findings: &[Finding], expected: ExpectedFinding) {
         "expected recall finding not produced: {expected:?}\nactual findings:\n{}",
         findings
             .iter()
-            .map(|f| format!("  {} :: {}:{} [{}]", f.id, f.path, f.line, f.severity.as_db_str()))
+            .map(|f| format!(
+                "  {} :: {}:{} [{}]",
+                f.id,
+                f.path,
+                f.line,
+                f.severity.as_db_str()
+            ))
             .collect::<Vec<_>>()
             .join("\n"),
     );

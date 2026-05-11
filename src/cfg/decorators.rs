@@ -585,11 +585,7 @@ pub(super) fn extract_route_path_captures<'a>(
     out
 }
 
-fn extract_python_route_captures<'a>(
-    func_node: Node<'a>,
-    code: &'a [u8],
-    out: &mut Vec<String>,
-) {
+fn extract_python_route_captures<'a>(func_node: Node<'a>, code: &'a [u8], out: &mut Vec<String>) {
     let Some(parent) = func_node.parent() else {
         return;
     };
@@ -643,11 +639,7 @@ fn extract_python_route_captures<'a>(
 /// If the call's method is a Sinatra-style HTTP verb and its first
 /// positional argument is a static string literal, parse Sinatra
 /// `:name` path captures into `out`.
-fn extract_ruby_route_captures<'a>(
-    func_node: Node<'a>,
-    code: &'a [u8],
-    out: &mut Vec<String>,
-) {
+fn extract_ruby_route_captures<'a>(func_node: Node<'a>, code: &'a [u8], out: &mut Vec<String>) {
     let Some(parent) = func_node.parent() else {
         return;
     };
@@ -706,14 +698,21 @@ fn python_string_text(node: Node<'_>, code: &[u8]) -> Option<String> {
     }
     let raw = text_of(node, code)?;
     let trimmed = raw.trim();
-    let trimmed = trimmed
-        .trim_start_matches(['r', 'R', 'b', 'B', 'u', 'U', 'f', 'F']);
+    let trimmed = trimmed.trim_start_matches(['r', 'R', 'b', 'B', 'u', 'U', 'f', 'F']);
     let stripped = trimmed
         .strip_prefix("\"\"\"")
         .and_then(|s| s.strip_suffix("\"\"\""))
-        .or_else(|| trimmed.strip_prefix("'''").and_then(|s| s.strip_suffix("'''")))
+        .or_else(|| {
+            trimmed
+                .strip_prefix("'''")
+                .and_then(|s| s.strip_suffix("'''"))
+        })
         .or_else(|| trimmed.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
-        .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))?;
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        })?;
     Some(stripped.to_string())
 }
 

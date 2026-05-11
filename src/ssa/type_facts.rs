@@ -23,7 +23,10 @@ thread_local! {
 /// Restores the prior value on drop so nested calls compose; pass `None`
 /// to suppress gating for callers that lack a file context.
 pub fn with_file_imports<R>(imports: Option<&HashMap<String, String>>, f: impl FnOnce() -> R) -> R {
-    let prev = FILE_IMPORTS_TLS.with(|cell| cell.borrow_mut().replace(imports.cloned().unwrap_or_default()));
+    let prev = FILE_IMPORTS_TLS.with(|cell| {
+        cell.borrow_mut()
+            .replace(imports.cloned().unwrap_or_default())
+    });
     let restore_to = if imports.is_some() { prev } else { None };
     struct Guard(Option<HashMap<String, String>>);
     impl Drop for Guard {
@@ -715,44 +718,44 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // The `FileSystemPromisesNs` TypeKind is reached via the
             // gated-import path in `cfg::apply_gated_label_rules` instead.
             match suffix {
-            "URL" => Some(TypeKind::Url),
-            "Request" | "XMLHttpRequest" => Some(TypeKind::HttpClient),
-            // Phase 07 — ORM constructors / factory functions. Coverage:
-            // `new Sequelize(...)`           → Sequelize
-            // `getRepository(Entity)`        → TypeOrmRepo  (typeorm)
-            // `getManager()`                 → TypeOrmManager (typeorm)
-            // `createEntityManager()`        → MikroOrmEm (@mikro-orm/core)
-            // Gated on the per-file local-import view published via
-            // [`with_file_imports`]: the suffix names are distinctive but
-            // not unique (an app-internal class named `Sequelize` with a
-            // `.literal()` helper, a custom `getRepository` method on a
-            // user-defined repository pattern, etc. would collide).
-            // When the TLS view is unset (test paths / non-file callers)
-            // the gate is treated as satisfied so prior behaviour is
-            // preserved.
-            "Sequelize" => orm_gate(TypeKind::Sequelize),
-            "getRepository" => orm_gate(TypeKind::TypeOrmRepo),
-            "getManager" => orm_gate(TypeKind::TypeOrmManager),
-            "createEntityManager" => orm_gate(TypeKind::MikroOrmEm),
-            // JS built-in collection constructors. `new Map()` / `new Set()`
-            // / `new WeakMap()` / `new WeakSet()` / `new Array()` produce
-            // in-memory collections; downstream `m.get(k)` / `m.set(k, v)`
-            // / `s.add(x)` / `s.has(x)` / `arr.find(p)` are container ops,
-            // not data-layer reads. Without this mapping the bare verb
-            // dispatch in `auth_analysis::config::classify_sink_class`
-            // matches the `get` / `find` / `add` read/mutation indicators
-            // and over-fires `js.auth.missing_ownership_check` on every
-            // Map lookup in pure data-manipulation code (excalidraw's
-            // `elementsMap.get(id)`, `origIdToDuplicateId.get(...)`,
-            // `groupIdMapForOperation.set(...)` shapes).
-            "Map" | "Set" | "WeakMap" | "WeakSet" | "Array" => Some(TypeKind::LocalCollection),
-            // ldapjs client factory: `ldap.createClient({ url: '…' })` returns
-            // a Client whose `search(base, opts, cb)` is an LDAP injection
-            // sink.  Match the qualified callee text rather than the bare
-            // `createClient` suffix to avoid widening to unrelated factories
-            // with the same verb name.
-            "createClient" if callee.contains("ldap") => Some(TypeKind::LdapClient),
-            _ => None,
+                "URL" => Some(TypeKind::Url),
+                "Request" | "XMLHttpRequest" => Some(TypeKind::HttpClient),
+                // Phase 07 — ORM constructors / factory functions. Coverage:
+                // `new Sequelize(...)`           → Sequelize
+                // `getRepository(Entity)`        → TypeOrmRepo  (typeorm)
+                // `getManager()`                 → TypeOrmManager (typeorm)
+                // `createEntityManager()`        → MikroOrmEm (@mikro-orm/core)
+                // Gated on the per-file local-import view published via
+                // [`with_file_imports`]: the suffix names are distinctive but
+                // not unique (an app-internal class named `Sequelize` with a
+                // `.literal()` helper, a custom `getRepository` method on a
+                // user-defined repository pattern, etc. would collide).
+                // When the TLS view is unset (test paths / non-file callers)
+                // the gate is treated as satisfied so prior behaviour is
+                // preserved.
+                "Sequelize" => orm_gate(TypeKind::Sequelize),
+                "getRepository" => orm_gate(TypeKind::TypeOrmRepo),
+                "getManager" => orm_gate(TypeKind::TypeOrmManager),
+                "createEntityManager" => orm_gate(TypeKind::MikroOrmEm),
+                // JS built-in collection constructors. `new Map()` / `new Set()`
+                // / `new WeakMap()` / `new WeakSet()` / `new Array()` produce
+                // in-memory collections; downstream `m.get(k)` / `m.set(k, v)`
+                // / `s.add(x)` / `s.has(x)` / `arr.find(p)` are container ops,
+                // not data-layer reads. Without this mapping the bare verb
+                // dispatch in `auth_analysis::config::classify_sink_class`
+                // matches the `get` / `find` / `add` read/mutation indicators
+                // and over-fires `js.auth.missing_ownership_check` on every
+                // Map lookup in pure data-manipulation code (excalidraw's
+                // `elementsMap.get(id)`, `origIdToDuplicateId.get(...)`,
+                // `groupIdMapForOperation.set(...)` shapes).
+                "Map" | "Set" | "WeakMap" | "WeakSet" | "Array" => Some(TypeKind::LocalCollection),
+                // ldapjs client factory: `ldap.createClient({ url: '…' })` returns
+                // a Client whose `search(base, opts, cb)` is an LDAP injection
+                // sink.  Match the qualified callee text rather than the bare
+                // `createClient` suffix to avoid widening to unrelated factories
+                // with the same verb name.
+                "createClient" if callee.contains("ldap") => Some(TypeKind::LdapClient),
+                _ => None,
             }
         }
         Lang::Python => {
@@ -827,9 +830,7 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // resulting receiver as `DjangoQuerySet` lets `qs.raw(sql)` /
                 // `qs.extra(...)` rewrite to `DjangoQuerySet.<method>`.
                 Some(TypeKind::DjangoQuerySet)
-            } else if callee.contains(".objects.")
-                && is_orm_queryset_chain_method(suffix)
-            {
+            } else if callee.contains(".objects.") && is_orm_queryset_chain_method(suffix) {
                 // Django ORM chained-queryset producers.
                 // `Model.objects.all() / .filter(...) / .exclude(...)` etc.
                 // return another `QuerySet`.  The FieldProj-chain
@@ -1046,8 +1047,8 @@ pub(crate) fn url_builder_arg_indices(
             // the visible callee with the source path; the original
             // constructor identifier is preserved on `outer_callee`.
             let direct = constructor_type(lang, callee) == Some(TypeKind::Url);
-            let via_outer = outer_callee
-                .is_some_and(|oc| constructor_type(lang, oc) == Some(TypeKind::Url));
+            let via_outer =
+                outer_callee.is_some_and(|oc| constructor_type(lang, oc) == Some(TypeKind::Url));
             if direct || via_outer {
                 Some((0, 1))
             } else {
@@ -1364,7 +1365,10 @@ pub fn is_safe_string_producing_callee(callee: &str) -> bool {
     // collapsed chain text (e.g. `loaded.getClass.getName`), so a
     // contains-check on `.getClass.` suffices to disambiguate from
     // user-defined `getName` methods on unrelated classes.
-    let suffix = after_colons.rsplit(['.', ':']).next().unwrap_or(after_colons);
+    let suffix = after_colons
+        .rsplit(['.', ':'])
+        .next()
+        .unwrap_or(after_colons);
     if matches!(suffix, "getName" | "getSimpleName" | "getCanonicalName")
         && (after_colons.contains(".getClass.") || after_colons.contains(".getClass()"))
     {
@@ -1726,9 +1730,7 @@ pub fn analyze_types_with_param_types(
                 // `.append(k, v)` on the searchParams view dispatches via
                 // the URL receiver-type rule rather than as an opaque
                 // Object.
-                if matches!(recv_fact.kind, TypeKind::Url)
-                    && is_url_identity_field(&field_name)
-                {
+                if matches!(recv_fact.kind, TypeKind::Url) && is_url_identity_field(&field_name) {
                     let new_fact = TypeFact::from_kind(TypeKind::Url);
                     if facts.get(&inst.value) != Some(&new_fact) {
                         facts.insert(inst.value, new_fact);
@@ -2401,22 +2403,30 @@ mod tests {
             (
                 "String",
                 TypeKind::String,
-                [false, false, false, false, false, false, false, false, false, false],
+                [
+                    false, false, false, false, false, false, false, false, false, false,
+                ],
             ),
             (
                 "Url",
                 TypeKind::Url,
-                [false, false, false, false, false, false, false, false, false, false],
+                [
+                    false, false, false, false, false, false, false, false, false, false,
+                ],
             ),
             (
                 "Object",
                 TypeKind::Object,
-                [false, false, false, false, false, false, false, false, false, false],
+                [
+                    false, false, false, false, false, false, false, false, false, false,
+                ],
             ),
             (
                 "Unknown",
                 TypeKind::Unknown,
-                [false, false, false, false, false, false, false, false, false, false],
+                [
+                    false, false, false, false, false, false, false, false, false, false,
+                ],
             ),
         ];
         for (kind_name, kind, expected) in rows {

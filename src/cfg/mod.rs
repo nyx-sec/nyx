@@ -306,7 +306,11 @@ pub(crate) fn lookup_local_receiver_type(
     fn_start: usize,
     var_name: &str,
 ) -> Option<crate::ssa::type_facts::TypeKind> {
-    LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow().get(&(fn_start, var_name.to_string())).cloned())
+    LOCAL_RECEIVER_TYPES.with(|cell| {
+        cell.borrow()
+            .get(&(fn_start, var_name.to_string()))
+            .cloned()
+    })
 }
 
 /// Public entry consulted by `find_classifiable_inner_call`: given the
@@ -637,7 +641,6 @@ pub enum RhsArraySlot {
         source_cap: crate::labels::Cap,
     },
 }
-
 
 /// AST origin/location metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1191,12 +1194,7 @@ pub(super) fn detect_negation<'a>(
 /// callee to its qualified form so the SSA-level promise-combinator
 /// recogniser fires. Returns `None` for every non-Rust input and for
 /// macro callees that already carry a `::` prefix.
-fn rewrite_rust_bare_join_macro(
-    raw: &str,
-    ast: Node,
-    lang: &str,
-    code: &[u8],
-) -> Option<String> {
+fn rewrite_rust_bare_join_macro(raw: &str, ast: Node, lang: &str, code: &[u8]) -> Option<String> {
     if lang != "rust" || raw.contains("::") {
         return None;
     }
@@ -1431,7 +1429,12 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
         let left = cur.named_child(0)?;
         if matches!(
             left.kind(),
-            "string" | "string_fragment" | "string_literal" | "interpreted_string_literal" | "raw_string_literal" | "encapsed_string"
+            "string"
+                | "string_fragment"
+                | "string_literal"
+                | "interpreted_string_literal"
+                | "raw_string_literal"
+                | "encapsed_string"
         ) {
             // For strings with embedded fragments (Java string_literal
             // wraps a string_fragment child), recurse one level into
@@ -1463,7 +1466,10 @@ fn prefix_of_expression(node: Node, code: &[u8]) -> Option<String> {
             .child_by_field_name("macro")
             .and_then(|n| text_of(n, code))
             .unwrap_or_default();
-        if matches!(macro_name.as_str(), "format" | "write" | "writeln" | "println" | "eprintln" | "print" | "eprint") {
+        if matches!(
+            macro_name.as_str(),
+            "format" | "write" | "writeln" | "println" | "eprintln" | "print" | "eprint"
+        ) {
             // tree-sitter-rust models macro args under a named
             // `token_tree` child rather than via the `arguments` field.
             // Walk every direct child looking for the first string
@@ -3847,11 +3853,7 @@ pub(super) fn try_lower_jsx_dangerous_html(
 
 /// Walk `root` collecting every `jsx_attribute` descendant whose name (via
 /// the source bytes in `code`) equals `dangerouslySetInnerHTML`.
-fn collect_jsx_dangerous_html_attrs<'a>(
-    root: Node<'a>,
-    code: &[u8],
-    out: &mut Vec<Node<'a>>,
-) {
+fn collect_jsx_dangerous_html_attrs<'a>(root: Node<'a>, code: &[u8], out: &mut Vec<Node<'a>>) {
     let mut stack: Vec<Node<'a>> = vec![root];
     while let Some(node) = stack.pop() {
         if node.kind() == "jsx_attribute" && jsx_attr_name_is(node, "dangerouslySetInnerHTML", code)
@@ -3940,12 +3942,18 @@ fn jsx_extract_html_value<'a>(attr: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
         value
     };
     let object_kind = inner.kind();
-    if !matches!(object_kind, "object" | "object_expression" | "object_literal") {
+    if !matches!(
+        object_kind,
+        "object" | "object_expression" | "object_literal"
+    ) {
         return None;
     }
     let mut cur = inner.walk();
     for pair in inner.named_children(&mut cur) {
-        if !matches!(pair.kind(), "pair" | "property" | "shorthand_property_identifier") {
+        if !matches!(
+            pair.kind(),
+            "pair" | "property" | "shorthand_property_identifier"
+        ) {
             continue;
         }
         let key_node = pair
@@ -3959,8 +3967,7 @@ fn jsx_extract_html_value<'a>(attr: Node<'a>, code: &[u8]) -> Option<Node<'a>> {
         };
         let key_text = text_of(k, code).unwrap_or_default();
         // Strip surrounding quotes for `"__html"` / `'__html'` literal keys.
-        let key_trim = key_text
-            .trim_matches(|c| c == '"' || c == '\'' || c == '`');
+        let key_trim = key_text.trim_matches(|c| c == '"' || c == '\'' || c == '`');
         if key_trim == "__html" {
             return Some(v);
         }
@@ -6593,8 +6600,7 @@ fn apply_gated_label_rules(
             let Some(callee) = body.graph[idx].call.callee.clone() else {
                 continue;
             };
-            let labels =
-                crate::labels::classify_gated_only(lang, &callee, Some(&ctx));
+            let labels = crate::labels::classify_gated_only(lang, &callee, Some(&ctx));
             if labels.is_empty() {
                 continue;
             }

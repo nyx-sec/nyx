@@ -270,7 +270,9 @@ impl ModuleGraph {
             let base = importer.parent().unwrap_or_else(|| Path::new(""));
             let joined = base.join(spec);
             let file = resolve_file_or_index(&joined);
-            let package = file.as_ref().and_then(|f| self.package_for(f).map(|p| p.name.clone()));
+            let package = file
+                .as_ref()
+                .and_then(|f| self.package_for(f).map(|p| p.name.clone()));
             return Some(ResolvedModule {
                 file,
                 package,
@@ -325,10 +327,7 @@ impl ModuleGraph {
 
     /// Snapshot the per-file import table.
     pub fn snapshot_import_table(&self) -> ImportTable {
-        self.imports
-            .read()
-            .map(|t| t.clone())
-            .unwrap_or_default()
+        self.imports.read().map(|t| t.clone()).unwrap_or_default()
     }
 
     fn resolve_tsconfig_alias(&self, importer: &Path, spec: &str) -> Option<PathBuf> {
@@ -458,10 +457,7 @@ pub struct RawJsImport {
 /// declarations. Returns raw bindings without consulting any
 /// [`ModuleGraph`], so it can run at CFG-build time before the resolver
 /// has populated its tables.
-pub fn walk_js_top_level_imports(
-    tree: &tree_sitter::Tree,
-    code: &[u8],
-) -> Vec<RawJsImport> {
+pub fn walk_js_top_level_imports(tree: &tree_sitter::Tree, code: &[u8]) -> Vec<RawJsImport> {
     let mut out = Vec::new();
     let root = tree.root_node();
     let mut cursor = root.walk();
@@ -477,11 +473,7 @@ pub fn walk_js_top_level_imports(
     out
 }
 
-fn walk_import_statement(
-    node: tree_sitter::Node,
-    code: &[u8],
-    out: &mut Vec<RawJsImport>,
-) {
+fn walk_import_statement(node: tree_sitter::Node, code: &[u8], out: &mut Vec<RawJsImport>) {
     let Some(source) = node.child_by_field_name("source") else {
         return;
     };
@@ -571,11 +563,7 @@ fn walk_import_statement(
     }
 }
 
-fn walk_require_decl(
-    node: tree_sitter::Node,
-    code: &[u8],
-    out: &mut Vec<RawJsImport>,
-) {
+fn walk_require_decl(node: tree_sitter::Node, code: &[u8], out: &mut Vec<RawJsImport>) {
     let mut cursor = node.walk();
     for decl in node.children(&mut cursor) {
         if decl.kind() != "variable_declarator" {

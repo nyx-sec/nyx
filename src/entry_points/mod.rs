@@ -195,11 +195,7 @@ pub fn detect_entries_in_file(
 // JS / TS — Next.js (Phase 10) + Express (Phase 16)
 // ─────────────────────────────────────────────────────────────────────
 
-fn detect_js_ts(
-    root: Node<'_>,
-    bytes: &[u8],
-    path: &Path,
-) -> HashMap<(usize, usize), EntryKind> {
+fn detect_js_ts(root: Node<'_>, bytes: &[u8], path: &Path) -> HashMap<(usize, usize), EntryKind> {
     let mut entries: HashMap<(usize, usize), EntryKind> = HashMap::new();
 
     let file_use_server = file_level_use_server(root, bytes);
@@ -222,16 +218,12 @@ fn detect_js_ts(
         let span = (node.start_byte(), node.end_byte());
 
         if function_level_use_server(node, bytes) {
-            entries
-                .entry(span)
-                .or_insert(EntryKind::UseServerDirective);
+            entries.entry(span).or_insert(EntryKind::UseServerDirective);
             return;
         }
 
         if file_use_server && exports_function(node, root, bytes, name) {
-            entries
-                .entry(span)
-                .or_insert(EntryKind::UseServerDirective);
+            entries.entry(span).or_insert(EntryKind::UseServerDirective);
             return;
         }
 
@@ -390,10 +382,7 @@ fn is_app_route_path(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    let recognised_basename = matches!(
-        name,
-        "route.ts" | "route.tsx" | "route.js" | "route.jsx"
-    );
+    let recognised_basename = matches!(name, "route.ts" | "route.tsx" | "route.js" | "route.jsx");
     if !recognised_basename {
         return false;
     }
@@ -447,11 +436,7 @@ fn function_level_use_server(func_node: Node, bytes: &[u8]) -> bool {
 
 /// Walk every JS/TS function-like definition and invoke
 /// `visit(node, name)` for each.
-fn walk_functions_js<F: FnMut(Node, Option<&str>)>(
-    root: Node,
-    bytes: &[u8],
-    visit: &mut F,
-) {
+fn walk_functions_js<F: FnMut(Node, Option<&str>)>(root: Node, bytes: &[u8], visit: &mut F) {
     let mut cursor = root.walk();
     visit_recursive_js(root, bytes, &mut cursor, visit);
 }
@@ -519,7 +504,8 @@ fn function_body_js<'a>(func_node: Node<'a>) -> Option<Node<'a>> {
 /// Extract the first `string` child of an `expression_statement`.
 fn first_string_child<'a>(node: Node<'a>) -> Option<Node<'a>> {
     let mut cursor = node.walk();
-    node.children(&mut cursor).find(|child| child.kind() == "string")
+    node.children(&mut cursor)
+        .find(|child| child.kind() == "string")
 }
 
 /// Compare the textual content of a `string` node (quotes stripped)
@@ -719,10 +705,9 @@ fn express_receiver_text_matches(object: Node, bytes: &[u8]) -> bool {
             || lower.ends_with("route")
     }
     match object.kind() {
-        "identifier" | "property_identifier" => object
-            .utf8_text(bytes)
-            .ok()
-            .is_some_and(matches_suffix),
+        "identifier" | "property_identifier" => {
+            object.utf8_text(bytes).ok().is_some_and(matches_suffix)
+        }
         "member_expression" => object
             .child_by_field_name("property")
             .and_then(|p| p.utf8_text(bytes).ok())
@@ -774,9 +759,7 @@ where
     F: FnMut(Node<'a>, Option<Node<'a>>),
 {
     if node.kind() == "function_definition" {
-        let dec = node
-            .parent()
-            .filter(|p| p.kind() == "decorated_definition");
+        let dec = node.parent().filter(|p| p.kind() == "decorated_definition");
         visit(node, dec);
     }
     let mut cursor = node.walk();
@@ -961,19 +944,15 @@ fn java_method_entry_kind(method: Node, bytes: &[u8]) -> Option<EntryKind> {
     None
 }
 
-fn java_annotation_to_entry_kind(
-    name: &str,
-    annotation: Node,
-    bytes: &[u8],
-) -> Option<EntryKind> {
+fn java_annotation_to_entry_kind(name: &str, annotation: Node, bytes: &[u8]) -> Option<EntryKind> {
     match name {
         "RequestMapping" => {
             // `@RequestMapping(method = RequestMethod.POST)` carries the
             // verb on the `method` element-value-pair; default to GET when
             // absent (Spring itself defaults to "all verbs", but GET is
             // the safest single-method approximation for seeding policy).
-            let method = extract_spring_request_mapping_method(annotation, bytes)
-                .unwrap_or(HttpMethod::GET);
+            let method =
+                extract_spring_request_mapping_method(annotation, bytes).unwrap_or(HttpMethod::GET);
             Some(EntryKind::SpringMapping { method })
         }
         "GetMapping" => Some(EntryKind::SpringMapping {
@@ -1461,7 +1440,9 @@ public class X {
 "#;
         let entries = detect_lang(src, "java", "X.java");
         assert!(
-            entries.values().any(|e| matches!(e, EntryKind::JaxRsResource)),
+            entries
+                .values()
+                .any(|e| matches!(e, EntryKind::JaxRsResource)),
             "expected JaxRsResource; got {entries:?}"
         );
     }
@@ -1477,7 +1458,9 @@ end
 "#;
         let entries = detect_lang(src, "ruby", "users_controller.rb");
         assert!(
-            entries.values().any(|e| matches!(e, EntryKind::RailsAction)),
+            entries
+                .values()
+                .any(|e| matches!(e, EntryKind::RailsAction)),
             "expected RailsAction; got {entries:?}"
         );
     }
@@ -1515,7 +1498,9 @@ async fn u(name: web::Path<String>) -> HttpResponse {
 "#;
         let entries = detect_lang(src, "rust", "u.rs");
         assert!(
-            entries.values().any(|e| matches!(e, EntryKind::ActixHandler)),
+            entries
+                .values()
+                .any(|e| matches!(e, EntryKind::ActixHandler)),
             "expected ActixHandler; got {entries:?}"
         );
     }
@@ -1531,7 +1516,9 @@ async fn list(Query(q): Query<String>) -> String {
 "#;
         let entries = detect_lang(src, "rust", "list.rs");
         assert!(
-            entries.values().any(|e| matches!(e, EntryKind::AxumHandler)),
+            entries
+                .values()
+                .any(|e| matches!(e, EntryKind::AxumHandler)),
             "expected AxumHandler; got {entries:?}"
         );
     }
