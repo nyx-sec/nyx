@@ -1,0 +1,19 @@
+{
+  "required_findings": [
+    { "id_prefix": "py.crypto.md5", "min_count": 1 },
+    { "id_prefix": "py.crypto.sha1", "min_count": 1 }
+  ],
+  "forbidden_findings": [
+    { "id_prefix": "py.cmdi.os_system" }
+  ],
+  "noise_budget": {
+    "max_total_findings": 6,
+    "max_high_findings": 0
+  },
+  "performance_expectations": {
+    "max_ms_no_index": 1000,
+    "max_ms_index_cold": 1500,
+    "max_ms_index_warm": 500,
+    "ci_mode": "lenient"
+  }
+}

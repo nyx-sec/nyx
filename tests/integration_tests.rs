@@ -1148,6 +1148,40 @@ fn fp_guard_file_level_const_scalars_xlang() {
     validate_expectations(&diags, &dir);
 }
 
+/// FP guard, Layer A literal-args suppression on Java
+/// `method_invocation` and `object_creation_expression` shapes.  The
+/// AST gate's `find_enclosing_call` walker only matched node kinds
+/// containing the substring `call`, so Java's `method_invocation`
+/// (e.g. `Class.forName(MYSQL_DRIVER)`) and `object_creation_expression`
+/// (e.g. `new Foo("literal")`) silently bypassed the suppression.
+/// Every `Class.forName(LITERAL)` / `Class.forName(CONST)` then fired
+/// `java.reflection.class_forname` regardless of whether the argument
+/// was provably constant.  Param-derived calls remain noisy because
+/// taint cannot prove the input safe.  The Crypto carve-out keeps
+/// `MessageDigest.getInstance("MD5")` firing because the literal
+/// algorithm name IS the weakness signal.
+#[test]
+fn fp_guard_ast_layer_a_java_call_args() {
+    let dir = fixture_path("fp_guards/ast_layer_a_java_call_args");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
+/// FP guard, Crypto / Secrets / InsecureConfig / InsecureTransport
+/// patterns must keep firing under the Layer A literal-args
+/// suppression.  Pre-fix, `hashlib.md5(b"static")` was treated as
+/// "all-literal args" and silently suppressed even though MD5 is
+/// weak regardless of input.  The carve-out routes calls in those
+/// categories around the suppression.  The contrast call,
+/// `os.system("ls -la /tmp")`, stays suppressed because a literal
+/// command string carries no attacker-controlled data.
+#[test]
+fn fp_guard_ast_layer_a_crypto_carve_out_py() {
+    let dir = fixture_path("fp_guards/ast_layer_a_crypto_carve_out_py");
+    let diags = scan_fixture_dir(&dir, AnalysisMode::Full);
+    validate_expectations(&diags, &dir);
+}
+
 /// FP guard, Drupal Database Query subclasses use
 /// `Connection::prepareStatement($sql, $opts, ...)` to obtain a
 /// statement object then bind values out of band via

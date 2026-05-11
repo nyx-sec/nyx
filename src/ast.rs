@@ -30,7 +30,7 @@ use crate::evidence::{Evidence, FlowStep, SpanEvidence, StateEvidence};
 use crate::labels::{
     Cap, DataLabel, LangAnalysisRules, build_lang_rules, severity_for_source_kind,
 };
-use crate::patterns::{FindingCategory, Severity};
+use crate::patterns::{FindingCategory, PatternCategory, Severity};
 use crate::state;
 use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::summary::{FuncSummary, GlobalSummaries};
@@ -1143,8 +1143,23 @@ impl<'a> ParsedSource<'a> {
             let mut matches = cursor.matches(&cq.query, root, self.bytes);
             while let Some(m) = matches.next() {
                 if let Some(cap) = m.captures.iter().find(|c| c.index == 0) {
-                    // Layer A: suppress Security findings on calls with all-literal args
+                    // Layer A: suppress Security findings on calls with all-literal args.
+                    //
+                    // Carve-outs for categories where the literal argument IS
+                    // the bug (algorithm choice, hardcoded secret, insecure
+                    // protocol scheme, unsafe config flag): suppression would
+                    // silence the actual signal.  Hash algorithms picked from
+                    // string literals (`MessageDigest.getInstance("MD5")`,
+                    // `hashlib.md5(b"…")`) are weak regardless of caller-side
+                    // data flow.
                     if cq.meta.category.finding_category() == FindingCategory::Security
+                        && !matches!(
+                            cq.meta.category,
+                            PatternCategory::Crypto
+                                | PatternCategory::Secrets
+                                | PatternCategory::InsecureConfig
+                                | PatternCategory::InsecureTransport
+                        )
                         && is_call_all_args_literal(cap.node, self.bytes, self.lang_slug)
                     {
                         continue;
@@ -2532,8 +2547,15 @@ fn find_enclosing_call(mut node: tree_sitter::Node) -> Option<tree_sitter::Node>
         if kind.contains("call") && !kind.contains("callee") {
             return Some(node);
         }
-        // PHP: function_call_expression
-        if kind == "function_call_expression" {
+        // Java / PHP / C-family kinds that don't have "call" in their name
+        // but represent the same call shape for arg-list inspection.
+        if matches!(
+            kind,
+            "function_call_expression"
+                | "method_invocation"
+                | "object_creation_expression"
+                | "explicit_constructor_invocation"
+        ) {
             return Some(node);
         }
         // Stop at scope/statement boundaries, don't cross into outer calls
@@ -7896,5 +7918,85 @@ fn is_literal_node_rejects_python_fstring_with_interpolation() {
     assert!(
         is_literal_node(rhs, code),
         "plain string literal must be classified as literal"
+    );
+}
+
+#[cfg(test)]
+fn first_java_capture<'tree>(
+    tree: &'tree tree_sitter::Tree,
+    code: &[u8],
+    query_str: &str,
+) -> tree_sitter::Node<'tree> {
+    use tree_sitter::StreamingIterator;
+    let lang = tree_sitter::Language::from(tree_sitter_java::LANGUAGE);
+    let query = tree_sitter::Query::new(&lang, query_str).expect("query compiles");
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut matches = cursor.matches(&query, tree.root_node(), code);
+    let m = matches.next().expect("query should match");
+    m.captures
+        .iter()
+        .find(|c| c.index == 0)
+        .expect("capture index 0")
+        .node
+}
+
+#[test]
+fn is_call_all_args_literal_recognises_java_call_kinds() {
+    let mut parser = tree_sitter::Parser::new();
+    let lang = tree_sitter::Language::from(tree_sitter_java::LANGUAGE);
+    parser.set_language(&lang).unwrap();
+
+    // method_invocation with literal arg, Layer A must suppress.
+    let code = b"class T { void f() throws Exception { Class.forName(\"com.foo.Bar\"); } }";
+    let tree = parser.parse(code, None).unwrap();
+    let q = r#"(method_invocation
+                 object: (identifier) @c (#eq? @c "Class")
+                 name: (identifier) @id (#eq? @id "forName"))
+               @vuln"#;
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        is_call_all_args_literal(cap, code, "java"),
+        "method_invocation with literal arg must trigger Layer A suppression"
+    );
+
+    // method_invocation with class-constant arg, Layer A must suppress
+    // via the file-level scalar-binding lookup (session 0014/0015).
+    let code = b"class T {\n  private static final String D = \"com.foo.Bar\";\n  void f() throws Exception { Class.forName(D); }\n}";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        is_call_all_args_literal(cap, code, "java"),
+        "method_invocation with class-const arg must trigger Layer A suppression"
+    );
+
+    // method_invocation with parameter arg, Layer A must NOT suppress.
+    let code = b"class T { void f(String s) throws Exception { Class.forName(s); } }";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        !is_call_all_args_literal(cap, code, "java"),
+        "method_invocation with non-literal arg must NOT trigger Layer A suppression"
+    );
+
+    // object_creation_expression with empty args (`new Yaml()` shape).
+    // `has_any_arg` stays false so the gate also returns false: empty
+    // arg lists do not satisfy "all args are literal" (arg-less calls
+    // can still carry side-effect risk via the constructor itself).
+    let code = b"class T { Object f() { return new Object(); } }";
+    let tree = parser.parse(code, None).unwrap();
+    let q = r#"(object_creation_expression) @vuln"#;
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        !is_call_all_args_literal(cap, code, "java"),
+        "object_creation_expression with empty args must NOT trigger Layer A"
+    );
+
+    // object_creation_expression with literal arg, must suppress.
+    let code = b"class T { Object f() { return new String(\"literal\"); } }";
+    let tree = parser.parse(code, None).unwrap();
+    let cap = first_java_capture(&tree, code, q);
+    assert!(
+        is_call_all_args_literal(cap, code, "java"),
+        "object_creation_expression with literal arg must trigger Layer A"
     );
 }
