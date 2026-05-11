@@ -132,9 +132,47 @@ pub(super) fn extract_destination_field_pairs(
                             raw
                         }
                     }),
-                    // Computed keys like `[someVar]` can't be statically
-                    // resolved, skip (conservative: not a destination field).
-                    "computed_property_name" => continue,
+                    // Computed keys: resolve only when the inner expression
+                    // is a pure string literal (`['url']`).  Dynamic forms
+                    // (`[someVar]`, `[`url-${i}`]`, ``[`url`]`` with
+                    // interpolation) stay conservative-skip.
+                    "computed_property_name" => {
+                        let mut inner_cursor = key_node.walk();
+                        let inner = key_node
+                            .named_children(&mut inner_cursor)
+                            .find(|c| {
+                                !matches!(c.kind(), "comment" | "block_comment" | "line_comment")
+                            });
+                        match inner.map(|n| (n.kind(), n)) {
+                            Some(("string" | "string_literal", n)) => {
+                                text_of(n, code).map(|raw| {
+                                    if raw.len() >= 2 {
+                                        raw[1..raw.len() - 1].to_string()
+                                    } else {
+                                        raw
+                                    }
+                                })
+                            }
+                            // Template strings only when no interpolation
+                            // (no `template_substitution` children).
+                            Some(("template_string", n))
+                                if {
+                                    let mut tc = n.walk();
+                                    !n.named_children(&mut tc)
+                                        .any(|c| c.kind() == "template_substitution")
+                                } =>
+                            {
+                                text_of(n, code).map(|raw| {
+                                    if raw.len() >= 2 {
+                                        raw[1..raw.len() - 1].to_string()
+                                    } else {
+                                        raw
+                                    }
+                                })
+                            }
+                            _ => continue,
+                        }
+                    }
                     _ => text_of(key_node, code),
                 };
                 let Some(key) = key_text else {

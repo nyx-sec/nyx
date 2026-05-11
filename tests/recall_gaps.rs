@@ -595,6 +595,10 @@ fn orm_builders() {
             f.path.ends_with(file)
                 && (f.id.starts_with("taint-unsanitised-flow")
                     || f.id.starts_with("cfg-unguarded-sink"))
+                && f.evidence
+                    .as_ref()
+                    .map(|e| (e.sink_caps & Cap::SQL_QUERY.bits()) != 0)
+                    .unwrap_or(false)
         });
         assert!(
             !leak,
@@ -636,6 +640,8 @@ fn ssrf_url_builders() {
         ("ssrf_searchparams_append.ts", 12usize),
         ("ssrf_fetch_object_form.ts", 11usize),
         ("ssrf_fetch_url_typed_arg.ts", 13usize),
+        ("ssrf_fetch_object_shorthand.ts", 13usize),
+        ("ssrf_fetch_object_shorthand.ts", 19usize),
     ];
     for (file, sink_line) in positives {
         assert_finding_with_cap(

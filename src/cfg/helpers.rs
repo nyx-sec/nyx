@@ -696,6 +696,7 @@ pub(crate) fn collect_idents_with_paths(
         "identifier"
         | "field_identifier"
         | "property_identifier"
+        | "shorthand_property_identifier"
         | "shorthand_property_identifier_pattern" => {
             if let Some(txt) = text_of(n, code) {
                 idents.push(txt);
@@ -719,12 +720,14 @@ pub(crate) fn collect_idents_with_paths(
 ///
 /// Recognises `identifier` (most languages), `variable_name` (PHP),
 /// `field_identifier` (Go), `property_identifier` (JS/TS), and
-/// `shorthand_property_identifier_pattern` (JS/TS destructuring).
+/// `shorthand_property_identifier` / `shorthand_property_identifier_pattern`
+/// (JS/TS object-literal shorthand uses and destructuring binding patterns).
 pub(crate) fn collect_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
     match n.kind() {
         "identifier"
         | "field_identifier"
         | "property_identifier"
+        | "shorthand_property_identifier"
         | "shorthand_property_identifier_pattern"
         // PHP `name`: leaf node carrying the bare identifier text for
         // function/method names and similar grammar slots.  Without this

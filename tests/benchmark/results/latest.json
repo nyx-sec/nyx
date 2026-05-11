@@ -1,6 +1,6 @@
 {
   "benchmark_version": "1.0",
-  "timestamp": "2026-05-11T03:08:30Z",
+  "timestamp": "2026-05-11T03:37:00Z",
   "scanner_version": "0.6.1",
   "scanner_config": {
     "analysis_mode": "Full",
@@ -1575,14 +1575,16 @@
       "outcome_location_level": "TP",
       "matched_rule_ids": [
         "js.code_exec.eval",
+        "taint-unsanitised-flow (source 24:5)",
         "taint-unsanitised-flow (source 24:5)"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "js.code_exec.eval",
+        "taint-unsanitised-flow (source 24:5)",
         "taint-unsanitised-flow (source 24:5)"
       ],
-      "security_finding_count": 2,
+      "security_finding_count": 3,
       "non_security_finding_count": 0
     },
     {
@@ -2506,13 +2508,15 @@
       "outcome_rule_level": "TP",
       "outcome_location_level": "TP",
       "matched_rule_ids": [
+        "taint-unsanitised-flow (source 50:5)",
         "taint-unsanitised-flow (source 50:5)"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
+        "taint-unsanitised-flow (source 50:5)",
         "taint-unsanitised-flow (source 50:5)"
       ],
-      "security_finding_count": 1,
+      "security_finding_count": 2,
       "non_security_finding_count": 0
     },
     {
@@ -9179,14 +9183,16 @@
       "outcome_location_level": "TP",
       "matched_rule_ids": [
         "taint-unsanitised-flow (source 5:5)",
-        "ts.code_exec.eval"
+        "ts.code_exec.eval",
+        "taint-unsanitised-flow (source 5:5)"
       ],
       "unexpected_rule_ids": [],
       "all_finding_ids": [
         "taint-unsanitised-flow (source 5:5)",
-        "ts.code_exec.eval"
+        "ts.code_exec.eval",
+        "taint-unsanitised-flow (source 5:5)"
       ],
-      "security_finding_count": 2,
+      "security_finding_count": 3,
       "non_security_finding_count": 0
     },
     {
