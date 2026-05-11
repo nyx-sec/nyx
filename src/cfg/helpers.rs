@@ -824,6 +824,101 @@ pub(crate) fn collect_array_pattern_bindings_indexed(
     out
 }
 
+/// Walk an array-literal-shape RHS node and return one slot per source-order
+/// element: `Some(ident)` for a bare identifier element, `None` for a
+/// syntactic literal (string, number, boolean, null/nil).
+///
+/// Recognised RHS kinds:
+///   * JS/TS / Ruby `array` — `[a, b]`
+///   * Python `list` — `[a, b]`
+///   * Python `tuple` — `(a, b)`
+///   * Python `expression_list` — bare comma form `a, b`
+///   * Rust `tuple_expression` — `(a, b)`
+///
+/// Bails (returns empty) when the RHS is not one of these kinds OR contains
+/// any element that is neither a bare identifier nor a syntactic literal
+/// (calls, member accesses, binary expressions, subscripts, spreads, etc.).
+/// Callers treat empty as "no per-element rewrite available; fall back to
+/// scalar union".
+pub(crate) fn collect_rhs_array_literal_elements(
+    rhs: Node,
+    code: &[u8],
+) -> SmallVec<[Option<String>; 4]> {
+    let mut out: SmallVec<[Option<String>; 4]> = SmallVec::new();
+    let kind = rhs.kind();
+    if !matches!(
+        kind,
+        "array"
+            | "array_literal"
+            | "list"
+            | "tuple"
+            | "tuple_expression"
+            | "expression_list"
+    ) {
+        return out;
+    }
+    let mut cursor = rhs.walk();
+    for child in rhs.named_children(&mut cursor) {
+        let ck = child.kind();
+        match ck {
+            "identifier"
+            | "shorthand_property_identifier"
+            | "shorthand_property_identifier_pattern"
+            | "field_identifier"
+            | "property_identifier" => {
+                if let Some(txt) = text_of(child, code) {
+                    out.push(Some(txt));
+                } else {
+                    out.clear();
+                    return out;
+                }
+            }
+            "variable_name" => {
+                if let Some(txt) = text_of(child, code) {
+                    out.push(Some(txt.trim_start_matches('$').to_string()));
+                } else {
+                    out.clear();
+                    return out;
+                }
+            }
+            // Syntactic literal slots: no ident, no taint contribution.
+            // Names follow tree-sitter's per-grammar literal kinds across
+            // the supported languages.
+            "string"
+            | "string_literal"
+            | "raw_string_literal"
+            | "interpreted_string_literal"
+            | "concatenated_string"
+            | "integer"
+            | "integer_literal"
+            | "float"
+            | "float_literal"
+            | "number"
+            | "numeric_literal"
+            | "true"
+            | "false"
+            | "boolean_literal"
+            | "boolean"
+            | "null"
+            | "null_literal"
+            | "nil"
+            | "none"
+            | "None"
+            | "undefined" => {
+                out.push(None);
+            }
+            // Anything else (call, member access, binary expr, subscript,
+            // spread, nested array literal, interpolation, etc.) is too
+            // complex to reason about per-element. Bail.
+            _ => {
+                out.clear();
+                return out;
+            }
+        }
+    }
+    out
+}
+
 /// Recursively collect every identifier that occurs inside `n`.
 ///
 /// Recognises `identifier` (most languages), `variable_name` (PHP),

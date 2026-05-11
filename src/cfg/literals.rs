@@ -1,5 +1,5 @@
 use super::conditions::unwrap_parens;
-use super::helpers::collect_array_pattern_bindings_indexed;
+use super::helpers::{collect_array_pattern_bindings_indexed, collect_rhs_array_literal_elements};
 use super::{
     anon_fn_name, collect_idents, collect_idents_with_paths, find_constructor_type_child,
     first_call_ident, root_receiver_text, text_of,
@@ -2237,8 +2237,8 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     result
 }
 
-/// Return `(defines, uses, extra_defines, array_pattern_indices)` for the
-/// AST fragment `ast`.
+/// Return `(defines, uses, extra_defines, array_pattern_indices,
+/// rhs_array_elements)` for the AST fragment `ast`.
 ///
 /// `extra_defines` captures additional bindings from destructuring patterns
 /// beyond the primary define. `array_pattern_indices`, when non-empty, gives
@@ -2246,6 +2246,14 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
 /// extra_defines)` for `array_pattern` / `tuple_pattern` LHS shapes. Empty
 /// for non-array destructures and for non-skip array patterns where callers
 /// can derive sequential 0..N indices implicitly.
+///
+/// `rhs_array_elements`, when non-empty, gives source-order RHS slots for
+/// destructure-from-array-literal shapes (`const [a, b] = [safe, tainted]`,
+/// `let (a, b) = (safe, tainted)`, Python `a, b = safe, tainted`). Each slot
+/// is `Some(ident)` for a bare-ident element or `None` for a syntactic
+/// literal. Empty when RHS isn't an array-literal shape or any element is
+/// too complex; callers fall back to scalar union in that case.
+#[allow(clippy::type_complexity)]
 pub(super) fn def_use(
     ast: Node,
     lang: &str,
@@ -2255,6 +2263,7 @@ pub(super) fn def_use(
     Vec<String>,
     Vec<String>,
     SmallVec<[usize; 4]>,
+    SmallVec<[Option<String>; 4]>,
 ) {
     match lookup(lang, ast.kind()) {
         // Declaration wrappers (let, var, short_var_declaration, etc.)
@@ -2263,6 +2272,7 @@ pub(super) fn def_use(
             let mut extra_defs = Vec::new();
             let mut uses = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
+            let mut rhs_array_elements: SmallVec<[Option<String>; 4]> = SmallVec::new();
 
             // Try direct field names first (Rust `let_declaration`, Go `short_var_declaration`)
             let def_node = ast
@@ -2317,6 +2327,14 @@ pub(super) fn def_use(
                     // the format-string bytes, not as a separate AST
                     // argument node, so collect_idents misses it.
                     uses.extend(extract_rust_format_macro_named_idents_in(val, code));
+                    // When the LHS is a recognised destructure pattern AND
+                    // the RHS is a bare array-literal shape (no call), record
+                    // per-element idents so the SSA destructure rewrite can
+                    // map each binding to its specific RHS slot.
+                    if !pattern_indices.is_empty() {
+                        rhs_array_elements =
+                            collect_rhs_array_literal_elements(val, code);
+                    }
                 }
             } else {
                 // Try nested declarator pattern (JS/TS `lexical_declaration` → `variable_declarator`,
@@ -2387,6 +2405,12 @@ pub(super) fn def_use(
                             uses.extend(paths);
                             uses.extend(idents);
                             uses.extend(extract_rust_format_macro_named_idents_in(val_node, code));
+                            if !pattern_indices.is_empty()
+                                && rhs_array_elements.is_empty()
+                            {
+                                rhs_array_elements =
+                                    collect_rhs_array_literal_elements(val_node, code);
+                            }
                         }
                     }
                 }
@@ -2402,7 +2426,7 @@ pub(super) fn def_use(
                     uses.extend(extract_rust_format_macro_named_idents_in(ast, code));
                 }
             }
-            (defs, uses, extra_defs, pattern_indices)
+            (defs, uses, extra_defs, pattern_indices, rhs_array_elements)
         }
 
         // Plain assignment `x = y` or destructuring assignment such as
@@ -2417,6 +2441,7 @@ pub(super) fn def_use(
             let mut defs = None;
             let mut extra_defs = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
+            let mut rhs_array_elements: SmallVec<[Option<String>; 4]> = SmallVec::new();
             let mut uses = Vec::new();
             if let Some(lhs) = ast.child_by_field_name("left") {
                 let bindings = collect_array_pattern_bindings_indexed(lhs, code);
@@ -2445,8 +2470,15 @@ pub(super) fn def_use(
                 uses.extend(paths);
                 uses.extend(idents);
                 uses.extend(extract_rust_format_macro_named_idents_in(rhs, code));
+                // When the LHS is a recognised destructure pattern AND the
+                // RHS is a bare array-literal shape, record per-element
+                // idents so the SSA destructure rewrite can map each
+                // binding to its specific RHS slot.
+                if !pattern_indices.is_empty() {
+                    rhs_array_elements = collect_rhs_array_literal_elements(rhs, code);
+                }
             }
-            (defs, uses, extra_defs, pattern_indices)
+            (defs, uses, extra_defs, pattern_indices, rhs_array_elements)
         }
 
         // if‑let / while‑let, the `let_condition` binds a variable from
@@ -2471,7 +2503,7 @@ pub(super) fn def_use(
                 if let Some(val) = c.child_by_field_name("value") {
                     collect_idents(val, code, &mut uses);
                 }
-                return (defs, uses, vec![], SmallVec::new());
+                return (defs, uses, vec![], SmallVec::new(), SmallVec::new());
             }
 
             let mut idents = Vec::new();
@@ -2479,7 +2511,7 @@ pub(super) fn def_use(
             collect_idents_with_paths(ast, code, &mut idents, &mut paths);
             let mut uses = paths;
             uses.extend(idents);
-            (None, uses, vec![], SmallVec::new())
+            (None, uses, vec![], SmallVec::new(), SmallVec::new())
         }
 
         // for-in / for-of / Python `for x in iter:` ─────────────────────────
@@ -2523,7 +2555,7 @@ pub(super) fn def_use(
                 collect_idents_with_paths(ast, code, &mut idents, &mut paths);
                 let mut uses = paths;
                 uses.extend(idents);
-                return (None, uses, vec![], SmallVec::new());
+                return (None, uses, vec![], SmallVec::new(), SmallVec::new());
             }
 
             let mut defs: Option<String> = None;
@@ -2549,7 +2581,7 @@ pub(super) fn def_use(
                 uses.extend(paths);
                 uses.extend(idents);
             }
-            (defs, uses, extra_defs, SmallVec::new())
+            (defs, uses, extra_defs, SmallVec::new(), SmallVec::new())
         }
 
         // everything else – no definition, but may read vars
@@ -2559,7 +2591,7 @@ pub(super) fn def_use(
             collect_idents_with_paths(ast, code, &mut idents, &mut paths);
             let mut uses = paths;
             uses.extend(idents);
-            (None, uses, vec![], SmallVec::new())
+            (None, uses, vec![], SmallVec::new(), SmallVec::new())
         }
     }
 }

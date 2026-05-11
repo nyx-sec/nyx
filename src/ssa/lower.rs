@@ -1462,12 +1462,59 @@ fn rename_variables(
                     None
                 };
 
+            // Bare-array RHS destructure precision: when the LHS is an
+            // array_pattern / tuple_pattern / pattern_list / left_assignment_list
+            // AND the RHS is a bare array-literal whose elements are all
+            // either bare idents (resolvable via var_stacks) or syntactic
+            // literals, build per-source-position ops so each binding sees
+            // only its index's element instead of the scalar union of every
+            // RHS ident.
+            //
+            // Closes FPs like `const [a, b] = [safe, tainted]; exec(a);`
+            // where the legacy scalar-union path painted `a` with `tainted`'s
+            // taint via the cloned primary Assign op.
+            //
+            // Gated on `info.call.callee.is_none()` so this does not co-fire
+            // with the combinator path above (combinator-call destructures
+            // already have a Call op + `promise_destruct_args`).
+            let bare_array_ops: Option<SmallVec<[SsaOp; 4]>> = if info.call.callee.is_none()
+                && !info.taint.rhs_array_elements.is_empty()
+                && !binding_indices.is_empty()
+                && promise_destruct_args.is_none()
+            {
+                let max_index = binding_indices.iter().copied().max().unwrap_or(0);
+                let needed = max_index + 1;
+                if info.taint.rhs_array_elements.len() < needed {
+                    None
+                } else {
+                    let mut per_pos: SmallVec<[SsaOp; 4]> = SmallVec::new();
+                    let mut bail = false;
+                    for slot in info.taint.rhs_array_elements.iter().take(needed) {
+                        let slot_op = match slot {
+                            Some(ident) => match var_stacks.get(ident).and_then(|s| s.last().copied()) {
+                                Some(sv) => SsaOp::Assign(SmallVec::from_elem(sv, 1)),
+                                None => {
+                                    bail = true;
+                                    break;
+                                }
+                            },
+                            None => SsaOp::Const(None),
+                        };
+                        per_pos.push(slot_op);
+                    }
+                    if bail { None } else { Some(per_pos) }
+                }
+            } else {
+                None
+            };
+
             // Clone op for potential extra_defines before moving into SsaInst.
-            // For the destructure-promise rewrite, the per-extra Assign ops are
-            // built explicitly below from `promise_destruct_args`, so the
-            // shared clone path is bypassed.
+            // For the destructure-promise / bare-array rewrites, the
+            // per-extra ops are built explicitly below, so the shared clone
+            // path is bypassed.
             let primary_op_for_extras = if info.taint.extra_defines.is_empty()
                 || promise_destruct_args.is_some()
+                || bare_array_ops.is_some()
             {
                 None
             } else {
@@ -1483,6 +1530,9 @@ fn rename_variables(
                 let primary_idx = binding_indices.first().copied().unwrap_or(0);
                 let pick = args.get(primary_idx).copied().unwrap_or(args[0]);
                 SsaOp::Assign(SmallVec::from_elem(pick, 1))
+            } else if let Some(ref per_pos) = bare_array_ops {
+                let primary_idx = binding_indices.first().copied().unwrap_or(0);
+                per_pos.get(primary_idx).cloned().unwrap_or(SsaOp::Const(None))
             } else {
                 op
             };
@@ -1582,6 +1632,32 @@ fn rename_variables(
                     ssa_blocks[block_idx].body.push(SsaInst {
                         value: ev,
                         op: SsaOp::Assign(SmallVec::from_elem(arg, 1)),
+                        cfg_node: node,
+                        var_name: Some(extra_def.clone()),
+                        span: info.ast.span,
+                    });
+                }
+            } else if let Some(ref per_pos) = bare_array_ops {
+                // Bare-array RHS destructure: each extra emits the op for its
+                // source-order RHS position. Ident slots emit Assign of the
+                // ident's reaching SSA value; literal slots emit Const(None).
+                for (i, extra_def) in info.taint.extra_defines.iter().enumerate() {
+                    let ev = SsaValue(*next_value);
+                    *next_value += 1;
+                    value_defs.push(ValueDef {
+                        var_name: Some(extra_def.clone()),
+                        cfg_node: node,
+                        block: block_id,
+                    });
+                    var_stacks.entry(extra_def.clone()).or_default().push(ev);
+                    let extra_idx = binding_indices.get(i + 1).copied().unwrap_or(i + 1);
+                    let op_for_extra = per_pos
+                        .get(extra_idx)
+                        .cloned()
+                        .unwrap_or(SsaOp::Const(None));
+                    ssa_blocks[block_idx].body.push(SsaInst {
+                        value: ev,
+                        op: op_for_extra,
                         cfg_node: node,
                         var_name: Some(extra_def.clone()),
                         span: info.ast.span,

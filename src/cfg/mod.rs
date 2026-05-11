@@ -591,6 +591,24 @@ pub struct TaintMeta {
     /// single-binding assignments, and non-array patterns.
     #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
     pub array_pattern_indices: SmallVec<[usize; 4]>,
+    /// Source-order RHS array-literal elements for destructure assignments.
+    /// Each slot is `Some(ident)` when the RHS element at that position is a
+    /// bare identifier (`safe` / `tainted`), or `None` when it is a syntactic
+    /// literal (string, number, bool, null). Populated only when the LHS is a
+    /// destructure pattern (`array_pattern`, `tuple_pattern`, `pattern_list`,
+    /// `left_assignment_list`) AND the RHS is an array-literal shape (JS/TS
+    /// `array`, Python `list`/`tuple`/`expression_list`, Ruby `array`, Rust
+    /// `tuple_expression`) whose elements are all either bare idents or
+    /// simple literals. Empty when the RHS shape doesn't match OR any element
+    /// is too complex (call, binary, subscript, etc.) — callers fall back to
+    /// the existing scalar-union behavior in that case.
+    ///
+    /// Used by the SSA destructure rewrite in `lower.rs` so each binding sees
+    /// only its index's element instead of the scalar union of every ident on
+    /// the RHS. Closes FPs like `const [a, b] = [safe, tainted]; exec(a);`
+    /// where `a` was over-painted via `tainted`.
+    #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
+    pub rhs_array_elements: SmallVec<[Option<String>; 4]>,
 }
 
 /// AST origin/location metadata.
@@ -3070,7 +3088,8 @@ pub(super) fn push_node<'a>(
 
     /* ── 3.  GRAPH INSERTION + DEBUG ──────────────────────────────────── */
 
-    let (defines, uses, extra_defines, array_pattern_indices) = def_use(ast, lang, code);
+    let (defines, uses, extra_defines, array_pattern_indices, rhs_array_elements) =
+        def_use(ast, lang, code);
 
     // Capture constant text for SSA constant propagation: when this node
     // defines a variable from a syntactic literal (no identifier uses),
@@ -3365,6 +3384,7 @@ pub(super) fn push_node<'a>(
             uses,
             extra_defines,
             array_pattern_indices,
+            rhs_array_elements,
         },
         ast: AstMeta {
             span,

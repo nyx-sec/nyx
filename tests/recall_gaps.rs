@@ -335,15 +335,48 @@ fn promise_all_destruct_per_index() {
         );
     }
 
-    // Ruby parallel assignment `a, b = [array_literal]` is a FN-closure
-    // shape, not a per-index precision shape (no combinator rewrite
-    // for bare array literals yet).  Pre-fix the legacy
-    // `Kind::Assignment` def_use path called `idents.pop()` on the
-    // LHS, recording only the LAST binding (`b`) as the def and
-    // silently dropping `a`.  Post-fix every binding fires via the
-    // scalar union of RHS uses, no FN.  Each handler block has 2 or 3
-    // bindings; every sink line on a binding must fire.
-    for sink_line in [25usize, 26, 31, 32, 37, 38, 39] {
+    // Bare-array RHS destructure (`const [a, b] = [safe, tainted]`)
+    // mirror of the Promise.all destructure precision, gated on
+    // `info.call.callee.is_none()` so the combinator path is not
+    // affected.  Each binding emits its own SSA op keyed on the
+    // source-order RHS slot.
+    for sink_line in [28usize, 36] {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: "bare_array_literal_destruct_fp.ts",
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
+    for forbidden_line in [27usize, 37, 44] {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with("bare_array_literal_destruct_fp.ts")
+                && f.line == forbidden_line
+                && f.id.starts_with("taint-unsanitised-flow")
+        });
+        assert!(
+            !leak,
+            "JS/TS bare-array binding at line {forbidden_line} must not carry req.body taint; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with("bare_array_literal_destruct_fp.ts"))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    // Ruby parallel assignment `a, b = [array_literal]` now gets per-index
+    // precision via the bare-array RHS rewrite at `src/ssa/lower.rs`.
+    // Each binding emits its own SSA op keyed on its source-order RHS
+    // slot — ident slots Assign the slot's value, literal slots emit
+    // Const(None). Positives at handler lines 25 / 32 / 37 (tainted-
+    // aligned bindings) must fire; negatives at 26 / 31 / 38 / 39
+    // (literal-aligned bindings) must NOT fire.
+    for sink_line in [23usize, 30, 35] {
         assert_finding(
             &findings,
             ExpectedFinding {
@@ -352,6 +385,23 @@ fn promise_all_destruct_per_index() {
                 sink_line,
                 source_line: None,
             },
+        );
+    }
+    for forbidden_line in [24usize, 29, 36, 37] {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with("ruby_parallel_assignment_fp.rb")
+                && f.line == forbidden_line
+                && f.id.starts_with("taint-unsanitised-flow")
+        });
+        assert!(
+            !leak,
+            "Ruby parallel assignment binding at line {forbidden_line} must not carry name taint; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with("ruby_parallel_assignment_fp.rb"))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
     }
 }

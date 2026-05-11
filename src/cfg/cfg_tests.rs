@@ -1203,6 +1203,7 @@ fn clone_preserves_all_sub_structs() {
             uses: vec!["a".into(), "b".into()],
             extra_defines: vec!["c".into()],
             array_pattern_indices: smallvec::SmallVec::new(),
+            rhs_array_elements: smallvec::SmallVec::new(),
         },
         ast: AstMeta {
             span: (10, 100),
@@ -3785,4 +3786,110 @@ fn left_assignment_list_indexed_bindings_recognise_ruby_destructure() {
     // destructured_left_assignment isn't in the simple-identifier
     // whitelist.
     assert!(run_case(b"(a, b) = [x, y]\n").is_empty());
+}
+
+/// Helper for `src/ssa/lower.rs` bare-array destructure rewrite.
+/// Walks the RHS of a destructure assignment and emits one slot per
+/// source-order element: `Some(ident)` for bare identifiers, `None`
+/// for syntactic literals.  Bails (empty) on any complex element so
+/// callers fall back to the scalar-union behaviour.
+#[test]
+fn rhs_array_literal_elements_recognise_per_language_shapes() {
+    use super::helpers::collect_rhs_array_literal_elements;
+
+    fn parse(lang_label: &str, src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
+        let mut parser = tree_sitter::Parser::new();
+        let lang = match lang_label {
+            "javascript" => Language::from(tree_sitter_javascript::LANGUAGE),
+            "typescript" => Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+            "python" => Language::from(tree_sitter_python::LANGUAGE),
+            "ruby" => Language::from(tree_sitter_ruby::LANGUAGE),
+            "rust" => Language::from(tree_sitter_rust::LANGUAGE),
+            other => panic!("unsupported lang: {}", other),
+        };
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        (tree, src.to_vec())
+    }
+
+    fn find_first<'t>(
+        n: tree_sitter::Node<'t>,
+        kinds: &[&str],
+    ) -> Option<tree_sitter::Node<'t>> {
+        if kinds.iter().any(|k| *k == n.kind()) {
+            return Some(n);
+        }
+        let mut c = n.walk();
+        for child in n.children(&mut c) {
+            if let Some(found) = find_first(child, kinds) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    fn run(lang: &str, src: &[u8], rhs_kinds: &[&str]) -> Vec<Option<String>> {
+        let (tree, bytes) = parse(lang, src);
+        let rhs = find_first(tree.root_node(), rhs_kinds).expect("rhs in fixture");
+        collect_rhs_array_literal_elements(rhs, &bytes)
+            .into_iter()
+            .collect()
+    }
+
+    // JS/TS `array` literal: two bare idents.
+    assert_eq!(
+        run("javascript", b"const _ = [safe, tainted];\n", &["array"]),
+        vec![Some("safe".into()), Some("tainted".into())],
+    );
+    // JS/TS `array` mixed ident + string literal.
+    assert_eq!(
+        run("javascript", b"const _ = [tainted, \"ok\"];\n", &["array"]),
+        vec![Some("tainted".into()), None],
+    );
+    // JS/TS bails on call element.
+    assert!(
+        run("javascript", b"const _ = [tainted, fn()];\n", &["array"]).is_empty()
+    );
+
+    // Python `list` shape.
+    assert_eq!(
+        run("python", b"a = [safe, tainted]\n", &["list"]),
+        vec![Some("safe".into()), Some("tainted".into())],
+    );
+    // Python `expression_list` (bare commas RHS in `a, b = x, y`).
+    assert_eq!(
+        run("python", b"a, b = safe, tainted\n", &["expression_list"]),
+        vec![Some("safe".into()), Some("tainted".into())],
+    );
+    // Python `tuple` (parenthesised).
+    assert_eq!(
+        run("python", b"x = (safe, 42)\n", &["tuple"]),
+        vec![Some("safe".into()), None],
+    );
+
+    // Ruby `array`.
+    assert_eq!(
+        run("ruby", b"a, b = [safe, tainted]\n", &["array"]),
+        vec![Some("safe".into()), Some("tainted".into())],
+    );
+    // Ruby `array` with literal + ident.
+    assert_eq!(
+        run("ruby", b"a, b = [tainted, \"safe\"]\n", &["array"]),
+        vec![Some("tainted".into()), None],
+    );
+
+    // Rust `tuple_expression`.
+    assert_eq!(
+        run(
+            "rust",
+            b"fn f(safe: &str, tainted: &str) { let _ = (safe, tainted); }\n",
+            &["tuple_expression"]
+        ),
+        vec![Some("safe".into()), Some("tainted".into())],
+    );
+
+    // Non-array-shape node returns empty (defensive guard).
+    assert!(
+        run("javascript", b"const x = tainted;\n", &["identifier"]).is_empty()
+    );
 }
