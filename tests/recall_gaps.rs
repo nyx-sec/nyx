@@ -189,8 +189,10 @@ fn async_await_rs_join_bare() {
 
 /// Phase 03 recall-gap: `.then(cb)` propagates the receiver Promise's
 /// resolved value into the callback's first parameter.  The taint trace
-/// surfaces at the `.then(cb)` call site via the engine's callback-pattern
-/// emission (`source_to_callback` paired with `cb`'s `param_to_sink`).
+/// attributes at the inner `db.query(data)` sink via the callback-pattern
+/// emission paired with the chain-hop site promotion that lifts the
+/// callback's own-body sink coordinates into the trace finding's primary
+/// location.
 #[test]
 fn promise_then_callback() {
     let findings = scan_fixture("promise_then_callback");
@@ -199,7 +201,7 @@ fn promise_then_callback() {
         ExpectedFinding {
             rule_id: "taint-unsanitised-flow",
             file_suffix: "promise_then_callback.ts",
-            sink_line: 12,
+            sink_line: 9,
             source_line: Some(7),
         },
     );
@@ -207,7 +209,8 @@ fn promise_then_callback() {
 
 /// Phase 03 recall-gap: `Promise.all([...])` returns a value carrying the
 /// union of element taints; `p.then(cb)` then exposes it to the sink at
-/// the `.then` call site via the callback-pattern emission.
+/// `db.query(items)` via the callback-pattern emission with chain-hop
+/// site promotion.
 #[test]
 fn promise_all_taint() {
     let findings = scan_fixture("promise_all_taint");
@@ -216,7 +219,7 @@ fn promise_all_taint() {
         ExpectedFinding {
             rule_id: "taint-unsanitised-flow",
             file_suffix: "promise_all_taint.ts",
-            sink_line: 11,
+            sink_line: 8,
             source_line: None,
         },
     );

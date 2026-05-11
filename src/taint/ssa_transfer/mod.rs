@@ -7049,6 +7049,15 @@ fn collect_block_events(
                             // param_to_sink.
                             let cb_resolved = resolve_callee(transfer, cb_callee, caller_func, 0);
                             let mut matching_sink_caps = Cap::empty();
+                            // Mark every callback-resolved sink site as
+                            // `from_chain=true`: the callback callee is a
+                            // logically-deeper frame than the outer
+                            // `.then(cb)` / `setImmediate(cb)` / etc. call
+                            // site. Without this, `should_promote_sink_site`
+                            // filters same-file callback sinks out (the file
+                            // matches `caller_namespace`), and the trace
+                            // finding falls back to the outer dispatch line
+                            // instead of attributing to the actual sink.
                             let cb_param_to_sink_sites: Vec<(usize, SmallVec<[SinkSite; 1]>)> =
                                 if let Some(ref r) = cb_resolved {
                                     matching_sink_caps = r
@@ -7056,7 +7065,20 @@ fn collect_block_events(
                                         .iter()
                                         .filter(|(_, caps)| !(src_caps & *caps).is_empty())
                                         .fold(Cap::empty(), |acc, (_, c)| acc | *c);
-                                    r.param_to_sink_sites.clone()
+                                    r.param_to_sink_sites
+                                        .iter()
+                                        .map(|(idx, sites)| {
+                                            let chain_sites: SmallVec<[SinkSite; 1]> = sites
+                                                .iter()
+                                                .map(|s| {
+                                                    let mut sc = s.clone();
+                                                    sc.from_chain = true;
+                                                    sc
+                                                })
+                                                .collect();
+                                            (*idx, chain_sites)
+                                        })
+                                        .collect()
                                 } else {
                                     vec![]
                                 };
