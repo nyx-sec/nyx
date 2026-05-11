@@ -1365,15 +1365,104 @@ fn rename_variables(
 
             cfg_node_map.insert(node, v);
 
-            // Clone op for potential extra_defines before moving into SsaInst
-            let primary_op_for_extras = if info.taint.extra_defines.is_empty() {
+            // Promise.all-style array-destructure precision: when a CallWrapper
+            // node binds an array_pattern (`const [a, b] = await Promise.all(
+            // [x, y])` or `let (a, b) = tokio::join!(x, y)`) and the value is a
+            // promise combinator that produces an array/tuple of per-element
+            // results (`Promise.all`, `Promise.allSettled`, `asyncio.gather`,
+            // `tokio::join!` and friends), rewrite the per-binding SSA so each
+            // binding sees only its own index's taint instead of the scalar
+            // union that `try_apply_promise_combinator` would produce.
+            //
+            // Two argument shapes are supported:
+            //   (a) literal-array (JS/Python): one positional arg whose
+            //       collected idents represent the array elements in order,
+            //       e.g. `Promise.all([x, y])` → args = [[x, y]].
+            //   (b) positional (Rust macros): N positional args, each one
+            //       ident, e.g. `tokio::join!(x, y)` → args = [[x], [y]].
+            //
+            // `Promise.race` and `Promise.resolve` are excluded: the awaited
+            // value of a race is whichever promise wins (a single value, not
+            // an array), and destructuring that value index-by-index does not
+            // correspond to the args.
+            let promise_destruct_args: Option<SmallVec<[SsaValue; 4]>> =
+                if !info.taint.extra_defines.is_empty()
+                    && matches!(
+                        info.call
+                            .callee
+                            .as_deref()
+                            .and_then(crate::labels::is_any_promise_combinator),
+                        Some(
+                            crate::labels::PromiseCombinatorKind::All
+                                | crate::labels::PromiseCombinatorKind::AllSettled
+                        )
+                    )
+                {
+                    // Use `info.call.arg_uses` directly rather than the
+                    // build_call_args-derived `args`, which may include an
+                    // implicit "uses not in arg_uses" group appended for chain
+                    // bookkeeping that would inflate the apparent arity.
+                    let arg_uses = &info.call.arg_uses;
+                    let needed = 1 + info.taint.extra_defines.len();
+                    let map_idents = |idents: &[String]| -> Option<SmallVec<[SsaValue; 4]>> {
+                        let mapped: SmallVec<[SsaValue; 4]> = idents
+                            .iter()
+                            .take(needed)
+                            .filter_map(|ident| {
+                                var_stacks.get(ident).and_then(|s| s.last().copied())
+                            })
+                            .collect();
+                        if mapped.len() == needed { Some(mapped) } else { None }
+                    };
+                    if arg_uses.len() == 1 && arg_uses[0].len() >= needed {
+                        // Shape (a): single positional arg whose idents are the
+                        // array elements in source order (`Promise.all([x, y])`,
+                        // `asyncio.gather([x, y])`).
+                        map_idents(&arg_uses[0])
+                    } else if arg_uses.len() >= needed
+                        && arg_uses.iter().take(needed).all(|g| g.len() == 1)
+                    {
+                        // Shape (b): N positional args, each with one ident
+                        // (`tokio::join!(x, y)`).
+                        let names: Vec<&String> =
+                            arg_uses.iter().take(needed).map(|g| &g[0]).collect();
+                        let mapped: SmallVec<[SsaValue; 4]> = names
+                            .iter()
+                            .filter_map(|ident| {
+                                var_stacks.get(ident.as_str()).and_then(|s| s.last().copied())
+                            })
+                            .collect();
+                        if mapped.len() == needed { Some(mapped) } else { None }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            // Clone op for potential extra_defines before moving into SsaInst.
+            // For the destructure-promise rewrite, the per-extra Assign ops are
+            // built explicitly below from `promise_destruct_args`, so the
+            // shared clone path is bypassed.
+            let primary_op_for_extras = if info.taint.extra_defines.is_empty()
+                || promise_destruct_args.is_some()
+            {
                 None
             } else {
                 Some(op.clone())
             };
+
+            // Override primary op to single-operand Assign when the
+            // destructure-promise rewrite fires.
+            let primary_op = if let Some(ref args) = promise_destruct_args {
+                SsaOp::Assign(SmallVec::from_elem(args[0], 1))
+            } else {
+                op
+            };
+
             ssa_blocks[block_idx].body.push(SsaInst {
                 value: v,
-                op,
+                op: primary_op,
                 cfg_node: node,
                 var_name: var_name_for_ssa.clone(),
                 span: info.ast.span,
@@ -1444,7 +1533,30 @@ fn rename_variables(
 
             // Emit extra SSA instructions for destructuring bindings.
             // Each extra define inherits the same op (Source/Call/Assign) as the primary.
-            if let Some(ref primary_op) = primary_op_for_extras {
+            //
+            // For the destructure-promise rewrite, each extra emits an Assign
+            // on its corresponding indexed argument so per-element taint is
+            // preserved instead of the scalar union.
+            if let Some(ref pd_args) = promise_destruct_args {
+                for (i, extra_def) in info.taint.extra_defines.iter().enumerate() {
+                    let ev = SsaValue(*next_value);
+                    *next_value += 1;
+                    value_defs.push(ValueDef {
+                        var_name: Some(extra_def.clone()),
+                        cfg_node: node,
+                        block: block_id,
+                    });
+                    var_stacks.entry(extra_def.clone()).or_default().push(ev);
+                    let arg = pd_args[i + 1];
+                    ssa_blocks[block_idx].body.push(SsaInst {
+                        value: ev,
+                        op: SsaOp::Assign(SmallVec::from_elem(arg, 1)),
+                        cfg_node: node,
+                        var_name: Some(extra_def.clone()),
+                        span: info.ast.span,
+                    });
+                }
+            } else if let Some(ref primary_op) = primary_op_for_extras {
                 for extra_def in &info.taint.extra_defines {
                     let ev = SsaValue(*next_value);
                     *next_value += 1;

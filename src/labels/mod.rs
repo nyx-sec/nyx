@@ -714,6 +714,22 @@ pub enum PromiseCombinatorKind {
     Race,
 }
 
+/// Lang-agnostic recognition of any promise combinator callee text. Used by
+/// SSA lowering, which doesn't carry a `lang` argument.
+pub fn is_any_promise_combinator(callee: &str) -> Option<PromiseCombinatorKind> {
+    match callee {
+        "Promise.resolve" => Some(PromiseCombinatorKind::Resolve),
+        "Promise.all" => Some(PromiseCombinatorKind::All),
+        "Promise.allSettled" => Some(PromiseCombinatorKind::AllSettled),
+        "Promise.race" => Some(PromiseCombinatorKind::Race),
+        "asyncio.gather" | "asyncio.wait" => Some(PromiseCombinatorKind::All),
+        "tokio::join" | "tokio::try_join" | "futures::join" | "futures::try_join" => {
+            Some(PromiseCombinatorKind::All)
+        }
+        _ => None,
+    }
+}
+
 pub fn is_promise_combinator(lang: &str, callee: &str) -> Option<PromiseCombinatorKind> {
     match lang {
         "javascript" | "js" | "typescript" | "ts" | "tsx" => match callee {

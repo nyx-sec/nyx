@@ -225,6 +225,46 @@ fn promise_all_taint() {
     );
 }
 
+/// Per-element precision for `const [a, b] = await Promise.all([safe,
+/// tainted])`. The SSA lowering rewrite in src/ssa/lower.rs maps each
+/// destructure binding to `Assign(arg_uses[0][i])`, so `a` binds only to
+/// the literal `"ok"` and `b` binds only to the tainted `req.body`. The
+/// scalar union from `try_apply_promise_combinator` is bypassed for the
+/// per-binding values.
+#[test]
+fn promise_all_destruct_per_index() {
+    let findings = scan_fixture("promise_all_destruct");
+
+    // Positive: line 17 sink reachable from req.body via index-1 binding.
+    assert_finding(
+        &findings,
+        ExpectedFinding {
+            rule_id: "taint-unsanitised-flow",
+            file_suffix: "promise_all_destruct_fp.ts",
+            sink_line: 17,
+            source_line: None,
+        },
+    );
+
+    // Negative: line 16 binds `a` to the literal "ok"; pre-fix the scalar
+    // union painted `a` with req.body's taint and produced a FP here.
+    let leak = findings.iter().any(|f| {
+        f.path.ends_with("promise_all_destruct_fp.ts")
+            && f.line == 16
+            && f.id.starts_with("taint-unsanitised-flow")
+    });
+    assert!(
+        !leak,
+        "destructure index-0 binding `a` must not carry req.body taint; got:\n{}",
+        findings
+            .iter()
+            .filter(|f| f.path.ends_with("promise_all_destruct_fp.ts"))
+            .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
 /// Phase 03 recall-gap: `for await (const x of iter)` taints `x` from the
 /// iterator (Web Streams / async-iterable request body).
 #[test]
