@@ -1307,11 +1307,11 @@ fn php_iter_var_assigns_safe_literals(
                 }
                 saw_init = true;
             }
-            b'[' => {
+            b'['
                 // Subscript-set: `$X['LIT'] = 'LIT';`
-                if !php_check_subscript_set(scope, p, used_as_key, used_as_val) {
-                    return false;
-                }
+                if !php_check_subscript_set(scope, p, used_as_key, used_as_val) =>
+            {
+                return false;
             }
             _ => {
                 // Other usage (foreach iter, function arg, member access).

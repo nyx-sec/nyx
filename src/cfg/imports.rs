@@ -565,20 +565,17 @@ fn rust_use_decl_imports_leaf(use_decl: Node, code: &[u8], crate_prefix: &str, l
                     let mut lc = list.walk();
                     for entry in list.named_children(&mut lc) {
                         match entry.kind() {
-                            "identifier" => {
-                                if text_of(entry, code).as_deref() == Some(leaf) {
-                                    return true;
-                                }
+                            "identifier" if text_of(entry, code).as_deref() == Some(leaf) => {
+                                return true;
                             }
-                            "use_as_clause" => {
+                            "use_as_clause"
                                 if entry
                                     .child_by_field_name("path")
                                     .and_then(|p| text_of(p, code))
                                     .as_deref()
-                                    == Some(leaf)
-                                {
-                                    return true;
-                                }
+                                    == Some(leaf) =>
+                            {
+                                return true;
                             }
                             _ => {}
                         }
