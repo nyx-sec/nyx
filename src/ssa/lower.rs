@@ -1464,21 +1464,55 @@ fn rename_variables(
 
             // Bare-array RHS destructure precision: when the LHS is an
             // array_pattern / tuple_pattern / pattern_list / left_assignment_list
-            // AND the RHS is a bare array-literal whose elements are all
-            // either bare idents (resolvable via var_stacks) or syntactic
-            // literals, build per-source-position ops so each binding sees
-            // only its index's element instead of the scalar union of every
-            // RHS ident.
+            // AND the RHS is a bare array-literal, build per-source-position
+            // ops so each binding sees only its index's element instead of
+            // the scalar union of every RHS ident.
             //
-            // Closes FPs like `const [a, b] = [safe, tainted]; exec(a);`
-            // where the legacy scalar-union path painted `a` with `tainted`'s
-            // taint via the cloned primary Assign op.
+            // Three slot shapes are recognised by `collect_rhs_array_literal_elements`:
             //
-            // Gated on `info.call.callee.is_none()` so this does not co-fire
-            // with the combinator path above (combinator-call destructures
-            // already have a Call op + `promise_destruct_args`).
-            let bare_array_ops: Option<SmallVec<[SsaOp; 4]>> = if info.call.callee.is_none()
-                && !info.taint.rhs_array_elements.is_empty()
+            //   * `Ident(name)` — bare identifier. Emit `Assign(reaching_def)`.
+            //   * `Literal` — syntactic literal (string/number/etc.). Emit
+            //     `Const(None)` so the binding carries no taint.
+            //   * `Complex(uses)` — call / binary / subscript / member access /
+            //     interpolated string / nested array literal / etc. Emit
+            //     `Assign(union of inner ident reaching defs)` — slot-scoped
+            //     union, not the whole-RHS union the legacy path produced.
+            //     Falls back to `Const(None)` when no inner idents resolve
+            //     (pure literal subexpression like `1 + 2`).
+            //
+            // Closes FPs like `const [a, b] = [safe, tainted]; exec(b);`
+            // (Ident shape) and `const [c, d] = [fn(req.x), 'lit']; exec(d);`
+            // (Complex shape) where the legacy union painted the safe binding.
+            //
+            // The promise-combinator path above has already populated
+            // `promise_destruct_args` when its preconditions held, so the
+            // mutual exclusion is gated through `promise_destruct_args.is_none()`
+            // rather than `info.call.callee.is_none()`. The earlier
+            // callee-none gate was wrong because the outer
+            // variable_declarator node picks up `info.call.callee` whenever
+            // the RHS text matches a Source label — which is exactly the
+            // case where we need the per-slot rewrite most.
+            // The outer node may carry a `DataLabel::Source(_)` whose
+            // classification matched somewhere in the RHS expression text
+            // (`req.body.cmd`, `process.env.X`, etc.). For multi-slot
+            // RHS we can't statically partition WHICH slot caused that
+            // match, but it must originate from a Complex slot (Literal
+            // and bare-Ident slots whose names resolve through
+            // `var_stacks` carry their own SsaValue identity). Treat
+            // Complex slots as Source-emitting when the outer label set
+            // included Source — strict precision improvement over the
+            // legacy union path which painted EVERY slot, including
+            // Literal, with the outer Source.
+            let outer_is_source = info
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
+
+            let bare_array_ops: Option<SmallVec<[SsaOp; 4]>> = if !info
+                .taint
+                .rhs_array_elements
+                .is_empty()
                 && !binding_indices.is_empty()
                 && promise_destruct_args.is_none()
             {
@@ -1487,18 +1521,51 @@ fn rename_variables(
                 if info.taint.rhs_array_elements.len() < needed {
                     None
                 } else {
+                    use crate::cfg::RhsArraySlot;
                     let mut per_pos: SmallVec<[SsaOp; 4]> = SmallVec::new();
                     let mut bail = false;
                     for slot in info.taint.rhs_array_elements.iter().take(needed) {
                         let slot_op = match slot {
-                            Some(ident) => match var_stacks.get(ident).and_then(|s| s.last().copied()) {
-                                Some(sv) => SsaOp::Assign(SmallVec::from_elem(sv, 1)),
-                                None => {
-                                    bail = true;
-                                    break;
+                            RhsArraySlot::Ident(ident) => {
+                                match var_stacks
+                                    .get(ident.as_str())
+                                    .and_then(|s| s.last().copied())
+                                {
+                                    Some(sv) => SsaOp::Assign(SmallVec::from_elem(sv, 1)),
+                                    None => {
+                                        bail = true;
+                                        break;
+                                    }
                                 }
-                            },
-                            None => SsaOp::Const(None),
+                            }
+                            RhsArraySlot::Literal => SsaOp::Const(None),
+                            RhsArraySlot::Complex(inner_uses) => {
+                                let mut mapped: SmallVec<[SsaValue; 4]> = SmallVec::new();
+                                for ident in inner_uses.iter() {
+                                    if let Some(sv) = var_stacks
+                                        .get(ident.as_str())
+                                        .and_then(|s| s.last().copied())
+                                    {
+                                        if !mapped.contains(&sv) {
+                                            mapped.push(sv);
+                                        }
+                                    }
+                                }
+                                if outer_is_source {
+                                    // Conservative: a Complex slot may
+                                    // contain the source-matching pattern
+                                    // whose classification landed on the
+                                    // outer node. Re-emit Source for this
+                                    // slot so the binding inherits the
+                                    // outer label without painting Literal
+                                    // siblings.
+                                    SsaOp::Source
+                                } else if mapped.is_empty() {
+                                    SsaOp::Const(None)
+                                } else {
+                                    SsaOp::Assign(mapped)
+                                }
+                            }
                         };
                         per_pos.push(slot_op);
                     }

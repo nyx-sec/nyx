@@ -591,25 +591,44 @@ pub struct TaintMeta {
     /// single-binding assignments, and non-array patterns.
     #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
     pub array_pattern_indices: SmallVec<[usize; 4]>,
-    /// Source-order RHS array-literal elements for destructure assignments.
-    /// Each slot is `Some(ident)` when the RHS element at that position is a
-    /// bare identifier (`safe` / `tainted`), or `None` when it is a syntactic
-    /// literal (string, number, bool, null). Populated only when the LHS is a
-    /// destructure pattern (`array_pattern`, `tuple_pattern`, `pattern_list`,
-    /// `left_assignment_list`) AND the RHS is an array-literal shape (JS/TS
-    /// `array`, Python `list`/`tuple`/`expression_list`, Ruby `array`, Rust
-    /// `tuple_expression`) whose elements are all either bare idents or
-    /// simple literals. Empty when the RHS shape doesn't match OR any element
-    /// is too complex (call, binary, subscript, etc.) — callers fall back to
-    /// the existing scalar-union behavior in that case.
+    /// Source-order RHS array-literal slots for destructure assignments.
+    /// Populated only when the LHS is a destructure pattern (`array_pattern`,
+    /// `tuple_pattern`, `pattern_list`, `left_assignment_list`) AND the RHS
+    /// is an array-literal shape (JS/TS `array`, Python `list`/`tuple`/
+    /// `expression_list`, Ruby `array`, Rust `tuple_expression`). Each slot
+    /// carries one of: a bare identifier (`Ident`), a syntactic literal
+    /// (`Literal`), or a complex expression with its inner identifier uses
+    /// (`Complex`). Empty when the RHS shape doesn't match OR a slot is
+    /// unrepresentable (spread / list splat) — callers fall back to the
+    /// existing scalar-union behavior in that case.
     ///
     /// Used by the SSA destructure rewrite in `lower.rs` so each binding sees
     /// only its index's element instead of the scalar union of every ident on
-    /// the RHS. Closes FPs like `const [a, b] = [safe, tainted]; exec(a);`
-    /// where `a` was over-painted via `tainted`.
+    /// the RHS. Closes FPs like `const [a, b] = [safe, tainted]; exec(b);`
+    /// (Ident shape) as well as `const [c, d] = [fn(req.x), 'lit']; exec(d);`
+    /// (Complex shape) where the legacy union painted `d` with `req.x`.
     #[serde(default, skip_serializing_if = "SmallVec::is_empty")]
-    pub rhs_array_elements: SmallVec<[Option<String>; 4]>,
+    pub rhs_array_elements: SmallVec<[RhsArraySlot; 4]>,
 }
+
+/// Source-order slot for an RHS array-literal element in a destructure
+/// assignment. See [`TaintMeta::rhs_array_elements`] for context.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RhsArraySlot {
+    /// Bare identifier (`safe`, `$user`, `req`). The SSA lowering looks up
+    /// the reaching def via `var_stacks` and emits an `Assign` of that value.
+    Ident(String),
+    /// Syntactic literal (string, number, bool, null/nil/None). The SSA
+    /// lowering emits a `Const(None)` so the binding carries no taint.
+    Literal,
+    /// Complex expression (call, binary, subscript, member access, nested
+    /// array literal). Carries the inner identifier uses harvested from the
+    /// slot's subtree. The SSA lowering emits an `Assign` over the reaching
+    /// defs of those idents — slot-scoped scalar union instead of the
+    /// whole-RHS union the legacy path produced.
+    Complex(SmallVec<[String; 4]>),
+}
+
 
 /// AST origin/location metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

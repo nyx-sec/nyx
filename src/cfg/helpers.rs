@@ -825,8 +825,14 @@ pub(crate) fn collect_array_pattern_bindings_indexed(
 }
 
 /// Walk an array-literal-shape RHS node and return one slot per source-order
-/// element: `Some(ident)` for a bare identifier element, `None` for a
-/// syntactic literal (string, number, boolean, null/nil).
+/// element. Each slot is one of:
+///   * `RhsArraySlot::Ident(name)` — bare identifier element.
+///   * `RhsArraySlot::Literal` — syntactic literal (string, number, bool,
+///     null/nil).
+///   * `RhsArraySlot::Complex(uses)` — call / binary / subscript / member
+///     access / nested array literal / etc. `uses` carries the inner
+///     identifier names (member-access paths first, bare idents second)
+///     harvested from the slot's subtree via `collect_idents_with_paths`.
 ///
 /// Recognised RHS kinds:
 ///   * JS/TS / Ruby `array` — `[a, b]`
@@ -836,15 +842,15 @@ pub(crate) fn collect_array_pattern_bindings_indexed(
 ///   * Rust `tuple_expression` — `(a, b)`
 ///
 /// Bails (returns empty) when the RHS is not one of these kinds OR contains
-/// any element that is neither a bare identifier nor a syntactic literal
-/// (calls, member accesses, binary expressions, subscripts, spreads, etc.).
+/// a slot whose shape would shift index alignment (spread, list splat).
 /// Callers treat empty as "no per-element rewrite available; fall back to
 /// scalar union".
 pub(crate) fn collect_rhs_array_literal_elements(
     rhs: Node,
     code: &[u8],
-) -> SmallVec<[Option<String>; 4]> {
-    let mut out: SmallVec<[Option<String>; 4]> = SmallVec::new();
+) -> SmallVec<[crate::cfg::RhsArraySlot; 4]> {
+    use crate::cfg::RhsArraySlot;
+    let mut out: SmallVec<[RhsArraySlot; 4]> = SmallVec::new();
     let kind = rhs.kind();
     if !matches!(
         kind,
@@ -865,22 +871,24 @@ pub(crate) fn collect_rhs_array_literal_elements(
             | "shorthand_property_identifier"
             | "shorthand_property_identifier_pattern"
             | "field_identifier"
-            | "property_identifier" => {
-                if let Some(txt) = text_of(child, code) {
-                    out.push(Some(txt));
-                } else {
+            | "property_identifier" => match text_of(child, code) {
+                Some(txt) => out.push(RhsArraySlot::Ident(txt)),
+                None => {
                     out.clear();
                     return out;
                 }
-            }
-            "variable_name" => {
-                if let Some(txt) = text_of(child, code) {
-                    out.push(Some(txt.trim_start_matches('$').to_string()));
-                } else {
+            },
+            "variable_name" => match text_of(child, code) {
+                Some(txt) => {
+                    out.push(RhsArraySlot::Ident(
+                        txt.trim_start_matches('$').to_string(),
+                    ))
+                }
+                None => {
                     out.clear();
                     return out;
                 }
-            }
+            },
             // Syntactic literal slots: no ident, no taint contribution.
             // Names follow tree-sitter's per-grammar literal kinds across
             // the supported languages.
@@ -905,14 +913,60 @@ pub(crate) fn collect_rhs_array_literal_elements(
             | "none"
             | "None"
             | "undefined" => {
-                out.push(None);
+                out.push(RhsArraySlot::Literal);
             }
-            // Anything else (call, member access, binary expr, subscript,
-            // spread, nested array literal, interpolation, etc.) is too
-            // complex to reason about per-element. Bail.
-            _ => {
+            // Spread / list-splat shift index alignment unpredictably
+            // (`[...arr, b]` may expand to N elements at index 0). Bail
+            // so callers fall back to scalar union.
+            "spread_element"
+            | "list_splat"
+            | "list_splat_pattern"
+            | "splat_argument"
+            | "unary_splat"
+            | "splat_expression" => {
                 out.clear();
                 return out;
+            }
+            // Interpolated strings carry inner identifier uses. Treat as
+            // Complex so the slot picks up the contributions from
+            // `${user.id}` etc.
+            "template_string"
+            | "string_interpolation"
+            | "interpolation"
+            | "encapsed_string" => {
+                let mut idents = Vec::new();
+                let mut paths = Vec::new();
+                collect_idents_with_paths(child, code, &mut idents, &mut paths);
+                let mut uses: SmallVec<[String; 4]> = SmallVec::new();
+                for p in paths {
+                    uses.push(p);
+                }
+                for ident in idents {
+                    if !uses.iter().any(|u| u == &ident) {
+                        uses.push(ident);
+                    }
+                }
+                out.push(RhsArraySlot::Complex(uses));
+            }
+            // Everything else (call, member access, binary, subscript,
+            // unary, ternary, nested array literal, etc.) is a "complex"
+            // slot. Harvest inner ident uses so the SSA lowering can paint
+            // the binding with this slot's contributions only — not the
+            // union of every ident on the RHS.
+            _ => {
+                let mut idents = Vec::new();
+                let mut paths = Vec::new();
+                collect_idents_with_paths(child, code, &mut idents, &mut paths);
+                let mut uses: SmallVec<[String; 4]> = SmallVec::new();
+                for p in paths {
+                    uses.push(p);
+                }
+                for ident in idents {
+                    if !uses.iter().any(|u| u == &ident) {
+                        uses.push(ident);
+                    }
+                }
+                out.push(RhsArraySlot::Complex(uses));
             }
         }
     }

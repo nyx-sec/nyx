@@ -404,6 +404,43 @@ fn promise_all_destruct_per_index() {
                 .join("\n"),
         );
     }
+
+    // Complex-slot bare-array RHS destructure (`const [a, b] =
+    // [normalize(req.body.cmd), 'static']`).  The helper now classifies
+    // call / binary / subscript / member access / template-string slots
+    // as `Complex(inner_uses)` rather than bailing.  Each Complex slot
+    // emits a slot-scoped `Assign` (or `Source` when the outer node
+    // carries a Source label), so the literal-aligned binding is
+    // correctly clean.  Positives at lines 32 / 39 / 46 / 54 / 62 fire;
+    // negatives at lines 33 / 40 / 47 / 55 / 63 must NOT fire.
+    for sink_line in [32usize, 39, 46, 54, 62] {
+        assert_finding(
+            &findings,
+            ExpectedFinding {
+                rule_id: "taint-unsanitised-flow",
+                file_suffix: "complex_slot_destruct_fp.ts",
+                sink_line,
+                source_line: None,
+            },
+        );
+    }
+    for forbidden_line in [33usize, 40, 47, 55, 63] {
+        let leak = findings.iter().any(|f| {
+            f.path.ends_with("complex_slot_destruct_fp.ts")
+                && f.line == forbidden_line
+                && f.id.starts_with("taint-unsanitised-flow")
+        });
+        assert!(
+            !leak,
+            "complex-slot literal binding at line {forbidden_line} must not carry req.body taint; got:\n{}",
+            findings
+                .iter()
+                .filter(|f| f.path.ends_with("complex_slot_destruct_fp.ts"))
+                .map(|f| format!("  {} :: {}:{}", f.id, f.path, f.line))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
 }
 
 /// Phase 03 recall-gap: `for await (const x of iter)` taints `x` from the

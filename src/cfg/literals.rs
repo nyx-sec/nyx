@@ -2263,7 +2263,7 @@ pub(super) fn def_use(
     Vec<String>,
     Vec<String>,
     SmallVec<[usize; 4]>,
-    SmallVec<[Option<String>; 4]>,
+    SmallVec<[crate::cfg::RhsArraySlot; 4]>,
 ) {
     match lookup(lang, ast.kind()) {
         // Declaration wrappers (let, var, short_var_declaration, etc.)
@@ -2272,7 +2272,8 @@ pub(super) fn def_use(
             let mut extra_defs = Vec::new();
             let mut uses = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
-            let mut rhs_array_elements: SmallVec<[Option<String>; 4]> = SmallVec::new();
+            let mut rhs_array_elements: SmallVec<[crate::cfg::RhsArraySlot; 4]> =
+                SmallVec::new();
 
             // Try direct field names first (Rust `let_declaration`, Go `short_var_declaration`)
             let def_node = ast
@@ -2441,7 +2442,8 @@ pub(super) fn def_use(
             let mut defs = None;
             let mut extra_defs = Vec::new();
             let mut pattern_indices: SmallVec<[usize; 4]> = SmallVec::new();
-            let mut rhs_array_elements: SmallVec<[Option<String>; 4]> = SmallVec::new();
+            let mut rhs_array_elements: SmallVec<[crate::cfg::RhsArraySlot; 4]> =
+                SmallVec::new();
             let mut uses = Vec::new();
             if let Some(lhs) = ast.child_by_field_name("left") {
                 let bindings = collect_array_pattern_bindings_indexed(lhs, code);

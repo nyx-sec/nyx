@@ -3790,11 +3790,12 @@ fn left_assignment_list_indexed_bindings_recognise_ruby_destructure() {
 
 /// Helper for `src/ssa/lower.rs` bare-array destructure rewrite.
 /// Walks the RHS of a destructure assignment and emits one slot per
-/// source-order element: `Some(ident)` for bare identifiers, `None`
-/// for syntactic literals.  Bails (empty) on any complex element so
-/// callers fall back to the scalar-union behaviour.
+/// source-order element. Each slot is `Ident(name)`, `Literal`, or
+/// `Complex(inner_uses)`. Bails (empty) on shapes that shift index
+/// alignment (spread / list splat).
 #[test]
 fn rhs_array_literal_elements_recognise_per_language_shapes() {
+    use super::RhsArraySlot;
     use super::helpers::collect_rhs_array_literal_elements;
 
     fn parse(lang_label: &str, src: &[u8]) -> (tree_sitter::Tree, Vec<u8>) {
@@ -3828,7 +3829,7 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
         None
     }
 
-    fn run(lang: &str, src: &[u8], rhs_kinds: &[&str]) -> Vec<Option<String>> {
+    fn run(lang: &str, src: &[u8], rhs_kinds: &[&str]) -> Vec<RhsArraySlot> {
         let (tree, bytes) = parse(lang, src);
         let rhs = find_first(tree.root_node(), rhs_kinds).expect("rhs in fixture");
         collect_rhs_array_literal_elements(rhs, &bytes)
@@ -3836,46 +3837,86 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
             .collect()
     }
 
+    fn ident(name: &str) -> RhsArraySlot {
+        RhsArraySlot::Ident(name.to_string())
+    }
+    fn complex(uses: &[&str]) -> RhsArraySlot {
+        RhsArraySlot::Complex(uses.iter().map(|s| s.to_string()).collect())
+    }
+
     // JS/TS `array` literal: two bare idents.
     assert_eq!(
         run("javascript", b"const _ = [safe, tainted];\n", &["array"]),
-        vec![Some("safe".into()), Some("tainted".into())],
+        vec![ident("safe"), ident("tainted")],
     );
     // JS/TS `array` mixed ident + string literal.
     assert_eq!(
         run("javascript", b"const _ = [tainted, \"ok\"];\n", &["array"]),
-        vec![Some("tainted".into()), None],
+        vec![ident("tainted"), RhsArraySlot::Literal],
     );
-    // JS/TS bails on call element.
+    // JS/TS now classifies a call as `Complex` carrying inner idents
+    // rather than bailing. `collect_idents_with_paths` lifts both paths
+    // and bare idents, so a member access surfaces as the dotted path
+    // (e.g. `req.query.x`) followed by its component idents.
+    assert_eq!(
+        run("javascript", b"const _ = [fn(x), 'lit'];\n", &["array"]),
+        vec![complex(&["fn", "x"]), RhsArraySlot::Literal],
+    );
+    // JS/TS member access becomes Complex; dotted path + component idents.
+    assert_eq!(
+        run(
+            "javascript",
+            b"const _ = [req.query.x, 'lit'];\n",
+            &["array"],
+        ),
+        vec![
+            complex(&["req.query.x", "req", "query", "x"]),
+            RhsArraySlot::Literal,
+        ],
+    );
+    // JS/TS spread bails entirely (index alignment shifts).
     assert!(
-        run("javascript", b"const _ = [tainted, fn()];\n", &["array"]).is_empty()
+        run("javascript", b"const _ = [...arr, b];\n", &["array"]).is_empty()
+    );
+    // JS/TS binary expression becomes Complex with the inner ident.
+    assert_eq!(
+        run(
+            "javascript",
+            b"const _ = ['log-' + x, 'lit'];\n",
+            &["array"],
+        ),
+        vec![complex(&["x"]), RhsArraySlot::Literal],
     );
 
     // Python `list` shape.
     assert_eq!(
         run("python", b"a = [safe, tainted]\n", &["list"]),
-        vec![Some("safe".into()), Some("tainted".into())],
+        vec![ident("safe"), ident("tainted")],
     );
     // Python `expression_list` (bare commas RHS in `a, b = x, y`).
     assert_eq!(
         run("python", b"a, b = safe, tainted\n", &["expression_list"]),
-        vec![Some("safe".into()), Some("tainted".into())],
+        vec![ident("safe"), ident("tainted")],
     );
     // Python `tuple` (parenthesised).
     assert_eq!(
         run("python", b"x = (safe, 42)\n", &["tuple"]),
-        vec![Some("safe".into()), None],
+        vec![ident("safe"), RhsArraySlot::Literal],
+    );
+    // Python list-splat bails.
+    assert!(
+        run("python", b"x = [*a, b]\n", &["list"]).is_empty()
     );
 
     // Ruby `array`.
     assert_eq!(
         run("ruby", b"a, b = [safe, tainted]\n", &["array"]),
-        vec![Some("safe".into()), Some("tainted".into())],
+        vec![ident("safe"), ident("tainted")],
     );
     // Ruby `array` with literal + ident.
     assert_eq!(
         run("ruby", b"a, b = [tainted, \"safe\"]\n", &["array"]),
-        vec![Some("tainted".into()), None],
+        vec![ident("tainted"), RhsArraySlot::Literal],
     );
 
     // Rust `tuple_expression`.
@@ -3885,7 +3926,7 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
             b"fn f(safe: &str, tainted: &str) { let _ = (safe, tainted); }\n",
             &["tuple_expression"]
         ),
-        vec![Some("safe".into()), Some("tainted".into())],
+        vec![ident("safe"), ident("tainted")],
     );
 
     // Non-array-shape node returns empty (defensive guard).
