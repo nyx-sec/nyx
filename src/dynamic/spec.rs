@@ -376,4 +376,87 @@ mod tests {
         let s2 = HarnessSpec::from_finding(&diag).unwrap();
         assert_eq!(s1.spec_hash, s2.spec_hash);
     }
+
+    fn base_spec() -> HarnessSpec {
+        use crate::labels::Cap;
+        let mut spec = HarnessSpec {
+            finding_id: "0000000000000000".into(),
+            entry_file: "src/handler.rs".into(),
+            entry_name: "process".into(),
+            entry_kind: EntryKind::Function,
+            lang: crate::symbol::Lang::Rust,
+            toolchain_id: "rust-stable".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            spec_hash: String::new(),
+        };
+        spec.spec_hash = compute_spec_hash(&spec);
+        spec
+    }
+
+    #[test]
+    fn spec_hash_flips_on_entry_file() {
+        let s1 = base_spec();
+        let mut s2 = s1.clone();
+        s2.entry_file = "src/other.rs".into();
+        s2.spec_hash = compute_spec_hash(&s2);
+        assert_ne!(s1.spec_hash, s2.spec_hash, "entry_file mutation must change spec_hash");
+    }
+
+    #[test]
+    fn spec_hash_flips_on_entry_name() {
+        let s1 = base_spec();
+        let mut s2 = s1.clone();
+        s2.entry_name = "other_handler".into();
+        s2.spec_hash = compute_spec_hash(&s2);
+        assert_ne!(s1.spec_hash, s2.spec_hash, "entry_name mutation must change spec_hash");
+    }
+
+    #[test]
+    fn spec_hash_flips_on_payload_slot() {
+        let s1 = base_spec();
+        let mut s2 = s1.clone();
+        s2.payload_slot = PayloadSlot::Param(1);
+        s2.spec_hash = compute_spec_hash(&s2);
+        assert_ne!(s1.spec_hash, s2.spec_hash, "payload_slot mutation must change spec_hash");
+
+        let mut s3 = s1.clone();
+        s3.payload_slot = PayloadSlot::HttpBody;
+        s3.spec_hash = compute_spec_hash(&s3);
+        assert_ne!(s1.spec_hash, s3.spec_hash, "payload_slot tag change must change spec_hash");
+
+        let mut s4 = s1.clone();
+        s4.payload_slot = PayloadSlot::EnvVar("NYX_INPUT".into());
+        s4.spec_hash = compute_spec_hash(&s4);
+        assert_ne!(s1.spec_hash, s4.spec_hash, "EnvVar payload_slot must change spec_hash");
+    }
+
+    #[test]
+    fn spec_hash_flips_on_expected_cap() {
+        use crate::labels::Cap;
+        let s1 = base_spec();
+        let mut s2 = s1.clone();
+        s2.expected_cap = Cap::CODE_EXEC;
+        s2.spec_hash = compute_spec_hash(&s2);
+        assert_ne!(s1.spec_hash, s2.spec_hash, "expected_cap mutation must change spec_hash");
+    }
+
+    #[test]
+    fn spec_hash_flips_on_constraint_hints() {
+        let s1 = base_spec();
+        let mut s2 = s1.clone();
+        s2.constraint_hints = vec!["prefix:admin/".into()];
+        s2.spec_hash = compute_spec_hash(&s2);
+        assert_ne!(s1.spec_hash, s2.spec_hash, "constraint_hints mutation must change spec_hash");
+    }
+
+    #[test]
+    fn spec_hash_flips_on_toolchain_id() {
+        let s1 = base_spec();
+        let mut s2 = s1.clone();
+        s2.toolchain_id = "rust-nightly".into();
+        s2.spec_hash = compute_spec_hash(&s2);
+        assert_ne!(s1.spec_hash, s2.spec_hash, "toolchain_id mutation must change spec_hash");
+    }
 }

@@ -71,6 +71,39 @@ pub enum Oracle {
 ///
 /// When adding a new `Cap` bit: add a row above, update this function, and
 /// bump [`CORPUS_VERSION`] if you add payload support.
+///
+/// Compile-time exhaustiveness guard: `CORPUS_SUPPORTED | CORPUS_UNSUPPORTED`
+/// must equal `Cap::all()`. Adding a new Cap bit without updating this table
+/// triggers a `const` assertion failure at build time.
+const CORPUS_SUPPORTED: u32 = Cap::SQL_QUERY.bits()
+    | Cap::CODE_EXEC.bits()
+    | Cap::FILE_IO.bits()
+    | Cap::SSRF.bits()
+    | Cap::HTML_ESCAPE.bits();
+
+const CORPUS_UNSUPPORTED: u32 = Cap::ENV_VAR.bits()
+    | Cap::SHELL_ESCAPE.bits()
+    | Cap::URL_ENCODE.bits()
+    | Cap::JSON_PARSE.bits()
+    | Cap::FMT_STRING.bits()
+    | Cap::DESERIALIZE.bits()
+    | Cap::CRYPTO.bits()
+    | Cap::UNAUTHORIZED_ID.bits()
+    | Cap::DATA_EXFIL.bits()
+    | Cap::LDAP_INJECTION.bits()
+    | Cap::XPATH_INJECTION.bits()
+    | Cap::HEADER_INJECTION.bits()
+    | Cap::OPEN_REDIRECT.bits()
+    | Cap::SSTI.bits()
+    | Cap::XXE.bits()
+    | Cap::PROTOTYPE_POLLUTION.bits();
+
+const _: () = assert!(
+    CORPUS_SUPPORTED | CORPUS_UNSUPPORTED == Cap::all().bits(),
+    "Cap bit missing from corpus coverage table; \
+     add to CORPUS_SUPPORTED or CORPUS_UNSUPPORTED and update payloads_for",
+);
+
 pub fn payloads_for(cap: Cap) -> &'static [Payload] {
     if cap.contains(Cap::SQL_QUERY) {
         return SQLI;

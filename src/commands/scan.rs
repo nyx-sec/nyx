@@ -192,6 +192,7 @@ fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
+#[cfg(test)]
 impl Default for Diag {
     fn default() -> Self {
         Self {
@@ -4262,5 +4263,124 @@ mod prioritize_tests {
         let j1 = serde_json::to_string(&d1).unwrap();
         let j2 = serde_json::to_string(&d2).unwrap();
         assert_eq!(j1, j2, "same input should produce same output");
+    }
+}
+
+#[cfg(test)]
+mod stable_hash_tests {
+    use super::*;
+    use crate::evidence::Evidence;
+    use crate::labels::Cap;
+    use crate::patterns::{FindingCategory, Severity};
+
+    fn base_diag() -> Diag {
+        Diag {
+            path: "src/handler.rs".into(),
+            line: 42,
+            col: 5,
+            severity: Severity::High,
+            id: "taint-unsanitised-flow".into(),
+            category: FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: None,
+            evidence: Some(Evidence {
+                sink_caps: Cap::SQL_QUERY.bits(),
+                ..Default::default()
+            }),
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        }
+    }
+
+    #[test]
+    fn compute_stable_hash_is_deterministic() {
+        let d = base_diag();
+        let h1 = compute_stable_hash(&d);
+        let h2 = compute_stable_hash(&d);
+        assert_eq!(h1, h2);
+        assert_ne!(h1, 0);
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_rule_id() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.id = "taint-unsanitised-flow (source 5:1)".into();
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_path() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.path = "src/other.rs".into();
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_line() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.line = 43;
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_col() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.col = 6;
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_sensitive_to_sink_caps() {
+        let d1 = base_diag();
+        let mut d2 = base_diag();
+        d2.evidence = Some(Evidence {
+            sink_caps: Cap::CODE_EXEC.bits(),
+            ..Default::default()
+        });
+        assert_ne!(compute_stable_hash(&d1), compute_stable_hash(&d2));
+    }
+
+    #[test]
+    fn compute_stable_hash_collision_resistance() {
+        let d1 = Diag {
+            path: "src/a.rs".into(),
+            line: 1,
+            col: 0,
+            id: "rule-x".into(),
+            ..base_diag()
+        };
+        let d2 = Diag {
+            path: "src/b.rs".into(),
+            line: 1,
+            col: 0,
+            id: "rule-x".into(),
+            ..base_diag()
+        };
+        let d3 = Diag {
+            path: "src/a.rs".into(),
+            line: 2,
+            col: 0,
+            id: "rule-x".into(),
+            ..base_diag()
+        };
+        let h1 = compute_stable_hash(&d1);
+        let h2 = compute_stable_hash(&d2);
+        let h3 = compute_stable_hash(&d3);
+        assert_ne!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_ne!(h2, h3);
     }
 }
