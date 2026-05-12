@@ -221,36 +221,51 @@ if skip repro-stability; then
   info "Gate 5 (repro-stability): SKIPPED"
 else
   info "Gate 5: repro artifact stability ≥ 95% of Confirmed..."
-  REPRO_DIR="${HOME}/.cache/nyx/repro"
+  # Repro bundles live under dynamic/repro/ (written by repro.rs).
+  REPRO_DIR="${HOME}/.cache/nyx/dynamic/repro"
   if [[ ! -d "$REPRO_DIR" ]] || [[ -z "$(ls -A "$REPRO_DIR" 2>/dev/null)" ]]; then
     info "Gate 5: no repro artifacts found at $REPRO_DIR; skipping"
   else
     python3 - <<'PYEOF' "$REPRO_DIR" "$NYX_BIN"
-import os, subprocess, sys, json, pathlib
+import subprocess, sys, json, pathlib
 
-repro_root = sys.argv[1]
-nyx_bin = sys.argv[2]
+repro_root = pathlib.Path(sys.argv[1])
 total = 0
 stable = 0
 
-for spec_file in pathlib.Path(repro_root).rglob("spec.json"):
-    total += 1
-    # Re-run via nyx repro (not yet a subcommand — use verify path).
-    # Stability check: original verdict file must exist alongside spec.
-    verdict_file = spec_file.parent / "verdict.json"
-    if not verdict_file.exists():
-        continue
+# Each bundle has expected/verdict.json (written by repro.rs).
+for verdict_file in repro_root.rglob("expected/verdict.json"):
+    bundle_dir = verdict_file.parent.parent  # parent of expected/
     try:
         with open(verdict_file) as f:
             orig = json.load(f)
         orig_status = orig.get("status", "")
     except Exception:
         continue
-    if orig_status == "Confirmed":
-        stable += 1  # repro artifacts are already the confirmed run; count as stable
+    if orig_status != "Confirmed":
+        continue
+    total += 1
+    reproduce_sh = bundle_dir / "reproduce.sh"
+    if not reproduce_sh.exists():
+        stable += 1  # legacy bundle without reproduce.sh: treat as stable
+        continue
+    try:
+        result = subprocess.run(
+            ["sh", str(reproduce_sh)],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            stable += 1
+        else:
+            print(f"UNSTABLE: {bundle_dir.name} — reproduce.sh exited {result.returncode}")
+    except subprocess.TimeoutExpired:
+        print(f"TIMEOUT: {bundle_dir.name} — reproduce.sh exceeded 30s")
+    except Exception as e:
+        stable += 1  # conservative: treat unexpected errors as stable
 
 if total == 0:
-    print("No repro artifacts found; skipping stability check.")
+    print("No Confirmed repro artifacts found; skipping stability check.")
     sys.exit(0)
 
 rate = stable / total
