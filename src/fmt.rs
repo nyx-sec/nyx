@@ -424,6 +424,14 @@ fn render_diag(d: &Diag, width: usize) -> String {
         ));
     }
 
+    // ── Dynamic verification annotation ──────────────────────────────
+    if let Some(ev) = d.evidence.as_ref() {
+        if let Some(ref dv) = ev.dynamic_verdict {
+            let annotation = format_dynamic_verdict_annotation(dv);
+            out.push_str(&format!("{indent_str}{}\n", style(&annotation).dim()));
+        }
+    }
+
     out
 }
 
@@ -450,6 +458,67 @@ fn state_remediation_hint(rule_id: &str) -> Option<&'static str> {
              behind an auth middleware/guard.",
         ),
         _ => None,
+    }
+}
+
+/// Format a dynamic verification annotation line.
+///
+/// Spec §5.4: `[DYN: confirmed via {payload}]` / `[DYN: not confirmed]` /
+/// `[DYN: unsupported ({reason})]` / `[DYN: inconclusive ({reason})]`
+fn format_dynamic_verdict_annotation(dv: &crate::evidence::VerifyResult) -> String {
+    use crate::evidence::VerifyStatus;
+    match dv.status {
+        VerifyStatus::Confirmed => {
+            let pid = dv.triggered_payload.as_deref().unwrap_or("unknown");
+            format!("[DYN: confirmed via {pid}]")
+        }
+        VerifyStatus::NotConfirmed => "[DYN: not confirmed]".to_string(),
+        VerifyStatus::Unsupported => {
+            let reason = dv
+                .reason
+                .as_ref()
+                .map(format_unsupported_reason)
+                .unwrap_or_else(|| "unknown".to_string());
+            format!("[DYN: unsupported ({reason})]")
+        }
+        VerifyStatus::Inconclusive => {
+            let reason = dv
+                .inconclusive_reason
+                .map(format_inconclusive_reason)
+                .unwrap_or_else(|| {
+                    dv.detail
+                        .as_deref()
+                        .map(|d| d.chars().take(40).collect())
+                        .unwrap_or_else(|| "unknown".to_string())
+                });
+            format!("[DYN: inconclusive ({reason})]")
+        }
+    }
+}
+
+fn format_unsupported_reason(r: &crate::evidence::UnsupportedReason) -> String {
+    use crate::evidence::UnsupportedReason;
+    match r {
+        UnsupportedReason::BackendUnavailable => "backend unavailable".to_string(),
+        UnsupportedReason::EntryKindUnsupported => "entry kind not supported".to_string(),
+        UnsupportedReason::ConfidenceTooLow => "confidence too low".to_string(),
+        UnsupportedReason::NoFlowSteps => "no flow steps".to_string(),
+        UnsupportedReason::NoPayloadsForCap => "no payloads for cap".to_string(),
+        UnsupportedReason::SpecDerivationFailed => "spec derivation failed".to_string(),
+        UnsupportedReason::RequiredFileRedactedForSecrets(_) => {
+            "file redacted for secrets".to_string()
+        }
+        UnsupportedReason::LangUnsupported => "language not supported".to_string(),
+    }
+}
+
+fn format_inconclusive_reason(r: crate::evidence::InconclusiveReason) -> String {
+    use crate::evidence::InconclusiveReason;
+    match r {
+        InconclusiveReason::OracleCollisionSuspected => "oracle collision".to_string(),
+        InconclusiveReason::NonReproducible => "non-reproducible".to_string(),
+        InconclusiveReason::BuildFailed => "build failed".to_string(),
+        InconclusiveReason::SandboxError => "sandbox error".to_string(),
     }
 }
 

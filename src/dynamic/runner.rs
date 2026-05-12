@@ -8,7 +8,7 @@
 use crate::dynamic::build_sandbox;
 use crate::dynamic::corpus::{benign_payload_for, materialise_bytes, payloads_for, Oracle, Payload};
 use crate::dynamic::harness::{self, HarnessError};
-use crate::dynamic::sandbox::{self, SandboxError, SandboxOptions, SandboxOutcome};
+use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
 use crate::symbol::Lang;
 
@@ -214,7 +214,11 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         let (oob_nonce, effective_bytes) = if payload.oob_nonce_slot {
             if let Some(ref listener) = opts.oob_listener {
                 let nonce = generate_nonce();
-                let url = listener.nonce_url(&nonce);
+                let url = if uses_docker_backend(opts) {
+                    listener.nonce_url_for_host("host-gateway", &nonce)
+                } else {
+                    listener.nonce_url(&nonce)
+                };
                 let bytes = url.into_bytes();
                 (Some(nonce), bytes)
             } else {
@@ -229,12 +233,10 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
 
         // For OOB payloads, check the nonce listener and update the outcome flag.
         if let (Some(nonce), Some(listener)) = (&oob_nonce, &opts.oob_listener) {
-            // Give the harness a brief window to complete the callback before we check.
-            // The sandbox run already waited for process exit, so the callback should
-            // have arrived. A short sleep handles edge cases where the OS hasn't yet
-            // delivered the TCP segment to the listener thread.
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            if listener.was_nonce_hit(nonce) {
+            // Poll until the nonce arrives or the budget expires. The sandbox run
+            // already waited for process exit so the callback should arrive quickly;
+            // 200 ms covers OS TCP delivery jitter without burning wall-clock at scale.
+            if listener.wait_for_nonce(nonce, std::time::Duration::from_millis(200)) {
                 outcome.oob_callback_seen = true;
             }
         }
@@ -285,6 +287,18 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         harness_source,
         entry_source,
     })
+}
+
+/// Returns true when the active backend will use Docker for execution.
+///
+/// Used at URL-generation time so Docker runs embed `host-gateway` rather than
+/// `127.0.0.1` (the container's loopback ≠ the host's loopback).
+fn uses_docker_backend(opts: &SandboxOptions) -> bool {
+    match opts.backend {
+        SandboxBackend::Docker => true,
+        SandboxBackend::Auto => sandbox::docker_available(),
+        SandboxBackend::Process => false,
+    }
 }
 
 fn oracle_fired(oracle: &Oracle, outcome: &SandboxOutcome) -> bool {

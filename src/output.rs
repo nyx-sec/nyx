@@ -282,6 +282,21 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 }
             }
 
+            // Dynamic verification vendor extension (§5.4).
+            // `partialFingerprints.dynamic_verdict_status` is a stable string
+            // consumers can key on without parsing the full verdict object.
+            // `properties.nyx_dynamic_verdict` carries the full VerifyResult.
+            if let Some(dv) = d.evidence.as_ref().and_then(|ev| ev.dynamic_verdict.as_ref()) {
+                result["partialFingerprints"] = json!({
+                    "dynamic_verdict_status": serde_json::to_value(dv.status)
+                        .unwrap_or(Value::Null)
+                });
+                props.insert(
+                    "nyx_dynamic_verdict".into(),
+                    serde_json::to_value(dv).unwrap_or(Value::Null),
+                );
+            }
+
             // Add rollup data if present
             if let Some(ref rollup) = d.rollup {
                 props.insert(

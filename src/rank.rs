@@ -90,6 +90,22 @@ pub fn compute_attack_rank(diag: &Diag) -> AttackRank {
         }
     }
 
+    // ── 7a. Dynamic verification delta ─────────────────────────────
+    //
+    // `Confirmed` findings are verified exploitable — boost rank so they
+    // surface above equivalent static-only findings.
+    // `NotConfirmed` findings where all available payloads were tried
+    // (corpus exhausted) receive a mild downward nudge.
+    // All other verdicts (Unsupported, Inconclusive, no verdict) are
+    // unaffected: no data is better than speculative data.
+    //
+    // TODO(M7): calibrate N (boost) and M (penalty) from telemetry
+    // collected here.  Placeholder values: N=20, M=5.
+    if let Some(delta) = dynamic_verdict_delta(diag) {
+        score += delta;
+        components.push(("dynamic_verdict".into(), format!("{delta:+}")));
+    }
+
     // ── 7. Completeness penalty (engine provenance notes) ────────────
     //
     // When the analysis engine hit a cap, widening, or lowering bail,
@@ -203,6 +219,26 @@ pub fn rank_diags(diags: &mut [Diag]) {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Scoring helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Rank delta from the dynamic verification verdict.
+///
+/// Returns `None` when there is no verdict (static-only scan) or the verdict
+/// does not change the score (Unsupported, Inconclusive).
+///
+/// TODO(M7): N=20 and M=5 are placeholders; calibrate from telemetry.
+fn dynamic_verdict_delta(diag: &Diag) -> Option<f64> {
+    use crate::evidence::VerifyStatus;
+    let dv = diag.evidence.as_ref()?.dynamic_verdict.as_ref()?;
+    match dv.status {
+        VerifyStatus::Confirmed => Some(20.0),
+        // Apply penalty only when the corpus was actually exhausted (attempts
+        // were made); a NotConfirmed with zero attempts means something went
+        // wrong before payload execution, which is an Inconclusive path, not
+        // a meaningful negative signal.
+        VerifyStatus::NotConfirmed if !dv.attempts.is_empty() => Some(-5.0),
+        _ => None,
+    }
+}
 
 /// Bonus based on analysis kind inferred from rule ID + evidence.
 fn analysis_kind_bonus(rule_id: &str, evidence: Option<&Evidence>) -> f64 {

@@ -1,6 +1,7 @@
 /target
 /fuzz/target
 /fuzz/corpus
+/fuzz/dynamic_corpus/target
 /fuzz/artifacts
 /.idea
 /frontend/node_modules

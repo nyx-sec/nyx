@@ -80,6 +80,24 @@ impl OobListener {
             .map(|h| h.contains(nonce))
             .unwrap_or(false)
     }
+
+    /// Polls until `nonce` is recorded or `timeout` elapses.
+    ///
+    /// Returns immediately on hit; polls every 5 ms otherwise.
+    /// Prefer this over a fixed sleep + `was_nonce_hit` at call sites.
+    pub fn wait_for_nonce(&self, nonce: &str, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self.was_nonce_hit(nonce) {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(5)));
+        }
+    }
 }
 
 impl Drop for OobListener {

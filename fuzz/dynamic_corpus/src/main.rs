@@ -25,7 +25,6 @@ use nyx_scanner::dynamic::corpus::{
 };
 use nyx_scanner::labels::Cap;
 use std::collections::HashSet;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 

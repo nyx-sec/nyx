@@ -2,6 +2,30 @@
 export type Confidence = 'Low' | 'Medium' | 'High';
 export type FlowStepKind = 'source' | 'assignment' | 'call' | 'phi' | 'sink';
 
+// Dynamic verification types (from src/evidence.rs VerifyStatus / VerifyResult)
+export type VerifyStatus = 'Confirmed' | 'NotConfirmed' | 'Inconclusive' | 'Unsupported';
+
+export interface AttemptSummary {
+  payload_label: string;
+  exit_code?: number;
+  timed_out: boolean;
+  triggered: boolean;
+  sink_hit?: boolean;
+}
+
+export interface VerifyResult {
+  finding_id: string;
+  status: VerifyStatus;
+  triggered_payload?: string;
+  /** Typed UnsupportedReason (PascalCase string) */
+  reason?: string;
+  /** Typed InconclusiveReason (PascalCase string) */
+  inconclusive_reason?: string;
+  detail?: string;
+  attempts: AttemptSummary[];
+  toolchain_match?: string;
+}
+
 export interface FlowStep {
   step: number;
   kind: FlowStepKind;
@@ -40,6 +64,8 @@ export interface Evidence {
   flow_steps: FlowStep[];
   explanation?: string;
   confidence_limiters: string[];
+  /** Dynamic verification result; present only when --verify was active. */
+  dynamic_verdict?: VerifyResult;
 }
 
 // Finding types

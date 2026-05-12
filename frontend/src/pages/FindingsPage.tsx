@@ -17,6 +17,7 @@ import { Dropdown, DropdownItem } from '../components/ui/Dropdown';
 import { LoadingState } from '../components/ui/LoadingState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { CopyMarkdownButton } from '../components/CopyMarkdownButton';
+import { VerdictBadge } from '../components/VerdictBadge';
 import { truncPath } from '../utils/truncPath';
 import { findingsToMarkdown } from '../utils/findingMarkdown';
 import { ApiError } from '../api/client';
@@ -711,6 +712,7 @@ export function FindingsPage() {
                     currentDir={state.sort_dir}
                     onSort={handleSort}
                   />
+                  <th>Verified</th>
                 </tr>
               </thead>
               <tbody>
@@ -759,6 +761,12 @@ export function FindingsPage() {
                       >
                         {formatTriageState(f.triage_state || f.status)}
                       </span>
+                    </td>
+                    <td>
+                      <VerdictBadge
+                        verdict={f.evidence?.dynamic_verdict}
+                        compact
+                      />
                     </td>
                   </tr>
                 ))}
