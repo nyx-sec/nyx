@@ -763,6 +763,7 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             },
             Diag {
                 path: "src/b.rs".into(),
@@ -784,6 +785,7 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             },
         ];
         let output = render_console(&diags, "test-project", None);
@@ -819,6 +821,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }];
         let output = render_console(&diags, "proj", None);
         let stripped = strip_ansi(&output);
@@ -854,6 +857,7 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             },
             Diag {
                 path: "src/a.rs".into(),
@@ -875,6 +879,7 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             },
         ];
         let output = render_console(&diags, "proj", None);
@@ -908,6 +913,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(
@@ -938,6 +944,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(
@@ -972,6 +979,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(
@@ -1065,6 +1073,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let output = render_diag(&d, 120);
         let stripped = strip_ansi(&output);
@@ -1111,6 +1120,7 @@ mod tests {
                 rollup: None,
                 finding_id: String::new(),
                 alternative_finding_ids: Vec::new(),
+                stable_hash: 0,
             };
             let output = render_diag(&d, 100);
             let stripped = strip_ansi(&output);
@@ -1143,6 +1153,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let output = render_diag(&d, 100);
         let stripped = strip_ansi(&output);
@@ -1179,6 +1190,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let output = render_diag(&d, 100);
         let stripped = strip_ansi(&output);
@@ -1211,6 +1223,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(
@@ -1257,6 +1270,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 

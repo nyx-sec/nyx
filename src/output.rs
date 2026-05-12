@@ -368,6 +368,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 

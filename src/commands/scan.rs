@@ -180,6 +180,59 @@ pub struct Diag {
     /// no alternative paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternative_finding_ids: Vec<String>,
+    /// Blake3 hash of `(rule_id, path, line, col, sink_caps)` truncated to
+    /// 64 bits.  Stable across scans for the same sink location and rule.
+    /// Always present (no feature gate); enables M6.5 baseline diffing.
+    /// Zero until the post-pass in `scan::handle` computes it.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub stable_hash: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+impl Default for Diag {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            line: 0,
+            col: 0,
+            severity: crate::patterns::Severity::Low,
+            id: String::new(),
+            category: crate::patterns::FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: None,
+            evidence: None,
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        }
+    }
+}
+
+/// Blake3 of `(rule_id, path, line, col, sink_caps)`, truncated to 64 bits.
+pub fn compute_stable_hash(diag: &Diag) -> u64 {
+    let mut h = blake3::Hasher::new();
+    h.update(diag.id.as_bytes());
+    h.update(b"\0");
+    h.update(diag.path.as_bytes());
+    h.update(b"\0");
+    h.update(&(diag.line as u64).to_le_bytes());
+    h.update(&(diag.col as u64).to_le_bytes());
+    let sink_caps = diag.evidence.as_ref().map_or(0u32, |e| e.sink_caps);
+    h.update(&sink_caps.to_le_bytes());
+    let out = h.finalize();
+    let bytes = out.as_bytes();
+    u64::from_le_bytes(bytes[..8].try_into().unwrap())
 }
 
 /// Rollup data for grouped findings (e.g. 38 occurrences of `rs.quality.unwrap`).
@@ -412,6 +465,23 @@ pub fn handle(
     let stats = prioritize(&mut diags, &config.output, show_instances);
 
     tracing::debug!("Emitting {:?} issues (post-filter).", diags.len());
+
+    // ── Compute stable_hash for every surviving finding ──────────────────
+    for diag in &mut diags {
+        diag.stable_hash = compute_stable_hash(diag);
+    }
+
+    // ── Dynamic verification (feature-gated) ─────────────────────────────
+    #[cfg(feature = "dynamic")]
+    if config.scanner.verify {
+        let opts = crate::dynamic::verify::VerifyOptions::from_config(config);
+        for diag in &mut diags {
+            let result = crate::dynamic::verify::verify_finding(diag, &opts);
+            if let Some(ref mut ev) = diag.evidence {
+                ev.dynamic_verdict = Some(result);
+            }
+        }
+    }
 
     // ── Output ──────────────────────────────────────────────────────────
     match format {
@@ -2989,6 +3059,7 @@ fn rollup_findings(
             }),
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
 
         rollups.push(rollup_diag);
@@ -3171,6 +3242,7 @@ mod dedup_taint_flow_tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 
@@ -3338,6 +3410,7 @@ mod scc_tagging_tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 
@@ -3629,6 +3702,7 @@ fn severity_filter_applied_at_output_stage() {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         },
         Diag {
             path: "src/main.rs".into(),
@@ -3650,6 +3724,7 @@ fn severity_filter_applied_at_output_stage() {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         },
     ];
 
@@ -3700,6 +3775,7 @@ mod prioritize_tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 
@@ -4133,6 +4209,7 @@ mod prioritize_tests {
             }),
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         };
         let json = serde_json::to_string(&d).unwrap();
         assert!(json.contains("\"rollup\""));

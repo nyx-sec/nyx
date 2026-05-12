@@ -155,6 +155,89 @@ pub struct SymbolicVerdict {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  Dynamic verification verdict types (always present; not feature-gated)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Why dynamic verification cannot be attempted for a finding.
+///
+/// Typed so that callers can pattern-match on the reason rather than parsing
+/// strings. Serializes as PascalCase (e.g. `"BackendUnavailable"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum UnsupportedReason {
+    /// The binary was not built with `--features dynamic`, or no backend
+    /// implementation exists yet for this platform.
+    BackendUnavailable,
+    /// The entry kind (e.g. `HttpRoute`, `CliSubcommand`) is not yet supported;
+    /// only `EntryKind::Function` is driven in current milestones.
+    EntryKindUnsupported,
+    /// Finding confidence is below `Medium`; dynamic verification is not
+    /// attempted for low-confidence findings to avoid noise.
+    ConfidenceTooLow,
+    /// The finding has no `flow_steps` from which to derive an entry point.
+    NoFlowSteps,
+    /// No payload corpus exists for the sink capability.
+    NoPayloadsForCap,
+    /// A `HarnessSpec` could not be derived from the finding (missing entry
+    /// function, unresolvable language, or zero sink capability bits).
+    SpecDerivationFailed,
+}
+
+/// High-level outcome of a dynamic verification attempt.
+///
+/// Serializes as PascalCase (`"Confirmed"`, `"NotConfirmed"`, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum VerifyStatus {
+    /// Sink fired with at least one payload. The static finding is exploitable
+    /// against the live target.
+    Confirmed,
+    /// All payloads ran cleanly. Either the path is infeasible at runtime
+    /// or the corpus is too narrow. Treat as "static-only", not "false positive".
+    NotConfirmed,
+    /// Could not build, run, or observe (toolchain missing, sandbox refused,
+    /// timeout on every attempt, etc.).
+    Inconclusive,
+    /// Dynamic verification was not attempted. See `reason` for the typed cause.
+    Unsupported,
+}
+
+/// Summary of a single payload attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptSummary {
+    pub payload_label: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub triggered: bool,
+}
+
+/// Result of a dynamic verification attempt for one finding.
+///
+/// Always present when `config.scanner.verify` is true and the `dynamic`
+/// feature is enabled. The `status` field is the high-level verdict;
+/// `reason` carries the typed `UnsupportedReason` when status is
+/// `Unsupported`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyResult {
+    /// Stable ID of the finding this result is for.
+    pub finding_id: String,
+    /// High-level outcome.
+    pub status: VerifyStatus,
+    /// Label of the payload that triggered, when `status == Confirmed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub triggered_payload: Option<String>,
+    /// Typed reason for `Unsupported` status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<UnsupportedReason>,
+    /// Free-form error detail (used for `Inconclusive` status).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Per-attempt log.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<AttemptSummary>,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  Evidence
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -241,6 +324,12 @@ pub struct Evidence {
     /// summary path that did not preserve destination metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_exfil_field: Option<String>,
+
+    /// Result of dynamic verification for this finding, when
+    /// `config.scanner.verify` is true and the `dynamic` feature is enabled.
+    /// Always `None` in static-only scans and in non-dynamic builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_verdict: Option<VerifyResult>,
 }
 
 fn is_zero_cap_bits(v: &u32) -> bool {
@@ -266,6 +355,7 @@ impl Evidence {
             && self.symbolic.is_none()
             && self.sink_caps == 0
             && self.engine_notes.is_empty()
+            && self.dynamic_verdict.is_none()
     }
 }
 
@@ -809,6 +899,7 @@ mod tests {
             rollup: None,
             finding_id: String::new(),
             alternative_finding_ids: Vec::new(),
+            stable_hash: 0,
         }
     }
 

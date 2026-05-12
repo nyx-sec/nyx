@@ -1037,6 +1037,7 @@ fn auth_finding_to_diag(finding: &checks::AuthFinding, tree: &Tree, file_path: &
         rollup: None,
         finding_id: String::new(),
         alternative_finding_ids: Vec::new(),
+        stable_hash: 0,
     }
 }
 

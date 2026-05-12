@@ -9,6 +9,12 @@ export interface StartScanBody {
   scan_root?: string;
   mode?: ScanMode;
   engine_profile?: EngineProfile;
+  /**
+   * Run dynamic verification on findings after the static pass. Default false.
+   * Backend currently accepts the field as a no-op; verification engine lands
+   * in milestone M1 (see .pitboss/dynamic/context.md).
+   */
+  verify?: boolean;
 }
 
 export function useStartScan() {

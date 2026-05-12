@@ -429,6 +429,15 @@ pub enum Commands {
         /// Deprecated: use --mode cfg
         #[arg(long, hide = true)]
         cfg_only: bool,
+
+        /// Build a harness and dynamically verify each finding in a sandbox.
+        ///
+        /// Requires the binary to be built with `--features dynamic`. Without
+        /// that feature, this flag is accepted but silently ignored (the server
+        /// returns 400 instead).
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic")]
+        verify: bool,
     },
 
     /// Manage project indexes

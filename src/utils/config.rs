@@ -248,6 +248,16 @@ pub struct ScannerConfig {
     /// subsystem still carries the stable detection; flipping to `true`
     /// enables the taint-based path alongside it.
     pub enable_auth_as_taint: bool,
+
+    /// Run dynamic verification on each finding after the static pass.
+    ///
+    /// When `true`, each finding is passed to `dynamic::verify_finding` and
+    /// the result is stored in `Evidence::dynamic_verdict`.  Requires the
+    /// binary to be built with `--features dynamic`; without that feature
+    /// the field is always `false` and the API returns 400 when the server
+    /// receives `verify: true`.
+    #[serde(default)]
+    pub verify: bool,
 }
 impl Default for ScannerConfig {
     fn default() -> Self {
@@ -285,6 +295,7 @@ impl Default for ScannerConfig {
             enable_auth_analysis: true,
             enable_panic_recovery: false,
             enable_auth_as_taint: false,
+            verify: false,
         }
     }
 }

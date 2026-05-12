@@ -38,6 +38,7 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
   const [scanRoot, setScanRoot] = useState('');
   const [mode, setMode] = useState<ScanMode>('full');
   const [engineProfile, setEngineProfile] = useState<EngineProfile>('balanced');
+  const [verify, setVerify] = useState(false);
 
   const handleStart = async () => {
     const root = scanRoot.trim();
@@ -45,6 +46,7 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
     if (root && root !== defaultRoot) body.scan_root = root;
     if (mode !== 'full') body.mode = mode;
     body.engine_profile = engineProfile;
+    if (verify) body.verify = true;
     const payload = Object.keys(body).length ? body : undefined;
     try {
       await startScan.mutateAsync(payload);
@@ -104,6 +106,25 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
               <option value="deep">Deep</option>
             </select>
             <span className="form-hint">{PROFILE_HINTS[engineProfile]}</span>
+          </div>
+          <div className="form-group">
+            <label>Dynamic Verification</label>
+            <div className="toggle-inline">
+              <input
+                type="checkbox"
+                id="new-scan-verify"
+                checked={verify}
+                onChange={(e) => setVerify(e.target.checked)}
+              />
+              <label htmlFor="new-scan-verify">
+                Build a harness and try to fire each finding's payload in a
+                sandbox.
+              </label>
+            </div>
+            <span className="form-hint">
+              Opt-in for now; will become the default once calibrated. Adds
+              wall-clock time per finding.
+            </span>
           </div>
           <div className="scan-modal-actions">
             <button className="btn btn-sm" onClick={onClose}>

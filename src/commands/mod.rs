@@ -97,6 +97,7 @@ pub fn handle_command(
             high_only,
             ast_only,
             cfg_only,
+            verify,
         } => {
             // ── Apply profile first (CLI flags override after) ──────────
             if let Some(ref name) = profile {
@@ -306,6 +307,16 @@ pub fn handle_command(
             // Detector knobs (currently `[detectors.data_exfil]`) are
             // resolved straight from config; no CLI overrides yet.
             let _ = crate::utils::detector_options::install(config.detectors.clone());
+
+            // ── Dynamic verification ────────────────────────────────────
+            #[cfg(feature = "dynamic")]
+            if verify {
+                config.scanner.verify = true;
+            }
+            // Without the dynamic feature, --verify is silently accepted (no-op).
+            // The server returns 400 instead; see server/routes/scans.rs.
+            #[cfg(not(feature = "dynamic"))]
+            let _ = verify;
 
             // ── --explain-engine: print resolved config and exit ────────
             if explain_engine {

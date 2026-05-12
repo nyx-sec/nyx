@@ -34,6 +34,10 @@ struct StartScanRequest {
     mode: Option<String>,
     /// Engine-depth profile: "fast" | "balanced" | "deep".
     engine_profile: Option<String>,
+    /// Run dynamic verification on findings after the static pass. Default false.
+    /// Requires the binary to be built with `--features dynamic`; returns 400
+    /// when the feature is absent and `verify: true` is requested.
+    verify: Option<bool>,
     #[allow(dead_code)]
     languages: Option<Vec<String>>,
     #[allow(dead_code)]
@@ -91,6 +95,19 @@ async fn start_scan(
     }
     if let Some(ref profile) = req.engine_profile {
         apply_engine_profile(&mut config, profile)?;
+    }
+
+    if req.verify == Some(true) {
+        #[cfg(feature = "dynamic")]
+        {
+            config.scanner.verify = true;
+        }
+        #[cfg(not(feature = "dynamic"))]
+        {
+            return Err(bad_request(
+                "binary built without --features dynamic; cannot use verify",
+            ));
+        }
     }
 
     let event_tx = state.event_tx.clone();

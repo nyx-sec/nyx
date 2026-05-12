@@ -10,6 +10,11 @@
 
 use crate::labels::Cap;
 
+/// Bump when the corpus content changes in a way that invalidates previously-
+/// computed [`crate::dynamic::spec::HarnessSpec::spec_hash`] values (e.g.
+/// payloads renamed, oracle semantics changed, new cap entries added).
+pub const CORPUS_VERSION: u32 = 1;
+
 /// A single payload + the oracle that confirms it fired.
 #[derive(Debug, Clone)]
 pub struct Payload {
@@ -37,6 +42,35 @@ pub enum Oracle {
 }
 
 /// Pick the payload set for a given cap. Empty slice = unsupported cap.
+///
+/// # Cap coverage (update when adding/removing Cap bits)
+///
+/// | Cap                | Supported | Notes                          |
+/// |--------------------|-----------|--------------------------------|
+/// | SQL_QUERY          | yes       | SQLI payloads                  |
+/// | CODE_EXEC          | yes       | command injection echo marker  |
+/// | FILE_IO            | yes       | path traversal to /etc/passwd  |
+/// | SSRF               | yes       | OOB callback probe             |
+/// | HTML_ESCAPE        | yes       | XSS script marker              |
+/// | ENV_VAR            | no        | source-only cap; no sink oracle|
+/// | SHELL_ESCAPE       | no        | sanitizer cap; no sink oracle  |
+/// | URL_ENCODE         | no        | sanitizer cap; no sink oracle  |
+/// | JSON_PARSE         | no        | no reliable oracle             |
+/// | FMT_STRING         | no        | no reliable oracle             |
+/// | DESERIALIZE        | no        | no reliable oracle             |
+/// | CRYPTO             | no        | no reliable oracle             |
+/// | UNAUTHORIZED_ID    | no        | auth bypass; no oracle         |
+/// | DATA_EXFIL         | no        | exfil; no oracle               |
+/// | LDAP_INJECTION     | no        | no oracle                      |
+/// | XPATH_INJECTION    | no        | no oracle                      |
+/// | HEADER_INJECTION   | no        | no oracle                      |
+/// | OPEN_REDIRECT      | no        | no oracle                      |
+/// | SSTI               | no        | no oracle                      |
+/// | XXE                | no        | no oracle                      |
+/// | PROTOTYPE_POLLUTION| no        | JS-runtime; no oracle          |
+///
+/// When adding a new `Cap` bit: add a row above, update this function, and
+/// bump [`CORPUS_VERSION`] if you add payload support.
 pub fn payloads_for(cap: Cap) -> &'static [Payload] {
     if cap.contains(Cap::SQL_QUERY) {
         return SQLI;
@@ -54,6 +88,48 @@ pub fn payloads_for(cap: Cap) -> &'static [Payload] {
         return XSS;
     }
     &[]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supported_caps_have_payloads() {
+        assert!(!payloads_for(Cap::SQL_QUERY).is_empty());
+        assert!(!payloads_for(Cap::CODE_EXEC).is_empty());
+        assert!(!payloads_for(Cap::FILE_IO).is_empty());
+        assert!(!payloads_for(Cap::SSRF).is_empty());
+        assert!(!payloads_for(Cap::HTML_ESCAPE).is_empty());
+    }
+
+    #[test]
+    fn unsupported_caps_return_empty() {
+        let unsupported = [
+            Cap::ENV_VAR,
+            Cap::SHELL_ESCAPE,
+            Cap::URL_ENCODE,
+            Cap::JSON_PARSE,
+            Cap::FMT_STRING,
+            Cap::DESERIALIZE,
+            Cap::CRYPTO,
+            Cap::UNAUTHORIZED_ID,
+            Cap::DATA_EXFIL,
+            Cap::LDAP_INJECTION,
+            Cap::XPATH_INJECTION,
+            Cap::HEADER_INJECTION,
+            Cap::OPEN_REDIRECT,
+            Cap::SSTI,
+            Cap::XXE,
+            Cap::PROTOTYPE_POLLUTION,
+        ];
+        for cap in unsupported {
+            assert!(
+                payloads_for(cap).is_empty(),
+                "expected {cap:?} to return empty payloads; update coverage table if adding support"
+            );
+        }
+    }
 }
 
 const SQLI: &[Payload] = &[Payload {
