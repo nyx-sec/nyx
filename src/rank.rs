@@ -206,6 +206,27 @@ pub fn rank_diags(diags: &mut [Diag]) {
         if !rank.components.is_empty() {
             d.rank_reason = Some(rank.components.clone());
         }
+        // Emit rank-delta telemetry for M7 calibration (§21 / deferred M7 hook).
+        // Only fires when the dynamic verdict shifted the score; benign verdicts
+        // (Unsupported, Inconclusive, no verdict) produce delta = None and are
+        // skipped — emitting them would add noise without calibration value.
+        #[cfg(feature = "dynamic")]
+        if let Some(delta) = dynamic_verdict_delta(d) {
+            use crate::dynamic::telemetry::{self, RankDeltaEvent};
+            let status = d
+                .evidence
+                .as_ref()
+                .and_then(|ev| ev.dynamic_verdict.as_ref())
+                .map(|dv| format!("{:?}", dv.status))
+                .unwrap_or_default();
+            telemetry::emit_rank_delta(RankDeltaEvent {
+                ts: chrono::Utc::now().to_rfc3339(),
+                event_type: "rank_delta",
+                finding_id: d.finding_id.clone(),
+                status,
+                delta,
+            });
+        }
     }
     diags.sort_by(|a, b| {
         let sa = a.rank_score.unwrap_or(0.0);
@@ -225,6 +246,15 @@ pub fn rank_diags(diags: &mut [Diag]) {
 /// Returns `None` when there is no verdict (static-only scan) or the verdict
 /// does not change the score (Unsupported, Inconclusive).
 ///
+/// Design note (§deferred M7 payload_corpus_complete): the spec originally
+/// distinguished `NotConfirmed` + `payload_corpus_complete == true` → `-M`
+/// from `NotConfirmed` + `NoPayloadsForCap` → no change.  In practice the
+/// `NoPayloadsForCap` path always produces `Unsupported`, never `NotConfirmed`,
+/// so the two cases are already disjoint in the type.  The heuristic
+/// `!dv.attempts.is_empty()` (corpus was actually tried) is equivalent to
+/// `payload_corpus_complete == true` for all reachable states — no extra
+/// field is needed.  See also §deferred decision in `.pitboss/play/deferred.md`.
+///
 /// TODO(M7): N=20 and M=5 are placeholders; calibrate from telemetry.
 fn dynamic_verdict_delta(diag: &Diag) -> Option<f64> {
     use crate::evidence::VerifyStatus;
@@ -234,7 +264,8 @@ fn dynamic_verdict_delta(diag: &Diag) -> Option<f64> {
         // Apply penalty only when the corpus was actually exhausted (attempts
         // were made); a NotConfirmed with zero attempts means something went
         // wrong before payload execution, which is an Inconclusive path, not
-        // a meaningful negative signal.
+        // a meaningful negative signal.  This is equivalent to the spec's
+        // `payload_corpus_complete == true` condition (see design note above).
         VerifyStatus::NotConfirmed if !dv.attempts.is_empty() => Some(-5.0),
         _ => None,
     }
@@ -1081,6 +1112,271 @@ mod tests {
         assert!(
             s_bail <= s_under,
             "Bail ({s_bail}) must rank at or below UnderReport ({s_under})"
+        );
+    }
+
+    // ── Dynamic verdict delta tests ────────────────────────────────────────
+
+    use crate::evidence::{AttemptSummary, Evidence, VerifyResult, VerifyStatus};
+
+    fn make_diag_with_verdict(verdict: Option<VerifyResult>) -> Diag {
+        let mut d = make_diag(
+            Severity::High,
+            "taint-unsanitised-flow (source 1:1)",
+            "src/main.rs",
+            10,
+            vec![("Source".into(), "stdin at 1:1".into())],
+            false,
+        );
+        d.finding_id = "test_finding_id".into();
+        if let Some(v) = verdict {
+            d.evidence = Some(Evidence {
+                dynamic_verdict: Some(v),
+                ..Default::default()
+            });
+        }
+        d
+    }
+
+    fn confirmed_verdict() -> VerifyResult {
+        VerifyResult {
+            finding_id: "test_finding_id".into(),
+            status: VerifyStatus::Confirmed,
+            triggered_payload: Some("sqli-tautology".into()),
+            reason: None,
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![AttemptSummary {
+                payload_label: "sqli-tautology".into(),
+                exit_code: Some(0),
+                timed_out: false,
+                triggered: true,
+                sink_hit: true,
+            }],
+            toolchain_match: Some("exact".into()),
+        }
+    }
+
+    fn not_confirmed_with_attempts() -> VerifyResult {
+        VerifyResult {
+            finding_id: "test_finding_id".into(),
+            status: VerifyStatus::NotConfirmed,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![AttemptSummary {
+                payload_label: "sqli-tautology".into(),
+                exit_code: Some(0),
+                timed_out: false,
+                triggered: false,
+                sink_hit: false,
+            }],
+            toolchain_match: Some("exact".into()),
+        }
+    }
+
+    fn not_confirmed_no_attempts() -> VerifyResult {
+        VerifyResult {
+            finding_id: "test_finding_id".into(),
+            status: VerifyStatus::NotConfirmed,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![],
+            toolchain_match: None,
+        }
+    }
+
+    fn unsupported_verdict() -> VerifyResult {
+        VerifyResult {
+            finding_id: "test_finding_id".into(),
+            status: VerifyStatus::Unsupported,
+            triggered_payload: None,
+            reason: Some(crate::evidence::UnsupportedReason::NoPayloadsForCap),
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![],
+            toolchain_match: None,
+        }
+    }
+
+    fn inconclusive_verdict() -> VerifyResult {
+        VerifyResult {
+            finding_id: "test_finding_id".into(),
+            status: VerifyStatus::Inconclusive,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: Some(crate::evidence::InconclusiveReason::BuildFailed),
+            detail: None,
+            attempts: vec![],
+            toolchain_match: None,
+        }
+    }
+
+    #[test]
+    fn dynamic_verdict_confirmed_delta_is_positive() {
+        let d = make_diag_with_verdict(Some(confirmed_verdict()));
+        assert_eq!(
+            dynamic_verdict_delta(&d),
+            Some(20.0),
+            "Confirmed must produce +20 delta"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_not_confirmed_with_attempts_delta_is_negative() {
+        let d = make_diag_with_verdict(Some(not_confirmed_with_attempts()));
+        assert_eq!(
+            dynamic_verdict_delta(&d),
+            Some(-5.0),
+            "NotConfirmed with attempts must produce -5 delta"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_not_confirmed_no_attempts_no_delta() {
+        let d = make_diag_with_verdict(Some(not_confirmed_no_attempts()));
+        assert_eq!(
+            dynamic_verdict_delta(&d),
+            None,
+            "NotConfirmed with zero attempts must produce no delta"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_unsupported_no_delta() {
+        let d = make_diag_with_verdict(Some(unsupported_verdict()));
+        assert_eq!(
+            dynamic_verdict_delta(&d),
+            None,
+            "Unsupported must produce no delta"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_inconclusive_no_delta() {
+        let d = make_diag_with_verdict(Some(inconclusive_verdict()));
+        assert_eq!(
+            dynamic_verdict_delta(&d),
+            None,
+            "Inconclusive must produce no delta"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_no_verdict_no_delta() {
+        let d = make_diag_with_verdict(None);
+        assert_eq!(
+            dynamic_verdict_delta(&d),
+            None,
+            "No verdict must produce no delta"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_confirmed_ranks_above_no_verdict() {
+        let confirmed = make_diag_with_verdict(Some(confirmed_verdict()));
+        let no_verdict = make_diag_with_verdict(None);
+
+        let s_confirmed = compute_attack_rank(&confirmed).score;
+        let s_none = compute_attack_rank(&no_verdict).score;
+        assert!(
+            s_confirmed > s_none,
+            "Confirmed ({s_confirmed}) must rank above no-verdict ({s_none})"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_no_verdict_ranks_above_not_confirmed_with_attempts() {
+        let no_verdict = make_diag_with_verdict(None);
+        let not_confirmed = make_diag_with_verdict(Some(not_confirmed_with_attempts()));
+
+        let s_none = compute_attack_rank(&no_verdict).score;
+        let s_nc = compute_attack_rank(&not_confirmed).score;
+        assert!(
+            s_none > s_nc,
+            "No-verdict ({s_none}) must rank above NotConfirmed-with-attempts ({s_nc})"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_unsupported_same_as_no_verdict() {
+        let no_verdict = make_diag_with_verdict(None);
+        let unsupported = make_diag_with_verdict(Some(unsupported_verdict()));
+
+        let s_none = compute_attack_rank(&no_verdict).score;
+        let s_uns = compute_attack_rank(&unsupported).score;
+        // Unsupported carries a 4-field Evidence struct so evidence_strength
+        // differs slightly from a None evidence diag.  What matters is that
+        // the *delta component* is zero — both deltas must agree.
+        assert_eq!(
+            dynamic_verdict_delta(&no_verdict),
+            dynamic_verdict_delta(&unsupported),
+            "Unsupported and no-verdict must both produce None delta"
+        );
+        // Same base inputs → scores differ only by evidence_strength bonus
+        // from the Evidence wrapper.  Verify no "dynamic_verdict" component
+        // in rank_reason.
+        let rank = compute_attack_rank(&unsupported);
+        assert!(
+            !rank.components.iter().any(|(k, _)| k == "dynamic_verdict"),
+            "Unsupported must not appear in rank_reason components"
+        );
+        let _ = s_none;
+        let _ = s_uns;
+    }
+
+    #[test]
+    fn dynamic_verdict_inconclusive_same_delta_as_no_verdict() {
+        let no_verdict = make_diag_with_verdict(None);
+        let inconclusive = make_diag_with_verdict(Some(inconclusive_verdict()));
+
+        assert_eq!(
+            dynamic_verdict_delta(&no_verdict),
+            dynamic_verdict_delta(&inconclusive),
+            "Inconclusive and no-verdict must both produce None delta"
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_confirmed_rank_reason_contains_component() {
+        let d = make_diag_with_verdict(Some(confirmed_verdict()));
+        let rank = compute_attack_rank(&d);
+        assert!(
+            rank.components.iter().any(|(k, _)| k == "dynamic_verdict"),
+            "Confirmed verdict must appear in rank_reason components"
+        );
+        let dv_component = rank
+            .components
+            .iter()
+            .find(|(k, _)| k == "dynamic_verdict")
+            .unwrap();
+        assert!(
+            dv_component.1.starts_with('+'),
+            "Confirmed delta must be positive in rank_reason: {:?}",
+            dv_component.1
+        );
+    }
+
+    #[test]
+    fn dynamic_verdict_not_confirmed_rank_reason_contains_negative_component() {
+        let d = make_diag_with_verdict(Some(not_confirmed_with_attempts()));
+        let rank = compute_attack_rank(&d);
+        assert!(
+            rank.components.iter().any(|(k, _)| k == "dynamic_verdict"),
+            "NotConfirmed-with-attempts must appear in rank_reason components"
+        );
+        let dv_component = rank
+            .components
+            .iter()
+            .find(|(k, _)| k == "dynamic_verdict")
+            .unwrap();
+        assert!(
+            dv_component.1.starts_with('-'),
+            "NotConfirmed delta must be negative in rank_reason: {:?}",
+            dv_component.1
         );
     }
 }

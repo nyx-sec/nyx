@@ -16,6 +16,7 @@
 //! | `src/commands/scan.rs`       | enrichment loop lives here                |
 //! | `src/commands/mod.rs`        | `verify-feedback` subcommand (§21.2)      |
 //! | `src/server/` (any file)     | server start_scan verify wiring           |
+//! | `src/rank.rs`                | M7 rank-delta telemetry hook (§21 / M7)   |
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ const ALLOWED: &[&str] = &[
     "commands/scan.rs",
     "commands/mod.rs",
     "server/",
+    "rank.rs",
     // The dynamic module itself is obviously allowed.
     "dynamic/",
 ];

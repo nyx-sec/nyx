@@ -118,6 +118,57 @@ pub fn log_path() -> Option<std::path::PathBuf> {
     events_log_path()
 }
 
+// ── Rank delta telemetry ──────────────────────────────────────────────────────
+
+/// One telemetry event per ranked finding that carries a dynamic verdict delta.
+///
+/// Emitted by `rank::rank_diags` for every diag whose dynamic verdict shifts
+/// its rank score (delta != 0). Used by the M7 calibration pipeline to tune
+/// the N/M boost/penalty constants from real-world verdict distributions.
+#[derive(Debug, serde::Serialize)]
+pub struct RankDeltaEvent {
+    pub ts: String,
+    /// Always `"rank_delta"` — distinguishes from verdict events in the log.
+    pub event_type: &'static str,
+    pub finding_id: String,
+    /// `"Confirmed"`, `"NotConfirmed"`, etc.
+    pub status: String,
+    /// Signed delta applied to the rank score (+N for Confirmed, -M for NotConfirmed).
+    pub delta: f64,
+}
+
+/// Write a rank-delta telemetry event to the events log.
+///
+/// Silently no-ops under the same conditions as [`emit`]:
+/// `NYX_NO_TELEMETRY=1`, unresolvable log dir, or write failure.
+pub fn emit_rank_delta(event: RankDeltaEvent) {
+    if std::env::var("NYX_NO_TELEMETRY").as_deref() == Ok("1") {
+        return;
+    }
+
+    let Some(path) = events_log_path() else {
+        return;
+    };
+
+    let Ok(line) = serde_json::to_string(&event) else {
+        return;
+    };
+
+    let _ = (|| -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+            }
+        }
+        let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+        writeln!(f, "{line}")?;
+        Ok(())
+    })();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

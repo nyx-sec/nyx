@@ -705,10 +705,12 @@ function HowToFix({ finding }: { finding: FindingView }) {
 
 // ── Dynamic Verification Panel ──────────────────────────────────────────────
 
-function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
+export function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
   const [copied, setCopied] = useState(false);
-  const reproPath = `~/.cache/nyx/dynamic/repro/${verdict.finding_id}/`;
-  const reproCmd = './reproduce.sh';
+  // The repro bundle is keyed by spec_hash (not finding_id) inside the Nyx
+  // cache.  Rather than showing a path that may not match, surface the CLI
+  // command that locates and opens the bundle regardless of the hash.
+  const reproCmd = `nyx repro --finding ${verdict.finding_id}`;
 
   const copyCmd = () => {
     navigator.clipboard.writeText(reproCmd).then(() => {
@@ -733,11 +735,8 @@ function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
 
       {verdict.status === 'Confirmed' && (
         <div className="repro-panel" data-testid="repro-panel">
-          <div className="repro-path-row">
-            <span className="repro-label">Repro artifact:</span>
-            <code className="repro-path">{reproPath}</code>
-          </div>
           <div className="repro-cmd-row">
+            <span className="repro-label">Reproduce:</span>
             <code className="repro-cmd">{reproCmd}</code>
             <button
               type="button"
