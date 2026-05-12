@@ -186,6 +186,145 @@ fn docker_bin() -> String {
 /// container, it skips `docker run` and goes straight to `docker exec`.
 static CONTAINER_REGISTRY: OnceLock<dashmap::DashMap<String, String>> = OnceLock::new();
 
+// ── OOB egress filter (Linux only, §17.2) ────────────────────────────────────
+
+/// Saved state for an active OOB egress iptables filter.
+///
+/// Retained so the cleanup handler can issue matching `-D` rules without
+/// needing to re-run `docker inspect` (the container may already be stopping).
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone)]
+struct OobEgressState {
+    container_ip: String,
+    oob_port: u16,
+}
+
+#[cfg(target_os = "linux")]
+static OOB_EGRESS_REGISTRY: OnceLock<dashmap::DashMap<String, OobEgressState>> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn oob_egress_registry() -> &'static dashmap::DashMap<String, OobEgressState> {
+    OOB_EGRESS_REGISTRY.get_or_init(dashmap::DashMap::new)
+}
+
+/// Retrieve the container's primary IP address via `docker inspect`.
+#[cfg(target_os = "linux")]
+fn get_container_ip(container_name: &str) -> Option<String> {
+    let out = std::process::Command::new(docker_bin())
+        .args([
+            "inspect",
+            "--format={{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}",
+            container_name,
+        ])
+        .output()
+        .ok()?;
+    let ip = std::str::from_utf8(&out.stdout).ok()?.trim().to_owned();
+    if ip.is_empty() { None } else { Some(ip) }
+}
+
+/// Apply host-level iptables rules restricting an OOB-sandboxed container.
+///
+/// Only outbound traffic to the host's OOB listener port is permitted:
+///
+/// - INPUT chain (docker0): ACCEPT `container_ip → host:oob_port` (TCP)
+/// - INPUT chain (docker0): DROP all other traffic from `container_ip` to host
+/// - DOCKER-USER chain (FORWARD): DROP all egress from `container_ip` (blocks
+///   internet via NAT)
+///
+/// Rules are inserted at the chain head so they precede any pre-existing
+/// allow-all rules.  On failure (no root / `iptables` absent) a warning is
+/// printed to stderr and the function returns; the OOB listener still works
+/// but without strict per-port egress isolation (§17.2 relaxed mode).
+#[cfg(target_os = "linux")]
+fn apply_oob_egress_filter(container_name: &str, oob_port: u16) {
+    let container_ip = match get_container_ip(container_name) {
+        Some(ip) => ip,
+        None => {
+            eprintln!(
+                "nyx: [oob-filter] docker inspect failed for {container_name} \
+                 — egress filter skipped"
+            );
+            return;
+        }
+    };
+
+    let port_str = oob_port.to_string();
+    let ip = container_ip.as_str();
+
+    let rules: &[&[&str]] = &[
+        // Allow container → host OOB port (INPUT; docker0 bridge to host).
+        &["-I", "INPUT", "1", "-i", "docker0",
+          "-s", ip, "-p", "tcp", "--dport", &port_str, "-j", "ACCEPT"],
+        // Drop all other container → host traffic (INPUT; position 2 fires after accept).
+        &["-I", "INPUT", "2", "-i", "docker0",
+          "-s", ip, "-j", "DROP"],
+        // Drop all container egress to external internet (FORWARD / DOCKER-USER).
+        &["-I", "DOCKER-USER", "1",
+          "-s", ip, "-j", "DROP"],
+    ];
+
+    let mut applied = 0usize;
+    for rule in rules {
+        let ok = std::process::Command::new("iptables")
+            .args(*rule)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            applied += 1;
+        }
+    }
+
+    if applied == rules.len() {
+        oob_egress_registry().insert(
+            container_name.to_owned(),
+            OobEgressState { container_ip, oob_port },
+        );
+    } else {
+        eprintln!(
+            "nyx: [oob-filter] iptables partially applied ({}/{} rules) for {} \
+             — needs root or CAP_NET_ADMIN; egress filtering is best-effort only",
+            applied,
+            rules.len(),
+            container_name,
+        );
+    }
+}
+
+/// Remove the iptables rules applied by [`apply_oob_egress_filter`].
+///
+/// Called from the atexit handler in [`stop_all_containers`].  Safe to call
+/// even if no filter was applied for `container_name` (no-op in that case).
+#[cfg(target_os = "linux")]
+fn remove_oob_egress_filter(container_name: &str) {
+    let Some((_, state)) = oob_egress_registry().remove(container_name) else {
+        return;
+    };
+
+    let port_str = state.oob_port.to_string();
+    let ip = state.container_ip.as_str();
+
+    let rules: &[&[&str]] = &[
+        &["-D", "INPUT", "-i", "docker0",
+          "-s", ip, "-p", "tcp", "--dport", &port_str, "-j", "ACCEPT"],
+        &["-D", "INPUT", "-i", "docker0",
+          "-s", ip, "-j", "DROP"],
+        &["-D", "DOCKER-USER",
+          "-s", ip, "-j", "DROP"],
+    ];
+
+    for rule in rules {
+        // Best-effort: ignore errors (container already removed, no privileges, etc.)
+        let _ = std::process::Command::new("iptables")
+            .args(*rule)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 fn container_registry() -> &'static dashmap::DashMap<String, String> {
     CONTAINER_REGISTRY.get_or_init(|| {
         // Register an atexit handler to stop containers on normal process exit.
@@ -207,6 +346,10 @@ extern "C" fn stop_all_containers() {
     let Some(reg) = CONTAINER_REGISTRY.get() else { return };
     let bin = std::env::var("NYX_DOCKER_BIN").unwrap_or_else(|_| "docker".to_owned());
     for entry in reg.iter() {
+        // Remove OOB egress filter before stopping the container so stale
+        // iptables rules don't accumulate across scans.
+        #[cfg(target_os = "linux")]
+        remove_oob_egress_filter(entry.key());
         let _ = std::process::Command::new(&bin)
             .args(["stop", "--time=0", entry.key()])
             .stdout(std::process::Stdio::null())
@@ -435,6 +578,13 @@ fn start_container(
         .map_err(SandboxError::Io)?;
 
     if status.success() {
+        // Apply OOB egress filter on Linux when the OOB listener is active.
+        // This restricts the bridge-networked container to only reach the host
+        // on the OOB port; all other egress is dropped (§17.2).
+        #[cfg(target_os = "linux")]
+        if let Some(port) = oob_port {
+            apply_oob_egress_filter(name, port);
+        }
         Ok(())
     } else {
         Err(SandboxError::BackendUnavailable(SandboxBackend::Docker))
@@ -1319,6 +1469,48 @@ mod tests {
             id == "python-nyx-nonexistent-99999" || id.starts_with("python-nyx-nonexistent-99999-"),
             "id should be base or base-digest, got: {id}"
         );
+    }
+
+    // ── OOB egress filter unit tests ──────────────────────────────────────────
+
+    /// `remove_oob_egress_filter` is a no-op when no filter was registered.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn oob_egress_remove_noop_when_no_entry() {
+        // Should not panic or error when the registry has no entry.
+        remove_oob_egress_filter("nyx-nonexistent-container-xyz");
+    }
+
+    /// Registry insert + remove round-trip.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn oob_egress_registry_insert_remove() {
+        let reg = oob_egress_registry();
+        let name = "nyx-test-egress-roundtrip";
+        reg.insert(
+            name.to_owned(),
+            OobEgressState {
+                container_ip: "172.17.0.99".to_owned(),
+                oob_port: 12345,
+            },
+        );
+        assert!(reg.contains_key(name), "entry must be present after insert");
+        // remove_oob_egress_filter also calls iptables -D; those will fail
+        // silently without root, but the registry entry is removed regardless
+        // of whether the iptables commands succeed.
+        let removed = reg.remove(name);
+        assert!(removed.is_some(), "entry must be removable");
+        assert!(!reg.contains_key(name), "entry must be gone after remove");
+    }
+
+    /// `get_container_ip` returns `None` for a nonexistent container name.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn get_container_ip_none_for_nonexistent() {
+        // This calls real docker; if docker is absent the command will fail
+        // and we still get None — both outcomes satisfy the assertion.
+        let ip = get_container_ip("nyx-nonexistent-container-abc9999");
+        assert!(ip.is_none(), "nonexistent container must yield None IP");
     }
 
     #[test]
