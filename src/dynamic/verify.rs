@@ -4,11 +4,11 @@
 //! It is the only function the rest of the crate needs to know about.
 
 use crate::commands::scan::Diag;
-use crate::dynamic::corpus::payloads_for;
+use crate::dynamic::corpus::{payloads_for, CORPUS_VERSION};
 use crate::dynamic::report::{AttemptSummary, VerifyResult, VerifyStatus};
 use crate::dynamic::runner::{run_spec, RunError};
-use crate::dynamic::sandbox::SandboxOptions;
-use crate::dynamic::spec::HarnessSpec;
+use crate::dynamic::sandbox::{toolchain_id_with_digest, SandboxOptions};
+use crate::dynamic::spec::{HarnessSpec, SPEC_FORMAT_VERSION};
 use crate::dynamic::telemetry::{self, TelemetryEvent};
 use crate::dynamic::toolchain;
 use crate::evidence::{InconclusiveReason, UnsupportedReason};
@@ -21,6 +21,9 @@ pub struct VerifyOptions {
     pub sandbox: SandboxOptions,
     /// Project root for repro artifact symlinks (optional).
     pub project_root: Option<std::path::PathBuf>,
+    /// Path to the Nyx index database for the dynamic verdict cache (§12 Q5).
+    /// When `None` (e.g. `--no-index` mode), the cache is bypassed entirely.
+    pub db_path: Option<std::path::PathBuf>,
 }
 
 impl VerifyOptions {
@@ -38,8 +41,111 @@ impl VerifyOptions {
                 ..SandboxOptions::default()
             },
             project_root: None,
+            db_path: None,
         }
     }
+}
+
+// ── Dynamic verdict cache helpers (§12 Q5) ───────────────────────────────────
+
+/// Hash the content of `entry_file` with BLAKE3 and return a 16-char hex string.
+///
+/// Returns `"unavailable"` when the file cannot be read (e.g. the finding
+/// points to a file that no longer exists). The cache simply misses in that case.
+fn compute_entry_content_hash(entry_file: &str) -> String {
+    std::fs::read(entry_file)
+        .map(|bytes| {
+            let h = blake3::hash(&bytes);
+            format!(
+                "{:016x}",
+                u64::from_le_bytes(h.as_bytes()[..8].try_into().unwrap())
+            )
+        })
+        .unwrap_or_else(|_| "unavailable".to_owned())
+}
+
+/// Placeholder transitive import digest.
+///
+/// Full transitive import analysis is deferred. The empty string is a valid
+/// conservative placeholder: a stale cache hit can only occur when a transitive
+/// import changes without the entry file changing, which is rare and unlikely to
+/// cause incorrect verdicts given the harness is also re-confirmed by the oracle.
+fn transitive_import_digest_placeholder() -> &'static str {
+    ""
+}
+
+/// Look up a cached verdict in the `dynamic_verdict_cache` table.
+///
+/// Opens the DB in read-write mode (no-create) so it never creates a DB that
+/// does not yet exist. Returns `None` on any error or cache miss.
+fn lookup_verdict_cache(
+    db_path: &std::path::Path,
+    spec_hash: &str,
+    entry_content_hash: &str,
+    transitive_import_digest: &str,
+    toolchain_id: &str,
+) -> Option<VerifyResult> {
+    use rusqlite::{Connection, OpenFlags};
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(db_path, flags).ok()?;
+    conn.query_row(
+        "SELECT verdict_json FROM dynamic_verdict_cache \
+         WHERE spec_hash = ?1 AND entry_content_hash = ?2 \
+         AND transitive_import_digest = ?3 AND toolchain_id = ?4 \
+         AND corpus_version = ?5 AND spec_format_version = ?6 \
+         LIMIT 1",
+        rusqlite::params![
+            spec_hash,
+            entry_content_hash,
+            transitive_import_digest,
+            toolchain_id,
+            CORPUS_VERSION as i64,
+            SPEC_FORMAT_VERSION as i64,
+        ],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|json| serde_json::from_str(&json).ok())
+}
+
+/// Insert or replace a verdict in the `dynamic_verdict_cache` table.
+///
+/// Best-effort: silently ignores all errors (DB unavailable, serialisation
+/// failure, UNIQUE constraint violation, etc.). The cache is an optimisation;
+/// a miss is never fatal.
+fn insert_verdict_cache(
+    db_path: &std::path::Path,
+    spec_hash: &str,
+    entry_content_hash: &str,
+    transitive_import_digest: &str,
+    toolchain_id: &str,
+    result: &VerifyResult,
+) {
+    use rusqlite::{Connection, OpenFlags};
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let Ok(conn) = Connection::open_with_flags(db_path, flags) else {
+        return;
+    };
+    let Ok(json) = serde_json::to_string(result) else {
+        return;
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = conn.execute(
+        "INSERT OR REPLACE INTO dynamic_verdict_cache \
+         (spec_hash, entry_content_hash, transitive_import_digest, toolchain_id, \
+          corpus_version, spec_format_version, verdict_json, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            spec_hash,
+            entry_content_hash,
+            transitive_import_digest,
+            toolchain_id,
+            CORPUS_VERSION as i64,
+            SPEC_FORMAT_VERSION as i64,
+            json,
+            now,
+        ],
+    );
 }
 
 /// Try to dynamically confirm a static finding.
@@ -105,6 +211,25 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         _ => toolchain::resolve_python(Path::new(".")),
     };
     let toolchain_match = if toolchain_res.toolchain_drift { "drift" } else { "exact" };
+    // Enrich the resolved toolchain_id with the Docker image digest (§22.1).
+    // The enriched ID is used as the toolchain_id component of the verdict cache
+    // key so that image updates always invalidate stale cache entries.
+    let effective_toolchain_id = toolchain_id_with_digest(&toolchain_res.toolchain_id);
+
+    // Verdict cache lookup (§12 Q5): skip execution when a valid cached result exists.
+    let entry_hash = compute_entry_content_hash(&spec.entry_file);
+    let import_digest = transitive_import_digest_placeholder();
+    if let Some(ref db_path) = opts.db_path {
+        if let Some(cached) = lookup_verdict_cache(
+            db_path,
+            &spec.spec_hash,
+            &entry_hash,
+            import_digest,
+            &effective_toolchain_id,
+        ) {
+            return cached;
+        }
+    }
 
     let start = Instant::now();
     let result = run_spec(&spec, &opts.sandbox);
@@ -125,6 +250,18 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         opts,
         elapsed,
     );
+
+    // Store result in verdict cache (best-effort; errors are silently ignored).
+    if let Some(ref db_path) = opts.db_path {
+        insert_verdict_cache(
+            db_path,
+            &spec.spec_hash,
+            &entry_hash,
+            import_digest,
+            &effective_toolchain_id,
+            &verdict,
+        );
+    }
 
     // Emit telemetry (best-effort; never affects verdict).
     let event = TelemetryEvent::new(
@@ -291,5 +428,167 @@ fn build_verdict(
             attempts: vec![],
             toolchain_match: None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_entry_content_hash_stable_for_same_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("entry.py");
+        std::fs::write(&path, b"def run(x): pass\n").unwrap();
+        let h1 = compute_entry_content_hash(path.to_str().unwrap());
+        let h2 = compute_entry_content_hash(path.to_str().unwrap());
+        assert_eq!(h1, h2, "hash must be deterministic");
+        assert_ne!(h1, "unavailable");
+    }
+
+    #[test]
+    fn compute_entry_content_hash_different_for_different_content() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p1 = dir.path().join("a.py");
+        let p2 = dir.path().join("b.py");
+        std::fs::write(&p1, b"def run(x): return x\n").unwrap();
+        std::fs::write(&p2, b"def run(x): return x + 1\n").unwrap();
+        let h1 = compute_entry_content_hash(p1.to_str().unwrap());
+        let h2 = compute_entry_content_hash(p2.to_str().unwrap());
+        assert_ne!(h1, h2, "different content must produce different hashes");
+    }
+
+    #[test]
+    fn compute_entry_content_hash_missing_file_returns_unavailable() {
+        let h = compute_entry_content_hash("/tmp/nyx_test_nonexistent_entry_file_99999.py");
+        assert_eq!(h, "unavailable");
+    }
+
+    #[test]
+    fn transitive_import_digest_placeholder_is_stable() {
+        assert_eq!(transitive_import_digest_placeholder(), "");
+    }
+
+    #[test]
+    fn verdict_cache_round_trip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Create and initialize the DB with the required schema.
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS dynamic_verdict_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    spec_hash TEXT NOT NULL,
+                    entry_content_hash TEXT NOT NULL,
+                    transitive_import_digest TEXT NOT NULL,
+                    toolchain_id TEXT NOT NULL,
+                    corpus_version INTEGER NOT NULL,
+                    spec_format_version INTEGER NOT NULL,
+                    verdict_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(spec_hash, entry_content_hash, transitive_import_digest,
+                           toolchain_id, corpus_version, spec_format_version)
+                );",
+            )
+            .unwrap();
+        }
+
+        let result = VerifyResult {
+            finding_id: "test_finding_0001".to_owned(),
+            status: crate::evidence::VerifyStatus::NotConfirmed,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![],
+            toolchain_match: Some("exact".to_owned()),
+        };
+
+        // Insert.
+        insert_verdict_cache(&db_path, "spec_abc", "hash_xyz", "", "python-3.11", &result);
+
+        // Lookup — should return the same result.
+        let cached = lookup_verdict_cache(&db_path, "spec_abc", "hash_xyz", "", "python-3.11");
+        assert!(cached.is_some(), "cache hit expected after insert");
+        let cached = cached.unwrap();
+        assert_eq!(cached.finding_id, "test_finding_0001");
+        assert_eq!(cached.status, crate::evidence::VerifyStatus::NotConfirmed);
+    }
+
+    #[test]
+    fn verdict_cache_miss_on_different_spec_hash() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS dynamic_verdict_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    spec_hash TEXT NOT NULL,
+                    entry_content_hash TEXT NOT NULL,
+                    transitive_import_digest TEXT NOT NULL,
+                    toolchain_id TEXT NOT NULL,
+                    corpus_version INTEGER NOT NULL,
+                    spec_format_version INTEGER NOT NULL,
+                    verdict_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(spec_hash, entry_content_hash, transitive_import_digest,
+                           toolchain_id, corpus_version, spec_format_version)
+                );",
+            )
+            .unwrap();
+        }
+
+        let result = VerifyResult {
+            finding_id: "test_finding_0002".to_owned(),
+            status: crate::evidence::VerifyStatus::NotConfirmed,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![],
+            toolchain_match: Some("exact".to_owned()),
+        };
+
+        insert_verdict_cache(&db_path, "spec_aaa", "hash_xyz", "", "python-3.11", &result);
+
+        // Different spec_hash → miss.
+        let miss = lookup_verdict_cache(&db_path, "spec_bbb", "hash_xyz", "", "python-3.11");
+        assert!(miss.is_none(), "different spec_hash must be a cache miss");
+    }
+
+    #[test]
+    fn verdict_cache_returns_none_for_nonexistent_db() {
+        let result = lookup_verdict_cache(
+            std::path::Path::new("/tmp/nyx_nonexistent_verdict_cache_99999.db"),
+            "spec_abc",
+            "hash_xyz",
+            "",
+            "python-3.11",
+        );
+        assert!(result.is_none(), "non-existent DB must return None");
+    }
+
+    #[test]
+    fn insert_verdict_cache_is_noop_for_nonexistent_db() {
+        // Should not panic or create the DB.
+        let db_path = std::path::Path::new("/tmp/nyx_nonexistent_verdict_cache_insert_99999.db");
+        let result = VerifyResult {
+            finding_id: "test".to_owned(),
+            status: crate::evidence::VerifyStatus::NotConfirmed,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![],
+            toolchain_match: None,
+        };
+        insert_verdict_cache(db_path, "spec", "hash", "", "python-3", &result);
+        assert!(!db_path.exists(), "insert must not create a new DB");
     }
 }

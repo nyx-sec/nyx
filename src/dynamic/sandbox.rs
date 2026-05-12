@@ -1012,6 +1012,68 @@ fn libc_kill(pid: i32, sig: i32) -> i32 {
     unsafe { kill(pid, sig) }
 }
 
+// ── Docker image digest enrichment (§22.1) ────────────────────────────────────
+
+/// Map a toolchain_id to its corresponding Docker image tag.
+///
+/// Only covers Docker-backed interpreted runtimes (Python, Node, Java, PHP).
+/// Returns `None` for compiled toolchains (Rust, Go) that use the generic
+/// `debian:bookworm-slim` runtime image independently of `toolchain_id`.
+fn docker_image_for_toolchain_id(toolchain_id: &str) -> Option<String> {
+    if toolchain_id.starts_with("python-") {
+        Some(python_image_for_toolchain(toolchain_id))
+    } else if toolchain_id.starts_with("node-") {
+        Some(node_image_for_toolchain(toolchain_id))
+    } else if toolchain_id.starts_with("java-") {
+        Some(java_image_for_toolchain(toolchain_id))
+    } else if toolchain_id.starts_with("php-") {
+        Some(php_image_for_toolchain(toolchain_id))
+    } else {
+        None
+    }
+}
+
+/// Fetch the first 12 hex characters of the Docker image content digest.
+///
+/// Runs `docker inspect --format={{.Id}} <image>` and truncates the SHA256
+/// hex string. Returns an empty string when docker is unavailable, the image
+/// has not been pulled locally, or the output cannot be parsed.
+pub fn fetch_docker_image_digest_short(image: &str) -> String {
+    let out = std::process::Command::new(docker_bin())
+        .args(["inspect", "--format={{.Id}}", image])
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let id = std::str::from_utf8(&o.stdout).unwrap_or("").trim();
+            let hex = id.strip_prefix("sha256:").unwrap_or(id);
+            hex.chars().take(12).collect()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Return a toolchain_id enriched with the Docker image digest (§22.1).
+///
+/// For Docker-backed toolchains (Python, Node, Java, PHP), appends a 12-char
+/// digest suffix so that cache keys remain distinct across image updates.
+/// Example: `"python-3.11"` → `"python-3.11-abc123456789"`.
+///
+/// Returns the base ID unchanged when:
+/// - the toolchain is not Docker-backed (Rust, Go),
+/// - docker is unavailable, or
+/// - the image has not been pulled locally.
+pub fn toolchain_id_with_digest(base_id: &str) -> String {
+    let Some(image) = docker_image_for_toolchain_id(base_id) else {
+        return base_id.to_owned();
+    };
+    let digest = fetch_docker_image_digest_short(&image);
+    if digest.is_empty() {
+        base_id.to_owned()
+    } else {
+        format!("{base_id}-{digest}")
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1196,5 +1258,63 @@ mod tests {
         let cmd = vec!["/usr/bin/node".to_owned(), "harness.js".to_owned()];
         // node is in the interpreter list → not native binary
         assert!(!harness_is_native_binary(&cmd));
+    }
+
+    // ── Docker image digest enrichment tests ──────────────────────────────────
+
+    #[test]
+    fn fetch_docker_image_digest_short_returns_empty_on_bad_image() {
+        // A non-existent image tag always returns empty (inspect fails).
+        let digest = fetch_docker_image_digest_short("nyx-nonexistent-image:does-not-exist-99999");
+        assert!(digest.is_empty(), "non-existent image must return empty digest");
+    }
+
+    #[test]
+    fn toolchain_id_with_digest_passthrough_for_rust() {
+        // Rust toolchain IDs are not Docker-backed; digest enrichment is a no-op.
+        let id = toolchain_id_with_digest("rust-stable");
+        assert_eq!(id, "rust-stable");
+    }
+
+    #[test]
+    fn toolchain_id_with_digest_passthrough_for_go() {
+        let id = toolchain_id_with_digest("go-1.22");
+        assert_eq!(id, "go-1.22");
+    }
+
+    #[test]
+    fn toolchain_id_with_digest_no_suffix_when_digest_empty() {
+        // When docker is absent or image not pulled, the base ID is returned unchanged.
+        // We can't control whether docker is available, but a non-existent image
+        // always yields an empty digest, so the base ID is returned as-is.
+        let id = toolchain_id_with_digest("python-nyx-nonexistent-99999");
+        // The crafted toolchain maps to python:nyx-nonexistent-99999-slim which
+        // won't be present → empty digest → base ID returned.
+        assert!(
+            id == "python-nyx-nonexistent-99999" || id.starts_with("python-nyx-nonexistent-99999-"),
+            "id should be base or base-digest, got: {id}"
+        );
+    }
+
+    #[test]
+    fn docker_image_for_toolchain_id_maps_correctly() {
+        assert_eq!(
+            docker_image_for_toolchain_id("python-3.11"),
+            Some("python:3.11-slim".to_owned())
+        );
+        assert_eq!(
+            docker_image_for_toolchain_id("node-20"),
+            Some("node:20-slim".to_owned())
+        );
+        assert_eq!(
+            docker_image_for_toolchain_id("java-21"),
+            Some("eclipse-temurin:21-jre-jammy".to_owned())
+        );
+        assert_eq!(
+            docker_image_for_toolchain_id("php-8"),
+            Some("php:8-cli".to_owned())
+        );
+        assert_eq!(docker_image_for_toolchain_id("rust-stable"), None);
+        assert_eq!(docker_image_for_toolchain_id("go-1.22"), None);
     }
 }

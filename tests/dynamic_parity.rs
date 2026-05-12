@@ -103,6 +103,7 @@ mod parity_tests {
                 ..SandboxOptions::default()
             },
             project_root: None,
+            db_path: None,
         }
     }
 
@@ -114,6 +115,7 @@ mod parity_tests {
                 ..SandboxOptions::default()
             },
             project_root: None,
+            db_path: None,
         }
     }
 

@@ -475,7 +475,12 @@ pub fn handle(
     // ── Dynamic verification (feature-gated) ─────────────────────────────
     #[cfg(feature = "dynamic")]
     if config.scanner.verify {
-        let opts = crate::dynamic::verify::VerifyOptions::from_config(config);
+        let mut opts = crate::dynamic::verify::VerifyOptions::from_config(config);
+        // Enable the verdict cache (§12 Q5) when an index DB is in use.
+        // When index_mode is Off, the DB is never created, so no cache.
+        if index_mode != IndexMode::Off && db_path.exists() {
+            opts.db_path = Some(db_path.clone());
+        }
         for diag in &mut diags {
             let result = crate::dynamic::verify::verify_finding(diag, &opts);
             if let Some(ref mut ev) = diag.evidence {
