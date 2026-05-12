@@ -266,7 +266,13 @@ impl JobManager {
 
             // Prepare the final state outside the lock.
             let (status, diags, error_str) = match result {
-                Ok(diags) => {
+                Ok(mut diags) => {
+                    // Compute stable_hash for every finding (§M6.5 cross-commit identity).
+                    // The CLI handler does this in commands/scan.rs::handle, but the
+                    // server scan path bypasses handle, so do it here.
+                    for d in &mut diags {
+                        d.stable_hash = scan::compute_stable_hash(d);
+                    }
                     log_collector.info(format!("Scan completed: {} findings", diags.len()), None);
                     (JobStatus::Completed, Some(Arc::new(diags)), None)
                 }

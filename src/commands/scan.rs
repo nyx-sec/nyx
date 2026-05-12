@@ -345,6 +345,9 @@ pub fn handle(
     show_instances: Option<&str>,
     database_dir: &Path,
     config: &Config,
+    baseline: Option<&Path>,
+    baseline_write: Option<&Path>,
+    gate: Option<&str>,
 ) -> NyxResult<()> {
     let scan_path = Path::new(path).canonicalize()?;
     let (project_name, db_path) = get_project_info(&scan_path, database_dir)?;
@@ -489,18 +492,65 @@ pub fn handle(
         }
     }
 
+    // ── Baseline write (§M6.5): persist current findings as stripped baseline
+    if let Some(bw_path) = baseline_write {
+        if let Err(e) = crate::baseline::write_baseline(bw_path, &diags) {
+            tracing::warn!(path = %bw_path.display(), error = %e, "baseline-write failed");
+            if !suppress_status {
+                eprintln!("warning: --baseline-write failed: {e}");
+            }
+        } else if !suppress_status {
+            eprintln!("Baseline written to {}", bw_path.display());
+        }
+    }
+
+    // ── Baseline diff (§M6.5): load previous baseline and compute transitions
+    let verdict_diff = if let Some(bl_path) = baseline {
+        match crate::baseline::load_baseline(bl_path) {
+            Ok(baseline_entries) => {
+                let diff = crate::baseline::compute_verdict_diff(&baseline_entries, &diags);
+                Some(diff)
+            }
+            Err(e) => {
+                return Err(crate::errors::NyxError::Msg(format!(
+                    "--baseline {}: {e}",
+                    bl_path.display()
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
     // ── Output ──────────────────────────────────────────────────────────
     match format {
         OutputFormat::Json => {
-            let json = serde_json::to_string(&diags)
-                .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
-            println!("{json}");
+            if let Some(ref diff) = verdict_diff {
+                // Wrap findings + verdict_diff into one JSON object so the
+                // diff is machine-readable alongside the findings.
+                let out = serde_json::json!({
+                    "findings": &diags,
+                    "verdict_diff": diff,
+                });
+                let json = serde_json::to_string(&out)
+                    .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
+                println!("{json}");
+            } else {
+                let json = serde_json::to_string(&diags)
+                    .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
+                println!("{json}");
+            }
         }
         OutputFormat::Sarif => {
             let sarif = crate::output::build_sarif(&diags, &scan_path);
             let json = serde_json::to_string_pretty(&sarif)
                 .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
             println!("{json}");
+            // Emit diff on stderr for SARIF (stdout is owned by the SARIF schema).
+            if let Some(ref diff) = verdict_diff {
+                eprintln!("\nBaseline comparison:");
+                eprint!("{}", crate::baseline::format_diff_console(diff));
+            }
         }
         OutputFormat::Console => {
             tracing::debug!("Printing to console");
@@ -508,6 +558,10 @@ pub fn handle(
                 "{}",
                 crate::fmt::render_console(&diags, &project_name, Some(&stats))
             );
+            if let Some(ref diff) = verdict_diff {
+                println!("\nBaseline comparison:");
+                print!("{}", crate::baseline::format_diff_console(diff));
+            }
         }
     }
 
@@ -534,6 +588,19 @@ pub fn handle(
                     "failed to write convergence telemetry sidecar"
                 );
             }
+        }
+    }
+
+    // ── --gate: CI gate check (exit 2 on violation) ─────────────────────
+    if let (Some(diff), Some(gate_name)) = (&verdict_diff, gate) {
+        if !crate::baseline::check_gate(diff, gate_name) {
+            if !suppress_status {
+                eprintln!(
+                    "Gate '{}' violated. Exit code 2.",
+                    gate_name
+                );
+            }
+            std::process::exit(2);
         }
     }
 

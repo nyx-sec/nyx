@@ -100,6 +100,9 @@ pub fn handle_command(
             verify,
             unsafe_sandbox,
             backend,
+            baseline,
+            baseline_write,
+            gate,
         } => {
             // ── Apply profile first (CLI flags override after) ──────────
             if let Some(ref name) = profile {
@@ -360,6 +363,9 @@ pub fn handle_command(
                 show_instances.as_deref(),
                 database_dir,
                 config,
+                baseline.as_deref().map(std::path::Path::new),
+                baseline_write.as_deref().map(std::path::Path::new),
+                gate.as_deref(),
             )?;
         }
         #[cfg(feature = "dynamic")]

@@ -459,6 +459,11 @@ async fn compare_scans(
         severity_delta,
     };
 
+    // Build verdict diff from left (baseline) → right (current) using stable_hash.
+    let left_baseline = crate::baseline::diags_to_baseline_entries(&left_findings);
+    let verdict_diff_result =
+        crate::baseline::compute_verdict_diff(&left_baseline, &right_findings);
+
     Ok(Json(CompareResponse {
         left_scan: left_info,
         right_scan: right_info,
@@ -467,6 +472,7 @@ async fn compare_scans(
         fixed_findings,
         changed_findings,
         unchanged_findings,
+        verdict_diff: verdict_diff_result.entries,
     }))
 }
 

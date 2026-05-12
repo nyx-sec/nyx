@@ -91,6 +91,7 @@
 pub mod abstract_interp;
 pub mod ast;
 pub mod auth_analysis;
+pub mod baseline;
 pub mod callgraph;
 pub mod cfg;
 pub mod cfg_analysis;

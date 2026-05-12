@@ -456,6 +456,37 @@ pub enum Commands {
         #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
         #[arg(long, help_heading = "Dynamic", value_name = "BACKEND")]
         backend: Option<String>,
+
+        // ── Baseline / patch-validation (§M6.5) ────────────────────────
+        /// Read a previous scan's JSON output (or a stripped .nyx/baseline.json)
+        /// and diff it against the current scan on stable_hash.
+        ///
+        /// Emits a verdict diff showing New / Resolved / FlippedConfirmed /
+        /// FlippedNotConfirmed transitions. Combine with --gate to enforce CI
+        /// policies.
+        #[arg(long, value_name = "FILE", help_heading = "Baseline")]
+        baseline: Option<String>,
+
+        /// Write a stripped baseline JSON to FILE after scanning.
+        ///
+        /// The file contains only stable_hash, dynamic_verdict, severity, path,
+        /// and rule_id — no source code. A CI job can persist this file to
+        /// compare future scans against without leaking source.
+        #[arg(long, value_name = "FILE", help_heading = "Baseline")]
+        baseline_write: Option<String>,
+
+        /// CI gate to enforce when --baseline is active.
+        ///
+        /// `no-new-confirmed`: exit 2 if any new Confirmed finding appears.
+        /// `resolve-all-confirmed`: exit 2 if any baseline-Confirmed finding
+        /// is not fully resolved (absent or NotConfirmed in the current scan).
+        #[arg(
+            long,
+            value_name = "GATE",
+            value_parser = ["no-new-confirmed", "resolve-all-confirmed"],
+            help_heading = "Baseline"
+        )]
+        gate: Option<String>,
     },
 
     /// Submit feedback on a dynamic verification verdict (§21.2).

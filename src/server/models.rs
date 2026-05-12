@@ -38,6 +38,10 @@ pub struct FindingView {
     pub fingerprint: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub portable_fingerprint: String,
+    /// Blake3-derived stable cross-commit identity hash (M6.5). Zero when not
+    /// yet computed (server-side scans always compute it post-analysis).
+    #[serde(skip_serializing_if = "crate::server::models::is_zero_u64")]
+    pub stable_hash: u64,
     pub path: String,
     pub line: usize,
     pub col: usize,
@@ -263,12 +267,17 @@ fn status_for_diag(d: &Diag) -> &'static str {
     }
 }
 
+pub(crate) fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
 /// Convert a Diag to a FindingView at a given index.
 pub fn finding_from_diag(index: usize, d: &Diag) -> FindingView {
     FindingView {
         index,
         fingerprint: compute_fingerprint(d),
         portable_fingerprint: String::new(), // set by caller with scan_root
+        stable_hash: d.stable_hash,
         path: d.path.clone(),
         line: d.line,
         col: d.col,
@@ -394,6 +403,10 @@ pub struct CompareResponse {
     pub fixed_findings: Vec<ComparedFinding>,
     pub changed_findings: Vec<ChangedFinding>,
     pub unchanged_findings: Vec<ComparedFinding>,
+    /// Verdict-level diff entries (M6.5). Populated when findings in both
+    /// scans carry `stable_hash` values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub verdict_diff: Vec<crate::baseline::VerdictDiffEntry>,
 }
 
 /// Minimal scan metadata for comparison headers.

@@ -83,10 +83,31 @@ export interface RelatedFindingView {
   severity: string;
 }
 
+// Baseline / patch-validation types (M6.5)
+export type VerdictTransition =
+  | 'New'
+  | 'Unchanged'
+  | 'Resolved'
+  | 'Regressed'
+  | 'FlippedConfirmed'
+  | 'FlippedNotConfirmed';
+
+export interface VerdictDiffEntry {
+  stable_hash: number;
+  path: string;
+  line: number;
+  rule_id: string;
+  baseline_status?: VerifyStatus;
+  current_status?: VerifyStatus;
+  transition: VerdictTransition;
+}
+
 export interface FindingView {
   index: number;
   fingerprint: string;
   portable_fingerprint?: string;
+  /** Blake3-derived stable cross-commit identity (M6.5). */
+  stable_hash?: number;
   path: string;
   line: number;
   col: number;
@@ -199,6 +220,8 @@ export interface CompareResponse {
   fixed_findings: ComparedFinding[];
   changed_findings: ChangedFinding[];
   unchanged_findings: ComparedFinding[];
+  /** Verdict-level diff (M6.5). Present when findings carry stable_hash values. */
+  verdict_diff?: VerdictDiffEntry[];
 }
 
 // Overview types
