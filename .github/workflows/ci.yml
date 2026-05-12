@@ -233,8 +233,19 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
-      - name: Pull python image for sandbox tests
-        run: docker pull python:3-slim
+      - name: Pull language images for sandbox tests
+        run: |
+          docker pull python:3-slim
+          docker pull node:20-slim
+          docker pull eclipse-temurin:21-jre-jammy
+          docker pull php:8-cli
+
+      - name: Smoke-test interpreter availability
+        run: |
+          docker run --rm python:3-slim python3 --version
+          docker run --rm node:20-slim node --version
+          docker run --rm eclipse-temurin:21-jre-jammy java -version
+          docker run --rm php:8-cli php --version
 
       - name: Rust tests with docker (sandbox escape gate)
         run: cargo nextest run --all-features --test dynamic_sandbox_escape --test dynamic_parity

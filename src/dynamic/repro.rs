@@ -273,24 +273,68 @@ fn dockerfile_for_spec(spec: &HarnessSpec) -> String {
 
 fn reproduce_script(spec: &HarnessSpec, payload_label: &str) -> String {
     use crate::symbol::Lang;
-    let run_cmd = match spec.lang {
-        Lang::Rust => {
-            "NYX_PAYLOAD=\"$(cat payload/payload.bin)\" ./harness/nyx_harness".to_owned()
-        }
-        _ => {
-            "NYX_PAYLOAD=\"$(cat payload/payload.bin)\" python3 harness/harness.py".to_owned()
-        }
+
+    // Shell command for the process backend (relative to SCRIPT_DIR).
+    let process_run_cmd = match spec.lang {
+        Lang::Rust | Lang::Go => "./harness/nyx_harness".to_owned(),
+        Lang::Python => "python3 ./harness/harness.py".to_owned(),
+        Lang::JavaScript | Lang::TypeScript => "node ./harness/harness.js".to_owned(),
+        Lang::Java => "java -cp ./harness NyxHarness".to_owned(),
+        Lang::Php => "php ./harness/harness.php".to_owned(),
+        _ => "echo 'unsupported language' >&2; exit 2".to_owned(),
     };
+
+    // Docker image tag is derived from spec_hash so each finding gets its own image.
+    let image_tag = format!("nyx-repro-{}", spec.spec_hash);
+
+    // Double braces escape literal { } in Rust format strings.
     format!(
         "#!/bin/sh\n\
-         # Repro script for finding {finding_id} ({payload_label})\n\
+         # Nyx dynamic repro — finding {finding_id} / payload {payload_label}\n\
+         #\n\
+         # Usage:\n\
+         #   ./reproduce.sh          — run via process backend (direct)\n\
+         #   ./reproduce.sh --docker — run via Docker backend (isolated)\n\
+         #\n\
+         # Exits 0 when sink_hit matches expected/outcome.json, 1 on mismatch.\n\
          set -e\n\
          SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n\
          cd \"$SCRIPT_DIR\"\n\
-         {run_cmd}\n",
+         PAYLOAD=\"$(cat payload/payload.bin)\"\n\
+         EXPECTED_SINK=$(grep -o '\"sink_hit\"[[:space:]]*:[[:space:]]*[a-z]*' \\\n\
+           expected/outcome.json | grep -o '[a-z]*$')\n\
+         \n\
+         if [ \"${{1:-}}\" = \"--docker\" ]; then\n\
+           if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then\n\
+             echo 'error: docker not available' >&2; exit 2\n\
+           fi\n\
+           IMAGE=\"{image_tag}\"\n\
+           docker build -t \"$IMAGE\" -f harness/Dockerfile.harness harness/ >/dev/null\n\
+           ACTUAL=$(docker run --rm --cap-drop=ALL \
+--security-opt no-new-privileges:true --network none \
+-e NYX_PAYLOAD=\"$PAYLOAD\" \"$IMAGE\" 2>&1) || ACTUAL=''\n\
+           docker rmi \"$IMAGE\" >/dev/null 2>&1 || true\n\
+         else\n\
+           ACTUAL=$(NYX_PAYLOAD=\"$PAYLOAD\" {process_run_cmd} 2>&1) || ACTUAL=''\n\
+         fi\n\
+         \n\
+         if echo \"$ACTUAL\" | grep -q '__NYX_SINK_HIT__'; then\n\
+           ACTUAL_SINK=true\n\
+         else\n\
+           ACTUAL_SINK=false\n\
+         fi\n\
+         \n\
+         if [ \"$ACTUAL_SINK\" = \"$EXPECTED_SINK\" ]; then\n\
+           echo \"PASS: sink_hit=$ACTUAL_SINK (matches expected)\"\n\
+           exit 0\n\
+         else\n\
+           echo \"FAIL: sink_hit=$ACTUAL_SINK expected=$EXPECTED_SINK\"\n\
+           exit 1\n\
+         fi\n",
         finding_id = spec.finding_id,
         payload_label = payload_label,
-        run_cmd = run_cmd,
+        process_run_cmd = process_run_cmd,
+        image_tag = image_tag,
     )
 }
 

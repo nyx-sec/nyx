@@ -34,8 +34,8 @@ use std::time::{Duration, Instant};
 /// rather than a compiled native binary.
 ///
 /// Interpreted harnesses can be run inside a Python/Node Docker image directly.
-/// Compiled harnesses (Rust, C) require a platform-matching binary; the Docker
-/// backend falls back to the process backend for them in Phase 04.
+/// Compiled harnesses (Rust, Go) are routed to `run_native_binary_docker` on
+/// Linux or to the process backend on other platforms.
 pub fn harness_is_interpreted(command: &[String]) -> bool {
     let cmd0 = match command.first() {
         Some(c) => c.as_str(),
@@ -50,6 +50,34 @@ pub fn harness_is_interpreted(command: &[String]) -> bool {
         "python3" | "python" | "python2" | "node" | "nodejs" | "ruby" | "php" | "perl" | "java"
     )
 }
+
+/// Returns true when the harness is a compiled native binary that can be run
+/// inside a Linux Docker container.
+///
+/// Compiled harnesses (Rust, Go) set `command[0]` to an absolute path after
+/// `prepare_rust()` / `prepare_go()` succeeds. This distinguishes them from
+/// interpreter commands (bare names like `python3`) and lets the Docker backend
+/// route them to `run_native_binary_docker` instead of the process backend.
+///
+/// Only returns true on Linux: native binaries compiled on macOS or Windows are
+/// not Linux ELF and cannot execute in Linux Docker containers.
+pub fn harness_is_native_binary(command: &[String]) -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    match command.first() {
+        Some(cmd) => {
+            std::path::Path::new(cmd.as_str()).is_absolute() && !harness_is_interpreted(command)
+        }
+        None => false,
+    }
+}
+
+/// Docker image used to run compiled native binaries (Rust, Go).
+///
+/// `debian:bookworm-slim` provides glibc and a minimal runtime compatible with
+/// dynamically-linked Rust/Go binaries produced by the standard toolchains.
+const NATIVE_BINARY_IMAGE: &str = "debian:bookworm-slim";
 
 /// Result of a single sandboxed run.
 #[derive(Debug, Clone)]
@@ -239,11 +267,10 @@ pub fn run(
 ) -> Result<SandboxOutcome, SandboxError> {
     match opts.backend {
         SandboxBackend::Docker => {
-            // Docker backend currently only supports interpreted harnesses.
-            // Compiled binaries (Rust, C) are not yet cross-platform in containers;
-            // fall back to the process backend for them.
             if harness_is_interpreted(&harness.command) {
                 run_docker(harness, payload, opts)
+            } else if harness_is_native_binary(&harness.command) {
+                run_native_binary_docker(harness, payload, opts)
             } else {
                 run_process(harness, payload, opts)
             }
@@ -251,6 +278,8 @@ pub fn run(
         SandboxBackend::Auto => {
             if docker_available() && harness_is_interpreted(&harness.command) {
                 run_docker(harness, payload, opts)
+            } else if docker_available() && harness_is_native_binary(&harness.command) {
+                run_native_binary_docker(harness, payload, opts)
             } else {
                 run_process(harness, payload, opts)
             }
@@ -576,6 +605,175 @@ fn detect_image_for_harness(harness: &BuiltHarness) -> String {
         "php" => "php:8-cli".to_owned(),
         _ => "python:3-slim".to_owned(),
     }
+}
+
+// ── Native binary Docker backend ──────────────────────────────────────────────
+
+/// Docker backend for compiled native binaries (Rust, Go).
+///
+/// Starts a `debian:bookworm-slim` container (glibc-compatible runtime), copies
+/// the compiled binary into it, then executes it via `docker exec`. This gives
+/// the same `--cap-drop=ALL` / `--network none` isolation as the interpreted
+/// harness path.
+///
+/// Only reachable on Linux (see [`harness_is_native_binary`]). On other platforms
+/// the dispatch in [`run`] routes compiled harnesses to [`run_process`].
+fn run_native_binary_docker(
+    harness: &BuiltHarness,
+    payload: &Payload,
+    opts: &SandboxOptions,
+) -> Result<SandboxOutcome, SandboxError> {
+    if !is_docker_reachable() {
+        return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
+    }
+
+    let binary_path = match harness.command.first() {
+        Some(p) => p.clone(),
+        None => return Err(SandboxError::Spawn(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty command for native binary",
+        ))),
+    };
+
+    let container_name = workdir_to_container_name(&harness.workdir);
+    let registry = container_registry();
+
+    let reused = if registry.contains_key(&container_name) {
+        is_container_running(&container_name)
+    } else {
+        false
+    };
+
+    if !reused {
+        start_container(&container_name, &harness.workdir, NATIVE_BINARY_IMAGE)?;
+
+        // Copy the compiled binary into the container as /workdir/nyx_harness.
+        let cp_dst = format!("{container_name}:/workdir/nyx_harness");
+        let cp_status = std::process::Command::new(docker_bin())
+            .args(["cp", &binary_path, &cp_dst])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(SandboxError::Io)?;
+        if !cp_status.success() {
+            return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
+        }
+
+        // Ensure execute bit is set (docker cp preserves it on Linux, but be explicit).
+        let chmod_status = std::process::Command::new(docker_bin())
+            .args(["exec", &container_name, "chmod", "+x", "/workdir/nyx_harness"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(SandboxError::Io)?;
+        if !chmod_status.success() {
+            return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
+        }
+
+        registry.insert(container_name.clone(), container_name.clone());
+    }
+
+    exec_native_binary_in_container(&container_name, harness, payload, opts)
+}
+
+/// Execute a native binary already in the container at `/workdir/nyx_harness`.
+fn exec_native_binary_in_container(
+    container_name: &str,
+    harness: &BuiltHarness,
+    payload: &Payload,
+    opts: &SandboxOptions,
+) -> Result<SandboxOutcome, SandboxError> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let payload_b64 = base64_encode(payload.bytes);
+    let mut cmd_args: Vec<String> = vec![
+        "exec".into(),
+        "-i".into(),
+        "--user".into(), "65534:65534".into(),
+        "-e".into(), format!("NYX_PAYLOAD_B64={payload_b64}"),
+    ];
+    for (k, v) in &harness.env {
+        cmd_args.push("-e".into());
+        cmd_args.push(format!("{k}={v}"));
+    }
+    cmd_args.push(container_name.into());
+    cmd_args.push("/workdir/nyx_harness".into());
+
+    let mut cmd = Command::new(docker_bin());
+    cmd.args(&cmd_args);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let start = std::time::Instant::now();
+    let mut child = cmd.spawn().map_err(SandboxError::Spawn)?;
+
+    let timeout = opts.timeout;
+    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let timed_out_clone = timed_out.clone();
+    let child_id = child.id();
+    let container_name_for_kill = container_name.to_owned();
+
+    let _timer = std::thread::spawn(move || {
+        std::thread::sleep(timeout);
+        timed_out_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(unix)]
+        libc_kill(child_id as i32, 9);
+        #[cfg(not(unix))]
+        let _ = child_id;
+        let _ = std::process::Command::new(docker_bin())
+            .args(["exec", &container_name_for_kill, "kill", "-9", "-1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    });
+
+    let limit = opts.output_limit;
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    let stdout_handle = stdout_pipe.map(|s| {
+        std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            std::io::Read::take(s, limit as u64).read_to_end(&mut buf)?;
+            Ok(buf)
+        })
+    });
+    let stderr_handle = stderr_pipe.map(|s| {
+        std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            std::io::Read::take(s, limit as u64).read_to_end(&mut buf)?;
+            Ok(buf)
+        })
+    });
+
+    let status = child.wait().map_err(SandboxError::Io)?;
+
+    let stdout_buf = stdout_handle
+        .and_then(|h| h.join().ok())
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+    let stderr_buf = stderr_handle
+        .and_then(|h| h.join().ok())
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+    let duration = start.elapsed();
+    let did_time_out = timed_out.load(std::sync::atomic::Ordering::SeqCst);
+    let exit_code = if did_time_out { None } else { status.code() };
+
+    const SINK_HIT_SENTINEL: &[u8] = b"__NYX_SINK_HIT__";
+    let sink_hit = contains_subslice(&stdout_buf, SINK_HIT_SENTINEL)
+        || contains_subslice(&stderr_buf, SINK_HIT_SENTINEL);
+
+    Ok(SandboxOutcome {
+        exit_code,
+        stdout: stdout_buf,
+        stderr: stderr_buf,
+        timed_out: did_time_out,
+        oob_callback_seen: false,
+        sink_hit,
+        duration,
+    })
 }
 
 // ── Process backend ───────────────────────────────────────────────────────────
@@ -960,5 +1158,43 @@ mod tests {
         assert!(!reg.contains_key(&name));
         reg.insert(name.clone(), name.clone());
         assert!(reg.contains_key(&name));
+    }
+
+    #[test]
+    fn harness_is_native_binary_absolute_path() {
+        let abs = "/home/ci/.cache/nyx/dynamic/build-cache/abc123-rust-stable/nyx_harness";
+        let cmd = vec![abs.to_owned()];
+        // On Linux: absolute path + not an interpreter → native binary.
+        // On other platforms: always false (not ELF).
+        #[cfg(target_os = "linux")]
+        assert!(harness_is_native_binary(&cmd));
+        #[cfg(not(target_os = "linux"))]
+        assert!(!harness_is_native_binary(&cmd));
+    }
+
+    #[test]
+    fn harness_is_native_binary_relative_path_false() {
+        // Relative paths are not detected as native binaries.
+        let cmd = vec!["./nyx_harness".to_owned()];
+        assert!(!harness_is_native_binary(&cmd));
+    }
+
+    #[test]
+    fn harness_is_native_binary_interpreter_false() {
+        let cmd = vec!["python3".to_owned(), "harness.py".to_owned()];
+        assert!(!harness_is_native_binary(&cmd));
+    }
+
+    #[test]
+    fn harness_is_native_binary_empty_false() {
+        assert!(!harness_is_native_binary(&[]));
+    }
+
+    #[test]
+    fn harness_is_native_binary_node_absolute_path_false() {
+        // Even an absolute path to an interpreter is not a native binary.
+        let cmd = vec!["/usr/bin/node".to_owned(), "harness.js".to_owned()];
+        // node is in the interpreter list → not native binary
+        assert!(!harness_is_native_binary(&cmd));
     }
 }

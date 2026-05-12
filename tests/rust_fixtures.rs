@@ -283,6 +283,63 @@ mod rust_fixture_tests {
         );
     }
 
+    // ── XSS fixtures ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn xss_positive_is_confirmed() {
+        let result = run_fixture("xss_positive.rs", "run", Cap::HTML_ESCAPE, 11);
+        assert_eq!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "xss_positive must be Confirmed; got {:?} (detail: {:?})",
+            result.status,
+            result.detail
+        );
+        assert!(
+            result.triggered_payload.is_some(),
+            "Confirmed result must have triggered_payload"
+        );
+    }
+
+    #[test]
+    fn xss_negative_is_not_confirmed() {
+        let result = run_fixture("xss_negative.rs", "run", Cap::HTML_ESCAPE, 15);
+        assert_eq!(
+            result.status,
+            VerifyStatus::NotConfirmed,
+            "xss_negative must be NotConfirmed; got {:?} (detail: {:?})",
+            result.status,
+            result.detail
+        );
+    }
+
+    #[test]
+    fn xss_unsupported_is_unsupported() {
+        let path = fixture_path("xss_unsupported.rs");
+        let mut d = make_diag(&path, "render", Cap::HTML_ESCAPE, 14);
+        d.confidence = Some(Confidence::Low);
+        let opts = VerifyOptions::default();
+        let result = verify_finding(&d, &opts);
+        assert_eq!(result.status, VerifyStatus::Unsupported);
+        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    }
+
+    #[test]
+    fn xss_adversarial_is_inconclusive_collision() {
+        let result = run_fixture("xss_adversarial.rs", "run", Cap::HTML_ESCAPE, 999);
+        assert_eq!(
+            result.status,
+            VerifyStatus::Inconclusive,
+            "xss_adversarial must be Inconclusive; got {:?}",
+            result.status
+        );
+        assert_eq!(
+            result.inconclusive_reason,
+            Some(InconclusiveReason::OracleCollisionSuspected),
+            "adversarial must be OracleCollisionSuspected"
+        );
+    }
+
     // ── Variant fixtures (smoke-test second positive paths) ──────────────────
 
     #[test]
