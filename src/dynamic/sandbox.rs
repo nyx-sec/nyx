@@ -28,6 +28,29 @@ use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+// ── Harness interpretation probe ──────────────────────────────────────────────
+
+/// Returns true when the harness is driven by an interpreter (Python, Node, …)
+/// rather than a compiled native binary.
+///
+/// Interpreted harnesses can be run inside a Python/Node Docker image directly.
+/// Compiled harnesses (Rust, C) require a platform-matching binary; the Docker
+/// backend falls back to the process backend for them in Phase 04.
+pub fn harness_is_interpreted(command: &[String]) -> bool {
+    let cmd0 = match command.first() {
+        Some(c) => c.as_str(),
+        None => return false,
+    };
+    let base = std::path::Path::new(cmd0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(cmd0);
+    matches!(
+        base,
+        "python3" | "python" | "python2" | "node" | "nodejs" | "ruby" | "php" | "perl"
+    )
+}
+
 /// Result of a single sandboxed run.
 #[derive(Debug, Clone)]
 pub struct SandboxOutcome {
@@ -201,9 +224,18 @@ pub fn run(
     opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     match opts.backend {
-        SandboxBackend::Docker => run_docker(harness, payload, opts),
+        SandboxBackend::Docker => {
+            // Docker backend currently only supports interpreted harnesses.
+            // Compiled binaries (Rust, C) are not yet cross-platform in containers;
+            // fall back to the process backend for them.
+            if harness_is_interpreted(&harness.command) {
+                run_docker(harness, payload, opts)
+            } else {
+                run_process(harness, payload, opts)
+            }
+        }
         SandboxBackend::Auto => {
-            if docker_available() {
+            if docker_available() && harness_is_interpreted(&harness.command) {
                 run_docker(harness, payload, opts)
             } else {
                 run_process(harness, payload, opts)
@@ -366,15 +398,33 @@ fn exec_in_container(
     }
     cmd_args.push(container_name.into());
 
-    // The harness script is at /workdir/{filename} inside the container.
-    let harness_file = harness
-        .command
-        .get(1)
-        .map(|s| s.as_str())
-        .unwrap_or("harness.py");
+    // Build the exec command inside the container.
+    // For interpreters: `python3 /workdir/harness.py`
+    // For compiled binaries: `/workdir/target/release/nyx_harness`
     let exec_cmd = harness.command.first().map(|s| s.as_str()).unwrap_or("python3");
-    cmd_args.push(exec_cmd.into());
-    cmd_args.push(format!("/workdir/{harness_file}"));
+    if harness_is_interpreted(&harness.command) {
+        let harness_file = harness
+            .command
+            .get(1)
+            .map(|s| s.as_str())
+            .unwrap_or("harness.py");
+        cmd_args.push(exec_cmd.into());
+        cmd_args.push(format!("/workdir/{harness_file}"));
+    } else {
+        // Compiled binary: the command is the relative path within workdir.
+        // e.g. "target/release/nyx_harness" → run "/workdir/target/release/nyx_harness"
+        let rel = std::path::Path::new(exec_cmd)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(exec_cmd);
+        if exec_cmd.contains('/') || exec_cmd.contains('\\') {
+            // Relative path within workdir (e.g. "target/release/nyx_harness").
+            cmd_args.push(format!("/workdir/{exec_cmd}"));
+        } else {
+            // Just a filename — try /workdir directly.
+            cmd_args.push(format!("/workdir/{rel}"));
+        }
+    }
 
     let mut cmd = Command::new(docker_bin());
     cmd.args(&cmd_args);

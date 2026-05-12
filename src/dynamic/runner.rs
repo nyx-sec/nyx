@@ -10,6 +10,7 @@ use crate::dynamic::corpus::{benign_payload_for, payloads_for, Oracle, Payload};
 use crate::dynamic::harness::{self, HarnessError};
 use crate::dynamic::sandbox::{self, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
+use crate::symbol::Lang;
 
 /// Max harness-build attempts before giving up.
 const MAX_BUILD_ATTEMPTS: u32 = 2;
@@ -86,28 +87,55 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         }
     };
 
-    // Prepare Python venv for build-time isolation and dependency caching.
-    // Errors from prepare_python propagate as RunError::BuildFailed (making
-    // that variant reachable) or are swallowed for non-fatal failures (Io /
-    // Unsupported), falling back to the system python3 in the harness command.
-    match build_sandbox::prepare_python(spec, &harness.workdir) {
-        Ok(build_result) => {
-            // Patch harness command to use venv Python when the venv was built
-            // or found in cache.
-            if let Some(cmd0) = harness.command.first_mut() {
-                if cmd0 == "python3" || cmd0 == "python" {
-                    let venv_python = build_result.venv_path.join("bin").join("python3");
-                    if venv_python.exists() {
-                        *cmd0 = venv_python.to_string_lossy().into_owned();
+    // Build-time isolation and dependency setup — dispatched by language.
+    match spec.lang {
+        Lang::Python => {
+            // Prepare Python venv for dependency caching.
+            // Errors propagate as RunError::BuildFailed or are swallowed for
+            // non-fatal failures (Io / Unsupported), falling back to system python3.
+            match build_sandbox::prepare_python(spec, &harness.workdir) {
+                Ok(build_result) => {
+                    if let Some(cmd0) = harness.command.first_mut() {
+                        if cmd0 == "python3" || cmd0 == "python" {
+                            let venv_python = build_result.venv_path.join("bin").join("python3");
+                            if venv_python.exists() {
+                                *cmd0 = venv_python.to_string_lossy().into_owned();
+                            }
+                        }
                     }
+                }
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                Err(_) => {}
+            }
+        }
+        Lang::Rust => {
+            // Compile the harness binary with `cargo build --release`.
+            match build_sandbox::prepare_rust(spec, &harness.workdir) {
+                Ok(build_result) => {
+                    // Update command to the compiled binary path.
+                    let binary = build_result.venv_path.join("nyx_harness");
+                    if binary.exists() {
+                        harness.command = vec![binary.to_string_lossy().into_owned()];
+                    } else {
+                        // Fall back to binary inside the workdir.
+                        let fallback = harness.workdir.join("target").join("release").join("nyx_harness");
+                        if fallback.exists() {
+                            harness.command = vec![fallback.to_string_lossy().into_owned()];
+                        }
+                    }
+                }
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                Err(_) => {
+                    // Io: fall back to whatever command was set (will likely fail at exec).
                 }
             }
         }
-        Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
-            return Err(RunError::BuildFailed { stderr, attempts });
-        }
-        Err(_) => {
-            // Io / Unsupported: fall back to system python3 already in command.
+        _ => {
+            // No build step for other interpreted languages.
         }
     }
 

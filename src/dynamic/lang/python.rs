@@ -31,6 +31,8 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         source,
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
     })
 }
 

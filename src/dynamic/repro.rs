@@ -111,8 +111,18 @@ pub fn write(
     let entry_path = root.join("entry").join(format!("extracted_source.{ext}"));
     fs::write(&entry_path, entry_source.as_bytes())?;
 
-    // harness/harness.py (or other lang ext)
-    let harness_path = root.join("harness").join(format!("harness.{ext}"));
+    // harness/harness.{ext} (or for Rust: harness/src/main.rs)
+    use crate::symbol::Lang;
+    let harness_path = if matches!(spec.lang, Lang::Rust) {
+        let src_dir = root.join("harness").join("src");
+        fs::create_dir_all(&src_dir)?;
+        // Also write Cargo.toml for Rust repro bundles.
+        let cargo_content = crate::dynamic::lang::rust::generate_cargo_toml(spec.expected_cap);
+        fs::write(root.join("harness").join("Cargo.toml"), cargo_content.as_bytes())?;
+        src_dir.join("main.rs")
+    } else {
+        root.join("harness").join(format!("harness.{ext}"))
+    };
     fs::write(&harness_path, harness_source.as_bytes())?;
 
     // harness/Dockerfile.harness
@@ -232,22 +242,55 @@ fn source_ext_for_lang(lang: &crate::symbol::Lang) -> &'static str {
 }
 
 fn dockerfile_for_spec(spec: &HarnessSpec) -> String {
-    let image = format!("python:{}", spec.toolchain_id.strip_prefix("python-").unwrap_or("3"));
-    format!(
-        "FROM {image}\nWORKDIR /harness\nCOPY harness.py .\nCMD [\"python3\", \"harness.py\"]\n"
-    )
+    use crate::symbol::Lang;
+    match spec.lang {
+        Lang::Rust => {
+            let toolchain = spec.toolchain_id.strip_prefix("rust-").unwrap_or("stable");
+            // Multi-stage: build with Rust, run the binary directly.
+            format!(
+                "FROM rust:{toolchain}-slim AS builder\n\
+                 WORKDIR /harness\n\
+                 COPY Cargo.toml Cargo.lock* ./\n\
+                 COPY src/ src/\n\
+                 RUN cargo build --release\n\n\
+                 FROM debian:bookworm-slim\n\
+                 WORKDIR /harness\n\
+                 COPY --from=builder /harness/target/release/nyx_harness .\n\
+                 CMD [\"/harness/nyx_harness\"]\n"
+            )
+        }
+        Lang::Python => {
+            let image = format!("python:{}", spec.toolchain_id.strip_prefix("python-").unwrap_or("3"));
+            format!(
+                "FROM {image}\nWORKDIR /harness\nCOPY harness.py .\nCMD [\"python3\", \"harness.py\"]\n"
+            )
+        }
+        _ => {
+            format!("# Unsupported language: {:?}\nFROM ubuntu:latest\n", spec.lang)
+        }
+    }
 }
 
 fn reproduce_script(spec: &HarnessSpec, payload_label: &str) -> String {
+    use crate::symbol::Lang;
+    let run_cmd = match spec.lang {
+        Lang::Rust => {
+            "NYX_PAYLOAD=\"$(cat payload/payload.bin)\" ./harness/nyx_harness".to_owned()
+        }
+        _ => {
+            "NYX_PAYLOAD=\"$(cat payload/payload.bin)\" python3 harness/harness.py".to_owned()
+        }
+    };
     format!(
         "#!/bin/sh\n\
          # Repro script for finding {finding_id} ({payload_label})\n\
          set -e\n\
          SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n\
          cd \"$SCRIPT_DIR\"\n\
-         NYX_PAYLOAD=\"$(cat payload/payload.bin)\" python3 harness/harness.py\n",
+         {run_cmd}\n",
         finding_id = spec.finding_id,
         payload_label = payload_label,
+        run_cmd = run_cmd,
     )
 }
 

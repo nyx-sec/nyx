@@ -74,31 +74,57 @@ fn stage_harness(
     let workdir = base_dir.join(&spec.spec_hash);
     fs::create_dir_all(&workdir)?;
 
-    // Write harness source.
+    // Write harness source (create parent dir if needed, e.g. "src/main.rs").
     let harness_path = workdir.join(&harness_src.filename);
+    if let Some(parent) = harness_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     fs::write(&harness_path, harness_src.source.as_bytes())?;
 
-    // Copy the entry file into the workdir so the harness can import it.
-    copy_entry_file(spec, &workdir);
+    // Write any extra files (e.g. Cargo.toml for Rust).
+    for (rel_path, content) in &harness_src.extra_files {
+        let dest = workdir.join(rel_path);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&dest, content.as_bytes())?;
+    }
+
+    // Copy the entry file into the workdir so the harness can import/include it.
+    copy_entry_file(spec, &workdir, harness_src.entry_subpath.as_deref());
 
     Ok(workdir)
 }
 
-/// Copy the entry Python file to the workdir so the harness can `import` it.
-/// Best-effort: silently skips if the file cannot be found/copied.
-fn copy_entry_file(spec: &HarnessSpec, workdir: &PathBuf) {
-    // Try the entry file relative to the project root candidates.
+/// Copy the entry source file to the workdir.
+///
+/// `entry_subpath` controls the destination:
+/// - `None` → `workdir/{filename}` (Python default: import by module name).
+/// - `Some("src/entry.rs")` → `workdir/src/entry.rs` (Rust: `mod entry;`).
+///
+/// Best-effort: silently skips if the file cannot be found or copied.
+fn copy_entry_file(spec: &HarnessSpec, workdir: &PathBuf, entry_subpath: Option<&str>) {
     let candidates = [
         PathBuf::from(&spec.entry_file),
         PathBuf::from(".").join(&spec.entry_file),
     ];
     for src in &candidates {
         if src.exists() {
-            if let Some(fname) = src.file_name() {
-                let dst = workdir.join(fname);
-                if !dst.exists() {
-                    let _ = fs::copy(src, &dst);
+            let dst = if let Some(subpath) = entry_subpath {
+                let dest = workdir.join(subpath);
+                if let Some(parent) = dest.parent() {
+                    let _ = fs::create_dir_all(parent);
                 }
+                dest
+            } else {
+                let fname = match src.file_name() {
+                    Some(f) => f,
+                    None => return,
+                };
+                workdir.join(fname)
+            };
+            if !dst.exists() {
+                let _ = fs::copy(src, &dst);
             }
             return;
         }
@@ -151,17 +177,18 @@ mod tests {
 
     #[test]
     fn build_unsupported_lang_returns_err() {
+        // Go is not yet supported (unsupported lang path).
         let spec = HarnessSpec {
             finding_id: "0000000000000001".into(),
-            entry_file: "src/main.rs".into(),
-            entry_name: "handle_request".into(),
+            entry_file: "main.go".into(),
+            entry_name: "handleRequest".into(),
             entry_kind: EntryKind::Function,
-            lang: Lang::Rust,
-            toolchain_id: "rust-stable".into(),
+            lang: Lang::Go,
+            toolchain_id: "go-stable".into(),
             payload_slot: PayloadSlot::Param(0),
             expected_cap: Cap::SQL_QUERY,
             constraint_hints: vec![],
-            sink_file: "src/main.rs".into(),
+            sink_file: "main.go".into(),
             sink_line: 5,
             spec_hash: "0000000000000000".into(),
         };

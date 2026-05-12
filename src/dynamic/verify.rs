@@ -94,8 +94,12 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
-    // Resolve toolchain information.
-    let toolchain_res = toolchain::resolve_python(Path::new("."));
+    // Resolve toolchain information (lang-aware: §22.2).
+    use crate::symbol::Lang;
+    let toolchain_res = match spec.lang {
+        Lang::Rust => toolchain::resolve_rust(Path::new(".")),
+        _ => toolchain::resolve_python(Path::new(".")),
+    };
     let toolchain_match = if toolchain_res.toolchain_drift { "drift" } else { "exact" };
 
     let start = Instant::now();

@@ -147,6 +147,136 @@ mod repro_determinism_tests {
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
+    // ── Rust repro tests ─────────────────────────────────────────────────────
+
+    fn make_confirmed_rust_spec(spec_hash: &str) -> HarnessSpec {
+        HarnessSpec {
+            finding_id: "rust_determ00001".into(),
+            entry_file: "src/entry.rs".into(),
+            entry_name: "run".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Rust,
+            toolchain_id: "rust-stable".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "src/entry.rs".into(),
+            sink_line: 18,
+            spec_hash: spec_hash.to_owned(),
+        }
+    }
+
+    fn make_confirmed_rust_harness_source() -> String {
+        r#"mod entry;
+fn main() {
+    let payload = std::env::var("NYX_PAYLOAD").unwrap_or_default();
+    entry::run(&payload);
+}
+"#
+        .into()
+    }
+
+    /// Rust repro bundle has the correct layout.
+    ///
+    /// For Rust, harness is at `harness/src/main.rs` and `harness/Cargo.toml`
+    /// is also written (unlike Python which uses `harness/harness.py`).
+    #[test]
+    fn rust_repro_layout_is_correct() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_rust_spec("rust_determ00001");
+        let opts = SandboxOptions::default();
+        let outcome = make_confirmed_outcome();
+        let verdict = make_confirmed_verdict("rust_determ00001");
+        let harness_src = make_confirmed_rust_harness_source();
+
+        let artifact = repro::write(
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            &harness_src,
+            "pub fn run(payload: &str) { println!(\"{}\", payload); }\n",
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("Rust repro write must succeed");
+
+        // Rust-specific layout: harness lives under harness/src/main.rs.
+        assert!(
+            artifact.root.join("harness/src/main.rs").exists(),
+            "Rust harness must be at harness/src/main.rs"
+        );
+        assert!(
+            artifact.root.join("harness/Cargo.toml").exists(),
+            "Rust harness must include harness/Cargo.toml"
+        );
+        // Common layout.
+        assert!(artifact.root.join("manifest.json").exists());
+        assert!(artifact.root.join("entry/extracted_source.rs").exists());
+        assert!(artifact.root.join("payload/payload.bin").exists());
+        assert!(artifact.root.join("expected/outcome.json").exists());
+        assert!(artifact.root.join("expected/verdict.json").exists());
+        assert!(artifact.root.join("reproduce.sh").exists());
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    /// Rust repro outcome.json is byte-identical across two writes.
+    #[test]
+    fn rust_repro_outcome_is_deterministic() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_rust_spec("rust_determ00002");
+        let opts = SandboxOptions::default();
+        let outcome = make_confirmed_outcome();
+        let verdict = make_confirmed_verdict("rust_determ00002");
+        let harness_src = make_confirmed_rust_harness_source();
+        let entry_src = "pub fn run(payload: &str) { println!(\"{}\", payload); }\n";
+
+        let artifact1 = repro::write(
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            &harness_src,
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("first Rust repro write");
+        let json1 =
+            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+
+        std::fs::remove_dir_all(&artifact1.root).unwrap();
+
+        let artifact2 = repro::write(
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            &harness_src,
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("second Rust repro write");
+        let json2 =
+            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+
+        assert_eq!(
+            json1, json2,
+            "Rust outcome.json must be byte-identical across two writes"
+        );
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
     /// Verify verdict.json is correctly structured.
     #[test]
     fn verdict_json_is_valid() {

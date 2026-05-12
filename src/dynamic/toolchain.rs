@@ -32,9 +32,145 @@ pub enum PinOrigin {
     Pipfile,
     /// `runtime.txt` (Heroku-style).
     RuntimeTxt,
+    /// `rust-toolchain.toml` `[toolchain] channel`.
+    RustToolchainToml,
+    /// `rust-toolchain` (plain text channel file).
+    RustToolchainFile,
+    /// `Cargo.toml` `rust-version` field.
+    CargoToml,
     /// No pin found; used the system default.
     SystemDefault,
 }
+
+// ── Rust toolchain resolver ───────────────────────────────────────────────────
+
+/// Resolve the Rust toolchain for `project_root` (§22.2).
+///
+/// Reads project pin files in priority order:
+/// `rust-toolchain.toml` > `rust-toolchain` > `Cargo.toml` `rust-version` > default.
+pub fn resolve_rust(project_root: &Path) -> ToolchainResolution {
+    if let Some(r) = try_rust_toolchain_toml(project_root) {
+        return r;
+    }
+    if let Some(r) = try_rust_toolchain_file(project_root) {
+        return r;
+    }
+    if let Some(r) = try_cargo_toml_rust_version(project_root) {
+        return r;
+    }
+    default_rust()
+}
+
+fn try_rust_toolchain_toml(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join("rust-toolchain.toml")).ok()?;
+    // Look for `channel = "stable"` or `channel = "1.75"` in [toolchain] section.
+    let mut in_toolchain = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "[toolchain]" {
+            in_toolchain = true;
+            continue;
+        }
+        if line.starts_with('[') {
+            in_toolchain = false;
+        }
+        if in_toolchain && line.starts_with("channel") {
+            if let Some(ver) = extract_version_from_toml_value(line) {
+                return Some(map_rust_version(&ver, RustPinOrigin::RustToolchainToml));
+            }
+        }
+    }
+    None
+}
+
+fn try_rust_toolchain_file(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join("rust-toolchain")).ok()?;
+    let version = content.trim().to_owned();
+    if version.is_empty() {
+        return None;
+    }
+    // Simple format: just the channel name (e.g. "stable", "1.75.0", "nightly-2024-01-01")
+    Some(map_rust_version(&version, RustPinOrigin::RustToolchainFile))
+}
+
+fn try_cargo_toml_rust_version(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("rust-version") {
+            if let Some(ver) = extract_version_from_toml_value(line) {
+                return Some(map_rust_version(&ver, RustPinOrigin::CargoToml));
+            }
+        }
+    }
+    None
+}
+
+fn default_rust() -> ToolchainResolution {
+    ToolchainResolution {
+        toolchain_id: "rust-stable".to_owned(),
+        pin_origin: PinOrigin::SystemDefault,
+        toolchain_drift: false,
+        version_string: "stable".to_owned(),
+    }
+}
+
+/// Internal origin enum for Rust (mapped to PinOrigin for the public API).
+enum RustPinOrigin {
+    RustToolchainToml,
+    RustToolchainFile,
+    CargoToml,
+}
+
+fn map_rust_version(version: &str, origin: RustPinOrigin) -> ToolchainResolution {
+    let pin_origin = match origin {
+        RustPinOrigin::RustToolchainToml => PinOrigin::RustToolchainToml,
+        RustPinOrigin::RustToolchainFile => PinOrigin::RustToolchainFile,
+        RustPinOrigin::CargoToml => PinOrigin::CargoToml,
+    };
+
+    // Named channels.
+    if version == "stable" || version.is_empty() {
+        return ToolchainResolution {
+            toolchain_id: "rust-stable".to_owned(),
+            pin_origin,
+            toolchain_drift: false,
+            version_string: "stable".to_owned(),
+        };
+    }
+    if version.starts_with("nightly") {
+        return ToolchainResolution {
+            toolchain_id: "rust-nightly".to_owned(),
+            pin_origin,
+            toolchain_drift: true,  // nightly != stable reference image
+            version_string: version.to_owned(),
+        };
+    }
+    if version.starts_with("beta") {
+        return ToolchainResolution {
+            toolchain_id: "rust-beta".to_owned(),
+            pin_origin,
+            toolchain_drift: true,
+            version_string: version.to_owned(),
+        };
+    }
+
+    // Semver pinned version like "1.75.0" or "1.75".
+    let parts: Vec<&str> = version.splitn(3, '.').collect();
+    let major = parts.first().copied().unwrap_or("1");
+    let minor = parts.get(1).copied();
+
+    // Map to stable; drift = true when exact version differs from "stable".
+    let drift = minor.is_some(); // pin to specific version = drift from "stable" label
+    ToolchainResolution {
+        toolchain_id: format!("rust-{major}.{}", minor.unwrap_or("x")),
+        pin_origin,
+        toolchain_drift: drift,
+        version_string: version.to_owned(),
+    }
+}
+
+// ── Python toolchain resolver ─────────────────────────────────────────────────
 
 /// Resolve the Python toolchain for `project_root`.
 ///
@@ -218,6 +354,51 @@ mod tests {
     fn fallback_to_system_default() {
         let dir = TempDir::new().unwrap();
         let r = resolve_python(dir.path());
+        assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
+    }
+
+    // ── Rust toolchain tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn rust_toolchain_toml_stable() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"stable\"\n",
+        ).unwrap();
+        let r = resolve_rust(dir.path());
+        assert_eq!(r.toolchain_id, "rust-stable");
+        assert!(!r.toolchain_drift);
+        assert_eq!(r.pin_origin, PinOrigin::RustToolchainToml);
+    }
+
+    #[test]
+    fn rust_toolchain_file_nightly() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("rust-toolchain"), "nightly\n").unwrap();
+        let r = resolve_rust(dir.path());
+        assert_eq!(r.toolchain_id, "rust-nightly");
+        assert!(r.toolchain_drift);
+        assert_eq!(r.pin_origin, PinOrigin::RustToolchainFile);
+    }
+
+    #[test]
+    fn cargo_toml_rust_version() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"foo\"\nrust-version = \"1.75\"\n",
+        ).unwrap();
+        let r = resolve_rust(dir.path());
+        assert_eq!(r.pin_origin, PinOrigin::CargoToml);
+        assert!(r.toolchain_id.starts_with("rust-1"));
+    }
+
+    #[test]
+    fn rust_default_is_stable() {
+        let dir = TempDir::new().unwrap();
+        let r = resolve_rust(dir.path());
+        assert_eq!(r.toolchain_id, "rust-stable");
         assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
     }
 }

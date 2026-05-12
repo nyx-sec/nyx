@@ -25,6 +25,24 @@ use nyx_scanner::labels::Cap;
 use nyx_scanner::symbol::Lang;
 
 #[cfg(feature = "dynamic")]
+fn make_rust_sqli_spec() -> HarnessSpec {
+    HarnessSpec {
+        finding_id: "bench_rust_0001".into(),
+        entry_file: "tests/dynamic_fixtures/rust/sqli_positive.rs".into(),
+        entry_name: "run".into(),
+        entry_kind: nyx_scanner::dynamic::spec::EntryKind::Function,
+        lang: Lang::Rust,
+        toolchain_id: "rust-stable".into(),
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap: Cap::SQL_QUERY,
+        constraint_hints: vec![],
+        sink_file: "tests/dynamic_fixtures/rust/sqli_positive.rs".into(),
+        sink_line: 18,
+        spec_hash: "benchrustsqli0001".into(),
+    }
+}
+
+#[cfg(feature = "dynamic")]
 fn make_sqli_spec() -> HarnessSpec {
     HarnessSpec {
         finding_id: "bench0000000001".into(),
@@ -194,6 +212,26 @@ fn bench_docker_payload_cost(c: &mut Criterion) {
     });
 }
 
+/// Rust harness build (source gen + disk write, no compilation).
+///
+/// Measures only `harness::build()` — staging files to the workdir.
+/// The expensive `cargo build --release` step is NOT included here
+/// (that is the province of an integration benchmark, not this microbench).
+#[cfg(feature = "dynamic")]
+fn bench_rust_harness_build_cold(c: &mut Criterion) {
+    use nyx_scanner::dynamic::harness;
+    let spec = make_rust_sqli_spec();
+    c.bench_function("rust_harness_build_cold", |b| {
+        b.iter(|| {
+            let workdir = std::env::temp_dir()
+                .join("nyx-harness")
+                .join(&spec.spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+            harness::build(&spec).expect("harness build")
+        });
+    });
+}
+
 #[cfg(feature = "dynamic")]
 fn bench_noop(_c: &mut Criterion) {}
 
@@ -212,6 +250,7 @@ criterion_group!(
     bench_docker_image_build,
     bench_docker_exec_warm,
     bench_docker_payload_cost,
+    bench_rust_harness_build_cold,
 );
 
 #[cfg(not(feature = "dynamic"))]

@@ -181,6 +181,51 @@ mod escape_tests {
     escape_test!(escape_chroot_escape, "chroot_escape.py");
     escape_test!(escape_ipc_shm, "ipc_shm_escape.py");
 
+    // ── Rust build.rs escape test ─────────────────────────────────────────────
+
+    /// Verify that a malicious Rust build.rs cannot write to the host when compiled
+    /// inside the sandbox.
+    ///
+    /// NOTE (Phase 04): Docker + Rust compilation is deferred to Phase 05.
+    /// `prepare_rust()` currently runs `cargo build` via the process backend on
+    /// the host, so Docker isolation does NOT protect the build step yet.
+    ///
+    /// This test documents the expected behaviour once Phase 05 is complete:
+    ///   - Docker available + Rust compilation in Docker → marker absent (BLOCKED).
+    ///   - No Docker or Phase 05 not yet implemented → test is skipped.
+    ///
+    /// The fixture is at `tests/dynamic_fixtures/escape/rust_build_rs/`.
+    ///
+    /// Ignored until Phase 05 wires real Docker-isolated cargo builds — the
+    /// current body would always pass (it removes the marker, then asserts it
+    /// is absent) so leaving it active gives a false-green signal.
+    #[test]
+    #[ignore = "Phase 05: Docker-isolated cargo build not yet implemented"]
+    fn escape_rust_malicious_build_rs() {
+        if !docker_available() {
+            // Docker required for build isolation; skip on machines without it.
+            return;
+        }
+
+        // Phase 05 TODO: wire Docker-isolated cargo build and re-enable this body.
+        // When Docker + Rust compilation is implemented:
+        //   1. Copy rust_build_rs/ to a temp workdir.
+        //   2. Run prepare_rust_in_docker(spec, workdir).
+        //   3. Assert !Path::new("/tmp/pwned_build_rs").exists().
+        //
+        // For now: assert the marker is absent (it always is because we don't run
+        // the malicious build here), establishing the baseline for regression tracking.
+        let marker = std::path::PathBuf::from("/tmp/pwned_build_rs");
+        let _ = fs::remove_file(&marker);
+
+        // No build is triggered yet (Docker + Rust deferred).
+        // The marker must remain absent.
+        assert!(
+            !marker.exists(),
+            "host marker /tmp/pwned_build_rs must not exist before Docker+Rust compilation is implemented"
+        );
+    }
+
     // ── Docker exec reuse test ────────────────────────────────────────────────
 
     /// Verify that the second payload for the same spec_hash reuses the running
