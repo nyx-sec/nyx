@@ -385,10 +385,17 @@ fn exec_in_container(
     use std::process::{Command, Stdio};
 
     // Build the docker exec command.
+    // exec_in_container is only called for interpreted harnesses (python3, node, …);
+    // compiled binaries are routed to run_process by the dispatch in run().
     let payload_b64 = base64_encode(payload.bytes);
     let mut cmd_args: Vec<String> = vec![
         "exec".into(),
         "-i".into(),
+        // Run the harness as an unprivileged user so that uid-based kernel
+        // checks provide a second layer of defence on top of --cap-drop=ALL.
+        // The container itself starts as root for setup (mkdir, docker cp),
+        // but harness execution runs as nobody (uid/gid 65534).
+        "--user".into(), "65534:65534".into(),
         "-e".into(), format!("NYX_PAYLOAD_B64={payload_b64}"),
     ];
     // Forward harness-specific env vars.
@@ -398,33 +405,15 @@ fn exec_in_container(
     }
     cmd_args.push(container_name.into());
 
-    // Build the exec command inside the container.
-    // For interpreters: `python3 /workdir/harness.py`
-    // For compiled binaries: `/workdir/target/release/nyx_harness`
+    // Build the exec command inside the container (always interpreted at this point).
     let exec_cmd = harness.command.first().map(|s| s.as_str()).unwrap_or("python3");
-    if harness_is_interpreted(&harness.command) {
-        let harness_file = harness
-            .command
-            .get(1)
-            .map(|s| s.as_str())
-            .unwrap_or("harness.py");
-        cmd_args.push(exec_cmd.into());
-        cmd_args.push(format!("/workdir/{harness_file}"));
-    } else {
-        // Compiled binary: the command is the relative path within workdir.
-        // e.g. "target/release/nyx_harness" → run "/workdir/target/release/nyx_harness"
-        let rel = std::path::Path::new(exec_cmd)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(exec_cmd);
-        if exec_cmd.contains('/') || exec_cmd.contains('\\') {
-            // Relative path within workdir (e.g. "target/release/nyx_harness").
-            cmd_args.push(format!("/workdir/{exec_cmd}"));
-        } else {
-            // Just a filename — try /workdir directly.
-            cmd_args.push(format!("/workdir/{rel}"));
-        }
-    }
+    let harness_file = harness
+        .command
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("harness.py");
+    cmd_args.push(exec_cmd.into());
+    cmd_args.push(format!("/workdir/{harness_file}"));
 
     let mut cmd = Command::new(docker_bin());
     cmd.args(&cmd_args);

@@ -239,6 +239,34 @@ jobs:
       - name: Rust tests with docker (sandbox escape gate)
         run: cargo nextest run --all-features --test dynamic_sandbox_escape --test dynamic_parity
 
+  escape-positive-control:
+    name: escape-positive-control
+    runs-on: ubuntu-latest
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
+    env:
+      DOCKER_TLS_CERTDIR: ""
+      DOCKER_HOST: tcp://docker:2375
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Pull python image
+        run: docker pull python:3-slim
+
+      - name: Escape positive control (gate wiring check)
+        run: |
+          cargo nextest run --all-features --test dynamic_sandbox_escape \
+            -- --include-ignored positive_control_cap_sys_admin
+
   cross-platform-smoke:
     name: cross-platform-smoke
     strategy:

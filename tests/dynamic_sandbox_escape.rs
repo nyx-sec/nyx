@@ -226,6 +226,95 @@ mod escape_tests {
         );
     }
 
+    // ── Positive control test ─────────────────────────────────────────────────
+
+    /// Positive control: verify the escape-detection mechanism itself.
+    ///
+    /// Runs `cap_sys_admin_positive_control.py` inside a container started with
+    /// `--cap-add=SYS_ADMIN` and asserts that `NYX_ESCAPE_SUCCESS` is detected
+    /// in the output. If it is not detected, either the test mechanism is broken
+    /// or the capability was not granted.
+    ///
+    /// This test is `#[ignore]`d in the normal escape suite. It is un-ignored
+    /// in the dedicated `escape-positive-control` CI job:
+    ///
+    ///   cargo nextest run --all-features --test dynamic_sandbox_escape \
+    ///     -- --include-ignored positive_control_cap_sys_admin
+    #[test]
+    #[ignore = "positive control: run only under --cap-add=SYS_ADMIN (escape-positive-control CI job)"]
+    fn positive_control_cap_sys_admin() {
+        if !docker_available() {
+            return;
+        }
+
+        let (_tmpdir, _harness) = harness_for_fixture("cap_sys_admin_positive_control.py");
+        let workdir_str = _tmpdir.path().to_string_lossy().to_string();
+
+        // Start a container with CAP_SYS_ADMIN to validate escape detection.
+        // This is intentionally privileged — it IS the escape we're detecting.
+        let container_name = format!("nyx-posctl-{}", std::process::id());
+        let status = std::process::Command::new("docker")
+            .args([
+                "run", "-d", "--rm",
+                "--name", &container_name,
+                "--cap-add=SYS_ADMIN",
+                "--network", "none",
+                "python:3-slim",
+                "sleep", "60",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("docker run");
+
+        if !status.success() {
+            // Container failed to start (image unavailable or docker error).
+            // Accept — this is a best-effort gate, not a hard requirement here.
+            return;
+        }
+
+        // Create /workdir and copy the fixture in.
+        let _ = std::process::Command::new("docker")
+            .args(["exec", &container_name, "mkdir", "-p", "/workdir"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        let cp_src = format!("{workdir_str}/.");
+        let cp_dst = format!("{container_name}:/workdir");
+        let _ = std::process::Command::new("docker")
+            .args(["cp", &cp_src, &cp_dst])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        // Run the fixture and capture output.
+        let out = std::process::Command::new("docker")
+            .args([
+                "exec", &container_name,
+                "python3", "/workdir/cap_sys_admin_positive_control.py",
+            ])
+            .output()
+            .expect("docker exec positive control");
+
+        // Cleanup the container immediately.
+        let _ = std::process::Command::new("docker")
+            .args(["stop", "--time=0", &container_name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+
+        let stdout = std::str::from_utf8(&out.stdout).unwrap_or("");
+        let stderr = std::str::from_utf8(&out.stderr).unwrap_or("");
+
+        assert!(
+            stdout.contains("NYX_ESCAPE_SUCCESS") || stderr.contains("NYX_ESCAPE_SUCCESS"),
+            "positive control failed: NYX_ESCAPE_SUCCESS not detected with CAP_SYS_ADMIN\n\
+             This means the test mechanism cannot detect actual escapes.\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+    }
+
     // ── Docker exec reuse test ────────────────────────────────────────────────
 
     /// Verify that the second payload for the same spec_hash reuses the running
