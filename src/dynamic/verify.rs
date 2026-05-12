@@ -591,4 +591,95 @@ mod tests {
         insert_verdict_cache(db_path, "spec", "hash", "", "python-3", &result);
         assert!(!db_path.exists(), "insert must not create a new DB");
     }
+
+    /// Verify that a cache entry keyed on an older corpus_version is a miss
+    /// once CORPUS_VERSION is bumped.  This proves the cache invalidation
+    /// mechanic in §15.4 / Pillar D: changing a payload's cap evicts stale entries.
+    ///
+    /// The test simulates a bump by inserting with an old version literal and
+    /// then looking up with the current CORPUS_VERSION (which is the default).
+    #[test]
+    fn dynamic_verdict_cache_corpus_version_invalidation() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test_corp_ver.db");
+
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS dynamic_verdict_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    spec_hash TEXT NOT NULL,
+                    entry_content_hash TEXT NOT NULL,
+                    transitive_import_digest TEXT NOT NULL,
+                    toolchain_id TEXT NOT NULL,
+                    corpus_version INTEGER NOT NULL,
+                    spec_format_version INTEGER NOT NULL,
+                    verdict_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(spec_hash, entry_content_hash, transitive_import_digest,
+                           toolchain_id, corpus_version, spec_format_version)
+                );",
+            )
+            .unwrap();
+        }
+
+        // The current CORPUS_VERSION is 3.  Simulate an entry from version 2.
+        let stale_corpus_version = CORPUS_VERSION.saturating_sub(1);
+        assert!(
+            stale_corpus_version < CORPUS_VERSION,
+            "test requires CORPUS_VERSION > 1"
+        );
+
+        let result = VerifyResult {
+            finding_id: "stale_entry".to_owned(),
+            status: crate::evidence::VerifyStatus::Confirmed,
+            triggered_payload: Some("sqli-tautology".to_owned()),
+            reason: None,
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![],
+            toolchain_match: Some("exact".to_owned()),
+        };
+
+        // Insert directly with the old corpus_version bypassing the helper.
+        {
+            use rusqlite::Connection;
+            let conn = Connection::open(&db_path).unwrap();
+            let json = serde_json::to_string(&result).unwrap();
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT OR REPLACE INTO dynamic_verdict_cache \
+                 (spec_hash, entry_content_hash, transitive_import_digest, toolchain_id, \
+                  corpus_version, spec_format_version, verdict_json, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    "spec_stale",
+                    "hash_stale",
+                    "",
+                    "python-3.11",
+                    stale_corpus_version as i64,
+                    SPEC_FORMAT_VERSION as i64,
+                    json,
+                    now,
+                ],
+            )
+            .unwrap();
+        }
+
+        // Lookup using current CORPUS_VERSION → must be a MISS.
+        let miss = lookup_verdict_cache(&db_path, "spec_stale", "hash_stale", "", "python-3.11");
+        assert!(
+            miss.is_none(),
+            "stale corpus_version ({stale_corpus_version}) must not match current CORPUS_VERSION ({CORPUS_VERSION})"
+        );
+
+        // Insert with current CORPUS_VERSION → must be a HIT.
+        insert_verdict_cache(&db_path, "spec_stale", "hash_stale", "", "python-3.11", &result);
+        let hit = lookup_verdict_cache(&db_path, "spec_stale", "hash_stale", "", "python-3.11");
+        assert!(
+            hit.is_some(),
+            "current corpus_version entry must be a cache hit"
+        );
+    }
 }

@@ -382,3 +382,42 @@ jobs:
           name: benchmark-results
           path: tests/benchmark/results/latest.json
           if-no-files-found: warn
+
+  corpus-marker-audit:
+    name: corpus-marker-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Marker collision audit (§16.3)
+        run: python3 scripts/corpus_dashboard.py
+        # Exits non-zero if any oracle marker from one cap appears in another
+        # cap's payload bytes.  This catches cross-cap oracle collisions that
+        # would cause false-positive confirmed verdicts.
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Corpus unit tests (no_marker_collisions, all_payloads_have_fixture_paths)
+        run: cargo nextest run --lib -p nyx-scanner --test-threads=4 2>/dev/null || \
+             cargo nextest run --lib -p nyx-scanner
+        env:
+          RUST_LOG: error

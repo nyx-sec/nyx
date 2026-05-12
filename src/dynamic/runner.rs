@@ -6,7 +6,7 @@
 //! the result into a [`crate::dynamic::report::VerifyResult`].
 
 use crate::dynamic::build_sandbox;
-use crate::dynamic::corpus::{benign_payload_for, payloads_for, Oracle, Payload};
+use crate::dynamic::corpus::{benign_payload_for, materialise_bytes, payloads_for, Oracle, Payload};
 use crate::dynamic::harness::{self, HarnessError};
 use crate::dynamic::sandbox::{self, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
@@ -127,7 +127,10 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                     }
                 }
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
-                    return Err(RunError::BuildFailed { stderr, attempts });
+                    return Err(RunError::BuildFailed {
+                        stderr,
+                        attempts,
+                    });
                 }
                 Err(_) => {
                     // Io: fall back to whatever command was set (will likely fail at exec).
@@ -207,7 +210,35 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     let mut oracle_collision = false;
 
     for (i, payload) in vuln_payloads.iter().enumerate() {
-        let outcome = sandbox::run(&harness, payload, opts)?;
+        // Materialise payload bytes (OOB nonce-slot payloads generate a URL).
+        let (oob_nonce, effective_bytes) = if payload.oob_nonce_slot {
+            if let Some(ref listener) = opts.oob_listener {
+                let nonce = generate_nonce();
+                let url = listener.nonce_url(&nonce);
+                let bytes = url.into_bytes();
+                (Some(nonce), bytes)
+            } else {
+                // No OOB listener configured — skip OOB payloads.
+                continue;
+            }
+        } else {
+            (None, payload.bytes.to_vec())
+        };
+
+        let mut outcome = sandbox::run(&harness, &effective_bytes, opts)?;
+
+        // For OOB payloads, check the nonce listener and update the outcome flag.
+        if let (Some(nonce), Some(listener)) = (&oob_nonce, &opts.oob_listener) {
+            // Give the harness a brief window to complete the callback before we check.
+            // The sandbox run already waited for process exit, so the callback should
+            // have arrived. A short sleep handles edge cases where the OS hasn't yet
+            // delivered the TCP segment to the listener thread.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if listener.was_nonce_hit(nonce) {
+                outcome.oob_callback_seen = true;
+            }
+        }
+
         let fired = oracle_fired(&payload.oracle, &outcome);
         let sink_hit = outcome.sink_hit;
 
@@ -215,7 +246,10 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             // Full confirmation: oracle + probe both fired.
             // Check differential: if benign payload also triggers oracle, downgrade.
             if let Some(benign) = benign_payload {
-                let benign_outcome = sandbox::run(&harness, benign, opts)?;
+                let benign_bytes = materialise_bytes(benign, None)
+                    .map(|b| b.into_owned())
+                    .unwrap_or_default();
+                let benign_outcome = sandbox::run(&harness, &benign_bytes, opts)?;
                 let benign_fired = oracle_fired(&benign.oracle, &benign_outcome);
                 !benign_fired
             } else {
@@ -273,6 +307,21 @@ fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Generate a random 16-character hex nonce for OOB callback tracking.
+fn generate_nonce() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    // Simple pseudo-random nonce: mix timestamp, thread ID, and a counter.
+    // Good enough for deduplication; not cryptographically secure.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let cnt = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mixed = ts.wrapping_mul(0x517cc1b727220a95).wrapping_add(cnt);
+    format!("{mixed:016x}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +339,19 @@ mod tests {
     #[test]
     fn contains_subslice_no_match() {
         assert!(!contains_subslice(b"hello", b"xyz"));
+    }
+
+    #[test]
+    fn generate_nonce_is_16_hex_chars() {
+        let n = generate_nonce();
+        assert_eq!(n.len(), 16);
+        assert!(n.chars().all(|c| c.is_ascii_hexdigit()), "nonce must be hex: {n}");
+    }
+
+    #[test]
+    fn generate_nonce_unique_per_call() {
+        let n1 = generate_nonce();
+        let n2 = generate_nonce();
+        assert_ne!(n1, n2, "consecutive nonces must differ");
     }
 }

@@ -22,10 +22,10 @@
 //! global runtime, no daemon. Containers are stopped and removed when the
 //! process exits.
 
-use crate::dynamic::corpus::Payload;
 use crate::dynamic::harness::BuiltHarness;
+use crate::dynamic::oob::OobListener;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 // ── Harness interpretation probe ──────────────────────────────────────────────
@@ -112,6 +112,10 @@ pub struct SandboxOptions {
     pub env_passthrough: Vec<String>,
     /// Maximum stdout/stderr bytes captured. Default: 65536 (64 KiB).
     pub output_limit: usize,
+    /// Per-scan OOB listener. When set, the Docker backend uses bridge
+    /// networking so the harness can reach the listener on the host, and the
+    /// runner checks [`OobListener::was_nonce_hit`] after each sandbox run.
+    pub oob_listener: Option<Arc<OobListener>>,
 }
 
 impl Default for SandboxOptions {
@@ -122,6 +126,7 @@ impl Default for SandboxOptions {
             backend: SandboxBackend::Auto,
             env_passthrough: vec![],
             output_limit: 65536,
+            oob_listener: None,
         }
     }
 }
@@ -258,33 +263,36 @@ fn php_image_for_toolchain(toolchain_id: &str) -> String {
 
 /// Run a built harness once with a chosen payload.
 ///
+/// `payload_bytes` overrides `payload.bytes` so the runner can inject
+/// materialised OOB-nonce URLs without cloning the static corpus entry.
+///
 /// Dispatches to the docker backend when available (or when explicitly
 /// requested), otherwise to the process backend.
 pub fn run(
     harness: &BuiltHarness,
-    payload: &Payload,
+    payload_bytes: &[u8],
     opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     match opts.backend {
         SandboxBackend::Docker => {
             if harness_is_interpreted(&harness.command) {
-                run_docker(harness, payload, opts)
+                run_docker(harness, payload_bytes, opts)
             } else if harness_is_native_binary(&harness.command) {
-                run_native_binary_docker(harness, payload, opts)
+                run_native_binary_docker(harness, payload_bytes, opts)
             } else {
-                run_process(harness, payload, opts)
+                run_process(harness, payload_bytes, opts)
             }
         }
         SandboxBackend::Auto => {
             if docker_available() && harness_is_interpreted(&harness.command) {
-                run_docker(harness, payload, opts)
+                run_docker(harness, payload_bytes, opts)
             } else if docker_available() && harness_is_native_binary(&harness.command) {
-                run_native_binary_docker(harness, payload, opts)
+                run_native_binary_docker(harness, payload_bytes, opts)
             } else {
-                run_process(harness, payload, opts)
+                run_process(harness, payload_bytes, opts)
             }
         }
-        SandboxBackend::Process => run_process(harness, payload, opts),
+        SandboxBackend::Process => run_process(harness, payload_bytes, opts),
     }
 }
 
@@ -293,7 +301,7 @@ pub fn run(
 /// Docker backend: image per toolchain_id, container reuse via `docker exec`.
 fn run_docker(
     harness: &BuiltHarness,
-    payload: &Payload,
+    payload_bytes: &[u8],
     opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     // Quick availability check (uses same binary as docker_available but not
@@ -317,11 +325,12 @@ fn run_docker(
         // Determine the Python image from the harness command (first element).
         // Fall back to python:3-slim when the command is not recognised.
         let image = detect_image_for_harness(harness);
-        start_container(&container_name, &harness.workdir, &image)?;
+        let oob_port = opts.oob_listener.as_ref().map(|l| l.port());
+        start_container(&container_name, &harness.workdir, &image, oob_port)?;
         registry.insert(container_name.clone(), container_name.clone());
     }
 
-    exec_in_container(&container_name, harness, payload, opts)
+    exec_in_container(&container_name, harness, payload_bytes, opts)
 }
 
 /// Returns true when `docker info` succeeds using the current `NYX_DOCKER_BIN`.
@@ -358,22 +367,37 @@ fn is_container_running(name: &str) -> bool {
 /// - `--rm`: auto-remove on stop (no manual cleanup required).
 /// - `--cap-drop=ALL`: drop all Linux capabilities.
 /// - `--security-opt no-new-privileges:true`: block privilege escalation.
-/// - `--network none`: no network access (loopback only).
-fn start_container(name: &str, workdir: &Path, image: &str) -> Result<(), SandboxError> {
+/// - `--network none`: no network access (loopback only), OR `bridge` when
+///   `oob_port` is set so the harness can reach the host OOB listener.
+/// - `--add-host=host-gateway:host-gateway`: host-gateway DNS alias when
+///   using bridge mode (Docker ≥ 20.10).
+fn start_container(
+    name: &str,
+    workdir: &Path,
+    image: &str,
+    oob_port: Option<u16>,
+) -> Result<(), SandboxError> {
+    let mut run_args: Vec<String> = vec![
+        "run".into(),
+        "-d".into(),
+        "--rm".into(),
+        "--name".into(), name.into(),
+        "--cap-drop=ALL".into(),
+        "--security-opt".into(), "no-new-privileges:true".into(),
+        "--tmpfs".into(), "/tmp:size=128m,exec".into(),
+    ];
+    if oob_port.is_some() {
+        // Bridge mode: container can reach host via host-gateway.
+        run_args.extend(["--network".into(), "bridge".into()]);
+        run_args.extend(["--add-host=host-gateway:host-gateway".into()]);
+    } else {
+        run_args.extend(["--network".into(), "none".into()]);
+    }
+    run_args.extend([image.into(), "sleep".into(), "300".into()]);
+
     // Start container (no volume mount).
     let status = std::process::Command::new(docker_bin())
-        .args([
-            "run",
-            "-d",
-            "--rm",
-            "--name", name,
-            "--cap-drop=ALL",
-            "--security-opt", "no-new-privileges:true",
-            "--network", "none",
-            "--tmpfs", "/tmp:size=128m,exec",
-            image,
-            "sleep", "300",
-        ])
+        .args(&run_args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -466,7 +490,7 @@ fn build_container_exec_args(command: &[String]) -> Vec<String> {
 fn exec_in_container(
     container_name: &str,
     harness: &BuiltHarness,
-    payload: &Payload,
+    payload_bytes: &[u8],
     opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     use std::io::Read;
@@ -475,7 +499,7 @@ fn exec_in_container(
     // Build the docker exec command.
     // exec_in_container is only called for interpreted harnesses (python3, node, …);
     // compiled binaries are routed to run_process by the dispatch in run().
-    let payload_b64 = base64_encode(payload.bytes);
+    let payload_b64 = base64_encode(payload_bytes);
     let mut cmd_args: Vec<String> = vec![
         "exec".into(),
         "-i".into(),
@@ -620,7 +644,7 @@ fn detect_image_for_harness(harness: &BuiltHarness) -> String {
 /// the dispatch in [`run`] routes compiled harnesses to [`run_process`].
 fn run_native_binary_docker(
     harness: &BuiltHarness,
-    payload: &Payload,
+    payload_bytes: &[u8],
     opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     if !is_docker_reachable() {
@@ -645,7 +669,8 @@ fn run_native_binary_docker(
     };
 
     if !reused {
-        start_container(&container_name, &harness.workdir, NATIVE_BINARY_IMAGE)?;
+        let oob_port = opts.oob_listener.as_ref().map(|l| l.port());
+        start_container(&container_name, &harness.workdir, NATIVE_BINARY_IMAGE, oob_port)?;
 
         // Copy the compiled binary into the container as /workdir/nyx_harness.
         let cp_dst = format!("{container_name}:/workdir/nyx_harness");
@@ -673,20 +698,20 @@ fn run_native_binary_docker(
         registry.insert(container_name.clone(), container_name.clone());
     }
 
-    exec_native_binary_in_container(&container_name, harness, payload, opts)
+    exec_native_binary_in_container(&container_name, harness, payload_bytes, opts)
 }
 
 /// Execute a native binary already in the container at `/workdir/nyx_harness`.
 fn exec_native_binary_in_container(
     container_name: &str,
     harness: &BuiltHarness,
-    payload: &Payload,
+    payload_bytes: &[u8],
     opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     use std::io::Read;
     use std::process::{Command, Stdio};
 
-    let payload_b64 = base64_encode(payload.bytes);
+    let payload_b64 = base64_encode(payload_bytes);
     let mut cmd_args: Vec<String> = vec![
         "exec".into(),
         "-i".into(),
@@ -787,7 +812,7 @@ fn exec_native_binary_in_container(
 /// behind `--unsafe-sandbox` in production.
 fn run_process(
     harness: &BuiltHarness,
-    payload: &Payload,
+    payload_bytes: &[u8],
     opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     use std::io::Read;
@@ -817,14 +842,14 @@ fn run_process(
         cmd.env(k, v);
     }
     // Payload injected via NYX_PAYLOAD env var.
-    let payload_b64 = base64_encode(payload.bytes);
+    let payload_b64 = base64_encode(payload_bytes);
     cmd.env("NYX_PAYLOAD_B64", &payload_b64);
     // NYX_PAYLOAD as raw bytes: Unix-only (OsStr can hold arbitrary bytes).
     // On other platforms we skip this env var; the harness falls back to NYX_PAYLOAD_B64.
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;
-        cmd.env("NYX_PAYLOAD", std::ffi::OsStr::from_bytes(payload.bytes));
+        cmd.env("NYX_PAYLOAD", std::ffi::OsStr::from_bytes(payload_bytes));
     }
 
     // Enforce memory cap before exec on Linux via RLIMIT_AS + PR_SET_NO_NEW_PRIVS.
