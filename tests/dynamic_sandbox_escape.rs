@@ -71,6 +71,22 @@ mod escape_tests {
         }
     }
 
+    /// Copy a directory tree into a destination (creating it if needed).
+    fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            let dst_path = dst.join(entry.file_name());
+            if ty.is_dir() {
+                copy_dir_recursive(&entry.path(), &dst_path)?;
+            } else {
+                fs::copy(entry.path(), &dst_path)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Assert that an escape fixture did not escape.
     ///
     /// Accepts three outcomes as "blocked":
@@ -183,153 +199,183 @@ mod escape_tests {
 
     // ── Rust build.rs escape test ─────────────────────────────────────────────
 
-    /// Verify that a malicious Rust build.rs cannot write to the host when compiled
-    /// inside the sandbox.
+    /// Verify that a malicious `build.rs` cannot write to the host when cargo
+    /// build runs inside a Docker-isolated container.
     ///
-    /// NOTE (Phase 04): Docker + Rust compilation is deferred to Phase 05.
-    /// `prepare_rust()` currently runs `cargo build` via the process backend on
-    /// the host, so Docker isolation does NOT protect the build step yet.
+    /// The fixture `rust_build_rs/` has a `build.rs` that attempts to create
+    /// `/tmp/pwned_build_rs`. Inside the container the write targets container-private
+    /// `/tmp`; the host filesystem is unaffected.
     ///
-    /// This test documents the expected behaviour once Phase 05 is complete:
-    ///   - Docker available + Rust compilation in Docker → marker absent (BLOCKED).
-    ///   - No Docker or Phase 05 not yet implemented → test is skipped.
-    ///
-    /// The fixture is at `tests/dynamic_fixtures/escape/rust_build_rs/`.
-    ///
-    /// Ignored until Phase 05 wires real Docker-isolated cargo builds — the
-    /// current body would always pass (it removes the marker, then asserts it
-    /// is absent) so leaving it active gives a false-green signal.
+    /// Skips gracefully when Docker is unavailable or `rust:slim` is not pulled.
     #[test]
-    #[ignore = "Phase 05: Docker-isolated cargo build not yet implemented"]
     fn escape_rust_malicious_build_rs() {
-        if !docker_available() {
-            // Docker required for build isolation; skip on machines without it.
+        if !docker_available() { return; }
+
+        let tmpdir = tempfile::TempDir::new().expect("temp dir");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/escape/rust_build_rs");
+        copy_dir_recursive(&fixture, tmpdir.path())
+            .expect("copy rust_build_rs fixture");
+
+        let marker: PathBuf = PathBuf::from("/tmp/pwned_build_rs");
+        let _ = fs::remove_file(&marker);
+
+        // Run Docker-isolated cargo build. Returns Err if Docker/image unavailable.
+        let result =
+            nyx_scanner::dynamic::build_sandbox::prepare_rust_in_docker(tmpdir.path());
+        if result.is_err() {
+            // Docker or rust:slim unavailable — no container ran.
             return;
         }
 
-        // Phase 05 TODO: wire Docker-isolated cargo build and re-enable this body.
-        // When Docker + Rust compilation is implemented:
-        //   1. Copy rust_build_rs/ to a temp workdir.
-        //   2. Run prepare_rust_in_docker(spec, workdir).
-        //   3. Assert !Path::new("/tmp/pwned_build_rs").exists().
-        //
-        // For now: assert the marker is absent (it always is because we don't run
-        // the malicious build here), establishing the baseline for regression tracking.
-        let marker = std::path::PathBuf::from("/tmp/pwned_build_rs");
-        let _ = fs::remove_file(&marker);
-
-        // No build is triggered yet (Docker + Rust deferred).
-        // The marker must remain absent.
         assert!(
             !marker.exists(),
-            "host marker /tmp/pwned_build_rs must not exist before Docker+Rust compilation is implemented"
+            "escape_rust_malicious_build_rs: /tmp/pwned_build_rs appeared on host — \
+             Docker cargo build isolation failed"
         );
+        let _ = fs::remove_file(&marker);
     }
 
     // ── Build-step escape tests for Phase 05 languages ────────────────────────
 
-    /// Verify that a malicious npm lifecycle script (`preinstall`) cannot write
-    /// to the host when `npm install` runs inside the sandbox.
+    /// Verify that a malicious npm `preinstall` lifecycle hook cannot write to
+    /// the host when `npm install` runs inside a Docker-isolated container.
     ///
-    /// NOTE (Phase 05): Docker + npm install is deferred. `prepare_node()` runs
-    /// `npm install` via the process backend on the host — Docker isolation does
-    /// NOT protect the build step yet.
+    /// The `preinstall` hook runs `echo NYX_ESCAPE_SUCCESS > /tmp/pwned_npm_lifecycle`.
+    /// Inside the container, `/tmp` is private; the host marker stays absent.
     ///
-    /// Fixture: `tests/dynamic_fixtures/escape/npm_malicious_lifecycle/package.json`
+    /// Skips gracefully when Docker is unavailable or `node:20-slim` is not pulled.
     #[test]
-    #[ignore = "Phase 06: Docker-isolated npm install not yet implemented"]
     fn escape_npm_malicious_lifecycle() {
-        if !docker_available() {
-            return;
-        }
-        let marker = std::path::PathBuf::from("/tmp/pwned_npm_lifecycle");
+        if !docker_available() { return; }
+
+        let tmpdir = tempfile::TempDir::new().expect("temp dir");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/escape/npm_malicious_lifecycle");
+        copy_dir_recursive(&fixture, tmpdir.path())
+            .expect("copy npm_malicious_lifecycle fixture");
+
+        let marker: PathBuf = PathBuf::from("/tmp/pwned_npm_lifecycle");
         let _ = fs::remove_file(&marker);
 
-        // Phase 06 TODO: wire Docker-isolated npm install and re-enable body.
-        // When implemented: copy npm_malicious_lifecycle/ to temp workdir,
-        // run prepare_node_in_docker(spec, workdir), assert !marker.exists().
+        let result =
+            nyx_scanner::dynamic::build_sandbox::prepare_node_in_docker(tmpdir.path());
+        if result.is_err() {
+            return;
+        }
 
         assert!(
             !marker.exists(),
-            "host marker /tmp/pwned_npm_lifecycle must not exist before Docker+npm install is implemented"
+            "escape_npm_malicious_lifecycle: /tmp/pwned_npm_lifecycle appeared on host — \
+             Docker npm install isolation failed"
         );
+        let _ = fs::remove_file(&marker);
     }
 
-    /// Verify that a malicious Go `init()` function cannot write to the host
-    /// when the compiled binary runs inside the Docker sandbox.
+    /// Verify that Docker-isolated `go build` does not trigger host side-effects.
     ///
-    /// NOTE (Phase 05): `go build` runs via the process backend on the host;
-    /// the resulting binary executes inside Docker (sandboxed runtime). The
-    /// `init()` write targets `/tmp/pwned_go_init` which is isolated inside
-    /// the container — host marker must remain absent.
+    /// Go `init()` functions run at binary execution time, not during compilation.
+    /// The Docker-isolated build step produces the binary without executing it, so
+    /// the `init()` write cannot reach the host. The host marker stays absent.
     ///
-    /// Fixture: `tests/dynamic_fixtures/escape/go_malicious_init.go`
+    /// Fixture: `tests/dynamic_fixtures/escape/go_malicious_init_main/` (main package).
+    ///
+    /// Skips gracefully when Docker is unavailable or `golang:1.21-slim` is not pulled.
     #[test]
-    #[ignore = "Phase 06: Docker-isolated go build not yet implemented; init() runtime escape sandboxed by container /tmp isolation"]
     fn escape_go_malicious_init() {
-        if !docker_available() {
-            return;
-        }
-        let marker = std::path::PathBuf::from("/tmp/pwned_go_init");
+        if !docker_available() { return; }
+
+        let tmpdir = tempfile::TempDir::new().expect("temp dir");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/escape/go_malicious_init_main");
+        copy_dir_recursive(&fixture, tmpdir.path())
+            .expect("copy go_malicious_init_main fixture");
+
+        let marker: PathBuf = PathBuf::from("/tmp/pwned_go_init");
         let _ = fs::remove_file(&marker);
 
-        // Phase 06 TODO: wire Docker-isolated go build, then run the binary
-        // inside the sandbox and assert the host marker is absent.
+        // Docker-isolated go build: init() does not run during compilation.
+        let result =
+            nyx_scanner::dynamic::build_sandbox::prepare_go_in_docker(tmpdir.path());
+        if result.is_err() {
+            return;
+        }
 
         assert!(
             !marker.exists(),
-            "host marker /tmp/pwned_go_init must not exist; Go init() write stays inside container /tmp"
+            "escape_go_malicious_init: /tmp/pwned_go_init appeared on host — \
+             unexpected side-effect from Docker go build"
         );
+        let _ = fs::remove_file(&marker);
     }
 
     /// Verify that a malicious Maven plugin (`exec-maven-plugin`) cannot write
-    /// to the host when `mvn compile` runs inside the sandbox.
+    /// to the host when `mvn validate` runs inside a Docker-isolated container.
     ///
-    /// NOTE (Phase 05): Docker + Maven compilation is deferred. `prepare_java()`
-    /// runs `javac` via the process backend on the host — Docker isolation does
-    /// NOT protect the build step yet.
+    /// The plugin runs `echo NYX_ESCAPE_SUCCESS > /tmp/pwned_maven_plugin` during
+    /// the validate phase. Inside the container, `/tmp` is private.
     ///
-    /// Fixture: `tests/dynamic_fixtures/escape/maven_malicious_plugin/pom.xml`
+    /// Bridge networking is used so Maven can download the plugin from Maven Central.
+    /// Skips gracefully when Docker is unavailable or the Maven image is not pulled.
     #[test]
-    #[ignore = "Phase 06: Docker-isolated Maven build not yet implemented"]
     fn escape_maven_malicious_plugin() {
-        if !docker_available() {
-            return;
-        }
-        let marker = std::path::PathBuf::from("/tmp/pwned_maven_plugin");
+        if !docker_available() { return; }
+
+        let tmpdir = tempfile::TempDir::new().expect("temp dir");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/escape/maven_malicious_plugin");
+        copy_dir_recursive(&fixture, tmpdir.path())
+            .expect("copy maven_malicious_plugin fixture");
+
+        let marker: PathBuf = PathBuf::from("/tmp/pwned_maven_plugin");
         let _ = fs::remove_file(&marker);
 
-        // Phase 06 TODO: wire Docker-isolated mvn compile and re-enable body.
+        let result =
+            nyx_scanner::dynamic::build_sandbox::prepare_java_in_docker(tmpdir.path());
+        if result.is_err() {
+            return;
+        }
 
         assert!(
             !marker.exists(),
-            "host marker /tmp/pwned_maven_plugin must not exist before Docker+Maven build is implemented"
+            "escape_maven_malicious_plugin: /tmp/pwned_maven_plugin appeared on host — \
+             Docker Maven build isolation failed"
         );
+        let _ = fs::remove_file(&marker);
     }
 
     /// Verify that a malicious Composer `post-install-cmd` cannot write to the
-    /// host when `composer install` runs inside the sandbox.
+    /// host when `composer install` runs inside a Docker-isolated container.
     ///
-    /// NOTE (Phase 05): Docker + Composer install is deferred. `prepare_php()`
-    /// runs `php` directly via the process backend — Docker isolation does NOT
-    /// protect the install step yet.
+    /// The script runs `echo NYX_ESCAPE_SUCCESS > /tmp/pwned_composer_postinstall`.
+    /// Inside the container, `/tmp` is private; the host marker stays absent.
     ///
-    /// Fixture: `tests/dynamic_fixtures/escape/composer_malicious_postinstall/composer.json`
+    /// Skips gracefully when Docker is unavailable or `composer:2` is not pulled.
     #[test]
-    #[ignore = "Phase 06: Docker-isolated composer install not yet implemented"]
     fn escape_composer_malicious_postinstall() {
-        if !docker_available() {
-            return;
-        }
-        let marker = std::path::PathBuf::from("/tmp/pwned_composer_postinstall");
+        if !docker_available() { return; }
+
+        let tmpdir = tempfile::TempDir::new().expect("temp dir");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/escape/composer_malicious_postinstall");
+        copy_dir_recursive(&fixture, tmpdir.path())
+            .expect("copy composer_malicious_postinstall fixture");
+
+        let marker: PathBuf = PathBuf::from("/tmp/pwned_composer_postinstall");
         let _ = fs::remove_file(&marker);
 
-        // Phase 06 TODO: wire Docker-isolated composer install and re-enable body.
+        let result =
+            nyx_scanner::dynamic::build_sandbox::prepare_php_in_docker(tmpdir.path());
+        if result.is_err() {
+            return;
+        }
 
         assert!(
             !marker.exists(),
-            "host marker /tmp/pwned_composer_postinstall must not exist before Docker+Composer install is implemented"
+            "escape_composer_malicious_postinstall: /tmp/pwned_composer_postinstall appeared on host — \
+             Docker Composer install isolation failed"
         );
+        let _ = fs::remove_file(&marker);
     }
 
     // ── Positive control test ─────────────────────────────────────────────────

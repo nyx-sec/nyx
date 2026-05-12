@@ -121,10 +121,13 @@ fn docker_available() -> bool {
 /// Measures the time to ensure `python:3-slim` is present locally. On a
 /// warm cache this is just an inspect call (sub-second). On a cold host it
 /// includes the pull from the registry.
+///
+/// Registers a labelled noop measurement when Docker is absent so criterion's
+/// output is never empty for this slot.
 #[cfg(feature = "dynamic")]
 fn bench_docker_image_build(c: &mut Criterion) {
     if !docker_available() {
-        eprintln!("bench_docker_image_build: docker unavailable, skipping");
+        c.bench_function("docker_image_build_no_docker", |b| b.iter(|| ()));
         return;
     }
     c.bench_function("docker_image_build", |b| {
@@ -185,10 +188,13 @@ fn bench_docker_exec_warm(c: &mut Criterion) {
 /// Measures the complete path: harness already built + docker backend +
 /// process the sqli_positive fixture. The first call includes container
 /// start; subsequent calls show exec-reuse cost.
+///
+/// Registers a labelled noop measurement when Docker is absent so criterion's
+/// output is never empty for this slot.
 #[cfg(feature = "dynamic")]
 fn bench_docker_payload_cost(c: &mut Criterion) {
     if !docker_available() {
-        eprintln!("bench_docker_payload_cost: docker unavailable, skipping");
+        c.bench_function("docker_payload_cost_no_docker", |b| b.iter(|| ()));
         return;
     }
     use nyx_scanner::dynamic::corpus::payloads_for;

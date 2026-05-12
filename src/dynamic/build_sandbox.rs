@@ -733,6 +733,260 @@ fn compute_php_lockfile_hash(workdir: &Path) -> String {
     format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
 }
 
+// ── Docker-isolated build step functions ─────────────────────────────────────
+//
+// Each function runs the language's build tool inside a Docker container with
+// no host volume mounts. A malicious build script can only write to the
+// container's private filesystem; the host is unaffected.
+//
+// Return value semantics:
+//   Ok(())      — container started and the build tool was invoked (the build
+//                 itself may have failed; the caller should only inspect host
+//                 side-effects, not assume the artefact was produced).
+//   Err(msg)    — Docker is unreachable or the image could not be started;
+//                 no container ran and no build-time code executed on any host.
+
+fn docker_bin_for_build() -> String {
+    std::env::var("NYX_DOCKER_BIN").unwrap_or_else(|_| "docker".to_owned())
+}
+
+fn build_container_id(prefix: &str, workdir: &Path) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    workdir.hash(&mut h);
+    format!("nyx-{prefix}-{:016x}", h.finish())
+}
+
+/// Start a `sleep 300` container for isolated builds.
+/// Returns `true` on success, `false` when Docker is unavailable or the image
+/// cannot be started (e.g. not yet pulled).
+fn start_isolated_build_container(
+    docker: &str,
+    name: &str,
+    image: &str,
+    network_none: bool,
+) -> bool {
+    let mut args: Vec<&str> = vec![
+        "run", "-d", "--rm",
+        "--name", name,
+        "--cap-drop=ALL",
+        "--security-opt", "no-new-privileges:true",
+    ];
+    if network_none {
+        args.extend_from_slice(&["--network", "none"]);
+    }
+    args.extend_from_slice(&[image, "sleep", "300"]);
+
+    std::process::Command::new(docker)
+        .args(&args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Copy the contents of `workdir` into `{container}:{dest}` via `docker cp`.
+fn copy_workdir_to_build_container(docker: &str, workdir: &Path, container: &str, dest: &str) {
+    let _ = std::process::Command::new(docker)
+        .args(["exec", container, "mkdir", "-p", dest])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    let src = format!("{}/.", workdir.display());
+    let cp_dst = format!("{container}:{dest}");
+    let _ = std::process::Command::new(docker)
+        .args(["cp", &src, &cp_dst])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// RAII guard that stops and removes a Docker container on drop.
+struct BuildContainerGuard {
+    docker: String,
+    name: String,
+}
+
+impl Drop for BuildContainerGuard {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new(&self.docker)
+            .args(["stop", "--time=0", &self.name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// Run `cargo build --release` inside a Docker container.
+///
+/// Provides build-time isolation: `--network none`, no host mounts. A
+/// malicious `build.rs` can only write to the container's private `/tmp`.
+///
+/// Returns `Ok(())` when the container started and `cargo build` was invoked
+/// (build success/failure inside the container is not checked). Returns
+/// `Err(msg)` when Docker is unreachable or `rust:slim` cannot be started.
+pub fn prepare_rust_in_docker(workdir: &Path) -> Result<(), String> {
+    let docker = docker_bin_for_build();
+    let container = build_container_id("rustbuild", workdir);
+
+    if !start_isolated_build_container(&docker, &container, "rust:slim", true) {
+        return Err("failed to start rust:slim build container; image may not be available".into());
+    }
+
+    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    copy_workdir_to_build_container(&docker, workdir, &container, "/build");
+
+    // CARGO_NET_OFFLINE prevents any registry contact; std lib is pre-built in the image.
+    let _ = std::process::Command::new(&docker)
+        .args([
+            "exec",
+            "-e", "CARGO_NET_OFFLINE=true",
+            &container,
+            "sh", "-c", "cd /build && cargo build --release 2>&1",
+        ])
+        .output();
+
+    Ok(())
+}
+
+/// Run `npm install` inside a Docker container.
+///
+/// The `preinstall` / `postinstall` lifecycle hooks execute inside the
+/// container only; they cannot write to host filesystem paths.
+///
+/// Returns `Ok(())` when the container started and `npm install` was invoked.
+/// Returns `Err(msg)` when Docker is unreachable or `node:20-slim` cannot be started.
+pub fn prepare_node_in_docker(workdir: &Path) -> Result<(), String> {
+    let docker = docker_bin_for_build();
+    let container = build_container_id("nodebuild", workdir);
+
+    if !start_isolated_build_container(&docker, &container, "node:20-slim", true) {
+        return Err("failed to start node:20-slim build container; image may not be available".into());
+    }
+
+    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    copy_workdir_to_build_container(&docker, workdir, &container, "/build");
+
+    // npm install may fail if the registry is unreachable (--network none), but the
+    // preinstall hook runs before any network calls, so the escape attempt executes.
+    let _ = std::process::Command::new(&docker)
+        .args([
+            "exec",
+            &container,
+            "sh", "-c",
+            "cd /build && npm install --no-save --no-audit --no-fund 2>&1",
+        ])
+        .output();
+
+    Ok(())
+}
+
+/// Run `go build ./...` inside a Docker container.
+///
+/// Go `init()` functions only run at binary execution time (not during
+/// compilation), so no host side-effects occur during the build step.
+///
+/// Returns `Ok(())` when the container started and `go build` was invoked.
+/// Returns `Err(msg)` when Docker is unreachable or `golang:1.21-slim` cannot be started.
+pub fn prepare_go_in_docker(workdir: &Path) -> Result<(), String> {
+    let docker = docker_bin_for_build();
+    let container = build_container_id("gobuild", workdir);
+
+    if !start_isolated_build_container(&docker, &container, "golang:1.21-slim", true) {
+        return Err("failed to start golang:1.21-slim build container; image may not be available".into());
+    }
+
+    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    copy_workdir_to_build_container(&docker, workdir, &container, "/build");
+
+    // GOPROXY=off prevents module downloads; std library is pre-compiled in the image.
+    let _ = std::process::Command::new(&docker)
+        .args([
+            "exec",
+            "-e", "GOPROXY=off",
+            "-e", "GONOSUMDB=*",
+            &container,
+            "sh", "-c", "cd /build && go build ./... 2>&1",
+        ])
+        .output();
+
+    Ok(())
+}
+
+/// Run `mvn validate` inside a Docker container.
+///
+/// Maven build plugins (e.g. exec-maven-plugin) execute inside the container
+/// only; they cannot write to host filesystem paths. Bridge networking is used
+/// so Maven can download required plugins from Maven Central.
+///
+/// Returns `Ok(())` when the container started and `mvn validate` was invoked.
+/// Returns `Err(msg)` when Docker is unreachable or the Maven image cannot be started.
+pub fn prepare_java_in_docker(workdir: &Path) -> Result<(), String> {
+    let docker = docker_bin_for_build();
+    let container = build_container_id("mavenbuild", workdir);
+
+    // Bridge network: Maven must download exec-maven-plugin from Maven Central.
+    // Filesystem isolation still holds: /tmp inside the container is private.
+    if !start_isolated_build_container(
+        &docker,
+        &container,
+        "maven:3.9-eclipse-temurin-21",
+        false,
+    ) {
+        return Err(
+            "failed to start maven:3.9-eclipse-temurin-21 build container; image may not be available"
+                .into(),
+        );
+    }
+
+    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    copy_workdir_to_build_container(&docker, workdir, &container, "/build");
+
+    let _ = std::process::Command::new(&docker)
+        .args([
+            "exec",
+            &container,
+            "sh", "-c", "cd /build && mvn --no-transfer-progress validate 2>&1",
+        ])
+        .output();
+
+    Ok(())
+}
+
+/// Run `composer install` inside a Docker container.
+///
+/// Composer lifecycle scripts (`post-install-cmd`) execute inside the
+/// container only; they cannot write to host filesystem paths.
+///
+/// Returns `Ok(())` when the container started and `composer install` was invoked.
+/// Returns `Err(msg)` when Docker is unreachable or `composer:2` cannot be started.
+pub fn prepare_php_in_docker(workdir: &Path) -> Result<(), String> {
+    let docker = docker_bin_for_build();
+    let container = build_container_id("phpbuild", workdir);
+
+    if !start_isolated_build_container(&docker, &container, "composer:2", true) {
+        return Err("failed to start composer:2 build container; image may not be available".into());
+    }
+
+    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    copy_workdir_to_build_container(&docker, workdir, &container, "/build");
+
+    // Empty require{} means no packages to fetch; post-install-cmd still fires.
+    let _ = std::process::Command::new(&docker)
+        .args([
+            "exec",
+            &container,
+            "sh", "-c",
+            "cd /build && composer install --no-dev --no-interaction --prefer-dist 2>&1",
+        ])
+        .output();
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
