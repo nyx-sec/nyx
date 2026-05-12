@@ -5,6 +5,7 @@
 //! above it ([`crate::dynamic::verify`]) just calls [`run_spec`] and turns
 //! the result into a [`crate::dynamic::report::VerifyResult`].
 
+use crate::dynamic::build_sandbox;
 use crate::dynamic::corpus::{benign_payload_for, payloads_for, Oracle, Payload};
 use crate::dynamic::harness::{self, HarnessError};
 use crate::dynamic::sandbox::{self, SandboxError, SandboxOptions, SandboxOutcome};
@@ -65,7 +66,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     // Build harness with retry.
     const BACKOFF: [u64; 1] = [1];
     let mut build_attempts = 0u32;
-    let harness = loop {
+    let mut harness = loop {
         build_attempts += 1;
         match harness::build(spec) {
             Ok(h) => break h,
@@ -84,6 +85,31 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             Err(e) => return Err(RunError::Harness(e)),
         }
     };
+
+    // Prepare Python venv for build-time isolation and dependency caching.
+    // Errors from prepare_python propagate as RunError::BuildFailed (making
+    // that variant reachable) or are swallowed for non-fatal failures (Io /
+    // Unsupported), falling back to the system python3 in the harness command.
+    match build_sandbox::prepare_python(spec, &harness.workdir) {
+        Ok(build_result) => {
+            // Patch harness command to use venv Python when the venv was built
+            // or found in cache.
+            if let Some(cmd0) = harness.command.first_mut() {
+                if cmd0 == "python3" || cmd0 == "python" {
+                    let venv_python = build_result.venv_path.join("bin").join("python3");
+                    if venv_python.exists() {
+                        *cmd0 = venv_python.to_string_lossy().into_owned();
+                    }
+                }
+            }
+        }
+        Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+            return Err(RunError::BuildFailed { stderr, attempts });
+        }
+        Err(_) => {
+            // Io / Unsupported: fall back to system python3 already in command.
+        }
+    }
 
     let harness_source = harness.source.clone();
     let entry_source = harness.entry_source.clone();

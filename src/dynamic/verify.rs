@@ -56,6 +56,35 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         }
     };
 
+    // Scan the entry file's directory for sensitive files (§17.3 mount filter).
+    // If the entry file itself matches a sensitive pattern, refuse to run it:
+    // the harness would copy it into the workdir and expose secrets.
+    {
+        let entry_path = Path::new(&spec.entry_file);
+        let scan_dir = entry_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let notes = crate::dynamic::mount_filter::scan_sensitive_files(scan_dir);
+        for note in &notes {
+            let note_abs = scan_dir.join(&note.path);
+            if entry_path == note_abs {
+                return VerifyResult {
+                    finding_id,
+                    status: VerifyStatus::Unsupported,
+                    triggered_payload: None,
+                    reason: Some(UnsupportedReason::RequiredFileRedactedForSecrets(
+                        note.path.clone(),
+                    )),
+                    inconclusive_reason: None,
+                    detail: None,
+                    attempts: vec![],
+                    toolchain_match: None,
+                };
+            }
+        }
+    }
+
     // Resolve toolchain information.
     let toolchain_res = toolchain::resolve_python(Path::new("."));
     let toolchain_match = if toolchain_res.toolchain_drift { "drift" } else { "exact" };
@@ -63,6 +92,13 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     let start = Instant::now();
     let result = run_spec(&spec, &opts.sandbox);
     let elapsed = start.elapsed();
+
+    // Extract build_attempts before result is consumed by build_verdict.
+    let build_attempts = match &result {
+        Ok(run) => run.build_attempts,
+        Err(RunError::BuildFailed { attempts, .. }) => *attempts,
+        _ => 1,
+    };
 
     let verdict = build_verdict(
         &finding_id,
@@ -80,7 +116,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         verdict.inconclusive_reason,
         toolchain_match,
         elapsed,
-        1, // build_attempts tracked in RunOutcome but not exposed here for simplicity
+        build_attempts,
     );
     telemetry::emit(&event);
 

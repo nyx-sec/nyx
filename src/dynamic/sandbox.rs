@@ -89,9 +89,8 @@ impl From<std::io::Error> for SandboxError {
 
 /// Run a built harness once with a chosen payload.
 ///
-/// Dispatches to the process backend (subprocess with timeout).
-/// On Linux the process backend uses unshare namespaces + seccomp.
-/// On other platforms it falls back to plain subprocess with timeout.
+/// Dispatches to the process backend (subprocess with timeout, env stripping,
+/// and memory cap via `setrlimit(RLIMIT_AS)` on Linux).
 pub fn run(
     harness: &BuiltHarness,
     payload: &Payload,
@@ -106,10 +105,7 @@ pub fn run(
 }
 
 /// Process backend: spawns the harness command in a subprocess with timeout,
-/// stdout/stderr capture, and env stripping.
-///
-/// On Linux, wraps the command with `unshare` for namespace isolation when
-/// available. On other platforms, runs the command directly.
+/// stdout/stderr capture, env stripping, and memory cap (Linux: RLIMIT_AS).
 fn run_process(
     harness: &BuiltHarness,
     payload: &Payload,
@@ -150,6 +146,21 @@ fn run_process(
     {
         use std::os::unix::ffi::OsStrExt;
         cmd.env("NYX_PAYLOAD", std::ffi::OsStr::from_bytes(payload.bytes));
+    }
+
+    // Enforce memory cap before exec on Linux via RLIMIT_AS.
+    // RLIMIT_AS limits total virtual address space. Python uses significantly
+    // more virtual AS than RSS (shared libs, mmap arenas), so the enforced
+    // limit is memory_mib * 8 with a floor of 4 GiB. This prevents multi-GiB
+    // memory bombs while leaving normal Python workloads headroom.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        let memory_mib = opts.memory_mib;
+        // Safety: called in the child after fork but before exec; no allocator use.
+        unsafe {
+            cmd.pre_exec(move || rlimit_as_linux(memory_mib));
+        }
     }
 
     let start = Instant::now();
@@ -259,6 +270,36 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Set RLIMIT_AS (virtual address space) in a `pre_exec` context on Linux.
+///
+/// `memory_mib` is the configured cap; we enforce `max(memory_mib * 8, 4096)`
+/// MiB of virtual AS to give Python's mmap-heavy runtime adequate headroom
+/// while still capping runaway memory bombs.
+///
+/// RLIMIT_AS = 9 on x86_64, aarch64, arm, ppc64, s390x, and all other major
+/// Linux architectures (kernel source: include/uapi/asm-generic/resource.h).
+#[cfg(target_os = "linux")]
+fn rlimit_as_linux(memory_mib: u64) -> std::io::Result<()> {
+    #[repr(C)]
+    struct Rlimit {
+        cur: u64,
+        max: u64,
+    }
+    unsafe extern "C" {
+        fn setrlimit(resource: i32, rlim: *const Rlimit) -> i32;
+    }
+    const RLIMIT_AS: i32 = 9;
+    let cap_mib = memory_mib.saturating_mul(8).max(4096);
+    let bytes = cap_mib.saturating_mul(1024 * 1024);
+    let rl = Rlimit { cur: bytes, max: bytes };
+    let ret = unsafe { setrlimit(RLIMIT_AS, &rl) };
+    if ret == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 #[cfg(unix)]

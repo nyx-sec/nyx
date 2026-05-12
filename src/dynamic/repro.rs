@@ -143,6 +143,9 @@ pub fn write(
     // expected/outcome.json — redacted
     let redacted_stdout = redact::redact(&outcome.stdout);
     let redacted_stderr = redact::redact(&outcome.stderr);
+    // duration_ms is omitted from the persisted outcome so that outcome.json is
+    // byte-identical when regenerated from the repro bundle (§18.2 determinism).
+    // Wall-clock timing goes to telemetry only.
     let outcome_json = serde_json::json!({
         "exit_code": outcome.exit_code,
         "stdout": String::from_utf8_lossy(&redacted_stdout),
@@ -150,7 +153,6 @@ pub fn write(
         "timed_out": outcome.timed_out,
         "oob_callback_seen": outcome.oob_callback_seen,
         "sink_hit": outcome.sink_hit,
-        "duration_ms": outcome.duration.as_millis(),
     });
     write_json(&root.join("expected").join("outcome.json"), &outcome_json)?;
 

@@ -23,7 +23,12 @@ mod python_fixture_tests {
     use nyx_scanner::labels::Cap;
     use nyx_scanner::patterns::{FindingCategory, Severity};
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // Serialize all fixture tests to prevent races on process-global state
+    // (NYX_REPRO_BASE and NYX_TELEMETRY_PATH env vars).
+    static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
 
     /// Returns `true` if `python3` is available.
     fn python3_available() -> bool {
@@ -41,7 +46,14 @@ mod python_fixture_tests {
     }
 
     /// Run a fixture and return the verdict.
+    ///
+    /// Acquires `FIXTURE_LOCK` for the full duration to prevent races on the
+    /// process-global NYX_REPRO_BASE / NYX_TELEMETRY_PATH env vars.
+    /// `set_current_dir` is NOT used here: `harness::copy_entry_file` resolves
+    /// the entry file via its absolute path, so CWD is irrelevant.
     fn run_fixture(fixture: &str, func: &str, cap: Cap, sink_line: u32) -> nyx_scanner::evidence::VerifyResult {
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         let path = fixture_path(fixture);
         // Copy fixture to a temp dir so the harness can import it.
         let tmp = TempDir::new().unwrap();
@@ -54,19 +66,11 @@ mod python_fixture_tests {
             std::env::set_var("NYX_TELEMETRY_PATH", tmp.path().join("events.jsonl").to_str().unwrap());
         }
 
-        // Use the temp dir copy as the fixture path.
+        // Use the temp dir copy as the fixture path (absolute — no CWD change needed).
         let diag = make_diag(&dst, func, cap, sink_line);
-
-        // Change CWD to the temp dir so the harness can find the module.
-        let original_dir = std::env::current_dir().ok();
-        let _ = std::env::set_current_dir(tmp.path());
 
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
-
-        if let Some(dir) = original_dir {
-            let _ = std::env::set_current_dir(dir);
-        }
 
         unsafe {
             std::env::remove_var("NYX_REPRO_BASE");
@@ -373,6 +377,8 @@ mod python_fixture_tests {
             return;
         }
 
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         let tmp = TempDir::new().unwrap();
         let telemetry_path = tmp.path().join("events.jsonl");
         unsafe {
@@ -385,16 +391,10 @@ mod python_fixture_tests {
         let tmp_fix = tmp.path().join("sqli_positive.py");
         let _ = std::fs::copy(&fixture, &tmp_fix);
 
-        let original_dir = std::env::current_dir().ok();
-        let _ = std::env::set_current_dir(tmp.path());
-
+        // No set_current_dir: entry file is absolute, copy_entry_file resolves it directly.
         let diag = make_diag(&tmp_fix, "login", Cap::SQL_QUERY, 17);
         let opts = VerifyOptions::default();
         let _ = verify_finding(&diag, &opts);
-
-        if let Some(dir) = original_dir {
-            let _ = std::env::set_current_dir(dir);
-        }
 
         // Check telemetry doesn't contain any secret patterns.
         if telemetry_path.exists() {
@@ -409,6 +409,34 @@ mod python_fixture_tests {
         unsafe {
             std::env::remove_var("NYX_REPRO_BASE");
             std::env::remove_var("NYX_TELEMETRY_PATH");
+        }
+    }
+
+    // ── Mount-filter gate ─────────────────────────────────────────────────────
+
+    /// If the entry file itself matches a sensitive-file pattern (e.g. `id_rsa*`),
+    /// verify_finding must return Unsupported(RequiredFileRedactedForSecrets).
+    /// No Python3 needed — the check fires before harness execution.
+    #[test]
+    fn sensitive_entry_file_is_unsupported() {
+        let tmp = TempDir::new().unwrap();
+        // "id_rsa.py" matches the id_rsa* sensitive pattern in mount_filter.
+        let entry = tmp.path().join("id_rsa.py");
+        std::fs::write(&entry, "def run(x): pass\n").unwrap();
+
+        let diag = make_diag(&entry, "run", Cap::SQL_QUERY, 2);
+        let opts = VerifyOptions::default();
+        let result = verify_finding(&diag, &opts);
+
+        assert_eq!(
+            result.status,
+            VerifyStatus::Unsupported,
+            "sensitive entry file must be Unsupported; got {:?}",
+            result.status
+        );
+        match &result.reason {
+            Some(UnsupportedReason::RequiredFileRedactedForSecrets(_)) => {}
+            other => panic!("expected RequiredFileRedactedForSecrets, got {other:?}"),
         }
     }
 
