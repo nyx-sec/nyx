@@ -25,9 +25,18 @@ pub struct VerifyOptions {
 
 impl VerifyOptions {
     /// Build `VerifyOptions` from scanner config.
-    pub fn from_config(_config: &Config) -> Self {
+    pub fn from_config(config: &Config) -> Self {
+        use crate::dynamic::sandbox::SandboxBackend;
+        let backend = match config.scanner.verify_backend.as_str() {
+            "docker" => SandboxBackend::Docker,
+            "process" => SandboxBackend::Process,
+            _ => SandboxBackend::Auto,
+        };
         Self {
-            sandbox: SandboxOptions::default(),
+            sandbox: SandboxOptions {
+                backend,
+                ..SandboxOptions::default()
+            },
             project_root: None,
         }
     }

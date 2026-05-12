@@ -1,14 +1,19 @@
 /// Dynamic verification benchmarks (§8.4).
 ///
-/// Tracks three cost anchors:
+/// Tracks six cost anchors:
 ///
 /// 1. `harness_build_cold` — fresh workdir, spec → BuiltHarness (source gen + disk write).
 /// 2. `harness_build_warm` — same spec, workdir already staged (file write skipped).
 /// 3. `sandbox_run_payload` — single payload run via process backend against
 ///    sqli_positive.py (subprocess + settrace overhead, no networking).
+/// 4. `docker_image_build` — cold image pull/build for the python:3-slim base.
+/// 5. `docker_exec_warm` — `docker exec` into a running container (no cold start).
+/// 6. `docker_payload_cost` — per-payload sandbox cost via docker backend end-to-end.
 ///
 /// Baselines committed to `benches/dynamic_bench_baseline.json`.
 /// Run: `cargo bench --features dynamic -- dynamic`
+///
+/// Docker benchmarks are no-ops when docker is unavailable (skipped, not failed).
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
@@ -83,6 +88,113 @@ fn bench_sandbox_run_payload(c: &mut Criterion) {
 }
 
 #[cfg(feature = "dynamic")]
+fn docker_available() -> bool {
+    std::process::Command::new("docker")
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Cold docker image pull/build.
+///
+/// Measures the time to ensure `python:3-slim` is present locally. On a
+/// warm cache this is just an inspect call (sub-second). On a cold host it
+/// includes the pull from the registry.
+#[cfg(feature = "dynamic")]
+fn bench_docker_image_build(c: &mut Criterion) {
+    if !docker_available() {
+        eprintln!("bench_docker_image_build: docker unavailable, skipping");
+        return;
+    }
+    c.bench_function("docker_image_build", |b| {
+        b.iter(|| {
+            // `docker pull` is idempotent and fast when image is already local.
+            let _ = std::process::Command::new("docker")
+                .args(["pull", "python:3-slim"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        });
+    });
+}
+
+/// Warm `docker exec` reuse benchmark.
+///
+/// Starts a single container before the benchmark loop and measures the cost
+/// of each `docker exec` call (no cold-start amortisation visible here — that
+/// is visible by comparing this vs `bench_docker_payload_cost`).
+#[cfg(feature = "dynamic")]
+fn bench_docker_exec_warm(c: &mut Criterion) {
+    if !docker_available() {
+        eprintln!("bench_docker_exec_warm: docker unavailable, skipping");
+        return;
+    }
+    // Start a long-lived container for the benchmark.
+    let container = "nyx-bench-exec-warm";
+    let _ = std::process::Command::new("docker")
+        .args([
+            "run", "-d", "--rm", "--name", container,
+            "--cap-drop=ALL", "--security-opt", "no-new-privileges:true",
+            "--network", "none",
+            "python:3-slim", "sleep", "300",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    c.bench_function("docker_exec_warm", |b| {
+        b.iter(|| {
+            let _ = std::process::Command::new("docker")
+                .args(["exec", container, "python3", "-c", "pass"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        });
+    });
+
+    let _ = std::process::Command::new("docker")
+        .args(["stop", container])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Per-payload sandbox cost via docker backend end-to-end.
+///
+/// Measures the complete path: harness already built + docker backend +
+/// process the sqli_positive fixture. The first call includes container
+/// start; subsequent calls show exec-reuse cost.
+#[cfg(feature = "dynamic")]
+fn bench_docker_payload_cost(c: &mut Criterion) {
+    if !docker_available() {
+        eprintln!("bench_docker_payload_cost: docker unavailable, skipping");
+        return;
+    }
+    use nyx_scanner::dynamic::corpus::payloads_for;
+    use nyx_scanner::dynamic::harness;
+    use nyx_scanner::dynamic::sandbox::{self, SandboxBackend, SandboxOptions};
+
+    let spec = make_sqli_spec();
+    let built = harness::build(&spec).expect("harness build");
+    let payloads = payloads_for(Cap::SQL_QUERY);
+    let payload = payloads.iter().find(|p| !p.is_benign).expect("sqli payload");
+    let opts = SandboxOptions {
+        timeout: std::time::Duration::from_secs(30),
+        backend: SandboxBackend::Docker,
+        ..SandboxOptions::default()
+    };
+
+    c.bench_function("docker_payload_cost", |b| {
+        b.iter(|| {
+            let _ = sandbox::run(&built, payload, &opts);
+        });
+    });
+}
+
+#[cfg(feature = "dynamic")]
 fn bench_noop(_c: &mut Criterion) {}
 
 // When dynamic feature is off, provide a stub so the binary still links.
@@ -97,6 +209,9 @@ criterion_group!(
     bench_harness_build_cold,
     bench_harness_build_warm,
     bench_sandbox_run_payload,
+    bench_docker_image_build,
+    bench_docker_exec_warm,
+    bench_docker_payload_cost,
 );
 
 #[cfg(not(feature = "dynamic"))]

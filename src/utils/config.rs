@@ -258,6 +258,14 @@ pub struct ScannerConfig {
     /// receives `verify: true`.
     #[serde(default)]
     pub verify: bool,
+
+    /// Sandbox backend for dynamic verification.
+    ///
+    /// `"auto"` (default): docker when available, else process.
+    /// `"docker"`: require docker; fail if unavailable.
+    /// `"process"`: in-process runner (same as `--unsafe-sandbox`).
+    #[serde(default)]
+    pub verify_backend: String,
 }
 impl Default for ScannerConfig {
     fn default() -> Self {
@@ -296,6 +304,7 @@ impl Default for ScannerConfig {
             enable_panic_recovery: false,
             enable_auth_as_taint: false,
             verify: false,
+            verify_backend: "auto".to_owned(),
         }
     }
 }

@@ -438,6 +438,24 @@ pub enum Commands {
         #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
         #[arg(long, help_heading = "Dynamic")]
         verify: bool,
+
+        /// Force the process sandbox backend (less isolation, dev use only).
+        ///
+        /// By default `--verify` uses docker when available. This flag
+        /// restricts the backend to the in-process runner. Cannot be combined
+        /// with `--backend docker`.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic")]
+        unsafe_sandbox: bool,
+
+        /// Sandbox backend to use for dynamic verification.
+        ///
+        /// `auto` (default): docker when available, else process.
+        /// `docker`: require docker; fail if unavailable.
+        /// `process`: in-process runner (same as `--unsafe-sandbox`).
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic", value_name = "BACKEND")]
+        backend: Option<String>,
     },
 
     /// Submit feedback on a dynamic verification verdict (§21.2).

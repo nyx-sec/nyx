@@ -98,6 +98,8 @@ pub fn handle_command(
             ast_only,
             cfg_only,
             verify,
+            unsafe_sandbox,
+            backend,
         } => {
             // ── Apply profile first (CLI flags override after) ──────────
             if let Some(ref name) = profile {
@@ -310,13 +312,35 @@ pub fn handle_command(
 
             // ── Dynamic verification ────────────────────────────────────
             #[cfg(feature = "dynamic")]
-            if verify {
-                config.scanner.verify = true;
+            {
+                // Validate and apply --unsafe-sandbox / --backend combo.
+                let explicit_backend = backend.as_deref().unwrap_or("auto");
+                if unsafe_sandbox && explicit_backend == "docker" {
+                    return Err(crate::errors::NyxError::Msg(
+                        "--unsafe-sandbox and --backend docker are mutually exclusive: \
+                         --unsafe-sandbox forces the process backend; \
+                         docker cannot be reached through this flag."
+                            .into(),
+                    ));
+                }
+                let resolved_backend = if unsafe_sandbox {
+                    "process"
+                } else {
+                    explicit_backend
+                };
+                if verify {
+                    config.scanner.verify = true;
+                }
+                config.scanner.verify_backend = resolved_backend.to_owned();
             }
-            // Without the dynamic feature, --verify is silently accepted (no-op).
-            // The server returns 400 instead; see server/routes/scans.rs.
+            // Without the dynamic feature, --verify / --unsafe-sandbox / --backend
+            // are silently accepted (no-op). The server returns 400 instead.
             #[cfg(not(feature = "dynamic"))]
-            let _ = verify;
+            {
+                let _ = verify;
+                let _ = unsafe_sandbox;
+                let _ = backend;
+            }
 
             // ── --explain-engine: print resolved config and exit ────────
             if explain_engine {

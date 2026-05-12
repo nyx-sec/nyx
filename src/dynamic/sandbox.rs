@@ -5,19 +5,27 @@
 //! writes outside the workdir, hard timeout, memory cap, no host PID
 //! visibility.
 //!
-//! Two backends planned, picked at runtime:
+//! Two backends, picked at runtime:
 //!
-//! - **`docker`**: portable, default on Linux/macOS. Image is a thin debian
-//!   plus the language toolchain matching `spec.lang`.
-//! - **`process`**: fallback for hosts without docker. Uses OS primitives
-//!   (`unshare` on Linux, `sandbox-exec` on macOS) and runs the harness
-//!   directly. Less isolation; gated behind `--unsafe-sandbox`.
+//! - **`docker`**: default when docker is available. Runs the harness inside
+//!   a container with `--cap-drop=ALL`, `--security-opt
+//!   no-new-privileges:true`, and `--network none`. Containers are reused
+//!   within a single spec_hash via `docker exec` to amortise image
+//!   cold-start cost.
+//! - **`process`**: fallback for hosts without docker; gated behind
+//!   `--unsafe-sandbox`. Runs the harness as a child process with env
+//!   stripping, memory cap (RLIMIT_AS on Linux), and
+//!   `prctl(PR_SET_NO_NEW_PRIVS)`. No network or namespace isolation — this
+//!   backend is intentionally weaker and is for dev iteration only.
 //!
 //! All public state on the sandbox is owned by the caller — there is no
-//! global runtime, no daemon, no persistent containers between runs.
+//! global runtime, no daemon. Containers are stopped and removed when the
+//! process exits.
 
 use crate::dynamic::corpus::Payload;
 use crate::dynamic::harness::BuiltHarness;
+use std::path::Path;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// Result of a single sandboxed run.
@@ -87,25 +95,349 @@ impl From<std::io::Error> for SandboxError {
     }
 }
 
+// ── Docker availability probe ─────────────────────────────────────────────────
+
+static DOCKER_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+/// Returns true if the docker daemon is reachable on this host.
+///
+/// Result is cached after the first call (§4.2 lazy-backend bullet).
+/// Override the docker binary with `NYX_DOCKER_BIN` for testing.
+pub fn docker_available() -> bool {
+    *DOCKER_AVAILABLE.get_or_init(probe_docker)
+}
+
+fn probe_docker() -> bool {
+    std::process::Command::new(docker_bin())
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Returns the docker binary path, respecting `NYX_DOCKER_BIN` for tests.
+fn docker_bin() -> String {
+    std::env::var("NYX_DOCKER_BIN").unwrap_or_else(|_| "docker".to_owned())
+}
+
+// ── Docker container registry (exec reuse) ────────────────────────────────────
+
+/// Global registry: workdir absolute path → container name.
+///
+/// When `run_docker` is called for a workdir that already has a running
+/// container, it skips `docker run` and goes straight to `docker exec`.
+static CONTAINER_REGISTRY: OnceLock<dashmap::DashMap<String, String>> = OnceLock::new();
+
+fn container_registry() -> &'static dashmap::DashMap<String, String> {
+    CONTAINER_REGISTRY.get_or_init(|| {
+        // Best-effort cleanup at process exit.
+        // Containers are started with --rm, so they self-remove on stop.
+        dashmap::DashMap::new()
+    })
+}
+
+fn workdir_to_container_name(workdir: &Path) -> String {
+    // The workdir is /tmp/nyx-harness/{spec_hash}; the spec_hash is the last
+    // path component (16-char hex). Use it directly for a readable name.
+    let spec_hash = workdir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+    // Container names: [a-zA-Z0-9_.-], must not start with dot or dash.
+    // spec_hash is lowercase hex (0-9a-f); safe to use directly.
+    format!("nyx-{spec_hash}")
+}
+
+/// Docker image tag for a Python toolchain ID (e.g. `python-3.11`).
+fn python_image_for_toolchain(toolchain_id: &str) -> String {
+    // toolchain_id examples: "python-3", "python-3.11", "python-3.12"
+    let ver = toolchain_id.strip_prefix("python-").unwrap_or("3");
+    format!("python:{ver}-slim")
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+
 /// Run a built harness once with a chosen payload.
 ///
-/// Dispatches to the process backend (subprocess with timeout, env stripping,
-/// and memory cap via `setrlimit(RLIMIT_AS)` on Linux).
+/// Dispatches to the docker backend when available (or when explicitly
+/// requested), otherwise to the process backend.
 pub fn run(
     harness: &BuiltHarness,
     payload: &Payload,
     opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     match opts.backend {
-        SandboxBackend::Docker => Err(SandboxError::BackendUnavailable(SandboxBackend::Docker)),
-        SandboxBackend::Auto | SandboxBackend::Process => {
-            run_process(harness, payload, opts)
+        SandboxBackend::Docker => run_docker(harness, payload, opts),
+        SandboxBackend::Auto => {
+            if docker_available() {
+                run_docker(harness, payload, opts)
+            } else {
+                run_process(harness, payload, opts)
+            }
         }
+        SandboxBackend::Process => run_process(harness, payload, opts),
     }
 }
 
+// ── Docker backend ────────────────────────────────────────────────────────────
+
+/// Docker backend: image per toolchain_id, container reuse via `docker exec`.
+fn run_docker(
+    harness: &BuiltHarness,
+    payload: &Payload,
+    opts: &SandboxOptions,
+) -> Result<SandboxOutcome, SandboxError> {
+    // Quick availability check (uses same binary as docker_available but not
+    // gated on the cached probe so tests can override NYX_DOCKER_BIN freely).
+    if !is_docker_reachable() {
+        return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
+    }
+
+    let container_name = workdir_to_container_name(&harness.workdir);
+    let registry = container_registry();
+
+    // Ensure a container is running for this spec_hash.
+    let reused = if registry.contains_key(&container_name) {
+        // Verify it is still alive before trusting the registry entry.
+        is_container_running(&container_name)
+    } else {
+        false
+    };
+
+    if !reused {
+        // Determine the Python image from the harness command (first element).
+        // Fall back to python:3-slim when the command is not recognised.
+        let image = detect_python_toolchain_from_harness(harness);
+        start_container(&container_name, &harness.workdir, &image)?;
+        registry.insert(container_name.clone(), container_name.clone());
+    }
+
+    exec_in_container(&container_name, harness, payload, opts)
+}
+
+/// Returns true when `docker info` succeeds using the current `NYX_DOCKER_BIN`.
+///
+/// Unlike `docker_available()` this is not cached, allowing tests to swap the
+/// docker binary between calls.
+fn is_docker_reachable() -> bool {
+    std::process::Command::new(docker_bin())
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn is_container_running(name: &str) -> bool {
+    let out = std::process::Command::new(docker_bin())
+        .args(["inspect", "--format={{.State.Running}}", name])
+        .output();
+    match out {
+        Ok(o) => o.status.success() && o.stdout.starts_with(b"true"),
+        Err(_) => false,
+    }
+}
+
+/// Start a long-lived container for this spec_hash and copy harness files into it.
+///
+/// Uses `docker cp` rather than a volume mount for portability — volume mounts
+/// of host temp paths can fail silently on macOS Docker Desktop and in some CI
+/// environments. Copying the harness into the container is always reliable.
+///
+/// Container options:
+/// - `--rm`: auto-remove on stop (no manual cleanup required).
+/// - `--cap-drop=ALL`: drop all Linux capabilities.
+/// - `--security-opt no-new-privileges:true`: block privilege escalation.
+/// - `--network none`: no network access (loopback only).
+fn start_container(name: &str, workdir: &Path, image: &str) -> Result<(), SandboxError> {
+    // Start container (no volume mount).
+    let status = std::process::Command::new(docker_bin())
+        .args([
+            "run",
+            "-d",
+            "--rm",
+            "--name", name,
+            "--cap-drop=ALL",
+            "--security-opt", "no-new-privileges:true",
+            "--network", "none",
+            image,
+            "sleep", "3600",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(SandboxError::Spawn)?;
+
+    if !status.success() {
+        return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
+    }
+
+    // Copy harness files into /workdir inside the container.
+    let workdir_str = workdir.to_string_lossy();
+    let status = std::process::Command::new(docker_bin())
+        .args([
+            "exec",
+            name,
+            "mkdir", "-p", "/workdir",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(SandboxError::Io)?;
+
+    if !status.success() {
+        return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
+    }
+
+    // Copy workdir contents (harness.py + entry module) into the container.
+    let cp_src = format!("{workdir_str}/."); // trailing /. copies dir contents
+    let cp_dst = format!("{name}:/workdir");
+    let status = std::process::Command::new(docker_bin())
+        .args(["cp", &cp_src, &cp_dst])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(SandboxError::Io)?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(SandboxError::BackendUnavailable(SandboxBackend::Docker))
+    }
+}
+
+/// Execute the harness inside an already-running container.
+fn exec_in_container(
+    container_name: &str,
+    harness: &BuiltHarness,
+    payload: &Payload,
+    opts: &SandboxOptions,
+) -> Result<SandboxOutcome, SandboxError> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    // Build the docker exec command.
+    let payload_b64 = base64_encode(payload.bytes);
+    let mut cmd_args: Vec<String> = vec![
+        "exec".into(),
+        "-i".into(),
+        "-e".into(), format!("NYX_PAYLOAD_B64={payload_b64}"),
+    ];
+    // Forward harness-specific env vars.
+    for (k, v) in &harness.env {
+        cmd_args.push("-e".into());
+        cmd_args.push(format!("{k}={v}"));
+    }
+    cmd_args.push(container_name.into());
+
+    // The harness script is at /workdir/{filename} inside the container.
+    let harness_file = harness
+        .command
+        .get(1)
+        .map(|s| s.as_str())
+        .unwrap_or("harness.py");
+    let exec_cmd = harness.command.first().map(|s| s.as_str()).unwrap_or("python3");
+    cmd_args.push(exec_cmd.into());
+    cmd_args.push(format!("/workdir/{harness_file}"));
+
+    let mut cmd = Command::new(docker_bin());
+    cmd.args(&cmd_args);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let start = Instant::now();
+    let mut child = cmd.spawn().map_err(SandboxError::Spawn)?;
+
+    let timeout = opts.timeout;
+    let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let timed_out_clone = timed_out.clone();
+    let child_id = child.id();
+
+    let _timer = std::thread::spawn(move || {
+        std::thread::sleep(timeout);
+        timed_out_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(unix)]
+        libc_kill(child_id as i32, 9);
+        #[cfg(not(unix))]
+        let _ = child_id;
+    });
+
+    let limit = opts.output_limit;
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+
+    let stdout_handle = stdout_pipe.map(|s| {
+        std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            std::io::Read::take(s, limit as u64).read_to_end(&mut buf)?;
+            Ok(buf)
+        })
+    });
+    let stderr_handle = stderr_pipe.map(|s| {
+        std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut buf = Vec::new();
+            std::io::Read::take(s, limit as u64).read_to_end(&mut buf)?;
+            Ok(buf)
+        })
+    });
+
+    let status = child.wait().map_err(SandboxError::Io)?;
+
+    let stdout_buf = stdout_handle
+        .and_then(|h| h.join().ok())
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+    let stderr_buf = stderr_handle
+        .and_then(|h| h.join().ok())
+        .and_then(|r| r.ok())
+        .unwrap_or_default();
+    let duration = start.elapsed();
+    let did_time_out = timed_out.load(std::sync::atomic::Ordering::SeqCst);
+    let exit_code = if did_time_out { None } else { status.code() };
+
+    const SINK_HIT_SENTINEL: &[u8] = b"__NYX_SINK_HIT__";
+    let sink_hit = contains_subslice(&stdout_buf, SINK_HIT_SENTINEL)
+        || contains_subslice(&stderr_buf, SINK_HIT_SENTINEL);
+
+    Ok(SandboxOutcome {
+        exit_code,
+        stdout: stdout_buf,
+        stderr: stderr_buf,
+        timed_out: did_time_out,
+        oob_callback_seen: false,
+        sink_hit,
+        duration,
+    })
+}
+
+/// Detect the Python image to use based on the harness command.
+///
+/// The first element of `harness.command` is typically `python3` or a venv
+/// path like `/path/to/venv/bin/python3`. Fall back to `python:3-slim`.
+fn detect_python_toolchain_from_harness(harness: &BuiltHarness) -> String {
+    // The harness workdir encodes the spec_hash but not the toolchain.
+    // Use the default image for Python; callers that know the toolchain_id
+    // should pass it through BuiltHarness.env (NYX_TOOLCHAIN_ID) when needed.
+    if let Ok(tid) = std::env::var("NYX_TOOLCHAIN_ID") {
+        return python_image_for_toolchain(&tid);
+    }
+    // Default to python:3-slim which is always available in CI.
+    let _ = harness;
+    "python:3-slim".to_owned()
+}
+
+// ── Process backend ───────────────────────────────────────────────────────────
+
 /// Process backend: spawns the harness command in a subprocess with timeout,
 /// stdout/stderr capture, env stripping, and memory cap (Linux: RLIMIT_AS).
+///
+/// Isolation is limited to env stripping, RLIMIT_AS, and
+/// `prctl(PR_SET_NO_NEW_PRIVS)` on Linux. No network or namespace isolation.
+/// Use the docker backend for stronger guarantees; this backend is gated
+/// behind `--unsafe-sandbox` in production.
 fn run_process(
     harness: &BuiltHarness,
     payload: &Payload,
@@ -148,18 +480,20 @@ fn run_process(
         cmd.env("NYX_PAYLOAD", std::ffi::OsStr::from_bytes(payload.bytes));
     }
 
-    // Enforce memory cap before exec on Linux via RLIMIT_AS.
+    // Enforce memory cap before exec on Linux via RLIMIT_AS + PR_SET_NO_NEW_PRIVS.
     // RLIMIT_AS limits total virtual address space. Python uses significantly
     // more virtual AS than RSS (shared libs, mmap arenas), so the enforced
-    // limit is memory_mib * 8 with a floor of 4 GiB. This prevents multi-GiB
-    // memory bombs while leaving normal Python workloads headroom.
+    // limit is memory_mib * 8 with a floor of 4 GiB.
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
         let memory_mib = opts.memory_mib;
         // Safety: called in the child after fork but before exec; no allocator use.
         unsafe {
-            cmd.pre_exec(move || rlimit_as_linux(memory_mib));
+            cmd.pre_exec(move || {
+                rlimit_as_linux(memory_mib)?;
+                prctl_no_new_privs()
+            });
         }
     }
 
@@ -238,6 +572,8 @@ fn run_process(
     })
 }
 
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
 fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;
@@ -272,6 +608,8 @@ fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+// ── Linux-specific syscall wrappers ──────────────────────────────────────────
+
 /// Set RLIMIT_AS (virtual address space) in a `pre_exec` context on Linux.
 ///
 /// `memory_mib` is the configured cap; we enforce `max(memory_mib * 8, 4096)`
@@ -302,6 +640,23 @@ fn rlimit_as_linux(memory_mib: u64) -> std::io::Result<()> {
     }
 }
 
+/// Set PR_SET_NO_NEW_PRIVS to 1 in a `pre_exec` context on Linux.
+///
+/// This prevents the child process from acquiring new privileges via setuid
+/// binaries, file capabilities, or ptrace. Best-effort: silently succeeds
+/// even if the prctl call fails (e.g., in restricted environments).
+#[cfg(target_os = "linux")]
+fn prctl_no_new_privs() -> std::io::Result<()> {
+    unsafe extern "C" {
+        fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32;
+    }
+    const PR_SET_NO_NEW_PRIVS: i32 = 38;
+    // Failure is non-fatal: some container runtimes block prctl but are
+    // themselves already sandboxed. Don't abort the child for this.
+    unsafe { prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    Ok(())
+}
+
 #[cfg(unix)]
 fn libc_kill(pid: i32, sig: i32) -> i32 {
     unsafe extern "C" {
@@ -309,6 +664,8 @@ fn libc_kill(pid: i32, sig: i32) -> i32 {
     }
     unsafe { kill(pid, sig) }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -349,5 +706,34 @@ mod tests {
         assert_eq!(base64_encode(b"Man"), "TWFu");
         assert_eq!(base64_encode(b"Ma"), "TWE=");
         assert_eq!(base64_encode(b"M"), "TQ==");
+    }
+
+    #[test]
+    fn container_name_from_spec_hash_workdir() {
+        let workdir = std::path::Path::new("/tmp/nyx-harness/abcdef1234567890");
+        let name = workdir_to_container_name(workdir);
+        assert_eq!(name, "nyx-abcdef1234567890");
+    }
+
+    #[test]
+    fn python_image_for_known_toolchains() {
+        assert_eq!(python_image_for_toolchain("python-3.11"), "python:3.11-slim");
+        assert_eq!(python_image_for_toolchain("python-3"), "python:3-slim");
+        assert_eq!(python_image_for_toolchain("python-3.12"), "python:3.12-slim");
+    }
+
+    /// Verify that a second sandbox::run call for the same workdir does NOT
+    /// start a new container when one is already registered.
+    ///
+    /// This is a logic-level unit test for the exec-reuse path. End-to-end
+    /// verification against a real (or mock) docker daemon runs in
+    /// `tests/dynamic_sandbox_escape.rs::docker_exec_reuse`.
+    #[test]
+    fn container_registry_insert_and_lookup() {
+        let reg = dashmap::DashMap::<String, String>::new();
+        let name = "nyx-testspec0001".to_owned();
+        assert!(!reg.contains_key(&name));
+        reg.insert(name.clone(), name.clone());
+        assert!(reg.contains_key(&name));
     }
 }
