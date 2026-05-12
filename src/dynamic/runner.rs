@@ -134,8 +134,64 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 }
             }
         }
+        Lang::JavaScript | Lang::TypeScript => {
+            // npm install for dependency resolution (no deps in basic fixtures).
+            match build_sandbox::prepare_node(spec, &harness.workdir) {
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                _ => {}
+            }
+        }
+        Lang::Go => {
+            // Compile the harness binary with `go build -o nyx_harness .`.
+            match build_sandbox::prepare_go(spec, &harness.workdir) {
+                Ok(build_result) => {
+                    let binary = build_result.venv_path.join("nyx_harness");
+                    if binary.exists() {
+                        harness.command = vec![binary.to_string_lossy().into_owned()];
+                    } else {
+                        let fallback = harness.workdir.join("nyx_harness");
+                        if fallback.exists() {
+                            harness.command = vec![fallback.to_string_lossy().into_owned()];
+                        }
+                    }
+                }
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                Err(_) => {}
+            }
+        }
+        Lang::Java => {
+            // Compile NyxHarness.java + Entry.java with javac.
+            match build_sandbox::prepare_java(spec, &harness.workdir) {
+                Ok(_) => {
+                    // Update classpath to absolute workdir path for Docker compatibility.
+                    harness.command = vec![
+                        "java".to_owned(),
+                        "-cp".to_owned(),
+                        harness.workdir.to_string_lossy().into_owned(),
+                        "NyxHarness".to_owned(),
+                    ];
+                }
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                Err(_) => {}
+            }
+        }
+        Lang::Php => {
+            // composer install if composer.json is present.
+            match build_sandbox::prepare_php(spec, &harness.workdir) {
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                _ => {}
+            }
+        }
         _ => {
-            // No build step for other interpreted languages.
+            // No build step for other languages.
         }
     }
 

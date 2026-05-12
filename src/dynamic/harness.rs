@@ -177,18 +177,18 @@ mod tests {
 
     #[test]
     fn build_unsupported_lang_returns_err() {
-        // Go is not yet supported (unsupported lang path).
+        // C is not supported (no emitter exists for it).
         let spec = HarnessSpec {
             finding_id: "0000000000000001".into(),
-            entry_file: "main.go".into(),
+            entry_file: "main.c".into(),
             entry_name: "handleRequest".into(),
             entry_kind: EntryKind::Function,
-            lang: Lang::Go,
-            toolchain_id: "go-stable".into(),
+            lang: Lang::C,
+            toolchain_id: "c-stable".into(),
             payload_slot: PayloadSlot::Param(0),
             expected_cap: Cap::SQL_QUERY,
             constraint_hints: vec![],
-            sink_file: "main.go".into(),
+            sink_file: "main.c".into(),
             sink_line: 5,
             spec_hash: "0000000000000000".into(),
         };

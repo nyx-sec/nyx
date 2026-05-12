@@ -233,6 +233,142 @@ fn bench_rust_harness_build_cold(c: &mut Criterion) {
 }
 
 #[cfg(feature = "dynamic")]
+fn make_js_sqli_spec() -> HarnessSpec {
+    HarnessSpec {
+        finding_id: "bench_js_0001".into(),
+        entry_file: "tests/dynamic_fixtures/js/sqli_positive.js".into(),
+        entry_name: "login".into(),
+        entry_kind: nyx_scanner::dynamic::spec::EntryKind::Function,
+        lang: Lang::JavaScript,
+        toolchain_id: "node-20".into(),
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap: Cap::SQL_QUERY,
+        constraint_hints: vec![],
+        sink_file: "tests/dynamic_fixtures/js/sqli_positive.js".into(),
+        sink_line: 8,
+        spec_hash: "benchjssqli000001".into(),
+    }
+}
+
+#[cfg(feature = "dynamic")]
+fn make_go_sqli_spec() -> HarnessSpec {
+    HarnessSpec {
+        finding_id: "bench_go_0001".into(),
+        entry_file: "tests/dynamic_fixtures/go/sqli_positive.go".into(),
+        entry_name: "Login".into(),
+        entry_kind: nyx_scanner::dynamic::spec::EntryKind::Function,
+        lang: Lang::Go,
+        toolchain_id: "go-1.21".into(),
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap: Cap::SQL_QUERY,
+        constraint_hints: vec![],
+        sink_file: "tests/dynamic_fixtures/go/sqli_positive.go".into(),
+        sink_line: 12,
+        spec_hash: "benchgosqli000001".into(),
+    }
+}
+
+#[cfg(feature = "dynamic")]
+fn make_java_sqli_spec() -> HarnessSpec {
+    HarnessSpec {
+        finding_id: "bench_java_0001".into(),
+        entry_file: "tests/dynamic_fixtures/java/sqli_positive.java".into(),
+        entry_name: "login".into(),
+        entry_kind: nyx_scanner::dynamic::spec::EntryKind::Function,
+        lang: Lang::Java,
+        toolchain_id: "java-21".into(),
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap: Cap::SQL_QUERY,
+        constraint_hints: vec![],
+        sink_file: "tests/dynamic_fixtures/java/sqli_positive.java".into(),
+        sink_line: 9,
+        spec_hash: "benchjavasqli00001".into(),
+    }
+}
+
+#[cfg(feature = "dynamic")]
+fn make_php_sqli_spec() -> HarnessSpec {
+    HarnessSpec {
+        finding_id: "bench_php_0001".into(),
+        entry_file: "tests/dynamic_fixtures/php/sqli_positive.php".into(),
+        entry_name: "login".into(),
+        entry_kind: nyx_scanner::dynamic::spec::EntryKind::Function,
+        lang: Lang::Php,
+        toolchain_id: "php-8".into(),
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap: Cap::SQL_QUERY,
+        constraint_hints: vec![],
+        sink_file: "tests/dynamic_fixtures/php/sqli_positive.php".into(),
+        sink_line: 9,
+        spec_hash: "benchphpsqli000001".into(),
+    }
+}
+
+/// JS harness build (source gen + disk write).
+#[cfg(feature = "dynamic")]
+fn bench_js_harness_build_cold(c: &mut Criterion) {
+    use nyx_scanner::dynamic::harness;
+    let spec = make_js_sqli_spec();
+    c.bench_function("js_harness_build_cold", |b| {
+        b.iter(|| {
+            let workdir = std::env::temp_dir()
+                .join("nyx-harness")
+                .join(&spec.spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+            harness::build(&spec).expect("JS harness build")
+        });
+    });
+}
+
+/// Go harness build (source gen + disk write, no compilation).
+#[cfg(feature = "dynamic")]
+fn bench_go_harness_build_cold(c: &mut Criterion) {
+    use nyx_scanner::dynamic::harness;
+    let spec = make_go_sqli_spec();
+    c.bench_function("go_harness_build_cold", |b| {
+        b.iter(|| {
+            let workdir = std::env::temp_dir()
+                .join("nyx-harness")
+                .join(&spec.spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+            harness::build(&spec).expect("Go harness build")
+        });
+    });
+}
+
+/// Java harness build (source gen + disk write, no compilation).
+#[cfg(feature = "dynamic")]
+fn bench_java_harness_build_cold(c: &mut Criterion) {
+    use nyx_scanner::dynamic::harness;
+    let spec = make_java_sqli_spec();
+    c.bench_function("java_harness_build_cold", |b| {
+        b.iter(|| {
+            let workdir = std::env::temp_dir()
+                .join("nyx-harness")
+                .join(&spec.spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+            harness::build(&spec).expect("Java harness build")
+        });
+    });
+}
+
+/// PHP harness build (source gen + disk write).
+#[cfg(feature = "dynamic")]
+fn bench_php_harness_build_cold(c: &mut Criterion) {
+    use nyx_scanner::dynamic::harness;
+    let spec = make_php_sqli_spec();
+    c.bench_function("php_harness_build_cold", |b| {
+        b.iter(|| {
+            let workdir = std::env::temp_dir()
+                .join("nyx-harness")
+                .join(&spec.spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+            harness::build(&spec).expect("PHP harness build")
+        });
+    });
+}
+
+#[cfg(feature = "dynamic")]
 fn bench_noop(_c: &mut Criterion) {}
 
 // When dynamic feature is off, provide a stub so the binary still links.
@@ -251,6 +387,10 @@ criterion_group!(
     bench_docker_exec_warm,
     bench_docker_payload_cost,
     bench_rust_harness_build_cold,
+    bench_js_harness_build_cold,
+    bench_go_harness_build_cold,
+    bench_java_harness_build_cold,
+    bench_php_harness_build_cold,
 );
 
 #[cfg(not(feature = "dynamic"))]

@@ -98,6 +98,10 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     use crate::symbol::Lang;
     let toolchain_res = match spec.lang {
         Lang::Rust => toolchain::resolve_rust(Path::new(".")),
+        Lang::JavaScript | Lang::TypeScript => toolchain::resolve_node(Path::new(".")),
+        Lang::Go => toolchain::resolve_go(Path::new(".")),
+        Lang::Java => toolchain::resolve_java(Path::new(".")),
+        Lang::Php => toolchain::resolve_php(Path::new(".")),
         _ => toolchain::resolve_python(Path::new(".")),
     };
     let toolchain_match = if toolchain_res.toolchain_drift { "drift" } else { "exact" };

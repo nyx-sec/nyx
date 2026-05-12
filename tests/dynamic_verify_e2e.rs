@@ -85,12 +85,46 @@ mod verify_e2e {
         }
     }
 
+    /// Same as `taint_diag_with_cap` but uses a C source file so that
+    /// `HarnessSpec::from_finding` derives `Lang::C`, which has no emitter.
+    fn taint_diag_c_lang(cap: Cap) -> Diag {
+        Diag {
+            path: "src/handler.c".into(),
+            line: 10,
+            col: 0,
+            severity: Severity::High,
+            id: "taint-unsanitised-flow".into(),
+            category: FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: Some(Confidence::High),
+            evidence: Some(Evidence {
+                flow_steps: vec![
+                    source_step("src/handler.c", "handle_request"),
+                    sink_step("src/handler.c"),
+                ],
+                sink_caps: cap.bits(),
+                ..Default::default()
+            }),
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        }
+    }
+
     /// A finding with a supported cap (SQL_QUERY) and a derivable spec reaches
-    /// `harness::build`. The finding uses a Rust entry file, so the Python-only
-    /// harness emitter returns `LangUnsupported`.
+    /// `harness::build`. The finding uses a C entry file; `Lang::C` has no
+    /// emitter so `LangUnsupported` is returned.
     #[test]
     fn verify_finding_rust_lang_returns_lang_unsupported() {
-        let diag = taint_diag_with_cap(Cap::SQL_QUERY);
+        let diag = taint_diag_c_lang(Cap::SQL_QUERY);
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
 
@@ -127,12 +161,12 @@ mod verify_e2e {
         assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
     }
 
-    /// The JSON shape of `VerifyResult` for a Rust finding (lang unsupported)
+    /// The JSON shape of `VerifyResult` for a C finding (lang unsupported)
     /// matches the documented contract: `status`, `reason` present;
     /// `triggered_payload`, `detail`, `attempts` absent (skipped by serde).
     #[test]
     fn verify_result_json_shape_lang_unsupported() {
-        let diag = taint_diag_with_cap(Cap::SQL_QUERY);
+        let diag = taint_diag_c_lang(Cap::SQL_QUERY);
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
 

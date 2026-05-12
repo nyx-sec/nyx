@@ -38,6 +38,16 @@ pub enum PinOrigin {
     RustToolchainFile,
     /// `Cargo.toml` `rust-version` field.
     CargoToml,
+    /// `package.json` `engines.node` field.
+    PackageJson,
+    /// `go.mod` `go` directive.
+    GoMod,
+    /// `pom.xml` `<java.version>` / `<maven.compiler.source>`.
+    PomXml,
+    /// `build.gradle` `sourceCompatibility` / `java.toolchain.languageVersion`.
+    BuildGradle,
+    /// `composer.json` `require.php`.
+    ComposerJson,
     /// No pin found; used the system default.
     SystemDefault,
 }
@@ -308,6 +318,371 @@ fn map_version(version: &str, origin: PinOrigin) -> ToolchainResolution {
     }
 }
 
+// ── Node.js toolchain resolver ────────────────────────────────────────────────
+
+/// Resolve the Node.js toolchain for `project_root`.
+///
+/// Reads pin files in priority order:
+/// `.nvmrc` > `package.json` `engines.node` > `.node-version` > default.
+pub fn resolve_node(project_root: &Path) -> ToolchainResolution {
+    if let Some(r) = try_nvmrc(project_root) {
+        return r;
+    }
+    if let Some(r) = try_package_json_engines(project_root) {
+        return r;
+    }
+    if let Some(r) = try_node_version_file(project_root) {
+        return r;
+    }
+    default_node()
+}
+
+fn try_nvmrc(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join(".nvmrc")).ok()?;
+    let version = content.trim().trim_start_matches('v').to_owned();
+    if version.is_empty() {
+        return None;
+    }
+    Some(map_node_version(&version, PinOrigin::PackageJson))
+}
+
+fn try_package_json_engines(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join("package.json")).ok()?;
+    // Look for "node": ">=18" or "node": "20.x" under "engines".
+    let mut in_engines = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("\"engines\"") {
+            in_engines = true;
+        }
+        if in_engines && trimmed.contains("\"node\"") {
+            // Extract version from: "node": ">=18" or "node": "20"
+            if let Some(ver) = extract_version_from_json_value(trimmed) {
+                return Some(map_node_version(&ver, PinOrigin::PackageJson));
+            }
+        }
+        if in_engines && trimmed.starts_with('}') {
+            in_engines = false;
+        }
+    }
+    None
+}
+
+fn try_node_version_file(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join(".node-version")).ok()?;
+    let version = content.trim().trim_start_matches('v').to_owned();
+    if version.is_empty() {
+        return None;
+    }
+    Some(map_node_version(&version, PinOrigin::PackageJson))
+}
+
+fn default_node() -> ToolchainResolution {
+    ToolchainResolution {
+        toolchain_id: "node-20".to_owned(),
+        pin_origin: PinOrigin::SystemDefault,
+        toolchain_drift: false,
+        version_string: "20".to_owned(),
+    }
+}
+
+fn map_node_version(version: &str, origin: PinOrigin) -> ToolchainResolution {
+    // Strip leading >= <= ~ ^ comparators.
+    let ver = version.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let parts: Vec<&str> = ver.splitn(3, '.').collect();
+    let major = parts.first().copied().unwrap_or("20");
+
+    // Node.js LTS catalog: 18, 20, 22.
+    let (toolchain_id, drift) = match major.parse::<u32>() {
+        Ok(n) if n < 18 => (format!("node-{n}"), true),
+        Ok(18) => ("node-18".to_owned(), false),
+        Ok(20) => ("node-20".to_owned(), false),
+        Ok(22) => ("node-22".to_owned(), false),
+        Ok(n) => (format!("node-{n}"), true),
+        _ => ("node-20".to_owned(), true),
+    };
+
+    ToolchainResolution {
+        toolchain_id,
+        pin_origin: origin,
+        toolchain_drift: drift,
+        version_string: version.to_owned(),
+    }
+}
+
+/// Extract a version string from a JSON value like `">=18"` or `"20.x"`.
+fn extract_version_from_json_value(line: &str) -> Option<String> {
+    // Find the second quoted value after the colon.
+    let after_colon = line.splitn(2, ':').nth(1)?;
+    let raw = after_colon.trim().trim_matches('"').trim_matches('\'');
+    let ver = raw.trim_start_matches(|c: char| !c.is_ascii_digit());
+    // Strip trailing .x or .* wildcards.
+    let ver = if let Some(pos) = ver.find(".x") {
+        &ver[..pos]
+    } else if let Some(pos) = ver.find(".*") {
+        &ver[..pos]
+    } else {
+        ver
+    };
+    if ver.is_empty() {
+        return None;
+    }
+    Some(ver.to_owned())
+}
+
+// ── Go toolchain resolver ─────────────────────────────────────────────────────
+
+/// Resolve the Go toolchain for `project_root`.
+///
+/// Reads pin files in priority order: `go.mod` `go` directive > default.
+pub fn resolve_go(project_root: &Path) -> ToolchainResolution {
+    if let Some(r) = try_go_mod(project_root) {
+        return r;
+    }
+    default_go()
+}
+
+fn try_go_mod(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join("go.mod")).ok()?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("go ") {
+            let version = rest.trim().to_owned();
+            if !version.is_empty() {
+                return Some(map_go_version(&version, PinOrigin::GoMod));
+            }
+        }
+    }
+    None
+}
+
+fn default_go() -> ToolchainResolution {
+    ToolchainResolution {
+        toolchain_id: "go-stable".to_owned(),
+        pin_origin: PinOrigin::SystemDefault,
+        toolchain_drift: false,
+        version_string: "stable".to_owned(),
+    }
+}
+
+fn map_go_version(version: &str, origin: PinOrigin) -> ToolchainResolution {
+    let parts: Vec<&str> = version.splitn(3, '.').collect();
+    let major = parts.first().copied().unwrap_or("1");
+    let minor = parts.get(1).copied();
+
+    // Go 1.21+ is the modern catalog.
+    let (toolchain_id, drift) = match (major, minor) {
+        ("1", Some("21")) => ("go-1.21".to_owned(), false),
+        ("1", Some("22")) => ("go-1.22".to_owned(), false),
+        ("1", Some("23")) => ("go-1.23".to_owned(), false),
+        ("1", Some(m)) if m.parse::<u32>().map_or(false, |v| v >= 24) => {
+            (format!("go-1.{m}"), true)
+        }
+        ("1", Some(m)) if m.parse::<u32>().map_or(false, |v| v < 21) => {
+            (format!("go-1.{m}"), true)
+        }
+        _ => ("go-stable".to_owned(), false),
+    };
+
+    ToolchainResolution {
+        toolchain_id,
+        pin_origin: origin,
+        toolchain_drift: drift,
+        version_string: version.to_owned(),
+    }
+}
+
+// ── Java toolchain resolver ───────────────────────────────────────────────────
+
+/// Resolve the Java toolchain for `project_root`.
+///
+/// Reads pin files in priority order:
+/// `pom.xml` `<java.version>` / `<maven.compiler.source>` >
+/// `build.gradle` `sourceCompatibility` > default.
+pub fn resolve_java(project_root: &Path) -> ToolchainResolution {
+    if let Some(r) = try_pom_xml(project_root) {
+        return r;
+    }
+    if let Some(r) = try_build_gradle(project_root) {
+        return r;
+    }
+    default_java()
+}
+
+fn try_pom_xml(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join("pom.xml")).ok()?;
+    // Look for <java.version>21</java.version> or <maven.compiler.source>21</...>
+    for line in content.lines() {
+        let trimmed = line.trim();
+        for tag in &["<java.version>", "<maven.compiler.source>", "<maven.compiler.release>"] {
+            if trimmed.starts_with(tag) {
+                if let Some(inner) = trimmed.strip_prefix(tag) {
+                    let version = inner.split('<').next().unwrap_or("").trim();
+                    if !version.is_empty() {
+                        return Some(map_java_version(version, PinOrigin::PomXml));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn try_build_gradle(root: &Path) -> Option<ToolchainResolution> {
+    for fname in &["build.gradle", "build.gradle.kts"] {
+        let Ok(content) = std::fs::read_to_string(root.join(fname)) else {
+            continue;
+        };
+        for line in content.lines() {
+            let trimmed = line.trim();
+            // Groovy: sourceCompatibility = '21' or JavaVersion.VERSION_21
+            // Kotlin: sourceCompatibility = JavaVersion.VERSION_21
+            if trimmed.starts_with("sourceCompatibility") || trimmed.starts_with("languageVersion") {
+                if let Some(ver) = extract_java_version_from_gradle_line(trimmed) {
+                    return Some(map_java_version(&ver, PinOrigin::BuildGradle));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_java_version_from_gradle_line(line: &str) -> Option<String> {
+    // Handle: sourceCompatibility = '21' or sourceCompatibility = 21
+    // and: languageVersion.set(JavaLanguageVersion.of(21))
+    let after_eq = line.splitn(2, '=').nth(1).unwrap_or(line);
+    // Try to find a number in the value.
+    let digits: String = after_eq.chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        // Try "VERSION_21" pattern.
+        if let Some(pos) = after_eq.find("VERSION_") {
+            let rest = &after_eq[pos + 8..];
+            let digits: String = rest.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if !digits.is_empty() {
+                return Some(digits);
+            }
+        }
+        return None;
+    }
+    Some(digits)
+}
+
+fn default_java() -> ToolchainResolution {
+    ToolchainResolution {
+        toolchain_id: "java-21".to_owned(),
+        pin_origin: PinOrigin::SystemDefault,
+        toolchain_drift: false,
+        version_string: "21".to_owned(),
+    }
+}
+
+fn map_java_version(version: &str, origin: PinOrigin) -> ToolchainResolution {
+    // Java version: 8, 11, 17, 21, 22 are common LTS/current.
+    let major = version.split('.').next().unwrap_or(version);
+
+    let (toolchain_id, drift) = match major.parse::<u32>() {
+        Ok(8) => ("java-8".to_owned(), false),
+        Ok(11) => ("java-11".to_owned(), false),
+        Ok(17) => ("java-17".to_owned(), false),
+        Ok(21) => ("java-21".to_owned(), false),
+        Ok(n) => (format!("java-{n}"), true),
+        _ => ("java-21".to_owned(), true),
+    };
+
+    ToolchainResolution {
+        toolchain_id,
+        pin_origin: origin,
+        toolchain_drift: drift,
+        version_string: version.to_owned(),
+    }
+}
+
+// ── PHP toolchain resolver ────────────────────────────────────────────────────
+
+/// Resolve the PHP toolchain for `project_root`.
+///
+/// Reads pin files in priority order:
+/// `composer.json` `require.php` > `.php-version` > default.
+pub fn resolve_php(project_root: &Path) -> ToolchainResolution {
+    if let Some(r) = try_composer_json(project_root) {
+        return r;
+    }
+    if let Some(r) = try_php_version_file(project_root) {
+        return r;
+    }
+    default_php()
+}
+
+fn try_composer_json(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join("composer.json")).ok()?;
+    // Look for "php": ">=8.1" under "require".
+    let mut in_require = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("\"require\"") {
+            in_require = true;
+        }
+        if in_require && trimmed.contains("\"php\"") {
+            if let Some(ver) = extract_version_from_json_value(trimmed) {
+                return Some(map_php_version(&ver, PinOrigin::ComposerJson));
+            }
+        }
+        // Stop at closing brace of require block.
+        if in_require && trimmed == "}," || (in_require && trimmed == "}") {
+            in_require = false;
+        }
+    }
+    None
+}
+
+fn try_php_version_file(root: &Path) -> Option<ToolchainResolution> {
+    let content = std::fs::read_to_string(root.join(".php-version")).ok()?;
+    let version = content.trim().to_owned();
+    if version.is_empty() {
+        return None;
+    }
+    Some(map_php_version(&version, PinOrigin::ComposerJson))
+}
+
+fn default_php() -> ToolchainResolution {
+    ToolchainResolution {
+        toolchain_id: "php-8".to_owned(),
+        pin_origin: PinOrigin::SystemDefault,
+        toolchain_drift: false,
+        version_string: "8".to_owned(),
+    }
+}
+
+fn map_php_version(version: &str, origin: PinOrigin) -> ToolchainResolution {
+    let ver = version.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let parts: Vec<&str> = ver.splitn(3, '.').collect();
+    let major = parts.first().copied().unwrap_or("8");
+    let minor = parts.get(1).copied();
+
+    let (toolchain_id, drift) = match (major.parse::<u32>(), minor) {
+        (Ok(8), Some("0")) => ("php-8.0".to_owned(), false),
+        (Ok(8), Some("1")) => ("php-8.1".to_owned(), false),
+        (Ok(8), Some("2")) => ("php-8.2".to_owned(), false),
+        (Ok(8), Some("3")) => ("php-8.3".to_owned(), false),
+        (Ok(8), None) => ("php-8".to_owned(), false),
+        (Ok(7), _) => ("php-7".to_owned(), true),
+        (Ok(n), _) => (format!("php-{n}"), true),
+        _ => ("php-8".to_owned(), true),
+    };
+
+    ToolchainResolution {
+        toolchain_id,
+        pin_origin: origin,
+        toolchain_drift: drift,
+        version_string: version.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +774,114 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let r = resolve_rust(dir.path());
         assert_eq!(r.toolchain_id, "rust-stable");
+        assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
+    }
+
+    // ── Node.js resolver tests ────────────────────────────────────────────────
+
+    #[test]
+    fn node_nvmrc_exact() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join(".nvmrc"), "v20.5.0\n").unwrap();
+        let r = resolve_node(dir.path());
+        assert_eq!(r.toolchain_id, "node-20");
+        assert!(!r.toolchain_drift);
+        assert_eq!(r.pin_origin, PinOrigin::PackageJson);
+    }
+
+    #[test]
+    fn node_package_json_engines() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{"engines": {"node": ">=18.0.0"}}"#,
+        ).unwrap();
+        let r = resolve_node(dir.path());
+        assert_eq!(r.toolchain_id, "node-18");
+    }
+
+    #[test]
+    fn node_default_is_20() {
+        let dir = TempDir::new().unwrap();
+        let r = resolve_node(dir.path());
+        assert_eq!(r.toolchain_id, "node-20");
+        assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
+    }
+
+    // ── Go resolver tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn go_mod_version() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n\ngo 1.22\n").unwrap();
+        let r = resolve_go(dir.path());
+        assert_eq!(r.toolchain_id, "go-1.22");
+        assert!(!r.toolchain_drift);
+        assert_eq!(r.pin_origin, PinOrigin::GoMod);
+    }
+
+    #[test]
+    fn go_default_is_stable() {
+        let dir = TempDir::new().unwrap();
+        let r = resolve_go(dir.path());
+        assert_eq!(r.toolchain_id, "go-stable");
+        assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
+    }
+
+    // ── Java resolver tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn java_pom_xml_version() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("pom.xml"),
+            "<project>\n  <properties>\n    <java.version>21</java.version>\n  </properties>\n</project>",
+        ).unwrap();
+        let r = resolve_java(dir.path());
+        assert_eq!(r.toolchain_id, "java-21");
+        assert!(!r.toolchain_drift);
+        assert_eq!(r.pin_origin, PinOrigin::PomXml);
+    }
+
+    #[test]
+    fn java_build_gradle_source_compat() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("build.gradle"),
+            "sourceCompatibility = '17'\ntargetCompatibility = '17'\n",
+        ).unwrap();
+        let r = resolve_java(dir.path());
+        assert_eq!(r.toolchain_id, "java-17");
+        assert_eq!(r.pin_origin, PinOrigin::BuildGradle);
+    }
+
+    #[test]
+    fn java_default_is_21() {
+        let dir = TempDir::new().unwrap();
+        let r = resolve_java(dir.path());
+        assert_eq!(r.toolchain_id, "java-21");
+        assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
+    }
+
+    // ── PHP resolver tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn php_composer_json_version() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("composer.json"),
+            r#"{"require": {"php": ">=8.1"}}"#,
+        ).unwrap();
+        let r = resolve_php(dir.path());
+        assert_eq!(r.toolchain_id, "php-8.1");
+        assert_eq!(r.pin_origin, PinOrigin::ComposerJson);
+    }
+
+    #[test]
+    fn php_default_is_8() {
+        let dir = TempDir::new().unwrap();
+        let r = resolve_php(dir.path());
+        assert_eq!(r.toolchain_id, "php-8");
         assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
     }
 }

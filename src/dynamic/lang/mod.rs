@@ -3,6 +3,10 @@
 //! Each submodule implements `emit(spec) -> HarnessSource` for one language.
 //! The top-level [`emit`] function dispatches on `spec.lang`.
 
+pub mod go;
+pub mod java;
+pub mod javascript;
+pub mod php;
 pub mod python;
 pub mod rust;
 
@@ -34,6 +38,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match spec.lang {
         Lang::Python => python::emit(spec),
         Lang::Rust => rust::emit(spec),
+        Lang::JavaScript | Lang::TypeScript => javascript::emit(spec),
+        Lang::Go => go::emit(spec),
+        Lang::Java => java::emit(spec),
+        Lang::Php => php::emit(spec),
         _ => Err(UnsupportedReason::LangUnsupported),
     }
 }

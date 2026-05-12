@@ -277,6 +277,218 @@ fn main() {
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
+    // ── JS repro tests ───────────────────────────────────────────────────────
+
+    fn make_confirmed_js_spec(spec_hash: &str) -> HarnessSpec {
+        HarnessSpec {
+            finding_id: "js_determ000001".into(),
+            entry_file: "tests/dynamic_fixtures/js/sqli_positive.js".into(),
+            entry_name: "login".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::JavaScript,
+            toolchain_id: "node-20".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "tests/dynamic_fixtures/js/sqli_positive.js".into(),
+            sink_line: 8,
+            spec_hash: spec_hash.to_owned(),
+        }
+    }
+
+    #[test]
+    fn js_repro_outcome_is_deterministic() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_js_spec("js_determ000001a");
+        let opts = SandboxOptions::default();
+        let outcome = make_confirmed_outcome();
+        let verdict = make_confirmed_verdict("js_determ000001");
+        let entry_src = "function login(username) { console.log(username); }\n";
+
+        let artifact1 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "// harness js\n", entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
+        ).expect("first JS repro write");
+        let json1 =
+            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+
+        std::fs::remove_dir_all(&artifact1.root).unwrap();
+
+        let artifact2 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "// harness js\n", entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
+        ).expect("second JS repro write");
+        let json2 =
+            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+
+        assert_eq!(json1, json2, "JS outcome.json must be byte-identical across two writes");
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    // ── Go repro tests ───────────────────────────────────────────────────────
+
+    fn make_confirmed_go_spec(spec_hash: &str) -> HarnessSpec {
+        HarnessSpec {
+            finding_id: "go_determ000001".into(),
+            entry_file: "tests/dynamic_fixtures/go/sqli_positive.go".into(),
+            entry_name: "Login".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Go,
+            toolchain_id: "go-1.21".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "tests/dynamic_fixtures/go/sqli_positive.go".into(),
+            sink_line: 12,
+            spec_hash: spec_hash.to_owned(),
+        }
+    }
+
+    #[test]
+    fn go_repro_outcome_is_deterministic() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_go_spec("go_determ000001a");
+        let opts = SandboxOptions::default();
+        let outcome = make_confirmed_outcome();
+        let verdict = make_confirmed_verdict("go_determ000001");
+        let entry_src = "package entry\nfunc Login(username string) {}\n";
+
+        let artifact1 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "// harness go\n", entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
+        ).expect("first Go repro write");
+        let json1 =
+            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+
+        std::fs::remove_dir_all(&artifact1.root).unwrap();
+
+        let artifact2 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "// harness go\n", entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
+        ).expect("second Go repro write");
+        let json2 =
+            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+
+        assert_eq!(json1, json2, "Go outcome.json must be byte-identical across two writes");
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    // ── Java repro tests ─────────────────────────────────────────────────────
+
+    fn make_confirmed_java_spec(spec_hash: &str) -> HarnessSpec {
+        HarnessSpec {
+            finding_id: "java_determ00001".into(),
+            entry_file: "tests/dynamic_fixtures/java/sqli_positive.java".into(),
+            entry_name: "login".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Java,
+            toolchain_id: "java-21".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "tests/dynamic_fixtures/java/sqli_positive.java".into(),
+            sink_line: 9,
+            spec_hash: spec_hash.to_owned(),
+        }
+    }
+
+    #[test]
+    fn java_repro_outcome_is_deterministic() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_java_spec("java_determ00001a");
+        let opts = SandboxOptions::default();
+        let outcome = make_confirmed_outcome();
+        let verdict = make_confirmed_verdict("java_determ00001");
+        let entry_src = "public class Entry { public static void login(String u) {} }\n";
+
+        let artifact1 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "// NyxHarness.java\n", entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
+        ).expect("first Java repro write");
+        let json1 =
+            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+
+        std::fs::remove_dir_all(&artifact1.root).unwrap();
+
+        let artifact2 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "// NyxHarness.java\n", entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
+        ).expect("second Java repro write");
+        let json2 =
+            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+
+        assert_eq!(json1, json2, "Java outcome.json must be byte-identical across two writes");
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    // ── PHP repro tests ──────────────────────────────────────────────────────
+
+    fn make_confirmed_php_spec(spec_hash: &str) -> HarnessSpec {
+        HarnessSpec {
+            finding_id: "php_determ000001".into(),
+            entry_file: "tests/dynamic_fixtures/php/sqli_positive.php".into(),
+            entry_name: "login".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Php,
+            toolchain_id: "php-8".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "tests/dynamic_fixtures/php/sqli_positive.php".into(),
+            sink_line: 9,
+            spec_hash: spec_hash.to_owned(),
+        }
+    }
+
+    #[test]
+    fn php_repro_outcome_is_deterministic() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_php_spec("php_determ000001a");
+        let opts = SandboxOptions::default();
+        let outcome = make_confirmed_outcome();
+        let verdict = make_confirmed_verdict("php_determ000001");
+        let entry_src = "<?php\nfunction login($username) {}\n";
+
+        let artifact1 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "<?php // harness\n", entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
+        ).expect("first PHP repro write");
+        let json1 =
+            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+
+        std::fs::remove_dir_all(&artifact1.root).unwrap();
+
+        let artifact2 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "<?php // harness\n", entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
+        ).expect("second PHP repro write");
+        let json2 =
+            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+
+        assert_eq!(json1, json2, "PHP outcome.json must be byte-identical across two writes");
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
     /// Verify verdict.json is correctly structured.
     #[test]
     fn verdict_json_is_valid() {

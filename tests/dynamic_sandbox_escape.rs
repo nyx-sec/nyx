@@ -226,6 +226,112 @@ mod escape_tests {
         );
     }
 
+    // ── Build-step escape tests for Phase 05 languages ────────────────────────
+
+    /// Verify that a malicious npm lifecycle script (`preinstall`) cannot write
+    /// to the host when `npm install` runs inside the sandbox.
+    ///
+    /// NOTE (Phase 05): Docker + npm install is deferred. `prepare_node()` runs
+    /// `npm install` via the process backend on the host — Docker isolation does
+    /// NOT protect the build step yet.
+    ///
+    /// Fixture: `tests/dynamic_fixtures/escape/npm_malicious_lifecycle/package.json`
+    #[test]
+    #[ignore = "Phase 06: Docker-isolated npm install not yet implemented"]
+    fn escape_npm_malicious_lifecycle() {
+        if !docker_available() {
+            return;
+        }
+        let marker = std::path::PathBuf::from("/tmp/pwned_npm_lifecycle");
+        let _ = fs::remove_file(&marker);
+
+        // Phase 06 TODO: wire Docker-isolated npm install and re-enable body.
+        // When implemented: copy npm_malicious_lifecycle/ to temp workdir,
+        // run prepare_node_in_docker(spec, workdir), assert !marker.exists().
+
+        assert!(
+            !marker.exists(),
+            "host marker /tmp/pwned_npm_lifecycle must not exist before Docker+npm install is implemented"
+        );
+    }
+
+    /// Verify that a malicious Go `init()` function cannot write to the host
+    /// when the compiled binary runs inside the Docker sandbox.
+    ///
+    /// NOTE (Phase 05): `go build` runs via the process backend on the host;
+    /// the resulting binary executes inside Docker (sandboxed runtime). The
+    /// `init()` write targets `/tmp/pwned_go_init` which is isolated inside
+    /// the container — host marker must remain absent.
+    ///
+    /// Fixture: `tests/dynamic_fixtures/escape/go_malicious_init.go`
+    #[test]
+    #[ignore = "Phase 06: Docker-isolated go build not yet implemented; init() runtime escape sandboxed by container /tmp isolation"]
+    fn escape_go_malicious_init() {
+        if !docker_available() {
+            return;
+        }
+        let marker = std::path::PathBuf::from("/tmp/pwned_go_init");
+        let _ = fs::remove_file(&marker);
+
+        // Phase 06 TODO: wire Docker-isolated go build, then run the binary
+        // inside the sandbox and assert the host marker is absent.
+
+        assert!(
+            !marker.exists(),
+            "host marker /tmp/pwned_go_init must not exist; Go init() write stays inside container /tmp"
+        );
+    }
+
+    /// Verify that a malicious Maven plugin (`exec-maven-plugin`) cannot write
+    /// to the host when `mvn compile` runs inside the sandbox.
+    ///
+    /// NOTE (Phase 05): Docker + Maven compilation is deferred. `prepare_java()`
+    /// runs `javac` via the process backend on the host — Docker isolation does
+    /// NOT protect the build step yet.
+    ///
+    /// Fixture: `tests/dynamic_fixtures/escape/maven_malicious_plugin/pom.xml`
+    #[test]
+    #[ignore = "Phase 06: Docker-isolated Maven build not yet implemented"]
+    fn escape_maven_malicious_plugin() {
+        if !docker_available() {
+            return;
+        }
+        let marker = std::path::PathBuf::from("/tmp/pwned_maven_plugin");
+        let _ = fs::remove_file(&marker);
+
+        // Phase 06 TODO: wire Docker-isolated mvn compile and re-enable body.
+
+        assert!(
+            !marker.exists(),
+            "host marker /tmp/pwned_maven_plugin must not exist before Docker+Maven build is implemented"
+        );
+    }
+
+    /// Verify that a malicious Composer `post-install-cmd` cannot write to the
+    /// host when `composer install` runs inside the sandbox.
+    ///
+    /// NOTE (Phase 05): Docker + Composer install is deferred. `prepare_php()`
+    /// runs `php` directly via the process backend — Docker isolation does NOT
+    /// protect the install step yet.
+    ///
+    /// Fixture: `tests/dynamic_fixtures/escape/composer_malicious_postinstall/composer.json`
+    #[test]
+    #[ignore = "Phase 06: Docker-isolated composer install not yet implemented"]
+    fn escape_composer_malicious_postinstall() {
+        if !docker_available() {
+            return;
+        }
+        let marker = std::path::PathBuf::from("/tmp/pwned_composer_postinstall");
+        let _ = fs::remove_file(&marker);
+
+        // Phase 06 TODO: wire Docker-isolated composer install and re-enable body.
+
+        assert!(
+            !marker.exists(),
+            "host marker /tmp/pwned_composer_postinstall must not exist before Docker+Composer install is implemented"
+        );
+    }
+
     // ── Positive control test ─────────────────────────────────────────────────
 
     /// Positive control: verify the escape-detection mechanism itself.

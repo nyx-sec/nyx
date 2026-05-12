@@ -47,7 +47,7 @@ pub fn harness_is_interpreted(command: &[String]) -> bool {
         .unwrap_or(cmd0);
     matches!(
         base,
-        "python3" | "python" | "python2" | "node" | "nodejs" | "ruby" | "php" | "perl"
+        "python3" | "python" | "python2" | "node" | "nodejs" | "ruby" | "php" | "perl" | "java"
     )
 }
 
@@ -207,9 +207,23 @@ fn workdir_to_container_name(workdir: &Path) -> String {
 
 /// Docker image tag for a Python toolchain ID (e.g. `python-3.11`).
 fn python_image_for_toolchain(toolchain_id: &str) -> String {
-    // toolchain_id examples: "python-3", "python-3.11", "python-3.12"
     let ver = toolchain_id.strip_prefix("python-").unwrap_or("3");
     format!("python:{ver}-slim")
+}
+
+fn node_image_for_toolchain(toolchain_id: &str) -> String {
+    let ver = toolchain_id.strip_prefix("node-").unwrap_or("20");
+    format!("node:{ver}-slim")
+}
+
+fn java_image_for_toolchain(toolchain_id: &str) -> String {
+    let ver = toolchain_id.strip_prefix("java-").unwrap_or("21");
+    format!("eclipse-temurin:{ver}-jre-jammy")
+}
+
+fn php_image_for_toolchain(toolchain_id: &str) -> String {
+    let ver = toolchain_id.strip_prefix("php-").unwrap_or("8");
+    format!("php:{ver}-cli")
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -273,7 +287,7 @@ fn run_docker(
     if !reused {
         // Determine the Python image from the harness command (first element).
         // Fall back to python:3-slim when the command is not recognised.
-        let image = detect_python_toolchain_from_harness(harness);
+        let image = detect_image_for_harness(harness);
         start_container(&container_name, &harness.workdir, &image)?;
         registry.insert(container_name.clone(), container_name.clone());
     }
@@ -374,6 +388,51 @@ fn start_container(name: &str, workdir: &Path, image: &str) -> Result<(), Sandbo
     }
 }
 
+/// Build the inner-container command args for `docker exec`.
+///
+/// For 2-arg interpreted commands (`python3 harness.py`, `node harness.js`,
+/// `php harness.php`) the file arg is prefixed with `/workdir/`.
+/// For Java (`java -cp /host/abs/path NyxHarness`) the classpath argument is
+/// replaced with `/workdir` (the container-side mount path, not the host path
+/// that runner.rs wrote after `javac`).
+fn build_container_exec_args(command: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    let cmd0 = match command.first() {
+        Some(c) => c.as_str(),
+        None => return args,
+    };
+    let base = std::path::Path::new(cmd0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(cmd0);
+
+    if base == "java" {
+        args.push("java".to_owned());
+        let mut i = 1;
+        while i < command.len() {
+            if command[i] == "-cp" || command[i] == "-classpath" {
+                args.push(command[i].clone());
+                i += 1;
+                args.push("/workdir".to_owned());
+                i += 1;
+            } else {
+                args.push(command[i].clone());
+                i += 1;
+            }
+        }
+    } else {
+        args.push(cmd0.to_owned());
+        if let Some(harness_file) = command.get(1) {
+            if harness_file.starts_with('/') {
+                args.push(harness_file.clone());
+            } else {
+                args.push(format!("/workdir/{harness_file}"));
+            }
+        }
+    }
+    args
+}
+
 /// Execute the harness inside an already-running container.
 fn exec_in_container(
     container_name: &str,
@@ -405,15 +464,10 @@ fn exec_in_container(
     }
     cmd_args.push(container_name.into());
 
-    // Build the exec command inside the container (always interpreted at this point).
-    let exec_cmd = harness.command.first().map(|s| s.as_str()).unwrap_or("python3");
-    let harness_file = harness
-        .command
-        .get(1)
-        .map(|s| s.as_str())
-        .unwrap_or("harness.py");
-    cmd_args.push(exec_cmd.into());
-    cmd_args.push(format!("/workdir/{harness_file}"));
+    // Build the exec command inside the container.
+    for arg in build_container_exec_args(&harness.command) {
+        cmd_args.push(arg);
+    }
 
     let mut cmd = Command::new(docker_bin());
     cmd.args(&cmd_args);
@@ -495,20 +549,33 @@ fn exec_in_container(
     })
 }
 
-/// Detect the Python image to use based on the harness command.
+/// Detect the Docker image for the harness based on the interpreter command.
 ///
-/// The first element of `harness.command` is typically `python3` or a venv
-/// path like `/path/to/venv/bin/python3`. Fall back to `python:3-slim`.
-fn detect_python_toolchain_from_harness(harness: &BuiltHarness) -> String {
-    // The harness workdir encodes the spec_hash but not the toolchain.
-    // Use the default image for Python; callers that know the toolchain_id
-    // should pass it through BuiltHarness.env (NYX_TOOLCHAIN_ID) when needed.
+/// Dispatches by the basename of `command[0]` (e.g. `python3`, `node`, `java`,
+/// `php`). Falls back to `python:3-slim` for unrecognised interpreters.
+/// `NYX_TOOLCHAIN_ID` env var overrides the version portion of the image tag.
+fn detect_image_for_harness(harness: &BuiltHarness) -> String {
+    let cmd0 = harness.command.first().map(|s| s.as_str()).unwrap_or("python3");
+    let base = std::path::Path::new(cmd0)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(cmd0);
+
     if let Ok(tid) = std::env::var("NYX_TOOLCHAIN_ID") {
-        return python_image_for_toolchain(&tid);
+        return match base {
+            "node" | "nodejs" => node_image_for_toolchain(&tid),
+            "java" => java_image_for_toolchain(&tid),
+            "php" => php_image_for_toolchain(&tid),
+            _ => python_image_for_toolchain(&tid),
+        };
     }
-    // Default to python:3-slim which is always available in CI.
-    let _ = harness;
-    "python:3-slim".to_owned()
+
+    match base {
+        "node" | "nodejs" => "node:20-slim".to_owned(),
+        "java" => "eclipse-temurin:21-jre-jammy".to_owned(),
+        "php" => "php:8-cli".to_owned(),
+        _ => "python:3-slim".to_owned(),
+    }
 }
 
 // ── Process backend ───────────────────────────────────────────────────────────
@@ -802,6 +869,82 @@ mod tests {
         assert_eq!(python_image_for_toolchain("python-3.11"), "python:3.11-slim");
         assert_eq!(python_image_for_toolchain("python-3"), "python:3-slim");
         assert_eq!(python_image_for_toolchain("python-3.12"), "python:3.12-slim");
+    }
+
+    #[test]
+    fn node_image_for_known_toolchains() {
+        assert_eq!(node_image_for_toolchain("node-20"), "node:20-slim");
+        assert_eq!(node_image_for_toolchain("node-18"), "node:18-slim");
+        assert_eq!(node_image_for_toolchain("node-lts"), "node:lts-slim");
+    }
+
+    #[test]
+    fn java_image_for_known_toolchains() {
+        assert_eq!(java_image_for_toolchain("java-21"), "eclipse-temurin:21-jre-jammy");
+        assert_eq!(java_image_for_toolchain("java-17"), "eclipse-temurin:17-jre-jammy");
+    }
+
+    #[test]
+    fn php_image_for_known_toolchains() {
+        assert_eq!(php_image_for_toolchain("php-8"), "php:8-cli");
+        assert_eq!(php_image_for_toolchain("php-8.2"), "php:8.2-cli");
+    }
+
+    #[test]
+    fn harness_is_interpreted_java() {
+        let cmd = vec!["java".to_owned(), "-cp".to_owned(), ".".to_owned(), "NyxHarness".to_owned()];
+        assert!(harness_is_interpreted(&cmd));
+    }
+
+    #[test]
+    fn harness_is_interpreted_node() {
+        assert!(harness_is_interpreted(&["node".to_owned(), "harness.js".to_owned()]));
+    }
+
+    #[test]
+    fn build_container_exec_args_python() {
+        let cmd = vec!["python3".to_owned(), "harness.py".to_owned()];
+        assert_eq!(
+            build_container_exec_args(&cmd),
+            vec!["python3", "/workdir/harness.py"]
+        );
+    }
+
+    #[test]
+    fn build_container_exec_args_node() {
+        let cmd = vec!["node".to_owned(), "harness.js".to_owned()];
+        assert_eq!(
+            build_container_exec_args(&cmd),
+            vec!["node", "/workdir/harness.js"]
+        );
+    }
+
+    #[test]
+    fn build_container_exec_args_php() {
+        let cmd = vec!["php".to_owned(), "harness.php".to_owned()];
+        assert_eq!(
+            build_container_exec_args(&cmd),
+            vec!["php", "/workdir/harness.php"]
+        );
+    }
+
+    #[test]
+    fn build_container_exec_args_java() {
+        let cmd = vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            "/tmp/nyx-harness/abc123".to_owned(),
+            "NyxHarness".to_owned(),
+        ];
+        assert_eq!(
+            build_container_exec_args(&cmd),
+            vec!["java", "-cp", "/workdir", "NyxHarness"]
+        );
+    }
+
+    #[test]
+    fn build_container_exec_args_empty() {
+        assert!(build_container_exec_args(&[]).is_empty());
     }
 
     /// Verify that a second sandbox::run call for the same workdir does NOT
