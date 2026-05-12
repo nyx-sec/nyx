@@ -147,7 +147,23 @@ fi
 # ── Emit summary table ────────────────────────────────────────────────────────
 info ""
 info "Results written to: $RESULTS_JSON"
-python3 "${SCRIPT_DIR}/report.py" --results "$RESULTS_JSON" \
-  || { info "report.py not available; raw results at $RESULTS_JSON"; exit 0; }
 
 [[ -n "$OUTPUT_DIR" ]] && cp "$RESULTS_JSON" "${OUTPUT_DIR}/eval_results.json"
+
+if [[ ! -f "${SCRIPT_DIR}/report.py" ]]; then
+  info "report.py not available; raw results at $RESULTS_JSON"
+  exit 0
+fi
+
+set +e
+python3 "${SCRIPT_DIR}/report.py" --results "$RESULTS_JSON"
+REPORT_RC=$?
+set -e
+# Propagate gate-fail (exit 2). Treat other non-zero as setup error (exit 1).
+if [[ $REPORT_RC -eq 2 ]]; then
+  exit 2
+elif [[ $REPORT_RC -ne 0 ]]; then
+  info "report.py crashed (exit $REPORT_RC); raw results at $RESULTS_JSON"
+  exit 1
+fi
+exit 0

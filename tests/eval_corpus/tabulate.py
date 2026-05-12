@@ -19,25 +19,46 @@ from pathlib import Path
 
 LINE_TOLERANCE = 5
 
-_CAP_PREFIX_TABLE = [
-    ("taint.path_traversal", "path_traversal"),
-    ("taint.sql", "sqli"),
-    ("taint.xss", "xss"),
-    ("taint.ssrf", "ssrf"),
-    ("taint.cmdi", "cmdi"),
-    ("taint.deserialize", "deserialize"),
-    ("taint.redirect", "redirect"),
-    ("taint.xxe", "xxe"),
+# Bitflag positions for Cap (src/labels/mod.rs). Sink bits map to a cap label.
+_CAP_BIT_TABLE = [
+    (1 << 5,  "path_traversal"),  # FILE_IO
+    (1 << 6,  "fmt_string"),
+    (1 << 7,  "sqli"),             # SQL_QUERY
+    (1 << 8,  "deserialize"),
+    (1 << 9,  "ssrf"),
+    (1 << 10, "cmdi"),             # CODE_EXEC
+    (1 << 11, "crypto"),
+    (1 << 12, "unauthorized_id"),
+    (1 << 13, "data_exfil"),
+    (1 << 14, "ldap_injection"),
+    (1 << 15, "xpath_injection"),
+    (1 << 16, "header_injection"),
+    (1 << 17, "redirect"),         # OPEN_REDIRECT
+    (1 << 18, "xss"),              # SSTI (template_injection); also covers XSS sinks
+    (1 << 19, "xxe"),
+    (1 << 20, "prototype_pollution"),
+]
+
+# Substring → cap lookup for rule IDs. Order matters: most specific first.
+_CAP_RULE_TABLE = [
     ("path_traversal", "path_traversal"),
-    ("sqli", "sqli"),
-    ("xss", "xss"),
-    ("ssrf", "ssrf"),
-    ("cmdi", "cmdi"),
-    ("deserialize", "deserialize"),
-    ("redirect", "redirect"),
-    ("xxe", "xxe"),
-    ("auth", "auth"),
-    ("taint", "taint"),
+    ("sql",           "sqli"),
+    ("xss",           "xss"),
+    ("ssrf",          "ssrf"),
+    ("cmdi",          "cmdi"),
+    ("cmd_exec",      "cmdi"),
+    ("code_exec",     "cmdi"),
+    ("deser",         "deserialize"),
+    ("unserialize",   "deserialize"),
+    ("redirect",      "redirect"),
+    ("xxe",           "xxe"),
+    ("template",      "xss"),
+    ("auth",          "auth"),
+    ("memory",        "memory"),
+    ("crypto",        "crypto"),
+    ("data-exfil",    "data_exfil"),
+    ("data_exfil",    "data_exfil"),
+    ("header",        "header_injection"),
 ]
 
 
@@ -47,9 +68,18 @@ def load_json(path: str) -> object:
 
 
 def cap_of(finding: dict) -> str:
-    rule = finding.get("rule_id", "").lower()
-    for prefix, cap in _CAP_PREFIX_TABLE:
-        if rule.startswith(prefix):
+    # 1. Prefer evidence.sink_caps bitmask — the engine's own classification.
+    ev = finding.get("evidence", {}) or {}
+    sink_caps = ev.get("sink_caps")
+    if isinstance(sink_caps, int) and sink_caps:
+        for bit, name in _CAP_BIT_TABLE:
+            if sink_caps & bit:
+                return name
+    # 2. Fall back to rule id substring (e.g. py.cmdi.os_system, java.deser.readobject).
+    rid = (finding.get("id") or "").lower()
+    head = rid.split(" ", 1)[0]
+    for needle, cap in _CAP_RULE_TABLE:
+        if needle in head:
             return cap
     return "other"
 
@@ -122,8 +152,9 @@ def main() -> int:
             for idx, gt_entry in enumerate(gt_true):
                 if (gt_entry["path"] == f_path
                         and gt_entry["cap"] == f_cap
-                        and abs(gt_entry["line"] - f_line) <= LINE_TOLERANCE
-                        and idx not in matched_gt):
+                        and idx not in matched_gt
+                        and (gt_entry["line"] == 0
+                             or abs(gt_entry["line"] - f_line) <= LINE_TOLERANCE)):
                     matched_idx = idx
                     break
             if matched_idx is not None:

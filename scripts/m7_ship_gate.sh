@@ -132,16 +132,19 @@ else
   if [[ ! -d "$BENCH_DIR" ]]; then
     info "Gate 3: benches/fixtures not found; skipping"
   else
+    # Portable epoch-millis. BSD date (macOS) lacks %3N; GNU date has it.
+    ms_now() { python3 -c 'import time; print(int(time.time()*1000))'; }
+
     # Static-only baseline.
-    T_STATIC_START=$(date +%s%3N)
+    T_STATIC_START=$(ms_now)
     "$NYX_BIN" scan --no-verify --format json --no-index "$BENCH_DIR" > /dev/null 2>&1 || true
-    T_STATIC_END=$(date +%s%3N)
+    T_STATIC_END=$(ms_now)
     T_STATIC=$(( T_STATIC_END - T_STATIC_START ))
 
     # Default (with verify).
-    T_VERIFY_START=$(date +%s%3N)
+    T_VERIFY_START=$(ms_now)
     "$NYX_BIN" scan --format json --no-index "$BENCH_DIR" > /dev/null 2>&1 || true
-    T_VERIFY_END=$(date +%s%3N)
+    T_VERIFY_END=$(ms_now)
     T_VERIFY=$(( T_VERIFY_END - T_VERIFY_START ))
 
     info "  static-only: ${T_STATIC}ms  with-verify: ${T_VERIFY}ms"

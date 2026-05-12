@@ -1,6 +1,6 @@
 # Dynamic verification
 
-As of M7, nyx verifies every `Confidence >= Medium` finding by default: it builds
+Nyx verifies every `Confidence >= Medium` finding by default: it builds
 a minimal harness, runs your code's entry point against a curated payload corpus
 inside a sandbox, and records the verdict in each finding's evidence block.
 

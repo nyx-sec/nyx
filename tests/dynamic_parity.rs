@@ -104,6 +104,7 @@ mod parity_tests {
             },
             project_root: None,
             db_path: None,
+            verify_all_confidence: false,
         }
     }
 
@@ -116,6 +117,7 @@ mod parity_tests {
             },
             project_root: None,
             db_path: None,
+            verify_all_confidence: false,
         }
     }
 

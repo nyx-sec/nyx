@@ -58,17 +58,15 @@ mod escape_tests {
             backend: SandboxBackend::Docker,
             env_passthrough: vec![],
             output_limit: 65536,
+            oob_listener: None,
         }
     }
 
-    /// Minimal no-op payload (escape scripts ignore NYX_PAYLOAD).
-    fn noop_payload() -> nyx_scanner::dynamic::corpus::Payload {
-        nyx_scanner::dynamic::corpus::Payload {
-            bytes: b"",
-            label: "escape-noop",
-            oracle: nyx_scanner::dynamic::corpus::Oracle::ExitStatus(1),
-            is_benign: true,
-        }
+    /// Minimal no-op payload bytes (escape scripts ignore NYX_PAYLOAD).
+    /// `sandbox::run` takes `&[u8]` directly; the CuratedPayload struct lives
+    /// one level up in the runner.
+    fn noop_payload() -> &'static [u8] {
+        b""
     }
 
     /// Copy a directory tree into a destination (creating it if needed).

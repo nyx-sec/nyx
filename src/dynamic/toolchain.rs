@@ -273,12 +273,17 @@ fn default_python() -> ToolchainResolution {
 fn extract_version_from_toml_value(line: &str) -> Option<String> {
     let after_eq = line.splitn(2, '=').nth(1)?;
     let raw = after_eq.trim().trim_matches('"').trim_matches('\'');
-    // Strip leading comparators: >=, <=, ==, ~=, ^, >
-    let ver = raw.trim_start_matches(|c: char| !c.is_ascii_digit());
-    if ver.is_empty() {
+    if raw.is_empty() {
         return None;
     }
-    Some(ver.to_owned())
+    // If the value begins with a digit (after stripping comparators), it is a
+    // semver pin like ">=1.75". Otherwise it is a channel name like "stable" /
+    // "nightly" / "beta" — return verbatim so `map_rust_version` can dispatch.
+    let trimmed = raw.trim_start_matches(|c: char| !c.is_ascii_digit() && !c.is_ascii_alphabetic());
+    if trimmed.starts_with(|c: char| c.is_ascii_digit()) {
+        return Some(trimmed.to_owned());
+    }
+    Some(trimmed.to_owned())
 }
 
 /// Map a raw version string to a Nyx reference toolchain ID.
@@ -433,6 +438,13 @@ fn extract_version_from_json_value(line: &str) -> Option<String> {
     let after_colon = line.splitn(2, ':').nth(1)?;
     let raw = after_colon.trim().trim_matches('"').trim_matches('\'');
     let ver = raw.trim_start_matches(|c: char| !c.is_ascii_digit());
+    // Strip trailing junk: stop at the first char that isn't a version char.
+    // Handles single-line JSON like `{"php": ">=8.1"}}` where the previous
+    // trim still leaves `8.1"}}`.
+    let end = ver
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+        .unwrap_or(ver.len());
+    let ver = &ver[..end];
     // Strip trailing .x or .* wildcards.
     let ver = if let Some(pos) = ver.find(".x") {
         &ver[..pos]
