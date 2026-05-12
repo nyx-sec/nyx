@@ -352,7 +352,7 @@ fn try_package_json_engines(root: &Path) -> Option<ToolchainResolution> {
     let mut in_engines = false;
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("\"engines\"") {
+        if json_line_has_key(trimmed, "engines") {
             in_engines = true;
         }
         if in_engines && trimmed.contains("\"node\"") {
@@ -408,6 +408,23 @@ fn map_node_version(version: &str, origin: PinOrigin) -> ToolchainResolution {
         toolchain_drift: drift,
         version_string: version.to_owned(),
     }
+}
+
+/// Return true if `line` contains `"key":` as a JSON object key assignment.
+///
+/// Prevents false-positives from values like `"type": "require"` that would
+/// otherwise match a plain `contains("\"key\"")` check.
+fn json_line_has_key(line: &str, key: &str) -> bool {
+    let needle = format!("\"{key}\"");
+    let mut search = line;
+    while let Some(pos) = search.find(needle.as_str()) {
+        let rest = &search[pos + needle.len()..];
+        if rest.trim_start().starts_with(':') {
+            return true;
+        }
+        search = &search[pos + 1..];
+    }
+    false
 }
 
 /// Extract a version string from a JSON value like `">=18"` or `"20.x"`.
@@ -624,7 +641,7 @@ fn try_composer_json(root: &Path) -> Option<ToolchainResolution> {
     let mut in_require = false;
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("\"require\"") {
+        if json_line_has_key(trimmed, "require") {
             in_require = true;
         }
         if in_require && trimmed.contains("\"php\"") {
@@ -883,5 +900,58 @@ mod tests {
         let r = resolve_php(dir.path());
         assert_eq!(r.toolchain_id, "php-8");
         assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
+    }
+
+    #[test]
+    fn php_composer_json_require_dev_before_require() {
+        // "require-dev" must not shadow the real "require" block even when it
+        // appears first. The tightened json_line_has_key check prevents false
+        // activation on the "require-dev" key.
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("composer.json"),
+            "{\n    \"require-dev\": {\n        \"php\": \"^7.0\"\n    },\n    \"require\": {\n        \"php\": \">=8.1\"\n    }\n}",
+        ).unwrap();
+        let r = resolve_php(dir.path());
+        assert_eq!(r.toolchain_id, "php-8.1");
+        assert_eq!(r.pin_origin, PinOrigin::ComposerJson);
+    }
+
+    #[test]
+    fn php_composer_json_require_as_value_not_matched() {
+        // "require" appearing as a string value (not a key) must not activate
+        // in_require and cause a php constraint from an unrelated block to be
+        // returned. Without the json_line_has_key fix, a line like
+        // `"type": "require"` would set in_require=true, letting the "php"
+        // key inside require-dev be matched instead of falling through.
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("composer.json"),
+            "{\n    \"extra\": {\"type\": \"require\"},\n    \"require-dev\": {\n        \"php\": \"^7.0\"\n    }\n}",
+        ).unwrap();
+        let r = resolve_php(dir.path());
+        // No real "require": key present — must fall back to system default.
+        assert_eq!(r.pin_origin, PinOrigin::SystemDefault);
+    }
+
+    // ── json_line_has_key unit tests ─────────────────────────────────────────
+
+    #[test]
+    fn json_line_has_key_matches_exact_key() {
+        assert!(json_line_has_key(r#"    "require": {"#, "require"));
+        assert!(json_line_has_key(r#"{"require": {}}"#, "require"));
+        assert!(json_line_has_key(r#"  "engines" : {"#, "engines"));
+    }
+
+    #[test]
+    fn json_line_has_key_rejects_key_in_value() {
+        assert!(!json_line_has_key(r#"    "type": "require","#, "require"));
+        assert!(!json_line_has_key(r#"    "desc": "engines config","#, "engines"));
+    }
+
+    #[test]
+    fn json_line_has_key_rejects_superstring_key() {
+        // "require-dev" does not contain "require" as a quoted key.
+        assert!(!json_line_has_key(r#"    "require-dev": {"#, "require"));
     }
 }

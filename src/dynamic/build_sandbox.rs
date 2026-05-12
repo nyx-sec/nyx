@@ -333,8 +333,13 @@ pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
     let lockfile_hash = compute_node_lockfile_hash(workdir);
     let cache_path = build_cache_path(&lockfile_hash, "node", &spec.toolchain_id)?;
 
-    // Cache hit: node_modules already installed.
+    // Cache hit: node_modules already installed. Restore to fresh workdir if
+    // a different finding shares the same cache key but got a new workdir.
     if cache_path.join(".node_cache_done").exists() {
+        let cached_nm = cache_path.join("node_modules");
+        if cached_nm.exists() && !workdir.join("node_modules").exists() {
+            let _ = copy_dir_all(&cached_nm, &workdir.join("node_modules"));
+        }
         return Ok(BuildResult {
             venv_path: cache_path,
             cache_hit: true,
@@ -363,6 +368,12 @@ pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         }
         match try_npm_install(workdir) {
             Ok(()) => {
+                // Persist node_modules to cache so future runs with the same
+                // package.json but a fresh workdir can restore without re-running npm.
+                let nm_src = workdir.join("node_modules");
+                if nm_src.exists() {
+                    let _ = copy_dir_all(&nm_src, &cache_path.join("node_modules"));
+                }
                 let _ = std::fs::write(cache_path.join(".node_cache_done"), b"done");
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -392,6 +403,25 @@ fn try_npm_install(workdir: &Path) -> Result<(), String> {
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(())
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+///
+/// Silently skips entries that cannot be copied. Used to persist
+/// `node_modules`/`vendor` to the build cache and restore them on cache hit.
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), &dst_path)?;
+        }
     }
     Ok(())
 }
@@ -620,6 +650,10 @@ pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
     let cache_path = build_cache_path(&lockfile_hash, "php", &spec.toolchain_id)?;
 
     if cache_path.join(".php_cache_done").exists() {
+        let cached_vendor = cache_path.join("vendor");
+        if cached_vendor.exists() && !workdir.join("vendor").exists() {
+            let _ = copy_dir_all(&cached_vendor, &workdir.join("vendor"));
+        }
         return Ok(BuildResult {
             venv_path: cache_path,
             cache_hit: true,
@@ -647,6 +681,12 @@ pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
         }
         match try_composer_install(workdir) {
             Ok(()) => {
+                // Persist vendor/ to cache so future runs with the same
+                // composer.json but a fresh workdir can restore without re-running composer.
+                let vendor_src = workdir.join("vendor");
+                if vendor_src.exists() {
+                    let _ = copy_dir_all(&vendor_src, &cache_path.join("vendor"));
+                }
                 let _ = std::fs::write(cache_path.join(".php_cache_done"), b"done");
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -737,5 +777,32 @@ mod tests {
         let h1 = compute_java_source_hash(dir.path());
         let h2 = compute_java_source_hash(dir.path());
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn copy_dir_all_copies_recursively() {
+        let src = tempfile::TempDir::new().unwrap();
+        let dst = tempfile::TempDir::new().unwrap();
+
+        std::fs::write(src.path().join("a.txt"), b"hello").unwrap();
+        std::fs::create_dir(src.path().join("sub")).unwrap();
+        std::fs::write(src.path().join("sub").join("b.txt"), b"world").unwrap();
+
+        copy_dir_all(src.path(), dst.path()).unwrap();
+
+        assert_eq!(std::fs::read(dst.path().join("a.txt")).unwrap(), b"hello");
+        assert_eq!(std::fs::read(dst.path().join("sub").join("b.txt")).unwrap(), b"world");
+    }
+
+    #[test]
+    fn copy_dir_all_creates_dst_if_absent() {
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(src.path().join("x.txt"), b"x").unwrap();
+
+        let dst_parent = tempfile::TempDir::new().unwrap();
+        let dst = dst_parent.path().join("new_dir");
+        // dst does not yet exist — copy_dir_all must create it.
+        copy_dir_all(src.path(), &dst).unwrap();
+        assert_eq!(std::fs::read(dst.join("x.txt")).unwrap(), b"x");
     }
 }
