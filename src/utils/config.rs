@@ -251,13 +251,28 @@ pub struct ScannerConfig {
 
     /// Run dynamic verification on each finding after the static pass.
     ///
-    /// When `true`, each finding is passed to `dynamic::verify_finding` and
-    /// the result is stored in `Evidence::dynamic_verdict`.  Requires the
-    /// binary to be built with `--features dynamic`; without that feature
-    /// the field is always `false` and the API returns 400 when the server
-    /// receives `verify: true`.
-    #[serde(default)]
+    /// Default `true` (M7 flip). Each `Confidence >= Medium` finding is
+    /// passed to `dynamic::verify_finding` and the result is stored in
+    /// `Evidence::dynamic_verdict`. Use `--no-verify` (CLI) or set
+    /// `verify = false` in `nyx.toml` to disable.
+    ///
+    /// Requires the binary to be built with `--features dynamic`; without
+    /// that feature the setting has no effect.
+    ///
+    /// Migration note: existing `nyx.toml` files that already set
+    /// `verify = false` keep the opt-out behaviour; only the inherited
+    /// default changes.
+    #[serde(default = "default_verify")]
     pub verify: bool,
+
+    /// Extend dynamic verification to findings below `Confidence::Medium`.
+    ///
+    /// By default only `Confidence >= Medium` findings are verified
+    /// (§5.1). Set this to `true` (or pass `--verify-all-confidence`)
+    /// to also verify `Low`-confidence findings.  Intended for
+    /// backfill / corpus-building runs, not production scans.
+    #[serde(default)]
+    pub verify_all_confidence: bool,
 
     /// Sandbox backend for dynamic verification.
     ///
@@ -266,6 +281,9 @@ pub struct ScannerConfig {
     /// `"process"`: in-process runner (same as `--unsafe-sandbox`).
     #[serde(default = "default_verify_backend")]
     pub verify_backend: String,
+}
+fn default_verify() -> bool {
+    true
 }
 fn default_verify_backend() -> String {
     "auto".to_owned()
@@ -306,7 +324,8 @@ impl Default for ScannerConfig {
             enable_auth_analysis: true,
             enable_panic_recovery: false,
             enable_auth_as_taint: false,
-            verify: false,
+            verify: true,
+            verify_all_confidence: false,
             verify_backend: "auto".to_owned(),
         }
     }

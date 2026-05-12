@@ -34,10 +34,17 @@ struct StartScanRequest {
     mode: Option<String>,
     /// Engine-depth profile: "fast" | "balanced" | "deep".
     engine_profile: Option<String>,
-    /// Run dynamic verification on findings after the static pass. Default false.
-    /// Requires the binary to be built with `--features dynamic`; returns 400
-    /// when the feature is absent and `verify: true` is requested.
+    /// Override dynamic verification for this scan.
+    ///
+    /// `true`  — force on even if config says off.
+    /// `false` — force off even if config says on (M7 default-on).
+    /// absent  — inherit config default (true since M7).
+    ///
+    /// Requires `--features dynamic`; `true` returns 400 when the
+    /// feature is absent.
     verify: Option<bool>,
+    /// Also verify `Confidence < Medium` findings. Default false.
+    verify_all_confidence: Option<bool>,
     #[allow(dead_code)]
     languages: Option<Vec<String>>,
     #[allow(dead_code)]
@@ -97,17 +104,26 @@ async fn start_scan(
         apply_engine_profile(&mut config, profile)?;
     }
 
-    if req.verify == Some(true) {
-        #[cfg(feature = "dynamic")]
-        {
-            config.scanner.verify = true;
+    match req.verify {
+        Some(true) => {
+            #[cfg(feature = "dynamic")]
+            {
+                config.scanner.verify = true;
+            }
+            #[cfg(not(feature = "dynamic"))]
+            {
+                return Err(bad_request(
+                    "binary built without --features dynamic; cannot use verify",
+                ));
+            }
         }
-        #[cfg(not(feature = "dynamic"))]
-        {
-            return Err(bad_request(
-                "binary built without --features dynamic; cannot use verify",
-            ));
+        Some(false) => {
+            config.scanner.verify = false;
         }
+        None => {}
+    }
+    if req.verify_all_confidence == Some(true) {
+        config.scanner.verify_all_confidence = true;
     }
 
     let event_tx = state.event_tx.clone();

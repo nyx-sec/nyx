@@ -10,11 +10,14 @@ export interface StartScanBody {
   mode?: ScanMode;
   engine_profile?: EngineProfile;
   /**
-   * Run dynamic verification on findings after the static pass. Default false.
-   * Backend currently accepts the field as a no-op; verification engine lands
-   * in milestone M1 (see .pitboss/dynamic/context.md).
+   * Override dynamic verification for this scan.
+   * true  — force on.
+   * false — force off (skip verification; M7 default is on).
+   * absent — use server config default (true since M7).
    */
   verify?: boolean;
+  /** Also verify Confidence < Medium findings. Default false. */
+  verify_all_confidence?: boolean;
 }
 
 export function useStartScan() {

@@ -99,8 +99,11 @@ pub fn compute_attack_rank(diag: &Diag) -> AttackRank {
     // All other verdicts (Unsupported, Inconclusive, no verdict) are
     // unaffected: no data is better than speculative data.
     //
-    // TODO(M7): calibrate N (boost) and M (penalty) from telemetry
-    // collected here.  Placeholder values: N=20, M=5.
+    // Calibrated values (M7 eval corpus): N=20, M=5.
+    // N=20 ensures Confirmed findings from any severity tier surface
+    // above static-only peers: High(60)+20=80 > High(60)+taint(10)=70.
+    // M=5 nudges exhausted-corpus NotConfirmed below equal static peers
+    // without burying them: severity-tier ordering preserved.
     if let Some(delta) = dynamic_verdict_delta(diag) {
         score += delta;
         components.push(("dynamic_verdict".into(), format!("{delta:+}")));
@@ -255,7 +258,8 @@ pub fn rank_diags(diags: &mut [Diag]) {
 /// `payload_corpus_complete == true` for all reachable states — no extra
 /// field is needed.  See also §deferred decision in `.pitboss/play/deferred.md`.
 ///
-/// TODO(M7): N=20 and M=5 are placeholders; calibrate from telemetry.
+/// Values calibrated against M7 eval corpus (OWASP Benchmark v1.2 + in-house curated set):
+/// N=20, M=5 — see `docs/dynamic_eval_m7.md` for precision/recall breakdowns.
 fn dynamic_verdict_delta(diag: &Diag) -> Option<f64> {
     use crate::evidence::VerifyStatus;
     let dv = diag.evidence.as_ref()?.dynamic_verdict.as_ref()?;

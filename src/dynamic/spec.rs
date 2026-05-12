@@ -107,17 +107,29 @@ impl HarnessSpec {
     /// Build a spec from a finding. Returns `Err` with a typed reason when
     /// the finding cannot be driven dynamically.
     ///
-    /// Conditions for `None` return:
-    /// - Confidence below `Medium`
+    /// Conditions for `Err` return:
+    /// - Confidence below `Medium` (bypass with `from_finding_opts(diag, true)`)
     /// - No `flow_steps` in evidence
     /// - No callable entry (source step missing a `function` annotation)
     /// - Unknown language (file extension unrecognised)
     /// - Zero sink capability bits
     pub fn from_finding(diag: &Diag) -> Result<Self, UnsupportedReason> {
-        // Require at least Medium confidence to attempt dynamic verification.
-        match diag.confidence {
-            Some(c) if c >= Confidence::Medium => {}
-            _ => return Err(UnsupportedReason::ConfidenceTooLow),
+        Self::from_finding_opts(diag, false)
+    }
+
+    /// Like `from_finding`, but with `verify_all_confidence=true` the
+    /// `Confidence >= Medium` gate is skipped so low-confidence findings
+    /// are also attempted.
+    pub fn from_finding_opts(
+        diag: &Diag,
+        verify_all_confidence: bool,
+    ) -> Result<Self, UnsupportedReason> {
+        // Require at least Medium confidence unless caller opts out.
+        if !verify_all_confidence {
+            match diag.confidence {
+                Some(c) if c >= Confidence::Medium => {}
+                _ => return Err(UnsupportedReason::ConfidenceTooLow),
+            }
         }
 
         let evidence = diag.evidence.as_ref().ok_or(UnsupportedReason::NoFlowSteps)?;

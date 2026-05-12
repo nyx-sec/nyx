@@ -38,7 +38,7 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
   const [scanRoot, setScanRoot] = useState('');
   const [mode, setMode] = useState<ScanMode>('full');
   const [engineProfile, setEngineProfile] = useState<EngineProfile>('balanced');
-  const [verify, setVerify] = useState(false);
+  const [noVerify, setNoVerify] = useState(false);
 
   const handleStart = async () => {
     const root = scanRoot.trim();
@@ -46,7 +46,7 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
     if (root && root !== defaultRoot) body.scan_root = root;
     if (mode !== 'full') body.mode = mode;
     body.engine_profile = engineProfile;
-    if (verify) body.verify = true;
+    if (noVerify) body.verify = false;
     const payload = Object.keys(body).length ? body : undefined;
     try {
       await startScan.mutateAsync(payload);
@@ -112,18 +112,17 @@ export function NewScanModal({ open, onClose }: NewScanModalProps) {
             <div className="toggle-inline">
               <input
                 type="checkbox"
-                id="new-scan-verify"
-                checked={verify}
-                onChange={(e) => setVerify(e.target.checked)}
+                id="new-scan-no-verify"
+                checked={noVerify}
+                onChange={(e) => setNoVerify(e.target.checked)}
               />
-              <label htmlFor="new-scan-verify">
-                Build a harness and try to fire each finding's payload in a
-                sandbox.
+              <label htmlFor="new-scan-no-verify">
+                Skip dynamic verification for this scan.
               </label>
             </div>
             <span className="form-hint">
-              Opt-in for now; will become the default once calibrated. Adds
-              wall-clock time per finding.
+              Verification runs by default on Medium and High confidence
+              findings. Check to skip and get a fast static-only result.
             </span>
           </div>
           <div className="scan-modal-actions">

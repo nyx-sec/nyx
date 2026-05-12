@@ -24,6 +24,9 @@ pub struct VerifyOptions {
     /// Path to the Nyx index database for the dynamic verdict cache (§12 Q5).
     /// When `None` (e.g. `--no-index` mode), the cache is bypassed entirely.
     pub db_path: Option<std::path::PathBuf>,
+    /// When `true`, skip the `Confidence >= Medium` gate and attempt
+    /// verification on all findings. Corresponds to `--verify-all-confidence`.
+    pub verify_all_confidence: bool,
 }
 
 impl VerifyOptions {
@@ -42,6 +45,7 @@ impl VerifyOptions {
             },
             project_root: None,
             db_path: None,
+            verify_all_confidence: config.scanner.verify_all_confidence,
         }
     }
 }
@@ -155,7 +159,7 @@ fn insert_verdict_cache(
 pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     let finding_id = format!("{:016x}", diag.stable_hash);
 
-    let spec = match HarnessSpec::from_finding(diag) {
+    let spec = match HarnessSpec::from_finding_opts(diag, opts.verify_all_confidence) {
         Ok(s) => s,
         Err(reason) => {
             return VerifyResult {

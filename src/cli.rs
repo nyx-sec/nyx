@@ -432,16 +432,34 @@ pub enum Commands {
 
         /// Build a harness and dynamically verify each finding in a sandbox.
         ///
-        /// Requires the binary to be built with `--features dynamic`. Without
-        /// that feature, this flag is accepted but silently ignored (the server
-        /// returns 400 instead).
+        /// Dynamic verification is on by default (M7). This flag is a no-op
+        /// when verification is already enabled via config. Use `--no-verify`
+        /// to disable for a single run. Requires the binary to be built with
+        /// `--features dynamic`; without that feature this flag is silently ignored.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic", conflicts_with = "no_verify")]
+        verify: bool,
+
+        /// Skip dynamic verification for this run.
+        ///
+        /// Overrides `verify = true` from config. Useful when you want a
+        /// fast static-only scan without permanently changing `nyx.toml`.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(long, help_heading = "Dynamic", conflicts_with = "verify")]
+        no_verify: bool,
+
+        /// Also verify `Confidence < Medium` findings dynamically.
+        ///
+        /// By default only `Confidence >= Medium` findings are verified (§5.1).
+        /// Pass this flag to run verification on all findings regardless of
+        /// confidence — intended for corpus-building and backfill runs.
         #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
         #[arg(long, help_heading = "Dynamic")]
-        verify: bool,
+        verify_all_confidence: bool,
 
         /// Force the process sandbox backend (less isolation, dev use only).
         ///
-        /// By default `--verify` uses docker when available. This flag
+        /// By default the docker backend is used when available. This flag
         /// restricts the backend to the in-process runner. Cannot be combined
         /// with `--backend docker`.
         #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]

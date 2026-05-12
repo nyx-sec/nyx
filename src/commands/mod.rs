@@ -98,6 +98,8 @@ pub fn handle_command(
             ast_only,
             cfg_only,
             verify,
+            no_verify,
+            verify_all_confidence,
             unsafe_sandbox,
             backend,
             baseline,
@@ -331,16 +333,25 @@ pub fn handle_command(
                 } else {
                     explicit_backend
                 };
-                if verify {
+                // --verify / --no-verify override the config default.
+                if no_verify {
+                    config.scanner.verify = false;
+                } else if verify {
                     config.scanner.verify = true;
+                }
+                // --verify-all-confidence overrides the confidence gate.
+                if verify_all_confidence {
+                    config.scanner.verify_all_confidence = true;
                 }
                 config.scanner.verify_backend = resolved_backend.to_owned();
             }
-            // Without the dynamic feature, --verify / --unsafe-sandbox / --backend
-            // are silently accepted (no-op). The server returns 400 instead.
+            // Without the dynamic feature, --verify / --no-verify / --unsafe-sandbox /
+            // --backend are silently accepted (no-op).
             #[cfg(not(feature = "dynamic"))]
             {
                 let _ = verify;
+                let _ = no_verify;
+                let _ = verify_all_confidence;
                 let _ = unsafe_sandbox;
                 let _ = backend;
             }
