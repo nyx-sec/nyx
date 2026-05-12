@@ -167,6 +167,13 @@ else
   else
     # Run each escape fixture under both Process and Docker backends.
     # A Confirmed verdict on an escape fixture is a gate failure.
+    # Additionally, check that no sentinel files were written to the host.
+    ESCAPE_SENTINEL_PATHS=(
+        "/tmp/nyx_escape_file_write_marker"
+    )
+    for _s in "${ESCAPE_SENTINEL_PATHS[@]}"; do
+        rm -f "$_s"
+    done
     ESCAPE_FAILED=0
     for fixture in "$ESCAPE_DIR"/*/; do
       [[ -d "$fixture" ]] || continue
@@ -196,7 +203,16 @@ print(len(confirmed))
         fi
       done
     done
+    for _s in "${ESCAPE_SENTINEL_PATHS[@]}"; do
+        if [[ -f "$_s" ]]; then
+            die "Gate 4: escape sentinel written to host: $_s"
+            ESCAPE_FAILED=1
+        fi
+    done
     [[ $ESCAPE_FAILED -eq 0 ]] && pass "Gate 4: sandbox escape suite green"
+    for _s in "${ESCAPE_SENTINEL_PATHS[@]}"; do
+        rm -f "$_s"
+    done
   fi
 fi
 

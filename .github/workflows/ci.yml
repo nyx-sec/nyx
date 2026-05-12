@@ -408,3 +408,6 @@ jobs:
         run: cargo nextest run --lib -p nyx-scanner dynamic::corpus
         env:
           RUST_LOG: error
+
+      - name: Corpus dashboard sync check (Python/Rust payload table parity)
+        run: python3 scripts/check_corpus_sync.py

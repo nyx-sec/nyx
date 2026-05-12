@@ -17,6 +17,29 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+LINE_TOLERANCE = 5
+
+_CAP_PREFIX_TABLE = [
+    ("taint.path_traversal", "path_traversal"),
+    ("taint.sql", "sqli"),
+    ("taint.xss", "xss"),
+    ("taint.ssrf", "ssrf"),
+    ("taint.cmdi", "cmdi"),
+    ("taint.deserialize", "deserialize"),
+    ("taint.redirect", "redirect"),
+    ("taint.xxe", "xxe"),
+    ("path_traversal", "path_traversal"),
+    ("sqli", "sqli"),
+    ("xss", "xss"),
+    ("ssrf", "ssrf"),
+    ("cmdi", "cmdi"),
+    ("deserialize", "deserialize"),
+    ("redirect", "redirect"),
+    ("xxe", "xxe"),
+    ("auth", "auth"),
+    ("taint", "taint"),
+]
+
 
 def load_json(path: str) -> object:
     with open(path) as f:
@@ -24,11 +47,9 @@ def load_json(path: str) -> object:
 
 
 def cap_of(finding: dict) -> str:
-    rule = finding.get("rule_id", "")
-    # Map rule_id prefix to cap name.
-    for cap in ["sqli", "xss", "cmdi", "ssrf", "deserialize", "path_traversal",
-                "redirect", "xxe", "taint", "auth"]:
-        if cap in rule.lower():
+    rule = finding.get("rule_id", "").lower()
+    for prefix, cap in _CAP_PREFIX_TABLE:
+        if rule.startswith(prefix):
             return cap
     return "other"
 
@@ -76,26 +97,45 @@ def main() -> int:
     if not args.inhouse and args.ground_truth and Path(args.ground_truth).exists():
         gt = load_json(args.ground_truth)
         # Ground truth format: list of {"path": ..., "line": ..., "cap": ..., "vuln": bool}
-        gt_true: set[tuple[str, int, str]] = set()
+        gt_true: list[dict] = []
         for entry in gt if isinstance(gt, list) else []:
             if entry.get("vuln"):
-                gt_true.add((entry.get("path", ""), entry.get("line", 0), entry.get("cap", "")))
+                gt_true.append({
+                    "path": entry.get("path", ""),
+                    "line": entry.get("line", 0),
+                    "cap": entry.get("cap", ""),
+                })
 
-        found_keys: set[tuple[str, int, str]] = set()
+        # Track which GT entries were matched (by index) to avoid double-counting.
+        matched_gt: set[int] = set()
+        # Track (path, cap) pairs that had at least one finding match.
+        found_path_caps: set[tuple[str, str]] = set()
+
         for f in findings:
-            key_gt = (f.get("path", ""), f.get("line", 0), cap_of(f))
-            found_keys.add(key_gt)
-            cap = cap_of(f)
+            f_path = f.get("path", "")
+            f_line = f.get("line", 0)
+            f_cap = cap_of(f)
+            cap = f_cap
             lang = lang_of(f)
             cell_key = (cap, lang)
-            if key_gt in gt_true:
+            matched_idx = None
+            for idx, gt_entry in enumerate(gt_true):
+                if (gt_entry["path"] == f_path
+                        and gt_entry["cap"] == f_cap
+                        and abs(gt_entry["line"] - f_line) <= LINE_TOLERANCE
+                        and idx not in matched_gt):
+                    matched_idx = idx
+                    break
+            if matched_idx is not None:
+                matched_gt.add(matched_idx)
+                found_path_caps.add((f_path, f_cap))
                 cells[cell_key]["tp"] += 1
             else:
                 cells[cell_key]["fp"] += 1
 
-        for gt_key in gt_true:
-            if gt_key not in found_keys:
-                cap = gt_key[2]
+        for idx, gt_entry in enumerate(gt_true):
+            if idx not in matched_gt:
+                cap = gt_entry["cap"]
                 cells[(cap, "unknown")]["fn"] += 1
 
     result = {
