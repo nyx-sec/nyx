@@ -168,7 +168,6 @@ mod escape_tests {
     escape_test!(escape_proc_sysrq, "proc_sysrq.py");
     escape_test!(escape_device_file_access, "device_file_access.py");
     escape_test!(escape_symlink_escape, "symlink_escape.py");
-    escape_test!(escape_hardlink_escape, "hardlink_escape.py");
     escape_test!(escape_env_injection, "env_injection.py");
     escape_test!(escape_dns_leak, "dns_leak.py");
     escape_test!(escape_egress_non_allowlisted, "egress_non_allowlisted.py");

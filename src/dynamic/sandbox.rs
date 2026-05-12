@@ -132,10 +132,42 @@ static CONTAINER_REGISTRY: OnceLock<dashmap::DashMap<String, String>> = OnceLock
 
 fn container_registry() -> &'static dashmap::DashMap<String, String> {
     CONTAINER_REGISTRY.get_or_init(|| {
-        // Best-effort cleanup at process exit.
-        // Containers are started with --rm, so they self-remove on stop.
+        // Register an atexit handler to stop containers on normal process exit.
+        // Containers are also started with --rm and `sleep 300` so they self-remove
+        // within 5 minutes if the handler doesn't run (e.g. SIGKILL).
+        #[cfg(unix)]
+        register_exit_cleanup();
         dashmap::DashMap::new()
     })
+}
+
+/// extern "C" fn registered via atexit(3).
+///
+/// Stops all containers in the registry with --time=0 (immediate SIGKILL).
+/// Runs on normal process exit and on `std::process::exit()`. Does not run
+/// on SIGKILL; the `sleep 300` in started containers bounds the leak window.
+#[cfg(unix)]
+extern "C" fn stop_all_containers() {
+    let Some(reg) = CONTAINER_REGISTRY.get() else { return };
+    let bin = std::env::var("NYX_DOCKER_BIN").unwrap_or_else(|_| "docker".to_owned());
+    for entry in reg.iter() {
+        let _ = std::process::Command::new(&bin)
+            .args(["stop", "--time=0", entry.key()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+#[cfg(unix)]
+fn register_exit_cleanup() {
+    unsafe extern "C" {
+        fn atexit(f: extern "C" fn()) -> i32;
+    }
+    // Safety: atexit(3) is async-signal-safe for registration; the handler
+    // itself runs on the main thread during normal shutdown, after all Rust
+    // destructors, so std::process::Command is safe to call from it.
+    unsafe { atexit(stop_all_containers) };
 }
 
 fn workdir_to_container_name(workdir: &Path) -> String {
@@ -263,8 +295,9 @@ fn start_container(name: &str, workdir: &Path, image: &str) -> Result<(), Sandbo
             "--cap-drop=ALL",
             "--security-opt", "no-new-privileges:true",
             "--network", "none",
+            "--tmpfs", "/tmp:size=128m,exec",
             image,
-            "sleep", "3600",
+            "sleep", "300",
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -355,14 +388,24 @@ fn exec_in_container(
     let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let timed_out_clone = timed_out.clone();
     let child_id = child.id();
+    let container_name_for_kill = container_name.to_owned();
 
     let _timer = std::thread::spawn(move || {
         std::thread::sleep(timeout);
         timed_out_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Kill the local docker-exec client.
         #[cfg(unix)]
         libc_kill(child_id as i32, 9);
         #[cfg(not(unix))]
         let _ = child_id;
+        // Also kill all non-PID-1 processes inside the container so runaway
+        // payloads (fork bombs, infinite loops) don't keep consuming host
+        // resources after the harness reports timed_out.
+        let _ = std::process::Command::new(docker_bin())
+            .args(["exec", &container_name_for_kill, "kill", "-9", "-1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     });
 
     let limit = opts.output_limit;

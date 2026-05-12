@@ -264,8 +264,11 @@ pub struct ScannerConfig {
     /// `"auto"` (default): docker when available, else process.
     /// `"docker"`: require docker; fail if unavailable.
     /// `"process"`: in-process runner (same as `--unsafe-sandbox`).
-    #[serde(default)]
+    #[serde(default = "default_verify_backend")]
     pub verify_backend: String,
+}
+fn default_verify_backend() -> String {
+    "auto".to_owned()
 }
 impl Default for ScannerConfig {
     fn default() -> Self {
