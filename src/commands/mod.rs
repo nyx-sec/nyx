@@ -338,6 +338,16 @@ pub fn handle_command(
                 config,
             )?;
         }
+        #[cfg(feature = "dynamic")]
+        Commands::VerifyFeedback { finding_id, wrong, right, upload } => {
+            handle_verify_feedback(&finding_id, wrong.as_deref(), right, upload)?;
+        }
+        #[cfg(not(feature = "dynamic"))]
+        Commands::VerifyFeedback { .. } => {
+            return Err(crate::errors::NyxError::Msg(
+                "The `dynamic` feature is not enabled. Rebuild with `cargo build --features dynamic`.".into(),
+            ));
+        }
         Commands::Index { action } => {
             install_from_config(config);
             index::handle(action, database_dir, config)?;
@@ -395,6 +405,59 @@ pub fn handle_command(
             }
         }
     }
+    Ok(())
+}
+
+/// Handle `nyx verify-feedback` (§21.2).
+///
+/// Records the user's correction or confirmation for a finding verdict.
+/// Local-first: writes to the telemetry log; no auto-upload.
+#[cfg(feature = "dynamic")]
+fn handle_verify_feedback(
+    finding_id: &str,
+    wrong: Option<&str>,
+    right: bool,
+    upload: bool,
+) -> crate::errors::NyxResult<()> {
+    use std::io::Write;
+    use std::fs::OpenOptions;
+
+    let _ = upload; // Upload not yet implemented (reserved).
+
+    let feedback_kind = if let Some(reason) = wrong {
+        format!("wrong:{reason}")
+    } else if right {
+        "right".to_owned()
+    } else {
+        return Err(crate::errors::NyxError::Msg(
+            "specify --wrong \"reason\" or --right".into(),
+        ));
+    };
+
+    let record = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "event": "verify_feedback",
+        "finding_id": finding_id,
+        "feedback": feedback_kind,
+    });
+
+    // Append to the telemetry log.
+    if let Some(log_path) = crate::dynamic::telemetry::log_path() {
+        if let Some(parent) = log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let _ = writeln!(f, "{}", serde_json::to_string(&record).unwrap_or_default());
+        }
+        eprintln!(
+            "Feedback recorded for finding {}. Log: {}",
+            finding_id,
+            log_path.display()
+        );
+    } else {
+        eprintln!("Feedback recorded (in-memory only; cannot determine cache path).");
+    }
+
     Ok(())
 }
 

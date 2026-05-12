@@ -14,6 +14,7 @@
 //! | `src/main.rs`                | binary entry point; wires --features dynamic|
 //! | `src/lib.rs`                 | crate root; `#[cfg(feature="dynamic")]` mod|
 //! | `src/commands/scan.rs`       | enrichment loop lives here                |
+//! | `src/commands/mod.rs`        | `verify-feedback` subcommand (§21.2)      |
 //! | `src/server/` (any file)     | server start_scan verify wiring           |
 
 use std::fs;
@@ -25,6 +26,7 @@ const ALLOWED: &[&str] = &[
     "main.rs",
     "lib.rs",
     "commands/scan.rs",
+    "commands/mod.rs",
     "server/",
     // The dynamic module itself is obviously allowed.
     "dynamic/",

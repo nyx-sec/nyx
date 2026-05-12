@@ -206,6 +206,27 @@ pub mod index {
             first_seen_at TEXT NOT NULL
         );
 
+        -- Dynamic verdict cache (§12 Q5).
+        -- Keyed on (spec_hash, entry_content_hash, transitive_import_digest).
+        -- Invalidation: any of entry content, import digest, toolchain_id,
+        -- corpus_version, or spec_format_version change → DELETE row → re-run.
+        CREATE TABLE IF NOT EXISTS dynamic_verdict_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            spec_hash TEXT NOT NULL,
+            entry_content_hash TEXT NOT NULL,
+            transitive_import_digest TEXT NOT NULL,
+            toolchain_id TEXT NOT NULL,
+            corpus_version INTEGER NOT NULL,
+            spec_format_version INTEGER NOT NULL,
+            verdict_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(spec_hash, entry_content_hash, transitive_import_digest,
+                   toolchain_id, corpus_version, spec_format_version)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_dynamic_verdict_cache_spec_hash
+            ON dynamic_verdict_cache(spec_hash);
+
         -- Indexes on (project, file_path) for the per-file replace_* paths.
         -- Without these, every DELETE WHERE project=? AND file_path=? does a
         -- full table scan, which dominates indexing time as the cache grows.

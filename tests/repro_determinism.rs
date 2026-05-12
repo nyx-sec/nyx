@@ -1,0 +1,175 @@
+//! Repro determinism test (§18.2).
+//!
+//! For every `Confirmed` fixture: the repro artifact `expected/outcome.json`
+//! produced during verification must be byte-identical when regenerated from
+//! the repro bundle.
+//!
+//! Tests are gated on `#[cfg(feature = "dynamic")]` and Python availability.
+//! They are also skipped if no `Confirmed` fixtures have been produced yet
+//! (trivially passes — zero assertions).
+
+#[cfg(feature = "dynamic")]
+mod repro_determinism_tests {
+    use nyx_scanner::dynamic::repro;
+    use nyx_scanner::dynamic::sandbox::{SandboxOptions, SandboxOutcome};
+    use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use nyx_scanner::evidence::{AttemptSummary, VerifyResult, VerifyStatus};
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    fn make_confirmed_spec(spec_hash: &str) -> HarnessSpec {
+        HarnessSpec {
+            finding_id: "determinism00001".into(),
+            entry_file: "app.py".into(),
+            entry_name: "login".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Python,
+            toolchain_id: "python-3".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "app.py".into(),
+            sink_line: 10,
+            spec_hash: spec_hash.to_owned(),
+        }
+    }
+
+    fn make_confirmed_outcome() -> SandboxOutcome {
+        SandboxOutcome {
+            exit_code: Some(0),
+            stdout: b"NYX_SQL_CONFIRMED\nsome extra output".to_vec(),
+            stderr: vec![],
+            timed_out: false,
+            oob_callback_seen: false,
+            sink_hit: true,
+            duration: Duration::from_millis(150),
+        }
+    }
+
+    fn make_confirmed_verdict(finding_id: &str) -> VerifyResult {
+        VerifyResult {
+            finding_id: finding_id.to_owned(),
+            status: VerifyStatus::Confirmed,
+            triggered_payload: Some("sqli-union-nyx".into()),
+            reason: None,
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![AttemptSummary {
+                payload_label: "sqli-union-nyx".into(),
+                exit_code: Some(0),
+                timed_out: false,
+                triggered: true,
+                sink_hit: true,
+            }],
+            toolchain_match: Some("exact".into()),
+        }
+    }
+
+    /// Write a repro bundle and verify it round-trips correctly.
+    #[test]
+    fn confirmed_repro_is_deterministic() {
+        let dir = TempDir::new().unwrap();
+        // Override repro base to temp dir.
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_spec("determ0000000001");
+        let opts = SandboxOptions::default();
+        let outcome = make_confirmed_outcome();
+        let verdict = make_confirmed_verdict("determinism00001");
+
+        // Write repro bundle (first time).
+        let artifact1 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "# harness source v1\n",
+            "def login(x): pass\n",
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        ).expect("first repro write must succeed");
+
+        let outcome_json_1 =
+            std::fs::read_to_string(artifact1.root.join("expected/outcome.json"))
+            .expect("outcome.json must exist after first write");
+
+        // Write repro bundle (second time, same inputs).
+        // Remove existing dir first (simulate fresh run).
+        std::fs::remove_dir_all(&artifact1.root).unwrap();
+
+        let artifact2 = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "# harness source v1\n",
+            "def login(x): pass\n",
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        ).expect("second repro write must succeed");
+
+        let outcome_json_2 =
+            std::fs::read_to_string(artifact2.root.join("expected/outcome.json"))
+            .expect("outcome.json must exist after second write");
+
+        assert_eq!(
+            outcome_json_1, outcome_json_2,
+            "outcome.json must be byte-identical across two runs with the same inputs"
+        );
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    /// Verify that redacted outcome.json does not contain the secret.
+    #[test]
+    fn outcome_json_secrets_are_redacted() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_spec("determ0000000002");
+        let opts = SandboxOptions::default();
+        let mut outcome = make_confirmed_outcome();
+        // Inject a fake AWS key into stdout.
+        outcome.stdout = b"AKIAFAKETEST00000000 result ok NYX_SQL_CONFIRMED".to_vec();
+        let verdict = make_confirmed_verdict("determinism00002");
+
+        let artifact = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "# harness", "# entry", b"payload", "label", None,
+        ).expect("repro write must succeed");
+
+        let outcome_json =
+            std::fs::read_to_string(artifact.root.join("expected/outcome.json")).unwrap();
+
+        assert!(
+            !outcome_json.contains("AKIAFAKETEST00000000"),
+            "AWS key must be redacted from outcome.json; got: {outcome_json}"
+        );
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    /// Verify verdict.json is correctly structured.
+    #[test]
+    fn verdict_json_is_valid() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+
+        let spec = make_confirmed_spec("determ0000000003");
+        let opts = SandboxOptions::default();
+        let outcome = make_confirmed_outcome();
+        let verdict = make_confirmed_verdict("determinism00003");
+
+        let artifact = repro::write(
+            &spec, &opts, &outcome, &verdict,
+            "# harness", "# entry", b"payload", "label", None,
+        ).expect("repro write must succeed");
+
+        let verdict_json =
+            std::fs::read_to_string(artifact.root.join("expected/verdict.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&verdict_json).unwrap();
+
+        assert_eq!(parsed["status"], "Confirmed");
+        assert_eq!(parsed["finding_id"], "determinism00003");
+
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+}

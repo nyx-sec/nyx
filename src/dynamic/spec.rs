@@ -93,6 +93,11 @@ pub struct HarnessSpec {
     /// Populated later from `Evidence::engine_notes` when available.
     #[serde(default)]
     pub constraint_hints: Vec<String>,
+    /// Project-relative path of the file containing the sink call site.
+    /// Used by the harness emitter to instrument the exact line.
+    pub sink_file: String,
+    /// 1-based line number of the sink call site in `sink_file`.
+    pub sink_line: u32,
     /// Blake3 hash (16 hex chars) of the spec's key fields, version-pinned.
     /// Stable across identical specs; used for deduplication and caching.
     pub spec_hash: String,
@@ -137,6 +142,15 @@ impl HarnessSpec {
 
         let toolchain_id = toolchain_id_for_lang(lang).to_owned();
 
+        // Sink location: prefer explicit sink step; fall back to diag location.
+        let (sink_file, sink_line) = evidence
+            .flow_steps
+            .iter()
+            .rev()
+            .find(|s| matches!(s.kind, FlowStepKind::Sink))
+            .map(|s| (s.file.clone(), s.line))
+            .unwrap_or_else(|| (diag.path.clone(), diag.line as u32));
+
         let mut spec = HarnessSpec {
             finding_id: format!("{:016x}", diag.stable_hash),
             entry_file: entry.file,
@@ -147,6 +161,8 @@ impl HarnessSpec {
             payload_slot: PayloadSlot::Param(0),
             expected_cap,
             constraint_hints: vec![],
+            sink_file,
+            sink_line,
             spec_hash: String::new(),
         };
 
@@ -244,6 +260,9 @@ fn compute_spec_hash(spec: &HarnessSpec) -> String {
 
     h.update(spec.toolchain_id.as_bytes());
     h.update(b"\0");
+    h.update(spec.sink_file.as_bytes());
+    h.update(b"\0");
+    h.update(&spec.sink_line.to_le_bytes());
     h.update(&CORPUS_VERSION.to_le_bytes());
 
     let out = h.finalize();
@@ -389,6 +408,8 @@ mod tests {
             payload_slot: PayloadSlot::Param(0),
             expected_cap: Cap::SQL_QUERY,
             constraint_hints: vec![],
+            sink_file: "src/handler.rs".into(),
+            sink_line: 10,
             spec_hash: String::new(),
         };
         spec.spec_hash = compute_spec_hash(&spec);

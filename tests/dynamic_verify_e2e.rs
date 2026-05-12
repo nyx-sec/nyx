@@ -86,16 +86,16 @@ mod verify_e2e {
     }
 
     /// A finding with a supported cap (SQL_QUERY) and a derivable spec reaches
-    /// `harness::build`, which returns `Unimplemented` in phase M1, producing
-    /// `VerifyStatus::Unsupported` with `reason = BackendUnavailable`.
+    /// `harness::build`. The finding uses a Rust entry file, so the Python-only
+    /// harness emitter returns `LangUnsupported`.
     #[test]
-    fn verify_finding_with_supported_cap_returns_backend_unavailable() {
+    fn verify_finding_rust_lang_returns_lang_unsupported() {
         let diag = taint_diag_with_cap(Cap::SQL_QUERY);
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
 
         assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::BackendUnavailable));
+        assert_eq!(result.reason, Some(UnsupportedReason::LangUnsupported));
         assert!(result.triggered_payload.is_none());
         assert!(result.attempts.is_empty());
     }
@@ -127,11 +127,11 @@ mod verify_e2e {
         assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
     }
 
-    /// The JSON shape of `VerifyResult` for `BackendUnavailable` matches the
-    /// documented contract: `status`, `reason` present; `triggered_payload`,
-    /// `detail`, `attempts` absent (skipped by serde default).
+    /// The JSON shape of `VerifyResult` for a Rust finding (lang unsupported)
+    /// matches the documented contract: `status`, `reason` present;
+    /// `triggered_payload`, `detail`, `attempts` absent (skipped by serde).
     #[test]
-    fn verify_result_json_shape_backend_unavailable() {
+    fn verify_result_json_shape_lang_unsupported() {
         let diag = taint_diag_with_cap(Cap::SQL_QUERY);
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
@@ -140,7 +140,7 @@ mod verify_e2e {
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
 
         assert_eq!(v["status"], "Unsupported");
-        assert_eq!(v["reason"], "BackendUnavailable");
+        assert_eq!(v["reason"], "LangUnsupported");
         assert!(v.get("triggered_payload").is_none(), "triggered_payload must be absent");
         assert!(v.get("detail").is_none(), "detail must be absent");
         assert!(v.get("attempts").is_none(), "attempts must be absent (empty vec skipped)");

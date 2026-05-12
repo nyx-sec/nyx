@@ -162,7 +162,7 @@ pub struct SymbolicVerdict {
 ///
 /// Typed so that callers can pattern-match on the reason rather than parsing
 /// strings. Serializes as PascalCase (e.g. `"BackendUnavailable"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum UnsupportedReason {
     /// The binary was not built with `--features dynamic`, or no backend
@@ -181,6 +181,27 @@ pub enum UnsupportedReason {
     /// A `HarnessSpec` could not be derived from the finding (missing entry
     /// function, unresolvable language, or zero sink capability bits).
     SpecDerivationFailed,
+    /// The harness required a file that was redacted by the mount filter for
+    /// secret containment. Path of the redacted file is carried inline.
+    RequiredFileRedactedForSecrets(String),
+    /// The language is not yet supported by the dynamic harness emitter.
+    LangUnsupported,
+}
+
+/// Typed reason for `VerifyStatus::Inconclusive`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum InconclusiveReason {
+    /// The oracle fired but the sink-reachability probe did not — likely an
+    /// oracle collision where a coincidental output matched the marker pattern.
+    OracleCollisionSuspected,
+    /// The repro artifact could not be written to disk; verdict cannot be
+    /// independently reproduced.
+    NonReproducible,
+    /// Harness build failed after retries.
+    BuildFailed,
+    /// Sandbox error (spawn failure, I/O error, etc.).
+    SandboxError,
 }
 
 /// High-level outcome of a dynamic verification attempt.
@@ -209,6 +230,9 @@ pub struct AttemptSummary {
     pub exit_code: Option<i32>,
     pub timed_out: bool,
     pub triggered: bool,
+    /// Whether the in-harness sink-reachability probe fired for this attempt.
+    #[serde(default)]
+    pub sink_hit: bool,
 }
 
 /// Result of a dynamic verification attempt for one finding.
@@ -229,12 +253,19 @@ pub struct VerifyResult {
     /// Typed reason for `Unsupported` status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<UnsupportedReason>,
+    /// Typed reason for `Inconclusive` status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inconclusive_reason: Option<InconclusiveReason>,
     /// Free-form error detail (used for `Inconclusive` status).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     /// Per-attempt log.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attempts: Vec<AttemptSummary>,
+    /// How well the resolved toolchain matches the project's pinned toolchain.
+    /// `"exact"` = precise match; `"drift"` = closest approximation used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toolchain_match: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

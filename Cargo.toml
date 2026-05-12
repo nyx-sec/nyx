@@ -68,6 +68,11 @@ required-features = ["docgen"]
 name = "scan_bench"
 harness = false
 
+[[bench]]
+name = "dynamic_bench"
+harness = false
+required-features = []
+
 [dev-dependencies]
 tempfile = "3.27.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }

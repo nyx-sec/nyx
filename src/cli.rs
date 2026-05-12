@@ -440,6 +440,28 @@ pub enum Commands {
         verify: bool,
     },
 
+    /// Submit feedback on a dynamic verification verdict (§21.2).
+    ///
+    /// Records a correction or confirmation for a finding's verdict in the
+    /// local telemetry log. Requires `--features dynamic`.
+    #[cfg_attr(not(feature = "dynamic"), command(hide = true))]
+    VerifyFeedback {
+        /// Stable finding ID (16-char hex, shown in `nyx scan --verify` output).
+        finding_id: String,
+
+        /// Mark this verdict as wrong and record a reason.
+        #[arg(long, conflicts_with = "right")]
+        wrong: Option<String>,
+
+        /// Confirm this verdict is correct.
+        #[arg(long, conflicts_with = "wrong")]
+        right: bool,
+
+        /// Upload feedback to Nyx telemetry (not yet implemented; reserved).
+        #[arg(long)]
+        upload: bool,
+    },
+
     /// Manage project indexes
     Index {
         #[command(subcommand)]

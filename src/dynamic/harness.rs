@@ -5,14 +5,18 @@
 //! 1. Imports/loads the target module from the project tree.
 //! 2. Reads the payload from a known channel (env var `NYX_PAYLOAD`).
 //! 3. Invokes the entry point with the payload routed to the right slot.
-//! 4. Lets the sink either fire or not — the oracle observes from outside.
+//! 4. Instruments the sink call site with a `sys.settrace` probe
+//!    (`__NYX_SINK_HIT__` sentinel on stdout).
+//! 5. Lets the sink either fire or not — the oracle observes from outside.
 //!
 //! One generator per [`Lang`]. Each emits source plus a build command.
 //! Build artefacts are staged inside the sandbox working dir, never the
 //! user's tree.
 
+use crate::dynamic::lang;
 use crate::dynamic::spec::HarnessSpec;
-use crate::symbol::Lang;
+use crate::evidence::UnsupportedReason;
+use std::fs;
 use std::path::PathBuf;
 
 /// A built harness ready to hand off to the sandbox.
@@ -20,27 +24,104 @@ use std::path::PathBuf;
 pub struct BuiltHarness {
     /// Working directory containing the harness source + any build output.
     pub workdir: PathBuf,
-    /// Command to invoke (e.g. `["python3", "harness.py"]` or
-    /// `["./target/release/harness"]`).
+    /// Command to invoke (e.g. `["python3", "harness.py"]`).
     pub command: Vec<String>,
-    /// Environment variables to set when running. Payload bytes go in via
-    /// `NYX_PAYLOAD` regardless of language.
+    /// Environment variables to set when running.
     pub env: Vec<(String, String)>,
+    /// Generated harness source code (for repro artifacts).
+    pub source: String,
+    /// Entry-point source extracted from the project (may be empty if not found).
+    pub entry_source: String,
 }
 
-/// Build a harness from a spec. Returns the artefact + run command.
+/// Build a harness from a spec. Returns the artifact + run command.
+pub fn build(spec: &HarnessSpec) -> Result<BuiltHarness, HarnessError> {
+    // Emit source via the language-specific emitter.
+    let harness_src = lang::emit(spec).map_err(HarnessError::Unsupported)?;
+
+    // Stage in a temporary workdir.
+    let workdir = stage_harness(spec, &harness_src)?;
+
+    // Extract entry source for repro artifacts (best-effort; not fatal).
+    let entry_source = extract_entry_source(spec);
+
+    Ok(BuiltHarness {
+        workdir,
+        command: harness_src.command,
+        env: vec![],
+        source: harness_src.source,
+        entry_source,
+    })
+}
+
+/// Write the harness source to a temporary working directory.
 ///
-/// Stub: per-language emitters will live in their own files
-/// (`harness/python.rs`, `harness/rust.rs`, etc.) and dispatch off
-/// `spec.lang`.
-pub fn build(_spec: &HarnessSpec) -> Result<BuiltHarness, HarnessError> {
-    Err(HarnessError::Unimplemented)
+/// On Unix we prefer `/tmp/nyx-harness/{spec_hash}` over `env::temp_dir()`
+/// because macOS' `$TMPDIR` resolves to `/var/folders/.../T/` — deep enough
+/// that traversal payloads like `../../../../etc/passwd` cannot escape to
+/// `/` from the workdir, which masks path-traversal verdicts. `/tmp` is
+/// shallow (resolves to `/private/tmp` on macOS, `/tmp` on Linux) and keeps
+/// payload depth assumptions portable.
+fn stage_harness(
+    spec: &HarnessSpec,
+    harness_src: &lang::HarnessSource,
+) -> Result<PathBuf, HarnessError> {
+    let base_dir = if cfg!(unix) {
+        PathBuf::from("/tmp/nyx-harness")
+    } else {
+        std::env::temp_dir().join("nyx-harness")
+    };
+    let workdir = base_dir.join(&spec.spec_hash);
+    fs::create_dir_all(&workdir)?;
+
+    // Write harness source.
+    let harness_path = workdir.join(&harness_src.filename);
+    fs::write(&harness_path, harness_src.source.as_bytes())?;
+
+    // Copy the entry file into the workdir so the harness can import it.
+    copy_entry_file(spec, &workdir);
+
+    Ok(workdir)
+}
+
+/// Copy the entry Python file to the workdir so the harness can `import` it.
+/// Best-effort: silently skips if the file cannot be found/copied.
+fn copy_entry_file(spec: &HarnessSpec, workdir: &PathBuf) {
+    // Try the entry file relative to the project root candidates.
+    let candidates = [
+        PathBuf::from(&spec.entry_file),
+        PathBuf::from(".").join(&spec.entry_file),
+    ];
+    for src in &candidates {
+        if src.exists() {
+            if let Some(fname) = src.file_name() {
+                let dst = workdir.join(fname);
+                if !dst.exists() {
+                    let _ = fs::copy(src, &dst);
+                }
+            }
+            return;
+        }
+    }
+}
+
+/// Extract the source of the entry file (for repro bundles). Best-effort.
+fn extract_entry_source(spec: &HarnessSpec) -> String {
+    let candidates = [
+        PathBuf::from(&spec.entry_file),
+        PathBuf::from(".").join(&spec.entry_file),
+    ];
+    for path in &candidates {
+        if let Ok(s) = fs::read_to_string(path) {
+            return s;
+        }
+    }
+    String::new()
 }
 
 #[derive(Debug)]
 pub enum HarnessError {
-    Unimplemented,
-    UnsupportedLang(Lang),
+    Unsupported(UnsupportedReason),
     BuildFailed(String),
     Io(std::io::Error),
 }
@@ -48,5 +129,64 @@ pub enum HarnessError {
 impl From<std::io::Error> for HarnessError {
     fn from(e: std::io::Error) -> Self {
         HarnessError::Io(e)
+    }
+}
+
+impl std::fmt::Display for HarnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HarnessError::Unsupported(r) => write!(f, "unsupported: {r:?}"),
+            HarnessError::BuildFailed(msg) => write!(f, "build failed: {msg}"),
+            HarnessError::Io(e) => write!(f, "I/O: {e}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use crate::labels::Cap;
+    use crate::symbol::Lang;
+
+    #[test]
+    fn build_unsupported_lang_returns_err() {
+        let spec = HarnessSpec {
+            finding_id: "0000000000000001".into(),
+            entry_file: "src/main.rs".into(),
+            entry_name: "handle_request".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Rust,
+            toolchain_id: "rust-stable".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "src/main.rs".into(),
+            sink_line: 5,
+            spec_hash: "0000000000000000".into(),
+        };
+        let err = build(&spec).unwrap_err();
+        assert!(matches!(err, HarnessError::Unsupported(_)));
+    }
+
+    #[test]
+    fn build_python_creates_workdir() {
+        let spec = HarnessSpec {
+            finding_id: "0000000000000001".into(),
+            entry_file: "src/app.py".into(),
+            entry_name: "login".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Python,
+            toolchain_id: "python-3".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "src/app.py".into(),
+            sink_line: 10,
+            spec_hash: "test0000abcd1234".into(),
+        };
+        let harness = build(&spec).unwrap();
+        assert!(harness.workdir.join("harness.py").exists());
+        assert!(!harness.source.is_empty());
     }
 }
