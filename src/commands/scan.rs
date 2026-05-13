@@ -333,6 +333,46 @@ pub(crate) fn is_preview_tier_path(path: &Path) -> bool {
     )
 }
 
+/// Load every persisted `FuncSummary` for `project` from `db_path` and fold
+/// them into a [`GlobalSummaries`]. Best-effort: any failure (pool init,
+/// summary load) logs and returns `None`, leaving dynamic verification on
+/// the no-summaries code path.
+///
+/// Called once at the top of the verify loop so per-finding spec derivation
+/// hits an in-memory index, not SQLite. The index is wrapped in `Arc` so
+/// `VerifyOptions` can be cloned cheaply if a caller threads it onto
+/// multiple findings concurrently in the future.
+#[cfg(feature = "dynamic")]
+fn load_verify_summaries(
+    project: &str,
+    db_path: &Path,
+    scan_root: &Path,
+) -> Option<Arc<crate::summary::GlobalSummaries>> {
+    let pool = match Indexer::init(db_path) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::debug!("verify: indexer init failed; summary-driven spec derivation off: {e}");
+            return None;
+        }
+    };
+    let idx = match Indexer::from_pool(project, &pool) {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::debug!("verify: indexer open failed; summary-driven spec derivation off: {e}");
+            return None;
+        }
+    };
+    let all = match idx.load_all_summaries() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::debug!("verify: load_all_summaries failed; spec derivation off: {e}");
+            return None;
+        }
+    };
+    let root_str = scan_root.to_string_lossy().into_owned();
+    Some(Arc::new(crate::summary::merge_summaries(all, Some(&root_str))))
+}
+
 /// Entry point called by the CLI.
 #[allow(clippy::too_many_arguments)]
 pub fn handle(
@@ -483,6 +523,12 @@ pub fn handle(
         // When index_mode is Off, the DB is never created, so no cache.
         if index_mode != IndexMode::Off && db_path.exists() {
             opts.db_path = Some(db_path.clone());
+            // Preload cross-file summaries once so the spec-derivation
+            // pipeline can resolve the enclosing function's `FuncSummary`
+            // (strategy 3) and its static `entry_kind` (strategy 4)
+            // without re-hitting SQLite per finding. Best-effort: a load
+            // failure logs and falls through to the substring heuristics.
+            opts.summaries = load_verify_summaries(&project_name, &db_path, &scan_path);
         }
         for diag in &mut diags {
             let result = crate::dynamic::verify::verify_finding(diag, &opts);

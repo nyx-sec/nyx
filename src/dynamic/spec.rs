@@ -19,9 +19,9 @@
 
 use crate::commands::scan::Diag;
 use crate::dynamic::corpus::CORPUS_VERSION;
-use crate::evidence::{Confidence, FlowStep, FlowStepKind, UnsupportedReason};
+use crate::evidence::{Confidence, FlowStepKind, UnsupportedReason};
 use crate::labels::Cap;
-use crate::summary::FuncSummary;
+use crate::summary::{FuncSummary, GlobalSummaries};
 use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -158,6 +158,32 @@ impl HarnessSpec {
         diag: &Diag,
         verify_all_confidence: bool,
     ) -> Result<Self, UnsupportedReason> {
+        Self::from_finding_with_summaries(diag, verify_all_confidence, None)
+    }
+
+    /// Strategy-aware constructor that consults `summaries` when present.
+    ///
+    /// When `summaries` is `Some`, strategy 3 ([`SpecDerivationStrategy::FromFuncSummaryWalk`])
+    /// looks up the enclosing function's [`FuncSummary`] by `(lang, name, file)`
+    /// — derived from `evidence.flow_steps[*].function` — and pulls a real
+    /// `tainted_sink_params` slot rather than no-op'ing as it does in the
+    /// `None` path. Strategy 4 additionally upgrades the
+    /// `.http.` / `.cli.` substring heuristic by consulting
+    /// [`FuncSummary::entry_kind`] on the resolved summary; an HTTP-shaped
+    /// entry-kind variant becomes `EntryKind::HttpRoute` regardless of the
+    /// rule id, and the legacy substring fallback runs only when no summary
+    /// is found.
+    ///
+    /// The `entry_name` populated by strategies 2 and 4 is also resolved
+    /// from `evidence.flow_steps[*].function` (the authoritative enclosing
+    /// function annotation set by the SSA taint engine) rather than from
+    /// `evidence.sink.snippet` / `evidence.source.snippet`, which carry
+    /// shortened callee text — never the enclosing-function name.
+    pub fn from_finding_with_summaries(
+        diag: &Diag,
+        verify_all_confidence: bool,
+        summaries: Option<&GlobalSummaries>,
+    ) -> Result<Self, UnsupportedReason> {
         if !verify_all_confidence {
             match diag.confidence {
                 Some(c) if c >= Confidence::Medium => {}
@@ -171,13 +197,13 @@ impl HarnessSpec {
         if let Some(spec) = derive_from_flow_steps(diag, evidence) {
             return Ok(spec);
         }
-        if let Some(spec) = derive_from_rule_namespace(diag, evidence) {
+        if let Some(spec) = derive_from_rule_namespace_with(diag, evidence, summaries) {
             return Ok(spec);
         }
-        if let Some(spec) = derive_from_func_summary(diag, evidence, None) {
+        if let Some(spec) = derive_from_func_summary_auto(diag, evidence, summaries) {
             return Ok(spec);
         }
-        if let Some(spec) = derive_from_callgraph_entry(diag, evidence) {
+        if let Some(spec) = derive_from_callgraph_entry_with(diag, evidence, summaries) {
             return Ok(spec);
         }
 
@@ -249,6 +275,20 @@ pub fn derive_from_rule_namespace(
     diag: &Diag,
     evidence: &crate::evidence::Evidence,
 ) -> Option<HarnessSpec> {
+    derive_from_rule_namespace_with(diag, evidence, None)
+}
+
+/// Like [`derive_from_rule_namespace`], but consults `summaries` to recover the
+/// enclosing function name when `evidence.flow_steps` does not carry one.
+///
+/// When neither flow_steps nor the summary index resolve a name, the entry
+/// name falls back to `"<unknown>"` (kept stable across runs so spec hashes
+/// remain reproducible).
+pub fn derive_from_rule_namespace_with(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: Option<&GlobalSummaries>,
+) -> Option<HarnessSpec> {
     let mut iter = diag.id.split('.');
     let lang_prefix = iter.next()?;
     let category = iter.next()?;
@@ -284,11 +324,7 @@ pub fn derive_from_rule_namespace(
         }
     }
 
-    let entry_function = evidence
-        .sink
-        .as_ref()
-        .and_then(|s| s.snippet.clone())
-        .filter(|s| !s.is_empty())
+    let entry_function = resolve_enclosing_function(diag, evidence, summaries, lang)
         .unwrap_or_else(|| "<unknown>".to_owned());
 
     Some(finalize_spec(
@@ -353,6 +389,26 @@ pub fn derive_from_func_summary(
     Some(spec)
 }
 
+// ── Strategy 3 (auto): locate the enclosing FuncSummary in `summaries` ───────
+
+/// Resolve the enclosing function's [`FuncSummary`] from `summaries` and
+/// delegate to [`derive_from_func_summary`].
+///
+/// Returns `None` when `summaries` is `None`, when the enclosing function
+/// name cannot be recovered from `evidence.flow_steps`, or when no summary
+/// matches `(lang, name, file)`.
+fn derive_from_func_summary_auto(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: Option<&GlobalSummaries>,
+) -> Option<HarnessSpec> {
+    let summaries = summaries?;
+    let lang = lang_from_path(&diag.path)?;
+    let name = enclosing_function_from_flow_steps(evidence)?;
+    let summary = find_summary_by_path(summaries, lang, &name, &diag.path)?;
+    derive_from_func_summary(diag, evidence, Some(summary))
+}
+
 // ── Strategy 4: callgraph entry-kind ─────────────────────────────────────────
 
 /// Build a spec by treating the sink's enclosing function as an entry point
@@ -367,26 +423,46 @@ pub fn derive_from_callgraph_entry(
     diag: &Diag,
     evidence: &crate::evidence::Evidence,
 ) -> Option<HarnessSpec> {
-    let id = &diag.id;
-    let entry_kind = if id.contains(".http.") {
-        EntryKind::HttpRoute
-    } else if id.contains(".cli.") {
-        EntryKind::CliSubcommand
-    } else {
-        return None;
-    };
+    derive_from_callgraph_entry_with(diag, evidence, None)
+}
 
+/// Like [`derive_from_callgraph_entry`], but prefers
+/// [`FuncSummary::entry_kind`] over the `.http.` / `.cli.` rule-id substring
+/// heuristic when a matching summary is available in `summaries`.
+///
+/// An HTTP-shaped [`crate::entry_points::EntryKind`] variant on the enclosing
+/// function's summary becomes [`EntryKind::HttpRoute`] regardless of the rule
+/// id. The substring fallback runs only when no summary entry-kind is found
+/// — e.g. for AST-only findings with no taint-engine flow_steps.
+pub fn derive_from_callgraph_entry_with(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: Option<&GlobalSummaries>,
+) -> Option<HarnessSpec> {
     let lang = lang_from_path(&diag.path)?;
     let expected_cap = Cap::from_bits_truncate(evidence.sink_caps);
     if expected_cap.is_empty() {
         return None;
     }
 
-    let entry_function = evidence
-        .source
-        .as_ref()
-        .and_then(|s| s.snippet.clone())
-        .filter(|s| !s.is_empty())
+    // Step 1: try summary-based classification.
+    let summary_kind = enclosing_function_from_flow_steps(evidence)
+        .and_then(|name| find_summary_by_path(summaries?, lang, &name, &diag.path))
+        .and_then(|s| s.entry_kind.as_ref().map(entry_kind_from_summary));
+
+    // Step 2: fall back to rule-id substring heuristic (legacy).
+    let id = &diag.id;
+    let id_kind = if id.contains(".http.") {
+        Some(EntryKind::HttpRoute)
+    } else if id.contains(".cli.") {
+        Some(EntryKind::CliSubcommand)
+    } else {
+        None
+    };
+
+    let entry_kind = summary_kind.or(id_kind)?;
+
+    let entry_function = resolve_enclosing_function(diag, evidence, summaries, lang)
         .unwrap_or_else(|| "<unknown>".to_owned());
 
     let mut spec = finalize_spec(
@@ -404,11 +480,91 @@ pub fn derive_from_callgraph_entry(
     Some(spec)
 }
 
+/// Map a static-analysis [`crate::entry_points::EntryKind`] (route shape) onto
+/// the dynamic-side [`EntryKind`] taxonomy. Every current variant of the
+/// static enum describes an HTTP route handler — no CLI / library-API
+/// variants exist statically — so they all collapse to
+/// [`EntryKind::HttpRoute`]. When the static taxonomy grows non-HTTP variants
+/// (e.g. clap subcommand detection), extend this match to preserve them.
+fn entry_kind_from_summary(_kind: &crate::entry_points::EntryKind) -> EntryKind {
+    EntryKind::HttpRoute
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn lang_from_path(path: &str) -> Option<Lang> {
     let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
     Lang::from_extension(ext)
+}
+
+/// Return the first non-empty `function` annotation found on any flow step.
+///
+/// Strategy 1 ([`derive_from_flow_steps`]) consumes the `Source`-step
+/// annotation directly; strategies 2 and 4 fall back to *any* step with a
+/// `function` set because the SSA engine annotates sink and assignment steps
+/// as well. The annotation is authoritative — it carries the enclosing
+/// function as resolved against the CFG — so it is preferred over the call
+/// snippet, which carries shortened callee text.
+fn enclosing_function_from_flow_steps(evidence: &crate::evidence::Evidence) -> Option<String> {
+    evidence
+        .flow_steps
+        .iter()
+        .find_map(|s| s.function.clone().filter(|f| !f.is_empty()))
+}
+
+/// Resolve the enclosing function name for the diag using, in order:
+/// 1. any `flow_steps[*].function` annotation (always authoritative),
+/// 2. a [`GlobalSummaries`] lookup when `summaries` is `Some` and exactly one
+///    function in the diag's file shares the rule-language tag (last-resort
+///    disambiguation when flow_steps is empty),
+/// 3. `None` (callers default to `"<unknown>"`).
+fn resolve_enclosing_function(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: Option<&GlobalSummaries>,
+    lang: Lang,
+) -> Option<String> {
+    if let Some(name) = enclosing_function_from_flow_steps(evidence) {
+        return Some(name);
+    }
+    let summaries = summaries?;
+    let mut hits = summaries
+        .iter()
+        .filter(|(k, _)| k.lang == lang)
+        .filter(|(_, s)| paths_match(&s.file_path, &diag.path));
+    let first = hits.next()?;
+    if hits.next().is_some() {
+        // Ambiguous: multiple functions in this file; refuse to guess.
+        return None;
+    }
+    Some(first.1.name.clone())
+}
+
+/// Lookup a `FuncSummary` by `(lang, name)` and filter to one whose
+/// `file_path` matches `diag_path`. Returns `None` on no match.
+fn find_summary_by_path<'a>(
+    summaries: &'a GlobalSummaries,
+    lang: Lang,
+    name: &str,
+    diag_path: &str,
+) -> Option<&'a FuncSummary> {
+    summaries
+        .lookup_same_lang(lang, name)
+        .into_iter()
+        .find(|(_, s)| paths_match(&s.file_path, diag_path))
+        .map(|(_, s)| s)
+}
+
+/// Loose path comparison that tolerates absolute / project-relative drift.
+///
+/// `FuncSummary::file_path` may be stored relative to the project root while
+/// `Diag::path` may be canonicalised. A suffix match is permissive enough to
+/// link them without dragging the canonicaliser into the verify hot path.
+fn paths_match(summary_path: &str, diag_path: &str) -> bool {
+    if summary_path == diag_path {
+        return true;
+    }
+    summary_path.ends_with(diag_path) || diag_path.ends_with(summary_path)
 }
 
 /// Map the first segment of a Nyx rule id (`py`, `js`, `ts`, `java`, …) to a
@@ -483,39 +639,6 @@ fn finalize_spec(
     };
     spec.spec_hash = compute_spec_hash(&spec);
     spec
-}
-
-/// Walk a synthetic single-step flow to satisfy callers that expect a `FlowStep`
-/// vector. Used by strategies 2–4 when they need to materialise a flow for
-/// downstream consumers.
-#[allow(dead_code)]
-pub(crate) fn synthetic_flow(diag: &Diag, function: &str) -> Vec<FlowStep> {
-    vec![
-        FlowStep {
-            step: 1,
-            kind: FlowStepKind::Source,
-            file: diag.path.clone(),
-            line: diag.line as u32,
-            col: diag.col as u32,
-            snippet: None,
-            variable: None,
-            callee: None,
-            function: Some(function.to_owned()),
-            is_cross_file: false,
-        },
-        FlowStep {
-            step: 2,
-            kind: FlowStepKind::Sink,
-            file: diag.path.clone(),
-            line: diag.line as u32,
-            col: diag.col as u32,
-            snippet: None,
-            variable: None,
-            callee: None,
-            function: Some(function.to_owned()),
-            is_cross_file: false,
-        },
-    ]
 }
 
 /// Walk `flow_steps` and return the entry point: the enclosing function of
@@ -920,6 +1043,22 @@ mod tests {
     }
 
     #[test]
+    fn rule_namespace_strategy_pins_rs_auth_mapping() {
+        // Regression: `rs.auth.*` must map to `Lang::Rust` + `Cap::UNAUTHORIZED_ID`.
+        // The plan calls out this exemplar but had no test coverage.
+        let diag = diag_with_rule_id(
+            "rs.auth.missing_ownership_check.taint",
+            "src/handler.rs",
+            0,
+        );
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
+        assert_eq!(spec.lang, Lang::Rust);
+        assert_eq!(spec.expected_cap, Cap::UNAUTHORIZED_ID);
+        assert_eq!(spec.toolchain_id, "rust-stable");
+    }
+
+    #[test]
     fn rule_namespace_strategy_rejects_path_lang_mismatch() {
         use crate::labels::Cap;
         // `py.*` rule id, but a `.java` file — the cross-check refuses.
@@ -1038,5 +1177,163 @@ mod tests {
         };
         let spec = HarnessSpec::from_finding(&diag).unwrap();
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromFlowSteps);
+    }
+
+    // ── Phase 01 follow-ups: GlobalSummaries threading ───────────────────────
+
+    fn sink_only_step_with_function(file: &str, function: &str) -> crate::evidence::FlowStep {
+        crate::evidence::FlowStep {
+            step: 1,
+            kind: FlowStepKind::Sink,
+            file: file.into(),
+            line: 6,
+            col: 0,
+            snippet: Some("os.system".into()),
+            variable: None,
+            callee: Some("os.system".into()),
+            function: Some(function.into()),
+            is_cross_file: false,
+        }
+    }
+
+    fn build_summary(name: &str, file: &str, lang: &str, sink_caps: u32, tainted_params: Vec<usize>, entry_kind: Option<crate::entry_points::EntryKind>) -> FuncSummary {
+        FuncSummary {
+            name: name.into(),
+            file_path: file.into(),
+            lang: lang.into(),
+            param_count: 1,
+            param_names: vec!["req".into()],
+            source_caps: 0,
+            sanitizer_caps: 0,
+            sink_caps,
+            propagating_params: vec![],
+            propagates_taint: false,
+            tainted_sink_params: tainted_params,
+            param_to_sink: vec![],
+            callees: vec![],
+            container: String::new(),
+            disambig: None,
+            kind: Default::default(),
+            module_path: None,
+            rust_use_map: None,
+            rust_wildcards: None,
+            hierarchy_edges: vec![],
+            entry_kind,
+        }
+    }
+
+    #[test]
+    fn entry_name_uses_flow_steps_function_not_snippet() {
+        // Strategy 2 was previously populating `entry_name` from the sink's
+        // *snippet* (callee text like `"os.system"`). The fix prefers the
+        // `function` annotation on any flow step, which carries the
+        // enclosing function name.
+        use crate::labels::Cap;
+        let ev = Evidence {
+            flow_steps: vec![sink_only_step_with_function(
+                "app/handler.py",
+                "do_request",
+            )],
+            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            id: "py.cmdi.os_system".into(),
+            path: "app/handler.py".into(),
+            line: 6,
+            confidence: Some(Confidence::High),
+            evidence: Some(ev.clone()),
+            ..Default::default()
+        };
+        let spec = derive_from_rule_namespace(&diag, &ev).expect("must derive");
+        assert_eq!(spec.entry_name, "do_request");
+        // The callee text never leaks into the entry name.
+        assert!(!spec.entry_name.contains("os.system"));
+    }
+
+    #[test]
+    fn func_summary_auto_resolves_via_global_summaries() {
+        // Strategy 3 with `summaries = Some(_)`: the enclosing function
+        // name comes from the flow_steps annotation, the summary is found
+        // by `(lang, name)` lookup filtered by file_path, and the spec
+        // picks `tainted_sink_params[0]` as the payload slot.
+        use crate::labels::Cap;
+        use crate::symbol::FuncKey;
+        let mut gs = GlobalSummaries::new();
+        let summary = build_summary(
+            "do_request",
+            "app/handler.py",
+            "python",
+            Cap::SHELL_ESCAPE.bits(),
+            vec![0],
+            None,
+        );
+        let key = FuncKey::new_function(Lang::Python, "app/handler.py", "do_request", Some(1));
+        gs.insert(key, summary);
+
+        let ev = Evidence {
+            flow_steps: vec![sink_only_step_with_function(
+                "app/handler.py",
+                "do_request",
+            )],
+            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            id: "taint-unsanitised-flow".into(),
+            path: "app/handler.py".into(),
+            line: 6,
+            confidence: Some(Confidence::High),
+            evidence: Some(ev),
+            ..Default::default()
+        };
+        let spec = HarnessSpec::from_finding_with_summaries(&diag, false, Some(&gs))
+            .expect("summary-driven derivation must succeed");
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromFuncSummaryWalk);
+        assert!(matches!(spec.payload_slot, PayloadSlot::Param(0)));
+        assert_eq!(spec.entry_name, "do_request");
+    }
+
+    #[test]
+    fn callgraph_entry_uses_summary_entry_kind_over_rule_id() {
+        // Strategy 4 with summaries: a non-http/non-cli rule id still wins
+        // HttpRoute classification when the enclosing function's
+        // `entry_kind` is set on its summary.
+        use crate::entry_points::{EntryKind as StaticEntryKind, HttpMethod};
+        use crate::labels::Cap;
+        use crate::symbol::FuncKey;
+        let mut gs = GlobalSummaries::new();
+        let summary = build_summary(
+            "index",
+            "app/views.py",
+            "python",
+            Cap::SSRF.bits(),
+            vec![],
+            Some(StaticEntryKind::FlaskRoute { method: HttpMethod::GET }),
+        );
+        let key = FuncKey::new_function(Lang::Python, "app/views.py", "index", Some(1));
+        gs.insert(key, summary);
+
+        let ev = Evidence {
+            flow_steps: vec![sink_only_step_with_function("app/views.py", "index")],
+            sink_caps: Cap::SSRF.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            // Note: the rule id has no `.http.` or `.cli.` segment — the
+            // legacy substring heuristic would bail. Only the summary
+            // entry_kind unlocks HttpRoute classification.
+            id: "taint-unsanitised-flow".into(),
+            path: "app/views.py".into(),
+            line: 6,
+            confidence: Some(Confidence::High),
+            evidence: Some(ev.clone()),
+            ..Default::default()
+        };
+        let spec = derive_from_callgraph_entry_with(&diag, &ev, Some(&gs))
+            .expect("entry-kind-driven derivation must succeed");
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromCallgraphEntry);
+        assert!(matches!(spec.entry_kind, EntryKind::HttpRoute));
+        assert_eq!(spec.entry_name, "index");
     }
 }

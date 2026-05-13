@@ -12,8 +12,10 @@ use crate::dynamic::spec::{HarnessSpec, SPEC_FORMAT_VERSION};
 use crate::dynamic::telemetry::{self, TelemetryEvent};
 use crate::dynamic::toolchain;
 use crate::evidence::{InconclusiveReason, SpecDerivationStrategy, UnsupportedReason};
+use crate::summary::GlobalSummaries;
 use crate::utils::config::Config;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Default)]
@@ -27,6 +29,18 @@ pub struct VerifyOptions {
     /// When `true`, skip the `Confidence >= Medium` gate and attempt
     /// verification on all findings. Corresponds to `--verify-all-confidence`.
     pub verify_all_confidence: bool,
+    /// Cross-file function summaries shared by every finding in a scan.
+    ///
+    /// Threaded into [`HarnessSpec::from_finding_with_summaries`] so the
+    /// summary-walk strategy and the entry-kind-aware callgraph strategy
+    /// can resolve the diag's enclosing function against the same
+    /// [`GlobalSummaries`] index the taint engine used. Held by `Arc` so the
+    /// caller (e.g. the scan command) can build the index once and reuse it
+    /// across the per-finding loop without cloning.
+    ///
+    /// `None` disables the summary-driven derivation paths; strategy 3 is a
+    /// no-op and strategy 4 falls back to the rule-id substring heuristic.
+    pub summaries: Option<Arc<GlobalSummaries>>,
 }
 
 impl VerifyOptions {
@@ -46,6 +60,7 @@ impl VerifyOptions {
             project_root: None,
             db_path: None,
             verify_all_confidence: config.scanner.verify_all_confidence,
+            summaries: None,
         }
     }
 }
@@ -243,7 +258,11 @@ fn derivation_failure_hint(diag: &Diag) -> String {
 pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     let finding_id = format!("{:016x}", diag.stable_hash);
 
-    let spec = match HarnessSpec::from_finding_opts(diag, opts.verify_all_confidence) {
+    let spec = match HarnessSpec::from_finding_with_summaries(
+        diag,
+        opts.verify_all_confidence,
+        opts.summaries.as_deref(),
+    ) {
         Ok(s) => s,
         Err(reason) => {
             return spec_derivation_failed_verdict(finding_id, diag, reason);

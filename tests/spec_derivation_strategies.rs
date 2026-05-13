@@ -144,6 +144,40 @@ mod spec_strategies {
         assert_eq!(spec.expected_cap, Cap::DESERIALIZE);
     }
 
+    #[test]
+    fn from_rule_namespace_pins_rs_auth_to_unauthorized_id() {
+        // Regression: `rs.auth.missing_ownership_check.taint` must derive a
+        // Rust + UNAUTHORIZED_ID spec via the rule-namespace strategy. The
+        // phase 01 deliverables called out `rs.auth.*` as an exemplar but
+        // shipped without a regression test pinning the `auth → UNAUTHORIZED_ID`
+        // mapping.
+        let mut diag = make_diag(
+            "rs.auth.missing_ownership_check.taint",
+            "src/handler.rs",
+            14,
+        );
+        let mut ev = Evidence::default();
+        ev.sink_caps = Cap::UNAUTHORIZED_ID.bits();
+        diag.evidence = Some(ev.clone());
+
+        let spec = derive_from_rule_namespace(&diag, &ev)
+            .expect("rs.auth rule namespace must derive a spec");
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
+        assert_eq!(spec.lang, nyx_scanner::symbol::Lang::Rust);
+        assert_eq!(spec.expected_cap, Cap::UNAUTHORIZED_ID);
+        assert_eq!(spec.sink_line, 14);
+        assert_eq!(spec.toolchain_id, "rust-stable");
+
+        // End-to-end through `HarnessSpec::from_finding` (no flow_steps).
+        let spec_end_to_end =
+            HarnessSpec::from_finding(&diag).expect("end-to-end derivation must succeed");
+        assert_eq!(
+            spec_end_to_end.derivation,
+            SpecDerivationStrategy::FromRuleNamespace
+        );
+        assert_eq!(spec_end_to_end.expected_cap, Cap::UNAUTHORIZED_ID);
+    }
+
     // ── Strategy 3: FromFuncSummaryWalk ──────────────────────────────────────
 
     #[test]
