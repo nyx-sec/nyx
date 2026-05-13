@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::path::Path;
 
 /// Supported source-code languages.
 ///
@@ -59,21 +60,69 @@ impl Lang {
     ///
     /// Mirrors the extension→language mapping in `ast::lang_for_path()` so that
     /// callers outside `ast` can obtain a `Lang` from a path without needing a
-    /// `FuncSummary`.
+    /// `FuncSummary`. Match is case-insensitive (ASCII).
+    ///
+    /// Extension coverage is intentionally broader than the tree-sitter loader
+    /// in `ast::lang_for_path` because this function is consumed by the
+    /// dynamic verifier, which must classify *every* finding-bearing path so
+    /// that spec derivation does not collapse on idiomatic file extensions
+    /// like `.cjs`, `.mts`, `.pyi`, or `.kts`. JVM-family `.kt` / `.kts` map
+    /// to [`Lang::Java`] because the spec/toolchain layer is JVM-aware even
+    /// where the tree-sitter grammar is not.
     pub fn from_extension(ext: &str) -> Option<Lang> {
-        match ext {
+        let lower = ext.to_ascii_lowercase();
+        match lower.as_str() {
             "rs" => Some(Lang::Rust),
             "c" => Some(Lang::C),
-            "cpp" => Some(Lang::Cpp),
-            "java" => Some(Lang::Java),
+            "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hxx" | "hh" | "h++" => Some(Lang::Cpp),
+            // Java family. `.kt` / `.kts` are Kotlin (JVM); the dynamic spec
+            // layer treats them as Java for toolchain selection purposes.
+            "java" | "kt" | "kts" => Some(Lang::Java),
             "go" => Some(Lang::Go),
             "php" => Some(Lang::Php),
-            "py" => Some(Lang::Python),
-            "ts" => Some(Lang::TypeScript),
-            "js" => Some(Lang::JavaScript),
+            // `.pyi` are Python stub files; spec derivation accepts them so
+            // typed-stub-only entry points still register a language.
+            "py" | "pyi" => Some(Lang::Python),
+            // `.mts` / `.cts` are TypeScript module-form (ES module / CommonJS).
+            "ts" | "tsx" | "mts" | "cts" => Some(Lang::TypeScript),
+            // `.mjs` / `.cjs` are JavaScript module-form. `.jsx` is React JSX.
+            "js" | "jsx" | "mjs" | "cjs" => Some(Lang::JavaScript),
             "rb" => Some(Lang::Ruby),
             _ => None,
         }
+    }
+
+    /// Probe a path's language using extension first, then a shebang line on
+    /// `head_bytes`, then a content-byte heuristic on the first 200 bytes.
+    ///
+    /// `head_bytes` should be the first N bytes of the file (200 is plenty;
+    /// callers may pass more). Empty / unreadable files return `None`.
+    ///
+    /// Order:
+    /// 1. [`Lang::from_extension`] on the path's extension — fast path.
+    /// 2. Shebang inspection. Common interpreter aliases are recognised:
+    ///    `python` / `python3` → [`Lang::Python`], `node` / `nodejs` / `deno`
+    ///    / `bun` → [`Lang::JavaScript`], `ruby` → [`Lang::Ruby`], `php` →
+    ///    [`Lang::Php`]. `/usr/bin/env <interp>` and direct
+    ///    `/usr/bin/<interp>` paths both work.
+    /// 3. Content-byte syntactic sniff: line-prefix matches on the first 200
+    ///    bytes (`<?php`, `package main`, Java `package …;`, `fn main`, etc.).
+    ///    The sniff stands in for a full tree-sitter parse — it is cheaper
+    ///    and covers the verifier's failure modes without paying the cost of
+    ///    loading every grammar for every extensionless file.
+    ///
+    /// Used by [`crate::dynamic::spec`] so spec derivation no longer rejects
+    /// CLI entry points and other extensionless / non-canonical files.
+    pub fn from_path_or_content(path: &Path, head_bytes: &[u8]) -> Option<Lang> {
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if let Some(lang) = Self::from_extension(ext) {
+                return Some(lang);
+            }
+        }
+        if let Some(lang) = lang_from_shebang(head_bytes) {
+            return Some(lang);
+        }
+        sniff_content_lang(head_bytes)
     }
 
     /// Canonical slug string for this language.
@@ -286,6 +335,114 @@ pub fn namespace_with_package(
         Some(pkg) => format!("{}::{}", pkg.name, plain),
         None => plain,
     }
+}
+
+/// Maximum bytes of `head_bytes` consulted by the shebang / content sniff.
+/// Larger reads are tolerated — the helpers truncate internally.
+const SNIFF_HEAD_LIMIT: usize = 200;
+
+/// Parse a `#!` shebang line and map the interpreter name to a `Lang`.
+///
+/// Handles `/usr/bin/env <interp>` (with optional `-S` / `-i` flags),
+/// direct `/usr/bin/<interp>`, and bare `<interp>` forms. Trailing version
+/// digits (`python3`, `python3.11`) are stripped so the lookup matches the
+/// base interpreter. Returns `None` for non-Nyx-supported interpreters
+/// (`bash`, `sh`, `perl`, …).
+fn lang_from_shebang(head: &[u8]) -> Option<Lang> {
+    if !head.starts_with(b"#!") {
+        return None;
+    }
+    let cap = head.len().min(SNIFF_HEAD_LIMIT);
+    let line_end = head[..cap]
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(cap);
+    let line = std::str::from_utf8(&head[..line_end]).ok()?;
+    let line = line.trim_end_matches('\r').trim();
+    let rest = line.strip_prefix("#!")?.trim();
+
+    let mut tokens = rest.split_whitespace();
+    let first = tokens.next()?;
+    let interpreter = if first.ends_with("/env") || first == "env" {
+        // Skip env's own options (e.g. `-S`, `-i`, `--split-string`).
+        tokens.find(|t| !t.starts_with('-'))?
+    } else {
+        first.rsplit('/').next()?
+    };
+
+    let base: String = interpreter
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    match base.as_str() {
+        "python" => Some(Lang::Python),
+        "node" | "nodejs" | "deno" | "bun" => Some(Lang::JavaScript),
+        "ts" | "tsx" => Some(Lang::TypeScript),
+        "ruby" => Some(Lang::Ruby),
+        "php" => Some(Lang::Php),
+        _ => None,
+    }
+}
+
+/// Lightweight syntactic sniff over the first 200 bytes of a file.
+///
+/// Skips a leading shebang line (callers already tried it), then inspects up
+/// to ~20 head lines for unambiguous language tokens. Returns `None` if
+/// nothing convinces; the verifier's caller will record `LangUnsupported`
+/// rather than misclassify.
+fn sniff_content_lang(head: &[u8]) -> Option<Lang> {
+    if head.is_empty() {
+        return None;
+    }
+    let cap = head.len().min(SNIFF_HEAD_LIMIT);
+    let text = std::str::from_utf8(&head[..cap]).ok()?;
+    let body = match (text.starts_with("#!"), text.find('\n')) {
+        (true, Some(i)) => &text[i + 1..],
+        _ => text,
+    };
+
+    for raw in body.lines().take(20) {
+        let line = raw.trim_start();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("<?php") {
+            return Some(Lang::Php);
+        }
+        if line.starts_with("package main") {
+            return Some(Lang::Go);
+        }
+        // Java `package foo.bar;` always ends with a semicolon.
+        if line.starts_with("package ") && line.trim_end().ends_with(';') {
+            return Some(Lang::Java);
+        }
+        if line.starts_with("import java.") || line.starts_with("public class ") {
+            return Some(Lang::Java);
+        }
+        if line.starts_with("from __future__")
+            || line.starts_with("from typing ")
+            || (line.starts_with("def ") && line.contains(':'))
+        {
+            return Some(Lang::Python);
+        }
+        if line.starts_with("fn main") || line.starts_with("use std::") {
+            return Some(Lang::Rust);
+        }
+        if line.starts_with("func ") && line.contains('(') {
+            return Some(Lang::Go);
+        }
+        if line.starts_with("require ") || line.starts_with("require_relative ") {
+            return Some(Lang::Ruby);
+        }
+        if line.starts_with("function ")
+            || line.starts_with("const ")
+            || line.starts_with("import {")
+            || line.starts_with("export ")
+        {
+            return Some(Lang::JavaScript);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ pub mod index {
     use r2d2_sqlite::SqliteConnectionManager;
     use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
     use std::fs;
+    use std::io::Read;
     use std::ops::Deref;
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
@@ -332,9 +333,62 @@ pub mod index {
         project: String,
     }
 
+    /// SQLite database files start with this 16-byte ASCII magic.
+    const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+
+    /// Reject obviously non-SQLite files before handing them to the
+    /// connection pool, where the same rejection costs minutes instead of
+    /// microseconds on some corruption shapes.
+    ///
+    /// Returns `Ok(())` when:
+    ///   * the file does not exist (the pool will `CREATE` it),
+    ///   * the file is zero-length (SQLite treats this as a fresh DB),
+    ///   * the first 16 bytes match the SQLite magic header,
+    ///   * the file is shorter than the magic but non-empty (extremely
+    ///     unusual; we defer to SQLite rather than gating arbitrarily).
+    ///
+    /// Returns `Err(NyxError::Sql(...))` carrying `SQLITE_NOTADB` when the
+    /// header is present but does not match.
+    fn preflight_header(database_path: &Path) -> NyxResult<()> {
+        let Ok(meta) = fs::metadata(database_path) else {
+            return Ok(());
+        };
+        if !meta.is_file() {
+            return Ok(());
+        }
+        if meta.len() < SQLITE_MAGIC.len() as u64 {
+            return Ok(());
+        }
+        let mut head = [0u8; 16];
+        let mut f = fs::File::open(database_path)?;
+        f.read_exact(&mut head)?;
+        if &head != SQLITE_MAGIC {
+            return Err(NyxError::Sql(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+                Some(format!(
+                    "file at {} is not a SQLite database (header magic mismatch)",
+                    database_path.display(),
+                )),
+            )));
+        }
+        Ok(())
+    }
+
     impl Indexer {
         pub fn init(database_path: &Path) -> NyxResult<Arc<Pool<SqliteConnectionManager>>> {
             let _span = tracing::info_span!("db_init", path = %database_path.display()).entered();
+
+            // Fast-fail when the existing file is clearly not a SQLite
+            // database.  Without this guard, certain corruption shapes
+            // (truncated header, header overwritten with arbitrary bytes,
+            // mid-page damage that preserves magic) can keep SQLite busy
+            // for 150-200 seconds inside the PRAGMA / schema execution
+            // below before it surfaces SQLITE_NOTADB or SQLITE_CORRUPT.
+            // A zero-length file is treated as a fresh DB by SQLite, so we
+            // only validate when the file is large enough to hold the
+            // 16-byte magic header.
+            preflight_header(database_path)?;
+
             // NO_MUTEX is safe because r2d2 ensures each pooled connection
             // is only ever used by one thread at a time.  Combined with WAL
             // mode this allows concurrent readers + a single writer without

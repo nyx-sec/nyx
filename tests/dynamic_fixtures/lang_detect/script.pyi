@@ -1,0 +1,3 @@
+from typing import Optional
+
+def handle_request(payload: str) -> Optional[str]: ...

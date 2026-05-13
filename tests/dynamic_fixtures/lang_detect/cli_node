@@ -1,0 +1,4 @@
+#!/usr/bin/env node
+// Extensionless CLI entry point. Shebang identifies the interpreter.
+const url = process.argv[2];
+require("child_process").execSync("curl " + url);

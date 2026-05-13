@@ -492,9 +492,41 @@ fn entry_kind_from_summary(_kind: &crate::entry_points::EntryKind) -> EntryKind 
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Resolve the language for a finding path using extension first, then a
+/// shebang / content sniff against the first 200 bytes of the file.
+///
+/// Phase 02 widens this resolver beyond `Lang::from_extension` so that
+/// extensionless CLI entry points and idiomatic non-canonical extensions
+/// (`.cjs`, `.mts`, `.pyi`, …) no longer cause `SpecDerivationFailed`. File
+/// I/O is best-effort: an unreadable / absent file falls through to the
+/// extension-only path so callers in tests that pass synthetic paths still
+/// resolve when the extension is well-known.
 fn lang_from_path(path: &str) -> Option<Lang> {
-    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
-    Lang::from_extension(ext)
+    let p = Path::new(path);
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        if let Some(lang) = Lang::from_extension(ext) {
+            return Some(lang);
+        }
+    }
+    // Fall back to a shebang / content sniff over the file head.
+    let head = read_file_head(p, 200);
+    if head.is_empty() {
+        return None;
+    }
+    Lang::from_path_or_content(p, &head)
+}
+
+/// Read up to `cap` bytes from `path`, returning an empty buffer on any I/O
+/// error. The verifier never wants a missing file to abort spec derivation —
+/// callers downstream already gate on `Lang` being `Some`.
+fn read_file_head(path: &Path, cap: usize) -> Vec<u8> {
+    use std::io::Read;
+    let mut buf = Vec::with_capacity(cap);
+    let Ok(f) = std::fs::File::open(path) else {
+        return buf;
+    };
+    let _ = f.take(cap as u64).read_to_end(&mut buf);
+    buf
 }
 
 /// Return the first non-empty `function` annotation found on any flow step.
