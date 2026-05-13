@@ -138,6 +138,7 @@ mod tests {
             sink_file: "src/main/java/App.java".into(),
             sink_line: 25,
             spec_hash: "java00000000001".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 

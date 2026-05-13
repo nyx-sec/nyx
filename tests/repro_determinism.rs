@@ -33,6 +33,7 @@ mod repro_determinism_tests {
             sink_file: "app.py".into(),
             sink_line: 10,
             spec_hash: spec_hash.to_owned(),
+            derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 
@@ -163,6 +164,7 @@ mod repro_determinism_tests {
             sink_file: "src/entry.rs".into(),
             sink_line: 18,
             spec_hash: spec_hash.to_owned(),
+            derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 
@@ -293,6 +295,7 @@ fn main() {
             sink_file: "tests/dynamic_fixtures/js/sqli_positive.js".into(),
             sink_line: 8,
             spec_hash: spec_hash.to_owned(),
+            derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 
@@ -346,6 +349,7 @@ fn main() {
             sink_file: "tests/dynamic_fixtures/go/sqli_positive.go".into(),
             sink_line: 12,
             spec_hash: spec_hash.to_owned(),
+            derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 
@@ -399,6 +403,7 @@ fn main() {
             sink_file: "tests/dynamic_fixtures/java/sqli_positive.java".into(),
             sink_line: 9,
             spec_hash: spec_hash.to_owned(),
+            derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 
@@ -452,6 +457,7 @@ fn main() {
             sink_file: "tests/dynamic_fixtures/php/sqli_positive.php".into(),
             sink_line: 9,
             spec_hash: spec_hash.to_owned(),
+            derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 

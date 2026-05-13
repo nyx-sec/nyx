@@ -179,6 +179,7 @@ mod tests {
             sink_file: "src/handler.rs".into(),
             sink_line: 10,
             spec_hash: "rusttest00000001".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 

@@ -188,8 +188,47 @@ pub enum UnsupportedReason {
     LangUnsupported,
 }
 
-/// Typed reason for `VerifyStatus::Inconclusive`.
+/// Spec-derivation strategy attempted by [`crate::dynamic::spec::HarnessSpec::from_finding_opts`].
+///
+/// Lives in `evidence.rs` (not `dynamic::spec`) so that
+/// [`InconclusiveReason::SpecDerivationFailed`] can carry a `Vec` of attempted
+/// strategies without requiring the `dynamic` feature.  The canonical
+/// accessor is `crate::dynamic::spec::SpecDerivationStrategy` (re-export).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum SpecDerivationStrategy {
+    /// Walk the finding's `evidence.flow_steps`. Original derivation path:
+    /// the outermost `Source` step with a `function` annotation becomes the
+    /// entry point. Requires non-empty `flow_steps`.
+    FromFlowSteps,
+    /// Inspect the diag's `id` (rule namespace, e.g. `py.cmdi.os_system`,
+    /// `java.deser.readobject`, `rs.auth.missing_ownership_check.taint`) plus
+    /// `evidence.sink_caps` to synthesize a single-step flow. Used when the
+    /// rule namespace alone identifies a sink class.
+    FromRuleNamespace,
+    /// Walk a matching [`crate::summary::FuncSummary`] for the sink's
+    /// enclosing function and construct a synthetic param-to-sink flow per
+    /// parameter when no real `flow_steps` exist.
+    FromFuncSummaryWalk,
+    /// Resolve an entry point through the call graph by treating an entry-kind
+    /// function (HTTP route, CLI handler) as the spec entry.
+    FromCallgraphEntry,
+}
+
+impl fmt::Display for SpecDerivationStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::FromFlowSteps => "from_flow_steps",
+            Self::FromRuleNamespace => "from_rule_namespace",
+            Self::FromFuncSummaryWalk => "from_func_summary_walk",
+            Self::FromCallgraphEntry => "from_callgraph_entry",
+        };
+        f.write_str(s)
+    }
+}
+
+/// Typed reason for `VerifyStatus::Inconclusive`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum InconclusiveReason {
     /// The oracle fired but the sink-reachability probe did not — likely an
@@ -202,6 +241,17 @@ pub enum InconclusiveReason {
     BuildFailed,
     /// Sandbox error (spawn failure, I/O error, etc.).
     SandboxError,
+    /// Every [`SpecDerivationStrategy`] candidate was attempted but none
+    /// produced a runnable [`crate::dynamic::spec::HarnessSpec`]. Distinct
+    /// from [`UnsupportedReason::SpecDerivationFailed`]: the latter covers
+    /// genuinely unmodellable findings (e.g. unknown language, zero sink
+    /// bits), while this variant signals that the rule namespace, sink
+    /// evidence, or call graph carried enough signal that derivation
+    /// *should* have worked but did not.
+    SpecDerivationFailed {
+        tried: Vec<SpecDerivationStrategy>,
+        hint: String,
+    },
 }
 
 /// High-level outcome of a dynamic verification attempt.

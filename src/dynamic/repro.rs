@@ -392,6 +392,7 @@ mod tests {
             sink_file: "app.py".into(),
             sink_line: 10,
             spec_hash: "cafecafecafe0001".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 

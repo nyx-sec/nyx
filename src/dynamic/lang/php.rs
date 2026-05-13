@@ -141,6 +141,7 @@ mod tests {
             sink_file: "src/login.php".into(),
             sink_line: 10,
             spec_hash: "php0000000000001".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 

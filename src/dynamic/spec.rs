@@ -19,11 +19,19 @@
 
 use crate::commands::scan::Diag;
 use crate::dynamic::corpus::CORPUS_VERSION;
-use crate::evidence::{Confidence, FlowStepKind, UnsupportedReason};
+use crate::evidence::{Confidence, FlowStep, FlowStepKind, UnsupportedReason};
 use crate::labels::Cap;
+use crate::summary::FuncSummary;
 use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Re-export of the always-present [`crate::evidence::SpecDerivationStrategy`].
+///
+/// The canonical definition lives in `evidence.rs` so that
+/// [`crate::evidence::InconclusiveReason::SpecDerivationFailed`] can carry a
+/// `Vec` of attempted strategies without depending on the `dynamic` feature.
+pub use crate::evidence::SpecDerivationStrategy;
 
 /// Bump whenever [`HarnessSpec`] fields change meaning or the spec hash
 /// inputs change. Downstream tools should reject specs with an unrecognised
@@ -101,6 +109,15 @@ pub struct HarnessSpec {
     /// Blake3 hash (16 hex chars) of the spec's key fields, version-pinned.
     /// Stable across identical specs; used for deduplication and caching.
     pub spec_hash: String,
+    /// Which derivation strategy produced this spec. Populated by
+    /// [`HarnessSpec::from_finding_opts`]; default for backward compatibility
+    /// with deserialised specs that pre-date the typed strategy.
+    #[serde(default = "default_derivation_strategy")]
+    pub derivation: SpecDerivationStrategy,
+}
+
+fn default_derivation_strategy() -> SpecDerivationStrategy {
+    SpecDerivationStrategy::FromFlowSteps
 }
 
 impl HarnessSpec {
@@ -120,11 +137,27 @@ impl HarnessSpec {
     /// Like `from_finding`, but with `verify_all_confidence=true` the
     /// `Confidence >= Medium` gate is skipped so low-confidence findings
     /// are also attempted.
+    ///
+    /// Returns `Err(UnsupportedReason::ConfidenceTooLow)` immediately when
+    /// the confidence gate fails. Otherwise tries each
+    /// [`SpecDerivationStrategy`] in order:
+    /// [`SpecDerivationStrategy::FromFlowSteps`],
+    /// [`SpecDerivationStrategy::FromRuleNamespace`],
+    /// [`SpecDerivationStrategy::FromFuncSummaryWalk`],
+    /// [`SpecDerivationStrategy::FromCallgraphEntry`]. The first non-error
+    /// strategy wins and its tag is stored on `spec.derivation`.
+    ///
+    /// Returns `Err(UnsupportedReason::NoFlowSteps)` only when no evidence is
+    /// present at all. When evidence exists but every strategy fails, the
+    /// caller is expected to surface the failure as
+    /// [`crate::evidence::InconclusiveReason::SpecDerivationFailed`] —
+    /// this method returns `Err(UnsupportedReason::SpecDerivationFailed)`
+    /// in that case, and `verify_finding` decides whether to lift it to
+    /// `Inconclusive` based on whether any strategy was actually tried.
     pub fn from_finding_opts(
         diag: &Diag,
         verify_all_confidence: bool,
     ) -> Result<Self, UnsupportedReason> {
-        // Require at least Medium confidence unless caller opts out.
         if !verify_all_confidence {
             match diag.confidence {
                 Some(c) if c >= Confidence::Medium => {}
@@ -134,53 +167,355 @@ impl HarnessSpec {
 
         let evidence = diag.evidence.as_ref().ok_or(UnsupportedReason::NoFlowSteps)?;
 
-        if evidence.flow_steps.is_empty() {
-            return Err(UnsupportedReason::NoFlowSteps);
+        // Try each strategy in priority order; first non-None wins.
+        if let Some(spec) = derive_from_flow_steps(diag, evidence) {
+            return Ok(spec);
+        }
+        if let Some(spec) = derive_from_rule_namespace(diag, evidence) {
+            return Ok(spec);
+        }
+        if let Some(spec) = derive_from_func_summary(diag, evidence, None) {
+            return Ok(spec);
+        }
+        if let Some(spec) = derive_from_callgraph_entry(diag, evidence) {
+            return Ok(spec);
         }
 
-        let entry = outermost_entry(&evidence.flow_steps)
-            .ok_or(UnsupportedReason::SpecDerivationFailed)?;
-
-        let ext = Path::new(&entry.file)
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        let lang = Lang::from_extension(ext).ok_or(UnsupportedReason::SpecDerivationFailed)?;
-
-        let expected_cap = Cap::from_bits_truncate(evidence.sink_caps);
-        if expected_cap.is_empty() {
-            return Err(UnsupportedReason::SpecDerivationFailed);
-        }
-
-        let toolchain_id = toolchain_id_for_lang(lang).to_owned();
-
-        // Sink location: prefer explicit sink step; fall back to diag location.
-        let (sink_file, sink_line) = evidence
-            .flow_steps
-            .iter()
-            .rev()
-            .find(|s| matches!(s.kind, FlowStepKind::Sink))
-            .map(|s| (s.file.clone(), s.line))
-            .unwrap_or_else(|| (diag.path.clone(), diag.line as u32));
-
-        let mut spec = HarnessSpec {
-            finding_id: format!("{:016x}", diag.stable_hash),
-            entry_file: entry.file,
-            entry_name: entry.function,
-            entry_kind: EntryKind::Function,
-            lang,
-            toolchain_id,
-            payload_slot: PayloadSlot::Param(0),
-            expected_cap,
-            constraint_hints: vec![],
-            sink_file,
-            sink_line,
-            spec_hash: String::new(),
-        };
-
-        spec.spec_hash = compute_spec_hash(&spec);
-        Ok(spec)
+        Err(UnsupportedReason::SpecDerivationFailed)
     }
+
+    /// Returns the ordered list of derivation strategies that
+    /// [`HarnessSpec::from_finding_opts`] attempts. Used by the verifier when
+    /// it needs to report which candidates were tried before declaring an
+    /// `Inconclusive(SpecDerivationFailed)` verdict.
+    pub fn derivation_strategies() -> &'static [SpecDerivationStrategy] {
+        &[
+            SpecDerivationStrategy::FromFlowSteps,
+            SpecDerivationStrategy::FromRuleNamespace,
+            SpecDerivationStrategy::FromFuncSummaryWalk,
+            SpecDerivationStrategy::FromCallgraphEntry,
+        ]
+    }
+}
+
+// ── Strategy 1: from flow_steps (original path) ──────────────────────────────
+
+fn derive_from_flow_steps(diag: &Diag, evidence: &crate::evidence::Evidence) -> Option<HarnessSpec> {
+    if evidence.flow_steps.is_empty() {
+        return None;
+    }
+    let entry = outermost_entry(&evidence.flow_steps)?;
+
+    let lang = lang_from_path(&entry.file)?;
+    let expected_cap = Cap::from_bits_truncate(evidence.sink_caps);
+    if expected_cap.is_empty() {
+        return None;
+    }
+
+    let (sink_file, sink_line) = evidence
+        .flow_steps
+        .iter()
+        .rev()
+        .find(|s| matches!(s.kind, FlowStepKind::Sink))
+        .map(|s| (s.file.clone(), s.line))
+        .unwrap_or_else(|| (diag.path.clone(), diag.line as u32));
+
+    Some(finalize_spec(
+        diag,
+        entry.file,
+        entry.function,
+        lang,
+        expected_cap,
+        sink_file,
+        sink_line,
+        SpecDerivationStrategy::FromFlowSteps,
+    ))
+}
+
+// ── Strategy 2: from rule namespace + sink evidence ──────────────────────────
+
+/// Build a spec from a rule-namespace finding (e.g. `py.cmdi.os_system`,
+/// `java.deser.readobject`, `rs.auth.missing_ownership_check.taint`) plus the
+/// finding's sink evidence. The diag's path and line locate the sink call
+/// site; the rule namespace's first segment selects the language, and the
+/// second segment maps to a [`Cap`] via [`cap_for_rule_category`].
+///
+/// A synthetic single-step `Source` flow is constructed at the diag location
+/// so downstream consumers that walk `evidence.flow_steps` keep working. The
+/// entry function defaults to the sink-enclosing function from the diag's
+/// evidence when available, otherwise to `"<unknown>"` (which keeps spec
+/// hashing stable while signalling the lack of a concrete entry).
+pub fn derive_from_rule_namespace(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+) -> Option<HarnessSpec> {
+    let mut iter = diag.id.split('.');
+    let lang_prefix = iter.next()?;
+    let category = iter.next()?;
+
+    let lang = lang_from_rule_prefix(lang_prefix)?;
+    // The category token must map to a known [`Cap`]; if not, defer to the
+    // callgraph-entry strategy or fall through to `SpecDerivationFailed`.
+    let category_cap = cap_for_rule_category(category)?;
+
+    // Sink caps: prefer explicit evidence; fall back to the category map.
+    let expected_cap = {
+        let from_ev = Cap::from_bits_truncate(evidence.sink_caps);
+        if !from_ev.is_empty() {
+            from_ev
+        } else {
+            category_cap
+        }
+    };
+    if expected_cap.is_empty() {
+        return None;
+    }
+
+    // Path is required to locate the sink and to extension-check the lang.
+    if diag.path.is_empty() {
+        return None;
+    }
+    // Cross-check: the diag's file extension must agree with the rule's
+    // language prefix when both are available. Disagreement is a stronger
+    // signal of a mis-rooted finding than a missing extension.
+    if let Some(path_lang) = lang_from_path(&diag.path) {
+        if path_lang != lang {
+            return None;
+        }
+    }
+
+    let entry_function = evidence
+        .sink
+        .as_ref()
+        .and_then(|s| s.snippet.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "<unknown>".to_owned());
+
+    Some(finalize_spec(
+        diag,
+        diag.path.clone(),
+        entry_function,
+        lang,
+        expected_cap,
+        diag.path.clone(),
+        diag.line as u32,
+        SpecDerivationStrategy::FromRuleNamespace,
+    ))
+}
+
+// ── Strategy 3: walk a FuncSummary for the sink's enclosing function ─────────
+
+/// Build a spec by walking `summary` (the sink's enclosing function) for any
+/// param-to-sink edge. When `summary` is `None` (the common case at verify
+/// time, where global summaries are not threaded in), this returns `None`.
+///
+/// Picks the first `tainted_sink_params` entry as `PayloadSlot::Param(idx)`.
+/// The synthetic flow has one source step pinned at the summary's parameter
+/// and one sink step at the diag's line.
+pub fn derive_from_func_summary(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summary: Option<&FuncSummary>,
+) -> Option<HarnessSpec> {
+    let summary = summary?;
+    let param_idx = *summary.tainted_sink_params.first()?;
+    let lang = Lang::from_slug(&summary.lang)?;
+    let expected_cap = {
+        let from_ev = Cap::from_bits_truncate(evidence.sink_caps);
+        if !from_ev.is_empty() {
+            from_ev
+        } else {
+            Cap::from_bits_truncate(summary.sink_caps)
+        }
+    };
+    if expected_cap.is_empty() {
+        return None;
+    }
+
+    let entry_file = if !summary.file_path.is_empty() {
+        summary.file_path.clone()
+    } else {
+        diag.path.clone()
+    };
+    let entry_name = summary.name.clone();
+    let mut spec = finalize_spec(
+        diag,
+        entry_file,
+        entry_name,
+        lang,
+        expected_cap,
+        diag.path.clone(),
+        diag.line as u32,
+        SpecDerivationStrategy::FromFuncSummaryWalk,
+    );
+    spec.payload_slot = PayloadSlot::Param(param_idx);
+    spec.spec_hash = compute_spec_hash(&spec);
+    Some(spec)
+}
+
+// ── Strategy 4: callgraph entry-kind ─────────────────────────────────────────
+
+/// Build a spec by treating the sink's enclosing function as an entry point
+/// when its rule namespace marks it as an externally-driven entry (HTTP route,
+/// CLI subcommand). Currently fires when the rule id contains `.http.` or
+/// `.cli.`; otherwise returns `None`.
+///
+/// Without a threaded [`crate::callgraph::CallGraph`] this strategy is a
+/// minimal heuristic; it remains as the last-chance resort so the verifier
+/// has something to drive against rather than declaring unsupported.
+pub fn derive_from_callgraph_entry(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+) -> Option<HarnessSpec> {
+    let id = &diag.id;
+    let entry_kind = if id.contains(".http.") {
+        EntryKind::HttpRoute
+    } else if id.contains(".cli.") {
+        EntryKind::CliSubcommand
+    } else {
+        return None;
+    };
+
+    let lang = lang_from_path(&diag.path)?;
+    let expected_cap = Cap::from_bits_truncate(evidence.sink_caps);
+    if expected_cap.is_empty() {
+        return None;
+    }
+
+    let entry_function = evidence
+        .source
+        .as_ref()
+        .and_then(|s| s.snippet.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "<unknown>".to_owned());
+
+    let mut spec = finalize_spec(
+        diag,
+        diag.path.clone(),
+        entry_function,
+        lang,
+        expected_cap,
+        diag.path.clone(),
+        diag.line as u32,
+        SpecDerivationStrategy::FromCallgraphEntry,
+    );
+    spec.entry_kind = entry_kind;
+    spec.spec_hash = compute_spec_hash(&spec);
+    Some(spec)
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn lang_from_path(path: &str) -> Option<Lang> {
+    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    Lang::from_extension(ext)
+}
+
+/// Map the first segment of a Nyx rule id (`py`, `js`, `ts`, `java`, …) to a
+/// [`Lang`]. Returns `None` for non-language prefixes (`taint-`, `cfg-`,
+/// `state-`).
+fn lang_from_rule_prefix(prefix: &str) -> Option<Lang> {
+    match prefix {
+        "rs" | "rust" => Some(Lang::Rust),
+        "py" | "python" => Some(Lang::Python),
+        "js" | "javascript" => Some(Lang::JavaScript),
+        "ts" | "typescript" => Some(Lang::TypeScript),
+        "java" => Some(Lang::Java),
+        "go" => Some(Lang::Go),
+        "php" => Some(Lang::Php),
+        "rb" | "ruby" => Some(Lang::Ruby),
+        "c" => Some(Lang::C),
+        "cpp" => Some(Lang::Cpp),
+        _ => None,
+    }
+}
+
+/// Map the second segment of a Nyx rule id (e.g. `cmdi`, `xss`, `sqli`,
+/// `deser`, `ssrf`, `path`, `auth`) to a [`Cap`].
+fn cap_for_rule_category(category: &str) -> Option<Cap> {
+    match category {
+        "cmdi" | "command" => Some(Cap::SHELL_ESCAPE),
+        "xss" => Some(Cap::HTML_ESCAPE),
+        "sqli" | "sql" => Some(Cap::SQL_QUERY),
+        "code_exec" | "eval" => Some(Cap::CODE_EXEC),
+        "ssrf" => Some(Cap::SSRF),
+        "path" | "traversal" => Some(Cap::FILE_IO),
+        "deser" | "deserialize" => Some(Cap::DESERIALIZE),
+        "auth" => Some(Cap::UNAUTHORIZED_ID),
+        "format" | "fmtstr" => Some(Cap::FMT_STRING),
+        "ldap" => Some(Cap::LDAP_INJECTION),
+        "xpath" => Some(Cap::XPATH_INJECTION),
+        "header" => Some(Cap::HEADER_INJECTION),
+        "redirect" => Some(Cap::OPEN_REDIRECT),
+        "ssti" | "template" => Some(Cap::SSTI),
+        "xxe" => Some(Cap::XXE),
+        "proto" | "prototype" => Some(Cap::PROTOTYPE_POLLUTION),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finalize_spec(
+    diag: &Diag,
+    entry_file: String,
+    entry_name: String,
+    lang: Lang,
+    expected_cap: Cap,
+    sink_file: String,
+    sink_line: u32,
+    derivation: SpecDerivationStrategy,
+) -> HarnessSpec {
+    let toolchain_id = toolchain_id_for_lang(lang).to_owned();
+    let mut spec = HarnessSpec {
+        finding_id: format!("{:016x}", diag.stable_hash),
+        entry_file,
+        entry_name,
+        entry_kind: EntryKind::Function,
+        lang,
+        toolchain_id,
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap,
+        constraint_hints: vec![],
+        sink_file,
+        sink_line,
+        spec_hash: String::new(),
+        derivation,
+    };
+    spec.spec_hash = compute_spec_hash(&spec);
+    spec
+}
+
+/// Walk a synthetic single-step flow to satisfy callers that expect a `FlowStep`
+/// vector. Used by strategies 2–4 when they need to materialise a flow for
+/// downstream consumers.
+#[allow(dead_code)]
+pub(crate) fn synthetic_flow(diag: &Diag, function: &str) -> Vec<FlowStep> {
+    vec![
+        FlowStep {
+            step: 1,
+            kind: FlowStepKind::Source,
+            file: diag.path.clone(),
+            line: diag.line as u32,
+            col: diag.col as u32,
+            snippet: None,
+            variable: None,
+            callee: None,
+            function: Some(function.to_owned()),
+            is_cross_file: false,
+        },
+        FlowStep {
+            step: 2,
+            kind: FlowStepKind::Sink,
+            file: diag.path.clone(),
+            line: diag.line as u32,
+            col: diag.col as u32,
+            snippet: None,
+            variable: None,
+            callee: None,
+            function: Some(function.to_owned()),
+            is_cross_file: false,
+        },
+    ]
 }
 
 /// Walk `flow_steps` and return the entry point: the enclosing function of
@@ -352,10 +687,30 @@ mod tests {
     }
 
     #[test]
-    fn from_finding_err_no_flow_steps() {
+    fn from_finding_err_no_flow_steps_falls_through_to_spec_derivation_failed() {
+        // Pre–Phase 01, this returned `NoFlowSteps` directly. After the
+        // typed-strategy rewrite, the verifier still tries the rule-namespace
+        // and func-summary strategies; only when *every* strategy fails does
+        // it surface `SpecDerivationFailed`. Empty evidence + empty rule
+        // id leaves nothing for any strategy to chew on.
         let diag = crate::commands::scan::Diag {
             confidence: Some(Confidence::Medium),
             evidence: Some(Evidence::default()),
+            ..Default::default()
+        };
+        assert_eq!(
+            HarnessSpec::from_finding(&diag).unwrap_err(),
+            UnsupportedReason::SpecDerivationFailed
+        );
+    }
+
+    #[test]
+    fn from_finding_err_no_evidence_returns_no_flow_steps() {
+        // When the finding carries no Evidence struct at all, there is no
+        // signal for any strategy. Reported as `NoFlowSteps`.
+        let diag = crate::commands::scan::Diag {
+            confidence: Some(Confidence::Medium),
+            evidence: None,
             ..Default::default()
         };
         assert_eq!(
@@ -423,6 +778,7 @@ mod tests {
             sink_file: "src/handler.rs".into(),
             sink_line: 10,
             spec_hash: String::new(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
         };
         spec.spec_hash = compute_spec_hash(&spec);
         spec
@@ -491,5 +847,196 @@ mod tests {
         s2.toolchain_id = "rust-nightly".into();
         s2.spec_hash = compute_spec_hash(&s2);
         assert_ne!(s1.spec_hash, s2.spec_hash, "toolchain_id mutation must change spec_hash");
+    }
+
+    // ── Phase 01: derivation strategies ──────────────────────────────────────
+
+    fn diag_with_rule_id(id: &str, path: &str, sink_caps: u32) -> crate::commands::scan::Diag {
+        crate::commands::scan::Diag {
+            id: id.into(),
+            path: path.into(),
+            line: 12,
+            col: 4,
+            confidence: Some(Confidence::Medium),
+            evidence: Some(Evidence {
+                sink_caps,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn derivation_strategies_returns_ordered_list() {
+        let strategies = HarnessSpec::derivation_strategies();
+        assert_eq!(strategies.len(), 4);
+        assert_eq!(strategies[0], SpecDerivationStrategy::FromFlowSteps);
+        assert_eq!(strategies[1], SpecDerivationStrategy::FromRuleNamespace);
+        assert_eq!(strategies[2], SpecDerivationStrategy::FromFuncSummaryWalk);
+        assert_eq!(strategies[3], SpecDerivationStrategy::FromCallgraphEntry);
+    }
+
+    #[test]
+    fn flow_steps_strategy_records_derivation_tag() {
+        use crate::labels::Cap;
+        let evidence = Evidence {
+            flow_steps: vec![
+                source_step("src/handler.py", "handle_request"),
+                sink_step("src/handler.py"),
+            ],
+            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            confidence: Some(Confidence::High),
+            evidence: Some(evidence),
+            path: "src/handler.py".into(),
+            ..Default::default()
+        };
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromFlowSteps);
+        assert_eq!(spec.entry_name, "handle_request");
+    }
+
+    #[test]
+    fn rule_namespace_strategy_fires_without_flow_steps() {
+        use crate::labels::Cap;
+        let diag = diag_with_rule_id("py.cmdi.os_system", "app/handler.py", Cap::SHELL_ESCAPE.bits());
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
+        assert_eq!(spec.lang, Lang::Python);
+        assert_eq!(spec.expected_cap, Cap::SHELL_ESCAPE);
+        assert_eq!(spec.entry_file, "app/handler.py");
+        assert_eq!(spec.sink_line, 12);
+    }
+
+    #[test]
+    fn rule_namespace_strategy_picks_cap_from_category_when_sink_caps_zero() {
+        let diag = diag_with_rule_id("java.deser.readobject", "src/Main.java", 0);
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
+        assert_eq!(spec.lang, Lang::Java);
+        assert_eq!(spec.expected_cap, Cap::DESERIALIZE);
+    }
+
+    #[test]
+    fn rule_namespace_strategy_rejects_path_lang_mismatch() {
+        use crate::labels::Cap;
+        // `py.*` rule id, but a `.java` file — the cross-check refuses.
+        let diag = diag_with_rule_id("py.cmdi.os_system", "src/Main.java", Cap::SHELL_ESCAPE.bits());
+        assert_eq!(
+            HarnessSpec::from_finding(&diag).unwrap_err(),
+            UnsupportedReason::SpecDerivationFailed
+        );
+    }
+
+    #[test]
+    fn rule_namespace_strategy_rejects_unknown_category() {
+        // Cap evidence zero AND category unknown → no fallback cap available.
+        let diag = diag_with_rule_id("py.weirdcategory.unknown", "app/handler.py", 0);
+        assert_eq!(
+            HarnessSpec::from_finding(&diag).unwrap_err(),
+            UnsupportedReason::SpecDerivationFailed
+        );
+    }
+
+    #[test]
+    fn rule_namespace_strategy_skips_legacy_taint_ids() {
+        use crate::labels::Cap;
+        // `taint-...` is *not* a language-namespace prefix; rule-namespace
+        // strategy must skip it so the next strategy can try.
+        let diag = diag_with_rule_id("taint-unsanitised-flow", "app/handler.py", Cap::SHELL_ESCAPE.bits());
+        // No flow_steps, no http/cli marker → ends in SpecDerivationFailed.
+        assert_eq!(
+            HarnessSpec::from_finding(&diag).unwrap_err(),
+            UnsupportedReason::SpecDerivationFailed
+        );
+    }
+
+    #[test]
+    fn func_summary_strategy_picks_first_tainted_param() {
+        use crate::labels::Cap;
+        let evidence = Evidence::default();
+        let diag = crate::commands::scan::Diag {
+            confidence: Some(Confidence::Medium),
+            evidence: Some(evidence.clone()),
+            path: "src/lib.rs".into(),
+            line: 7,
+            ..Default::default()
+        };
+        let summary = FuncSummary {
+            name: "open_path".into(),
+            file_path: "src/lib.rs".into(),
+            lang: "rust".into(),
+            param_count: 2,
+            param_names: vec!["root".into(), "name".into()],
+            source_caps: 0,
+            sanitizer_caps: 0,
+            sink_caps: Cap::FILE_IO.bits(),
+            propagating_params: vec![],
+            propagates_taint: false,
+            tainted_sink_params: vec![1],
+            param_to_sink: vec![],
+            callees: vec![],
+            container: String::new(),
+            disambig: None,
+            kind: Default::default(),
+            module_path: None,
+            rust_use_map: None,
+            rust_wildcards: None,
+            hierarchy_edges: vec![],
+            entry_kind: None,
+        };
+        let spec = derive_from_func_summary(&diag, &evidence, Some(&summary))
+            .expect("summary strategy must fire");
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromFuncSummaryWalk);
+        assert!(matches!(spec.payload_slot, PayloadSlot::Param(1)));
+        assert_eq!(spec.entry_name, "open_path");
+        assert_eq!(spec.expected_cap, Cap::FILE_IO);
+    }
+
+    #[test]
+    fn callgraph_entry_strategy_fires_on_http_rule_id() {
+        use crate::labels::Cap;
+        // `http` is not in `cap_for_rule_category`, so rule-namespace bails.
+        // The id contains `.http.`, so callgraph-entry catches it.
+        let diag = diag_with_rule_id("py.http.flask_route", "app/views.py", Cap::SSRF.bits());
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromCallgraphEntry);
+        assert!(matches!(spec.entry_kind, EntryKind::HttpRoute));
+        assert_eq!(spec.lang, Lang::Python);
+    }
+
+    #[test]
+    fn callgraph_entry_strategy_fires_on_cli_rule_id() {
+        use crate::labels::Cap;
+        let diag = diag_with_rule_id("rs.cli.parse_subcommand", "src/main.rs", Cap::SHELL_ESCAPE.bits());
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromCallgraphEntry);
+        assert!(matches!(spec.entry_kind, EntryKind::CliSubcommand));
+    }
+
+    #[test]
+    fn strategy_priority_flow_steps_beats_rule_namespace() {
+        use crate::labels::Cap;
+        // Both signals present: flow_steps wins because it appears first
+        // in the strategy order.
+        let evidence = Evidence {
+            flow_steps: vec![
+                source_step("src/handler.py", "handle_request"),
+                sink_step("src/handler.py"),
+            ],
+            sink_caps: Cap::SHELL_ESCAPE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            id: "py.cmdi.os_system".into(),
+            confidence: Some(Confidence::High),
+            evidence: Some(evidence),
+            path: "src/handler.py".into(),
+            ..Default::default()
+        };
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromFlowSteps);
     }
 }

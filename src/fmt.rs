@@ -484,6 +484,7 @@ fn format_dynamic_verdict_annotation(dv: &crate::evidence::VerifyResult) -> Stri
         VerifyStatus::Inconclusive => {
             let reason = dv
                 .inconclusive_reason
+                .as_ref()
                 .map(format_inconclusive_reason)
                 .unwrap_or_else(|| {
                     dv.detail
@@ -512,13 +513,20 @@ fn format_unsupported_reason(r: &crate::evidence::UnsupportedReason) -> String {
     }
 }
 
-fn format_inconclusive_reason(r: crate::evidence::InconclusiveReason) -> String {
+fn format_inconclusive_reason(r: &crate::evidence::InconclusiveReason) -> String {
     use crate::evidence::InconclusiveReason;
     match r {
         InconclusiveReason::OracleCollisionSuspected => "oracle collision".to_string(),
         InconclusiveReason::NonReproducible => "non-reproducible".to_string(),
         InconclusiveReason::BuildFailed => "build failed".to_string(),
         InconclusiveReason::SandboxError => "sandbox error".to_string(),
+        InconclusiveReason::SpecDerivationFailed { hint, .. } => {
+            if hint.is_empty() {
+                "spec derivation failed".to_string()
+            } else {
+                format!("spec derivation failed ({hint})")
+            }
+        }
     }
 }
 

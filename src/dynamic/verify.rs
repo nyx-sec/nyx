@@ -11,7 +11,7 @@ use crate::dynamic::sandbox::{toolchain_id_with_digest, SandboxOptions};
 use crate::dynamic::spec::{HarnessSpec, SPEC_FORMAT_VERSION};
 use crate::dynamic::telemetry::{self, TelemetryEvent};
 use crate::dynamic::toolchain;
-use crate::evidence::{InconclusiveReason, UnsupportedReason};
+use crate::evidence::{InconclusiveReason, SpecDerivationStrategy, UnsupportedReason};
 use crate::utils::config::Config;
 use std::path::Path;
 use std::time::Instant;
@@ -152,6 +152,90 @@ fn insert_verdict_cache(
     );
 }
 
+/// Decide whether a [`HarnessSpec::from_finding_opts`] failure should surface
+/// as `Unsupported` (the finding is genuinely unmodellable) or
+/// `Inconclusive(SpecDerivationFailed)` (the rule namespace or sink evidence
+/// carried enough signal that derivation *should* have worked).
+///
+/// The rule-of-thumb: if any spec-derivation strategy could plausibly have
+/// fired (i.e. the finding had a usable rule namespace, non-empty path, or
+/// non-zero sink caps) yet none produced a spec, the failure is
+/// **Inconclusive** — we tried and missed. Otherwise it's **Unsupported**.
+fn spec_derivation_failed_verdict(
+    finding_id: String,
+    diag: &Diag,
+    reason: UnsupportedReason,
+) -> VerifyResult {
+    if matches!(reason, UnsupportedReason::SpecDerivationFailed) && should_be_inconclusive(diag) {
+        let strategies: Vec<SpecDerivationStrategy> =
+            HarnessSpec::derivation_strategies().to_vec();
+        let hint = derivation_failure_hint(diag);
+        return VerifyResult {
+            finding_id,
+            status: VerifyStatus::Inconclusive,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: Some(InconclusiveReason::SpecDerivationFailed {
+                tried: strategies,
+                hint,
+            }),
+            detail: None,
+            attempts: vec![],
+            toolchain_match: None,
+        };
+    }
+
+    VerifyResult {
+        finding_id,
+        status: VerifyStatus::Unsupported,
+        triggered_payload: None,
+        reason: Some(reason),
+        inconclusive_reason: None,
+        detail: None,
+        attempts: vec![],
+        toolchain_match: None,
+    }
+}
+
+/// True when the finding has *some* derivable signal (rule namespace, sink
+/// caps, or evidence) so a spec-derivation failure should be surfaced as
+/// `Inconclusive` rather than `Unsupported`.
+fn should_be_inconclusive(diag: &Diag) -> bool {
+    let has_rule_ns = diag.id.split('.').count() >= 2
+        && !diag.id.starts_with("taint-")
+        && !diag.id.starts_with("cfg-")
+        && !diag.id.starts_with("state-");
+    let has_evidence = diag
+        .evidence
+        .as_ref()
+        .map(|e| e.sink_caps != 0 || !e.flow_steps.is_empty() || e.sink.is_some())
+        .unwrap_or(false);
+    has_rule_ns || has_evidence
+}
+
+fn derivation_failure_hint(diag: &Diag) -> String {
+    let ev = match diag.evidence.as_ref() {
+        Some(e) => e,
+        None => return "no evidence on finding".to_owned(),
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if !diag.id.is_empty() {
+        parts.push(format!("rule_id={}", diag.id));
+    }
+    if ev.sink_caps == 0 {
+        parts.push("sink_caps=0".to_owned());
+    }
+    if ev.flow_steps.is_empty() {
+        parts.push("no_flow_steps".to_owned());
+    }
+    if diag.path.is_empty() {
+        parts.push("empty_path".to_owned());
+    } else {
+        parts.push(format!("path={}", diag.path));
+    }
+    parts.join("; ")
+}
+
 /// Try to dynamically confirm a static finding.
 ///
 /// Never fails: every error path collapses into a [`VerifyStatus`] so the
@@ -162,16 +246,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     let spec = match HarnessSpec::from_finding_opts(diag, opts.verify_all_confidence) {
         Ok(s) => s,
         Err(reason) => {
-            return VerifyResult {
-                finding_id,
-                status: VerifyStatus::Unsupported,
-                triggered_payload: None,
-                reason: Some(reason),
-                inconclusive_reason: None,
-                detail: None,
-                attempts: vec![],
-                toolchain_match: None,
-            };
+            return spec_derivation_failed_verdict(finding_id, diag, reason);
         }
     };
 
@@ -271,7 +346,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     let event = TelemetryEvent::new(
         &spec,
         verdict.status,
-        verdict.inconclusive_reason,
+        verdict.inconclusive_reason.clone(),
         toolchain_match,
         elapsed,
         build_attempts,

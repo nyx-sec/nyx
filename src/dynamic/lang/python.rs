@@ -201,6 +201,7 @@ mod tests {
             sink_file: "src/app.py".into(),
             sink_line: 15,
             spec_hash: "00000000deadbeef".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 

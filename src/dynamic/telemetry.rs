@@ -191,6 +191,7 @@ mod tests {
             sink_file: "handler.py".into(),
             sink_line: 5,
             spec_hash: "abcd1234abcd1234".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 

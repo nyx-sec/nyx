@@ -181,6 +181,7 @@ mod tests {
             sink_file: "src/app.js".into(),
             sink_line: 15,
             spec_hash: "js000000000001".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 

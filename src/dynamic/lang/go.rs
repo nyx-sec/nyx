@@ -150,6 +150,7 @@ mod tests {
             sink_file: "cmd/server/main.go".into(),
             sink_line: 20,
             spec_hash: "go0000000000001".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         }
     }
 
