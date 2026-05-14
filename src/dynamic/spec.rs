@@ -221,9 +221,15 @@ impl HarnessSpec {
         // Takes precedence over the four-strategy ladder because a route
         // handler / CLI entry is always a stronger driving anchor than
         // the helper function that physically contains the sink.
+        //
+        // Strict variant: only the reverse-edge BFS (`find_entry_via_callgraph`)
+        // counts here. The summary-entry-kind + rule-id substring fallbacks
+        // that live in `derive_from_callgraph_entry_full` stay at strategy-4
+        // priority — calling them here would short-circuit the more precise
+        // strategies (FromFlowSteps / FromRuleNamespace / FromFuncSummaryAuto)
+        // whenever the rule id happens to contain `.http.` / `.cli.`.
         if let (Some(s), Some(cg)) = (summaries, callgraph) {
-            if let Some(spec) = derive_from_callgraph_entry_full(diag, evidence, Some(s), Some(cg))
-            {
+            if let Some(spec) = derive_from_callgraph_walk_only(diag, evidence, s, cg) {
                 return Ok(spec);
             }
         }
@@ -514,6 +520,62 @@ pub fn derive_from_callgraph_entry_with(
     summaries: Option<&GlobalSummaries>,
 ) -> Option<HarnessSpec> {
     derive_from_callgraph_entry_full(diag, evidence, summaries, None)
+}
+
+/// Strict reverse-edge-BFS-only variant of
+/// [`derive_from_callgraph_entry_full`].
+///
+/// Returns `Some(spec)` only when [`find_entry_via_callgraph`] resolves
+/// the sink's enclosing function to a framework-bound ancestor via the
+/// whole-program callgraph. Unlike
+/// [`derive_from_callgraph_entry_full`], the summary-entry-kind fallback
+/// on the enclosing function and the rule-id `.http.` / `.cli.`
+/// substring heuristic are *not* consulted here — those remain
+/// strategy-4 last-chance behaviour invoked from
+/// [`HarnessSpec::from_finding_full`]'s strategy ladder.
+///
+/// Used by the Phase 04 pre-step in [`HarnessSpec::from_finding_full`]
+/// so a successful callgraph walk takes precedence over strategies 1–3,
+/// while the substring / summary fallbacks do not short-circuit
+/// [`SpecDerivationStrategy::FromFlowSteps`] /
+/// [`SpecDerivationStrategy::FromRuleNamespace`] /
+/// [`SpecDerivationStrategy::FromFuncSummaryWalk`].
+pub fn derive_from_callgraph_walk_only(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: &GlobalSummaries,
+    callgraph: &CallGraph,
+) -> Option<HarnessSpec> {
+    let lang = lang_from_path(&diag.path)?;
+    let expected_cap = Cap::from_bits_truncate(evidence.sink_caps);
+    if expected_cap.is_empty() {
+        return None;
+    }
+    let found = find_entry_via_callgraph(diag, evidence, summaries, callgraph, lang)?;
+    let entry_kind = found
+        .summary
+        .entry_kind
+        .as_ref()
+        .map(entry_kind_from_summary)
+        .unwrap_or_else(|| name_to_entry_kind(&found.summary.name));
+    let entry_file = if !found.summary.file_path.is_empty() {
+        found.summary.file_path.clone()
+    } else {
+        diag.path.clone()
+    };
+    let mut spec = finalize_spec(
+        diag,
+        entry_file,
+        found.summary.name.clone(),
+        lang,
+        expected_cap,
+        diag.path.clone(),
+        diag.line as u32,
+        SpecDerivationStrategy::FromCallgraphEntry,
+    );
+    spec.entry_kind = entry_kind;
+    spec.spec_hash = compute_spec_hash(&spec);
+    Some(spec)
 }
 
 /// Like [`derive_from_callgraph_entry_with`], but also consults the

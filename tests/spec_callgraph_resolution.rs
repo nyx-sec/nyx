@@ -104,6 +104,21 @@ fn sink_step_in(file: &str, function: &str, line: usize) -> FlowStep {
     }
 }
 
+fn source_step_in(file: &str, function: &str, line: usize) -> FlowStep {
+    FlowStep {
+        step: 0,
+        kind: FlowStepKind::Source,
+        file: file.into(),
+        line: line as u32,
+        col: 0,
+        snippet: None,
+        variable: None,
+        callee: None,
+        function: Some(function.into()),
+        is_cross_file: false,
+    }
+}
+
 /// Helper: assert that strategy 4 with the callgraph rewrites the
 /// entry to a framework-bound ancestor.
 fn assert_callgraph_rewrites_entry(
@@ -255,4 +270,60 @@ fn from_finding_with_callgraph_thin_wrapper_compiles_and_runs() {
         .expect("wrapper must derive a spec via the rule-id fallback");
     assert_eq!(spec.derivation, SpecDerivationStrategy::FromCallgraphEntry);
     assert!(matches!(spec.entry_kind, EntryKind::HttpRoute));
+}
+
+// ── Strict pre-step regression: BFS-miss must defer to the ladder ────────────
+
+#[test]
+fn bfs_miss_with_http_rule_defers_to_flow_steps_strategy() {
+    // Regression for the Phase 04 follow-up: the pre-step in
+    // `HarnessSpec::from_finding_full` must use the *strict*
+    // `derive_from_callgraph_walk_only` helper. If it instead falls
+    // through to the rule-id `.http.` / `.cli.` substring fallback baked
+    // into `derive_from_callgraph_entry_full`, every `.http.*` finding
+    // whose enclosing function happens to be orphaned in the callgraph
+    // gets tagged `FromCallgraphEntry` and loses the more precise
+    // `FromFlowSteps` resolution. This fixture parks the sink in a
+    // class method with no callers: the helper is *not* an entry point
+    // (`container` is non-empty so the zero-in-degree heuristic does
+    // not apply) and BFS bottoms out without finding an ancestor.
+    let file = fixtures_dir().join("orphan_helper_sink.py");
+    let file_str = file.to_string_lossy().to_string();
+    let (summaries, cg, _analysis) = build_context(&file);
+
+    // Sanity: the helper must be summarised and not be an entry point.
+    let helper_summary = summaries
+        .iter()
+        .find(|(_, s)| s.name == "helper")
+        .map(|(_, s)| s)
+        .expect("pass 1 must summarise the orphan helper");
+    assert!(
+        !is_entry_point(helper_summary, &cg),
+        "class method helper with non-empty container must not qualify as entry point"
+    );
+
+    // Synth a `py.http.*` rule id with a Source flow_step rooted in the
+    // helper so strategy 1 (FromFlowSteps) has a concrete entry.
+    let mut diag = make_diag("py.http.synthetic_route", &file_str, 13);
+    let mut ev = Evidence::default();
+    ev.flow_steps = vec![
+        source_step_in(&file_str, "helper", 13),
+        sink_step_in(&file_str, "helper", 13),
+    ];
+    ev.sink_caps = Cap::SHELL_ESCAPE.bits();
+    diag.evidence = Some(ev);
+
+    let spec = HarnessSpec::from_finding_full(&diag, false, Some(&summaries), Some(&cg))
+        .expect("strict pre-step must defer; strategy 1 must produce a spec");
+    assert_eq!(
+        spec.derivation,
+        SpecDerivationStrategy::FromFlowSteps,
+        "BFS-miss + `.http.` rule must NOT short-circuit on the substring fallback; \
+         expected FromFlowSteps but got {:?}",
+        spec.derivation
+    );
+    assert_eq!(
+        spec.entry_name, "helper",
+        "FromFlowSteps must record the helper as entry, not an inferred route handler"
+    );
 }
