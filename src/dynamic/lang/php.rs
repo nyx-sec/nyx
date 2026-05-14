@@ -143,7 +143,7 @@ function __nyx_install_crash_guard(string $sinkCallee): void {
     });
     if (function_exists('pcntl_signal') && function_exists('pcntl_async_signals')) {
         pcntl_async_signals(true);
-        foreach ([SIGABRT, SIGBUS ?? null, SIGFPE ?? null, SIGILL ?? null] as $sig) {
+        foreach ([SIGABRT, defined('SIGBUS') ? SIGBUS : null, defined('SIGFPE') ? SIGFPE : null, defined('SIGILL') ? SIGILL : null] as $sig) {
             if ($sig === null) continue;
             pcntl_signal($sig, function ($s) use ($emit_crash) {
                 $name = 'SIGABRT';
