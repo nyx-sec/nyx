@@ -524,13 +524,18 @@ fn generate_harness_java(spec: &HarnessSpec, shape: JavaShape, entry_class: &str
         ""
     };
 
+    // Reflection imports are only used by shapes whose helpers / catch
+    // clause reference them; emitting them for `StaticMethod` /
+    // `StaticMain` produces unused-import warnings under javac -Xlint.
+    let imports = if shape_uses_reflection(shape) {
+        "import java.lang.reflect.Method;\nimport java.lang.reflect.Constructor;\nimport java.lang.reflect.InvocationTargetException;\n\n"
+    } else {
+        ""
+    };
+
     format!(
         r#"// Nyx dynamic harness — auto-generated, do not edit (Phase 14 — JavaShape::{shape:?}).
-import java.lang.reflect.Method;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
-
-public class NyxHarness {{
+{imports}public class NyxHarness {{
 {probe}
 {helpers}
     public static void main(String[] args) {{
@@ -557,6 +562,7 @@ public class NyxHarness {{
 }}
 "#,
         shape = shape,
+        imports = imports,
         probe = probe,
         helpers = helpers,
         pre_call = pre_call,
@@ -988,5 +994,54 @@ mod tests {
         spec.entry_file = "/nonexistent/Vuln.java".into();
         let harness = emit(&spec).unwrap();
         assert_eq!(harness.entry_subpath, Some("Entry.java".to_owned()));
+    }
+
+    #[test]
+    fn detect_shape_reads_file_and_returns_shape() {
+        // Drive the public `detect_shape(spec)` wrapper end-to-end:
+        // write a representative source to a tempfile, then assert the
+        // wrapper reads it and produces the expected JavaShape variant.
+        let dir = std::env::temp_dir().join(format!(
+            "nyx_detect_shape_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let cases: &[(&str, &str, &str, EntryKind, JavaShape)] = &[
+            (
+                "Servlet.java",
+                "import javax.servlet.http.HttpServletRequest;\npublic class Servlet extends HttpServlet { public void doGet(HttpServletRequest r, HttpServletResponse w) {} }",
+                "doGet",
+                EntryKind::HttpRoute,
+                JavaShape::ServletDoGet,
+            ),
+            (
+                "Spring.java",
+                "@RestController\npublic class Spring { @GetMapping(\"/x\") public String run(String p) { return p; } }",
+                "run",
+                EntryKind::HttpRoute,
+                JavaShape::SpringController,
+            ),
+            (
+                "MainClass.java",
+                "public class MainClass { public static void main(String[] args) {} }",
+                "main",
+                EntryKind::CliSubcommand,
+                JavaShape::StaticMain,
+            ),
+            (
+                "Plain.java",
+                "public class Plain { public static void run(String p) {} }",
+                "run",
+                EntryKind::Function,
+                JavaShape::StaticMethod,
+            ),
+        ];
+        for (name, body, entry_name, kind, expected) in cases {
+            let path = dir.join(name);
+            std::fs::write(&path, body).expect("write fixture");
+            let spec = make_spec_with(*kind, entry_name, path.to_str().unwrap());
+            assert_eq!(detect_shape(&spec), *expected, "case {name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

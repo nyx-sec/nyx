@@ -50,24 +50,6 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     js_shared::emit(spec, false)
 }
 
-/// Derive the JS module name from an entry file path.
-///
-/// Always returns `"entry"` because the JS harness stages the entry file at
-/// `workdir/entry.js` so `require('./entry')` is the only path that resolves
-/// regardless of the source file's original name.
-pub fn entry_module_name(_entry_file: &str) -> String {
-    "entry".to_owned()
-}
-
-/// Derive the entry filename from an entry file path.
-///
-/// Always `"entry.js"` for the JS surface; TypeScript uses `"entry.ts"` (see
-/// [`crate::dynamic::lang::typescript`]) and ESM-default shapes use
-/// `"entry.mjs"` (handled inside `js_shared`).
-pub fn entry_module_filename(_entry_file: &str) -> String {
-    "entry.js".to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,11 +146,4 @@ mod tests {
         assert!(hint.contains("Phase 13"));
     }
 
-    #[test]
-    fn entry_module_name_is_always_entry_to_match_copy_destination() {
-        assert_eq!(entry_module_name("src/handlers/login.js"), "entry");
-        assert_eq!(entry_module_name("app.ts"), "entry");
-        assert_eq!(entry_module_name("handler.mjs"), "entry");
-        assert_eq!(entry_module_name("no_ext"), "entry");
-    }
 }

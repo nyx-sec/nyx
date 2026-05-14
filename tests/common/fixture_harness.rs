@@ -283,17 +283,7 @@ pub fn run_shape_fixture_lang(
         u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
     });
 
-    let toolchain_id = match lang {
-        nyx_scanner::symbol::Lang::Python => "python-3",
-        nyx_scanner::symbol::Lang::JavaScript | nyx_scanner::symbol::Lang::TypeScript => "node-20",
-        nyx_scanner::symbol::Lang::Rust => "rust-stable",
-        nyx_scanner::symbol::Lang::Go => "go-1.21",
-        nyx_scanner::symbol::Lang::Java => "java-17",
-        nyx_scanner::symbol::Lang::Php => "php-8",
-        nyx_scanner::symbol::Lang::Ruby => "ruby-3",
-        nyx_scanner::symbol::Lang::C => "gcc",
-        nyx_scanner::symbol::Lang::Cpp => "g++",
-    };
+    let toolchain_id = nyx_scanner::dynamic::spec::default_toolchain_id(lang);
 
     let spec = HarnessSpec {
         finding_id: spec_hash.clone(),
@@ -482,11 +472,7 @@ pub fn run_harness_snapshot_lang(
     std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
     let entry_file = dst.to_string_lossy().into_owned();
 
-    let toolchain_id = match lang {
-        nyx_scanner::symbol::Lang::Python => "python-3",
-        nyx_scanner::symbol::Lang::JavaScript | nyx_scanner::symbol::Lang::TypeScript => "node-20",
-        _ => "unknown",
-    };
+    let toolchain_id = nyx_scanner::dynamic::spec::default_toolchain_id(lang);
 
     let spec = HarnessSpec {
         finding_id: "0000000000000001".into(),

@@ -988,7 +988,7 @@ fn finalize_spec(
     sink_line: u32,
     derivation: SpecDerivationStrategy,
 ) -> HarnessSpec {
-    let toolchain_id = toolchain_id_for_lang(lang).to_owned();
+    let toolchain_id = default_toolchain_id(lang).to_owned();
     let stubs_required = StubKind::for_cap(expected_cap);
     let mut spec = HarnessSpec {
         finding_id: format!("{:016x}", diag.stable_hash),
@@ -1031,7 +1031,7 @@ pub fn outermost_entry(steps: &[crate::evidence::FlowStep]) -> Option<EntryRef> 
 
 /// Default toolchain label for a language (informational; harness builder
 /// may override for locally-installed compilers/runtimes).
-fn toolchain_id_for_lang(lang: Lang) -> &'static str {
+pub fn default_toolchain_id(lang: Lang) -> &'static str {
     match lang {
         Lang::Rust => "rust-stable",
         Lang::C => "gcc-stable",
