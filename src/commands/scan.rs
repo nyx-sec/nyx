@@ -373,6 +373,22 @@ fn load_verify_summaries(
     Some(Arc::new(crate::summary::merge_summaries(all, Some(&root_str))))
 }
 
+/// Build the whole-program [`crate::callgraph::CallGraph`] from a
+/// preloaded [`crate::summary::GlobalSummaries`] so the verifier can
+/// thread it into the callgraph-aware spec-derivation path
+/// (`SpecDerivationStrategy::FromCallgraphEntry`).
+///
+/// Best-effort: callgraph construction itself never fails, but this
+/// helper exists to keep the verify pipeline parallel with
+/// [`load_verify_summaries`] and to absorb future failure modes (e.g.
+/// interop-edge loading) behind a single optional return.
+#[cfg(feature = "dynamic")]
+fn load_verify_callgraph(
+    summaries: &crate::summary::GlobalSummaries,
+) -> Arc<crate::callgraph::CallGraph> {
+    Arc::new(crate::callgraph::build_call_graph(summaries, &[]))
+}
+
 /// Entry point called by the CLI.
 #[allow(clippy::too_many_arguments)]
 pub fn handle(
@@ -529,6 +545,12 @@ pub fn handle(
             // without re-hitting SQLite per finding. Best-effort: a load
             // failure logs and falls through to the substring heuristics.
             opts.summaries = load_verify_summaries(&project_name, &db_path, &scan_path);
+            // Build the whole-program callgraph from the preloaded summaries
+            // so strategy 4 can walk reverse edges to a route handler / CLI
+            // entry when the sink lives in a leaf helper.
+            if let Some(ref s) = opts.summaries {
+                opts.callgraph = Some(load_verify_callgraph(s));
+            }
         }
         for diag in &mut diags {
             let result = crate::dynamic::verify::verify_finding(diag, &opts);

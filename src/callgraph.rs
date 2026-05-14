@@ -52,6 +52,7 @@ pub struct AmbiguousCallee {
 ///
 /// Nodes are [`FuncKey`]s (one per function definition across all files).
 /// Edges represent call-site relationships resolved after pass 1.
+#[derive(Debug)]
 pub struct CallGraph {
     pub graph: DiGraph<FuncKey, CallEdge>,
     /// `FuncKey → NodeIndex` for quick lookup.

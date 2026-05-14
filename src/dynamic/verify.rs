@@ -3,6 +3,7 @@
 //! The CLI subcommand and any library consumer call [`verify_finding`].
 //! It is the only function the rest of the crate needs to know about.
 
+use crate::callgraph::CallGraph;
 use crate::commands::scan::Diag;
 use crate::dynamic::corpus::{payloads_for, CORPUS_VERSION};
 use crate::dynamic::report::{AttemptSummary, VerifyResult, VerifyStatus};
@@ -41,6 +42,14 @@ pub struct VerifyOptions {
     /// `None` disables the summary-driven derivation paths; strategy 3 is a
     /// no-op and strategy 4 falls back to the rule-id substring heuristic.
     pub summaries: Option<Arc<GlobalSummaries>>,
+    /// Whole-program [`CallGraph`] threaded into the callgraph-aware
+    /// branch of strategy 4 ([`SpecDerivationStrategy::FromCallgraphEntry`]).
+    ///
+    /// When present alongside [`Self::summaries`], the verifier walks
+    /// reverse edges from the sink's enclosing function to the nearest
+    /// entry-point ancestor (route handler, CLI subcommand, `main`).
+    /// `None` keeps strategy 4 on the legacy rule-id substring path.
+    pub callgraph: Option<Arc<CallGraph>>,
 }
 
 impl VerifyOptions {
@@ -61,6 +70,7 @@ impl VerifyOptions {
             db_path: None,
             verify_all_confidence: config.scanner.verify_all_confidence,
             summaries: None,
+            callgraph: None,
         }
     }
 }
@@ -322,10 +332,11 @@ fn derivation_failure_hint(diag: &Diag) -> String {
 pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     let finding_id = format!("{:016x}", diag.stable_hash);
 
-    let spec = match HarnessSpec::from_finding_with_summaries(
+    let spec = match HarnessSpec::from_finding_full(
         diag,
         opts.verify_all_confidence,
         opts.summaries.as_deref(),
+        opts.callgraph.as_deref(),
     ) {
         Ok(s) => s,
         Err(reason) => {

@@ -106,6 +106,7 @@ mod parity_tests {
             db_path: None,
             verify_all_confidence: false,
             summaries: None,
+            callgraph: None,
         }
     }
 
@@ -120,6 +121,7 @@ mod parity_tests {
             db_path: None,
             verify_all_confidence: false,
             summaries: None,
+            callgraph: None,
         }
     }
 

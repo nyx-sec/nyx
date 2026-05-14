@@ -17,13 +17,15 @@
 //! meaning, the hash inputs change, or the corpus changes in a way that
 //! would invalidate previously-computed hashes.
 
+use crate::callgraph::{CallGraph, CallGraphAnalysis};
 use crate::commands::scan::Diag;
 use crate::dynamic::corpus::CORPUS_VERSION;
 use crate::evidence::{Confidence, FlowStepKind, UnsupportedReason};
 use crate::labels::Cap;
 use crate::summary::{FuncSummary, GlobalSummaries};
-use crate::symbol::Lang;
+use crate::symbol::{FuncKey, Lang};
 use serde::{Deserialize, Serialize};
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 /// Re-export of the always-present [`crate::evidence::SpecDerivationStrategy`].
@@ -178,6 +180,33 @@ impl HarnessSpec {
         verify_all_confidence: bool,
         summaries: Option<&GlobalSummaries>,
     ) -> Result<Self, UnsupportedReason> {
+        Self::from_finding_full(diag, verify_all_confidence, summaries, None)
+    }
+
+    /// Strategy-aware constructor that also consults a whole-program
+    /// [`CallGraph`] when `callgraph` is `Some`.
+    ///
+    /// Strategy 4 ([`SpecDerivationStrategy::FromCallgraphEntry`]) walks
+    /// reverse call-graph edges from the sink's enclosing function via
+    /// [`crate::callgraph::callers_of`] to discover the *nearest* ancestor
+    /// that qualifies as an entry point (see [`is_entry_point`]). When
+    /// found, the spec's `entry_file` / `entry_name` are rewritten to the
+    /// ancestor and `entry_kind` is classified from the ancestor's
+    /// [`FuncSummary::entry_kind`] — capturing every framework-bound sink
+    /// whose only real caller is a route decorator or CLI subcommand.
+    ///
+    /// When `callgraph` is `None` the behaviour matches
+    /// [`HarnessSpec::from_finding_with_summaries`] verbatim: strategy 4
+    /// falls back to the rule-id substring / summary-entry-kind path.
+    /// When `summaries` is `None` the callgraph walk has no per-key
+    /// summary to consult and degrades to a name-based entry recogniser
+    /// (`main` / `__main__`).
+    pub fn from_finding_full(
+        diag: &Diag,
+        verify_all_confidence: bool,
+        summaries: Option<&GlobalSummaries>,
+        callgraph: Option<&CallGraph>,
+    ) -> Result<Self, UnsupportedReason> {
         if !verify_all_confidence {
             match diag.confidence {
                 Some(c) if c >= Confidence::Medium => {}
@@ -186,6 +215,18 @@ impl HarnessSpec {
         }
 
         let evidence = diag.evidence.as_ref().ok_or(UnsupportedReason::NoFlowSteps)?;
+
+        // Phase 04 pre-step: when both callgraph *and* summaries are
+        // present, walk reverse edges to a framework-bound ancestor.
+        // Takes precedence over the four-strategy ladder because a route
+        // handler / CLI entry is always a stronger driving anchor than
+        // the helper function that physically contains the sink.
+        if let (Some(s), Some(cg)) = (summaries, callgraph) {
+            if let Some(spec) = derive_from_callgraph_entry_full(diag, evidence, Some(s), Some(cg))
+            {
+                return Ok(spec);
+            }
+        }
 
         // Try each strategy in priority order; first non-None wins.
         if let Some(spec) = derive_from_flow_steps(diag, evidence) {
@@ -197,11 +238,33 @@ impl HarnessSpec {
         if let Some(spec) = derive_from_func_summary_auto(diag, evidence, summaries) {
             return Ok(spec);
         }
-        if let Some(spec) = derive_from_callgraph_entry_with(diag, evidence, summaries) {
+        if let Some(spec) = derive_from_callgraph_entry_full(diag, evidence, summaries, callgraph)
+        {
             return Ok(spec);
         }
 
         Err(UnsupportedReason::SpecDerivationFailed)
+    }
+
+    /// Convenience wrapper around [`HarnessSpec::from_finding_full`] that
+    /// pins `verify_all_confidence = false` and accepts only callgraph
+    /// context. Used by the verifier when the caller has built a fresh
+    /// [`CallGraph`] but not yet plumbed the matching
+    /// [`GlobalSummaries`]; in that mode the callgraph walk degrades to
+    /// the name-based entry recogniser.
+    ///
+    /// The `analysis` argument is accepted to pin the API surface against
+    /// future SCC-aware refinements (e.g. bounding the reverse-edge BFS
+    /// against the analysis's pre-computed back edges); the current
+    /// implementation does not consult it because the BFS already
+    /// protects against recursive predecessor chains via its visited
+    /// set.
+    pub fn from_finding_with_callgraph(
+        diag: &Diag,
+        callgraph: &CallGraph,
+        _analysis: &CallGraphAnalysis,
+    ) -> Result<Self, UnsupportedReason> {
+        Self::from_finding_full(diag, false, None, Some(callgraph))
     }
 
     /// True when [`HarnessSpec::entry_kind`] is in
@@ -450,13 +513,64 @@ pub fn derive_from_callgraph_entry_with(
     evidence: &crate::evidence::Evidence,
     summaries: Option<&GlobalSummaries>,
 ) -> Option<HarnessSpec> {
+    derive_from_callgraph_entry_full(diag, evidence, summaries, None)
+}
+
+/// Like [`derive_from_callgraph_entry_with`], but also consults the
+/// whole-program [`CallGraph`] when `callgraph` is `Some`.
+///
+/// When both `summaries` and `callgraph` are present, the sink's
+/// enclosing function is resolved to a [`FuncKey`] and a reverse-edge
+/// BFS walks predecessors until an ancestor satisfies
+/// [`is_entry_point`]. The spec's `entry_file` / `entry_name` are
+/// rewritten to that ancestor and `entry_kind` is classified from the
+/// ancestor's [`FuncSummary::entry_kind`] (HTTP variants → HttpRoute).
+/// The legacy rule-id `.http.` / `.cli.` substring fallback is still
+/// consulted when the callgraph walk finds nothing.
+pub fn derive_from_callgraph_entry_full(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: Option<&GlobalSummaries>,
+    callgraph: Option<&CallGraph>,
+) -> Option<HarnessSpec> {
     let lang = lang_from_path(&diag.path)?;
     let expected_cap = Cap::from_bits_truncate(evidence.sink_caps);
     if expected_cap.is_empty() {
         return None;
     }
 
-    // Step 1: try summary-based classification.
+    // Step 0: callgraph-aware reverse-edge walk to the nearest entry-point
+    // ancestor. Only fires when both summaries *and* callgraph are present.
+    if let (Some(s), Some(cg)) = (summaries, callgraph) {
+        if let Some(found) = find_entry_via_callgraph(diag, evidence, s, cg, lang) {
+            let entry_kind = found
+                .summary
+                .entry_kind
+                .as_ref()
+                .map(entry_kind_from_summary)
+                .unwrap_or_else(|| name_to_entry_kind(&found.summary.name));
+            let entry_file = if !found.summary.file_path.is_empty() {
+                found.summary.file_path.clone()
+            } else {
+                diag.path.clone()
+            };
+            let mut spec = finalize_spec(
+                diag,
+                entry_file,
+                found.summary.name.clone(),
+                lang,
+                expected_cap,
+                diag.path.clone(),
+                diag.line as u32,
+                SpecDerivationStrategy::FromCallgraphEntry,
+            );
+            spec.entry_kind = entry_kind;
+            spec.spec_hash = compute_spec_hash(&spec);
+            return Some(spec);
+        }
+    }
+
+    // Step 1: try summary-based classification of the enclosing function.
     let summary_kind = enclosing_function_from_flow_steps(evidence)
         .and_then(|name| find_summary_by_path(summaries?, lang, &name, &diag.path))
         .and_then(|s| s.entry_kind.as_ref().map(entry_kind_from_summary));
@@ -489,6 +603,140 @@ pub fn derive_from_callgraph_entry_with(
     spec.entry_kind = entry_kind;
     spec.spec_hash = compute_spec_hash(&spec);
     Some(spec)
+}
+
+/// Recognise function-name-only entry points when no static
+/// [`crate::entry_points::EntryKind`] tag is available.
+///
+/// `main` / `fn main` / `__main__` (Python's `if __name__ == "__main__":`
+/// block-as-function convention) become [`EntryKind::CliSubcommand`];
+/// every other name defaults to [`EntryKind::Function`]. Used to give
+/// the verifier a non-`Function` entry kind for callgraph-discovered
+/// ancestors whose summaries pre-date the static entry-kind detector.
+fn name_to_entry_kind(name: &str) -> EntryKind {
+    match name {
+        "main" | "__main__" => EntryKind::CliSubcommand,
+        _ => EntryKind::Function,
+    }
+}
+
+/// True when `func` qualifies as a static entry point: framework-bound
+/// route handler (`func.entry_kind.is_some()`), Rust / C-style program
+/// `main`, or Python `__main__` block-as-function.
+///
+/// `callgraph` is accepted as future-extension surface (e.g. checking
+/// in-degree == 0 to claim externally-driven CLI helpers) but the
+/// current implementation only uses it for the in-degree heuristic when
+/// the function name itself does not match a recognised pattern.
+pub fn is_entry_point(func: &FuncSummary, callgraph: &CallGraph) -> bool {
+    if func.entry_kind.is_some() {
+        return true;
+    }
+    if matches!(func.name.as_str(), "main" | "__main__") {
+        return true;
+    }
+    // Last-resort: if the call graph has zero static callers for this
+    // function and it is *not* a closure / lambda (which legitimately
+    // have zero callers but are inlined at their use site), treat it as
+    // externally driven. We only claim this when the function lives at
+    // file top level (empty container) so we do not promote leaf helper
+    // methods on classes to entry points.
+    if !func.container.is_empty() {
+        return false;
+    }
+    let lang = match Lang::from_slug(&func.lang) {
+        Some(l) => l,
+        None => return false,
+    };
+    let key = FuncKey {
+        lang,
+        namespace: func.file_path.clone(),
+        container: func.container.clone(),
+        name: func.name.clone(),
+        arity: Some(func.param_count),
+        disambig: func.disambig,
+        kind: func.kind,
+    };
+    if let Some(&node) = callgraph.index.get(&key) {
+        callgraph
+            .graph
+            .neighbors_directed(node, petgraph::Direction::Incoming)
+            .next()
+            .is_none()
+    } else {
+        false
+    }
+}
+
+/// Result of a successful callgraph-driven entry-point lookup.
+struct EntryHit<'a> {
+    #[allow(dead_code)]
+    key: FuncKey,
+    summary: &'a FuncSummary,
+}
+
+/// Walk reverse edges from the sink's enclosing function until an entry
+/// point is found.
+///
+/// Returns `None` when:
+/// * the sink's enclosing function cannot be resolved from
+///   `evidence.flow_steps`, or
+/// * the resolved function has no node in the callgraph (e.g. defined
+///   in a file pass 1 did not summarise), or
+/// * no ancestor satisfies [`is_entry_point`] within the BFS frontier.
+fn find_entry_via_callgraph<'a>(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: &'a GlobalSummaries,
+    callgraph: &CallGraph,
+    lang: Lang,
+) -> Option<EntryHit<'a>> {
+    let enclosing = enclosing_function_from_flow_steps(evidence)
+        .or_else(|| resolve_enclosing_function(diag, evidence, Some(summaries), lang))?;
+    // Locate the FuncKey by matching name + file_path against the summaries.
+    let (sink_key, sink_summary) = summaries
+        .iter()
+        .find(|(k, s)| {
+            k.lang == lang && s.name == enclosing && paths_match(&s.file_path, &diag.path)
+        })
+        .map(|(k, s)| (k.clone(), s))?;
+    // Sink's own enclosing function may itself be an entry (route
+    // handler that contains the sink directly). When that is the case
+    // the existing summary-classification path already returns the
+    // right answer, but seeding the BFS with it keeps the two paths
+    // consistent.
+    let start = *callgraph.index.get(&sink_key)?;
+    if is_entry_point(sink_summary, callgraph) {
+        return Some(EntryHit {
+            key: sink_key,
+            summary: sink_summary,
+        });
+    }
+    let mut visited: HashSet<petgraph::graph::NodeIndex> = HashSet::new();
+    visited.insert(start);
+    let mut queue: VecDeque<petgraph::graph::NodeIndex> = VecDeque::new();
+    queue.push_back(start);
+    while let Some(node) = queue.pop_front() {
+        for caller_node in callgraph
+            .graph
+            .neighbors_directed(node, petgraph::Direction::Incoming)
+        {
+            if !visited.insert(caller_node) {
+                continue;
+            }
+            let caller_key = &callgraph.graph[caller_node];
+            if let Some(caller_summary) = summaries.get(caller_key) {
+                if is_entry_point(caller_summary, callgraph) {
+                    return Some(EntryHit {
+                        key: caller_key.clone(),
+                        summary: caller_summary,
+                    });
+                }
+            }
+            queue.push_back(caller_node);
+        }
+    }
+    None
 }
 
 /// Map a static-analysis [`crate::entry_points::EntryKind`] (route shape) onto
