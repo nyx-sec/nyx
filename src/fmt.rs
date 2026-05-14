@@ -540,6 +540,7 @@ fn format_inconclusive_reason(r: &crate::evidence::InconclusiveReason) -> String
         }
         InconclusiveReason::NoBenignControl => "no benign control payload".to_string(),
         InconclusiveReason::ReversedDifferential => "reversed differential".to_string(),
+        InconclusiveReason::UnrelatedCrash => "unrelated crash (not sink-site)".to_string(),
     }
 }
 

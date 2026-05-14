@@ -51,12 +51,53 @@ impl LangEmitter for PhpEmitter {
 /// Track C.1).
 pub fn probe_shim() -> &'static str {
     r#"
-// ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
-function __nyx_probe(string $sinkCallee, ...$args): void {
-    $p = getenv('NYX_PROBE_PATH');
-    if ($p === false || $p === '') {
-        return;
+// ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──────
+const __NYX_DENY_SUBSTRINGS = [
+    'TOKEN','SECRET','PASSWORD','PASSWD','API_KEY','APIKEY','PRIVATE_KEY',
+    'CREDENTIAL','SESSION','COOKIE','AUTH','BEARER','AWS_ACCESS','AWS_SESSION',
+    'GH_TOKEN','GITHUB_TOKEN','NPM_TOKEN','PYPI_TOKEN','DOCKER_PASS',
+];
+const __NYX_PAYLOAD_LIMIT = 16 * 1024;
+const __NYX_REDACTED = '<redacted-by-nyx-policy>';
+
+function __nyx_is_denied_key(string $k): bool {
+    $ku = strtoupper($k);
+    foreach (__NYX_DENY_SUBSTRINGS as $n) {
+        if (strpos($ku, $n) !== false) return true;
     }
+    return false;
+}
+
+function __nyx_witness(string $sinkCallee, array $args): array {
+    $env = [];
+    foreach ($_ENV as $k => $v) {
+        $env[(string)$k] = __nyx_is_denied_key((string)$k) ? __NYX_REDACTED : (string)$v;
+    }
+    // Sort for deterministic output.
+    ksort($env);
+    $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+    $pb = substr($payload, 0, __NYX_PAYLOAD_LIMIT);
+    $bytes = [];
+    for ($i = 0; $i < strlen($pb); $i++) $bytes[] = ord($pb[$i]);
+    $repr = [];
+    foreach ($args as $a) $repr[] = is_string($a) ? $a : (string) $a;
+    return [
+        'env_snapshot'  => $env,
+        'cwd'           => @getcwd() ?: '',
+        'payload_bytes' => $bytes,
+        'callee'        => $sinkCallee,
+        'args_repr'     => $repr,
+    ];
+}
+
+function __nyx_emit(array $rec): void {
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $line = json_encode($rec) . "\n";
+    @file_put_contents($p, $line, FILE_APPEND);
+}
+
+function __nyx_probe(string $sinkCallee, ...$args): void {
     $ser = [];
     foreach ($args as $a) {
         if (is_int($a)) {
@@ -65,14 +106,57 @@ function __nyx_probe(string $sinkCallee, ...$args): void {
             $ser[] = ['kind' => 'String', 'value' => (string) $a];
         }
     }
-    $rec = [
-        'sink_callee' => $sinkCallee,
-        'args' => $ser,
+    __nyx_emit([
+        'sink_callee'    => $sinkCallee,
+        'args'           => $ser,
         'captured_at_ns' => (int) (microtime(true) * 1e9),
-        'payload_id' => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
-    ];
-    $line = json_encode($rec) . "\n";
-    @file_put_contents($p, $line, FILE_APPEND);
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'Normal'],
+        'witness'        => __nyx_witness($sinkCallee, $args),
+    ]);
+}
+
+// Phase 08: PHP cannot catch SIGSEGV from userland, but pcntl_signal and
+// register_shutdown_function intercept SIGABRT-class fatal errors.
+function __nyx_install_crash_guard(string $sinkCallee): void {
+    $emit_crash = function (string $signalName) use ($sinkCallee) {
+        __nyx_emit([
+            'sink_callee'    => $sinkCallee,
+            'args'           => [],
+            'captured_at_ns' => (int) (microtime(true) * 1e9),
+            'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+            'kind'           => ['kind' => 'Crash', 'signal' => $signalName],
+            'witness'        => __nyx_witness($sinkCallee, []),
+        ]);
+    };
+    set_error_handler(function ($errno, $errstr) use ($emit_crash) {
+        if ($errno & (E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR)) {
+            $emit_crash('SIGABRT');
+        }
+        return false;
+    });
+    register_shutdown_function(function () use ($emit_crash) {
+        $err = error_get_last();
+        if ($err && ($err['type'] & (E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR))) {
+            $emit_crash('SIGABRT');
+        }
+    });
+    if (function_exists('pcntl_signal') && function_exists('pcntl_async_signals')) {
+        pcntl_async_signals(true);
+        foreach ([SIGABRT, SIGBUS ?? null, SIGFPE ?? null, SIGILL ?? null] as $sig) {
+            if ($sig === null) continue;
+            pcntl_signal($sig, function ($s) use ($emit_crash) {
+                $name = 'SIGABRT';
+                if (defined('SIGABRT') && $s === SIGABRT) $name = 'SIGABRT';
+                if (defined('SIGBUS')  && $s === SIGBUS)  $name = 'SIGBUS';
+                if (defined('SIGFPE')  && $s === SIGFPE)  $name = 'SIGFPE';
+                if (defined('SIGILL')  && $s === SIGILL)  $name = 'SIGILL';
+                $emit_crash($name);
+                pcntl_signal($s, SIG_DFL);
+                posix_kill(posix_getpid(), $s);
+            });
+        }
+    }
 }
 "#
 }

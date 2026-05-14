@@ -8,6 +8,19 @@
 //! [`crate::dynamic::oracle::oracle_fired`]) evaluates a payload's
 //! [`crate::dynamic::oracle::ProbePredicate`] set against the captured args.
 //!
+//! # Phase 08 extensions (Track C.4 + C.5)
+//!
+//! - [`ProbeKind`] discriminates a normal sink observation from a crash
+//!   intercepted by a sink-site signal handler.  The handler stamps
+//!   `ProbeKind::Crash { signal }` onto the probe before re-raising so the
+//!   oracle can distinguish "the sink crashed under my payload"
+//!   (Confirmed) from "some unrelated setup code crashed"
+//!   (Inconclusive(UnrelatedCrash)).
+//! - [`ProbeWitness`] carries bounded forensic data — scrubbed env, cwd,
+//!   payload-bytes prefix, callee, args repr — so downstream repro and
+//!   chain composition need only the probe file, not a live sandbox.  All
+//!   bounding goes through [`crate::dynamic::policy`].
+//!
 //! # Channel medium
 //!
 //! Currently file-based: one JSON record per line at
@@ -22,7 +35,10 @@
 //! The runner truncates the file via [`ProbeChannel::clear`] before each
 //! payload to keep verdicts independent.
 
+use crate::dynamic::oracle::Signal;
+use crate::dynamic::policy;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -87,6 +103,107 @@ impl ProbeArg {
     }
 }
 
+/// Discriminator on a [`SinkProbe`] (Phase 08 — Track C.4).
+///
+/// Distinguishes a probe written from the normal sink-instrumentation
+/// path from one written by a sink-site signal handler when the sink
+/// invocation crashed under the active payload.  The oracle's
+/// [`crate::dynamic::oracle::Oracle::SinkCrash`] variant ignores anything
+/// other than `Crash { signal }`, so a process-level abort outside the
+/// sink no longer satisfies the oracle.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind")]
+pub enum ProbeKind {
+    /// Standard sink observation: arguments were captured before the sink
+    /// returned normally (or raised a non-crash exception).
+    Normal,
+    /// Sink invocation was interrupted by a fatal signal that the
+    /// sink-site handler intercepted.  The captured `signal` is the one
+    /// the handler observed; the handler re-raises after writing the
+    /// probe so the runner's outcome still records the process death.
+    Crash {
+        /// Signal that interrupted the sink call.
+        signal: Signal,
+    },
+}
+
+impl Default for ProbeKind {
+    fn default() -> Self {
+        ProbeKind::Normal
+    }
+}
+
+/// Bounded forensic snapshot captured alongside a [`SinkProbe`]
+/// (Phase 08 — Track C.5).
+///
+/// Every byte that lands in a witness is policed by
+/// [`crate::dynamic::policy`]: env keys are scrubbed against
+/// [`crate::dynamic::policy::DENY_KEY_SUBSTRINGS`] and payload bytes are
+/// truncated at [`crate::dynamic::policy::PAYLOAD_CAPTURE_LIMIT_BYTES`].
+/// All fields are `#[serde(default, skip_serializing_if = "...")]` so
+/// host-side host-emitted probes (which don't carry a witness) and
+/// per-language shim-emitted probes (which do) round-trip through the
+/// same JSON schema.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProbeWitness {
+    /// Scrubbed snapshot of the harness process environment at probe
+    /// time.  Keys matching a deny substring carry
+    /// [`crate::dynamic::policy::REDACTED_VALUE`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_snapshot: BTreeMap<String, String>,
+    /// Current working directory of the harness when the probe fired.
+    /// Empty when the language shim could not determine it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cwd: String,
+    /// Head-truncated payload bytes routed into the sink, capped at
+    /// [`crate::dynamic::policy::PAYLOAD_CAPTURE_LIMIT_BYTES`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub payload_bytes: Vec<u8>,
+    /// Same callee name as [`SinkProbe::sink_callee`]; retained on the
+    /// witness so repro tooling can consume the witness in isolation.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub callee: String,
+    /// Per-arg human-readable repr, parallel to [`SinkProbe::args`].
+    /// `String` for textual / numeric args; `"<bytes:N>"` for binary
+    /// payloads the shim chose not to inline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args_repr: Vec<String>,
+}
+
+impl ProbeWitness {
+    /// An empty witness — every field at its `Default` value.  Used by
+    /// tests and the host-side [`ProbeChannel::write`] path that does
+    /// not snapshot any forensic state.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Construct a bounded witness from raw inputs.  Goes through
+    /// [`crate::dynamic::policy::scrub_env`] and
+    /// [`crate::dynamic::policy::truncate_payload_bytes`] so the
+    /// host-side constructor cannot accidentally produce an
+    /// unscrubbed / unbounded witness.
+    pub fn from_inputs<I, S>(
+        env: I,
+        cwd: impl Into<String>,
+        payload: &[u8],
+        callee: impl Into<String>,
+        args_repr: Vec<String>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = (S, S)>,
+        S: Into<String>,
+    {
+        Self {
+            env_snapshot: policy::scrub_env(env),
+            cwd: cwd.into(),
+            payload_bytes: policy::truncate_payload_bytes(payload).to_vec(),
+            callee: callee.into(),
+            args_repr,
+        }
+    }
+}
+
 /// One structured observation written by the harness when the instrumented
 /// sink fires.  Serialised as a single JSON object on its own line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +220,16 @@ pub struct SinkProbe {
     pub captured_at_ns: u64,
     /// Identifier of the payload in flight when the probe fired.
     pub payload_id: PayloadId,
+    /// Phase 08: normal sink observation vs sink-site crash.  Defaults to
+    /// `Normal` so probes written by the Phase 06 shims (no `kind` field
+    /// on the wire) deserialise as normal observations.
+    #[serde(default)]
+    pub kind: ProbeKind,
+    /// Phase 08: bounded forensic snapshot.  Empty when the shim did not
+    /// capture one — the field stays `default` so older probe files
+    /// round-trip unchanged.
+    #[serde(default)]
+    pub witness: ProbeWitness,
 }
 
 /// Per-run handle on a file-backed [`SinkProbe`] channel.
@@ -212,6 +339,8 @@ mod tests {
             args: vec![ProbeArg::String("ls; whoami".into())],
             captured_at_ns: 42,
             payload_id: label.into(),
+            kind: ProbeKind::Normal,
+            witness: ProbeWitness::empty(),
         }
     }
 
@@ -270,5 +399,54 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let ch = ProbeChannel::for_workdir(dir.path()).unwrap();
         assert!(ch.drain().is_empty());
+    }
+
+    #[test]
+    fn probe_kind_defaults_to_normal_when_field_omitted() {
+        // Legacy probe-line shape (Phase 06) — no `kind` field on the wire.
+        let line = r#"{"sink_callee":"os.system","args":[],"captured_at_ns":1,"payload_id":"p"}"#;
+        let p: SinkProbe = serde_json::from_str(line).unwrap();
+        assert_eq!(p.kind, ProbeKind::Normal);
+        assert_eq!(p.witness, ProbeWitness::empty());
+    }
+
+    #[test]
+    fn crash_probe_round_trips_through_channel() {
+        let dir = TempDir::new().unwrap();
+        let ch = ProbeChannel::for_workdir(dir.path()).unwrap();
+        let mut p = sample_probe("crash-test");
+        p.kind = ProbeKind::Crash { signal: Signal::Sigsegv };
+        ch.write(&p).unwrap();
+        let drained = ch.drain();
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(
+            drained[0].kind,
+            ProbeKind::Crash { signal: Signal::Sigsegv }
+        ));
+    }
+
+    #[test]
+    fn witness_from_inputs_redacts_and_truncates() {
+        let huge_payload = vec![0xAB; policy::PAYLOAD_CAPTURE_LIMIT_BYTES * 2];
+        let env = vec![
+            ("PATH".to_owned(), "/bin".to_owned()),
+            ("AWS_SECRET_ACCESS_KEY".to_owned(), "secret!!!".to_owned()),
+        ];
+        let w = ProbeWitness::from_inputs(
+            env,
+            "/tmp/run",
+            &huge_payload,
+            "os.system",
+            vec!["ls; whoami".to_owned()],
+        );
+        assert_eq!(w.cwd, "/tmp/run");
+        assert_eq!(w.payload_bytes.len(), policy::PAYLOAD_CAPTURE_LIMIT_BYTES);
+        assert_eq!(w.env_snapshot.get("PATH").map(String::as_str), Some("/bin"));
+        assert_eq!(
+            w.env_snapshot.get("AWS_SECRET_ACCESS_KEY").map(String::as_str),
+            Some(policy::REDACTED_VALUE)
+        );
+        assert_eq!(w.args_repr, vec!["ls; whoami".to_owned()]);
+        assert_eq!(w.callee, "os.system");
     }
 }

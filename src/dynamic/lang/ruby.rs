@@ -25,11 +25,50 @@ const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
 /// even though `emit` returns `LangUnsupported` until Phase 15 lands.
 pub fn probe_shim() -> &'static str {
     r#"
-# ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
-def __nyx_probe(sink_callee, *args)
+# ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──────
+__NYX_DENY_SUBSTRINGS = %w[
+  TOKEN SECRET PASSWORD PASSWD API_KEY APIKEY PRIVATE_KEY CREDENTIAL SESSION
+  COOKIE AUTH BEARER AWS_ACCESS AWS_SESSION GH_TOKEN GITHUB_TOKEN NPM_TOKEN
+  PYPI_TOKEN DOCKER_PASS
+].freeze
+__NYX_PAYLOAD_LIMIT = 16 * 1024
+__NYX_REDACTED = '<redacted-by-nyx-policy>'
+
+def __nyx_is_denied_key(k)
+  ku = k.to_s.upcase
+  __NYX_DENY_SUBSTRINGS.any? { |n| ku.include?(n) }
+end
+
+def __nyx_witness(sink_callee, args)
+  env_snapshot = {}
+  ENV.each do |k, v|
+    env_snapshot[k] = __nyx_is_denied_key(k) ? __NYX_REDACTED : v
+  end
+  payload = ENV['NYX_PAYLOAD'] || ''
+  pb = payload.bytes
+  pb = pb[0, __NYX_PAYLOAD_LIMIT] if pb.length > __NYX_PAYLOAD_LIMIT
+  repr = args.map { |a| a.is_a?(String) ? a : a.to_s }
+  cwd = (Dir.pwd rescue '')
+  {
+    env_snapshot: env_snapshot,
+    cwd: cwd,
+    payload_bytes: pb,
+    callee: sink_callee.to_s,
+    args_repr: repr,
+  }
+end
+
+def __nyx_emit(rec)
   require 'json'
   p = ENV['NYX_PROBE_PATH']
   return if p.nil? || p.empty?
+  begin
+    File.open(p, 'a') { |f| f.puts(rec.to_json) }
+  rescue StandardError
+  end
+end
+
+def __nyx_probe(sink_callee, *args)
   ser = args.map do |a|
     case a
     when Integer then { kind: 'Int', value: a }
@@ -37,15 +76,36 @@ def __nyx_probe(sink_callee, *args)
     else              { kind: 'String', value: a.to_s }
     end
   end
-  rec = {
+  __nyx_emit({
     sink_callee: sink_callee.to_s,
     args: ser,
     captured_at_ns: (Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond)),
     payload_id: (ENV['NYX_PAYLOAD_ID'] || ''),
-  }
-  begin
-    File.open(p, 'a') { |f| f.puts(rec.to_json) }
-  rescue StandardError
+    kind: { kind: 'Normal' },
+    witness: __nyx_witness(sink_callee, args),
+  })
+end
+
+# Phase 08: install a sink-site signal trap.  Ruby traps run in interrupt
+# context but can write to a file before re-raising via Process.kill.
+def __nyx_install_crash_guard(sink_callee)
+  %w[SEGV ABRT BUS FPE ILL].each do |nm|
+    begin
+      Signal.trap(nm) do
+        __nyx_emit({
+          sink_callee: sink_callee.to_s,
+          args: [],
+          captured_at_ns: (Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond)),
+          payload_id: (ENV['NYX_PAYLOAD_ID'] || ''),
+          kind: { kind: 'Crash', signal: "SIG#{nm}" },
+          witness: __nyx_witness(sink_callee, []),
+        })
+        Signal.trap(nm, 'DEFAULT')
+        Process.kill(nm, Process.pid)
+      end
+    rescue ArgumentError, Errno::EINVAL
+      # signal not supported on this platform
+    end
   end
 end
 "#

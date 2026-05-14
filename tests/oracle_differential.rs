@@ -14,7 +14,7 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::differential::{build_outcome, evaluate};
-use nyx_scanner::dynamic::probe::{ProbeArg, SinkProbe};
+use nyx_scanner::dynamic::probe::{ProbeArg, ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::evidence::DifferentialVerdict;
 
 // ── Rule table ──────────────────────────────────────────────────────────────
@@ -74,6 +74,8 @@ fn sample_probe(callee: &str, arg: &str, label: &str) -> SinkProbe {
         args: vec![ProbeArg::String(arg.into())],
         captured_at_ns: 1,
         payload_id: label.into(),
+        kind: ProbeKind::Normal,
+        witness: ProbeWitness::empty(),
     }
 }
 

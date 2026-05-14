@@ -64,16 +64,78 @@ impl LangEmitter for JavaEmitter {
 /// [`crate::dynamic::probe::SinkProbe`] wire format.
 pub fn probe_shim() -> &'static str {
     r#"
-    // ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
-    static void __nyx_probe(String sinkCallee, String... args) {
-        String p = System.getenv("NYX_PROBE_PATH");
-        if (p == null || p.isEmpty()) {
-            return;
+    // ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──
+    private static final String[] __NYX_DENY = {
+        "TOKEN","SECRET","PASSWORD","PASSWD","API_KEY","APIKEY","PRIVATE_KEY",
+        "CREDENTIAL","SESSION","COOKIE","AUTH","BEARER","AWS_ACCESS","AWS_SESSION",
+        "GH_TOKEN","GITHUB_TOKEN","NPM_TOKEN","PYPI_TOKEN","DOCKER_PASS"
+    };
+    private static final int __NYX_PAYLOAD_LIMIT = 16 * 1024;
+    private static final String __NYX_REDACTED = "<redacted-by-nyx-policy>";
+
+    private static boolean nyxIsDeniedKey(String k) {
+        String ku = k.toUpperCase();
+        for (String n : __NYX_DENY) {
+            if (ku.contains(n)) return true;
         }
+        return false;
+    }
+
+    private static String nyxWitnessJson(String sinkCallee, String[] args) {
+        StringBuilder out = new StringBuilder(256);
+        out.append("{\"env_snapshot\":{");
+        boolean first = true;
+        java.util.TreeMap<String,String> envSorted = new java.util.TreeMap<>(System.getenv());
+        for (java.util.Map.Entry<String,String> e : envSorted.entrySet()) {
+            if (!first) out.append(',');
+            first = false;
+            out.append('"'); nyxJsonEscape(e.getKey(), out); out.append("\":\"");
+            if (nyxIsDeniedKey(e.getKey())) {
+                out.append(__NYX_REDACTED);
+            } else {
+                nyxJsonEscape(e.getValue() == null ? "" : e.getValue(), out);
+            }
+            out.append('"');
+        }
+        out.append("},\"cwd\":\"");
+        nyxJsonEscape(System.getProperty("user.dir", ""), out);
+        out.append("\",\"payload_bytes\":[");
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload != null) {
+            byte[] pb = payload.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            int cap = Math.min(pb.length, __NYX_PAYLOAD_LIMIT);
+            for (int i = 0; i < cap; i++) {
+                if (i > 0) out.append(',');
+                out.append(((int) pb[i]) & 0xff);
+            }
+        }
+        out.append("],\"callee\":\""); nyxJsonEscape(sinkCallee, out);
+        out.append("\",\"args_repr\":[");
+        if (args != null) {
+            for (int i = 0; i < args.length; i++) {
+                if (i > 0) out.append(',');
+                out.append('"'); nyxJsonEscape(args[i] == null ? "" : args[i], out); out.append('"');
+            }
+        }
+        out.append("]}");
+        return out.toString();
+    }
+
+    private static void nyxEmit(String line) {
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        try (java.io.FileWriter fw = new java.io.FileWriter(p, true)) {
+            fw.write(line);
+        } catch (java.io.IOException e) {
+            // best-effort
+        }
+    }
+
+    static void __nyx_probe(String sinkCallee, String... args) {
         long now = System.nanoTime();
         String payloadId = System.getenv("NYX_PAYLOAD_ID");
         if (payloadId == null) payloadId = "";
-        StringBuilder line = new StringBuilder(128);
+        StringBuilder line = new StringBuilder(256);
         line.append("{\"sink_callee\":\"");
         nyxJsonEscape(sinkCallee, line);
         line.append("\",\"args\":[");
@@ -85,12 +147,33 @@ pub fn probe_shim() -> &'static str {
         }
         line.append("],\"captured_at_ns\":").append(now).append(",\"payload_id\":\"");
         nyxJsonEscape(payloadId, line);
-        line.append("\"}\n");
-        try (java.io.FileWriter fw = new java.io.FileWriter(p, true)) {
-            fw.write(line.toString());
-        } catch (java.io.IOException e) {
-            // best-effort
-        }
+        line.append("\",\"kind\":{\"kind\":\"Normal\"},\"witness\":");
+        line.append(nyxWitnessJson(sinkCallee, args));
+        line.append("}\n");
+        nyxEmit(line.toString());
+    }
+
+    // Phase 08: install a sink-site Throwable handler.  Java cannot catch
+    // SIGSEGV / SIGFPE directly (JVM aborts), but it can intercept the
+    // uncaught-exception path which fires for any Error / RuntimeException
+    // escaping the sink call.  Map them onto SIGABRT for the oracle.
+    static void __nyx_install_crash_guard(String sinkCallee) {
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            long now = System.nanoTime();
+            String payloadId = System.getenv("NYX_PAYLOAD_ID");
+            if (payloadId == null) payloadId = "";
+            StringBuilder line = new StringBuilder(256);
+            line.append("{\"sink_callee\":\"");
+            nyxJsonEscape(sinkCallee, line);
+            line.append("\",\"args\":[],\"captured_at_ns\":").append(now)
+                .append(",\"payload_id\":\"");
+            nyxJsonEscape(payloadId, line);
+            line.append("\",\"kind\":{\"kind\":\"Crash\",\"signal\":\"SIGABRT\"},\"witness\":");
+            line.append(nyxWitnessJson(sinkCallee, new String[0]));
+            line.append("}\n");
+            nyxEmit(line.toString());
+            System.exit(134);
+        });
     }
 
     private static void nyxJsonEscape(String s, StringBuilder out) {

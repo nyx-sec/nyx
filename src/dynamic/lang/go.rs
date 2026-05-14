@@ -58,12 +58,71 @@ impl LangEmitter for GoEmitter {
 /// captured args at the sink site.
 pub fn probe_shim() -> &'static str {
     r#"
-// ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
-func __nyx_probe(sinkCallee string, args ...string) {
-    p := os.Getenv("NYX_PROBE_PATH")
-    if p == "" {
-        return
+// ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──────
+var __nyx_deny_substrings = []string{
+    "TOKEN","SECRET","PASSWORD","PASSWD","API_KEY","APIKEY","PRIVATE_KEY",
+    "CREDENTIAL","SESSION","COOKIE","AUTH","BEARER","AWS_ACCESS","AWS_SESSION",
+    "GH_TOKEN","GITHUB_TOKEN","NPM_TOKEN","PYPI_TOKEN","DOCKER_PASS",
+}
+
+const __nyx_payload_limit = 16 * 1024
+const __nyx_redacted = "<redacted-by-nyx-policy>"
+
+func __nyx_scrub_env() map[string]string {
+    out := map[string]string{}
+    for _, e := range os.Environ() {
+        idx := -1
+        for i, c := range e {
+            if c == '=' { idx = i; break }
+        }
+        if idx < 0 { continue }
+        k := e[:idx]
+        v := e[idx+1:]
+        ku := strings.ToUpper(k)
+        denied := false
+        for _, n := range __nyx_deny_substrings {
+            if strings.Contains(ku, n) { denied = true; break }
+        }
+        if denied {
+            out[k] = __nyx_redacted
+        } else {
+            out[k] = v
+        }
     }
+    return out
+}
+
+func __nyx_witness(sinkCallee string, args []string) map[string]interface{} {
+    payload := os.Getenv("NYX_PAYLOAD")
+    pb := []byte(payload)
+    if len(pb) > __nyx_payload_limit { pb = pb[:__nyx_payload_limit] }
+    repr := make([]string, len(args))
+    for i, a := range args { repr[i] = a }
+    cwd, _ := os.Getwd()
+    bytes_int := make([]int, len(pb))
+    for i, b := range pb { bytes_int[i] = int(b) }
+    return map[string]interface{}{
+        "env_snapshot":  __nyx_scrub_env(),
+        "cwd":           cwd,
+        "payload_bytes": bytes_int,
+        "callee":        sinkCallee,
+        "args_repr":     repr,
+    }
+}
+
+func __nyx_emit(rec map[string]interface{}) {
+    p := os.Getenv("NYX_PROBE_PATH")
+    if p == "" { return }
+    b, err := json.Marshal(rec)
+    if err != nil { return }
+    f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    if err != nil { return }
+    defer f.Close()
+    f.Write(b)
+    f.Write([]byte("\n"))
+}
+
+func __nyx_probe(sinkCallee string, args ...string) {
     serArgs := make([]map[string]interface{}, 0, len(args))
     for _, a := range args {
         serArgs = append(serArgs, map[string]interface{}{
@@ -71,23 +130,61 @@ func __nyx_probe(sinkCallee string, args ...string) {
             "value": a,
         })
     }
-    rec := map[string]interface{}{
+    __nyx_emit(map[string]interface{}{
         "sink_callee":    sinkCallee,
         "args":           serArgs,
         "captured_at_ns": uint64(time.Now().UnixNano()),
         "payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+        "kind":           map[string]interface{}{"kind": "Normal"},
+        "witness":        __nyx_witness(sinkCallee, args),
+    })
+}
+
+// Phase 08: install a sink-site signal listener via `signal.Notify`.  Go
+// can intercept SIGABRT but not SIGSEGV (the Go runtime panics on
+// memory faults before user handlers see them); for SIGSEGV we rely on
+// the runtime's panic catch via `recover()` inside __nyx_run_sink.
+func __nyx_install_crash_guard(sinkCallee string) {
+    ch := make(chan os.Signal, 1)
+    signal.Notify(ch, syscall.SIGABRT, syscall.SIGBUS, syscall.SIGFPE, syscall.SIGILL)
+    go func() {
+        sig := <-ch
+        name := "SIGABRT"
+        switch sig {
+        case syscall.SIGBUS: name = "SIGBUS"
+        case syscall.SIGFPE: name = "SIGFPE"
+        case syscall.SIGILL: name = "SIGILL"
+        }
+        __nyx_emit(map[string]interface{}{
+            "sink_callee":    sinkCallee,
+            "args":           []interface{}{},
+            "captured_at_ns": uint64(time.Now().UnixNano()),
+            "payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+            "kind":           map[string]interface{}{"kind": "Crash", "signal": name},
+            "witness":        __nyx_witness(sinkCallee, nil),
+        })
+        signal.Reset(sig)
+        syscall.Kill(syscall.Getpid(), sig.(syscall.Signal))
+    }()
+}
+
+// Phase 08: panic-recover hook for Go runtime-caught faults (SIGSEGV nil-
+// deref, divide-by-zero treated as panic).  Call as `defer __nyx_recover_crash("callee")()`
+// around the instrumented sink invocation.
+func __nyx_recover_crash(sinkCallee string) func() {
+    return func() {
+        if r := recover(); r != nil {
+            __nyx_emit(map[string]interface{}{
+                "sink_callee":    sinkCallee,
+                "args":           []interface{}{},
+                "captured_at_ns": uint64(time.Now().UnixNano()),
+                "payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+                "kind":           map[string]interface{}{"kind": "Crash", "signal": "SIGSEGV"},
+                "witness":        __nyx_witness(sinkCallee, nil),
+            })
+            panic(r)
+        }
     }
-    b, err := json.Marshal(rec)
-    if err != nil {
-        return
-    }
-    f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-    if err != nil {
-        return
-    }
-    defer f.Close()
-    f.Write(b)
-    f.Write([]byte("\n"))
 }
 "#
 }

@@ -18,7 +18,9 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::oracle::{oracle_fired, Oracle, ProbePredicate};
-use nyx_scanner::dynamic::probe::{ProbeArg, ProbeChannel, SinkProbe, PROBE_PATH_ENV};
+use nyx_scanner::dynamic::probe::{
+    ProbeArg, ProbeChannel, ProbeKind, ProbeWitness, SinkProbe, PROBE_PATH_ENV,
+};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -53,6 +55,8 @@ fn synthetic_harness_fires_probe(
         args: vec![ProbeArg::String(captured_arg.into())],
         captured_at_ns: 1,
         payload_id: payload_id.into(),
+        kind: ProbeKind::Normal,
+        witness: ProbeWitness::empty(),
     };
     channel.write(&probe).expect("synthetic harness probe write");
 }

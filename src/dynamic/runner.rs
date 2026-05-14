@@ -11,7 +11,7 @@ use crate::dynamic::corpus::{
 };
 use crate::dynamic::differential;
 use crate::dynamic::harness::{self, HarnessError};
-use crate::dynamic::oracle::oracle_fired;
+use crate::dynamic::oracle::{oracle_fired, probe_crash_signal, Oracle};
 use crate::dynamic::probe::{ProbeChannel, SinkProbe};
 use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
@@ -47,6 +47,13 @@ pub struct RunOutcome {
     /// reference was `None` (or unresolved).  The verifier maps this to
     /// [`crate::evidence::InconclusiveReason::NoBenignControl`].
     pub no_benign_control: bool,
+    /// Phase 08 §C.4: at least one payload's sandbox outcome reported a
+    /// process-level crash (no exit code, no timeout) but no
+    /// [`crate::dynamic::probe::ProbeKind::Crash`] record was drained
+    /// from the channel.  The verifier maps this to
+    /// [`crate::evidence::InconclusiveReason::UnrelatedCrash`] so a
+    /// setup-code abort cannot impersonate a confirmed sink fire.
+    pub unrelated_crash: bool,
 }
 
 #[derive(Debug)]
@@ -240,6 +247,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     let mut triggered_by = None;
     let mut oracle_collision = false;
     let mut no_benign_control = false;
+    let mut unrelated_crash = false;
     let mut differential_outcome: Option<DifferentialOutcome> = None;
 
     for (i, payload) in vuln_payloads.iter().enumerate() {
@@ -287,6 +295,22 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
 
         let vuln_fired = oracle_fired(&payload.oracle, &outcome, &vuln_probes);
         let sink_hit = outcome.sink_hit;
+
+        // Phase 08 §C.4: a process-level crash with no matching sink-site
+        // Crash probe is an "unrelated abort" (setup code, harness build,
+        // library init).  Detect once per payload and surface via
+        // `unrelated_crash` so the verifier downgrades from `Confirmed`
+        // to `Inconclusive(UnrelatedCrash)`.  Only applies to
+        // `Oracle::SinkCrash` payloads — other oracles handle crashes
+        // through their own predicates.
+        let process_crashed = outcome.exit_code.is_none() && !outcome.timed_out;
+        let has_sink_crash_probe = vuln_probes.iter().any(|p| probe_crash_signal(p).is_some());
+        if matches!(payload.oracle, Oracle::SinkCrash { .. })
+            && process_crashed
+            && !has_sink_crash_probe
+        {
+            unrelated_crash = true;
+        }
 
         // Differential rule (Phase 07, §4.1).  Only when the vuln oracle
         // fired *and* the in-harness sink-hit sentinel was observed do we
@@ -361,6 +385,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         entry_source,
         differential: differential_outcome,
         no_benign_control,
+        unrelated_crash,
     })
 }
 

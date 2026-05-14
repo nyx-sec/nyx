@@ -58,11 +58,62 @@ impl LangEmitter for JavaScriptEmitter {
 /// unset.
 pub fn probe_shim() -> &'static str {
     r#"
-// ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
-function __nyx_probe(sinkCallee, ...args) {
+// ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──────
+const _NYX_DENY_SUBSTRINGS = [
+    'TOKEN','SECRET','PASSWORD','PASSWD','API_KEY','APIKEY','PRIVATE_KEY',
+    'CREDENTIAL','SESSION','COOKIE','AUTH','BEARER','AWS_ACCESS','AWS_SESSION',
+    'GH_TOKEN','GITHUB_TOKEN','NPM_TOKEN','PYPI_TOKEN','DOCKER_PASS'
+];
+const _NYX_PAYLOAD_LIMIT = 16 * 1024;
+const _NYX_REDACTED = '<redacted-by-nyx-policy>';
+
+function __nyx_scrub_env() {
+    const out = {};
+    const env = process.env || {};
+    for (const k of Object.keys(env)) {
+        const ku = String(k).toUpperCase();
+        if (_NYX_DENY_SUBSTRINGS.some((n) => ku.indexOf(n) !== -1)) {
+            out[k] = _NYX_REDACTED;
+        } else {
+            out[k] = env[k];
+        }
+    }
+    return out;
+}
+
+function __nyx_witness(sinkCallee, args) {
+    let payload = process.env.NYX_PAYLOAD || '';
+    let buf = Buffer.from(String(payload), 'utf8');
+    if (buf.length > _NYX_PAYLOAD_LIMIT) buf = buf.slice(0, _NYX_PAYLOAD_LIMIT);
+    const argsRepr = args.map(function (a) {
+        if (a && typeof a === 'object' && (a instanceof Buffer || a instanceof Uint8Array)) {
+            return '<bytes:' + a.length + '>';
+        }
+        return String(a);
+    });
+    let cwd = '';
+    try { cwd = process.cwd(); } catch (e) {}
+    return {
+        env_snapshot: __nyx_scrub_env(),
+        cwd: cwd,
+        payload_bytes: Array.from(buf),
+        callee: String(sinkCallee),
+        args_repr: argsRepr,
+    };
+}
+
+function __nyx_emit(rec) {
     const _fs = require('fs');
     const _p = process.env.NYX_PROBE_PATH;
     if (!_p) return;
+    try {
+        _fs.appendFileSync(_p, JSON.stringify(rec) + '\n');
+    } catch (e) {
+        // best-effort: probe channel write failure is non-fatal.
+    }
+}
+
+function __nyx_probe(sinkCallee, ...args) {
     const _ser = args.map(function (a) {
         if (a && typeof a === 'object' && (a instanceof Buffer || a instanceof Uint8Array)) {
             return { kind: 'Bytes', value: Array.from(a) };
@@ -75,16 +126,49 @@ function __nyx_probe(sinkCallee, ...args) {
         }
         return { kind: 'String', value: String(a) };
     });
-    const _rec = {
+    __nyx_emit({
         sink_callee: String(sinkCallee),
         args: _ser,
         captured_at_ns: Number(process.hrtime.bigint()),
         payload_id: String(process.env.NYX_PAYLOAD_ID || ''),
+        kind: { kind: 'Normal' },
+        witness: __nyx_witness(sinkCallee, args),
+    });
+}
+
+// Phase 08: V8 cannot catch native SIGSEGV in pure JS, but it can intercept
+// `uncaughtException` / `unhandledRejection` plus the synchronously
+// deliverable signals (SIGABRT via process.kill).  __nyx_install_crash_guard
+// registers both: the uncaught path maps Error-shaped failures to a SIGABRT
+// crash probe; explicit process.on('SIG*') registers the others where the
+// runtime exposes them.  Re-raise via process.exit(134) so the outcome's
+// exit_code still reflects an abort-style death.
+function __nyx_install_crash_guard(sinkCallee) {
+    const _emit_crash = function (signalName) {
+        __nyx_emit({
+            sink_callee: String(sinkCallee),
+            args: [],
+            captured_at_ns: Number(process.hrtime.bigint()),
+            payload_id: String(process.env.NYX_PAYLOAD_ID || ''),
+            kind: { kind: 'Crash', signal: signalName },
+            witness: __nyx_witness(sinkCallee, []),
+        });
     };
-    try {
-        _fs.appendFileSync(_p, JSON.stringify(_rec) + '\n');
-    } catch (e) {
-        // best-effort: probe channel write failure is non-fatal.
+    process.on('uncaughtException', function (_err) {
+        _emit_crash('SIGABRT');
+        process.exit(134);
+    });
+    process.on('unhandledRejection', function (_reason) {
+        _emit_crash('SIGABRT');
+        process.exit(134);
+    });
+    for (const nm of ['SIGSEGV','SIGABRT','SIGBUS','SIGFPE','SIGILL']) {
+        try {
+            process.on(nm, function () {
+                _emit_crash(nm);
+                process.exit(128 + (nm === 'SIGABRT' ? 6 : 11));
+            });
+        } catch (e) { /* runtime refused signal handler */ }
     }
 }
 "#

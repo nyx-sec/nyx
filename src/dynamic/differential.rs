@@ -110,18 +110,22 @@ mod tests {
 
     #[test]
     fn build_outcome_carries_both_traces() {
-        use crate::dynamic::probe::{ProbeArg, SinkProbe};
+        use crate::dynamic::probe::{ProbeArg, ProbeKind, ProbeWitness, SinkProbe};
         let vuln = vec![SinkProbe {
             sink_callee: "os.system".into(),
             args: vec![ProbeArg::String("; echo X".into())],
             captured_at_ns: 1,
             payload_id: "cmdi-echo-marker".into(),
+            kind: ProbeKind::Normal,
+            witness: ProbeWitness::empty(),
         }];
         let benign = vec![SinkProbe {
             sink_callee: "os.system".into(),
             args: vec![ProbeArg::String("safe".into())],
             captured_at_ns: 2,
             payload_id: "cmdi-benign".into(),
+            kind: ProbeKind::Normal,
+            witness: ProbeWitness::empty(),
         }];
         let outcome = build_outcome(
             "cmdi-echo-marker",

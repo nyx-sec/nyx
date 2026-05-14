@@ -309,6 +309,14 @@ pub enum InconclusiveReason {
     /// did not.  Surfaces a misconfigured corpus, a swapped pair, or an
     /// oracle that fires unconditionally; never a valid `Confirmed`.
     ReversedDifferential,
+    /// Phase 08 §C.4: the harness process died with a crash signal
+    /// (SIGSEGV / SIGABRT / etc.) but no sink-site
+    /// [`crate::dynamic::probe::ProbeKind::Crash`] record was written —
+    /// i.e. the crash happened outside the instrumented sink (setup
+    /// code, harness build, library init).  Downgrades the verdict
+    /// rather than letting an unrelated abort masquerade as a
+    /// confirmed sink fire.
+    UnrelatedCrash,
 }
 
 /// High-level outcome of a dynamic verification attempt.

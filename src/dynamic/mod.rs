@@ -73,6 +73,7 @@ pub mod lang;
 pub mod mount_filter;
 pub mod oob;
 pub mod oracle;
+pub mod policy;
 pub mod probe;
 pub mod repro;
 pub mod report;

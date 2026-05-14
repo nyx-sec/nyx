@@ -563,6 +563,25 @@ fn build_verdict(
                     toolchain_match: Some(toolchain_match.to_owned()),
                     differential: run.differential,
                 }
+            } else if run.unrelated_crash {
+                // Phase 08 §C.4: the harness crashed but the death
+                // happened outside the instrumented sink (no Crash
+                // probe was written).  Downgrade rather than letting
+                // a setup-code abort masquerade as a confirmed fire.
+                VerifyResult {
+                    finding_id: finding_id.to_owned(),
+                    status: VerifyStatus::Inconclusive,
+                    triggered_payload: None,
+                    reason: None,
+                    inconclusive_reason: Some(InconclusiveReason::UnrelatedCrash),
+                    detail: Some(
+                        "process crashed with no sink-site crash probe — likely setup-code abort, not the sink"
+                            .to_owned(),
+                    ),
+                    attempts,
+                    toolchain_match: Some(toolchain_match.to_owned()),
+                    differential: None,
+                }
             } else if run.no_benign_control {
                 // Phase 07 §4.1: vuln oracle + sink-hit fired but the
                 // paired benign control was missing.  Downgrade to

@@ -61,58 +61,197 @@ impl LangEmitter for RustEmitter {
 /// [`crate::dynamic::probe::SinkProbe`] wire format.
 pub fn probe_shim() -> &'static str {
     r#"
-// ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
+// ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──────
 #[allow(dead_code)]
-fn __nyx_probe(sink_callee: &str, args: &[&str]) {
+const __NYX_DENY_SUBSTRINGS: &[&str] = &[
+    "TOKEN","SECRET","PASSWORD","PASSWD","API_KEY","APIKEY","PRIVATE_KEY",
+    "CREDENTIAL","SESSION","COOKIE","AUTH","BEARER","AWS_ACCESS","AWS_SESSION",
+    "GH_TOKEN","GITHUB_TOKEN","NPM_TOKEN","PYPI_TOKEN","DOCKER_PASS",
+];
+#[allow(dead_code)]
+const __NYX_PAYLOAD_LIMIT: usize = 16 * 1024;
+#[allow(dead_code)]
+const __NYX_REDACTED: &str = "<redacted-by-nyx-policy>";
+
+#[allow(dead_code)]
+fn __nyx_esc(s: &str, out: &mut String) {
+    for ch in s.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn __nyx_witness_json(sink_callee: &str, args: &[&str]) -> String {
+    let mut out = String::with_capacity(256);
+    out.push_str("{\"env_snapshot\":{");
+    let mut first = true;
+    let mut keys: Vec<(String, String)> = std::env::vars().collect();
+    keys.sort();
+    for (k, v) in keys {
+        let ku = k.to_ascii_uppercase();
+        let denied = __NYX_DENY_SUBSTRINGS.iter().any(|n| ku.contains(n));
+        let val = if denied { __NYX_REDACTED } else { v.as_str() };
+        if !first { out.push(','); }
+        first = false;
+        out.push('"');
+        __nyx_esc(&k, &mut out);
+        out.push_str("\":\"");
+        __nyx_esc(val, &mut out);
+        out.push('"');
+    }
+    out.push_str("},\"cwd\":\"");
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    __nyx_esc(&cwd, &mut out);
+    out.push_str("\",\"payload_bytes\":[");
+    let payload = std::env::var("NYX_PAYLOAD").unwrap_or_default();
+    let bytes = payload.as_bytes();
+    let cap = bytes.len().min(__NYX_PAYLOAD_LIMIT);
+    for i in 0..cap {
+        if i > 0 { out.push(','); }
+        out.push_str(&format!("{}", bytes[i]));
+    }
+    out.push_str("],\"callee\":\"");
+    __nyx_esc(sink_callee, &mut out);
+    out.push_str("\",\"args_repr\":[");
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 { out.push(','); }
+        out.push('"');
+        __nyx_esc(a, &mut out);
+        out.push('"');
+    }
+    out.push_str("]}");
+    out
+}
+
+#[allow(dead_code)]
+fn __nyx_emit(line: &str) {
     use std::io::Write;
     let p = match std::env::var("NYX_PROBE_PATH") {
         Ok(v) => v,
         Err(_) => return,
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let payload_id = std::env::var("NYX_PAYLOAD_ID").unwrap_or_default();
-    fn esc(s: &str, out: &mut String) {
-        for ch in s.chars() {
-            match ch {
-                '"' => out.push_str("\\\""),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-                c => out.push(c),
-            }
-        }
-    }
-    let mut line = String::with_capacity(128);
-    line.push_str("{\"sink_callee\":\"");
-    esc(sink_callee, &mut line);
-    line.push_str("\",\"args\":[");
-    for (i, a) in args.iter().enumerate() {
-        if i > 0 {
-            line.push(',');
-        }
-        line.push_str("{\"kind\":\"String\",\"value\":\"");
-        esc(a, &mut line);
-        line.push_str("\"}");
-    }
-    line.push_str(&format!(
-        "],\"captured_at_ns\":{},\"payload_id\":\"",
-        now
-    ));
-    esc(&payload_id, &mut line);
-    line.push_str("\"}\n");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&p)
     {
         let _ = f.write_all(line.as_bytes());
+        let _ = f.write_all(b"\n");
     }
 }
+
+#[allow(dead_code)]
+fn __nyx_probe(sink_callee: &str, args: &[&str]) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let payload_id = std::env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let mut line = String::with_capacity(256);
+    line.push_str("{\"sink_callee\":\"");
+    __nyx_esc(sink_callee, &mut line);
+    line.push_str("\",\"args\":[");
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 { line.push(','); }
+        line.push_str("{\"kind\":\"String\",\"value\":\"");
+        __nyx_esc(a, &mut line);
+        line.push_str("\"}");
+    }
+    line.push_str(&format!(
+        "],\"captured_at_ns\":{},\"payload_id\":\"",
+        now
+    ));
+    __nyx_esc(&payload_id, &mut line);
+    line.push_str("\",\"kind\":{\"kind\":\"Normal\"},\"witness\":");
+    line.push_str(&__nyx_witness_json(sink_callee, args));
+    line.push('}');
+    __nyx_emit(&line);
+}
+
+// Phase 08: install a sink-site signal handler via `libc::sigaction` so a
+// SIGSEGV / SIGABRT / etc. inside the sink call is captured as a Crash
+// probe before the kernel re-delivers it via SIG_DFL.  The shim is
+// no-op on non-Unix targets (the dynamic-verification supported set is
+// Unix-only) so consumers can splice it unconditionally.
+#[cfg(unix)]
+#[allow(dead_code)]
+fn __nyx_install_crash_guard(sink_callee: &'static str) {
+    use std::sync::atomic::{AtomicPtr, Ordering};
+    static SINK_CALLEE: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+    SINK_CALLEE.store(sink_callee.as_ptr() as *mut u8, Ordering::SeqCst);
+    let len = sink_callee.len();
+    static CALLEE_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    CALLEE_LEN.store(len, Ordering::SeqCst);
+    extern "C" fn handler(sig: i32) {
+        // async-signal-unsafe code is unavoidable here (file I/O); we
+        // accept the risk because the process is already dying and we
+        // need the forensic record.
+        let name = match sig {
+            libc::SIGSEGV => "SIGSEGV",
+            libc::SIGABRT => "SIGABRT",
+            libc::SIGBUS => "SIGBUS",
+            libc::SIGFPE => "SIGFPE",
+            libc::SIGILL => "SIGILL",
+            _ => "SIGABRT",
+        };
+        let p = SINK_CALLEE.load(Ordering::SeqCst);
+        let len = CALLEE_LEN.load(Ordering::SeqCst);
+        let sink_callee: &str = unsafe {
+            if p.is_null() {
+                ""
+            } else {
+                let slice = std::slice::from_raw_parts(p as *const u8, len);
+                std::str::from_utf8_unchecked(slice)
+            }
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let payload_id = std::env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+        let mut line = String::with_capacity(256);
+        line.push_str("{\"sink_callee\":\"");
+        __nyx_esc(sink_callee, &mut line);
+        line.push_str("\",\"args\":[],\"captured_at_ns\":");
+        line.push_str(&format!("{now},\"payload_id\":\""));
+        __nyx_esc(&payload_id, &mut line);
+        line.push_str("\",\"kind\":{\"kind\":\"Crash\",\"signal\":\"");
+        line.push_str(name);
+        line.push_str("\"},\"witness\":");
+        line.push_str(&__nyx_witness_json(sink_callee, &[]));
+        line.push('}');
+        __nyx_emit(&line);
+        // Restore default handler and re-raise so process actually dies.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = libc::SIG_DFL;
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+            libc::raise(sig);
+        }
+    }
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = handler as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        for sig in [libc::SIGSEGV, libc::SIGABRT, libc::SIGBUS, libc::SIGFPE, libc::SIGILL] {
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(not(unix))]
+#[allow(dead_code)]
+fn __nyx_install_crash_guard(_sink_callee: &'static str) {}
 "#
 }
 
