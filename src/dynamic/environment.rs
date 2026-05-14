@@ -38,7 +38,7 @@ use crate::dynamic::spec::HarnessSpec;
 use crate::dynamic::toolchain::{self, ToolchainResolution};
 use crate::summary::GlobalSummaries;
 use crate::symbol::{FuncKey, Lang};
-use crate::utils::project::{detect_frameworks, DetectedFramework, FrameworkContext};
+use crate::utils::project::{detect_frameworks, DetectedFramework};
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -544,7 +544,7 @@ fn collect_manifest_files(lang: Lang, project_root: &Path) -> Vec<PathBuf> {
 /// names.  Distinct per language; the fall-through returns an empty Vec
 /// so unsupported languages do not crash, they just stage with no
 /// imports.
-pub fn extract_direct_deps(entry_file: &Path, lang: Lang) -> Vec<String> {
+pub(crate) fn extract_direct_deps(entry_file: &Path, lang: Lang) -> Vec<String> {
     let bytes = match read_bounded(entry_file) {
         Some(s) => s,
         None => return Vec::new(),
@@ -925,37 +925,6 @@ fn paths_equal(a: &Path, b: &Path) -> bool {
         (Some(a), Some(b)) => a == b,
         _ => a == b,
     }
-}
-
-/// Adapter used by [`crate::dynamic::lang::LangEmitter::materialize_runtime`]
-/// when a language wants to know whether the captured deps mention a
-/// specific package name (case-insensitive).
-pub fn deps_mention(env: &Environment, needle: &str) -> bool {
-    let needle = needle.to_ascii_lowercase();
-    env.direct_deps
-        .iter()
-        .any(|d| d.eq_ignore_ascii_case(&needle))
-}
-
-/// Adapter used by [`crate::dynamic::lang::LangEmitter::materialize_runtime`]
-/// when a language wants to know whether a specific [`DetectedFramework`]
-/// was named in the project manifest.
-pub fn frameworks_contain(env: &Environment, fw: DetectedFramework) -> bool {
-    env.frameworks.contains(&fw)
-}
-
-/// Stamp the Phase-09 lang detection slug back onto an [`Environment`]
-/// whose [`Lang`] field was guessed from the toolchain id.  Used by the
-/// integration tests to make the lang round-trip deterministic.
-pub fn override_lang(env: &mut Environment, lang: Lang) {
-    env.lang = lang;
-}
-
-/// Helper for [`FrameworkContext`] consumers: returns the cached
-/// inspected-langs set so the verifier can decide whether a missing
-/// framework signal counts as "absent" vs "no manifest".
-pub fn framework_context_for(project_root: &Path) -> FrameworkContext {
-    detect_frameworks(project_root)
 }
 
 #[cfg(test)]
