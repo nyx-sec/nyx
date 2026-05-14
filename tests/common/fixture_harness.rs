@@ -307,10 +307,52 @@ pub fn run_shape_fixture_lang(
         constraint_hints: vec![],
         sink_file: entry_file,
         sink_line,
-        spec_hash,
+        spec_hash: spec_hash.clone(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
     };
+
+    // Phase 14: Java shape fixtures bundle annotation / type stubs as
+    // sibling `*.java` files alongside `Vuln.java` / `Benign.java`.
+    // The harness builder owns `/tmp/nyx-harness/<spec_hash>/` and only
+    // copies the entry file + extra_files — it never walks the entry
+    // file's parent dir.  Pre-create the workdir and stage every
+    // sibling stub there so the build sandbox's `javac *.java` step
+    // resolves the annotation / type references without pulling in any
+    // Maven deps.  Skip the alternate Vuln/Benign file to keep public
+    // class declarations from colliding with the running variant.
+    if matches!(lang, nyx_scanner::symbol::Lang::Java) {
+        let workdir = std::path::PathBuf::from("/tmp/nyx-harness").join(&spec.spec_hash);
+        // Wipe any prior contents so stale `.java` / `.class` files
+        // from previous emitter revisions cannot bleed into this run.
+        // `prepare_java` globs every `*.java` in the workdir — leaving
+        // an obsolete `Entry.java` next to the new `Vuln.java` produces
+        // a duplicate-class compile error.
+        let _ = std::fs::remove_dir_all(&workdir);
+        let _ = std::fs::create_dir_all(&workdir);
+        let alt_file = if file == "Vuln.java" {
+            "Benign.java"
+        } else if file == "Benign.java" {
+            "Vuln.java"
+        } else {
+            ""
+        };
+        if let Ok(entries) = std::fs::read_dir(&fixture_root) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let name = match p.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_owned(),
+                    None => continue,
+                };
+                if name == file || name == alt_file {
+                    continue;
+                }
+                if p.extension().map(|e| e == "java").unwrap_or(false) {
+                    let _ = std::fs::copy(&p, workdir.join(&name));
+                }
+            }
+        }
+    }
 
     let opts = SandboxOptions::default();
     let outcome = run_spec(&spec, &opts);

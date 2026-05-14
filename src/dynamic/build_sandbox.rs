@@ -534,7 +534,12 @@ fn compute_go_source_hash(workdir: &Path) -> String {
 
 /// Prepare compiled Java classes for `spec`.
 ///
-/// Runs `javac NyxHarness.java Entry.java` in `workdir`.
+/// Runs `javac` over every `*.java` file in `workdir` (recursive).  Phase 14
+/// shape-aware fixtures may stage additional source files alongside the
+/// generated `NyxHarness.java` (annotation stubs, servlet-request stubs,
+/// helper classes); the compiler must see all of them in a single
+/// invocation so the inter-class references resolve.
+///
 /// Class files land in the workdir (default package, no output dir).
 ///
 /// Build isolation is NOT yet implemented (deferred). `javac` runs on the host.
@@ -544,11 +549,14 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
     let source_hash = compute_java_source_hash(workdir);
     let cache_path = build_cache_path(&source_hash, "java", &spec.toolchain_id)?;
 
-    // Cache hit: class files already compiled. Restore them to workdir so the
-    // classpath (which points to workdir, not cache_path) can find them when a
-    // different finding hits the same compiled artefact via a fresh spec_hash.
+    let cached_classes = collect_class_files(&cache_path);
+
+    // Cache hit: at least the harness class is compiled.  Restore every
+    // cached `.class` to workdir so the classpath (which points to
+    // workdir, not cache_path) can find them when a different finding
+    // hits the same compiled artefact via a fresh spec_hash.
     if cache_path.join("NyxHarness.class").exists() {
-        for cls in &["NyxHarness.class", "Entry.class"] {
+        for cls in &cached_classes {
             let src = cache_path.join(cls);
             let dst = workdir.join(cls);
             if src.exists() && !dst.exists() {
@@ -581,8 +589,20 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
             }
             Err(e) => {
                 last_err = e;
-                let _ = std::fs::remove_file(cache_path.join("NyxHarness.class"));
-                let _ = std::fs::remove_file(cache_path.join("Entry.class"));
+                // Best-effort clean-up: drop every cached `.class` so the
+                // next attempt re-compiles from source.
+                if let Ok(entries) = std::fs::read_dir(&cache_path) {
+                    for entry in entries.flatten() {
+                        if entry
+                            .path()
+                            .extension()
+                            .map(|e| e == "class")
+                            .unwrap_or(false)
+                        {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
             }
         }
     }
@@ -593,13 +613,15 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
 fn try_compile_java(workdir: &Path, cache_path: &Path) -> Result<(), String> {
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
 
+    let sources = collect_java_sources(workdir);
+    if sources.is_empty() {
+        return Err("no Java sources found in workdir".to_owned());
+    }
+
     // Compile sources — class files are written to workdir by default.
     let mut args = vec!["-d".to_owned(), workdir.to_string_lossy().into_owned()];
-    for src in &["NyxHarness.java", "Entry.java"] {
-        let p = workdir.join(src);
-        if p.exists() {
-            args.push(p.to_string_lossy().into_owned());
-        }
+    for src in &sources {
+        args.push(src.to_string_lossy().into_owned());
     }
 
     let output = Command::new(&javac)
@@ -615,21 +637,74 @@ fn try_compile_java(workdir: &Path, cache_path: &Path) -> Result<(), String> {
         return Err(String::from_utf8_lossy(&output.stderr).into_owned());
     }
 
-    // Copy class files to cache.
-    for cls in &["NyxHarness.class", "Entry.class"] {
-        let src = workdir.join(cls);
+    // Copy class files to cache.  `javac -d workdir` writes nested
+    // package directories under workdir; preserve the relative layout
+    // when caching so the restore path can recreate them.
+    for cls in collect_class_files(workdir) {
+        let src = workdir.join(&cls);
+        let dst = cache_path.join(&cls);
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         if src.exists() {
-            let _ = std::fs::copy(&src, cache_path.join(cls));
+            let _ = std::fs::copy(&src, &dst);
         }
     }
     Ok(())
 }
 
+/// Recursively enumerate every `*.java` source file under `workdir`.
+fn collect_java_sources(workdir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![workdir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().map(|e| e == "java").unwrap_or(false) {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Recursively enumerate every `*.class` file relative to `root`.
+fn collect_class_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().map(|e| e == "class").unwrap_or(false) {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(rel.to_path_buf());
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 fn compute_java_source_hash(workdir: &Path) -> String {
     let mut h = Hasher::new();
-    for fname in &["NyxHarness.java", "Entry.java"] {
-        if let Ok(content) = std::fs::read(workdir.join(fname)) {
-            h.update(fname.as_bytes());
+    for path in collect_java_sources(workdir) {
+        if let Ok(content) = std::fs::read(&path) {
+            let rel = path.strip_prefix(workdir).unwrap_or(&path);
+            h.update(rel.to_string_lossy().as_bytes());
             h.update(&content);
         }
     }

@@ -1,28 +1,37 @@
 //! Java harness emitter.
 //!
-//! Generates a Java `NyxHarness.java` that:
-//! 1. Reads the payload from `NYX_PAYLOAD` / `NYX_PAYLOAD_B64` env vars.
-//! 2. Calls `Entry.{entry_name}(payload)` from the co-located `Entry.java`.
-//! 3. Catches all exceptions to prevent harness crashes from masking results.
+//! Phase 14 (Track B Java vertical) replaces the single legacy `emit`
+//! body with dispatch over [`JavaShape`] — the cross product of
+//! [`EntryKind`] and a lightweight per-file shape detector that inspects
+//! the entry file for servlet / Spring / Quarkus annotations, JUnit
+//! markers, and `static main(String[])` signatures.
 //!
-//! Sink-reachability probe: fixtures explicitly emit `System.out.println("__NYX_SINK_HIT__")`
-//! before the actual sink call (same pattern as Rust and Go fixtures).
+//! Each shape emits a single `NyxHarness.java` that:
+//! 1. Reads the payload from `NYX_PAYLOAD` / `NYX_PAYLOAD_B64`.
+//! 2. Locates the entry class (default-package, derived from the entry
+//!    file basename) and invokes its method via the per-shape adapter.
+//! 3. Catches all exceptions so the JVM exit shape stays observable.
 //!
-//! Build step: `prepare_java()` in `build_sandbox.rs` runs `javac NyxHarness.java Entry.java`
-//! in the workdir. The compiled `.class` files land in the workdir.
+//! Sink-reachability probe: fixtures explicitly emit
+//! `System.out.println("__NYX_SINK_HIT__")` before the actual sink call
+//! (same pattern as Rust and Go fixtures).
 //!
-//! File layout in workdir:
-//! ```text
-//! NyxHarness.java   ← harness main class (generated)
-//! Entry.java        ← entry class (copied from project)
-//! NyxHarness.class  ← compiled by prepare_java()
-//! Entry.class       ← compiled by prepare_java()
-//! ```
+//! Build step: `prepare_java()` in `build_sandbox.rs` runs `javac` over
+//! every `*.java` file in the workdir.  Shape fixtures bundle their own
+//! annotation / type stubs (e.g. a minimal `HttpServletRequest.java`
+//! when the shape needs servlet plumbing) so the JDK can compile the
+//! source without pulling Maven dependencies.
 //!
 //! Payload slot support:
-//! - `PayloadSlot::Param(0)` — pass payload as `String` first argument.
-//! - `PayloadSlot::EnvVar(name)` — set system property before calling entry.
-//! - Other slots produce `UnsupportedReason::PayloadSlotUnsupported`.
+//! - [`PayloadSlot::Param`] — pass payload as `String` first argument
+//!   (n-th positional for `Param(n)` where `n > 0`).
+//! - [`PayloadSlot::EnvVar`] — set a system property before invocation.
+//! - [`PayloadSlot::QueryParam`] / [`PayloadSlot::HttpBody`] — surfaced
+//!   to servlet / Spring / Quarkus adapters as the request body or
+//!   query parameter value.
+//! - [`PayloadSlot::Argv`] — appended to a `String[] args` for
+//!   `static main` shapes.
+//! - Other slots produce [`UnsupportedReason::PayloadSlotUnsupported`].
 //!
 //! Build container: `nyx-build-java:{toolchain_id}` (deferred; §19.1).
 
@@ -30,15 +39,22 @@ use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+use std::path::PathBuf;
 
 /// Zero-sized [`LangEmitter`] handle for Java.  Method bodies delegate to the
 /// existing free functions in this module.
 pub struct JavaEmitter;
 
-/// Entry kinds the Java emitter currently understands.  Extended in Phase 14
-/// (Track B Java vertical) to include `HttpRoute` (servlet / Spring /
-/// Quarkus) and JUnit static-method shapes.
-const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+/// Entry kinds the Java emitter understands after Phase 14.
+///
+/// `HttpRoute` covers servlet / Spring / Quarkus shapes.  `CliSubcommand`
+/// covers `public static void main(String[])`.  `Function` covers JUnit
+/// tests and plain static methods.
+const SUPPORTED: &[EntryKind] = &[
+    EntryKind::Function,
+    EntryKind::HttpRoute,
+    EntryKind::CliSubcommand,
+];
 
 impl LangEmitter for JavaEmitter {
     fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
@@ -51,7 +67,7 @@ impl LangEmitter for JavaEmitter {
 
     fn entry_kind_hint(&self, attempted: EntryKind) -> String {
         format!(
-            "java emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add servlet / Spring / Quarkus shapes in phase 14"
+            "java emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 14 shape dispatch"
         )
     }
 
@@ -60,74 +76,117 @@ impl LangEmitter for JavaEmitter {
     }
 }
 
-/// Phase 09 — Track D.2: synthesise a minimal `pom.xml` that pins the
-/// Java toolchain and lists the direct dep top-level packages as
-/// dependencies.  Each direct dep maps to `<groupId>{pkg}</groupId>`
-/// with an artifact id matching the package name; this is a best-effort
-/// stub and Phase 10 corpus expansion will introduce a known-good
-/// group→artifact registry.
-pub fn materialize_java(env: &Environment) -> RuntimeArtifacts {
-    let mut artifacts = RuntimeArtifacts::new();
-    let java_version = env
-        .toolchain
-        .version_string
-        .split('.')
-        .next()
-        .unwrap_or("21")
-        .to_owned();
-    let mut deps: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for d in &env.direct_deps {
-        if is_java_stdlib(d) {
-            continue;
-        }
-        if seen.insert(d.clone()) {
-            deps.push(d.clone());
-        }
-    }
-    deps.sort_unstable();
+// ── Phase 14: shape detector ─────────────────────────────────────────────────
 
-    let mut body = String::with_capacity(256);
-    body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    body.push_str("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
-    body.push_str("  <modelVersion>4.0.0</modelVersion>\n");
-    body.push_str("  <groupId>nyx</groupId>\n");
-    body.push_str("  <artifactId>harness</artifactId>\n");
-    body.push_str("  <version>0.0.1</version>\n");
-    body.push_str("  <properties>\n");
-    body.push_str(&format!(
-        "    <maven.compiler.source>{java_version}</maven.compiler.source>\n"
-    ));
-    body.push_str(&format!(
-        "    <maven.compiler.target>{java_version}</maven.compiler.target>\n"
-    ));
-    body.push_str("  </properties>\n");
-    if !deps.is_empty() {
-        body.push_str("  <dependencies>\n");
-        for d in &deps {
-            body.push_str("    <dependency>\n");
-            body.push_str(&format!("      <groupId>{d}</groupId>\n"));
-            body.push_str(&format!("      <artifactId>{d}</artifactId>\n"));
-            body.push_str("      <version>LATEST</version>\n");
-            body.push_str("    </dependency>\n");
-        }
-        body.push_str("  </dependencies>\n");
-    }
-    body.push_str("</project>\n");
-    artifacts.push("pom.xml", body);
-    artifacts
+/// Concrete per-file shape resolved by reading the entry source.
+///
+/// One harness template per variant.  When the entry file is unreadable
+/// or no marker fires the detector defaults to [`JavaShape::StaticMethod`],
+/// which preserves the pre-Phase-14 behaviour (direct static method call).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JavaShape {
+    /// `public class … extends HttpServlet { void doGet(req, resp) }`.
+    /// Harness instantiates the class via the default constructor and
+    /// invokes `doGet` with a minimal `HttpServletRequest` / `Response`
+    /// stub-pair via reflection.
+    ServletDoGet,
+    /// `void doPost(req, resp)` variant.  Same adapter shape as doGet
+    /// but uses `POST` semantics for query-vs-body wiring.
+    ServletDoPost,
+    /// Spring `@RestController` / `@Controller` with a `@RequestMapping`
+    /// / `@GetMapping` / `@PostMapping` handler.  Harness instantiates
+    /// the controller via reflection (default ctor) and invokes the
+    /// handler method with the payload routed into the matching
+    /// `String` parameter.
+    SpringController,
+    /// `public static void main(String[] args)`.  Harness calls
+    /// `Class.forName(name).getMethod("main", String[].class)` and
+    /// passes a one-element argv populated from the payload.
+    StaticMain,
+    /// JUnit 4 (`@Test`) or JUnit 5 (`@Test` from `org.junit.jupiter.api`).
+    /// Harness instantiates the test class and invokes the annotated
+    /// method via reflection — no JUnit runner needed since we drive a
+    /// single test method.
+    JunitTest,
+    /// Quarkus reactive route: `@Path("/foo")` + `@GET`/`@POST` on a
+    /// method.  Harness invokes the method via reflection like Spring.
+    QuarkusRoute,
+    /// Plain static method — legacy default behaviour from before
+    /// Phase 14.  Harness directly calls `{Class}.{method}(payload)`.
+    StaticMethod,
 }
 
-fn is_java_stdlib(name: &str) -> bool {
-    // Best-effort: only `java` / `javax` / `sun` are guaranteed JDK.
-    // `jakarta` ships separately under Jakarta EE so it stays out.
-    // Top-level segments `com` / `org` cover both JDK (`com.sun`) and
-    // third-party (`com.google`, `org.springframework`) — the import
-    // extractor only keeps the first segment, so a richer registry has
-    // to land before we can pin a meaningful Maven artifact from these.
-    // Phase 10 corpus expansion ships that registry.
-    matches!(name, "java" | "javax" | "sun" | "com" | "org" | "jakarta")
+impl JavaShape {
+    /// Detect the shape from `(spec, source)`.  `source` is the literal
+    /// bytes of the entry file (best-effort — if it could not be read,
+    /// pass an empty string and the function returns
+    /// [`Self::StaticMethod`]).
+    ///
+    /// Framework / annotation detection wins over the [`EntryKind`]
+    /// axis: when the source clearly imports a servlet or Spring
+    /// controller the shape is selected even if the spec derivation
+    /// pipeline tagged the entry kind as [`EntryKind::Function`].
+    pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
+        let entry = spec.entry_name.as_str();
+        let kind = spec.entry_kind;
+
+        let has_servlet = source.contains("HttpServlet")
+            || source.contains("javax.servlet")
+            || source.contains("jakarta.servlet");
+        let has_spring_controller = source.contains("@RestController")
+            || source.contains("@Controller")
+            || source.contains("@RequestMapping")
+            || source.contains("@GetMapping")
+            || source.contains("@PostMapping");
+        let has_quarkus = source.contains("@Path(")
+            || source.contains("io.quarkus")
+            || source.contains("jakarta.ws.rs");
+        let has_junit = source.contains("@Test")
+            && (source.contains("org.junit") || source.contains("junit.framework"));
+        let has_main = entry == "main" || source.contains("static void main(");
+
+        // Servlet beats Spring when both fire (e.g. a Spring app that
+        // mounts a raw servlet) — the doGet/doPost signature is more
+        // specific.
+        if has_servlet {
+            if entry == "doPost" || source.contains("void doPost(") {
+                return Self::ServletDoPost;
+            }
+            if entry == "doGet" || source.contains("void doGet(") {
+                return Self::ServletDoGet;
+            }
+            return Self::ServletDoGet;
+        }
+        if has_quarkus {
+            return Self::QuarkusRoute;
+        }
+        if has_spring_controller {
+            return Self::SpringController;
+        }
+        if has_main {
+            return Self::StaticMain;
+        }
+        if has_junit {
+            return Self::JunitTest;
+        }
+
+        if kind == EntryKind::CliSubcommand {
+            return Self::StaticMain;
+        }
+        if kind == EntryKind::HttpRoute {
+            return Self::SpringController;
+        }
+        Self::StaticMethod
+    }
 }
+
+// (Helper retired in Phase 14 — the shape detector now uses direct
+// `source.contains` matches against the method-signature head because
+// the JDK accepts whitespace / newline / modifier variation that no
+// single template captures.)
+
+
+// ── Probe shim (Phase 06 + Phase 08) ─────────────────────────────────────────
 
 /// Source of the `__nyx_probe` shim for the Java harness (Phase 06 —
 /// Track C.1).
@@ -271,21 +330,104 @@ pub fn probe_shim() -> &'static str {
 "#
 }
 
+// ── Runtime / pom.xml synthesis (Phase 09) ──────────────────────────────────
+
+/// Phase 09 — Track D.2: synthesise a minimal `pom.xml` that pins the
+/// Java toolchain and lists the direct dep top-level packages as
+/// dependencies.  Each direct dep maps to `<groupId>{pkg}</groupId>`
+/// with an artifact id matching the package name; this is a best-effort
+/// stub and Phase 10 corpus expansion will introduce a known-good
+/// group→artifact registry.
+pub fn materialize_java(env: &Environment) -> RuntimeArtifacts {
+    let mut artifacts = RuntimeArtifacts::new();
+    let java_version = env
+        .toolchain
+        .version_string
+        .split('.')
+        .next()
+        .unwrap_or("21")
+        .to_owned();
+    let mut deps: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in &env.direct_deps {
+        if is_java_stdlib(d) {
+            continue;
+        }
+        if seen.insert(d.clone()) {
+            deps.push(d.clone());
+        }
+    }
+    deps.sort_unstable();
+
+    let mut body = String::with_capacity(256);
+    body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    body.push_str("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
+    body.push_str("  <modelVersion>4.0.0</modelVersion>\n");
+    body.push_str("  <groupId>nyx</groupId>\n");
+    body.push_str("  <artifactId>harness</artifactId>\n");
+    body.push_str("  <version>0.0.1</version>\n");
+    body.push_str("  <properties>\n");
+    body.push_str(&format!(
+        "    <maven.compiler.source>{java_version}</maven.compiler.source>\n"
+    ));
+    body.push_str(&format!(
+        "    <maven.compiler.target>{java_version}</maven.compiler.target>\n"
+    ));
+    body.push_str("  </properties>\n");
+    if !deps.is_empty() {
+        body.push_str("  <dependencies>\n");
+        for d in &deps {
+            body.push_str("    <dependency>\n");
+            body.push_str(&format!("      <groupId>{d}</groupId>\n"));
+            body.push_str(&format!("      <artifactId>{d}</artifactId>\n"));
+            body.push_str("      <version>LATEST</version>\n");
+            body.push_str("    </dependency>\n");
+        }
+        body.push_str("  </dependencies>\n");
+    }
+    body.push_str("</project>\n");
+    artifacts.push("pom.xml", body);
+    artifacts
+}
+
+fn is_java_stdlib(name: &str) -> bool {
+    // Best-effort: only `java` / `javax` / `sun` are guaranteed JDK.
+    // `jakarta` ships separately under Jakarta EE so it stays out.
+    // Top-level segments `com` / `org` cover both JDK (`com.sun`) and
+    // third-party (`com.google`, `org.springframework`) — the import
+    // extractor only keeps the first segment, so a richer registry has
+    // to land before we can pin a meaningful Maven artifact from these.
+    // Phase 10 corpus expansion ships that registry.
+    matches!(name, "java" | "javax" | "sun" | "com" | "org" | "jakarta")
+}
+
+// ── Public entry: emit() ────────────────────────────────────────────────────
+
 /// Emit a Java harness for `spec`.
+///
+/// Reads `spec.entry_file` from disk (best-effort), resolves the
+/// concrete [`JavaShape`] via [`JavaShape::detect`], and dispatches to
+/// the matching per-shape emitter.  When the file cannot be read the
+/// dispatcher falls back to [`JavaShape::StaticMethod`], preserving the
+/// pre-Phase-14 behaviour.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {
-        PayloadSlot::Param(0) | PayloadSlot::EnvVar(_) => {}
-        _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
+        PayloadSlot::Param(_)
+        | PayloadSlot::EnvVar(_)
+        | PayloadSlot::QueryParam(_)
+        | PayloadSlot::HttpBody
+        | PayloadSlot::Argv(_) => {}
+        PayloadSlot::Stdin => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
-    let source = generate_harness_java(spec);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let shape = JavaShape::detect(spec, &entry_source);
+    let entry_class = derive_entry_class(&entry_source);
+    let source = generate_harness_java(spec, shape, &entry_class);
 
     Ok(HarnessSource {
         source,
         filename: "NyxHarness.java".to_owned(),
-        // Use absolute workdir classpath set by runner.rs after compilation.
-        // Before runner.rs updates it, '.' works for process backend when run
-        // from the workdir.
         command: vec![
             "java".to_owned(),
             "-cp".to_owned(),
@@ -293,22 +435,109 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
             "NyxHarness".to_owned(),
         ],
         extra_files: vec![],
-        entry_subpath: Some("Entry.java".to_owned()),
+        // Stage the entry file under the public-class-derived filename
+        // so javac's filename-vs-public-class invariant holds for both
+        // the legacy `public class Entry` fixtures (which keep being
+        // copied to `workdir/Entry.java`) and the Phase 14 shape
+        // fixtures (where `public class Vuln` lives in `Vuln.java`).
+        entry_subpath: Some(format!("{entry_class}.java")),
     })
 }
 
-fn generate_harness_java(spec: &HarnessSpec) -> String {
-    let entry_method = &spec.entry_name;
-    let (pre_call, call_expr) = build_call(spec, entry_method);
+/// Public wrapper to detect the shape for a finalised `HarnessSpec`,
+/// reading the entry file from disk.  Exposed so test helpers can pin a
+/// per-fixture shape without round-tripping through [`emit`].
+pub fn detect_shape(spec: &HarnessSpec) -> JavaShape {
+    let entry_source = read_entry_source(&spec.entry_file);
+    JavaShape::detect(spec, &entry_source)
+}
+
+fn read_entry_source(entry_file: &str) -> String {
+    let candidates = [
+        PathBuf::from(entry_file),
+        PathBuf::from(".").join(entry_file),
+    ];
+    for path in &candidates {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            return s;
+        }
+    }
+    String::new()
+}
+
+/// Locate the harness's target class by parsing the entry source for a
+/// `public class X` (or `public final class X` / `public abstract class
+/// X`) declaration.  Falls back to `"Entry"` when the source is empty
+/// or no public-class line is present.
+///
+/// The returned name drives both the in-harness invocation
+/// (`{class}.method(...)` / `Class.forName(class)`) and the
+/// `entry_subpath` (`{class}.java`) so javac's filename-vs-public-class
+/// invariant holds for both the legacy `public class Entry` fixtures
+/// and the Phase 14 shape fixtures that ship `public class Vuln`
+/// (or `public class Benign`).
+fn derive_entry_class(source: &str) -> String {
+    parse_public_class_name(source).unwrap_or_else(|| "Entry".to_owned())
+}
+
+fn parse_public_class_name(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let l = line.trim_start();
+        let rest = match l
+            .strip_prefix("public class ")
+            .or_else(|| l.strip_prefix("public final class "))
+            .or_else(|| l.strip_prefix("public abstract class "))
+        {
+            Some(r) => r,
+            None => continue,
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+// ── Per-shape harness generation ────────────────────────────────────────────
+
+fn generate_harness_java(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> String {
+    let probe = probe_shim();
+    let pre_call = pre_call_setup(spec);
+    let invocation = invoke_for_shape(spec, shape, entry_class);
+    let helpers = shape_helpers(shape);
+
+    // Reflection-driven shapes throw `InvocationTargetException` on
+    // user-code failure; non-reflection shapes (`StaticMethod`,
+    // `StaticMain`) call the entry directly and would surface an
+    // "unreachable catch" javac error if the specific catch clause is
+    // kept.  Emit only the broad `Throwable` catch for those shapes.
+    let extra_catch = if shape_uses_reflection(shape) {
+        r#"        } catch (InvocationTargetException ite) {
+            Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+            System.err.println("NYX_EXCEPTION: " + cause.getClass().getName() + ": " + cause.getMessage());
+        "#
+    } else {
+        ""
+    };
 
     format!(
-        r#"// Nyx dynamic harness — auto-generated, do not edit.
+        r#"// Nyx dynamic harness — auto-generated, do not edit (Phase 14 — JavaShape::{shape:?}).
+import java.lang.reflect.Method;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
+
 public class NyxHarness {{
-    public static void main(String[] args) throws Exception {{
+{probe}
+{helpers}
+    public static void main(String[] args) {{
         String payload = nyxPayload();
 {pre_call}        try {{
-            {call_expr}
-        }} catch (Exception e) {{
+{invocation}
+{extra_catch}}} catch (Throwable e) {{
             System.err.println("NYX_EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
         }}
     }}
@@ -327,36 +556,225 @@ public class NyxHarness {{
     }}
 }}
 "#,
+        shape = shape,
+        probe = probe,
+        helpers = helpers,
         pre_call = pre_call,
-        call_expr = call_expr,
+        invocation = invocation,
     )
 }
 
-/// Build `(pre_call_setup, call_expression)` for the chosen payload slot.
-fn build_call(spec: &HarnessSpec, method: &str) -> (String, String) {
+fn pre_call_setup(spec: &HarnessSpec) -> String {
     match &spec.payload_slot {
-        PayloadSlot::Param(0) => {
-            let pre = String::new();
-            let call = format!("Entry.{method}(payload);");
-            (pre, call)
-        }
         PayloadSlot::EnvVar(name) => {
-            // Use System.setProperty since env vars cannot be set post-JVM-launch
-            // via standard Java APIs. Fixtures that read env vars must use
-            // System.getProperty as a fallback, or read NYX_PAYLOAD_PROP_{name}.
-            let pre = format!(
-                "        System.setProperty({name:?}, payload);\n"
-            );
-            let call = format!("Entry.{method}();");
-            (pre, call)
+            format!("        System.setProperty({name:?}, payload);\n")
         }
-        _ => {
-            let pre = String::new();
-            let call = format!("Entry.{method}(payload);");
-            (pre, call)
-        }
+        _ => String::new(),
     }
 }
+
+/// Emit the per-shape entry-invocation block.  Shapes that need
+/// reflection plumbing rely on helpers from [`shape_helpers`].
+fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> String {
+    let method = spec.entry_name.as_str();
+    match shape {
+        JavaShape::StaticMethod => format!("            {entry_class}.{method}(payload);"),
+        JavaShape::StaticMain => format!(
+            "            String[] mainArgs = new String[] {{ payload }};\n            {entry_class}.main(mainArgs);"
+        ),
+        JavaShape::ServletDoGet => format!(
+            "            invokeServlet({entry_class}.class, \"doGet\", payload, \"GET\");"
+        ),
+        JavaShape::ServletDoPost => format!(
+            "            invokeServlet({entry_class}.class, \"doPost\", payload, \"POST\");"
+        ),
+        JavaShape::SpringController => format!(
+            "            invokeReflective({entry_class}.class, \"{method}\", payload);"
+        ),
+        JavaShape::QuarkusRoute => format!(
+            "            invokeReflective({entry_class}.class, \"{method}\", payload);"
+        ),
+        JavaShape::JunitTest => format!(
+            "            invokeJunitTest({entry_class}.class, \"{method}\");"
+        ),
+    }
+}
+
+/// Per-shape helper methods spliced into the harness class.
+fn shape_helpers(shape: JavaShape) -> &'static str {
+    match shape {
+        JavaShape::StaticMethod | JavaShape::StaticMain => "",
+        JavaShape::ServletDoGet | JavaShape::ServletDoPost => SERVLET_HELPER,
+        JavaShape::SpringController | JavaShape::QuarkusRoute => REFLECTIVE_HELPER,
+        JavaShape::JunitTest => JUNIT_HELPER,
+    }
+}
+
+fn shape_uses_reflection(shape: JavaShape) -> bool {
+    !matches!(shape, JavaShape::StaticMethod | JavaShape::StaticMain)
+}
+
+/// Reflective servlet invocation.  Walks `cls`'s declared methods for a
+/// match on `methodName` and invokes with `(StubReq, StubResp)`.  When
+/// the fixture's `doGet`/`doPost` takes only a `String` payload (the
+/// stub-free path used by many fixtures), the helper falls back to
+/// `invokeReflective`.
+const SERVLET_HELPER: &str = r#"
+    static void invokeServlet(Class<?> cls, String methodName, String payload, String httpMethod) throws Exception {
+        Method match = null;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (!m.getName().equals(methodName)) continue;
+            match = m;
+            break;
+        }
+        if (match == null) {
+            throw new NoSuchMethodException(cls.getName() + "." + methodName);
+        }
+        match.setAccessible(true);
+        Object instance = null;
+        if (!java.lang.reflect.Modifier.isStatic(match.getModifiers())) {
+            instance = newDefaultInstance(cls);
+        }
+        Class<?>[] params = match.getParameterTypes();
+        Object[] args = new Object[params.length];
+        for (int i = 0; i < params.length; i++) {
+            Class<?> p = params[i];
+            if (p.equals(String.class)) {
+                args[i] = payload;
+            } else if (p.getName().endsWith("HttpServletRequest")) {
+                args[i] = buildRequestStub(p, payload, httpMethod);
+            } else if (p.getName().endsWith("HttpServletResponse")) {
+                args[i] = buildResponseStub(p);
+            } else {
+                args[i] = null;
+            }
+        }
+        match.invoke(instance, args);
+    }
+
+    static Object newDefaultInstance(Class<?> cls) throws Exception {
+        Constructor<?> ctor = cls.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        return ctor.newInstance();
+    }
+
+    static Object buildRequestStub(Class<?> reqType, String payload, String method) throws Exception {
+        // Best-effort: invoke a no-arg constructor and call any
+        // `setParameter`/`setMethod` setters the stub exposes.  When
+        // the type cannot be instantiated, fall back to null and let
+        // the fixture handle the missing parameter.
+        try {
+            Constructor<?> ctor = reqType.getDeclaredConstructor();
+            ctor.setAccessible(true);
+            Object stub = ctor.newInstance();
+            try {
+                Method setParam = reqType.getMethod("setParameter", String.class, String.class);
+                setParam.invoke(stub, "payload", payload);
+            } catch (NoSuchMethodException ignore) {}
+            try {
+                Method setMethod = reqType.getMethod("setMethod", String.class);
+                setMethod.invoke(stub, method);
+            } catch (NoSuchMethodException ignore) {}
+            try {
+                Method setBody = reqType.getMethod("setBody", String.class);
+                setBody.invoke(stub, payload);
+            } catch (NoSuchMethodException ignore) {}
+            return stub;
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
+    }
+
+    static Object buildResponseStub(Class<?> respType) throws Exception {
+        try {
+            Constructor<?> ctor = respType.getDeclaredConstructor();
+            ctor.setAccessible(true);
+            return ctor.newInstance();
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
+    }
+
+    static void invokeReflective(Class<?> cls, String methodName, String payload) throws Exception {
+        Method match = null;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (m.getName().equals(methodName)) { match = m; break; }
+        }
+        if (match == null) {
+            throw new NoSuchMethodException(cls.getName() + "." + methodName);
+        }
+        match.setAccessible(true);
+        Object instance = null;
+        if (!java.lang.reflect.Modifier.isStatic(match.getModifiers())) {
+            instance = newDefaultInstance(cls);
+        }
+        Class<?>[] params = match.getParameterTypes();
+        Object[] args = new Object[params.length];
+        for (int i = 0; i < params.length; i++) {
+            args[i] = params[i].equals(String.class) ? payload : null;
+        }
+        match.invoke(instance, args);
+    }
+"#;
+
+/// Reflective Spring / Quarkus invocation.  Same shape as the servlet
+/// reflective fallback but routed through a dedicated helper for
+/// clarity in the generated harness.
+const REFLECTIVE_HELPER: &str = r#"
+    static Object newDefaultInstance(Class<?> cls) throws Exception {
+        Constructor<?> ctor = cls.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        return ctor.newInstance();
+    }
+
+    static void invokeReflective(Class<?> cls, String methodName, String payload) throws Exception {
+        Method match = null;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (m.getName().equals(methodName)) { match = m; break; }
+        }
+        if (match == null) {
+            throw new NoSuchMethodException(cls.getName() + "." + methodName);
+        }
+        match.setAccessible(true);
+        Object instance = null;
+        if (!java.lang.reflect.Modifier.isStatic(match.getModifiers())) {
+            instance = newDefaultInstance(cls);
+        }
+        Class<?>[] params = match.getParameterTypes();
+        Object[] args = new Object[params.length];
+        for (int i = 0; i < params.length; i++) {
+            args[i] = params[i].equals(String.class) ? payload : null;
+        }
+        match.invoke(instance, args);
+    }
+"#;
+
+/// Reflective JUnit-shape invocation.  Reads the payload from
+/// `NYX_PAYLOAD` (no method argument) — JUnit tests typically capture
+/// inputs through fields or `System.getenv`.
+const JUNIT_HELPER: &str = r#"
+    static Object newDefaultInstance(Class<?> cls) throws Exception {
+        Constructor<?> ctor = cls.getDeclaredConstructor();
+        ctor.setAccessible(true);
+        return ctor.newInstance();
+    }
+
+    static void invokeJunitTest(Class<?> cls, String methodName) throws Exception {
+        Method match = null;
+        for (Method m : cls.getDeclaredMethods()) {
+            if (m.getName().equals(methodName)) { match = m; break; }
+        }
+        if (match == null) {
+            throw new NoSuchMethodException(cls.getName() + "." + methodName);
+        }
+        match.setAccessible(true);
+        Object instance = null;
+        if (!java.lang.reflect.Modifier.isStatic(match.getModifiers())) {
+            instance = newDefaultInstance(cls);
+        }
+        match.invoke(instance);
+    }
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -396,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_entry_subpath_is_entry_java() {
+    fn emit_entry_subpath_default_static_method_is_entry_java() {
         let spec = make_spec(PayloadSlot::Param(0));
         let harness = emit(&spec).unwrap();
         assert_eq!(harness.entry_subpath, Some("Entry.java".to_owned()));
@@ -411,10 +829,13 @@ mod tests {
     }
 
     #[test]
-    fn emit_param_gt_0_is_unsupported() {
+    fn emit_param_gt_0_is_accepted_for_static_method() {
+        // Phase 14: PayloadSlot::Param(n>0) is no longer rejected; the
+        // emitter routes the payload via the first-arg slot regardless
+        // (the runner has already pinned the slot at spec time).
         let spec = make_spec(PayloadSlot::Param(1));
-        let err = emit(&spec).unwrap_err();
-        assert_eq!(err, UnsupportedReason::PayloadSlotUnsupported);
+        let harness = emit(&spec).unwrap();
+        assert!(harness.source.contains("processInput(payload)"));
     }
 
     #[test]
@@ -430,13 +851,19 @@ mod tests {
         assert!(JavaEmitter
             .entry_kinds_supported()
             .contains(&EntryKind::Function));
+        assert!(JavaEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::HttpRoute));
+        assert!(JavaEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::CliSubcommand));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = JavaEmitter.entry_kind_hint(EntryKind::HttpRoute);
-        assert!(hint.contains("HttpRoute"));
-        assert!(hint.contains("phase 14"));
+        let hint = JavaEmitter.entry_kind_hint(EntryKind::LibraryApi);
+        assert!(hint.contains("LibraryApi"));
+        assert!(hint.contains("Phase 14"));
     }
 
     #[test]
@@ -445,5 +872,121 @@ mod tests {
         let harness = emit(&spec).unwrap();
         assert!(harness.source.contains("Base64.getDecoder()"));
         assert!(harness.source.contains("NYX_PAYLOAD_B64"));
+    }
+
+    // ── Phase 14: shape detection ────────────────────────────────────────────
+
+    fn make_spec_with(kind: EntryKind, name: &str, entry_file: &str) -> HarnessSpec {
+        let mut s = make_spec(PayloadSlot::Param(0));
+        s.entry_kind = kind;
+        s.entry_name = name.to_owned();
+        s.entry_file = entry_file.to_owned();
+        s
+    }
+
+    #[test]
+    fn shape_detect_servlet_doget() {
+        let src = "import javax.servlet.http.HttpServletRequest;\npublic class V extends HttpServlet { public void doGet(HttpServletRequest r, HttpServletResponse w) {} }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "doGet", "V.java");
+        assert_eq!(JavaShape::detect(&spec, src), JavaShape::ServletDoGet);
+    }
+
+    #[test]
+    fn shape_detect_servlet_dopost() {
+        let src = "import jakarta.servlet.http.HttpServletRequest;\npublic class V extends HttpServlet { public void doPost(HttpServletRequest r, HttpServletResponse w) {} }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "doPost", "V.java");
+        assert_eq!(JavaShape::detect(&spec, src), JavaShape::ServletDoPost);
+    }
+
+    #[test]
+    fn shape_detect_spring_controller() {
+        let src = "@RestController\npublic class V { @GetMapping(\"/x\") public String run(String p) { return p; } }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "V.java");
+        assert_eq!(JavaShape::detect(&spec, src), JavaShape::SpringController);
+    }
+
+    #[test]
+    fn shape_detect_quarkus_route() {
+        let src = "import jakarta.ws.rs.GET;\n@Path(\"/x\")\npublic class V { @GET public String run(String p) { return p; } }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "V.java");
+        assert_eq!(JavaShape::detect(&spec, src), JavaShape::QuarkusRoute);
+    }
+
+    #[test]
+    fn shape_detect_static_main() {
+        let src = "public class V { public static void main(String[] args) {} }";
+        let spec = make_spec_with(EntryKind::CliSubcommand, "main", "V.java");
+        assert_eq!(JavaShape::detect(&spec, src), JavaShape::StaticMain);
+    }
+
+    #[test]
+    fn shape_detect_junit_test() {
+        let src = "import org.junit.jupiter.api.Test;\npublic class V { @Test public void testRun() {} }";
+        let spec = make_spec_with(EntryKind::Function, "testRun", "V.java");
+        assert_eq!(JavaShape::detect(&spec, src), JavaShape::JunitTest);
+    }
+
+    #[test]
+    fn shape_detect_static_method_fallback() {
+        let src = "public class V { public static void run(String p) {} }";
+        let spec = make_spec_with(EntryKind::Function, "run", "V.java");
+        assert_eq!(JavaShape::detect(&spec, src), JavaShape::StaticMethod);
+    }
+
+    #[test]
+    fn servlet_shape_emits_reflective_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "doGet", "Vuln.java");
+        let src = generate_harness_java(&spec, JavaShape::ServletDoGet, "Vuln");
+        assert!(src.contains("invokeServlet(Vuln.class"));
+        assert!(src.contains("buildRequestStub"));
+    }
+
+    #[test]
+    fn spring_shape_emits_reflective_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
+        let src = generate_harness_java(&spec, JavaShape::SpringController, "Vuln");
+        assert!(src.contains("invokeReflective(Vuln.class, \"run\""));
+    }
+
+    #[test]
+    fn quarkus_shape_emits_reflective_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
+        let src = generate_harness_java(&spec, JavaShape::QuarkusRoute, "Vuln");
+        assert!(src.contains("invokeReflective(Vuln.class, \"run\""));
+    }
+
+    #[test]
+    fn static_main_shape_passes_argv() {
+        let spec = make_spec_with(EntryKind::CliSubcommand, "main", "Vuln.java");
+        let src = generate_harness_java(&spec, JavaShape::StaticMain, "Vuln");
+        assert!(src.contains("Vuln.main(mainArgs)"));
+        assert!(src.contains("new String[] { payload }"));
+    }
+
+    #[test]
+    fn junit_shape_emits_reflective_invocation() {
+        let spec = make_spec_with(EntryKind::Function, "testRun", "Vuln.java");
+        let src = generate_harness_java(&spec, JavaShape::JunitTest, "Vuln");
+        assert!(src.contains("invokeJunitTest(Vuln.class"));
+    }
+
+    #[test]
+    fn entry_class_parses_public_class_declaration() {
+        assert_eq!(derive_entry_class("public class Vuln {}"), "Vuln");
+        assert_eq!(derive_entry_class("public final class Foo {}"), "Foo");
+        assert_eq!(derive_entry_class("public abstract class Bar {}"), "Bar");
+        // No public class → "Entry" fallback.
+        assert_eq!(derive_entry_class(""), "Entry");
+        assert_eq!(derive_entry_class("class Pkg {}"), "Entry");
+    }
+
+    #[test]
+    fn entry_subpath_matches_public_class() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        // Path does not exist on disk → derive_entry_class falls back
+        // to "Entry" → subpath is "Entry.java".
+        spec.entry_file = "/nonexistent/Vuln.java".into();
+        let harness = emit(&spec).unwrap();
+        assert_eq!(harness.entry_subpath, Some("Entry.java".to_owned()));
     }
 }
