@@ -9,6 +9,8 @@
 //!
 //! Run with: `cargo nextest run --features dynamic --test go_fixtures`
 
+mod common;
+
 #[cfg(feature = "dynamic")]
 mod go_fixture_tests {
     use nyx_scanner::commands::scan::Diag;
@@ -444,5 +446,177 @@ mod go_fixture_tests {
             alternative_finding_ids: vec![],
             stable_hash: 0,
         }
+    }
+}
+
+// ── Phase 15: per-shape acceptance ───────────────────────────────────────────
+
+#[cfg(feature = "dynamic")]
+mod phase15_shape_tests {
+    use crate::common::fixture_harness::run_shape_fixture_lang;
+    use nyx_scanner::dynamic::spec::PayloadSlot;
+    use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+
+    fn go_available() -> bool {
+        std::process::Command::new("go")
+            .arg("version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn assert_confirmed(shape: &str, result: &VerifyResult) {
+        assert_eq!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "{shape}/vuln: expected Confirmed, got {:?} ({:?})",
+            result.status,
+            result.detail,
+        );
+    }
+
+    fn assert_not_confirmed(shape: &str, result: &VerifyResult) {
+        assert!(
+            matches!(
+                result.status,
+                VerifyStatus::NotConfirmed | VerifyStatus::Inconclusive
+            ),
+            "{shape}/benign: expected NotConfirmed (or Inconclusive), got {:?} ({:?})",
+            result.status,
+            result.detail,
+        );
+        assert_ne!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "{shape}/benign: must not confirm",
+        );
+    }
+
+    fn run(
+        shape: &str,
+        file: &str,
+        func: &str,
+        cap: Cap,
+        sink_line: u32,
+        kind: EntryKind,
+        slot: PayloadSlot,
+    ) -> VerifyResult {
+        run_shape_fixture_lang(
+            Lang::Go, "go", shape, file, func, cap, sink_line, kind, slot,
+        )
+    }
+
+    // ── handler_func ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn handler_func_vuln_is_confirmed() {
+        if !go_available() {
+            eprintln!("SKIP: go not available");
+            return;
+        }
+        let r = run(
+            "handler_func", "vuln.go", "Handle", Cap::CODE_EXEC, 17,
+            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+        );
+        assert_confirmed("handler_func", &r);
+    }
+
+    #[test]
+    fn handler_func_benign_not_confirmed() {
+        if !go_available() {
+            eprintln!("SKIP: go not available");
+            return;
+        }
+        let r = run(
+            "handler_func", "benign.go", "Handle", Cap::CODE_EXEC, 14,
+            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+        );
+        assert_not_confirmed("handler_func", &r);
+    }
+
+    // ── gin_handler ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn gin_handler_vuln_is_confirmed() {
+        if !go_available() {
+            eprintln!("SKIP: go not available");
+            return;
+        }
+        let r = run(
+            "gin_handler", "vuln.go", "Handle", Cap::CODE_EXEC, 16,
+            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+        );
+        assert_confirmed("gin_handler", &r);
+    }
+
+    #[test]
+    fn gin_handler_benign_not_confirmed() {
+        if !go_available() {
+            eprintln!("SKIP: go not available");
+            return;
+        }
+        let r = run(
+            "gin_handler", "benign.go", "Handle", Cap::CODE_EXEC, 14,
+            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+        );
+        assert_not_confirmed("gin_handler", &r);
+    }
+
+    // ── flag_cli ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn flag_cli_vuln_is_confirmed() {
+        if !go_available() {
+            eprintln!("SKIP: go not available");
+            return;
+        }
+        let r = run(
+            "flag_cli", "vuln.go", "Run", Cap::CODE_EXEC, 19,
+            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+        );
+        assert_confirmed("flag_cli", &r);
+    }
+
+    #[test]
+    fn flag_cli_benign_not_confirmed() {
+        if !go_available() {
+            eprintln!("SKIP: go not available");
+            return;
+        }
+        let r = run(
+            "flag_cli", "benign.go", "Run", Cap::CODE_EXEC, 15,
+            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+        );
+        assert_not_confirmed("flag_cli", &r);
+    }
+
+    // ── fuzz_variadic ────────────────────────────────────────────────────────
+
+    #[test]
+    fn fuzz_variadic_vuln_is_confirmed() {
+        if !go_available() {
+            eprintln!("SKIP: go not available");
+            return;
+        }
+        let r = run(
+            "fuzz_variadic", "vuln.go", "FuzzHandle", Cap::CODE_EXEC, 14,
+            EntryKind::Function, PayloadSlot::Param(0),
+        );
+        assert_confirmed("fuzz_variadic", &r);
+    }
+
+    #[test]
+    fn fuzz_variadic_benign_not_confirmed() {
+        if !go_available() {
+            eprintln!("SKIP: go not available");
+            return;
+        }
+        let r = run(
+            "fuzz_variadic", "benign.go", "FuzzHandle", Cap::CODE_EXEC, 14,
+            EntryKind::Function, PayloadSlot::Param(0),
+        );
+        assert_not_confirmed("fuzz_variadic", &r);
     }
 }

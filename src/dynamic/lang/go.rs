@@ -1,25 +1,37 @@
 //! Go harness emitter.
 //!
-//! Generates a Go `main` package that:
-//! 1. Reads the payload from `NYX_PAYLOAD` / `NYX_PAYLOAD_B64` env vars.
-//! 2. Imports the entry package from `./entry/` and calls the entry function.
-//! 3. Uses `runtime.Caller`-style wrapping in fixtures for sink-reachability
-//!    probes (fixtures explicitly emit `__NYX_SINK_HIT__` before the sink).
+//! Phase 15 (Track B Go vertical) replaces the single legacy `emit` body
+//! with dispatch over [`GoShape`] — the cross product of [`EntryKind`]
+//! and a lightweight per-file shape detector that inspects the entry
+//! file for `net/http` handler signatures, gin context handlers,
+//! `flag.Parse` CLIs, and `func(args ...) error` fuzz harnesses.
 //!
-//! Build step: `prepare_go()` in `build_sandbox.rs` runs `go build -o nyx_harness .`
-//! in the workdir. The harness command is updated to the compiled binary path.
+//! Each shape emits a single `main.go` that:
+//! 1. Reads the payload from `NYX_PAYLOAD` / `NYX_PAYLOAD_B64` env vars.
+//! 2. Imports the entry package from `./entry/` and invokes the entry
+//!    function via the per-shape adapter.
+//!
+//! Build step: `prepare_go()` in `build_sandbox.rs` runs
+//! `go build -o nyx_harness .` in the workdir. The harness command is
+//! updated to the compiled binary path.
 //!
 //! File layout in workdir:
 //! ```text
 //! main.go         ← harness entry point (generated)
 //! go.mod          ← module definition (generated)
 //! entry/
-//!   entry.go      ← entry function (copied from project; must have `package entry`)
+//!   entry.go      ← entry function (copied from project; `package entry`)
 //! ```
 //!
 //! Payload slot support:
 //! - `PayloadSlot::Param(0)` — pass payload as `string` first argument.
 //! - `PayloadSlot::EnvVar(name)` — set env var before calling entry.
+//! - `PayloadSlot::QueryParam(name)` — surfaced to HandlerFunc / gin
+//!   shapes as the named query parameter.
+//! - `PayloadSlot::HttpBody` — surfaced to HandlerFunc / gin shapes as
+//!   the request body.
+//! - `PayloadSlot::Argv(n)` — appended to `os.Args` for `flag.Parse`
+//!   shapes.
 //! - Other slots produce `UnsupportedReason::PayloadSlotUnsupported`.
 //!
 //! Build container: `nyx-build-go:{toolchain_id}` (deferred; §19.1).
@@ -28,15 +40,22 @@ use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+use std::path::PathBuf;
 
 /// Zero-sized [`LangEmitter`] handle for Go.  Method bodies delegate to the
 /// existing free functions in this module.
 pub struct GoEmitter;
 
-/// Entry kinds the Go emitter currently understands.  Extended in Phase 15
-/// (Track B Go vertical) to include `HttpRoute` (`net/http`, gin) and CLI
-/// (`flag.Parse`) shapes.
-const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+/// Entry kinds the Go emitter understands after Phase 15.
+///
+/// `HttpRoute` covers `net/http` and gin handlers.  `CliSubcommand`
+/// covers `flag.Parse` CLIs.  `Function` covers plain functions and
+/// fuzz harnesses.
+const SUPPORTED: &[EntryKind] = &[
+    EntryKind::Function,
+    EntryKind::HttpRoute,
+    EntryKind::CliSubcommand,
+];
 
 impl LangEmitter for GoEmitter {
     fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
@@ -49,13 +68,97 @@ impl LangEmitter for GoEmitter {
 
     fn entry_kind_hint(&self, attempted: EntryKind) -> String {
         format!(
-            "go emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add net/http, gin, flag.Parse shapes in phase 15"
+            "go emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 15 shape dispatch"
         )
     }
 
     fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
         materialize_go(env)
     }
+}
+
+// ── Phase 15: shape detector ─────────────────────────────────────────────────
+
+/// Concrete per-file shape resolved by reading the entry source.
+///
+/// One harness template per variant.  When the entry file is unreadable
+/// or no marker fires the detector defaults to [`GoShape::Generic`],
+/// preserving the pre-Phase-15 behaviour (direct `entry.Func(payload)`
+/// call).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoShape {
+    /// `func(w http.ResponseWriter, r *http.Request)`.  Harness builds
+    /// a `httptest.NewRequest` + `httptest.NewRecorder` and dispatches
+    /// the handler.
+    HttpHandlerFunc,
+    /// `func(c *gin.Context)`.  Harness constructs a minimal
+    /// `gin.Context` stub and dispatches.  Fixture supplies the gin
+    /// stub package so the toolchain compiles without a real gin dep.
+    GinHandler,
+    /// `flag.Parse`-driven CLI.  Harness sets `os.Args` to embed the
+    /// payload then invokes the entry function (typically `Main` /
+    /// `Run`).
+    FlagParseCli,
+    /// Fuzz-style harness: `func(args ...) error` taking `[]byte`-ish
+    /// inputs.  Harness invokes with `[]byte(payload)`.
+    FuzzVariadic,
+    /// Generic free function — pre-Phase-15 default.  Harness calls
+    /// `entry.Func(payload)` directly.
+    Generic,
+}
+
+impl GoShape {
+    /// Detect the shape from `(spec, source)`.  `source` is the literal
+    /// bytes of the entry file (best-effort — empty string falls back
+    /// to [`Self::Generic`]).
+    pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
+        let entry = spec.entry_name.as_str();
+        let kind = spec.entry_kind;
+
+        let has_http_handler = source.contains("http.ResponseWriter")
+            && source.contains("*http.Request");
+        let has_gin = source.contains("gin.Context") || source.contains("*gin.Context");
+        let has_flag_parse = source.contains("flag.Parse()") || source.contains("flag.Parse(");
+        let has_fuzz_signature = source.contains("[]byte")
+            && (entry.starts_with("Fuzz") || source.contains("// nyx-shape: fuzz"));
+
+        if has_gin {
+            return Self::GinHandler;
+        }
+        if has_http_handler {
+            return Self::HttpHandlerFunc;
+        }
+        if has_flag_parse {
+            return Self::FlagParseCli;
+        }
+        if has_fuzz_signature {
+            return Self::FuzzVariadic;
+        }
+        if kind == EntryKind::HttpRoute {
+            return Self::HttpHandlerFunc;
+        }
+        if kind == EntryKind::CliSubcommand {
+            return Self::FlagParseCli;
+        }
+        Self::Generic
+    }
+}
+
+/// Public wrapper to detect the shape for a finalised `HarnessSpec`,
+/// reading the entry file from disk.
+pub fn detect_shape(spec: &HarnessSpec) -> GoShape {
+    let src = read_entry_source(&spec.entry_file);
+    GoShape::detect(spec, &src)
+}
+
+fn read_entry_source(entry_file: &str) -> String {
+    let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
+    for path in &candidates {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            return s;
+        }
+    }
+    String::new()
 }
 
 /// Phase 09 — Track D.2: synthesise a `go.mod` listing every captured
@@ -246,51 +349,52 @@ func __nyx_recover_crash(sinkCallee string) func() {
 /// Emit a Go harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {
-        PayloadSlot::Param(0) | PayloadSlot::EnvVar(_) => {}
-        _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
+        PayloadSlot::Param(_)
+        | PayloadSlot::EnvVar(_)
+        | PayloadSlot::QueryParam(_)
+        | PayloadSlot::HttpBody
+        | PayloadSlot::Argv(_) => {}
+        PayloadSlot::Stdin => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
-    let main_go = generate_main_go(spec);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let shape = GoShape::detect(spec, &entry_source);
+    let main_go = generate_main_go(spec, shape);
     let go_mod = generate_go_mod();
+
+    let mut extra_files = vec![("go.mod".to_owned(), go_mod)];
+    // Phase 15: GinHandler shape stages a minimal gin stub package so
+    // the toolchain can compile the harness without pulling real gin.
+    if matches!(shape, GoShape::GinHandler) {
+        extra_files.push(("entry/gin/gin.go".to_owned(), gin_stub_pkg()));
+    }
 
     Ok(HarnessSource {
         source: main_go,
         filename: "main.go".to_owned(),
         command: vec!["./nyx_harness".to_owned()],
-        extra_files: vec![("go.mod".to_owned(), go_mod)],
+        extra_files,
         entry_subpath: Some("entry/entry.go".to_owned()),
     })
 }
 
-fn generate_main_go(spec: &HarnessSpec) -> String {
+fn generate_main_go(spec: &HarnessSpec, shape: GoShape) -> String {
     let entry_fn = capitalize_first(&spec.entry_name);
-    let (pre_call, call_expr) = build_call(spec, &entry_fn);
-
-    // Determine which imports are needed.
-    let env_import = if matches!(&spec.payload_slot, PayloadSlot::EnvVar(_)) {
-        ""
-    } else {
-        ""
-    };
-    let _ = env_import;
+    let pre_call = pre_call_setup(spec);
+    let imports = imports_for_shape(shape);
+    let invocation = invoke_for_shape(spec, shape, &entry_fn);
 
     format!(
-        r#"// Nyx dynamic harness — auto-generated, do not edit.
+        r#"// Nyx dynamic harness — auto-generated, do not edit (Phase 15 — GoShape::{shape:?}).
 package main
 
 import (
-	"encoding/base64"
-	"fmt"
-	"os"
-
-	"nyx-harness/entry"
-)
+{imports})
 
 func main() {{
 	payload := nyxPayload()
-{pre_call}	{call_expr}
-	_ = fmt.Sprintf("") // suppress unused import if call_expr uses fmt directly
-	_ = os.Stderr       // suppress unused import
+	_ = payload
+{pre_call}{invocation}
 }}
 
 func nyxPayload() string {{
@@ -305,34 +409,154 @@ func nyxPayload() string {{
 	return ""
 }}
 "#,
+        shape = shape,
+        imports = imports,
         pre_call = pre_call,
-        call_expr = call_expr,
+        invocation = invocation,
     )
+}
+
+fn imports_for_shape(shape: GoShape) -> &'static str {
+    match shape {
+        GoShape::Generic => {
+            "\t\"encoding/base64\"\n\t\"os\"\n\n\t\"nyx-harness/entry\"\n"
+        }
+        GoShape::HttpHandlerFunc => {
+            "\t\"encoding/base64\"\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"os\"\n\t\"strings\"\n\n\t\"nyx-harness/entry\"\n"
+        }
+        GoShape::GinHandler => {
+            "\t\"encoding/base64\"\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"os\"\n\t\"strings\"\n\n\t\"nyx-harness/entry\"\n\t\"nyx-harness/entry/gin\"\n"
+        }
+        GoShape::FlagParseCli => {
+            "\t\"encoding/base64\"\n\t\"os\"\n\n\t\"nyx-harness/entry\"\n"
+        }
+        GoShape::FuzzVariadic => {
+            "\t\"encoding/base64\"\n\t\"os\"\n\n\t\"nyx-harness/entry\"\n"
+        }
+    }
+}
+
+fn pre_call_setup(spec: &HarnessSpec) -> String {
+    match &spec.payload_slot {
+        PayloadSlot::EnvVar(name) => format!("\tos.Setenv({name:?}, payload)\n"),
+        PayloadSlot::Argv(n) => {
+            let pads = (0..*n).map(|_| "\"\"".to_owned()).collect::<Vec<_>>().join(", ");
+            if pads.is_empty() {
+                format!("\tos.Args = []string{{\"nyx_harness\", payload}}\n")
+            } else {
+                format!("\tos.Args = []string{{\"nyx_harness\", {pads}, payload}}\n")
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+fn invoke_for_shape(spec: &HarnessSpec, shape: GoShape, entry_fn: &str) -> String {
+    let query_param = match &spec.payload_slot {
+        PayloadSlot::QueryParam(name) => name.clone(),
+        _ => "payload".to_owned(),
+    };
+    let use_body = matches!(&spec.payload_slot, PayloadSlot::HttpBody);
+
+    match shape {
+        GoShape::Generic => format!("\tentry.{entry_fn}(payload)\n"),
+        GoShape::HttpHandlerFunc => {
+            let body_setup = if use_body {
+                "\treq := httptest.NewRequest(\"POST\", \"/\", strings.NewReader(payload))\n"
+            } else {
+                ""
+            };
+            let url_setup = if use_body {
+                String::new()
+            } else {
+                format!(
+                    "\treq := httptest.NewRequest(\"GET\", \"/?{q}=\"+payload, strings.NewReader(\"\"))\n",
+                    q = query_param
+                )
+            };
+            format!(
+                "{body_setup}{url_setup}\trw := httptest.NewRecorder()\n\tentry.{entry_fn}(rw, req)\n\t_ = http.StatusOK\n",
+            )
+        }
+        GoShape::GinHandler => {
+            let setup = if use_body {
+                "\treq := httptest.NewRequest(\"POST\", \"/\", strings.NewReader(payload))\n"
+            } else {
+                "\treq := httptest.NewRequest(\"GET\", \"/?payload=\"+payload, strings.NewReader(\"\"))\n"
+            };
+            format!(
+                "{setup}\trw := httptest.NewRecorder()\n\tctx := gin.NewContext(rw, req)\n\tentry.{entry_fn}(ctx)\n\t_ = http.StatusOK\n",
+            )
+        }
+        GoShape::FlagParseCli => format!("\tentry.{entry_fn}()\n"),
+        GoShape::FuzzVariadic => format!("\t_ = entry.{entry_fn}([]byte(payload))\n"),
+    }
 }
 
 fn generate_go_mod() -> String {
     "module nyx-harness\n\ngo 1.21\n".to_owned()
 }
 
-/// Build `(pre_call_setup, call_expression)` for the chosen payload slot.
-fn build_call(spec: &HarnessSpec, entry_fn: &str) -> (String, String) {
-    match &spec.payload_slot {
-        PayloadSlot::Param(0) => {
-            let pre = String::new();
-            let call = format!("entry.{entry_fn}(payload)");
-            (pre, call)
-        }
-        PayloadSlot::EnvVar(name) => {
-            let pre = format!("\tos.Setenv({name:?}, payload)\n");
-            let call = format!("entry.{entry_fn}()");
-            (pre, call)
-        }
-        _ => {
-            let pre = String::new();
-            let call = format!("entry.{entry_fn}(payload)");
-            (pre, call)
-        }
-    }
+/// Minimal `gin` stub package used by [`GoShape::GinHandler`] fixtures
+/// so the toolchain can compile without a real gin dependency.
+/// Exposes just enough surface (Context.Query, Context.JSON,
+/// Context.String, NewContext) to support the per-shape harness call.
+fn gin_stub_pkg() -> String {
+    r#"// Phase 15 — minimal gin stub for harness build (not the real gin).
+package gin
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+)
+
+type Context struct {
+	Writer  http.ResponseWriter
+	Request *http.Request
+}
+
+func NewContext(w http.ResponseWriter, r *http.Request) *Context {
+	return &Context{Writer: w, Request: r}
+}
+
+func (c *Context) Query(name string) string {
+	if c.Request == nil {
+		return ""
+	}
+	return c.Request.URL.Query().Get(name)
+}
+
+func (c *Context) PostForm(name string) string {
+	if c.Request == nil {
+		return ""
+	}
+	_ = c.Request.ParseForm()
+	return c.Request.PostFormValue(name)
+}
+
+func (c *Context) GetRawData() ([]byte, error) {
+	if c.Request == nil || c.Request.Body == nil {
+		return []byte{}, nil
+	}
+	return io.ReadAll(c.Request.Body)
+}
+
+func (c *Context) JSON(code int, obj interface{}) {
+	if c.Writer != nil {
+		c.Writer.WriteHeader(code)
+		fmt.Fprintf(c.Writer, "%v", obj)
+	}
+}
+
+func (c *Context) String(code int, format string, values ...interface{}) {
+	if c.Writer != nil {
+		c.Writer.WriteHeader(code)
+		fmt.Fprintf(c.Writer, format, values...)
+	}
+}
+"#
+    .to_owned()
 }
 
 /// Capitalize the first character of a string (Go exported names must start uppercase).
@@ -406,13 +630,6 @@ mod tests {
     }
 
     #[test]
-    fn emit_param_gt_0_is_unsupported() {
-        let spec = make_spec(PayloadSlot::Param(1));
-        let err = emit(&spec).unwrap_err();
-        assert_eq!(err, UnsupportedReason::PayloadSlotUnsupported);
-    }
-
-    #[test]
     fn emit_stdin_is_unsupported() {
         let spec = make_spec(PayloadSlot::Stdin);
         let err = emit(&spec).unwrap_err();
@@ -423,13 +640,15 @@ mod tests {
     fn entry_kinds_supported_is_non_empty() {
         assert!(!GoEmitter.entry_kinds_supported().is_empty());
         assert!(GoEmitter.entry_kinds_supported().contains(&EntryKind::Function));
+        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKind::HttpRoute));
+        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKind::CliSubcommand));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = GoEmitter.entry_kind_hint(EntryKind::HttpRoute);
-        assert!(hint.contains("HttpRoute"));
-        assert!(hint.contains("phase 15"));
+        let hint = GoEmitter.entry_kind_hint(EntryKind::LibraryApi);
+        assert!(hint.contains("LibraryApi"));
+        assert!(hint.contains("Phase 15"));
     }
 
     #[test]
@@ -445,5 +664,83 @@ mod tests {
         let go_mod = generate_go_mod();
         assert!(go_mod.contains("module nyx-harness"));
         assert!(go_mod.contains("go 1.21"));
+    }
+
+    // ── Phase 15: shape detection ────────────────────────────────────────────
+
+    fn make_spec_with(kind: EntryKind, name: &str, entry_file: &str) -> HarnessSpec {
+        let mut s = make_spec(PayloadSlot::Param(0));
+        s.entry_kind = kind;
+        s.entry_name = name.to_owned();
+        s.entry_file = entry_file.to_owned();
+        s
+    }
+
+    #[test]
+    fn shape_detect_http_handler_func() {
+        let src = "package entry\nimport \"net/http\"\nfunc Handle(w http.ResponseWriter, r *http.Request) {}";
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::HttpHandlerFunc);
+    }
+
+    #[test]
+    fn shape_detect_gin_handler() {
+        let src = "package entry\nimport \"nyx-harness/entry/gin\"\nfunc Handle(c *gin.Context) {}";
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::GinHandler);
+    }
+
+    #[test]
+    fn shape_detect_flag_parse_cli() {
+        let src = "package entry\nimport \"flag\"\nfunc Run() { flag.Parse() }";
+        let spec = make_spec_with(EntryKind::CliSubcommand, "Run", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::FlagParseCli);
+    }
+
+    #[test]
+    fn shape_detect_fuzz_variadic() {
+        let src = "package entry\nfunc FuzzHandle(data []byte) error { return nil }";
+        let spec = make_spec_with(EntryKind::Function, "FuzzHandle", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::FuzzVariadic);
+    }
+
+    #[test]
+    fn shape_detect_generic_fallback() {
+        let src = "package entry\nfunc Login(payload string) {}";
+        let spec = make_spec_with(EntryKind::Function, "Login", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::Generic);
+    }
+
+    #[test]
+    fn http_shape_emits_httptest_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        let src = generate_main_go(&spec, GoShape::HttpHandlerFunc);
+        assert!(src.contains("httptest.NewRequest"));
+        assert!(src.contains("httptest.NewRecorder"));
+        assert!(src.contains("entry.Handle(rw, req)"));
+    }
+
+    #[test]
+    fn gin_shape_emits_context_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        let src = generate_main_go(&spec, GoShape::GinHandler);
+        assert!(src.contains("gin.NewContext"));
+        assert!(src.contains("entry.Handle(ctx)"));
+    }
+
+    #[test]
+    fn cli_shape_emits_os_args_setup() {
+        let mut spec = make_spec_with(EntryKind::CliSubcommand, "Run", "entry.go");
+        spec.payload_slot = PayloadSlot::Argv(0);
+        let src = generate_main_go(&spec, GoShape::FlagParseCli);
+        assert!(src.contains("os.Args = []string"));
+        assert!(src.contains("entry.Run()"));
+    }
+
+    #[test]
+    fn fuzz_shape_emits_bytes_invocation() {
+        let spec = make_spec_with(EntryKind::Function, "FuzzHandle", "entry.go");
+        let src = generate_main_go(&spec, GoShape::FuzzVariadic);
+        assert!(src.contains("entry.FuzzHandle([]byte(payload))"));
     }
 }

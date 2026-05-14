@@ -9,6 +9,8 @@
 //!
 //! Run with: `cargo nextest run --features dynamic --test php_fixtures`
 
+mod common;
+
 #[cfg(feature = "dynamic")]
 mod php_fixture_tests {
     use nyx_scanner::commands::scan::Diag;
@@ -444,5 +446,149 @@ mod php_fixture_tests {
             alternative_finding_ids: vec![],
             stable_hash: 0,
         }
+    }
+}
+
+// ── Phase 15: per-shape acceptance ───────────────────────────────────────────
+
+#[cfg(feature = "dynamic")]
+mod phase15_shape_tests {
+    use crate::common::fixture_harness::run_shape_fixture_lang;
+    use nyx_scanner::dynamic::spec::PayloadSlot;
+    use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+
+    fn php_available() -> bool {
+        std::process::Command::new("php")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn assert_confirmed(shape: &str, result: &VerifyResult) {
+        assert_eq!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "{shape}/vuln: expected Confirmed, got {:?} ({:?})",
+            result.status,
+            result.detail,
+        );
+    }
+
+    fn assert_not_confirmed(shape: &str, result: &VerifyResult) {
+        assert!(
+            matches!(
+                result.status,
+                VerifyStatus::NotConfirmed | VerifyStatus::Inconclusive
+            ),
+            "{shape}/benign: expected NotConfirmed (or Inconclusive), got {:?} ({:?})",
+            result.status,
+            result.detail,
+        );
+        assert_ne!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "{shape}/benign: must not confirm",
+        );
+    }
+
+    fn run(
+        shape: &str,
+        file: &str,
+        func: &str,
+        cap: Cap,
+        sink_line: u32,
+        kind: EntryKind,
+        slot: PayloadSlot,
+    ) -> VerifyResult {
+        run_shape_fixture_lang(
+            Lang::Php, "php", shape, file, func, cap, sink_line, kind, slot,
+        )
+    }
+
+    // ── route_closure ────────────────────────────────────────────────────────
+
+    #[test]
+    fn route_closure_vuln_is_confirmed() {
+        if !php_available() {
+            eprintln!("SKIP: php not available");
+            return;
+        }
+        let r = run(
+            "route_closure", "vuln.php", "run", Cap::CODE_EXEC, 10,
+            EntryKind::HttpRoute, PayloadSlot::Param(0),
+        );
+        assert_confirmed("route_closure", &r);
+    }
+
+    #[test]
+    fn route_closure_benign_not_confirmed() {
+        if !php_available() {
+            eprintln!("SKIP: php not available");
+            return;
+        }
+        let r = run(
+            "route_closure", "benign.php", "run", Cap::CODE_EXEC, 11,
+            EntryKind::HttpRoute, PayloadSlot::Param(0),
+        );
+        assert_not_confirmed("route_closure", &r);
+    }
+
+    // ── cli_script ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn cli_script_vuln_is_confirmed() {
+        if !php_available() {
+            eprintln!("SKIP: php not available");
+            return;
+        }
+        let r = run(
+            "cli_script", "vuln.php", "main", Cap::CODE_EXEC, 8,
+            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+        );
+        assert_confirmed("cli_script", &r);
+    }
+
+    #[test]
+    fn cli_script_benign_not_confirmed() {
+        if !php_available() {
+            eprintln!("SKIP: php not available");
+            return;
+        }
+        let r = run(
+            "cli_script", "benign.php", "main", Cap::CODE_EXEC, 11,
+            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+        );
+        assert_not_confirmed("cli_script", &r);
+    }
+
+    // ── top_level_script ─────────────────────────────────────────────────────
+
+    #[test]
+    fn top_level_script_vuln_is_confirmed() {
+        if !php_available() {
+            eprintln!("SKIP: php not available");
+            return;
+        }
+        let r = run(
+            "top_level_script", "vuln.php", "", Cap::CODE_EXEC, 8,
+            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+        );
+        assert_confirmed("top_level_script", &r);
+    }
+
+    #[test]
+    fn top_level_script_benign_not_confirmed() {
+        if !php_available() {
+            eprintln!("SKIP: php not available");
+            return;
+        }
+        let r = run(
+            "top_level_script", "benign.php", "", Cap::CODE_EXEC, 10,
+            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+        );
+        assert_not_confirmed("top_level_script", &r);
     }
 }

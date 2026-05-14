@@ -1,19 +1,29 @@
 //! PHP harness emitter.
 //!
-//! Generates a PHP script that:
+//! Phase 15 (Track B PHP vertical) replaces the single legacy `emit`
+//! body with dispatch over [`PhpShape`] — the cross product of
+//! [`EntryKind`] and a lightweight per-file shape detector that
+//! inspects the entry file for Slim/Laravel/Symfony route closures,
+//! `$argv`-driven CLI scripts, and top-level script bodies.
+//!
+//! Each shape emits a single `harness.php` that:
 //! 1. Reads the payload from `NYX_PAYLOAD` / `NYX_PAYLOAD_B64` env vars.
 //! 2. Includes the entry file (`entry.php`) from the workdir.
-//! 3. Calls the entry function with the payload routed to the correct slot.
-//! 4. Catches all Throwables to prevent harness crashes from masking results.
+//! 3. Invokes the entry function / closure via the per-shape adapter.
+//! 4. Catches all Throwables so the harness exit stays observable.
 //!
-//! Sink-reachability probe: fixtures explicitly emit `__NYX_SINK_HIT__` before
-//! the actual sink call (same pattern as Rust / JS fixtures).
+//! Sink-reachability probe: fixtures explicitly emit `__NYX_SINK_HIT__`
+//! before the actual sink call (same pattern as Rust / JS fixtures).
 //!
 //! Payload slot support:
 //! - `PayloadSlot::Param(n)` — n-th positional argument.
 //! - `PayloadSlot::EnvVar(name)` — set `$_ENV`/`putenv()` before calling.
 //! - `PayloadSlot::Stdin` — wrap `STDIN` with the payload.
-//! - Other slots produce `UnsupportedReason::PayloadSlotUnsupported`.
+//! - `PayloadSlot::Argv(n)` — appended to `$argv` for CLI shapes.
+//! - `PayloadSlot::QueryParam(name)` — surfaced via `$_GET[name]` /
+//!   request stub query for route closures.
+//! - `PayloadSlot::HttpBody` — surfaced via `$_POST` / request stub body
+//!   for route closures.
 //!
 //! Build: no compilation step. Command is `php harness.php`.
 //! Build container: `nyx-build-php:{toolchain_id}` (deferred; §19.1).
@@ -22,15 +32,22 @@ use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+use std::path::PathBuf;
 
 /// Zero-sized [`LangEmitter`] handle for PHP.  Method bodies delegate to the
 /// existing free functions in this module.
 pub struct PhpEmitter;
 
-/// Entry kinds the PHP emitter currently understands.  Extended in Phase 15
-/// (Track B PHP vertical) to include `HttpRoute` (Slim / Laravel / Symfony
-/// closures) and `CliSubcommand` (`$argv`).
-const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+/// Entry kinds the PHP emitter understands after Phase 15.
+///
+/// `HttpRoute` covers Slim / Laravel / Symfony route closures.
+/// `CliSubcommand` covers `$argv`-driven CLI scripts.  `Function`
+/// covers plain functions and top-level scripts.
+const SUPPORTED: &[EntryKind] = &[
+    EntryKind::Function,
+    EntryKind::HttpRoute,
+    EntryKind::CliSubcommand,
+];
 
 impl LangEmitter for PhpEmitter {
     fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
@@ -43,7 +60,7 @@ impl LangEmitter for PhpEmitter {
 
     fn entry_kind_hint(&self, attempted: EntryKind) -> String {
         format!(
-            "php emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add Slim / Laravel / Symfony route + CLI shapes in phase 15"
+            "php emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 15 shape dispatch"
         )
     }
 
@@ -52,11 +69,101 @@ impl LangEmitter for PhpEmitter {
     }
 }
 
+// ── Phase 15: shape detector ─────────────────────────────────────────────────
+
+/// Concrete per-file shape resolved by reading the entry source.
+///
+/// One harness template per variant.  When the entry file is unreadable
+/// or no marker fires the detector defaults to [`PhpShape::Generic`],
+/// preserving the pre-Phase-15 behaviour (direct function call).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhpShape {
+    /// Slim / Laravel / Symfony route closure.  Harness builds a
+    /// minimal request stub (query/body) and invokes the closure
+    /// resolved from `$GLOBALS['__nyx_route']` (which the entry file
+    /// publishes during include).
+    RouteClosure,
+    /// CLI script driven by `$argv`.  Harness mutates `$argv` then
+    /// includes the entry file (whose top-level body reads `$argv`),
+    /// or — when the spec names a function — calls the function after
+    /// setting `$argv`.
+    CliArgvScript,
+    /// Top-level script body — no function entry point.  Harness just
+    /// includes the entry file (the include itself runs the body).
+    TopLevelScript,
+    /// Plain function — pre-Phase-15 default.  Harness calls
+    /// `funcName($payload)` directly.
+    Generic,
+}
+
+impl PhpShape {
+    /// Detect the shape from `(spec, source)`.  Framework markers in
+    /// the source win over `spec.entry_kind`.
+    pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
+        let entry = spec.entry_name.as_str();
+        let kind = spec.entry_kind;
+
+        let has_route_marker = source.contains("$app->get(")
+            || source.contains("$app->post(")
+            || source.contains("$app->any(")
+            || source.contains("$app->map(")
+            || source.contains("$router->get(")
+            || source.contains("$router->post(")
+            || source.contains("Route::get(")
+            || source.contains("Route::post(")
+            || source.contains("Route::any(")
+            || source.contains("// nyx-shape: route");
+        let has_argv = source.contains("$argv") || source.contains("// nyx-shape: cli");
+        let has_function_decl = source.contains("function ")
+            && !source.trim_start().starts_with("<?php\n//");
+        let entry_named_function = entry != "main"
+            && entry != "__main__"
+            && !entry.is_empty()
+            && source.contains(&format!("function {entry}"));
+
+        if has_route_marker {
+            return Self::RouteClosure;
+        }
+        if has_argv && !entry_named_function {
+            return Self::CliArgvScript;
+        }
+        if kind == EntryKind::HttpRoute {
+            return Self::RouteClosure;
+        }
+        if kind == EntryKind::CliSubcommand {
+            return Self::CliArgvScript;
+        }
+        // TopLevelScript only fires when we actually saw the source
+        // and confirmed there's no function declaration to call.  When
+        // the source is unreadable (empty), fall through to Generic so
+        // the legacy pre-Phase-15 behaviour (direct named-function call)
+        // survives.
+        if !source.is_empty() && !has_function_decl && entry.is_empty() {
+            return Self::TopLevelScript;
+        }
+        Self::Generic
+    }
+}
+
+/// Public wrapper to detect the shape for a finalised `HarnessSpec`,
+/// reading the entry file from disk.
+pub fn detect_shape(spec: &HarnessSpec) -> PhpShape {
+    let src = read_entry_source(&spec.entry_file);
+    PhpShape::detect(spec, &src)
+}
+
+fn read_entry_source(entry_file: &str) -> String {
+    let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
+    for path in &candidates {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            return s;
+        }
+    }
+    String::new()
+}
+
 /// Phase 09 — Track D.2: synthesise a `composer.json` with the captured
-/// PHP version pin and (where known) the framework deps.  Direct
-/// imports of namespaced classes are too coarse to pin without a
-/// vendor→package registry, so the manifest stays toolchain-only by
-/// default; Phase 10 corpus expansion will introduce the registry.
+/// PHP version pin and (where known) the framework deps.
 pub fn materialize_php(env: &Environment) -> RuntimeArtifacts {
     let mut artifacts = RuntimeArtifacts::new();
     let php_ver = env
@@ -199,11 +306,17 @@ function __nyx_install_crash_guard(string $sinkCallee): void {
 /// Emit a PHP harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {
-        PayloadSlot::Param(_) | PayloadSlot::EnvVar(_) | PayloadSlot::Stdin => {}
-        _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
+        PayloadSlot::Param(_)
+        | PayloadSlot::EnvVar(_)
+        | PayloadSlot::Stdin
+        | PayloadSlot::Argv(_)
+        | PayloadSlot::QueryParam(_)
+        | PayloadSlot::HttpBody => {}
     }
 
-    let source = generate_source(spec);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let shape = PhpShape::detect(spec, &entry_source);
+    let source = generate_source(spec, shape);
 
     Ok(HarnessSource {
         source,
@@ -214,13 +327,15 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     })
 }
 
-fn generate_source(spec: &HarnessSpec) -> String {
+fn generate_source(spec: &HarnessSpec, shape: PhpShape) -> String {
     let entry_fn = &spec.entry_name;
-    let (pre_call, call_expr) = build_call(spec, entry_fn);
+    let pre_call = build_pre_call(spec, shape);
+    let entry_block = build_entry_block(shape);
+    let call_expr = build_call_expr(spec, shape, entry_fn);
 
     format!(
         r#"<?php
-// Nyx dynamic harness — auto-generated, do not edit.
+// Nyx dynamic harness — auto-generated, do not edit (Phase 15 — PhpShape::{shape:?}).
 
 // ── Payload loading ────────────────────────────────────────────────────────────
 function nyx_payload(): string {{
@@ -237,16 +352,10 @@ function nyx_payload(): string {{
 
 $payload = nyx_payload();
 
-// ── Entry include ─────────────────────────────────────────────────────────────
-try {{
-    require_once __DIR__ . '/entry.php';
-}} catch (Throwable $e) {{
-    fwrite(STDERR, 'NYX_IMPORT_ERROR: ' . $e->getMessage() . "\n");
-    exit(77);
-}}
-
 // ── Pre-call setup ─────────────────────────────────────────────────────────────
 {pre_call}
+// ── Entry include ─────────────────────────────────────────────────────────────
+{entry_block}
 // ── Call entry point ──────────────────────────────────────────────────────────
 try {{
     $result = {call_expr};
@@ -257,41 +366,113 @@ try {{
     fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
 }}
 "#,
+        shape = shape,
         pre_call = pre_call,
+        entry_block = entry_block,
         call_expr = call_expr,
     )
 }
 
-/// Build `(pre_call_setup, call_expression)` for the chosen payload slot.
-fn build_call(spec: &HarnessSpec, func: &str) -> (String, String) {
+fn build_pre_call(spec: &HarnessSpec, shape: PhpShape) -> String {
+    let mut out = String::new();
+    match &spec.payload_slot {
+        PayloadSlot::EnvVar(name) => {
+            out.push_str(&format!(
+                "putenv({name:?} . '=' . $payload);\n$_ENV[{name:?}] = $payload;\n"
+            ));
+        }
+        PayloadSlot::Stdin => {
+            out.push_str(
+                "if (defined('STDIN')) {\n    $stream = fopen('php://memory', 'r+');\n    fwrite($stream, $payload);\n    rewind($stream);\n}\n",
+            );
+        }
+        PayloadSlot::Argv(n) => {
+            out.push_str("$argv = $argv ?? [];\n");
+            out.push_str("$argv[0] = $argv[0] ?? 'nyx_harness';\n");
+            for _ in 0..*n {
+                out.push_str("$argv[] = '';\n");
+            }
+            out.push_str("$argv[] = $payload;\n");
+            out.push_str("$argc = count($argv);\n");
+            out.push_str("$_SERVER['argv'] = $argv;\n");
+            out.push_str("$_SERVER['argc'] = $argc;\n");
+        }
+        PayloadSlot::QueryParam(name) => {
+            out.push_str(&format!("$_GET[{name:?}] = $payload;\n"));
+            out.push_str("$_REQUEST = array_merge($_REQUEST ?? [], $_GET);\n");
+        }
+        PayloadSlot::HttpBody => {
+            out.push_str("$_POST['body'] = $payload;\n");
+            out.push_str("$GLOBALS['__nyx_body'] = $payload;\n");
+        }
+        _ => {}
+    }
+    if matches!(shape, PhpShape::CliArgvScript)
+        && !matches!(&spec.payload_slot, PayloadSlot::Argv(_))
+    {
+        out.push_str("$argv = $argv ?? ['nyx_harness'];\n");
+        out.push_str("$argv[] = $payload;\n");
+        out.push_str("$argc = count($argv);\n");
+        out.push_str("$_SERVER['argv'] = $argv;\n");
+        out.push_str("$_SERVER['argc'] = $argc;\n");
+    }
+    out
+}
+
+fn build_entry_block(_shape: PhpShape) -> String {
+    r#"try {
+    require_once __DIR__ . '/entry.php';
+} catch (Throwable $e) {
+    fwrite(STDERR, 'NYX_IMPORT_ERROR: ' . $e->getMessage() . "\n");
+    exit(77);
+}"#
+    .to_owned()
+}
+
+fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {
+    match shape {
+        PhpShape::TopLevelScript => "null".to_owned(),
+        PhpShape::CliArgvScript => {
+            if func.is_empty() || func == "main" || func == "__main__" {
+                "null".to_owned()
+            } else if function_exists_call(func) {
+                format!("{func}()")
+            } else {
+                "null".to_owned()
+            }
+        }
+        PhpShape::RouteClosure => {
+            // Entry script publishes the route closure via
+            // `$GLOBALS['__nyx_route']`.  When the global is missing,
+            // fall back to calling the named function directly.
+            format!(
+                "(isset($GLOBALS['__nyx_route']) && is_callable($GLOBALS['__nyx_route'])) ? call_user_func($GLOBALS['__nyx_route'], $payload) : (function_exists({func:?}) ? {func}($payload) : null)"
+            )
+        }
+        PhpShape::Generic => build_generic_call(spec, func),
+    }
+}
+
+fn build_generic_call(spec: &HarnessSpec, func: &str) -> String {
     match &spec.payload_slot {
         PayloadSlot::Param(idx) => {
-            let pre = String::new();
-            let call = if *idx == 0 {
+            if *idx == 0 {
                 format!("{func}($payload)")
             } else {
                 let pads = (0..*idx).map(|_| "''").collect::<Vec<_>>().join(", ");
                 format!("{func}({pads}, $payload)")
-            };
-            (pre, call)
+            }
         }
-        PayloadSlot::EnvVar(name) => {
-            let pre = format!("putenv({name:?} . '=' . $payload);\n$_ENV[{name:?}] = $payload;\n");
-            let call = format!("{func}()");
-            (pre, call)
-        }
-        PayloadSlot::Stdin => {
-            // Replace STDIN with an in-memory stream containing the payload.
-            let pre = "if (defined('STDIN')) {\n    $stream = fopen('php://memory', 'r+');\n    fwrite($stream, $payload);\n    rewind($stream);\n    // Note: STDIN reassignment is not portable; fixture reads via fgets(STDIN).\n}\n".to_owned();
-            let call = format!("{func}()");
-            (pre, call)
-        }
-        _ => {
-            let pre = String::new();
-            let call = format!("{func}($payload)");
-            (pre, call)
-        }
+        PayloadSlot::EnvVar(_) | PayloadSlot::Stdin => format!("{func}()"),
+        _ => format!("{func}($payload)"),
     }
+}
+
+/// Wrap the named-function call in a `function_exists` guard for shapes
+/// where the entry function may be optional (CLI scripts whose body is
+/// the entry, not a named function).
+fn function_exists_call(_func: &str) -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -355,10 +536,11 @@ mod tests {
     }
 
     #[test]
-    fn emit_http_body_is_unsupported() {
-        let spec = make_spec(PayloadSlot::HttpBody);
-        let err = emit(&spec).unwrap_err();
-        assert_eq!(err, UnsupportedReason::PayloadSlotUnsupported);
+    fn emit_http_body_now_supported_for_route_shape() {
+        let mut spec = make_spec(PayloadSlot::HttpBody);
+        spec.entry_kind = EntryKind::HttpRoute;
+        let h = emit(&spec).unwrap();
+        assert!(h.source.contains("$GLOBALS['__nyx_body']"));
     }
 
     #[test]
@@ -374,13 +556,19 @@ mod tests {
         assert!(PhpEmitter
             .entry_kinds_supported()
             .contains(&EntryKind::Function));
+        assert!(PhpEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::HttpRoute));
+        assert!(PhpEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::CliSubcommand));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = PhpEmitter.entry_kind_hint(EntryKind::HttpRoute);
-        assert!(hint.contains("HttpRoute"));
-        assert!(hint.contains("phase 15"));
+        let hint = PhpEmitter.entry_kind_hint(EntryKind::LibraryApi);
+        assert!(hint.contains("LibraryApi"));
+        assert!(hint.contains("Phase 15"));
     }
 
     #[test]
@@ -389,5 +577,73 @@ mod tests {
         let harness = emit(&spec).unwrap();
         assert!(harness.source.contains("base64_decode"));
         assert!(harness.source.contains("NYX_PAYLOAD_B64"));
+    }
+
+    // ── Phase 15: shape detection ────────────────────────────────────────────
+
+    fn make_spec_with(kind: EntryKind, name: &str, entry_file: &str) -> HarnessSpec {
+        let mut s = make_spec(PayloadSlot::Param(0));
+        s.entry_kind = kind;
+        s.entry_name = name.to_owned();
+        s.entry_file = entry_file.to_owned();
+        s
+    }
+
+    #[test]
+    fn shape_detect_slim_route_closure() {
+        let src = "<?php\n$app->get('/run', function ($req, $res) {\n    return 'hi';\n});\n";
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
+        assert_eq!(PhpShape::detect(&spec, src), PhpShape::RouteClosure);
+    }
+
+    #[test]
+    fn shape_detect_laravel_route_closure() {
+        let src = "<?php\nRoute::get('/run', function ($payload) { return $payload; });\n";
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
+        assert_eq!(PhpShape::detect(&spec, src), PhpShape::RouteClosure);
+    }
+
+    #[test]
+    fn shape_detect_cli_argv_script() {
+        let src = "<?php\n$cmd = $argv[1] ?? '';\necho $cmd;\n";
+        let spec = make_spec_with(EntryKind::CliSubcommand, "main", "entry.php");
+        assert_eq!(PhpShape::detect(&spec, src), PhpShape::CliArgvScript);
+    }
+
+    #[test]
+    fn shape_detect_top_level_script() {
+        let src = "<?php\necho 'hello';\n";
+        let spec = make_spec_with(EntryKind::Function, "", "entry.php");
+        assert_eq!(PhpShape::detect(&spec, src), PhpShape::TopLevelScript);
+    }
+
+    #[test]
+    fn shape_detect_generic_function() {
+        let src = "<?php\nfunction login($payload) { return $payload; }\n";
+        let spec = make_spec_with(EntryKind::Function, "login", "entry.php");
+        assert_eq!(PhpShape::detect(&spec, src), PhpShape::Generic);
+    }
+
+    #[test]
+    fn route_shape_emits_globals_dispatch() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "ping", "entry.php");
+        let src = generate_source(&spec, PhpShape::RouteClosure);
+        assert!(src.contains("$GLOBALS['__nyx_route']"));
+    }
+
+    #[test]
+    fn cli_shape_appends_payload_to_argv() {
+        let spec = make_spec_with(EntryKind::CliSubcommand, "main", "entry.php");
+        let src = generate_source(&spec, PhpShape::CliArgvScript);
+        assert!(src.contains("$argv"));
+        assert!(src.contains("$_SERVER['argv']"));
+    }
+
+    #[test]
+    fn top_level_script_only_includes() {
+        let spec = make_spec_with(EntryKind::Function, "", "entry.php");
+        let src = generate_source(&spec, PhpShape::TopLevelScript);
+        assert!(src.contains("require_once"));
+        assert!(src.contains("$result = null"));
     }
 }

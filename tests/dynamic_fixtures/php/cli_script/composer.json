@@ -1,0 +1,6 @@
+{
+  "name": "nyx/cli-script-fixture",
+  "require": {
+    "php": ">=8.0"
+  }
+}

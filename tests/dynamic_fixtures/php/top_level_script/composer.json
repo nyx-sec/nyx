@@ -1,0 +1,6 @@
+{
+  "name": "nyx/top-level-script-fixture",
+  "require": {
+    "php": ">=8.0"
+  }
+}
