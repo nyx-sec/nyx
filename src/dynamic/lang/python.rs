@@ -11,7 +11,7 @@
 //! Payload slot support:
 //! - `PayloadSlot::Param(n)` — n-th positional argument.
 //! - `PayloadSlot::EnvVar(name)` — set env var before calling.
-//! - Other slots produce `UnsupportedReason::EntryKindUnsupported`.
+//! - Other slots produce `UnsupportedReason::PayloadSlotUnsupported`.
 
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
@@ -47,7 +47,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // Validate payload slot.
     match &spec.payload_slot {
         PayloadSlot::Param(_) | PayloadSlot::EnvVar(_) | PayloadSlot::Stdin => {}
-        _ => return Err(UnsupportedReason::EntryKindUnsupported),
+        _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
     let source = generate_source(spec);

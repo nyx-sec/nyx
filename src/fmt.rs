@@ -502,6 +502,7 @@ fn format_unsupported_reason(r: &crate::evidence::UnsupportedReason) -> String {
     match r {
         UnsupportedReason::BackendUnavailable => "backend unavailable".to_string(),
         UnsupportedReason::EntryKindUnsupported => "entry kind not supported".to_string(),
+        UnsupportedReason::PayloadSlotUnsupported => "payload slot not supported".to_string(),
         UnsupportedReason::ConfidenceTooLow => "confidence too low".to_string(),
         UnsupportedReason::NoFlowSteps => "no flow steps".to_string(),
         UnsupportedReason::NoPayloadsForCap => "no payloads for cap".to_string(),

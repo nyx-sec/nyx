@@ -1,0 +1,19 @@
+# nextest configuration
+#
+# See https://nexte.st/docs/configuration/ for the full schema.
+
+# ── Test groups ──────────────────────────────────────────────────────────────
+#
+# `hostile-input-timing` serialises the two timing-bounded
+# `hostile_input_tests` cases that pass under nextest in isolation but fail
+# under the full-suite parallel run on darwin (resource contention from the
+# other ~4000 tests pushes them past their internal budget). Pinning them to
+# a single thread within their own group keeps their wall-clock predictable
+# without slowing the rest of the suite.
+
+[test-groups]
+hostile-input-timing = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(hostile_input_tests) and (test(very_long_single_line_parses) or test(many_small_functions_do_not_explode))'
+test-group = 'hostile-input-timing'

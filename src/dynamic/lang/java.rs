@@ -22,7 +22,7 @@
 //! Payload slot support:
 //! - `PayloadSlot::Param(0)` — pass payload as `String` first argument.
 //! - `PayloadSlot::EnvVar(name)` — set system property before calling entry.
-//! - Other slots produce `UnsupportedReason::EntryKindUnsupported`.
+//! - Other slots produce `UnsupportedReason::PayloadSlotUnsupported`.
 //!
 //! Build container: `nyx-build-java:{toolchain_id}` (deferred; §19.1).
 
@@ -59,7 +59,7 @@ impl LangEmitter for JavaEmitter {
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {
         PayloadSlot::Param(0) | PayloadSlot::EnvVar(_) => {}
-        _ => return Err(UnsupportedReason::EntryKindUnsupported),
+        _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
     let source = generate_harness_java(spec);
@@ -197,14 +197,14 @@ mod tests {
     fn emit_param_gt_0_is_unsupported() {
         let spec = make_spec(PayloadSlot::Param(1));
         let err = emit(&spec).unwrap_err();
-        assert_eq!(err, UnsupportedReason::EntryKindUnsupported);
+        assert_eq!(err, UnsupportedReason::PayloadSlotUnsupported);
     }
 
     #[test]
     fn emit_stdin_is_unsupported() {
         let spec = make_spec(PayloadSlot::Stdin);
         let err = emit(&spec).unwrap_err();
-        assert_eq!(err, UnsupportedReason::EntryKindUnsupported);
+        assert_eq!(err, UnsupportedReason::PayloadSlotUnsupported);
     }
 
     #[test]

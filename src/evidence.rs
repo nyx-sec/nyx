@@ -172,6 +172,11 @@ pub enum UnsupportedReason {
     /// The entry kind (e.g. `HttpRoute`, `CliSubcommand`) is not yet supported;
     /// only `EntryKind::Function` is driven in current milestones.
     EntryKindUnsupported,
+    /// The lang emitter does not yet support the spec's [`crate::dynamic::spec::PayloadSlot`]
+    /// shape (e.g. `PayloadSlot::Param(n>0)` on Rust, `PayloadSlot::HttpBody`
+    /// on JavaScript). Distinct from [`UnsupportedReason::EntryKindUnsupported`]:
+    /// the entry kind is driveable, only the payload-injection slot is not.
+    PayloadSlotUnsupported,
     /// Finding confidence is below `Medium`; dynamic verification is not
     /// attempted for low-confidence findings to avoid noise.
     ConfidenceTooLow,

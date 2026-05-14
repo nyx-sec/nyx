@@ -16,7 +16,7 @@
 //! - `PayloadSlot::Param(0)` — pass payload as `&str` first argument.
 //! - `PayloadSlot::EnvVar(name)` — set env var before calling entry.
 //! - All other slots (`Stdin`, `Param(n>0)`, `QueryParam`, `HttpBody`, `Argv`)
-//!   produce `UnsupportedReason::EntryKindUnsupported`. Stdin piping into the
+//!   produce `UnsupportedReason::PayloadSlotUnsupported`. Stdin piping into the
 //!   generated harness is not yet wired (deferred).
 //!
 //! HTML_ESCAPE is n/a for Rust (§15.4).
@@ -55,7 +55,7 @@ impl LangEmitter for RustEmitter {
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {
         PayloadSlot::Param(0) | PayloadSlot::EnvVar(_) => {}
-        _ => return Err(UnsupportedReason::EntryKindUnsupported),
+        _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
     let cargo_toml = generate_cargo_toml(spec.expected_cap);
@@ -262,7 +262,7 @@ mod tests {
     fn emit_param_gt_0_is_unsupported() {
         let spec = make_spec(PayloadSlot::Param(1));
         let err = emit(&spec).unwrap_err();
-        assert_eq!(err, UnsupportedReason::EntryKindUnsupported);
+        assert_eq!(err, UnsupportedReason::PayloadSlotUnsupported);
     }
 
     #[test]

@@ -13,7 +13,7 @@
 //! - `PayloadSlot::Param(n)` — n-th positional argument.
 //! - `PayloadSlot::EnvVar(name)` — set `$_ENV`/`putenv()` before calling.
 //! - `PayloadSlot::Stdin` — wrap `STDIN` with the payload.
-//! - Other slots produce `UnsupportedReason::EntryKindUnsupported`.
+//! - Other slots produce `UnsupportedReason::PayloadSlotUnsupported`.
 //!
 //! Build: no compilation step. Command is `php harness.php`.
 //! Build container: `nyx-build-php:{toolchain_id}` (deferred; §19.1).
@@ -51,7 +51,7 @@ impl LangEmitter for PhpEmitter {
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {
         PayloadSlot::Param(_) | PayloadSlot::EnvVar(_) | PayloadSlot::Stdin => {}
-        _ => return Err(UnsupportedReason::EntryKindUnsupported),
+        _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
     let source = generate_source(spec);
@@ -208,7 +208,7 @@ mod tests {
     fn emit_http_body_is_unsupported() {
         let spec = make_spec(PayloadSlot::HttpBody);
         let err = emit(&spec).unwrap_err();
-        assert_eq!(err, UnsupportedReason::EntryKindUnsupported);
+        assert_eq!(err, UnsupportedReason::PayloadSlotUnsupported);
     }
 
     #[test]

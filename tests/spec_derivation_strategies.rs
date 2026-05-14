@@ -312,4 +312,73 @@ mod spec_strategies {
         let spec = HarnessSpec::from_finding(&diag).unwrap();
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromFlowSteps);
     }
+
+    // ── Phase 03 acceptance: entry-kind gate produces Inconclusive ───────────
+
+    /// Phase 03 promised that findings whose [`EntryKind`] is not in the
+    /// emitter's supported list surface as
+    /// `Inconclusive(EntryKindUnsupported { lang, attempted, supported, hint })`
+    /// rather than `Unsupported`. End-to-end coverage:
+    ///   - construct an HttpRoute spec via `derive_from_callgraph_entry`
+    ///     (Python emitter currently advertises `[Function]` only);
+    ///   - drive it through `verify_finding`;
+    ///   - assert the verdict shape matches the promise.
+    #[test]
+    fn entry_kind_gate_promotes_unsupported_to_inconclusive_with_hint() {
+        let mut diag = make_diag(
+            "py.http.flask_route",
+            "tests/dynamic_fixtures/spec_strategies/callgraph_entry_http.py",
+            8,
+        );
+        let mut ev = Evidence::default();
+        ev.sink_caps = Cap::SSRF.bits();
+        diag.evidence = Some(ev);
+
+        // Sanity: the spec really does carry an HttpRoute entry kind.
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert!(matches!(spec.entry_kind, EntryKind::HttpRoute));
+
+        let result = verify_finding(&diag, &VerifyOptions::default());
+        assert_eq!(
+            result.status,
+            VerifyStatus::Inconclusive,
+            "entry-kind gate must emit Inconclusive; got {:?}",
+            result.status
+        );
+        assert!(
+            result.reason.is_none(),
+            "Inconclusive verdicts carry inconclusive_reason, not reason; got {:?}",
+            result.reason
+        );
+        match result.inconclusive_reason {
+            Some(InconclusiveReason::EntryKindUnsupported {
+                lang,
+                attempted,
+                supported,
+                hint,
+            }) => {
+                assert_eq!(lang, nyx_scanner::symbol::Lang::Python);
+                assert!(matches!(attempted, EntryKind::HttpRoute));
+                assert!(
+                    !supported.is_empty(),
+                    "supported list must be non-empty so operators can triage"
+                );
+                assert!(
+                    supported.contains(&EntryKind::Function),
+                    "Python emitter must advertise Function support; got {supported:?}"
+                );
+                assert!(
+                    !hint.is_empty(),
+                    "hint must guide the operator toward the gap"
+                );
+                assert!(
+                    hint.contains("HttpRoute"),
+                    "hint must name the attempted entry kind; got {hint:?}"
+                );
+            }
+            other => panic!(
+                "expected InconclusiveReason::EntryKindUnsupported, got {other:?}"
+            ),
+        }
+    }
 }

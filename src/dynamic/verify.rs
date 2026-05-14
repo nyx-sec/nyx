@@ -567,24 +567,28 @@ fn build_verdict(
             toolchain_match: None,
         },
         Err(RunError::Harness(e)) => {
-            // EntryKindUnsupported coming back from the lang emitter is
-            // promoted to a structured `Inconclusive(EntryKindUnsupported)`
-            // verdict so the operator sees the supported list + hint, not a
-            // bare `Unsupported`. The pre-flight gate in `verify_finding`
-            // catches the common case (entry_kind decided by spec
-            // derivation); this arm covers the residual where an emitter
-            // rejects a payload-slot / shape combination internally.
+            // Defence-in-depth residual for `EntryKindUnsupported` from the
+            // lang dispatcher. Promote to `Inconclusive(EntryKindUnsupported)`
+            // so the operator sees the supported list + hint, but only when
+            // the spec's entry kind is genuinely outside the supported list —
+            // otherwise the pre-flight gate already handled it (or a stray
+            // emitter mis-tagged a payload-slot rejection, which now uses
+            // `PayloadSlotUnsupported` and falls through to the generic
+            // `Unsupported(reason)` arm below).
             if let crate::dynamic::harness::HarnessError::Unsupported(
                 UnsupportedReason::EntryKindUnsupported,
             ) = &e
             {
-                return entry_kind_unsupported_verdict(
-                    finding_id.to_owned(),
-                    None,
-                    &spec.entry_file,
-                    spec.lang,
-                    spec.entry_kind,
-                );
+                let supported = crate::dynamic::lang::entry_kinds_supported(spec.lang);
+                if !supported.contains(&spec.entry_kind) {
+                    return entry_kind_unsupported_verdict(
+                        finding_id.to_owned(),
+                        None,
+                        &spec.entry_file,
+                        spec.lang,
+                        spec.entry_kind,
+                    );
+                }
             }
             // Typed `Unsupported(reason)` carries its semantics in `reason`; the
             // free-form `detail` is reserved for `Inconclusive`/unexpected paths
