@@ -133,10 +133,13 @@ pub struct SandboxOptions {
     pub env_passthrough: Vec<String>,
     /// Maximum stdout/stderr bytes captured. Default: 65536 (64 KiB).
     pub output_limit: usize,
-    /// Per-scan OOB listener. When set, the Docker backend uses bridge
-    /// networking so the harness can reach the listener on the host, and the
-    /// runner checks [`OobListener::was_nonce_hit`] after each sandbox run.
-    pub oob_listener: Option<Arc<OobListener>>,
+    /// Phase 11 (Track D.5): network reachability the harness is allowed
+    /// to exercise.  Default [`NetworkPolicy::None`] — the previous
+    /// behaviour was equivalent to a binary `oob_listener: Option<...>`;
+    /// callers wanting OOB callbacks now set
+    /// [`NetworkPolicy::OobOutbound`].  See [`NetworkPolicy`] for the
+    /// per-variant backend wiring.
+    pub network_policy: NetworkPolicy,
     /// Per-run structured-oracle [`ProbeChannel`] (Phase 06 — Track C.1).
     /// When set, the sandbox forwards the channel's path to the harness via
     /// the `NYX_PROBE_PATH` env var so the per-language `__nyx_probe` shim
@@ -158,6 +161,19 @@ pub struct SandboxOptions {
     pub stub_harness: Option<Arc<crate::dynamic::stubs::StubHarness>>,
 }
 
+impl SandboxOptions {
+    /// Borrow the OOB listener handle when the network policy carries
+    /// one.  Returns `None` for every variant except
+    /// [`NetworkPolicy::OobOutbound`].
+    ///
+    /// Kept stable across the Phase 11 cut-over so the runner can keep
+    /// poking at `effective_opts.oob_listener()` without caring whether
+    /// the policy machinery moves underneath it.
+    pub fn oob_listener(&self) -> Option<&Arc<OobListener>> {
+        self.network_policy.oob_listener()
+    }
+}
+
 impl Default for SandboxOptions {
     fn default() -> Self {
         Self {
@@ -166,11 +182,103 @@ impl Default for SandboxOptions {
             backend: SandboxBackend::Auto,
             env_passthrough: vec![],
             output_limit: 65536,
-            oob_listener: None,
+            network_policy: NetworkPolicy::None,
             probe_channel: None,
             extra_env: Vec::new(),
             stub_harness: None,
         }
+    }
+}
+
+// ── Phase 11 — Track D.5: NetworkPolicy ──────────────────────────────────────
+
+/// Host + port allowlist entry referenced by [`NetworkPolicy::StubsOnly`].
+///
+/// The Docker backend treats each entry as an `--add-host` line so the
+/// harness DNS-resolves stub endpoints to their host-side bind address;
+/// the netfilter chain itself blocks all other egress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostPort {
+    pub host: String,
+    pub port: u16,
+}
+
+impl HostPort {
+    pub fn new(host: impl Into<String>, port: u16) -> Self {
+        Self { host: host.into(), port }
+    }
+}
+
+/// Phase 11 (Track D.5): network reachability the harness is allowed to
+/// exercise.  Replaces the legacy `oob_listener: Option<Arc<OobListener>>`
+/// binary flag with an enum that distinguishes the four operationally
+/// meaningful stances:
+///
+/// - [`NetworkPolicy::None`] — no outbound network at all (default).
+///   Docker: `--network none`.  Process backend: caller-imposed; the
+///   process backend has no network namespace facility so the policy is
+///   structural here (the harness has whatever connectivity the host's
+///   `lo`/routes provide; production runs should use the Docker backend
+///   for real isolation).
+/// - [`NetworkPolicy::StubsOnly`] — only the listed host/port pairs are
+///   reachable.  Docker: `bridge` network + `--add-host` per allow-entry.
+///   Linux production hardening (netns + nftables) is staged for a
+///   follow-up phase; today the variant carries the allowlist for the
+///   harness emitter and is mechanically distinguished by the backend
+///   selector.
+/// - [`NetworkPolicy::OobOutbound`] — the legacy "OOB only" path: the
+///   harness can reach the per-scan OOB listener (and only it via the
+///   Linux iptables filter in [`apply_oob_egress_filter`]).  Docker:
+///   `bridge` + host-gateway + iptables OOB-port filter.
+/// - [`NetworkPolicy::Open`] — unrestricted outbound.  Docker: `bridge`
+///   with no egress filter.  Reserved for diagnostic / dev-only runs;
+///   the verifier never sets this in production.
+#[derive(Debug, Clone)]
+pub enum NetworkPolicy {
+    None,
+    StubsOnly { allow: Vec<HostPort> },
+    OobOutbound { listener: Arc<OobListener> },
+    Open,
+}
+
+impl NetworkPolicy {
+    /// `true` when the docker backend should run the container with a
+    /// bridge network (i.e. with outbound reachability available, even
+    /// if filtered).  `false` selects `--network none`.
+    pub fn allows_network(&self) -> bool {
+        !matches!(self, NetworkPolicy::None)
+    }
+
+    /// OOB listener handle when this policy carries one.
+    pub fn oob_listener(&self) -> Option<&Arc<OobListener>> {
+        match self {
+            NetworkPolicy::OobOutbound { listener } => Some(listener),
+            _ => None,
+        }
+    }
+
+    /// Stub allow-list entries when this policy carries one.
+    pub fn stub_allow_list(&self) -> Option<&[HostPort]> {
+        match self {
+            NetworkPolicy::StubsOnly { allow } => Some(allow.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// Short tag used by the docker `--add-host` shaper / telemetry.
+    pub fn variant_tag(&self) -> &'static str {
+        match self {
+            NetworkPolicy::None => "none",
+            NetworkPolicy::StubsOnly { .. } => "stubs-only",
+            NetworkPolicy::OobOutbound { .. } => "oob-outbound",
+            NetworkPolicy::Open => "open",
+        }
+    }
+}
+
+impl Default for NetworkPolicy {
+    fn default() -> Self {
+        NetworkPolicy::None
     }
 }
 
@@ -511,8 +619,7 @@ fn run_docker(
         // Determine the Python image from the harness command (first element).
         // Fall back to python:3-slim when the command is not recognised.
         let image = detect_image_for_harness(harness);
-        let oob_port = opts.oob_listener.as_ref().map(|l| l.port());
-        start_container(&container_name, &harness.workdir, &image, oob_port)?;
+        start_container(&container_name, &harness.workdir, &image, &opts.network_policy)?;
         registry.insert(container_name.clone(), container_name.clone());
     }
 
@@ -553,15 +660,18 @@ fn is_container_running(name: &str) -> bool {
 /// - `--rm`: auto-remove on stop (no manual cleanup required).
 /// - `--cap-drop=ALL`: drop all Linux capabilities.
 /// - `--security-opt no-new-privileges:true`: block privilege escalation.
-/// - `--network none`: no network access (loopback only), OR `bridge` when
-///   `oob_port` is set so the harness can reach the host OOB listener.
-/// - `--add-host=host-gateway:host-gateway`: host-gateway DNS alias when
-///   using bridge mode (Docker ≥ 20.10).
+/// - Network: derived from [`NetworkPolicy`] —
+///   - [`NetworkPolicy::None`] ⇒ `--network none` (no egress).
+///   - [`NetworkPolicy::OobOutbound`] ⇒ `bridge` + `--add-host=host-gateway`
+///     + (on Linux) iptables OOB-port filter.
+///   - [`NetworkPolicy::StubsOnly`] ⇒ `bridge` + one `--add-host` per
+///     [`HostPort`] in the allow list so DNS resolves to the host bind.
+///   - [`NetworkPolicy::Open`] ⇒ `bridge` with no egress filter.
 fn start_container(
     name: &str,
     workdir: &Path,
     image: &str,
-    oob_port: Option<u16>,
+    policy: &NetworkPolicy,
 ) -> Result<(), SandboxError> {
     let mut run_args: Vec<String> = vec![
         "run".into(),
@@ -572,12 +682,26 @@ fn start_container(
         "--security-opt".into(), "no-new-privileges:true".into(),
         "--tmpfs".into(), "/tmp:size=128m,exec".into(),
     ];
-    if oob_port.is_some() {
-        // Bridge mode: container can reach host via host-gateway.
-        run_args.extend(["--network".into(), "bridge".into()]);
-        run_args.extend(["--add-host=host-gateway:host-gateway".into()]);
-    } else {
-        run_args.extend(["--network".into(), "none".into()]);
+    match policy {
+        NetworkPolicy::None => {
+            run_args.extend(["--network".into(), "none".into()]);
+        }
+        NetworkPolicy::OobOutbound { .. } => {
+            run_args.extend(["--network".into(), "bridge".into()]);
+            run_args.extend(["--add-host=host-gateway:host-gateway".into()]);
+        }
+        NetworkPolicy::StubsOnly { allow } => {
+            run_args.extend(["--network".into(), "bridge".into()]);
+            // host-gateway alias still useful so stubs bound to 127.0.0.1
+            // can be reached as host-gateway from inside the container.
+            run_args.extend(["--add-host=host-gateway:host-gateway".into()]);
+            for hp in allow {
+                run_args.push(format!("--add-host={}:host-gateway", hp.host));
+            }
+        }
+        NetworkPolicy::Open => {
+            run_args.extend(["--network".into(), "bridge".into()]);
+        }
     }
     run_args.extend([image.into(), "sleep".into(), "300".into()]);
 
@@ -625,9 +749,11 @@ fn start_container(
         // This restricts the bridge-networked container to only reach the host
         // on the OOB port; all other egress is dropped (§17.2).
         #[cfg(target_os = "linux")]
-        if let Some(port) = oob_port {
-            apply_oob_egress_filter(name, port);
+        if let NetworkPolicy::OobOutbound { listener } = policy {
+            apply_oob_egress_filter(name, listener.port());
         }
+        #[cfg(not(target_os = "linux"))]
+        let _ = policy; // policy already consumed structurally above
         Ok(())
     } else {
         Err(SandboxError::BackendUnavailable(SandboxBackend::Docker))
@@ -862,8 +988,12 @@ fn run_native_binary_docker(
     };
 
     if !reused {
-        let oob_port = opts.oob_listener.as_ref().map(|l| l.port());
-        start_container(&container_name, &harness.workdir, NATIVE_BINARY_IMAGE, oob_port)?;
+        start_container(
+            &container_name,
+            &harness.workdir,
+            NATIVE_BINARY_IMAGE,
+            &opts.network_policy,
+        )?;
 
         // Copy the compiled binary into the container as /workdir/nyx_harness.
         let cp_dst = format!("{container_name}:/workdir/nyx_harness");

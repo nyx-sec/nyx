@@ -68,17 +68,24 @@ impl VerifyOptions {
     /// (`src/dynamic/runner.rs` `oob_nonce_slot` branch) while non-OOB
     /// payloads continue to run against their existing oracle.
     pub fn from_config(config: &Config) -> Self {
-        use crate::dynamic::sandbox::SandboxBackend;
+        use crate::dynamic::sandbox::{NetworkPolicy, SandboxBackend};
         let backend = match config.scanner.verify_backend.as_str() {
             "docker" => SandboxBackend::Docker,
             "process" => SandboxBackend::Process,
             _ => SandboxBackend::Auto,
         };
-        let oob_listener = OobListener::bind().ok().map(Arc::new);
+        // Phase 11 — Track D.5: surface the per-scan listener as a
+        // [`NetworkPolicy::OobOutbound`] so the docker backend turns on
+        // bridge networking + the iptables egress filter, and the process
+        // backend reaches the listener via the same accessor as before.
+        let network_policy = match OobListener::bind().ok().map(Arc::new) {
+            Some(listener) => NetworkPolicy::OobOutbound { listener },
+            None => NetworkPolicy::None,
+        };
         Self {
             sandbox: SandboxOptions {
                 backend,
-                oob_listener,
+                network_policy,
                 ..SandboxOptions::default()
             },
             project_root: None,

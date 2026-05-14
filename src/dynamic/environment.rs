@@ -43,6 +43,218 @@ use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
+// ── Phase 11 — Track D.4: deterministic secret derivation ────────────────────
+
+/// Prefix prepended to every derived secret so a leaked harness value is
+/// immediately recognisable as a Nyx stub rather than a real credential.
+pub const SECRET_VALUE_PREFIX: &str = "nyx-stub-";
+
+/// Deterministic placeholder for a secret env var.
+///
+/// Constructed by [`derive_secret`] from `BLAKE3(spec_hash || env_var_name)`
+/// and prefixed with [`SECRET_VALUE_PREFIX`].  The value is stable for the
+/// lifetime of a spec, so two harness invocations under the same
+/// [`HarnessSpec`] see identical credentials — but never the user's real
+/// secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretValue(String);
+
+impl SecretValue {
+    /// Raw value, ready to drop into `env`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume into the owned string.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Display for SecretValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Derive a deterministic placeholder for `env_var_name` keyed by
+/// `spec_hash`.
+///
+/// `BLAKE3(spec_hash || '|' || env_var_name)` → first 32 hex chars →
+/// `"nyx-stub-{hex}"`.  The separator (`|`) prevents accidental collisions
+/// between `("abc", "DEF")` and `("abcDEF", "")`.
+///
+/// Length is bounded at 32 hex characters (128 bits) so the value remains
+/// short enough to fit comfortably in URLs, JSON config blobs, and POSIX
+/// argv without inflating the env footprint.
+pub fn derive_secret(spec_hash: &str, env_var_name: &str) -> SecretValue {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(spec_hash.as_bytes());
+    hasher.update(b"|");
+    hasher.update(env_var_name.as_bytes());
+    let hex = hasher.finalize().to_hex();
+    let mut out = String::with_capacity(SECRET_VALUE_PREFIX.len() + 32);
+    out.push_str(SECRET_VALUE_PREFIX);
+    out.push_str(&hex.as_str()[..32]);
+    SecretValue(out)
+}
+
+/// Scan `entry_file` for env-var references in `lang`.
+///
+/// Returns the set of env-var names referenced via the language's standard
+/// env access API:
+///
+/// | Lang | Patterns |
+/// |---|---|
+/// | Python | `os.environ.get("X")`, `os.environ["X"]`, `os.getenv("X")` |
+/// | JS/TS  | `process.env.X`, `process.env["X"]` |
+/// | Java   | `System.getenv("X")` |
+/// | Rust   | `std::env::var("X")`, `env::var("X")` |
+/// | Go     | `os.Getenv("X")`, `os.LookupEnv("X")` |
+/// | PHP    | `getenv("X")`, `$_ENV["X"]`, `$_SERVER["X"]` |
+/// | Ruby   | `ENV["X"]`, `ENV.fetch("X")` |
+/// | C/C++  | `getenv("X")` |
+///
+/// Static substring scan — bounded by [`IMPORT_SCAN_LIMIT`] like the import
+/// extractor.  No AST: an entry-file with `os.environ.get(some_var)` (a
+/// non-literal arg) is intentionally skipped; the secret bag is populated
+/// from literal references only so a typo cannot produce noisy injection.
+pub fn extract_env_var_references(entry_file: &Path, lang: Lang) -> Vec<String> {
+    let bytes = match read_bounded(entry_file) {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let source = match std::str::from_utf8(&bytes) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let patterns: &[&str] = match lang {
+        Lang::Python => &[
+            "os.environ.get(",
+            "os.environ[",
+            "os.getenv(",
+            "environ.get(",
+            "environ[",
+            "getenv(",
+        ],
+        Lang::JavaScript | Lang::TypeScript => &["process.env.", "process.env["],
+        Lang::Java => &["System.getenv(", "getenv("],
+        Lang::Rust => &["std::env::var(", "env::var(", "env::var_os(", "std::env::var_os("],
+        Lang::Go => &["os.Getenv(", "os.LookupEnv("],
+        Lang::Php => &["getenv(", "$_ENV[", "$_SERVER["],
+        Lang::Ruby => &["ENV[", "ENV.fetch(", "ENV.fetch "],
+        Lang::C | Lang::Cpp => &["getenv("],
+    };
+
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for pat in patterns {
+        let mut start = 0;
+        while let Some(rel) = source[start..].find(pat) {
+            let abs = start + rel + pat.len();
+            start = abs;
+            let tail = &source[abs..];
+            let name = match lang {
+                Lang::JavaScript | Lang::TypeScript if *pat == "process.env." => {
+                    extract_identifier_name(tail)
+                }
+                _ => extract_quoted_arg(tail),
+            };
+            if let Some(name) = name {
+                if !name.is_empty() && is_env_var_name(&name) && seen.insert(name.clone()) {
+                    out.push(name);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Extract a quoted (single or double quote) literal argument starting at
+/// `s`.  Skips leading whitespace; stops at the matching close-quote.
+/// Returns `None` when the first non-whitespace char is not a quote — the
+/// arg is dynamic and the scanner deliberately skips it.
+fn extract_quoted_arg(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && (bytes[i] == b' ' || bytes[i] == b'\t') {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let quote = match bytes[i] {
+        b'"' => b'"',
+        b'\'' => b'\'',
+        b'`' => b'`',
+        _ => return None,
+    };
+    i += 1;
+    let start = i;
+    while i < bytes.len() && bytes[i] != quote {
+        if bytes[i] == b'\n' {
+            return None;
+        }
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    std::str::from_utf8(&bytes[start..i]).ok().map(|s| s.to_owned())
+}
+
+/// Extract a bare identifier (e.g. `FOO` in `process.env.FOO`).  Stops at
+/// the first non-identifier byte.
+fn extract_identifier_name(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        let is_ident = c.is_ascii_alphanumeric() || c == b'_';
+        if !is_ident {
+            break;
+        }
+        i += 1;
+    }
+    if i == 0 {
+        return None;
+    }
+    std::str::from_utf8(&bytes[..i]).ok().map(|s| s.to_owned())
+}
+
+/// Permissive env-var-name shape: starts with a letter or underscore, then
+/// any of `[A-Za-z0-9_]`.  Filters out blatantly bogus parses (e.g. when
+/// the quoted scanner picks up `{`).
+fn is_env_var_name(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut chars = s.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Build the per-spec secret bag: each env var the entry file references
+/// gets a deterministic `(name, derive_secret(spec_hash, name))` entry.
+///
+/// Returned in deterministic source-order so two runs against the same
+/// inputs produce byte-identical env layouts.
+pub fn build_secret_bag(
+    entry_file: &Path,
+    lang: Lang,
+    spec_hash: &str,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for name in extract_env_var_references(entry_file, lang) {
+        let val = derive_secret(spec_hash, &name);
+        out.push((name, val.into_string()));
+    }
+    out
+}
+
 /// Hard upper bound on the bytes a staged workdir may consume after
 /// `stage_workdir` returns. Phase 09 acceptance pins this to 10 MiB so a
 /// pathological full-tree copy regression is caught at the test boundary
@@ -165,8 +377,12 @@ pub struct Environment {
     /// to the workdir root (e.g. `"src/handler.py"`).
     pub staged_sources: Vec<PathBuf>,
     /// Environment variables the harness should set before invoking the
-    /// entry point.  Phase 09 stops at the empty set; Phase 10+
-    /// extensions (stub injection) will populate these.
+    /// entry point.  Populated by [`build_secret_bag`] during
+    /// [`stage_workdir_full`] (Phase 11 — Track D.4) with deterministic
+    /// stub values for every env var the entry file literally
+    /// references.  Phase 10 stub endpoints (SQL DB path, HTTP origin
+    /// URL, etc.) are layered on top by the verifier via
+    /// [`crate::dynamic::sandbox::SandboxOptions::extra_env`].
     pub env_vars: Vec<(String, String)>,
     /// Stub registry handles.  Reserved for the Phase 10 stub-injection
     /// layer; Phase 09 stages no stubs so this is always empty.
@@ -385,12 +601,21 @@ pub fn stage_workdir_full(
             copy_into_workdir(cfg, workdir, &rel, running_bytes, &mut staged_sources)?;
     }
 
+    // Phase 11 — Track D.4: populate the per-spec secret bag for every
+    // env var the entry file literally references.  `spec_hash` is empty
+    // for the legacy [`stage_workdir`] entry point; in that case the
+    // derived values still hash deterministically (collisions are avoided
+    // by the env-var name component) but two distinct specs would alias.
+    // Callers with a real spec hash should use
+    // [`stage_workdir_full`] / [`stage_workdir_with_spec_hash`].
+    let env_vars = build_secret_bag(&captured.entry_file, lang, spec_hash);
+
     Ok(Environment {
         spec_hash: spec_hash.to_owned(),
         workdir: workdir.to_path_buf(),
         lockfile: lockfile_in_workdir,
         staged_sources,
-        env_vars: Vec::new(),
+        env_vars,
         stub_handles: Vec::new(),
         toolchain: captured.toolchain.clone(),
         direct_deps: captured.direct_deps.clone(),

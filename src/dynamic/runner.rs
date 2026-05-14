@@ -254,7 +254,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     for (i, payload) in vuln_payloads.iter().enumerate() {
         // Materialise payload bytes (OOB nonce-slot payloads generate a URL).
         let (oob_nonce, effective_bytes) = if payload.oob_nonce_slot {
-            if let Some(ref listener) = effective_opts.oob_listener {
+            if let Some(listener) = effective_opts.oob_listener() {
                 let nonce = generate_nonce();
                 let url = if uses_docker_backend(&effective_opts) {
                     listener.nonce_url_for_host("host-gateway", &nonce)
@@ -280,7 +280,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         let mut outcome = sandbox::run(&harness, &effective_bytes, &effective_opts)?;
 
         // For OOB payloads, check the nonce listener and update the outcome flag.
-        if let (Some(nonce), Some(listener)) = (&oob_nonce, &effective_opts.oob_listener) {
+        if let (Some(nonce), Some(listener)) = (&oob_nonce, effective_opts.oob_listener()) {
             // Poll until the nonce arrives or the budget expires. The sandbox run
             // already waited for process exit so the callback should arrive quickly;
             // 200 ms covers OS TCP delivery jitter without burning wall-clock at scale.

@@ -15,7 +15,9 @@
 #[cfg(feature = "dynamic")]
 mod escape_tests {
     use nyx_scanner::dynamic::harness::BuiltHarness;
-    use nyx_scanner::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions};
+    use nyx_scanner::dynamic::sandbox::{
+        self, NetworkPolicy, SandboxBackend, SandboxError, SandboxOptions,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -58,7 +60,7 @@ mod escape_tests {
             backend: SandboxBackend::Docker,
             env_passthrough: vec![],
             output_limit: 65536,
-            oob_listener: None,
+            network_policy: NetworkPolicy::None,
             probe_channel: None,
             extra_env: vec![],
             stub_harness: None,
