@@ -8,7 +8,10 @@ pub fn run(payload: &str) {
     use std::io::Read;
 
     // Vulnerable: path joins base with user input without canonicalization.
-    let path = format!("/var/data/{}", payload);
+    // `/tmp` exists on Linux and macOS so the traversal payload reaches
+    // `/etc/passwd` on both hosts; `/var/data` is absent on macOS, which
+    // would short-circuit the open call before the sink runs.
+    let path = format!("/tmp/{}", payload);
 
     println!("__NYX_SINK_HIT__");
     let _ = std::io::Write::flush(&mut std::io::stdout());

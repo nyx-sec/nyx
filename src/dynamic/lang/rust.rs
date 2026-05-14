@@ -106,10 +106,14 @@ fn nyx_payload() -> String {{
 /// Minimal base64 decoder (no external deps).
 fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
     const TABLE: [u8; 128] = {{
+        // `while` loop (not `for`) so the initializer stays inside what stable
+        // Rust permits in a `const` context: `IntoIterator::into_iter` is not a
+        // const fn, so a `for` loop here fails with E0015.
         let mut t = [255u8; 128];
-        let mut i = 0u8;
-        for &c in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/" {{
-            t[c as usize] = i;
+        let alphabet: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0usize;
+        while i < alphabet.len() {{
+            t[alphabet[i] as usize] = i as u8;
             i += 1;
         }}
         t

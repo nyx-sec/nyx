@@ -185,20 +185,30 @@ fn spec_derivation_failed_verdict(
         let strategies: Vec<SpecDerivationStrategy> =
             HarnessSpec::derivation_strategies().to_vec();
         let hint = derivation_failure_hint(diag);
+        let inconclusive_reason = InconclusiveReason::SpecDerivationFailed {
+            tried: strategies,
+            hint,
+        };
+        let event = TelemetryEvent::no_spec(
+            diag,
+            VerifyStatus::Inconclusive,
+            Some(inconclusive_reason.clone()),
+        );
+        telemetry::emit(&event);
         return VerifyResult {
             finding_id,
             status: VerifyStatus::Inconclusive,
             triggered_payload: None,
             reason: None,
-            inconclusive_reason: Some(InconclusiveReason::SpecDerivationFailed {
-                tried: strategies,
-                hint,
-            }),
+            inconclusive_reason: Some(inconclusive_reason),
             detail: None,
             attempts: vec![],
             toolchain_match: None,
         };
     }
+
+    let event = TelemetryEvent::no_spec(diag, VerifyStatus::Unsupported, None);
+    telemetry::emit(&event);
 
     VerifyResult {
         finding_id,

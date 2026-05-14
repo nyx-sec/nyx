@@ -36,6 +36,26 @@ use std::time::{Duration, Instant};
 /// Interpreted harnesses can be run inside a Python/Node Docker image directly.
 /// Compiled harnesses (Rust, Go) are routed to `run_native_binary_docker` on
 /// Linux or to the process backend on other platforms.
+/// Resolve a bare command name to an absolute path by walking the host's
+/// `PATH`.  Returns `None` if `PATH` is unset or the name is not present in
+/// any entry as a regular file.
+///
+/// Used by `run_process` so spawn(2) succeeds even after the child
+/// environment has been wiped: macOS' `posix_spawnp` defaults to
+/// `confstr(_CS_PATH)` (`/usr/bin:/bin`) when the child has no `PATH`, which
+/// misses common installs like Homebrew's `/opt/homebrew/bin/node` or
+/// `nvm`-managed binaries under `~/.nvm/...`.
+fn find_in_host_path(name: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 pub fn harness_is_interpreted(command: &[String]) -> bool {
     let cmd0 = match command.first() {
         Some(c) => c.as_str(),
@@ -975,7 +995,19 @@ fn run_process(
         ))
     })?;
 
-    let mut cmd = Command::new(cmd_name);
+    // Resolve a bare interpreter name against the *host* PATH so the spawn
+    // works even when the child env has been scrubbed (env_clear strips PATH,
+    // so posix_spawnp falls back to confstr(_CS_PATH) which is typically just
+    // `/usr/bin:/bin` on macOS — node/cargo/etc. installed via Homebrew or nvm
+    // are not on that path and would otherwise yield `Spawn(NotFound)`).
+    // Absolute commands pass through unchanged.
+    let resolved_cmd_path = if std::path::Path::new(cmd_name).is_absolute() {
+        std::path::PathBuf::from(cmd_name)
+    } else {
+        find_in_host_path(cmd_name).unwrap_or_else(|| std::path::PathBuf::from(cmd_name))
+    };
+
+    let mut cmd = Command::new(&resolved_cmd_path);
     cmd.args(&harness.command[1..]);
     cmd.current_dir(&harness.workdir);
     cmd.stdout(Stdio::piped());

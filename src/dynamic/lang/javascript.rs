@@ -135,21 +135,12 @@ fn build_call(spec: &HarnessSpec, _module: &str, func: &str) -> (String, String)
 /// Derive the JS module name from an entry file path.
 ///
 /// `"src/handlers/login.js"` → `"login"` (basename without extension).
-pub fn entry_module_name(entry_file: &str) -> String {
-    let base = entry_file
-        .rsplit('/')
-        .next()
-        .unwrap_or(entry_file)
-        .rsplit('\\')
-        .next()
-        .unwrap_or(entry_file);
-    // Strip known JS/TS extensions.
-    for ext in &[".js", ".mjs", ".cjs", ".ts", ".mts"] {
-        if let Some(stem) = base.strip_suffix(ext) {
-            return stem.to_owned();
-        }
-    }
-    base.to_owned()
+pub fn entry_module_name(_entry_file: &str) -> String {
+    // The harness always `require('./entry')` because `entry_module_filename`
+    // unconditionally copies the source to `entry.js` in the workdir.  Keeping
+    // these two helpers in sync prevents a "Cannot find module" import error
+    // when the fixture's on-disk filename is anything other than `entry.js`.
+    "entry".to_owned()
 }
 
 /// Derive the filename for `entry_subpath` from an entry file path.
@@ -240,10 +231,14 @@ mod tests {
     }
 
     #[test]
-    fn entry_module_name_strips_extensions() {
-        assert_eq!(entry_module_name("src/handlers/login.js"), "login");
-        assert_eq!(entry_module_name("app.ts"), "app");
-        assert_eq!(entry_module_name("handler.mjs"), "handler");
-        assert_eq!(entry_module_name("no_ext"), "no_ext");
+    fn entry_module_name_is_always_entry_to_match_copy_destination() {
+        // `copy_entry_file` (via `entry_module_filename`) stages every fixture
+        // at `workdir/entry.js`, so `require('./entry')` is the only path the
+        // harness can use without missing-module errors at runtime, regardless
+        // of the source file's original name.
+        assert_eq!(entry_module_name("src/handlers/login.js"), "entry");
+        assert_eq!(entry_module_name("app.ts"), "entry");
+        assert_eq!(entry_module_name("handler.mjs"), "entry");
+        assert_eq!(entry_module_name("no_ext"), "entry");
     }
 }

@@ -102,6 +102,12 @@ fn stage_harness(
 /// - `None` → `workdir/{filename}` (Python default: import by module name).
 /// - `Some("src/entry.rs")` → `workdir/src/entry.rs` (Rust: `mod entry;`).
 ///
+/// Always overwrites the destination so the per-language build hash
+/// (`compute_*_source_hash`) reflects the current on-disk source.  Leaving a
+/// stale destination in place would let the build cache return class files
+/// built from a previous fixture revision even after the source on disk has
+/// changed.
+///
 /// Best-effort: silently skips if the file cannot be found or copied.
 fn copy_entry_file(spec: &HarnessSpec, workdir: &PathBuf, entry_subpath: Option<&str>) {
     let candidates = [
@@ -123,9 +129,7 @@ fn copy_entry_file(spec: &HarnessSpec, workdir: &PathBuf, entry_subpath: Option<
                 };
                 workdir.join(fname)
             };
-            if !dst.exists() {
-                let _ = fs::copy(src, &dst);
-            }
+            let _ = fs::copy(src, &dst);
             return;
         }
     }

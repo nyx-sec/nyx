@@ -21,7 +21,11 @@ pub fn run(payload: &str) {
     println!("__NYX_SINK_HIT__");
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
-    match conn.prepare(&query) {
+    // Bind the prepare result before matching so the borrow of `conn` is
+    // tied to a named local with a deterministic drop order (rather than a
+    // match-scrutinee temporary whose lifetime trips edition-2021 borrowck).
+    let prepared = conn.prepare(&query);
+    match prepared {
         Ok(mut stmt) => {
             let _ = stmt.query_map([], |row| row.get::<_, String>(0)).map(|rows| {
                 for name in rows.flatten() {

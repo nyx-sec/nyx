@@ -19,14 +19,21 @@
 //! }
 //! ```
 
+use crate::commands::scan::Diag;
 use crate::dynamic::spec::HarnessSpec;
 use crate::evidence::{InconclusiveReason, VerifyStatus};
 use directories::ProjectDirs;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::Path;
 use std::time::Duration;
 
 /// One telemetry event per verdict.
+///
+/// `lang` is `"unknown"` for findings whose language could not be resolved
+/// (e.g. spec derivation failed before `HarnessSpec::lang` was set).  Counting
+/// these is the `lang_unknown_count` Phase 02 acceptance asks for:
+/// `grep '"lang":"unknown"' events.jsonl | wc -l`.
 #[derive(Debug, serde::Serialize)]
 pub struct TelemetryEvent {
     pub ts: String,
@@ -41,6 +48,12 @@ pub struct TelemetryEvent {
     pub build_attempts: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inconclusive_reason: Option<String>,
+    /// Path of the finding's source file, populated for spec-derivation
+    /// failures so downstream consumers can map `lang="unknown"` events back
+    /// to a file.  Skipped on successful verdicts (the spec already carries
+    /// `entry_file`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 impl TelemetryEvent {
@@ -64,6 +77,49 @@ impl TelemetryEvent {
             duration_ms: duration.as_millis() as u64,
             build_attempts,
             inconclusive_reason: inconclusive_reason.map(|r| format!("{r:?}")),
+            path: None,
+        }
+    }
+
+    /// Telemetry event for findings that never got a `HarnessSpec`.
+    ///
+    /// Used by `verify_finding` when spec derivation fails (lang unresolvable,
+    /// path empty, sink redacted, etc.).  Without this path the events log
+    /// silently drops every spec-derivation failure, which breaks the Phase 02
+    /// `lang_unknown_count` aggregation acceptance.
+    ///
+    /// `lang` is best-effort sniffed from `diag.path`'s extension via
+    /// [`crate::symbol::Lang::from_extension`].  When the extension is
+    /// unknown or absent, `lang` is the literal string `"unknown"`.
+    pub fn no_spec(
+        diag: &Diag,
+        status: VerifyStatus,
+        inconclusive_reason: Option<InconclusiveReason>,
+    ) -> Self {
+        let lang = Path::new(&diag.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(crate::symbol::Lang::from_extension)
+            .map(|l| l.as_str().to_owned())
+            .unwrap_or_else(|| "unknown".to_owned());
+        let cap = diag
+            .evidence
+            .as_ref()
+            .map(|e| format!("{:?}", e.sink_caps))
+            .unwrap_or_else(|| "0".to_owned());
+        Self {
+            ts: chrono::Utc::now().to_rfc3339(),
+            finding_id: format!("{:016x}", diag.stable_hash),
+            spec_hash: String::new(),
+            lang,
+            cap,
+            status: format!("{status:?}"),
+            toolchain_id: String::new(),
+            toolchain_match: String::new(),
+            duration_ms: 0,
+            build_attempts: 0,
+            inconclusive_reason: inconclusive_reason.map(|r| format!("{r:?}")),
+            path: Some(diag.path.clone()),
         }
     }
 }
@@ -218,6 +274,49 @@ mod tests {
         assert_eq!(v["toolchain_match"], "exact");
 
         unsafe { std::env::remove_var("NYX_TELEMETRY_PATH") };
+    }
+
+    fn make_diag(path: &str) -> Diag {
+        Diag {
+            stable_hash: 0xdeadbeef_cafebabe,
+            path: path.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_spec_event_records_lang_unknown_for_missing_extension() {
+        let diag = make_diag("/tmp/some_script_no_ext");
+        let event = TelemetryEvent::no_spec(&diag, VerifyStatus::Unsupported, None);
+        assert_eq!(event.lang, "unknown");
+        assert_eq!(event.path.as_deref(), Some("/tmp/some_script_no_ext"));
+        assert!(event.spec_hash.is_empty());
+        assert_eq!(event.status, "Unsupported");
+    }
+
+    #[test]
+    fn no_spec_event_sniffs_lang_from_extension_when_present() {
+        let diag = make_diag("/tmp/handler.py");
+        let event = TelemetryEvent::no_spec(&diag, VerifyStatus::Inconclusive, None);
+        assert_eq!(event.lang, "python");
+        assert_eq!(event.path.as_deref(), Some("/tmp/handler.py"));
+        assert!(event.spec_hash.is_empty());
+    }
+
+    #[test]
+    fn no_spec_event_serialises_inconclusive_reason() {
+        use crate::evidence::SpecDerivationStrategy;
+        let diag = make_diag("/tmp/x.kt");
+        let reason = InconclusiveReason::SpecDerivationFailed {
+            tried: vec![SpecDerivationStrategy::FromFlowSteps],
+            hint: "kotlin source".to_owned(),
+        };
+        let event =
+            TelemetryEvent::no_spec(&diag, VerifyStatus::Inconclusive, Some(reason));
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"lang\":\"java\""));
+        assert!(json.contains("SpecDerivationFailed"));
+        assert!(json.contains("\"path\":\"/tmp/x.kt\""));
     }
 
     #[test]
