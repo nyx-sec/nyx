@@ -20,6 +20,37 @@ pub struct RubyEmitter;
 /// `Inconclusive(EntryKindUnsupported)` rather than `Unsupported`.
 const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
 
+/// Source of the `__nyx_probe` shim for the (future) Ruby harness
+/// (Phase 06 — Track C.1).  Defined here for the deliverable contract
+/// even though `emit` returns `LangUnsupported` until Phase 15 lands.
+pub fn probe_shim() -> &'static str {
+    r#"
+# ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
+def __nyx_probe(sink_callee, *args)
+  require 'json'
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  ser = args.map do |a|
+    case a
+    when Integer then { kind: 'Int', value: a }
+    when String  then { kind: 'String', value: a }
+    else              { kind: 'String', value: a.to_s }
+    end
+  end
+  rec = {
+    sink_callee: sink_callee.to_s,
+    args: ser,
+    captured_at_ns: (Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond)),
+    payload_id: (ENV['NYX_PAYLOAD_ID'] || ''),
+  }
+  begin
+    File.open(p, 'a') { |f| f.puts(rec.to_json) }
+  rescue StandardError
+  end
+end
+"#
+}
+
 impl LangEmitter for RubyEmitter {
     fn emit(&self, _spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         Err(UnsupportedReason::LangUnsupported)

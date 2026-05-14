@@ -1,3 +1,9 @@
+// Legacy [`Oracle::OutputContains`] is intentionally retained for
+// pre-Phase-06 corpus entries until they migrate to
+// [`Oracle::SinkProbe`].  The deprecation warning is informational, not a
+// signal to migrate inside this module.
+#![allow(deprecated)]
+
 //! Per-capability payload corpus.
 //!
 //! Each [`Cap`] maps to a small set of canonical payloads plus a matching
@@ -16,7 +22,17 @@
 //! tracks the history of incompatible corpus changes; bumping it invalidates
 //! all `dynamic_verdict_cache` entries whose spec touched the changed cap.
 
+use crate::dynamic::oracle::ProbePredicate;
 use crate::labels::Cap;
+
+/// Re-exported canonical [`Oracle`] type.
+///
+/// The actual enum lives in [`crate::dynamic::oracle`] alongside
+/// [`crate::dynamic::oracle::ProbePredicate`] and
+/// [`crate::dynamic::oracle::oracle_fired`].  Re-exported here so the
+/// `CuratedPayload.oracle: Oracle` field reads naturally and existing
+/// `crate::dynamic::corpus::Oracle` callers keep working.
+pub use crate::dynamic::oracle::Oracle;
 
 /// Bump when the corpus content changes in a way that invalidates previously-
 /// computed [`crate::dynamic::spec::HarnessSpec::spec_hash`] values.
@@ -75,25 +91,18 @@ pub struct CuratedPayload {
     /// listener URL + per-finding nonce at execution time (SSRF OOB variant).
     /// The `bytes` field is unused for such payloads.
     pub oob_nonce_slot: bool,
+    /// Structured-oracle predicates evaluated against
+    /// [`crate::dynamic::probe::SinkProbe`] records drained from the run's
+    /// probe channel (Phase 06 — Track C.1).  Always populated; empty when
+    /// the payload still relies on the legacy
+    /// [`Oracle::OutputContains`](crate::dynamic::oracle::Oracle::OutputContains)
+    /// path and has not been migrated to
+    /// [`Oracle::SinkProbe`](crate::dynamic::oracle::Oracle::SinkProbe) yet.
+    pub probe_predicates: &'static [ProbePredicate],
 }
 
 /// Backward-compatible type alias.
 pub type Payload = CuratedPayload;
-
-/// Detection strategy.
-#[derive(Debug, Clone)]
-pub enum Oracle {
-    /// Substring on stdout/stderr.
-    OutputContains(&'static str),
-    /// Process exited with a crash signal (SIGSEGV, SIGABRT).
-    Crash,
-    /// Outbound network connection observed to a controlled sink host.
-    OobCallback { host: &'static str },
-    /// File written outside the sandbox root.
-    FileEscape,
-    /// Non-zero exit with specific status.
-    ExitStatus(i32),
-}
 
 /// Pick the payload set for a given cap. Empty slice = unsupported cap.
 ///
@@ -374,6 +383,7 @@ const SQLI: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
         oob_nonce_slot: false,
+        probe_predicates: &[],
     },
     CuratedPayload {
         bytes: b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
@@ -385,6 +395,7 @@ const SQLI: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
         oob_nonce_slot: false,
+        probe_predicates: &[],
     },
 ];
 
@@ -402,6 +413,7 @@ const CMDI: &[CuratedPayload] = &[CuratedPayload {
         "tests/benchmark/corpus/rust/cmdi/cmdi_args.rs",
     ],
     oob_nonce_slot: false,
+    probe_predicates: &[],
 }];
 
 // ── Path traversal ────────────────────────────────────────────────────────────
@@ -422,6 +434,7 @@ const PATH_TRAV: &[CuratedPayload] = &[
             "tests/benchmark/corpus/rust/path_traversal/path_read.rs",
         ],
         oob_nonce_slot: false,
+        probe_predicates: &[],
     },
     CuratedPayload {
         bytes: b"benign_safe_file_that_does_not_exist_NYX_BENIGN",
@@ -433,6 +446,7 @@ const PATH_TRAV: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/benchmark/corpus/rust/path_traversal/path_file_open.rs"],
         oob_nonce_slot: false,
+        probe_predicates: &[],
     },
 ];
 
@@ -458,6 +472,7 @@ const SSRF_PAYLOADS: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
         oob_nonce_slot: false,
+        probe_predicates: &[],
     },
     CuratedPayload {
         // `bytes` is unused when `oob_nonce_slot = true`; the runner
@@ -471,6 +486,7 @@ const SSRF_PAYLOADS: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
         oob_nonce_slot: true,
+        probe_predicates: &[],
     },
 ];
 
@@ -488,6 +504,7 @@ const XSS: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/benchmark/corpus/rust/xss/axum_html/main.rs"],
         oob_nonce_slot: false,
+        probe_predicates: &[],
     },
     CuratedPayload {
         bytes: b"Hello World",
@@ -499,5 +516,6 @@ const XSS: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/benchmark/corpus/rust/xss/axum_html/main.rs"],
         oob_nonce_slot: false,
+        probe_predicates: &[],
     },
 ];

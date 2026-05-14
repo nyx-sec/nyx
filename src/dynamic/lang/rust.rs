@@ -51,6 +51,71 @@ impl LangEmitter for RustEmitter {
     }
 }
 
+/// Source of the `__nyx_probe` shim for the Rust harness (Phase 06 —
+/// Track C.1).
+///
+/// Defined here so future sink-rewrite passes can splice
+/// `__nyx_probe("os.system", payload)` into the entry source without
+/// depending on serde at the harness boundary.  Hand-rolled JSON keeps
+/// the shim's only dep on `std`; matches the
+/// [`crate::dynamic::probe::SinkProbe`] wire format.
+pub fn probe_shim() -> &'static str {
+    r#"
+// ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
+#[allow(dead_code)]
+fn __nyx_probe(sink_callee: &str, args: &[&str]) {
+    use std::io::Write;
+    let p = match std::env::var("NYX_PROBE_PATH") {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let payload_id = std::env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    fn esc(s: &str, out: &mut String) {
+        for ch in s.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+    }
+    let mut line = String::with_capacity(128);
+    line.push_str("{\"sink_callee\":\"");
+    esc(sink_callee, &mut line);
+    line.push_str("\",\"args\":[");
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 {
+            line.push(',');
+        }
+        line.push_str("{\"kind\":\"String\",\"value\":\"");
+        esc(a, &mut line);
+        line.push_str("\"}");
+    }
+    line.push_str(&format!(
+        "],\"captured_at_ns\":{},\"payload_id\":\"",
+        now
+    ));
+    esc(&payload_id, &mut line);
+    line.push_str("\"}\n");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+"#
+}
+
 /// Emit a Rust harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {

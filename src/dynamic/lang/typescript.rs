@@ -27,6 +27,15 @@ pub struct TypeScriptEmitter;
 /// browser modules).
 const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
 
+/// Source of the `__nyx_probe` shim for TypeScript harnesses.
+///
+/// Delegates to [`crate::dynamic::lang::javascript::probe_shim`] — the
+/// runtime is Node.js in both cases, so the JSON-emit shim is identical
+/// after type erasure.
+pub fn probe_shim() -> &'static str {
+    javascript::probe_shim()
+}
+
 impl LangEmitter for TypeScriptEmitter {
     fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         javascript::emit(spec)

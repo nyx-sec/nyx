@@ -53,6 +53,45 @@ impl LangEmitter for GoEmitter {
     }
 }
 
+/// Source of the `__nyx_probe` shim for the Go harness (Phase 06 —
+/// Track C.1).  Variadic over `string` so callers can pass any number of
+/// captured args at the sink site.
+pub fn probe_shim() -> &'static str {
+    r#"
+// ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
+func __nyx_probe(sinkCallee string, args ...string) {
+    p := os.Getenv("NYX_PROBE_PATH")
+    if p == "" {
+        return
+    }
+    serArgs := make([]map[string]interface{}, 0, len(args))
+    for _, a := range args {
+        serArgs = append(serArgs, map[string]interface{}{
+            "kind":  "String",
+            "value": a,
+        })
+    }
+    rec := map[string]interface{}{
+        "sink_callee":    sinkCallee,
+        "args":           serArgs,
+        "captured_at_ns": uint64(time.Now().UnixNano()),
+        "payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+    }
+    b, err := json.Marshal(rec)
+    if err != nil {
+        return
+    }
+    f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    if err != nil {
+        return
+    }
+    defer f.Close()
+    f.Write(b)
+    f.Write([]byte("\n"))
+}
+"#
+}
+
 /// Emit a Go harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {

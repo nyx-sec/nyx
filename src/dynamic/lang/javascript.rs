@@ -49,6 +49,47 @@ impl LangEmitter for JavaScriptEmitter {
     }
 }
 
+/// Source of the `__nyx_probe` shim for the Node.js harness.
+///
+/// Defined once here so both [`JavaScriptEmitter`] and
+/// [`crate::dynamic::lang::typescript::TypeScriptEmitter`] reuse the same
+/// JSON-emit format.  Writes a single [`crate::dynamic::probe::SinkProbe`]
+/// JSON line to `NYX_PROBE_PATH` per call; no-op when the env var is
+/// unset.
+pub fn probe_shim() -> &'static str {
+    r#"
+// ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
+function __nyx_probe(sinkCallee, ...args) {
+    const _fs = require('fs');
+    const _p = process.env.NYX_PROBE_PATH;
+    if (!_p) return;
+    const _ser = args.map(function (a) {
+        if (a && typeof a === 'object' && (a instanceof Buffer || a instanceof Uint8Array)) {
+            return { kind: 'Bytes', value: Array.from(a) };
+        }
+        if (typeof a === 'number' && Number.isInteger(a)) {
+            return { kind: 'Int', value: a };
+        }
+        if (typeof a === 'boolean') {
+            return { kind: 'Int', value: a ? 1 : 0 };
+        }
+        return { kind: 'String', value: String(a) };
+    });
+    const _rec = {
+        sink_callee: String(sinkCallee),
+        args: _ser,
+        captured_at_ns: Number(process.hrtime.bigint()),
+        payload_id: String(process.env.NYX_PAYLOAD_ID || ''),
+    };
+    try {
+        _fs.appendFileSync(_p, JSON.stringify(_rec) + '\n');
+    } catch (e) {
+        // best-effort: probe channel write failure is non-fatal.
+    }
+}
+"#
+}
+
 /// Emit a Node.js harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {
@@ -72,10 +113,12 @@ fn generate_source(spec: &HarnessSpec) -> String {
     let entry_module = entry_module_name(&spec.entry_file);
     let entry_fn = &spec.entry_name;
     let (pre_call, call_expr) = build_call(spec, &entry_module, entry_fn);
+    let probe = probe_shim();
 
     format!(
         r#"'use strict';
 // Nyx dynamic harness — auto-generated, do not edit.
+{probe}
 
 // ── Payload loading ────────────────────────────────────────────────────────────
 const _nyx_payload = (() => {{
@@ -120,6 +163,7 @@ try {{
         entry_module = entry_module,
         pre_call = pre_call,
         call_expr = call_expr,
+        probe = probe,
     )
 }
 

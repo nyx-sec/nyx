@@ -59,6 +59,7 @@ mod escape_tests {
             env_passthrough: vec![],
             output_limit: 65536,
             oob_listener: None,
+            probe_channel: None,
         }
     }
 

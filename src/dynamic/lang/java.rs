@@ -55,6 +55,65 @@ impl LangEmitter for JavaEmitter {
     }
 }
 
+/// Source of the `__nyx_probe` shim for the Java harness (Phase 06 —
+/// Track C.1).
+///
+/// Splices into the generated harness class as a `static void __nyx_probe(...)`
+/// method.  Hand-rolled JSON keeps the shim free of org.json / jackson
+/// dependencies; matches the
+/// [`crate::dynamic::probe::SinkProbe`] wire format.
+pub fn probe_shim() -> &'static str {
+    r#"
+    // ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
+    static void __nyx_probe(String sinkCallee, String... args) {
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) {
+            return;
+        }
+        long now = System.nanoTime();
+        String payloadId = System.getenv("NYX_PAYLOAD_ID");
+        if (payloadId == null) payloadId = "";
+        StringBuilder line = new StringBuilder(128);
+        line.append("{\"sink_callee\":\"");
+        nyxJsonEscape(sinkCallee, line);
+        line.append("\",\"args\":[");
+        for (int i = 0; i < args.length; i++) {
+            if (i > 0) line.append(',');
+            line.append("{\"kind\":\"String\",\"value\":\"");
+            nyxJsonEscape(args[i] == null ? "" : args[i], line);
+            line.append("\"}");
+        }
+        line.append("],\"captured_at_ns\":").append(now).append(",\"payload_id\":\"");
+        nyxJsonEscape(payloadId, line);
+        line.append("\"}\n");
+        try (java.io.FileWriter fw = new java.io.FileWriter(p, true)) {
+            fw.write(line.toString());
+        } catch (java.io.IOException e) {
+            // best-effort
+        }
+    }
+
+    private static void nyxJsonEscape(String s, StringBuilder out) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"':  out.append("\\\""); break;
+                case '\\': out.append("\\\\"); break;
+                case '\n': out.append("\\n"); break;
+                case '\r': out.append("\\r"); break;
+                case '\t': out.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        out.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        out.append(c);
+                    }
+            }
+        }
+    }
+"#
+}
+
 /// Emit a Java harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {

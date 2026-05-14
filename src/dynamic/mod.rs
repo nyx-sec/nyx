@@ -71,6 +71,8 @@ pub mod harness;
 pub mod lang;
 pub mod mount_filter;
 pub mod oob;
+pub mod oracle;
+pub mod probe;
 pub mod repro;
 pub mod report;
 pub mod runner;

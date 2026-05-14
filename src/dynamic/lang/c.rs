@@ -18,6 +18,45 @@ pub struct CEmitter;
 /// Entry kinds the C emitter intends to support once Phase 16 lands.
 const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
 
+/// Source of the `__nyx_probe` shim for the (future) C harness (Phase 06 —
+/// Track C.1).  Variadic over `const char *` args; hand-rolled JSON keeps
+/// the only dep on libc / stdio.
+pub fn probe_shim() -> &'static str {
+    r#"
+/* ── __nyx_probe shim (Phase 06 — Track C.1) ─────────────────────────────── */
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+static void __nyx_probe(const char *sink_callee, int nargs, ...) {
+    const char *p = getenv("NYX_PROBE_PATH");
+    if (!p || *p == '\0') return;
+    FILE *f = fopen(p, "a");
+    if (!f) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    unsigned long long ns = (unsigned long long)ts.tv_sec * 1000000000ULL +
+                            (unsigned long long)ts.tv_nsec;
+    const char *pid = getenv("NYX_PAYLOAD_ID");
+    if (!pid) pid = "";
+    fprintf(f, "{\"sink_callee\":\"%s\",\"args\":[", sink_callee);
+    va_list ap;
+    va_start(ap, nargs);
+    for (int i = 0; i < nargs; ++i) {
+        const char *arg = va_arg(ap, const char *);
+        if (!arg) arg = "";
+        if (i > 0) fputc(',', f);
+        fprintf(f, "{\"kind\":\"String\",\"value\":\"%s\"}", arg);
+    }
+    va_end(ap);
+    fprintf(f, "],\"captured_at_ns\":%llu,\"payload_id\":\"%s\"}\n", ns, pid);
+    fclose(f);
+}
+"#
+}
+
 impl LangEmitter for CEmitter {
     fn emit(&self, _spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         Err(UnsupportedReason::LangUnsupported)

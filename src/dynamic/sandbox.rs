@@ -24,6 +24,7 @@
 
 use crate::dynamic::harness::BuiltHarness;
 use crate::dynamic::oob::OobListener;
+use crate::dynamic::probe::{ProbeChannel, PROBE_PATH_ENV};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -136,6 +137,13 @@ pub struct SandboxOptions {
     /// networking so the harness can reach the listener on the host, and the
     /// runner checks [`OobListener::was_nonce_hit`] after each sandbox run.
     pub oob_listener: Option<Arc<OobListener>>,
+    /// Per-run structured-oracle [`ProbeChannel`] (Phase 06 — Track C.1).
+    /// When set, the sandbox forwards the channel's path to the harness via
+    /// the `NYX_PROBE_PATH` env var so the per-language `__nyx_probe` shim
+    /// can write [`crate::dynamic::probe::SinkProbe`] records.  The runner
+    /// drains the channel after each sandbox run and evaluates
+    /// [`crate::dynamic::oracle::ProbePredicate`]s against the records.
+    pub probe_channel: Option<Arc<ProbeChannel>>,
 }
 
 impl Default for SandboxOptions {
@@ -147,6 +155,7 @@ impl Default for SandboxOptions {
             env_passthrough: vec![],
             output_limit: 65536,
             oob_listener: None,
+            probe_channel: None,
         }
     }
 }
@@ -1026,6 +1035,12 @@ fn run_process(
     // Payload injected via NYX_PAYLOAD env var.
     let payload_b64 = base64_encode(payload_bytes);
     cmd.env("NYX_PAYLOAD_B64", &payload_b64);
+    // Probe channel (Phase 06).  Process backend writes directly to the
+    // host workdir file the channel handles, so the harness shim only
+    // needs the absolute path.
+    if let Some(ch) = &opts.probe_channel {
+        cmd.env(PROBE_PATH_ENV, ch.path());
+    }
     // NYX_PAYLOAD as raw bytes: Unix-only (OsStr can hold arbitrary bytes).
     // On other platforms we skip this env var; the harness falls back to NYX_PAYLOAD_B64.
     #[cfg(unix)]

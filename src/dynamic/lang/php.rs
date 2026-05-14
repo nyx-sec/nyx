@@ -47,6 +47,36 @@ impl LangEmitter for PhpEmitter {
     }
 }
 
+/// Source of the `__nyx_probe` shim for the PHP harness (Phase 06 —
+/// Track C.1).
+pub fn probe_shim() -> &'static str {
+    r#"
+// ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
+function __nyx_probe(string $sinkCallee, ...$args): void {
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') {
+        return;
+    }
+    $ser = [];
+    foreach ($args as $a) {
+        if (is_int($a)) {
+            $ser[] = ['kind' => 'Int', 'value' => $a];
+        } else {
+            $ser[] = ['kind' => 'String', 'value' => (string) $a];
+        }
+    }
+    $rec = [
+        'sink_callee' => $sinkCallee,
+        'args' => $ser,
+        'captured_at_ns' => (int) (microtime(true) * 1e9),
+        'payload_id' => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+    ];
+    $line = json_encode($rec) . "\n";
+    @file_put_contents($p, $line, FILE_APPEND);
+}
+"#
+}
+
 /// Emit a PHP harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {

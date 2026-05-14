@@ -6,11 +6,14 @@
 //! the result into a [`crate::dynamic::report::VerifyResult`].
 
 use crate::dynamic::build_sandbox;
-use crate::dynamic::corpus::{benign_payload_for, materialise_bytes, payloads_for, Oracle, Payload};
+use crate::dynamic::corpus::{benign_payload_for, materialise_bytes, payloads_for, Payload};
 use crate::dynamic::harness::{self, HarnessError};
+use crate::dynamic::oracle::oracle_fired;
+use crate::dynamic::probe::{ProbeChannel, SinkProbe};
 use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
 use crate::symbol::Lang;
+use std::sync::Arc;
 
 /// Max harness-build attempts before giving up.
 const MAX_BUILD_ATTEMPTS: u32 = 2;
@@ -201,6 +204,19 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     let harness_source = harness.source.clone();
     let entry_source = harness.entry_source.clone();
 
+    // Provision a per-run [`ProbeChannel`] under the harness workdir when
+    // the caller didn't pre-supply one (the public verifier path leaves
+    // `probe_channel = None` so the runner owns lifetime).  Failure to
+    // create the file is non-fatal: the legacy `Oracle::OutputContains`
+    // oracle still works without a channel.
+    let mut effective_opts = opts.clone();
+    if effective_opts.probe_channel.is_none() {
+        if let Ok(ch) = ProbeChannel::for_workdir(&harness.workdir) {
+            effective_opts.probe_channel = Some(Arc::new(ch));
+        }
+    }
+    let probe_channel: Option<Arc<ProbeChannel>> = effective_opts.probe_channel.clone();
+
     // Run only vuln (non-benign) payloads in the main loop.
     let vuln_payloads: Vec<&Payload> = payloads.iter().filter(|p| !p.is_benign).collect();
     let benign_payload = benign_payload_for(spec.expected_cap);
@@ -212,9 +228,9 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     for (i, payload) in vuln_payloads.iter().enumerate() {
         // Materialise payload bytes (OOB nonce-slot payloads generate a URL).
         let (oob_nonce, effective_bytes) = if payload.oob_nonce_slot {
-            if let Some(ref listener) = opts.oob_listener {
+            if let Some(ref listener) = effective_opts.oob_listener {
                 let nonce = generate_nonce();
-                let url = if uses_docker_backend(opts) {
+                let url = if uses_docker_backend(&effective_opts) {
                     listener.nonce_url_for_host("host-gateway", &nonce)
                 } else {
                     listener.nonce_url(&nonce)
@@ -229,10 +245,16 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             (None, payload.bytes.to_vec())
         };
 
-        let mut outcome = sandbox::run(&harness, &effective_bytes, opts)?;
+        // Clear the probe channel before each payload so the oracle's
+        // drained records belong unambiguously to this run.
+        if let Some(ch) = &probe_channel {
+            let _ = ch.clear();
+        }
+
+        let mut outcome = sandbox::run(&harness, &effective_bytes, &effective_opts)?;
 
         // For OOB payloads, check the nonce listener and update the outcome flag.
-        if let (Some(nonce), Some(listener)) = (&oob_nonce, &opts.oob_listener) {
+        if let (Some(nonce), Some(listener)) = (&oob_nonce, &effective_opts.oob_listener) {
             // Poll until the nonce arrives or the budget expires. The sandbox run
             // already waited for process exit so the callback should arrive quickly;
             // 200 ms covers OS TCP delivery jitter without burning wall-clock at scale.
@@ -241,7 +263,12 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             }
         }
 
-        let fired = oracle_fired(&payload.oracle, &outcome);
+        let probes: Vec<SinkProbe> = probe_channel
+            .as_ref()
+            .map(|ch| ch.drain())
+            .unwrap_or_default();
+
+        let fired = oracle_fired(&payload.oracle, &outcome, &probes);
         let sink_hit = outcome.sink_hit;
 
         let triggered = if fired && sink_hit {
@@ -251,8 +278,15 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 let benign_bytes = materialise_bytes(benign, None)
                     .map(|b| b.into_owned())
                     .unwrap_or_default();
-                let benign_outcome = sandbox::run(&harness, &benign_bytes, opts)?;
-                let benign_fired = oracle_fired(&benign.oracle, &benign_outcome);
+                if let Some(ch) = &probe_channel {
+                    let _ = ch.clear();
+                }
+                let benign_outcome = sandbox::run(&harness, &benign_bytes, &effective_opts)?;
+                let benign_probes: Vec<SinkProbe> = probe_channel
+                    .as_ref()
+                    .map(|ch| ch.drain())
+                    .unwrap_or_default();
+                let benign_fired = oracle_fired(&benign.oracle, &benign_outcome, &benign_probes);
                 !benign_fired
             } else {
                 true
@@ -301,25 +335,6 @@ fn uses_docker_backend(opts: &SandboxOptions) -> bool {
     }
 }
 
-fn oracle_fired(oracle: &Oracle, outcome: &SandboxOutcome) -> bool {
-    match oracle {
-        Oracle::OutputContains(needle) => {
-            let nb = needle.as_bytes();
-            contains_subslice(&outcome.stdout, nb) || contains_subslice(&outcome.stderr, nb)
-        }
-        Oracle::Crash => matches!(outcome.exit_code, None) && !outcome.timed_out,
-        Oracle::OobCallback { .. } => outcome.oob_callback_seen,
-        Oracle::FileEscape => false,
-        Oracle::ExitStatus(code) => outcome.exit_code == Some(*code),
-    }
-}
-
-fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() || needle.len() > hay.len() {
-        return needle.is_empty();
-    }
-    hay.windows(needle.len()).any(|w| w == needle)
-}
 
 /// Generate a random 16-character hex nonce for OOB callback tracking.
 fn generate_nonce() -> String {
@@ -339,21 +354,6 @@ fn generate_nonce() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn contains_subslice_empty_needle() {
-        assert!(contains_subslice(b"hello", b""));
-    }
-
-    #[test]
-    fn contains_subslice_finds_match() {
-        assert!(contains_subslice(b"hello world", b"world"));
-    }
-
-    #[test]
-    fn contains_subslice_no_match() {
-        assert!(!contains_subslice(b"hello", b"xyz"));
-    }
 
     #[test]
     fn generate_nonce_is_16_hex_chars() {

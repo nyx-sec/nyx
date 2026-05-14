@@ -42,6 +42,45 @@ impl LangEmitter for PythonEmitter {
     }
 }
 
+/// Source of the `__nyx_probe` shim for the Python harness.
+///
+/// The shim is callable as `__nyx_probe("sink.callee", arg0, arg1, ...)`.
+/// It emits one JSON line per call to `NYX_PROBE_PATH` (when set) in the
+/// [`crate::dynamic::probe::SinkProbe`] schema.  No-op when the env var
+/// is unset, so the shim is safe to inject even when the runner has not
+/// configured a probe channel.
+pub fn probe_shim() -> &'static str {
+    r#"
+# ── __nyx_probe shim (Phase 06 — Track C.1) ──────────────────────────────────
+def __nyx_probe(sink_callee, *args):
+    import os, time, json
+    p = os.environ.get("NYX_PROBE_PATH")
+    if not p:
+        return
+    serialised = []
+    for a in args:
+        if isinstance(a, (bytes, bytearray)):
+            serialised.append({"kind": "Bytes", "value": list(a)})
+        elif isinstance(a, bool):
+            serialised.append({"kind": "Int", "value": 1 if a else 0})
+        elif isinstance(a, int):
+            serialised.append({"kind": "Int", "value": a})
+        else:
+            serialised.append({"kind": "String", "value": str(a)})
+    rec = {
+        "sink_callee": str(sink_callee),
+        "args": serialised,
+        "captured_at_ns": time.time_ns(),
+        "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
+    }
+    try:
+        with open(p, "a") as _f:
+            _f.write(json.dumps(rec) + "\n")
+    except OSError:
+        pass
+"#
+}
+
 /// Emit a Python harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // Validate payload slot.
@@ -69,6 +108,7 @@ fn generate_source(spec: &HarnessSpec) -> String {
 
     // Build the call expression based on payload slot.
     let (pre_call, call_expr) = build_call(spec, entry_module, entry_fn);
+    let probe = probe_shim();
 
     format!(
         r#"#!/usr/bin/env python3
@@ -80,6 +120,8 @@ import traceback
 # ── Sink-reachability probe (sys.settrace) ────────────────────────────────────
 # Fires __NYX_SINK_HIT__ exactly once when the traced function is called at
 # the expected file:line. Filtered to avoid false positives from library code.
+
+{probe}
 
 _NYX_SINK_FILE = {sink_file:?}
 _NYX_SINK_LINE = {sink_line}
@@ -152,6 +194,7 @@ sys.settrace(None)
         entry_module = entry_module,
         pre_call = pre_call,
         call_expr = call_expr,
+        probe = probe,
     )
 }
 
@@ -275,6 +318,17 @@ mod tests {
         let hint = PythonEmitter.entry_kind_hint(EntryKind::HttpRoute);
         assert!(hint.contains("HttpRoute"));
         assert!(hint.contains("phase 12"));
+    }
+
+    #[test]
+    fn probe_shim_is_injected() {
+        let spec = make_spec(PayloadSlot::Param(0));
+        let harness = emit(&spec).unwrap();
+        assert!(
+            harness.source.contains("def __nyx_probe"),
+            "Phase 06 shim must be present in generated harness",
+        );
+        assert!(harness.source.contains("NYX_PROBE_PATH"));
     }
 
     #[test]
