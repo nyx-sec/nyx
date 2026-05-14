@@ -17,6 +17,7 @@ pub mod cpp;
 pub mod go;
 pub mod java;
 pub mod javascript;
+pub mod js_shared;
 pub mod php;
 pub mod python;
 pub mod ruby;

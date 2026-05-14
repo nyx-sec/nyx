@@ -1,0 +1,8 @@
+{
+  "name": "nyx-harness-koa",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "koa": "^2.15.3"
+  }
+}

@@ -192,24 +192,50 @@ fn stage_fixture(src: &Path, tmp: &TempDir, copy: CopyStrategy) -> PathBuf {
     }
 }
 
-/// Phase 12 — per-shape acceptance helper.
+/// Phase 12 — Python-specific per-shape acceptance helper.
 ///
-/// Stages `fixture_root/<shape>/<file>` into a tempdir, builds a
-/// [`HarnessSpec`] with the caller's `entry_kind` / `payload_slot`,
-/// then executes it through [`nyx_scanner::dynamic::runner::run_spec`]
-/// directly.  Returns a [`VerifyResult`]-shaped summary so callers can
-/// reuse the same `assert_confirmed` / `assert_not_confirmed` helpers
-/// the older golden-based suite uses.
-///
-/// Bypasses [`verify_finding`] because the public verifier derives the
-/// payload slot from the synthetic Diag's flow steps and always lands
-/// on [`nyx_scanner::dynamic::spec::PayloadSlot::Param`], which the
-/// HTTP / pytest / CLI shapes cannot honour.  Going through the runner
-/// directly lets the test pin the slot the spec under test actually
-/// expects (e.g. [`nyx_scanner::dynamic::spec::PayloadSlot::QueryParam`]
-/// for HTTP routes).
+/// Thin wrapper over [`run_shape_fixture_lang`] pinning the lang dir
+/// to `tests/dynamic_fixtures/python/` and [`Lang::Python`].
 #[allow(clippy::too_many_arguments)]
 pub fn run_shape_fixture(
+    shape_dir: &str,
+    file: &str,
+    func: &str,
+    cap: Cap,
+    sink_line: u32,
+    entry_kind: EntryKind,
+    payload_slot: nyx_scanner::dynamic::spec::PayloadSlot,
+) -> VerifyResult {
+    run_shape_fixture_lang(
+        nyx_scanner::symbol::Lang::Python,
+        "python",
+        shape_dir,
+        file,
+        func,
+        cap,
+        sink_line,
+        entry_kind,
+        payload_slot,
+    )
+}
+
+/// Phase 13 — lang-aware per-shape acceptance helper.
+///
+/// Stages `tests/dynamic_fixtures/<lang_dir>/<shape>/<file>` into a
+/// tempdir, builds a [`HarnessSpec`] with the caller's `entry_kind` /
+/// `payload_slot` / [`Lang`], then executes it through
+/// [`nyx_scanner::dynamic::runner::run_spec`] directly.  Returns a
+/// [`VerifyResult`]-shaped summary so callers can reuse the same
+/// `assert_confirmed` / `assert_not_confirmed` helpers across Python /
+/// JS / TS / etc. shape suites.
+///
+/// Bypasses [`verify_finding`] for the same reason as [`run_shape_fixture`]:
+/// the public verifier always lands on
+/// [`nyx_scanner::dynamic::spec::PayloadSlot::Param`].
+#[allow(clippy::too_many_arguments)]
+pub fn run_shape_fixture_lang(
+    lang: nyx_scanner::symbol::Lang,
+    lang_dir: &str,
     shape_dir: &str,
     file: &str,
     func: &str,
@@ -221,12 +247,12 @@ pub fn run_shape_fixture(
     use nyx_scanner::dynamic::runner::{run_spec, RunError};
     use nyx_scanner::dynamic::sandbox::SandboxOptions;
     use nyx_scanner::dynamic::spec::{HarnessSpec, SpecDerivationStrategy};
-    use nyx_scanner::symbol::Lang;
 
     let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/dynamic_fixtures/python")
+        .join("tests/dynamic_fixtures")
+        .join(lang_dir)
         .join(shape_dir);
     let fixture_src = fixture_root.join(file);
 
@@ -245,8 +271,10 @@ pub fn run_shape_fixture(
 
     let entry_file = dst.to_string_lossy().into_owned();
     // Per-fixture stable hash so workdir layout / cache key stays
-    // distinct between shapes and between vuln / benign fixtures.
+    // distinct between langs / shapes / vuln-vs-benign fixtures.
     let mut digest = blake3::Hasher::new();
+    digest.update(lang_dir.as_bytes());
+    digest.update(b"|");
     digest.update(shape_dir.as_bytes());
     digest.update(b"|");
     digest.update(file.as_bytes());
@@ -255,13 +283,25 @@ pub fn run_shape_fixture(
         u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
     });
 
+    let toolchain_id = match lang {
+        nyx_scanner::symbol::Lang::Python => "python-3",
+        nyx_scanner::symbol::Lang::JavaScript | nyx_scanner::symbol::Lang::TypeScript => "node-20",
+        nyx_scanner::symbol::Lang::Rust => "rust-stable",
+        nyx_scanner::symbol::Lang::Go => "go-1.21",
+        nyx_scanner::symbol::Lang::Java => "java-17",
+        nyx_scanner::symbol::Lang::Php => "php-8",
+        nyx_scanner::symbol::Lang::Ruby => "ruby-3",
+        nyx_scanner::symbol::Lang::C => "gcc",
+        nyx_scanner::symbol::Lang::Cpp => "g++",
+    };
+
     let spec = HarnessSpec {
         finding_id: spec_hash.clone(),
         entry_file: entry_file.clone(),
         entry_name: func.to_owned(),
         entry_kind,
-        lang: Lang::Python,
-        toolchain_id: "python-3".into(),
+        lang,
+        toolchain_id: toolchain_id.into(),
         payload_slot,
         expected_cap: cap,
         constraint_hints: vec![],
@@ -332,15 +372,10 @@ pub fn run_shape_fixture(
     }
 }
 
-/// Phase 12 — golden harness snapshot.
+/// Phase 12 — Python-specific harness snapshot wrapper.
 ///
-/// Stages `<shape>/<file>` into a tempdir, builds a [`HarnessSpec`] for
-/// the supplied entry kind / payload slot, emits the per-shape harness
-/// via [`nyx_scanner::dynamic::lang::emit`], and either writes the
-/// resulting source to `<shape>/<file>.golden_harness.py` (under
-/// `NYX_UPDATE_GOLDENS=1`) or diffs against the existing snapshot.  The
-/// emitter is deterministic, so the snapshot doubles as documentation
-/// of the per-shape harness shape.
+/// Pins lang to [`Lang::Python`] and the lang dir to `python` so legacy
+/// Python tests can keep their original two-axis signature.
 #[allow(clippy::too_many_arguments)]
 pub fn run_harness_snapshot(
     shape_dir: &str,
@@ -351,17 +386,52 @@ pub fn run_harness_snapshot(
     entry_kind: EntryKind,
     payload_slot: nyx_scanner::dynamic::spec::PayloadSlot,
 ) {
-    use nyx_scanner::dynamic::lang;
+    run_harness_snapshot_lang(
+        nyx_scanner::symbol::Lang::Python,
+        "python",
+        "py",
+        shape_dir,
+        file,
+        func,
+        cap,
+        sink_line,
+        entry_kind,
+        payload_slot,
+    )
+}
+
+/// Phase 13 — lang-aware golden harness snapshot.
+///
+/// Stages `tests/dynamic_fixtures/<lang_dir>/<shape>/<file>` into a
+/// tempdir, builds a [`HarnessSpec`] for the supplied lang / entry kind
+/// / payload slot, emits the per-shape harness via
+/// [`nyx_scanner::dynamic::lang::emit`], and either writes the resulting
+/// source to `<shape>/<file>.golden_harness.<ext>` (under
+/// `NYX_UPDATE_GOLDENS=1`) or diffs against the existing snapshot.
+#[allow(clippy::too_many_arguments)]
+pub fn run_harness_snapshot_lang(
+    lang: nyx_scanner::symbol::Lang,
+    lang_dir: &str,
+    snapshot_ext: &str,
+    shape_dir: &str,
+    file: &str,
+    func: &str,
+    cap: Cap,
+    sink_line: u32,
+    entry_kind: EntryKind,
+    payload_slot: nyx_scanner::dynamic::spec::PayloadSlot,
+) {
+    use nyx_scanner::dynamic::lang as lang_emit;
     use nyx_scanner::dynamic::spec::{HarnessSpec, SpecDerivationStrategy};
-    use nyx_scanner::symbol::Lang;
 
     let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/dynamic_fixtures/python")
+        .join("tests/dynamic_fixtures")
+        .join(lang_dir)
         .join(shape_dir);
     let fixture_src = fixture_root.join(file);
-    let snapshot_path = fixture_root.join(format!("{file}.golden_harness.py"));
+    let snapshot_path = fixture_root.join(format!("{file}.golden_harness.{snapshot_ext}"));
 
     // Stage into tempdir so the spec.entry_file path matches what the
     // verifier sees at runtime.
@@ -370,13 +440,19 @@ pub fn run_harness_snapshot(
     std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
     let entry_file = dst.to_string_lossy().into_owned();
 
+    let toolchain_id = match lang {
+        nyx_scanner::symbol::Lang::Python => "python-3",
+        nyx_scanner::symbol::Lang::JavaScript | nyx_scanner::symbol::Lang::TypeScript => "node-20",
+        _ => "unknown",
+    };
+
     let spec = HarnessSpec {
         finding_id: "0000000000000001".into(),
         entry_file: entry_file.clone(),
         entry_name: func.to_owned(),
         entry_kind,
-        lang: Lang::Python,
-        toolchain_id: "python-3".into(),
+        lang,
+        toolchain_id: toolchain_id.into(),
         payload_slot,
         expected_cap: cap,
         constraint_hints: vec![],
@@ -389,7 +465,7 @@ pub fn run_harness_snapshot(
         stubs_required: vec![],
     };
 
-    let harness = lang::emit(&spec).expect("python emitter must produce a harness");
+    let harness = lang_emit::emit(&spec).expect("emitter must produce a harness");
 
     // Strip the tempdir prefix so the snapshot is stable across runs.
     let tmp_prefix = tmp.path().to_string_lossy().into_owned();
