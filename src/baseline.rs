@@ -445,6 +445,7 @@ mod tests {
                 detail: None,
                 attempts: vec![],
                 toolchain_match: None,
+                differential: None,
             }),
             ..Default::default()
         });

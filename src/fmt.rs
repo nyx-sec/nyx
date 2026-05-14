@@ -538,6 +538,8 @@ fn format_inconclusive_reason(r: &crate::evidence::InconclusiveReason) -> String
                 "entry kind {attempted} unsupported for {lang:?} (supported: {supported:?})"
             )
         }
+        InconclusiveReason::NoBenignControl => "no benign control payload".to_string(),
+        InconclusiveReason::ReversedDifferential => "reversed differential".to_string(),
     }
 }
 

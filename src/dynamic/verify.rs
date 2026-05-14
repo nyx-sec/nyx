@@ -242,6 +242,7 @@ fn entry_kind_unsupported_verdict(
         detail: None,
         attempts: vec![],
         toolchain_match: None,
+        differential: None,
     }
 }
 
@@ -282,6 +283,7 @@ fn spec_derivation_failed_verdict(
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         };
     }
 
@@ -297,6 +299,7 @@ fn spec_derivation_failed_verdict(
         detail: None,
         attempts: vec![],
         toolchain_match: None,
+        differential: None,
     }
 }
 
@@ -397,6 +400,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
                     detail: None,
                     attempts: vec![],
                     toolchain_match: None,
+                    differential: None,
                 };
             }
         }
@@ -524,6 +528,7 @@ fn build_verdict(
                         detail: None,
                         attempts: attempts.clone(),
                         toolchain_match: Some(toolchain_match.to_owned()),
+                        differential: run.differential.clone(),
                     },
                     &run.harness_source,
                     &run.entry_source,
@@ -543,6 +548,7 @@ fn build_verdict(
                         detail: Some(format!("repro write failed: {}", repro_result.unwrap_err())),
                         attempts,
                         toolchain_match: Some(toolchain_match.to_owned()),
+                        differential: run.differential,
                     };
                 }
 
@@ -555,9 +561,82 @@ fn build_verdict(
                     detail: None,
                     attempts,
                     toolchain_match: Some(toolchain_match.to_owned()),
+                    differential: run.differential,
+                }
+            } else if run.no_benign_control {
+                // Phase 07 §4.1: vuln oracle + sink-hit fired but the
+                // paired benign control was missing.  Downgrade to
+                // `Inconclusive(NoBenignControl)` rather than stamping
+                // `Confirmed` from a one-sided observation.
+                VerifyResult {
+                    finding_id: finding_id.to_owned(),
+                    status: VerifyStatus::Inconclusive,
+                    triggered_payload: None,
+                    reason: None,
+                    inconclusive_reason: Some(InconclusiveReason::NoBenignControl),
+                    detail: Some(
+                        "vulnerable oracle fired but no paired benign control payload for differential confirmation".to_owned(),
+                    ),
+                    attempts,
+                    toolchain_match: Some(toolchain_match.to_owned()),
+                    differential: None,
+                }
+            } else if let Some(d) = run.differential.as_ref() {
+                // Differential ran but didn't produce `Confirmed`.  Map
+                // the rule's verdict onto the corresponding inconclusive
+                // reason or fall through to `NotConfirmed`.
+                match d.verdict {
+                    crate::evidence::DifferentialVerdict::OracleCollisionSuspected => {
+                        VerifyResult {
+                            finding_id: finding_id.to_owned(),
+                            status: VerifyStatus::Inconclusive,
+                            triggered_payload: None,
+                            reason: None,
+                            inconclusive_reason: Some(
+                                InconclusiveReason::OracleCollisionSuspected,
+                            ),
+                            detail: Some(
+                                "differential rule: both vulnerable and benign payloads fired the oracle".to_owned(),
+                            ),
+                            attempts,
+                            toolchain_match: Some(toolchain_match.to_owned()),
+                            differential: run.differential,
+                        }
+                    }
+                    crate::evidence::DifferentialVerdict::ReversedDifferential => {
+                        VerifyResult {
+                            finding_id: finding_id.to_owned(),
+                            status: VerifyStatus::Inconclusive,
+                            triggered_payload: None,
+                            reason: None,
+                            inconclusive_reason: Some(
+                                InconclusiveReason::ReversedDifferential,
+                            ),
+                            detail: Some(
+                                "differential rule: only the benign control fired the oracle".to_owned(),
+                            ),
+                            attempts,
+                            toolchain_match: Some(toolchain_match.to_owned()),
+                            differential: run.differential,
+                        }
+                    }
+                    crate::evidence::DifferentialVerdict::Confirmed
+                    | crate::evidence::DifferentialVerdict::NotConfirmed => VerifyResult {
+                        finding_id: finding_id.to_owned(),
+                        status: VerifyStatus::NotConfirmed,
+                        triggered_payload: None,
+                        reason: None,
+                        inconclusive_reason: None,
+                        detail: None,
+                        attempts,
+                        toolchain_match: Some(toolchain_match.to_owned()),
+                        differential: run.differential,
+                    },
                 }
             } else if run.oracle_collision {
-                // Oracle fired but probe didn't — likely collision.
+                // Oracle fired but the sink-hit sentinel did not —
+                // legacy single-payload collision path, predates the
+                // differential rule.
                 VerifyResult {
                     finding_id: finding_id.to_owned(),
                     status: VerifyStatus::Inconclusive,
@@ -567,6 +646,7 @@ fn build_verdict(
                     detail: Some("oracle fired but sink-reachability probe did not".to_owned()),
                     attempts,
                     toolchain_match: Some(toolchain_match.to_owned()),
+                    differential: None,
                 }
             } else {
                 VerifyResult {
@@ -578,6 +658,7 @@ fn build_verdict(
                     detail: None,
                     attempts,
                     toolchain_match: Some(toolchain_match.to_owned()),
+                    differential: None,
                 }
             }
         }
@@ -590,6 +671,7 @@ fn build_verdict(
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         },
         Err(RunError::Harness(e)) => {
             // Defence-in-depth residual for `EntryKindUnsupported` from the
@@ -631,6 +713,7 @@ fn build_verdict(
                 detail,
                 attempts: vec![],
                 toolchain_match: None,
+                differential: None,
             }
         }
         Err(RunError::BuildFailed { stderr, attempts: build_att }) => VerifyResult {
@@ -642,6 +725,7 @@ fn build_verdict(
             detail: Some(format!("build failed after {build_att} attempts: {stderr}")),
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         },
         Err(RunError::Sandbox(e)) => VerifyResult {
             finding_id: finding_id.to_owned(),
@@ -652,6 +736,7 @@ fn build_verdict(
             detail: Some(format!("sandbox failed: {e:?}")),
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         },
     }
 }
@@ -730,6 +815,7 @@ mod tests {
             detail: None,
             attempts: vec![],
             toolchain_match: Some("exact".to_owned()),
+            differential: None,
         };
 
         // Insert.
@@ -778,6 +864,7 @@ mod tests {
             detail: None,
             attempts: vec![],
             toolchain_match: Some("exact".to_owned()),
+            differential: None,
         };
 
         insert_verdict_cache(&db_path, "spec_aaa", "hash_xyz", "", "python-3.11", &result);
@@ -812,6 +899,7 @@ mod tests {
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         };
         insert_verdict_cache(db_path, "spec", "hash", "", "python-3", &result);
         assert!(!db_path.exists(), "insert must not create a new DB");
@@ -865,6 +953,7 @@ mod tests {
             detail: None,
             attempts: vec![],
             toolchain_match: Some("exact".to_owned()),
+            differential: None,
         };
 
         // Insert directly with the old corpus_version bypassing the helper.

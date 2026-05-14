@@ -73,6 +73,7 @@ fn sarif_confirmed_verdict_sets_partial_fingerprint() {
             sink_hit: true,
         }],
         toolchain_match: Some("exact".into()),
+        differential: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -105,6 +106,7 @@ fn sarif_not_confirmed_verdict_sets_partial_fingerprint() {
         detail: None,
         attempts: vec![],
         toolchain_match: Some("exact".into()),
+        differential: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -131,6 +133,7 @@ fn sarif_unsupported_verdict_sets_partial_fingerprint() {
         detail: None,
         attempts: vec![],
         toolchain_match: None,
+        differential: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -162,6 +165,7 @@ fn sarif_inconclusive_verdict_sets_partial_fingerprint() {
         detail: Some("build failed after 3 attempts".into()),
         attempts: vec![],
         toolchain_match: None,
+        differential: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -209,6 +213,7 @@ fn sarif_confirmed_verdict_nyx_dynamic_verdict_contains_triggered_payload() {
         detail: None,
         attempts: vec![],
         toolchain_match: Some("exact".into()),
+        differential: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -239,6 +244,7 @@ fn sarif_all_four_statuses_produce_partial_fingerprint() {
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         };
 
         let result = sarif_result(diag_with_verdict(verdict));

@@ -44,7 +44,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 1       | 2025-11-01 | Initial corpus (SQLi, CMDI, PATH_TRAV, SSRF, XSS) |
 /// | 2       | 2025-12-15 | SSRF OOB-variant added; oracle semantics tightened |
 /// | 3       | 2026-05-12 | Migrated to `CuratedPayload`; provenance + fixture_paths enforced; SSRF OOB-nonce slot added |
-pub const CORPUS_VERSION: u32 = 3;
+/// | 4       | 2026-05-14 | Phase 07: `benign_control` paired refs + benign payloads added to SQLI / CMDI / SSRF (file-scheme) |
+pub const CORPUS_VERSION: u32 = 4;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +57,18 @@ pub enum PayloadProvenance {
     InternalFuzzer,
     /// Derived from a public CVE or external security report.
     ExternalReport,
+}
+
+/// Reference from a vulnerable payload to its paired benign control.
+///
+/// Resolved at call time by scanning the same cap's payload slice for an
+/// `is_benign == true` entry whose `label` matches.  Stored as `&'static
+/// str` (rather than a back-pointer to [`CuratedPayload`]) so the corpus
+/// tables stay `const`-declarable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadRef {
+    /// Label of the benign-control entry inside the same cap's payload set.
+    pub label: &'static str,
 }
 
 /// A single payload entry in the curated corpus.
@@ -99,6 +112,15 @@ pub struct CuratedPayload {
     /// path and has not been migrated to
     /// [`Oracle::SinkProbe`](crate::dynamic::oracle::Oracle::SinkProbe) yet.
     pub probe_predicates: &'static [ProbePredicate],
+    /// Paired benign-control payload inside the same cap's slice.
+    ///
+    /// `Some(PayloadRef)` on a vulnerable entry means the differential rule
+    /// (Phase 07, §4.1) compares this entry's oracle firing against the
+    /// referenced benign.  `None` marks the entry as having no paired
+    /// control — the runner downgrades any would-be `Confirmed` to
+    /// [`crate::evidence::InconclusiveReason::NoBenignControl`].
+    /// Always `None` on benign entries themselves.
+    pub benign_control: Option<PayloadRef>,
 }
 
 /// Backward-compatible type alias.
@@ -185,6 +207,24 @@ pub fn payloads_for(cap: Cap) -> &'static [CuratedPayload] {
 /// Return the benign control payload for a cap, if one exists.
 pub fn benign_payload_for(cap: Cap) -> Option<&'static CuratedPayload> {
     payloads_for(cap).iter().find(|p| p.is_benign)
+}
+
+/// Resolve a [`CuratedPayload::benign_control`] reference to the matching
+/// benign entry inside the same cap's payload slice.
+///
+/// Returns `None` when the vulnerable payload has no paired control
+/// (`benign_control == None`) or when the named label is missing /
+/// non-benign in the corpus.  The runner treats the `None` result as
+/// `NoControl` and downgrades the verdict to
+/// [`crate::evidence::InconclusiveReason::NoBenignControl`].
+pub fn resolve_benign_control(
+    vuln_payload: &CuratedPayload,
+    cap: Cap,
+) -> Option<&'static CuratedPayload> {
+    let r = vuln_payload.benign_control?;
+    payloads_for(cap)
+        .iter()
+        .find(|p| p.is_benign && p.label == r.label)
 }
 
 /// Materialise the effective bytes for a payload.
@@ -367,6 +407,52 @@ mod tests {
         let p = SSRF_PAYLOADS.iter().find(|p| p.oob_nonce_slot).expect("must have OOB payload");
         assert!(materialise_bytes(p, None).is_none(), "no OOB URL → None");
     }
+
+    #[test]
+    fn benign_control_refs_resolve_for_paired_caps() {
+        let cases: &[(Cap, &str, &str)] = &[
+            (Cap::SQL_QUERY, "sqli-tautology", "sqli-benign"),
+            (Cap::SQL_QUERY, "sqli-union-nyx", "sqli-benign"),
+            (Cap::CODE_EXEC, "cmdi-echo-marker", "cmdi-benign"),
+            (Cap::FILE_IO, "path-traversal-passwd", "path-traversal-benign"),
+            (Cap::SSRF, "ssrf-file-scheme", "ssrf-benign"),
+            (Cap::HTML_ESCAPE, "xss-script-marker", "xss-benign-text"),
+        ];
+        for (cap, vuln_label, benign_label) in cases {
+            let vuln = payloads_for(*cap)
+                .iter()
+                .find(|p| p.label == *vuln_label)
+                .unwrap_or_else(|| panic!("missing vuln payload {vuln_label} for {cap:?}"));
+            let resolved = resolve_benign_control(vuln, *cap)
+                .unwrap_or_else(|| panic!("missing benign control for {vuln_label}"));
+            assert_eq!(resolved.label, *benign_label);
+            assert!(resolved.is_benign, "resolved control must be marked benign");
+        }
+    }
+
+    #[test]
+    fn oob_payload_has_no_benign_control() {
+        let p = SSRF_PAYLOADS
+            .iter()
+            .find(|p| p.oob_nonce_slot)
+            .expect("OOB payload");
+        assert!(p.benign_control.is_none(), "OOB-nonce payload is intentionally NoControl");
+        assert!(resolve_benign_control(p, Cap::SSRF).is_none());
+    }
+
+    #[test]
+    fn benign_entries_are_terminal() {
+        let caps = [Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF, Cap::HTML_ESCAPE];
+        for cap in caps {
+            for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
+                assert!(
+                    p.benign_control.is_none(),
+                    "benign payload {} must not chain to another control",
+                    p.label,
+                );
+            }
+        }
+    }
 }
 
 // ── SQLi ─────────────────────────────────────────────────────────────────────
@@ -384,6 +470,7 @@ const SQLI: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
+        benign_control: Some(PayloadRef { label: "sqli-benign" }),
     },
     CuratedPayload {
         bytes: b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
@@ -396,25 +483,60 @@ const SQLI: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
+        benign_control: Some(PayloadRef { label: "sqli-benign" }),
+    },
+    // Benign control: ordinary value that should never produce the SQL marker.
+    CuratedPayload {
+        bytes: b"benign_safe_sqli_NYX_BENIGN",
+        label: "sqli-benign",
+        oracle: Oracle::OutputContains("NYX_SQL_CONFIRMED"),
+        is_benign: true,
+        provenance: PayloadProvenance::Curated,
+        since_corpus_version: 4,
+        deprecated_at_corpus_version: None,
+        fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
+        oob_nonce_slot: false,
+        probe_predicates: &[],
+        benign_control: None,
     },
 ];
 
 // ── Command injection ─────────────────────────────────────────────────────────
-const CMDI: &[CuratedPayload] = &[CuratedPayload {
-    bytes: b"; echo NYX_PWN_CMDI",
-    label: "cmdi-echo-marker",
-    oracle: Oracle::OutputContains("NYX_PWN_CMDI"),
-    is_benign: false,
-    provenance: PayloadProvenance::Curated,
-    since_corpus_version: 1,
-    deprecated_at_corpus_version: None,
-    fixture_paths: &[
-        "tests/benchmark/corpus/rust/cmdi/cmdi_command.rs",
-        "tests/benchmark/corpus/rust/cmdi/cmdi_args.rs",
-    ],
-    oob_nonce_slot: false,
-    probe_predicates: &[],
-}];
+const CMDI: &[CuratedPayload] = &[
+    CuratedPayload {
+        bytes: b"; echo NYX_PWN_CMDI",
+        label: "cmdi-echo-marker",
+        oracle: Oracle::OutputContains("NYX_PWN_CMDI"),
+        is_benign: false,
+        provenance: PayloadProvenance::Curated,
+        since_corpus_version: 1,
+        deprecated_at_corpus_version: None,
+        fixture_paths: &[
+            "tests/benchmark/corpus/rust/cmdi/cmdi_command.rs",
+            "tests/benchmark/corpus/rust/cmdi/cmdi_args.rs",
+        ],
+        oob_nonce_slot: false,
+        probe_predicates: &[],
+        benign_control: Some(PayloadRef { label: "cmdi-benign" }),
+    },
+    // Benign control: plain text that should never produce the cmdi marker.
+    CuratedPayload {
+        bytes: b"benign_safe_cmdi_NYX_BENIGN",
+        label: "cmdi-benign",
+        oracle: Oracle::OutputContains("NYX_PWN_CMDI"),
+        is_benign: true,
+        provenance: PayloadProvenance::Curated,
+        since_corpus_version: 4,
+        deprecated_at_corpus_version: None,
+        fixture_paths: &[
+            "tests/benchmark/corpus/rust/cmdi/cmdi_command.rs",
+            "tests/benchmark/corpus/rust/cmdi/cmdi_args.rs",
+        ],
+        oob_nonce_slot: false,
+        probe_predicates: &[],
+        benign_control: None,
+    },
+];
 
 // ── Path traversal ────────────────────────────────────────────────────────────
 // Benign payload reads a known-safe file (Python's os module source path).
@@ -435,6 +557,7 @@ const PATH_TRAV: &[CuratedPayload] = &[
         ],
         oob_nonce_slot: false,
         probe_predicates: &[],
+        benign_control: Some(PayloadRef { label: "path-traversal-benign" }),
     },
     CuratedPayload {
         bytes: b"benign_safe_file_that_does_not_exist_NYX_BENIGN",
@@ -447,6 +570,7 @@ const PATH_TRAV: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/path_traversal/path_file_open.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
+        benign_control: None,
     },
 ];
 
@@ -473,6 +597,7 @@ const SSRF_PAYLOADS: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
+        benign_control: Some(PayloadRef { label: "ssrf-benign" }),
     },
     CuratedPayload {
         // `bytes` is unused when `oob_nonce_slot = true`; the runner
@@ -487,6 +612,26 @@ const SSRF_PAYLOADS: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
         oob_nonce_slot: true,
         probe_predicates: &[],
+        // OOB-nonce payloads are self-confirming via the listener; no
+        // benign counterpart is meaningful (a benign URL can never hit
+        // the nonce listener), so this entry sits at `NoControl`.
+        benign_control: None,
+    },
+    // Benign control for the file-scheme SSRF variant.  Fetched the same
+    // way as the vuln payload but cannot resolve to a body containing the
+    // `daemon:` marker.
+    CuratedPayload {
+        bytes: b"benign_safe_ssrf_NYX_BENIGN",
+        label: "ssrf-benign",
+        oracle: Oracle::OutputContains("daemon:"),
+        is_benign: true,
+        provenance: PayloadProvenance::Curated,
+        since_corpus_version: 4,
+        deprecated_at_corpus_version: None,
+        fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
+        oob_nonce_slot: false,
+        probe_predicates: &[],
+        benign_control: None,
     },
 ];
 
@@ -505,6 +650,7 @@ const XSS: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/xss/axum_html/main.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
+        benign_control: Some(PayloadRef { label: "xss-benign-text" }),
     },
     CuratedPayload {
         bytes: b"Hello World",
@@ -517,5 +663,6 @@ const XSS: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/xss/axum_html/main.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
+        benign_control: None,
     },
 ];

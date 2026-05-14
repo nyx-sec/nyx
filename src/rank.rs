@@ -1158,6 +1158,7 @@ mod tests {
                 sink_hit: true,
             }],
             toolchain_match: Some("exact".into()),
+            differential: None,
         }
     }
 
@@ -1177,6 +1178,7 @@ mod tests {
                 sink_hit: false,
             }],
             toolchain_match: Some("exact".into()),
+            differential: None,
         }
     }
 
@@ -1190,6 +1192,7 @@ mod tests {
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         }
     }
 
@@ -1203,6 +1206,7 @@ mod tests {
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         }
     }
 
@@ -1216,6 +1220,7 @@ mod tests {
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         }
     }
 

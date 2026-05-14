@@ -65,6 +65,7 @@ mod repro_determinism_tests {
                 sink_hit: true,
             }],
             toolchain_match: Some("exact".into()),
+            differential: None,
         }
     }
 

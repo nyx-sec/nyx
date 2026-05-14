@@ -52,6 +52,7 @@ fn set_verdict(
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         });
     }
 }
@@ -164,6 +165,7 @@ fn new_confirmed_fails_no_new_confirmed_gate() {
                 detail: None,
                 attempts: vec![],
                 toolchain_match: None,
+                differential: None,
             });
         }
     }

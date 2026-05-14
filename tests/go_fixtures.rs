@@ -56,6 +56,7 @@ mod go_fixture_tests {
                 detail: None,
                 attempts: vec![],
                 toolchain_match: None,
+                differential: None,
             };
         }
 

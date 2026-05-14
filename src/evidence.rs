@@ -298,6 +298,17 @@ pub enum InconclusiveReason {
         supported: Vec<EntryKind>,
         hint: String,
     },
+    /// The capability's corpus lacks a paired benign control payload, so
+    /// the differential-confirmation rule (§4.1) cannot be evaluated.
+    /// Downgrades the verdict from a would-be `Confirmed` because the
+    /// vulnerable-only firing might still be caused by a coincidental
+    /// oracle match (a benign control would rule that out).
+    NoBenignControl,
+    /// The differential rule observed `!vuln_probe_fires && benign_probe_fires`:
+    /// the benign control triggered the oracle but the vulnerable payload
+    /// did not.  Surfaces a misconfigured corpus, a swapped pair, or an
+    /// oracle that fires unconditionally; never a valid `Confirmed`.
+    ReversedDifferential,
 }
 
 /// High-level outcome of a dynamic verification attempt.
@@ -331,6 +342,76 @@ pub struct AttemptSummary {
     pub sink_hit: bool,
 }
 
+/// Outcome of the Phase 07 differential confirmation rule.
+///
+/// Reflects which side of the (vulnerable, benign-control) probe pair
+/// fired the oracle.  Stored on [`VerifyResult::differential`] so
+/// operators can see the actual rule input that produced the verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum DifferentialVerdict {
+    /// Vulnerable payload fired the oracle and the benign control did not.
+    Confirmed,
+    /// Both vulnerable and benign payloads fired the oracle — the oracle
+    /// cannot discriminate; downgrade to
+    /// [`InconclusiveReason::OracleCollisionSuspected`].
+    OracleCollisionSuspected,
+    /// Neither payload fired.
+    NotConfirmed,
+    /// Only the benign payload fired (vulnerable did not).  Surfaces a
+    /// misconfigured corpus or a swapped pair; downgrade to
+    /// [`InconclusiveReason::ReversedDifferential`].
+    ReversedDifferential,
+}
+
+/// Probe-arg snapshot stored on [`DifferentialOutcome`].
+///
+/// Mirrors `crate::dynamic::probe::ProbeArg` without depending on the
+/// `dynamic` feature.  The conversion is centralised in
+/// `crate::dynamic::differential::build_outcome`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value")]
+pub enum DifferentialProbeArg {
+    String(String),
+    Bytes(Vec<u8>),
+    Int(i64),
+}
+
+/// One probe observation captured during a differential payload run.
+///
+/// Mirrors `crate::dynamic::probe::SinkProbe` without depending on the
+/// `dynamic` feature.  Embedded inside
+/// [`DifferentialOutcome::vuln_probes`] /
+/// [`DifferentialOutcome::benign_probes`] for forensic review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifferentialProbeRecord {
+    pub sink_callee: String,
+    pub args: Vec<DifferentialProbeArg>,
+    pub captured_at_ns: u64,
+    pub payload_id: String,
+}
+
+/// Full record of a Phase 07 differential confirmation run.
+///
+/// Captures the rule's verdict plus the raw probe traces from both the
+/// vulnerable payload run and the benign-control run.  Stored on
+/// [`VerifyResult::differential`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DifferentialOutcome {
+    pub verdict: DifferentialVerdict,
+    /// Label of the vulnerable payload (matches
+    /// [`AttemptSummary::payload_label`] for the same run).
+    pub vuln_label: String,
+    /// Label of the benign-control payload.
+    pub benign_label: String,
+    /// Probe records drained from the vulnerable run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vuln_probes: Vec<DifferentialProbeRecord>,
+    /// Probe records drained from the benign run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub benign_probes: Vec<DifferentialProbeRecord>,
+}
+
 /// Result of a dynamic verification attempt for one finding.
 ///
 /// Always present when `config.scanner.verify` is true and the `dynamic`
@@ -362,6 +443,14 @@ pub struct VerifyResult {
     /// `"exact"` = precise match; `"drift"` = closest approximation used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolchain_match: Option<String>,
+    /// Phase 07 differential-confirmation trace.  Present whenever the
+    /// verifier ran both a vulnerable payload and its paired benign
+    /// control (status `Confirmed` and the `OracleCollisionSuspected` /
+    /// `ReversedDifferential` Inconclusive paths).  `None` for verdicts
+    /// that never reached the differential step (e.g. `NoPayloadsForCap`,
+    /// `BuildFailed`, `NoBenignControl`, `NotConfirmed` with vuln-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub differential: Option<DifferentialOutcome>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

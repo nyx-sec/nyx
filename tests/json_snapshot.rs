@@ -57,6 +57,7 @@ fn json_dynamic_verdict_confirmed_serialises_correctly() {
                 sink_hit: true,
             }],
             toolchain_match: Some("exact".into()),
+            differential: None,
         }),
         ..Default::default()
     });
@@ -94,6 +95,7 @@ fn json_dynamic_verdict_not_confirmed_serialises_correctly() {
             detail: None,
             attempts: vec![],
             toolchain_match: Some("exact".into()),
+            differential: None,
         }),
         ..Default::default()
     });
@@ -156,6 +158,7 @@ fn json_unsupported_verdict_has_reason() {
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         }),
         ..Default::default()
     });

@@ -71,6 +71,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
                 sink_hit: true,
             }],
             toolchain_match: Some("exact".into()),
+            differential: None,
         },
         VerifyStatus::NotConfirmed => VerifyResult {
             finding_id: "abc123".into(),
@@ -87,6 +88,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
                 sink_hit: false,
             }],
             toolchain_match: Some("exact".into()),
+            differential: None,
         },
         VerifyStatus::Unsupported => VerifyResult {
             finding_id: "abc123".into(),
@@ -97,6 +99,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             detail: None,
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         },
         VerifyStatus::Inconclusive => VerifyResult {
             finding_id: "abc123".into(),
@@ -107,6 +110,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             detail: Some("build failed after 3 attempts: linker error".into()),
             attempts: vec![],
             toolchain_match: None,
+            differential: None,
         },
     };
 

@@ -6,12 +6,16 @@
 //! the result into a [`crate::dynamic::report::VerifyResult`].
 
 use crate::dynamic::build_sandbox;
-use crate::dynamic::corpus::{benign_payload_for, materialise_bytes, payloads_for, Payload};
+use crate::dynamic::corpus::{
+    materialise_bytes, payloads_for, resolve_benign_control, Payload,
+};
+use crate::dynamic::differential;
 use crate::dynamic::harness::{self, HarnessError};
 use crate::dynamic::oracle::oracle_fired;
 use crate::dynamic::probe::{ProbeChannel, SinkProbe};
 use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
+use crate::evidence::{DifferentialOutcome, DifferentialVerdict};
 use crate::symbol::Lang;
 use std::sync::Arc;
 
@@ -31,6 +35,18 @@ pub struct RunOutcome {
     /// Harness sources for repro artifacts.
     pub harness_source: String,
     pub entry_source: String,
+    /// Phase 07 differential-confirmation trace.  Carries the verdict +
+    /// raw probe traces from both the vulnerable run and the paired
+    /// benign-control run when one was executed.  `None` when no benign
+    /// control was available (the runner sets [`Self::no_benign_control`]
+    /// in that case) or when execution never reached the differential
+    /// step.
+    pub differential: Option<DifferentialOutcome>,
+    /// `true` when a vuln payload tripped its oracle + sink-hit gate but
+    /// the matching [`crate::dynamic::corpus::CuratedPayload::benign_control`]
+    /// reference was `None` (or unresolved).  The verifier maps this to
+    /// [`crate::evidence::InconclusiveReason::NoBenignControl`].
+    pub no_benign_control: bool,
 }
 
 #[derive(Debug)]
@@ -219,11 +235,12 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
 
     // Run only vuln (non-benign) payloads in the main loop.
     let vuln_payloads: Vec<&Payload> = payloads.iter().filter(|p| !p.is_benign).collect();
-    let benign_payload = benign_payload_for(spec.expected_cap);
 
     let mut attempts = Vec::with_capacity(vuln_payloads.len());
     let mut triggered_by = None;
     let mut oracle_collision = false;
+    let mut no_benign_control = false;
+    let mut differential_outcome: Option<DifferentialOutcome> = None;
 
     for (i, payload) in vuln_payloads.iter().enumerate() {
         // Materialise payload bytes (OOB nonce-slot payloads generate a URL).
@@ -263,35 +280,57 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             }
         }
 
-        let probes: Vec<SinkProbe> = probe_channel
+        let vuln_probes: Vec<SinkProbe> = probe_channel
             .as_ref()
             .map(|ch| ch.drain())
             .unwrap_or_default();
 
-        let fired = oracle_fired(&payload.oracle, &outcome, &probes);
+        let vuln_fired = oracle_fired(&payload.oracle, &outcome, &vuln_probes);
         let sink_hit = outcome.sink_hit;
 
-        let triggered = if fired && sink_hit {
-            // Full confirmation: oracle + probe both fired.
-            // Check differential: if benign payload also triggers oracle, downgrade.
-            if let Some(benign) = benign_payload {
-                let benign_bytes = materialise_bytes(benign, None)
-                    .map(|b| b.into_owned())
-                    .unwrap_or_default();
-                if let Some(ch) = &probe_channel {
-                    let _ = ch.clear();
+        // Differential rule (Phase 07, §4.1).  Only when the vuln oracle
+        // fired *and* the in-harness sink-hit sentinel was observed do we
+        // consult the paired benign control.  Oracle-fires-without-sink
+        // stays on the legacy `oracle_collision` path so the existing
+        // `Inconclusive(OracleCollisionSuspected)` semantics survive.
+        let triggered = if vuln_fired && sink_hit {
+            match resolve_benign_control(payload, spec.expected_cap) {
+                None => {
+                    no_benign_control = true;
+                    false
                 }
-                let benign_outcome = sandbox::run(&harness, &benign_bytes, &effective_opts)?;
-                let benign_probes: Vec<SinkProbe> = probe_channel
-                    .as_ref()
-                    .map(|ch| ch.drain())
-                    .unwrap_or_default();
-                let benign_fired = oracle_fired(&benign.oracle, &benign_outcome, &benign_probes);
-                !benign_fired
-            } else {
-                true
+                Some(benign) => {
+                    let benign_bytes = materialise_bytes(benign, None)
+                        .map(|b| b.into_owned())
+                        .unwrap_or_default();
+                    if let Some(ch) = &probe_channel {
+                        let _ = ch.clear();
+                    }
+                    let benign_outcome =
+                        sandbox::run(&harness, &benign_bytes, &effective_opts)?;
+                    let benign_probes: Vec<SinkProbe> = probe_channel
+                        .as_ref()
+                        .map(|ch| ch.drain())
+                        .unwrap_or_default();
+                    let benign_fired = oracle_fired(
+                        &benign.oracle,
+                        &benign_outcome,
+                        &benign_probes,
+                    );
+                    let outcome_record = differential::build_outcome(
+                        payload.label,
+                        vuln_fired,
+                        &vuln_probes,
+                        benign.label,
+                        benign_fired,
+                        &benign_probes,
+                    );
+                    let confirmed = outcome_record.verdict == DifferentialVerdict::Confirmed;
+                    differential_outcome = Some(outcome_record);
+                    confirmed
+                }
             }
-        } else if fired && !sink_hit {
+        } else if vuln_fired && !sink_hit {
             // Oracle fired but probe didn't — likely collision.
             oracle_collision = true;
             false
@@ -302,7 +341,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         attempts.push(Attempt {
             payload_label: payload.label,
             outcome,
-            oracle_fired: fired,
+            oracle_fired: vuln_fired,
             triggered,
         });
 
@@ -320,6 +359,8 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         build_attempts,
         harness_source,
         entry_source,
+        differential: differential_outcome,
+        no_benign_control,
     })
 }
 
