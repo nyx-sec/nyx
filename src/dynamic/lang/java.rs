@@ -26,9 +26,34 @@
 //!
 //! Build container: `nyx-build-java:{toolchain_id}` (deferred; §19.1).
 
-use crate::dynamic::lang::HarnessSource;
-use crate::dynamic::spec::{HarnessSpec, PayloadSlot};
+use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+
+/// Zero-sized [`LangEmitter`] handle for Java.  Method bodies delegate to the
+/// existing free functions in this module.
+pub struct JavaEmitter;
+
+/// Entry kinds the Java emitter currently understands.  Extended in Phase 14
+/// (Track B Java vertical) to include `HttpRoute` (servlet / Spring /
+/// Quarkus) and JUnit static-method shapes.
+const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+
+impl LangEmitter for JavaEmitter {
+    fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+        emit(spec)
+    }
+
+    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+        SUPPORTED
+    }
+
+    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+        format!(
+            "java emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add servlet / Spring / Quarkus shapes in phase 14"
+        )
+    }
+}
 
 /// Emit a Java harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
@@ -180,6 +205,21 @@ mod tests {
         let spec = make_spec(PayloadSlot::Stdin);
         let err = emit(&spec).unwrap_err();
         assert_eq!(err, UnsupportedReason::EntryKindUnsupported);
+    }
+
+    #[test]
+    fn entry_kinds_supported_is_non_empty() {
+        assert!(!JavaEmitter.entry_kinds_supported().is_empty());
+        assert!(JavaEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::Function));
+    }
+
+    #[test]
+    fn entry_kind_hint_names_attempted_and_phase() {
+        let hint = JavaEmitter.entry_kind_hint(EntryKind::HttpRoute);
+        assert!(hint.contains("HttpRoute"));
+        assert!(hint.contains("phase 14"));
     }
 
     #[test]

@@ -19,9 +19,35 @@
 //! Build: no compilation step. Command is `node harness.js`.
 //! Build container: `nyx-build-node:{toolchain_id}` (deferred; §19.1).
 
-use crate::dynamic::lang::HarnessSource;
-use crate::dynamic::spec::{HarnessSpec, PayloadSlot};
+use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+
+/// Zero-sized [`LangEmitter`] handle for JavaScript / TypeScript (one
+/// emitter, both langs share the same Node.js dispatch).  Method bodies
+/// delegate to the existing free functions in this module.
+pub struct JavaScriptEmitter;
+
+/// Entry kinds the JS / TS emitter currently understands.  Extended in
+/// Phase 13 (Track B JS + TS vertical) to include `HttpRoute` (Express /
+/// Koa / Next), `CliSubcommand`, etc.
+const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+
+impl LangEmitter for JavaScriptEmitter {
+    fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+        emit(spec)
+    }
+
+    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+        SUPPORTED
+    }
+
+    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+        format!(
+            "javascript / typescript emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add Express / Koa / Next shapes in phase 13"
+        )
+    }
+}
 
 /// Emit a Node.js harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
@@ -228,6 +254,21 @@ mod tests {
         let spec = make_spec(PayloadSlot::Param(0));
         let harness = emit(&spec).unwrap();
         assert_eq!(harness.entry_subpath, Some("entry.js".to_owned()));
+    }
+
+    #[test]
+    fn entry_kinds_supported_is_non_empty() {
+        assert!(!JavaScriptEmitter.entry_kinds_supported().is_empty());
+        assert!(JavaScriptEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::Function));
+    }
+
+    #[test]
+    fn entry_kind_hint_names_attempted_and_phase() {
+        let hint = JavaScriptEmitter.entry_kind_hint(EntryKind::HttpRoute);
+        assert!(hint.contains("HttpRoute"));
+        assert!(hint.contains("phase 13"));
     }
 
     #[test]

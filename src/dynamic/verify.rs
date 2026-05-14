@@ -167,6 +167,60 @@ fn insert_verdict_cache(
     );
 }
 
+/// Build an `Inconclusive(EntryKindUnsupported)` verdict for a finding whose
+/// derived spec named an entry kind the lang emitter does not yet handle.
+///
+/// `attempted` is the spec's entry kind; `lang` is the spec's language; the
+/// supported list and human-readable hint come from the lang emitter via
+/// [`crate::dynamic::lang::entry_kinds_supported`] /
+/// [`crate::dynamic::lang::entry_kind_hint`], so adding new shapes in later
+/// Track B phases automatically narrows what gets routed here without
+/// touching this function.
+///
+/// The caller passes the originating [`Diag`] when one is in scope (for the
+/// pre-flight gate) or `None` otherwise (for the residual harness-emit path,
+/// where only the spec is available); telemetry derives `lang`/`path` from
+/// the diag when present and falls back to the spec otherwise.
+fn entry_kind_unsupported_verdict(
+    finding_id: String,
+    diag: Option<&Diag>,
+    spec_entry_path: &str,
+    lang: crate::symbol::Lang,
+    attempted: crate::dynamic::spec::EntryKind,
+) -> VerifyResult {
+    let supported = crate::dynamic::lang::entry_kinds_supported(lang).to_vec();
+    let hint = crate::dynamic::lang::entry_kind_hint(lang, attempted);
+    let inconclusive_reason = InconclusiveReason::EntryKindUnsupported {
+        lang,
+        attempted,
+        supported,
+        hint,
+    };
+    let event = match diag {
+        Some(d) => TelemetryEvent::no_spec(
+            d,
+            VerifyStatus::Inconclusive,
+            Some(inconclusive_reason.clone()),
+        ),
+        None => TelemetryEvent::no_spec_for_path(
+            spec_entry_path,
+            VerifyStatus::Inconclusive,
+            Some(inconclusive_reason.clone()),
+        ),
+    };
+    telemetry::emit(&event);
+    VerifyResult {
+        finding_id,
+        status: VerifyStatus::Inconclusive,
+        triggered_payload: None,
+        reason: None,
+        inconclusive_reason: Some(inconclusive_reason),
+        detail: None,
+        attempts: vec![],
+        toolchain_match: None,
+    }
+}
+
 /// Decide whether a [`HarnessSpec::from_finding_opts`] failure should surface
 /// as `Unsupported` (the finding is genuinely unmodellable) or
 /// `Inconclusive(SpecDerivationFailed)` (the rule namespace or sink evidence
@@ -278,6 +332,21 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             return spec_derivation_failed_verdict(finding_id, diag, reason);
         }
     };
+
+    // Pre-flight gate: surface a structured `Inconclusive(EntryKindUnsupported)`
+    // up-front when the spec's [`EntryKind`] is not in the lang emitter's
+    // supported list.  Without this, the same condition would degrade silently
+    // through `lang::emit -> HarnessError::Unsupported` and lose the
+    // supported-list / hint context the operator needs to triage.
+    if !spec.entry_kind_is_supported() {
+        return entry_kind_unsupported_verdict(
+            finding_id,
+            Some(diag),
+            &spec.entry_file,
+            spec.lang,
+            spec.entry_kind,
+        );
+    }
 
     // Scan the entry file's directory for sensitive files (§17.3 mount filter).
     // If the entry file itself matches a sensitive pattern, refuse to run it:
@@ -498,6 +567,25 @@ fn build_verdict(
             toolchain_match: None,
         },
         Err(RunError::Harness(e)) => {
+            // EntryKindUnsupported coming back from the lang emitter is
+            // promoted to a structured `Inconclusive(EntryKindUnsupported)`
+            // verdict so the operator sees the supported list + hint, not a
+            // bare `Unsupported`. The pre-flight gate in `verify_finding`
+            // catches the common case (entry_kind decided by spec
+            // derivation); this arm covers the residual where an emitter
+            // rejects a payload-slot / shape combination internally.
+            if let crate::dynamic::harness::HarnessError::Unsupported(
+                UnsupportedReason::EntryKindUnsupported,
+            ) = &e
+            {
+                return entry_kind_unsupported_verdict(
+                    finding_id.to_owned(),
+                    None,
+                    &spec.entry_file,
+                    spec.lang,
+                    spec.entry_kind,
+                );
+            }
             // Typed `Unsupported(reason)` carries its semantics in `reason`; the
             // free-form `detail` is reserved for `Inconclusive`/unexpected paths
             // (cf. §10 decision 14 and the verify_result_json_shape contract).

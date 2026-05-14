@@ -8,6 +8,7 @@
 
 use crate::commands::scan::Diag;
 use crate::patterns::Severity;
+use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -188,6 +189,36 @@ pub enum UnsupportedReason {
     LangUnsupported,
 }
 
+/// What kind of entry point a harness should call.
+///
+/// Lives in `evidence.rs` (not `dynamic::spec`) so that
+/// [`InconclusiveReason::EntryKindUnsupported`] can name the attempted /
+/// supported variants without depending on the `dynamic` feature. The
+/// canonical accessor is `crate::dynamic::spec::EntryKind` (re-export).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EntryKind {
+    /// Free function. Build a `main` that calls it directly.
+    Function,
+    /// HTTP route. Stand up the framework, send a request.
+    HttpRoute,
+    /// CLI subcommand. Spawn the binary with crafted argv.
+    CliSubcommand,
+    /// Library API surface. Build an in-process consumer.
+    LibraryApi,
+}
+
+impl fmt::Display for EntryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Self::Function => "Function",
+            Self::HttpRoute => "HttpRoute",
+            Self::CliSubcommand => "CliSubcommand",
+            Self::LibraryApi => "LibraryApi",
+        };
+        f.write_str(s)
+    }
+}
+
 /// Spec-derivation strategy attempted by [`crate::dynamic::spec::HarnessSpec::from_finding_opts`].
 ///
 /// Lives in `evidence.rs` (not `dynamic::spec`) so that
@@ -250,6 +281,16 @@ pub enum InconclusiveReason {
     /// *should* have worked but did not.
     SpecDerivationFailed {
         tried: Vec<SpecDerivationStrategy>,
+        hint: String,
+    },
+    /// The lang-specific harness emitter does not yet support the spec's
+    /// [`EntryKind`].  Carries the language, the attempted entry kind, the
+    /// list of entry kinds the emitter currently understands, and a
+    /// human-actionable hint pointing at the phase that will add support.
+    EntryKindUnsupported {
+        lang: Lang,
+        attempted: EntryKind,
+        supported: Vec<EntryKind>,
         hint: String,
     },
 }

@@ -13,9 +13,34 @@
 //! - `PayloadSlot::EnvVar(name)` — set env var before calling.
 //! - Other slots produce `UnsupportedReason::EntryKindUnsupported`.
 
-use crate::dynamic::lang::HarnessSource;
-use crate::dynamic::spec::{HarnessSpec, PayloadSlot};
+use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+
+/// Zero-sized [`LangEmitter`] handle for Python.  Registered in the
+/// `lang::dispatch` table; method bodies delegate to the existing free
+/// functions in this module.
+pub struct PythonEmitter;
+
+/// Entry kinds the Python emitter currently understands.  Extended in Phase 12
+/// (Track B Python vertical) to include `HttpRoute`, `CliSubcommand`, etc.
+const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+
+impl LangEmitter for PythonEmitter {
+    fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+        emit(spec)
+    }
+
+    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+        SUPPORTED
+    }
+
+    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+        format!(
+            "python emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add framework + CLI shapes in phase 12"
+        )
+    }
+}
 
 /// Emit a Python harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
@@ -235,6 +260,21 @@ mod tests {
         assert_eq!(module_name("src/handlers/login.py"), "login");
         assert_eq!(module_name("app.py"), "app");
         assert_eq!(module_name("no_ext"), "no_ext");
+    }
+
+    #[test]
+    fn entry_kinds_supported_is_non_empty() {
+        assert!(!PythonEmitter.entry_kinds_supported().is_empty());
+        assert!(PythonEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::Function));
+    }
+
+    #[test]
+    fn entry_kind_hint_names_attempted_and_phase() {
+        let hint = PythonEmitter.entry_kind_hint(EntryKind::HttpRoute);
+        assert!(hint.contains("HttpRoute"));
+        assert!(hint.contains("phase 12"));
     }
 
     #[test]

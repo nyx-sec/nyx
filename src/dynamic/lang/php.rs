@@ -18,9 +18,34 @@
 //! Build: no compilation step. Command is `php harness.php`.
 //! Build container: `nyx-build-php:{toolchain_id}` (deferred; §19.1).
 
-use crate::dynamic::lang::HarnessSource;
-use crate::dynamic::spec::{HarnessSpec, PayloadSlot};
+use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+
+/// Zero-sized [`LangEmitter`] handle for PHP.  Method bodies delegate to the
+/// existing free functions in this module.
+pub struct PhpEmitter;
+
+/// Entry kinds the PHP emitter currently understands.  Extended in Phase 15
+/// (Track B PHP vertical) to include `HttpRoute` (Slim / Laravel / Symfony
+/// closures) and `CliSubcommand` (`$argv`).
+const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+
+impl LangEmitter for PhpEmitter {
+    fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+        emit(spec)
+    }
+
+    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+        SUPPORTED
+    }
+
+    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+        format!(
+            "php emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add Slim / Laravel / Symfony route + CLI shapes in phase 15"
+        )
+    }
+}
 
 /// Emit a PHP harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
@@ -191,6 +216,21 @@ mod tests {
         let spec = make_spec(PayloadSlot::Param(0));
         let harness = emit(&spec).unwrap();
         assert_eq!(harness.entry_subpath, Some("entry.php".to_owned()));
+    }
+
+    #[test]
+    fn entry_kinds_supported_is_non_empty() {
+        assert!(!PhpEmitter.entry_kinds_supported().is_empty());
+        assert!(PhpEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::Function));
+    }
+
+    #[test]
+    fn entry_kind_hint_names_attempted_and_phase() {
+        let hint = PhpEmitter.entry_kind_hint(EntryKind::HttpRoute);
+        assert!(hint.contains("HttpRoute"));
+        assert!(hint.contains("phase 15"));
     }
 
     #[test]

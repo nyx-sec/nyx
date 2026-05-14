@@ -47,18 +47,12 @@ pub struct EntryRef {
     pub function: String,
 }
 
-/// What kind of entry point the harness should call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EntryKind {
-    /// Free function. Build a `main` that calls it directly.
-    Function,
-    /// HTTP route. Stand up the framework, send a request.
-    HttpRoute,
-    /// CLI subcommand. Spawn the binary with crafted argv.
-    CliSubcommand,
-    /// Library API surface. Build an in-process consumer.
-    LibraryApi,
-}
+/// Re-export of [`crate::evidence::EntryKind`].
+///
+/// The canonical definition lives in `evidence.rs` so that
+/// [`crate::evidence::InconclusiveReason::EntryKindUnsupported`] can name the
+/// attempted / supported variants without depending on the `dynamic` feature.
+pub use crate::evidence::EntryKind;
 
 /// Where the payload goes when the harness fires.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +202,23 @@ impl HarnessSpec {
         }
 
         Err(UnsupportedReason::SpecDerivationFailed)
+    }
+
+    /// True when [`HarnessSpec::entry_kind`] is in
+    /// [`crate::dynamic::lang::entry_kinds_supported`] for [`HarnessSpec::lang`].
+    ///
+    /// Strategies 1–4 may stamp non-`Function` entry kinds (route handlers,
+    /// CLI subcommands) onto the spec when the rule namespace or the
+    /// resolved [`crate::summary::FuncSummary`] indicates the enclosing
+    /// function is externally driven; not every lang emitter understands
+    /// those shapes yet (Tracks B.12–B.16 add them per language).  The
+    /// verifier consults this gate so unsupported shapes route to
+    /// [`crate::evidence::InconclusiveReason::EntryKindUnsupported`] with a
+    /// concrete supported list and hint, rather than degrading silently to
+    /// `Unsupported`.
+    pub fn entry_kind_is_supported(&self) -> bool {
+        let supported = crate::dynamic::lang::entry_kinds_supported(self.lang);
+        supported.contains(&self.entry_kind)
     }
 
     /// Returns the ordered list of derivation strategies that

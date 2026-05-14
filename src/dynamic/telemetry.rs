@@ -122,6 +122,41 @@ impl TelemetryEvent {
             path: Some(diag.path.clone()),
         }
     }
+
+    /// Telemetry event for a verdict reached without a [`Diag`] handle.
+    ///
+    /// Used by `verify_finding` when emitting an
+    /// `Inconclusive(EntryKindUnsupported)` from inside `build_verdict` —
+    /// the diag is not threaded that far, but the spec's `entry_file` and
+    /// the inconclusive reason carry enough signal to populate the event.
+    /// `cap` and `finding_id` default to empty / `0`; downstream consumers
+    /// already handle that path for `no_spec` events.
+    pub fn no_spec_for_path(
+        path: &str,
+        status: VerifyStatus,
+        inconclusive_reason: Option<InconclusiveReason>,
+    ) -> Self {
+        let lang = Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(crate::symbol::Lang::from_extension)
+            .map(|l| l.as_str().to_owned())
+            .unwrap_or_else(|| "unknown".to_owned());
+        Self {
+            ts: chrono::Utc::now().to_rfc3339(),
+            finding_id: String::new(),
+            spec_hash: String::new(),
+            lang,
+            cap: "0".to_owned(),
+            status: format!("{status:?}"),
+            toolchain_id: String::new(),
+            toolchain_match: String::new(),
+            duration_ms: 0,
+            build_attempts: 0,
+            inconclusive_reason: inconclusive_reason.map(|r| format!("{r:?}")),
+            path: Some(path.to_owned()),
+        }
+    }
 }
 
 /// Write a telemetry event to the events log.

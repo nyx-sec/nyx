@@ -527,6 +527,16 @@ fn format_inconclusive_reason(r: &crate::evidence::InconclusiveReason) -> String
                 format!("spec derivation failed ({hint})")
             }
         }
+        InconclusiveReason::EntryKindUnsupported {
+            lang,
+            attempted,
+            supported,
+            ..
+        } => {
+            format!(
+                "entry kind {attempted} unsupported for {lang:?} (supported: {supported:?})"
+            )
+        }
     }
 }
 

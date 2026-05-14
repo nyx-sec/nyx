@@ -21,10 +21,35 @@
 //!
 //! HTML_ESCAPE is n/a for Rust (§15.4).
 
-use crate::dynamic::lang::HarnessSource;
-use crate::dynamic::spec::{HarnessSpec, PayloadSlot};
+use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::labels::Cap;
+
+/// Zero-sized [`LangEmitter`] handle for Rust.  Method bodies delegate to the
+/// existing free functions in this module.
+pub struct RustEmitter;
+
+/// Entry kinds the Rust emitter currently understands.  Extended in Phase 16
+/// (Track B Rust + C/C++ vertical) to include `HttpRoute` (`actix_web`,
+/// `axum`), `CliSubcommand` (clap), and `LibraryApi` (libfuzzer).
+const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+
+impl LangEmitter for RustEmitter {
+    fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+        emit(spec)
+    }
+
+    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+        SUPPORTED
+    }
+
+    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+        format!(
+            "rust emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add actix / axum / clap / libfuzzer shapes in phase 16"
+        )
+    }
+}
 
 /// Emit a Rust harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
@@ -245,6 +270,21 @@ mod tests {
         let cargo = generate_cargo_toml(Cap::SQL_QUERY);
         assert!(cargo.contains("name = \"nyx_harness\""));
         assert!(cargo.contains("path = \"src/main.rs\""));
+    }
+
+    #[test]
+    fn entry_kinds_supported_is_non_empty() {
+        assert!(!RustEmitter.entry_kinds_supported().is_empty());
+        assert!(RustEmitter
+            .entry_kinds_supported()
+            .contains(&EntryKind::Function));
+    }
+
+    #[test]
+    fn entry_kind_hint_names_attempted_and_phase() {
+        let hint = RustEmitter.entry_kind_hint(EntryKind::HttpRoute);
+        assert!(hint.contains("HttpRoute"));
+        assert!(hint.contains("phase 16"));
     }
 
     #[test]
