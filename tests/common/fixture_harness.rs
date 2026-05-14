@@ -16,8 +16,8 @@
 use nyx_scanner::commands::scan::Diag;
 use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
 use nyx_scanner::evidence::{
-    Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
-    VerifyResult, VerifyStatus,
+    Confidence, EntryKind, Evidence, FlowStep, FlowStepKind, InconclusiveReason,
+    UnsupportedReason, VerifyResult, VerifyStatus,
 };
 use nyx_scanner::labels::Cap;
 use nyx_scanner::patterns::{FindingCategory, Severity};
@@ -189,6 +189,238 @@ fn stage_fixture(src: &Path, tmp: &TempDir, copy: CopyStrategy) -> PathBuf {
             // builder for the workdir-relative `src/entry.rs` view.
             src.to_path_buf()
         }
+    }
+}
+
+/// Phase 12 — per-shape acceptance helper.
+///
+/// Stages `fixture_root/<shape>/<file>` into a tempdir, builds a
+/// [`HarnessSpec`] with the caller's `entry_kind` / `payload_slot`,
+/// then executes it through [`nyx_scanner::dynamic::runner::run_spec`]
+/// directly.  Returns a [`VerifyResult`]-shaped summary so callers can
+/// reuse the same `assert_confirmed` / `assert_not_confirmed` helpers
+/// the older golden-based suite uses.
+///
+/// Bypasses [`verify_finding`] because the public verifier derives the
+/// payload slot from the synthetic Diag's flow steps and always lands
+/// on [`nyx_scanner::dynamic::spec::PayloadSlot::Param`], which the
+/// HTTP / pytest / CLI shapes cannot honour.  Going through the runner
+/// directly lets the test pin the slot the spec under test actually
+/// expects (e.g. [`nyx_scanner::dynamic::spec::PayloadSlot::QueryParam`]
+/// for HTTP routes).
+#[allow(clippy::too_many_arguments)]
+pub fn run_shape_fixture(
+    shape_dir: &str,
+    file: &str,
+    func: &str,
+    cap: Cap,
+    sink_line: u32,
+    entry_kind: EntryKind,
+    payload_slot: nyx_scanner::dynamic::spec::PayloadSlot,
+) -> VerifyResult {
+    use nyx_scanner::dynamic::runner::{run_spec, RunError};
+    use nyx_scanner::dynamic::sandbox::SandboxOptions;
+    use nyx_scanner::dynamic::spec::{HarnessSpec, SpecDerivationStrategy};
+    use nyx_scanner::symbol::Lang;
+
+    let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/dynamic_fixtures/python")
+        .join(shape_dir);
+    let fixture_src = fixture_root.join(file);
+
+    let tmp = TempDir::new().expect("create tempdir");
+    let dst = tmp.path().join(file);
+    std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
+
+    // SAFETY: env mutation is serialised by FIXTURE_LOCK and cleared at end.
+    unsafe {
+        std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
+        std::env::set_var(
+            "NYX_TELEMETRY_PATH",
+            tmp.path().join("events.jsonl").to_str().unwrap(),
+        );
+    }
+
+    let entry_file = dst.to_string_lossy().into_owned();
+    // Per-fixture stable hash so workdir layout / cache key stays
+    // distinct between shapes and between vuln / benign fixtures.
+    let mut digest = blake3::Hasher::new();
+    digest.update(shape_dir.as_bytes());
+    digest.update(b"|");
+    digest.update(file.as_bytes());
+    let spec_hash = format!("{:016x}", {
+        let bytes = digest.finalize();
+        u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+    });
+
+    let spec = HarnessSpec {
+        finding_id: spec_hash.clone(),
+        entry_file: entry_file.clone(),
+        entry_name: func.to_owned(),
+        entry_kind,
+        lang: Lang::Python,
+        toolchain_id: "python-3".into(),
+        payload_slot,
+        expected_cap: cap,
+        constraint_hints: vec![],
+        sink_file: entry_file,
+        sink_line,
+        spec_hash,
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
+    };
+
+    let opts = SandboxOptions::default();
+    let outcome = run_spec(&spec, &opts);
+
+    unsafe {
+        std::env::remove_var("NYX_REPRO_BASE");
+        std::env::remove_var("NYX_TELEMETRY_PATH");
+    }
+
+    // Project the [`RunOutcome`] / [`RunError`] back onto a
+    // [`VerifyResult`] shape so callers can assert against
+    // [`VerifyStatus`] directly without learning the runner's API.
+    match outcome {
+        Ok(run) => {
+            let status = if run.triggered_by.is_some() {
+                VerifyStatus::Confirmed
+            } else if run.oracle_collision {
+                VerifyStatus::Inconclusive
+            } else {
+                VerifyStatus::NotConfirmed
+            };
+            VerifyResult {
+                finding_id: spec.finding_id.clone(),
+                status,
+                triggered_payload: run
+                    .triggered_by
+                    .and_then(|i| run.attempts.get(i))
+                    .map(|a| a.payload_label.to_owned()),
+                reason: None,
+                inconclusive_reason: None,
+                detail: None,
+                attempts: vec![],
+                toolchain_match: None,
+                differential: None,
+            }
+        }
+        Err(RunError::NoPayloadsForCap) => VerifyResult {
+            finding_id: spec.finding_id.clone(),
+            status: VerifyStatus::Unsupported,
+            triggered_payload: None,
+            reason: Some(UnsupportedReason::NoPayloadsForCap),
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![],
+            toolchain_match: None,
+            differential: None,
+        },
+        Err(e) => VerifyResult {
+            finding_id: spec.finding_id.clone(),
+            status: VerifyStatus::Inconclusive,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: None,
+            detail: Some(format!("{e:?}")),
+            attempts: vec![],
+            toolchain_match: None,
+            differential: None,
+        },
+    }
+}
+
+/// Phase 12 — golden harness snapshot.
+///
+/// Stages `<shape>/<file>` into a tempdir, builds a [`HarnessSpec`] for
+/// the supplied entry kind / payload slot, emits the per-shape harness
+/// via [`nyx_scanner::dynamic::lang::emit`], and either writes the
+/// resulting source to `<shape>/<file>.golden_harness.py` (under
+/// `NYX_UPDATE_GOLDENS=1`) or diffs against the existing snapshot.  The
+/// emitter is deterministic, so the snapshot doubles as documentation
+/// of the per-shape harness shape.
+#[allow(clippy::too_many_arguments)]
+pub fn run_harness_snapshot(
+    shape_dir: &str,
+    file: &str,
+    func: &str,
+    cap: Cap,
+    sink_line: u32,
+    entry_kind: EntryKind,
+    payload_slot: nyx_scanner::dynamic::spec::PayloadSlot,
+) {
+    use nyx_scanner::dynamic::lang;
+    use nyx_scanner::dynamic::spec::{HarnessSpec, SpecDerivationStrategy};
+    use nyx_scanner::symbol::Lang;
+
+    let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let fixture_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/dynamic_fixtures/python")
+        .join(shape_dir);
+    let fixture_src = fixture_root.join(file);
+    let snapshot_path = fixture_root.join(format!("{file}.golden_harness.py"));
+
+    // Stage into tempdir so the spec.entry_file path matches what the
+    // verifier sees at runtime.
+    let tmp = TempDir::new().expect("create tempdir");
+    let dst = tmp.path().join(file);
+    std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
+    let entry_file = dst.to_string_lossy().into_owned();
+
+    let spec = HarnessSpec {
+        finding_id: "0000000000000001".into(),
+        entry_file: entry_file.clone(),
+        entry_name: func.to_owned(),
+        entry_kind,
+        lang: Lang::Python,
+        toolchain_id: "python-3".into(),
+        payload_slot,
+        expected_cap: cap,
+        constraint_hints: vec![],
+        sink_file: entry_file,
+        sink_line,
+        // Snapshot uses a fixed spec_hash so the emitted source stays
+        // stable; the runner regenerates the real hash at verify time.
+        spec_hash: "snapshotsnapshot".into(),
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
+    };
+
+    let harness = lang::emit(&spec).expect("python emitter must produce a harness");
+
+    // Strip the tempdir prefix so the snapshot is stable across runs.
+    let tmp_prefix = tmp.path().to_string_lossy().into_owned();
+    let normalised = harness
+        .source
+        .replace(&tmp_prefix, "<TMPDIR>")
+        .replace(file, "<ENTRY_FILE>");
+
+    if std::env::var("NYX_UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
+        std::fs::write(&snapshot_path, &normalised).unwrap_or_else(|e| {
+            panic!("write harness snapshot {}: {e}", snapshot_path.display())
+        });
+        return;
+    }
+
+    let expected = std::fs::read_to_string(&snapshot_path).unwrap_or_else(|e| {
+        panic!(
+            "missing harness snapshot {}: {e}\n\
+             current harness source:\n{normalised}\n\
+             rerun with NYX_UPDATE_GOLDENS=1 to seed it.",
+            snapshot_path.display()
+        )
+    });
+
+    if expected != normalised {
+        panic!(
+            "harness snapshot drift for {shape_dir}/{file}:\n\
+             ---- expected ----\n{expected}\n\
+             ---- actual ----\n{normalised}\n\
+             rerun with NYX_UPDATE_GOLDENS=1 if intended."
+        );
     }
 }
 

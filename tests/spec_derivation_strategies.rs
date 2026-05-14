@@ -320,14 +320,16 @@ mod spec_strategies {
     /// `Inconclusive(EntryKindUnsupported { lang, attempted, supported, hint })`
     /// rather than `Unsupported`. End-to-end coverage:
     ///   - construct an HttpRoute spec via `derive_from_callgraph_entry`
-    ///     (Python emitter currently advertises `[Function]` only);
+    ///     against a language whose emitter still advertises `[Function]`
+    ///     only (Rust, post Phase 12 — the Python emitter now supports
+    ///     `HttpRoute` and would short-circuit the gate);
     ///   - drive it through `verify_finding`;
     ///   - assert the verdict shape matches the promise.
     #[test]
     fn entry_kind_gate_promotes_unsupported_to_inconclusive_with_hint() {
         let mut diag = make_diag(
-            "py.http.flask_route",
-            "tests/dynamic_fixtures/spec_strategies/callgraph_entry_http.py",
+            "rs.http.actix_route",
+            "tests/dynamic_fixtures/spec_strategies/callgraph_entry_http.rs",
             8,
         );
         let mut ev = Evidence::default();
@@ -357,7 +359,7 @@ mod spec_strategies {
                 supported,
                 hint,
             }) => {
-                assert_eq!(lang, nyx_scanner::symbol::Lang::Python);
+                assert_eq!(lang, nyx_scanner::symbol::Lang::Rust);
                 assert!(matches!(attempted, EntryKind::HttpRoute));
                 assert!(
                     !supported.is_empty(),
@@ -365,7 +367,7 @@ mod spec_strategies {
                 );
                 assert!(
                     supported.contains(&EntryKind::Function),
-                    "Python emitter must advertise Function support; got {supported:?}"
+                    "Rust emitter must advertise Function support; got {supported:?}"
                 );
                 assert!(
                     !hint.is_empty(),
