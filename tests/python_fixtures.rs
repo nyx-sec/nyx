@@ -1,36 +1,33 @@
 //! Python fixture integration tests (§15 Pillar B acceptance gate).
 //!
-//! Runs the dynamic verification pipeline against each Python fixture and
-//! asserts the expected verdict. Requires `--features dynamic` and Python3
-//! to be available on PATH.
+//! Each fixture is run through the dynamic verification pipeline; its
+//! verdict is then compared against the per-fixture golden under
+//! `tests/dynamic_fixtures/python/{name}.golden.json`. Refresh the goldens
+//! via `NYX_UPDATE_GOLDENS=1 ./scripts/update_dynamic_goldens.sh`.
 //!
-//! Verdicts under test:
-//! - positive  → Confirmed
-//! - negative  → NotConfirmed
-//! - unsupported → Unsupported(ConfidenceTooLow) [spec-level rejection]
-//! - adversarial → Inconclusive(OracleCollisionSuspected)
-//!
-//! Tests are skipped when Python3 is not available.
+//! Tests that need python3 on PATH skip with an `eprintln!` when it is
+//! missing; `Confidence::Low` rows do not need python3 because the verifier
+//! short-circuits before harness execution.
+
+mod common;
 
 #[cfg(feature = "dynamic")]
 mod python_fixture_tests {
+    use crate::common::fixture_harness::{
+        run_fixture_and_compare_to_golden, CopyStrategy, FixtureSpec,
+    };
     use nyx_scanner::commands::scan::Diag;
     use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
     use nyx_scanner::evidence::{
-        Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
-        VerifyStatus,
+        Confidence, Evidence, FlowStep, FlowStepKind, UnsupportedReason, VerifyStatus,
     };
     use nyx_scanner::labels::Cap;
     use nyx_scanner::patterns::{FindingCategory, Severity};
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
-    // Serialize all fixture tests to prevent races on process-global state
-    // (NYX_REPRO_BASE and NYX_TELEMETRY_PATH env vars).
-    static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Returns `true` if `python3` is available.
+    /// `python3` available on PATH? Tests that need an interpreter return
+    /// early with an `eprintln!` when this is false.
     fn python3_available() -> bool {
         std::process::Command::new("python3")
             .arg("--version")
@@ -39,337 +36,204 @@ mod python_fixture_tests {
             .unwrap_or(false)
     }
 
-    fn fixture_path(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/dynamic_fixtures/python")
-            .join(name)
-    }
-
-    /// Run a fixture and return the verdict.
-    ///
-    /// Acquires `FIXTURE_LOCK` for the full duration to prevent races on the
-    /// process-global NYX_REPRO_BASE / NYX_TELEMETRY_PATH env vars.
-    /// `set_current_dir` is NOT used here: `harness::copy_entry_file` resolves
-    /// the entry file via its absolute path, so CWD is irrelevant.
-    fn run_fixture(fixture: &str, func: &str, cap: Cap, sink_line: u32) -> nyx_scanner::evidence::VerifyResult {
-        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        let path = fixture_path(fixture);
-        // Copy fixture to a temp dir so the harness can import it.
-        let tmp = TempDir::new().unwrap();
-        let dst = tmp.path().join(Path::new(fixture).file_name().unwrap());
-        std::fs::copy(&path, &dst).expect("fixture file must exist");
-
-        // Set up repro and telemetry to temp dirs to avoid side effects.
-        unsafe {
-            std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
-            std::env::set_var("NYX_TELEMETRY_PATH", tmp.path().join("events.jsonl").to_str().unwrap());
+    fn spec(fixture: &'static str, func: &'static str, cap: Cap, sink_line: u32) -> FixtureSpec<'static> {
+        FixtureSpec {
+            lang_dir: "python",
+            fixture,
+            func,
+            cap,
+            sink_line,
+            confidence: Confidence::High,
+            copy: CopyStrategy::PreserveName,
         }
+    }
 
-        // Use the temp dir copy as the fixture path (absolute — no CWD change needed).
-        let diag = make_diag(&dst, func, cap, sink_line);
-
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&diag, &opts);
-
-        unsafe {
-            std::env::remove_var("NYX_REPRO_BASE");
-            std::env::remove_var("NYX_TELEMETRY_PATH");
+    fn low_spec(
+        fixture: &'static str,
+        func: &'static str,
+        cap: Cap,
+        sink_line: u32,
+    ) -> FixtureSpec<'static> {
+        FixtureSpec {
+            lang_dir: "python",
+            fixture,
+            func,
+            cap,
+            sink_line,
+            confidence: Confidence::Low,
+            copy: CopyStrategy::PreserveName,
         }
-
-        result
     }
 
-    // ── SQLi fixtures ────────────────────────────────────────────────────────
+    // ── SQLi ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn sqli_positive_is_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("sqli_positive.py", "login", Cap::SQL_QUERY, 17);
-        assert_eq!(
-            result.status, VerifyStatus::Confirmed,
-            "sqli_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status, result.detail
-        );
+    fn sqli_positive_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("sqli_positive.py", "login", Cap::SQL_QUERY, 17));
     }
 
     #[test]
-    fn sqli_negative_is_not_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("sqli_negative.py", "login", Cap::SQL_QUERY, 12);
-        assert_eq!(
-            result.status, VerifyStatus::NotConfirmed,
-            "sqli_negative must be NotConfirmed; got {:?}",
-            result.status
-        );
+    fn sqli_negative_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("sqli_negative.py", "login", Cap::SQL_QUERY, 12));
     }
 
     #[test]
-    fn sqli_unsupported_is_unsupported() {
-        // Low-confidence Diag → Unsupported(ConfidenceTooLow) without execution.
-        let path = fixture_path("sqli_unsupported.py");
-        let mut d = make_diag(&path, "find_user", Cap::SQL_QUERY, 10);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn sqli_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec(
+            "sqli_unsupported.py",
+            "find_user",
+            Cap::SQL_QUERY,
+            10,
+        ));
     }
 
     #[test]
-    fn sqli_adversarial_is_inconclusive_collision() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        // The adversarial fixture prints the oracle marker WITHOUT going through
-        // any SQL sink — so the oracle fires but the probe at the (nonexistent)
-        // SQL execute line does not.
-        // We point the sink line at a line that doesn't exist in the file (999)
-        // so the settrace probe can't fire.
-        let result = run_fixture("sqli_adversarial.py", "get_value", Cap::SQL_QUERY, 999);
-        // Oracle fires (prints "NYX_SQL_CONFIRMED") but probe doesn't (line 999 missing).
-        assert_eq!(
-            result.status, VerifyStatus::Inconclusive,
-            "sqli_adversarial must be Inconclusive; got {:?}",
-            result.status
-        );
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected),
-            "adversarial must be OracleCollisionSuspected"
-        );
+    fn sqli_adversarial_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("sqli_adversarial.py", "get_value", Cap::SQL_QUERY, 999));
     }
 
-    // ── Command injection fixtures ───────────────────────────────────────────
+    // ── Command injection ────────────────────────────────────────────────────
 
     #[test]
-    fn cmdi_positive_is_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("cmdi_positive.py", "run_ping", Cap::CODE_EXEC, 13);
-        assert_eq!(
-            result.status, VerifyStatus::Confirmed,
-            "cmdi_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status, result.detail
-        );
+    fn cmdi_positive_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("cmdi_positive.py", "run_ping", Cap::CODE_EXEC, 13));
     }
 
     #[test]
-    fn cmdi_negative_is_not_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("cmdi_negative.py", "run_ping", Cap::CODE_EXEC, 17);
-        assert_eq!(
-            result.status, VerifyStatus::NotConfirmed,
-            "cmdi_negative must be NotConfirmed; got {:?}",
-            result.status
-        );
+    fn cmdi_negative_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("cmdi_negative.py", "run_ping", Cap::CODE_EXEC, 17));
     }
 
     #[test]
-    fn cmdi_unsupported_is_unsupported() {
-        let path = fixture_path("cmdi_unsupported.py");
-        let mut d = make_diag(&path, "process_request", Cap::CODE_EXEC, 9);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn cmdi_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec(
+            "cmdi_unsupported.py",
+            "process_request",
+            Cap::CODE_EXEC,
+            9,
+        ));
     }
 
     #[test]
-    fn cmdi_adversarial_is_inconclusive_collision() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("cmdi_adversarial.py", "process_input", Cap::CODE_EXEC, 999);
-        assert_eq!(result.status, VerifyStatus::Inconclusive);
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected)
-        );
+    fn cmdi_adversarial_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec(
+            "cmdi_adversarial.py",
+            "process_input",
+            Cap::CODE_EXEC,
+            999,
+        ));
     }
 
-    // ── File I/O fixtures ────────────────────────────────────────────────────
+    // ── File I/O ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn fileio_positive_is_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("fileio_positive.py", "read_file", Cap::FILE_IO, 11);
-        assert_eq!(
-            result.status, VerifyStatus::Confirmed,
-            "fileio_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status, result.detail
-        );
+    fn fileio_positive_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("fileio_positive.py", "read_file", Cap::FILE_IO, 11));
     }
 
     #[test]
-    fn fileio_negative_is_not_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("fileio_negative.py", "read_file", Cap::FILE_IO, 18);
-        assert_eq!(
-            result.status, VerifyStatus::NotConfirmed,
-            "fileio_negative must be NotConfirmed; got {:?}",
-            result.status
-        );
+    fn fileio_negative_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("fileio_negative.py", "read_file", Cap::FILE_IO, 18));
     }
 
     #[test]
-    fn fileio_unsupported_is_unsupported() {
-        let path = fixture_path("fileio_unsupported.py");
-        let mut d = make_diag(&path, "read_config", Cap::FILE_IO, 7);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn fileio_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec(
+            "fileio_unsupported.py",
+            "read_config",
+            Cap::FILE_IO,
+            7,
+        ));
     }
 
     #[test]
-    fn fileio_adversarial_is_inconclusive_collision() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("fileio_adversarial.py", "read_file", Cap::FILE_IO, 999);
-        assert_eq!(result.status, VerifyStatus::Inconclusive);
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected)
-        );
+    fn fileio_adversarial_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("fileio_adversarial.py", "read_file", Cap::FILE_IO, 999));
     }
 
-    // ── SSRF fixtures ────────────────────────────────────────────────────────
+    // ── SSRF ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn ssrf_positive_is_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("ssrf_positive.py", "fetch_url", Cap::SSRF, 11);
-        assert_eq!(
-            result.status, VerifyStatus::Confirmed,
-            "ssrf_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status, result.detail
-        );
+    fn ssrf_positive_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("ssrf_positive.py", "fetch_url", Cap::SSRF, 11));
     }
 
     #[test]
-    fn ssrf_negative_is_not_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("ssrf_negative.py", "fetch_url", Cap::SSRF, 26);
-        // Blocked by host validation — oracle won't fire.
-        assert_eq!(
-            result.status, VerifyStatus::NotConfirmed,
-            "ssrf_negative must be NotConfirmed; got {:?}",
-            result.status
-        );
+    fn ssrf_negative_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("ssrf_negative.py", "fetch_url", Cap::SSRF, 26));
     }
 
     #[test]
-    fn ssrf_unsupported_is_unsupported() {
-        let path = fixture_path("ssrf_unsupported.py");
-        let mut d = make_diag(&path, "fetch", Cap::SSRF, 9);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn ssrf_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec("ssrf_unsupported.py", "fetch", Cap::SSRF, 9));
     }
 
     #[test]
-    fn ssrf_adversarial_is_inconclusive_collision() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("ssrf_adversarial.py", "fetch_url", Cap::SSRF, 999);
-        assert_eq!(result.status, VerifyStatus::Inconclusive);
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected)
-        );
+    fn ssrf_adversarial_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec("ssrf_adversarial.py", "fetch_url", Cap::SSRF, 999));
     }
 
-    // ── XSS fixtures ─────────────────────────────────────────────────────────
+    // ── XSS ──────────────────────────────────────────────────────────────────
 
     #[test]
-    fn xss_positive_is_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("xss_positive.py", "render_comment", Cap::HTML_ESCAPE, 9);
-        assert_eq!(
-            result.status, VerifyStatus::Confirmed,
-            "xss_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status, result.detail
-        );
+    fn xss_positive_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec(
+            "xss_positive.py",
+            "render_comment",
+            Cap::HTML_ESCAPE,
+            9,
+        ));
     }
 
     #[test]
-    fn xss_negative_is_not_confirmed() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("xss_negative.py", "render_comment", Cap::HTML_ESCAPE, 11);
-        assert_eq!(
-            result.status, VerifyStatus::NotConfirmed,
-            "xss_negative must be NotConfirmed; got {:?}",
-            result.status
-        );
+    fn xss_negative_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec(
+            "xss_negative.py",
+            "render_comment",
+            Cap::HTML_ESCAPE,
+            11,
+        ));
     }
 
     #[test]
-    fn xss_unsupported_is_unsupported() {
-        let path = fixture_path("xss_unsupported.py");
-        let mut d = make_diag(&path, "render", Cap::HTML_ESCAPE, 7);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn xss_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec(
+            "xss_unsupported.py",
+            "render",
+            Cap::HTML_ESCAPE,
+            7,
+        ));
     }
 
     #[test]
-    fn xss_adversarial_is_inconclusive_collision() {
-        if !python3_available() {
-            eprintln!("SKIP: python3 not available");
-            return;
-        }
-        let result = run_fixture("xss_adversarial.py", "render_comment", Cap::HTML_ESCAPE, 999);
-        assert_eq!(result.status, VerifyStatus::Inconclusive);
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected)
-        );
+    fn xss_adversarial_matches_golden() {
+        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        run_fixture_and_compare_to_golden(&spec(
+            "xss_adversarial.py",
+            "render_comment",
+            Cap::HTML_ESCAPE,
+            999,
+        ));
     }
 
-    // ── Secrets fixture ───────────────────────────────────────────────────────
+    // ── Cross-cutting tests retained verbatim ────────────────────────────────
 
+    /// Telemetry must not contain literal secret strings from the fixture.
+    /// Independent of the golden contract: it inspects the side-channel.
     #[test]
     fn secret_not_in_telemetry_after_verify() {
         if !python3_available() {
@@ -377,7 +241,9 @@ mod python_fixture_tests {
             return;
         }
 
-        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::common::fixture_harness::FIXTURE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let tmp = TempDir::new().unwrap();
         let telemetry_path = tmp.path().join("events.jsonl");
@@ -391,15 +257,12 @@ mod python_fixture_tests {
         let tmp_fix = tmp.path().join("sqli_positive.py");
         let _ = std::fs::copy(&fixture, &tmp_fix);
 
-        // No set_current_dir: entry file is absolute, copy_entry_file resolves it directly.
         let diag = make_diag(&tmp_fix, "login", Cap::SQL_QUERY, 17);
         let opts = VerifyOptions::default();
         let _ = verify_finding(&diag, &opts);
 
-        // Check telemetry doesn't contain any secret patterns.
         if telemetry_path.exists() {
             let content = std::fs::read_to_string(&telemetry_path).unwrap_or_default();
-            // Telemetry must not contain the fake AWS key.
             assert!(
                 !content.contains("AKIAFAKETEST00000000"),
                 "telemetry must not contain fake AWS key; got: {content}"
@@ -412,15 +275,11 @@ mod python_fixture_tests {
         }
     }
 
-    // ── Mount-filter gate ─────────────────────────────────────────────────────
-
-    /// If the entry file itself matches a sensitive-file pattern (e.g. `id_rsa*`),
-    /// verify_finding must return Unsupported(RequiredFileRedactedForSecrets).
-    /// No Python3 needed — the check fires before harness execution.
+    /// Sensitive-filename gate fires before any harness execution; no
+    /// python3 needed.
     #[test]
     fn sensitive_entry_file_is_unsupported() {
         let tmp = TempDir::new().unwrap();
-        // "id_rsa.py" matches the id_rsa* sensitive pattern in mount_filter.
         let entry = tmp.path().join("id_rsa.py");
         std::fs::write(&entry, "def run(x): pass\n").unwrap();
 
@@ -428,12 +287,7 @@ mod python_fixture_tests {
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
 
-        assert_eq!(
-            result.status,
-            VerifyStatus::Unsupported,
-            "sensitive entry file must be Unsupported; got {:?}",
-            result.status
-        );
+        assert_eq!(result.status, VerifyStatus::Unsupported);
         match &result.reason {
             Some(UnsupportedReason::RequiredFileRedactedForSecrets(_)) => {}
             other => panic!("expected RequiredFileRedactedForSecrets, got {other:?}"),

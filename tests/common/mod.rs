@@ -2,6 +2,13 @@
 
 pub mod recall;
 
+// Only `python_fixtures` and `rust_fixtures` reference these symbols; every
+// other test binary pulls `mod common` in and would otherwise emit
+// per-binary `dead_code` warnings for the whole submodule.
+#[cfg(feature = "dynamic")]
+#[allow(dead_code)]
+pub mod fixture_harness;
+
 use nyx_scanner::commands::scan::Diag;
 use nyx_scanner::utils::config::{AnalysisMode, Config};
 use serde::Deserialize;

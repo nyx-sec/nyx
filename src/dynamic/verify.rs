@@ -6,6 +6,7 @@
 use crate::callgraph::CallGraph;
 use crate::commands::scan::Diag;
 use crate::dynamic::corpus::{payloads_for, CORPUS_VERSION};
+use crate::dynamic::oob::OobListener;
 use crate::dynamic::report::{AttemptSummary, VerifyResult, VerifyStatus};
 use crate::dynamic::runner::{run_spec, RunError};
 use crate::dynamic::sandbox::{toolchain_id_with_digest, SandboxOptions};
@@ -54,6 +55,17 @@ pub struct VerifyOptions {
 
 impl VerifyOptions {
     /// Build `VerifyOptions` from scanner config.
+    ///
+    /// Binds a per-scan [`OobListener`] on a free loopback port and attaches
+    /// it to `sandbox.oob_listener`. The listener is held by `Arc` so every
+    /// per-finding clone of `VerifyOptions` shares the same accept thread;
+    /// it is torn down via the `OobListener::Drop` impl once the last
+    /// `Arc` is released at end of scan.
+    ///
+    /// If `OobListener::bind` fails (e.g. all loopback ports are in use),
+    /// the field stays `None`; the runner skips OOB-callback payloads
+    /// (`src/dynamic/runner.rs` `oob_nonce_slot` branch) while non-OOB
+    /// payloads continue to run against their existing oracle.
     pub fn from_config(config: &Config) -> Self {
         use crate::dynamic::sandbox::SandboxBackend;
         let backend = match config.scanner.verify_backend.as_str() {
@@ -61,9 +73,11 @@ impl VerifyOptions {
             "process" => SandboxBackend::Process,
             _ => SandboxBackend::Auto,
         };
+        let oob_listener = OobListener::bind().ok().map(Arc::new);
         Self {
             sandbox: SandboxOptions {
                 backend,
+                oob_listener,
                 ..SandboxOptions::default()
             },
             project_root: None,

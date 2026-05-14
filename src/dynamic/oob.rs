@@ -5,6 +5,17 @@
 //! URL path.  The lifetime of the listener is per-scan: create one
 //! [`OobListener`] at scan start, drop it when the scan finishes.
 //!
+//! # Wiring
+//!
+//! As of Phase 05 the listener is load-bearing: [`crate::dynamic::verify::VerifyOptions::from_config`]
+//! constructs one per scan via [`OobListener::bind`] and threads it into
+//! [`crate::dynamic::sandbox::SandboxOptions::oob_listener`]. The runner
+//! polls [`OobListener::was_nonce_hit`] after each sandbox run (see
+//! `src/dynamic/runner.rs`) and toggles
+//! [`crate::dynamic::sandbox::SandboxOutcome::oob_callback_seen`] when a
+//! probe arrives — that is the only signal that turns an OOB-only sink
+//! (e.g. blind SSRF) into a `Confirmed` verdict.
+//!
 //! # Nonce URL
 //!
 //! The caller generates a per-finding nonce (UUID4 hex) and embeds it in

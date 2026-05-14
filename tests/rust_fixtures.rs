@@ -1,396 +1,224 @@
 //! Rust fixture integration tests (Phase 04 acceptance gate).
 //!
-//! Runs the dynamic verification pipeline against each Rust fixture and
-//! asserts the expected verdict. Requires `--features dynamic` and a
-//! working `cargo` toolchain on PATH.
+//! Each fixture is run through the dynamic verification pipeline; its
+//! verdict is then compared against the per-fixture golden under
+//! `tests/dynamic_fixtures/rust/{name}.golden.json`. Refresh the goldens
+//! via `NYX_UPDATE_GOLDENS=1 ./scripts/update_dynamic_goldens.sh`.
 //!
-//! Fixture entry points follow the convention:
-//!   `pub fn run(payload: &str)` in `tests/dynamic_fixtures/rust/{name}.rs`
-//!
-//! The harness emitter wraps each fixture in a generated `src/main.rs` that
-//! reads `NYX_PAYLOAD` from the environment and calls `entry::run(&payload)`.
-//!
-//! Build note: the first run per capability compiles a Cargo project; subsequent
-//! runs with differing entry files hit the build cache only when Cargo.toml and
-//! src/entry.rs are identical (the cache key includes the entry file hash).
-//! Expect 2-4 compilations per full test run (one per unique dependency set).
-//!
-//! Run with: `cargo nextest run --features dynamic --test rust_fixtures`
+//! Run with: `cargo nextest run --features dynamic --test rust_fixtures`.
+
+mod common;
 
 #[cfg(feature = "dynamic")]
 mod rust_fixture_tests {
+    use crate::common::fixture_harness::{
+        run_fixture_and_compare_to_golden, CopyStrategy, FixtureSpec,
+    };
     use nyx_scanner::commands::scan::Diag;
     use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
     use nyx_scanner::evidence::{
-        Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
-        VerifyStatus,
+        Confidence, Evidence, FlowStep, FlowStepKind,
     };
     use nyx_scanner::labels::Cap;
     use nyx_scanner::patterns::{FindingCategory, Severity};
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
-    use tempfile::TempDir;
 
-    // Serialize all fixture tests: prevents races on process-global env vars
-    // (NYX_REPRO_BASE, NYX_TELEMETRY_PATH) and the shared build cache dir.
-    static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
-
-    fn fixture_path(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/dynamic_fixtures/rust")
-            .join(name)
+    fn spec(fixture: &'static str, func: &'static str, cap: Cap, sink_line: u32) -> FixtureSpec<'static> {
+        FixtureSpec {
+            lang_dir: "rust",
+            fixture,
+            func,
+            cap,
+            sink_line,
+            confidence: Confidence::High,
+            copy: CopyStrategy::RustEntry,
+        }
     }
 
-    /// Run a Rust fixture through the full dynamic verification pipeline.
-    ///
-    /// The fixture file is copied to a temp dir as `src/entry.rs`.
-    /// `NYX_REPRO_BASE` and `NYX_TELEMETRY_PATH` are redirected to temp dirs.
-    fn run_fixture(
-        fixture: &str,
-        func: &str,
+    fn low_spec(
+        fixture: &'static str,
+        func: &'static str,
         cap: Cap,
         sink_line: u32,
-    ) -> nyx_scanner::evidence::VerifyResult {
-        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        let path = fixture_path(fixture);
-
-        let tmp = TempDir::new().unwrap();
-        // Rust fixtures live at src/entry.rs inside the harness workdir;
-        // the Diag's entry_file points to the fixture source on disk.
-        let dst_dir = tmp.path().join("src");
-        std::fs::create_dir_all(&dst_dir).unwrap();
-        let dst = dst_dir.join("entry.rs");
-        std::fs::copy(&path, &dst).expect("fixture file must exist");
-
-        unsafe {
-            std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
-            std::env::set_var(
-                "NYX_TELEMETRY_PATH",
-                tmp.path().join("events.jsonl").to_str().unwrap(),
-            );
+    ) -> FixtureSpec<'static> {
+        FixtureSpec {
+            lang_dir: "rust",
+            fixture,
+            func,
+            cap,
+            sink_line,
+            confidence: Confidence::Low,
+            copy: CopyStrategy::RustEntry,
         }
-
-        // Point the Diag at the original fixture path (absolute), not the copy.
-        // The harness emitter reads the file at entry_file to extract source.
-        let diag = make_diag(&path, func, cap, sink_line);
-
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&diag, &opts);
-
-        unsafe {
-            std::env::remove_var("NYX_REPRO_BASE");
-            std::env::remove_var("NYX_TELEMETRY_PATH");
-        }
-
-        result
     }
 
-    // ── SQLi fixtures ────────────────────────────────────────────────────────
+    // ── SQLi ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn sqli_positive_is_confirmed() {
-        let result = run_fixture("sqli_positive.rs", "run", Cap::SQL_QUERY, 18);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Confirmed,
-            "sqli_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
-        assert!(
-            result.triggered_payload.is_some(),
-            "Confirmed result must have triggered_payload"
-        );
+    fn sqli_positive_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("sqli_positive.rs", "run", Cap::SQL_QUERY, 18));
     }
 
     #[test]
-    fn sqli_negative_is_not_confirmed() {
-        let result = run_fixture("sqli_negative.rs", "run", Cap::SQL_QUERY, 22);
-        assert_eq!(
-            result.status,
-            VerifyStatus::NotConfirmed,
-            "sqli_negative must be NotConfirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
+    fn sqli_negative_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("sqli_negative.rs", "run", Cap::SQL_QUERY, 22));
     }
 
     #[test]
-    fn sqli_unsupported_is_unsupported() {
-        let path = fixture_path("sqli_unsupported.rs");
-        let mut d = make_diag(&path, "find_user", Cap::SQL_QUERY, 10);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn sqli_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec(
+            "sqli_unsupported.rs",
+            "find_user",
+            Cap::SQL_QUERY,
+            10,
+        ));
     }
 
     #[test]
-    fn sqli_adversarial_is_inconclusive_collision() {
-        // Adversarial prints oracle marker without __NYX_SINK_HIT__:
-        //   oracle_fired = true, sink_hit = false → OracleCollisionSuspected.
-        let result = run_fixture("sqli_adversarial.rs", "run", Cap::SQL_QUERY, 999);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Inconclusive,
-            "sqli_adversarial must be Inconclusive; got {:?}",
-            result.status
-        );
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected),
-            "adversarial must be OracleCollisionSuspected"
-        );
+    fn sqli_adversarial_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("sqli_adversarial.rs", "run", Cap::SQL_QUERY, 999));
     }
 
-    // ── Command injection fixtures ───────────────────────────────────────────
+    // ── Command injection ────────────────────────────────────────────────────
 
     #[test]
-    fn cmdi_positive_is_confirmed() {
-        let result = run_fixture("cmdi_positive.rs", "run", Cap::CODE_EXEC, 17);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Confirmed,
-            "cmdi_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
+    fn cmdi_positive_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("cmdi_positive.rs", "run", Cap::CODE_EXEC, 17));
     }
 
     #[test]
-    fn cmdi_negative_is_not_confirmed() {
-        let result = run_fixture("cmdi_negative.rs", "run", Cap::CODE_EXEC, 17);
-        assert_eq!(
-            result.status,
-            VerifyStatus::NotConfirmed,
-            "cmdi_negative must be NotConfirmed; got {:?}",
-            result.status
-        );
+    fn cmdi_negative_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("cmdi_negative.rs", "run", Cap::CODE_EXEC, 17));
     }
 
     #[test]
-    fn cmdi_unsupported_is_unsupported() {
-        let path = fixture_path("cmdi_unsupported.rs");
-        let mut d = make_diag(&path, "execute", Cap::CODE_EXEC, 9);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn cmdi_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec(
+            "cmdi_unsupported.rs",
+            "execute",
+            Cap::CODE_EXEC,
+            9,
+        ));
     }
 
     #[test]
-    fn cmdi_adversarial_is_inconclusive_collision() {
-        let result = run_fixture("cmdi_adversarial.rs", "run", Cap::CODE_EXEC, 999);
-        assert_eq!(result.status, VerifyStatus::Inconclusive);
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected)
-        );
+    fn cmdi_adversarial_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("cmdi_adversarial.rs", "run", Cap::CODE_EXEC, 999));
     }
 
-    // ── File I/O fixtures ────────────────────────────────────────────────────
+    // ── File I/O ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn fileio_positive_is_confirmed() {
-        let result = run_fixture("fileio_positive.rs", "run", Cap::FILE_IO, 7);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Confirmed,
-            "fileio_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
+    fn fileio_positive_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("fileio_positive.rs", "run", Cap::FILE_IO, 7));
     }
 
     #[test]
-    fn fileio_negative_is_not_confirmed() {
-        let result = run_fixture("fileio_negative.rs", "run", Cap::FILE_IO, 17);
-        assert_eq!(
-            result.status,
-            VerifyStatus::NotConfirmed,
-            "fileio_negative must be NotConfirmed; got {:?}",
-            result.status
-        );
+    fn fileio_negative_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("fileio_negative.rs", "run", Cap::FILE_IO, 17));
     }
 
     #[test]
-    fn fileio_unsupported_is_unsupported() {
-        let path = fixture_path("fileio_unsupported.rs");
-        let mut d = make_diag(&path, "read", Cap::FILE_IO, 8);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn fileio_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec(
+            "fileio_unsupported.rs",
+            "read",
+            Cap::FILE_IO,
+            8,
+        ));
     }
 
     #[test]
-    fn fileio_adversarial_is_inconclusive_collision() {
-        let result = run_fixture("fileio_adversarial.rs", "run", Cap::FILE_IO, 999);
-        assert_eq!(result.status, VerifyStatus::Inconclusive);
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected)
-        );
+    fn fileio_adversarial_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("fileio_adversarial.rs", "run", Cap::FILE_IO, 999));
     }
 
-    // ── SSRF fixtures ────────────────────────────────────────────────────────
+    // ── SSRF ─────────────────────────────────────────────────────────────────
 
     #[test]
-    fn ssrf_positive_is_confirmed() {
-        let result = run_fixture("ssrf_positive.rs", "run", Cap::SSRF, 7);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Confirmed,
-            "ssrf_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
+    fn ssrf_positive_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("ssrf_positive.rs", "run", Cap::SSRF, 7));
     }
 
     #[test]
-    fn ssrf_negative_is_not_confirmed() {
-        let result = run_fixture("ssrf_negative.rs", "run", Cap::SSRF, 13);
-        assert_eq!(
-            result.status,
-            VerifyStatus::NotConfirmed,
-            "ssrf_negative must be NotConfirmed; got {:?}",
-            result.status
-        );
+    fn ssrf_negative_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("ssrf_negative.rs", "run", Cap::SSRF, 13));
     }
 
     #[test]
-    fn ssrf_unsupported_is_unsupported() {
-        let path = fixture_path("ssrf_unsupported.rs");
-        let mut d = make_diag(&path, "get", Cap::SSRF, 8);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn ssrf_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec("ssrf_unsupported.rs", "get", Cap::SSRF, 8));
     }
 
     #[test]
-    fn ssrf_adversarial_is_inconclusive_collision() {
-        let result = run_fixture("ssrf_adversarial.rs", "run", Cap::SSRF, 999);
-        assert_eq!(result.status, VerifyStatus::Inconclusive);
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected)
-        );
+    fn ssrf_adversarial_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("ssrf_adversarial.rs", "run", Cap::SSRF, 999));
     }
 
-    // ── XSS fixtures ─────────────────────────────────────────────────────────
+    // ── XSS ──────────────────────────────────────────────────────────────────
 
     #[test]
-    fn xss_positive_is_confirmed() {
-        let result = run_fixture("xss_positive.rs", "run", Cap::HTML_ESCAPE, 11);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Confirmed,
-            "xss_positive must be Confirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
-        assert!(
-            result.triggered_payload.is_some(),
-            "Confirmed result must have triggered_payload"
-        );
+    fn xss_positive_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("xss_positive.rs", "run", Cap::HTML_ESCAPE, 11));
     }
 
     #[test]
-    fn xss_negative_is_not_confirmed() {
-        let result = run_fixture("xss_negative.rs", "run", Cap::HTML_ESCAPE, 15);
-        assert_eq!(
-            result.status,
-            VerifyStatus::NotConfirmed,
-            "xss_negative must be NotConfirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
+    fn xss_negative_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("xss_negative.rs", "run", Cap::HTML_ESCAPE, 15));
     }
 
     #[test]
-    fn xss_unsupported_is_unsupported() {
-        let path = fixture_path("xss_unsupported.rs");
-        let mut d = make_diag(&path, "render", Cap::HTML_ESCAPE, 14);
-        d.confidence = Some(Confidence::Low);
-        let opts = VerifyOptions::default();
-        let result = verify_finding(&d, &opts);
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
+    fn xss_unsupported_matches_golden() {
+        run_fixture_and_compare_to_golden(&low_spec(
+            "xss_unsupported.rs",
+            "render",
+            Cap::HTML_ESCAPE,
+            14,
+        ));
     }
 
     #[test]
-    fn xss_adversarial_is_inconclusive_collision() {
-        let result = run_fixture("xss_adversarial.rs", "run", Cap::HTML_ESCAPE, 999);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Inconclusive,
-            "xss_adversarial must be Inconclusive; got {:?}",
-            result.status
-        );
-        assert_eq!(
-            result.inconclusive_reason,
-            Some(InconclusiveReason::OracleCollisionSuspected),
-            "adversarial must be OracleCollisionSuspected"
-        );
+    fn xss_adversarial_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec(
+            "xss_adversarial.rs",
+            "run",
+            Cap::HTML_ESCAPE,
+            999,
+        ));
     }
 
-    // ── Variant fixtures (smoke-test second positive paths) ──────────────────
+    // ── Smoke-test second positive paths ─────────────────────────────────────
 
     #[test]
-    fn cmdi_positive2_is_confirmed() {
-        let result = run_fixture("cmdi_positive2.rs", "run", Cap::CODE_EXEC, 17);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Confirmed,
-            "cmdi_positive2 must be Confirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
+    fn cmdi_positive2_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("cmdi_positive2.rs", "run", Cap::CODE_EXEC, 17));
     }
 
     #[test]
-    fn fileio_positive2_is_confirmed() {
-        let result = run_fixture("fileio_positive2.rs", "run", Cap::FILE_IO, 11);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Confirmed,
-            "fileio_positive2 must be Confirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
+    fn fileio_positive2_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("fileio_positive2.rs", "run", Cap::FILE_IO, 11));
     }
 
     #[test]
-    fn ssrf_positive2_is_confirmed() {
-        let result = run_fixture("ssrf_positive2.rs", "run", Cap::SSRF, 7);
-        assert_eq!(
-            result.status,
-            VerifyStatus::Confirmed,
-            "ssrf_positive2 must be Confirmed; got {:?} (detail: {:?})",
-            result.status,
-            result.detail
-        );
+    fn ssrf_positive2_matches_golden() {
+        run_fixture_and_compare_to_golden(&spec("ssrf_positive2.rs", "run", Cap::SSRF, 7));
     }
 
-    // ── Harness architecture: non-Python-specific gate ───────────────────────
+    // ── Pipeline non-panic gate ──────────────────────────────────────────────
 
-    /// Rust fixture must produce a VerifyResult (not panic or ICE).
-    /// This is the Phase 04 acceptance gate: the dynamic pipeline handles
-    /// a compiled-language finding without Python-specific assumptions.
+    /// Confirms the Rust pipeline produces a VerifyResult (not a panic/ICE).
+    /// Independent of the golden contract: this is a structural assertion.
     #[test]
     fn rust_pipeline_does_not_panic() {
-        let result = run_fixture("sqli_positive.rs", "run", Cap::SQL_QUERY, 18);
-        // Any verdict is acceptable; the test asserts non-panic only.
-        let _ = result;
+        let _guard = crate::common::fixture_harness::FIXTURE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/rust/sqli_positive.rs");
+        let diag = make_diag(&path, "run", Cap::SQL_QUERY, 18);
+        let opts = VerifyOptions::default();
+        let _ = verify_finding(&diag, &opts);
     }
-
-    // ── Helpers ─────────────────────────────────────────────────────────────
 
     fn make_diag(path: &Path, func: &str, cap: Cap, sink_line: u32) -> Diag {
         let path_str = path.to_string_lossy().into_owned();
