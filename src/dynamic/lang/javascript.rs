@@ -19,9 +19,11 @@
 //! Build: no compilation step. Command is `node harness.js`.
 //! Build container: `nyx-build-node:{toolchain_id}` (deferred; §19.1).
 
+use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+use crate::utils::project::DetectedFramework;
 
 /// Zero-sized [`LangEmitter`] handle for JavaScript / TypeScript (one
 /// emitter, both langs share the same Node.js dispatch).  Method bodies
@@ -46,6 +48,96 @@ impl LangEmitter for JavaScriptEmitter {
         format!(
             "javascript / typescript emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add Express / Koa / Next shapes in phase 13"
         )
+    }
+
+    fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
+        materialize_node(env)
+    }
+}
+
+/// Phase 09 — Track D.2: emit a `package.json` covering every captured
+/// dep plus the framework deps inferred from the manifest detector.
+///
+/// Versions default to `"*"` so npm resolves to a recent compatible
+/// release.  Re-used by the TypeScript emitter.
+pub fn materialize_node(env: &Environment) -> RuntimeArtifacts {
+    let mut artifacts = RuntimeArtifacts::new();
+    let mut deps: Vec<(String, &'static str)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for d in &env.direct_deps {
+        if is_node_builtin(d) {
+            continue;
+        }
+        if seen.insert(d.clone()) {
+            deps.push((d.clone(), "*"));
+        }
+    }
+    for fw in &env.frameworks {
+        if let Some(name) = node_framework_pkg_name(*fw) {
+            if seen.insert(name.to_owned()) {
+                deps.push((name.to_owned(), "*"));
+            }
+        }
+    }
+    deps.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut body = String::with_capacity(128);
+    body.push_str("{\n");
+    body.push_str("  \"name\": \"nyx-harness\",\n");
+    body.push_str("  \"version\": \"0.0.0\",\n");
+    body.push_str("  \"private\": true,\n");
+    body.push_str("  \"dependencies\": {\n");
+    for (i, (name, ver)) in deps.iter().enumerate() {
+        body.push_str("    \"");
+        body.push_str(name);
+        body.push_str("\": \"");
+        body.push_str(ver);
+        body.push('"');
+        if i + 1 != deps.len() {
+            body.push(',');
+        }
+        body.push('\n');
+    }
+    body.push_str("  }\n");
+    body.push_str("}\n");
+    artifacts.push("package.json", body);
+    artifacts
+}
+
+fn is_node_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "fs"
+            | "path"
+            | "http"
+            | "https"
+            | "url"
+            | "crypto"
+            | "stream"
+            | "util"
+            | "child_process"
+            | "os"
+            | "events"
+            | "buffer"
+            | "querystring"
+            | "zlib"
+            | "assert"
+            | "process"
+            | "net"
+            | "tls"
+            | "dns"
+            | "readline"
+            | "tty"
+    )
+}
+
+fn node_framework_pkg_name(fw: DetectedFramework) -> Option<&'static str> {
+    match fw {
+        DetectedFramework::Express => Some("express"),
+        DetectedFramework::Koa => Some("koa"),
+        DetectedFramework::Fastify => Some("fastify"),
+        _ => None,
     }
 }
 

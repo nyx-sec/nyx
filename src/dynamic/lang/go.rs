@@ -24,6 +24,7 @@
 //!
 //! Build container: `nyx-build-go:{toolchain_id}` (deferred; §19.1).
 
+use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
@@ -51,6 +52,59 @@ impl LangEmitter for GoEmitter {
             "go emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add net/http, gin, flag.Parse shapes in phase 15"
         )
     }
+
+    fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
+        materialize_go(env)
+    }
+}
+
+/// Phase 09 — Track D.2: synthesise a `go.mod` listing every captured
+/// third-party import path.  Standard-library imports are skipped via
+/// [`is_go_stdlib`].
+pub fn materialize_go(env: &Environment) -> RuntimeArtifacts {
+    let mut artifacts = RuntimeArtifacts::new();
+    let go_version = env
+        .toolchain
+        .version_string
+        .split('.')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".");
+    let go_version = if go_version.is_empty() {
+        "1.22".to_owned()
+    } else {
+        go_version
+    };
+    let mut deps: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in &env.direct_deps {
+        if is_go_stdlib(d) {
+            continue;
+        }
+        if seen.insert(d.clone()) {
+            deps.push(d.clone());
+        }
+    }
+    deps.sort_unstable();
+
+    let mut body = String::with_capacity(128);
+    body.push_str("module nyx_harness\n\n");
+    body.push_str(&format!("go {go_version}\n"));
+    if !deps.is_empty() {
+        body.push_str("\nrequire (\n");
+        for d in &deps {
+            body.push_str(&format!("\t{d} latest\n"));
+        }
+        body.push_str(")\n");
+    }
+    artifacts.push("go.mod", body);
+    artifacts
+}
+
+fn is_go_stdlib(path: &str) -> bool {
+    // Anything without a "." in the first path segment is a stdlib pkg.
+    let first = path.split('/').next().unwrap_or(path);
+    !first.contains('.')
 }
 
 /// Source of the `__nyx_probe` shim for the Go harness (Phase 06 —

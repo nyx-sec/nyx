@@ -1,0 +1,5 @@
+[project]
+name = "flask_three_deps"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["Flask>=2.3", "requests>=2.30", "Jinja2>=3.1"]

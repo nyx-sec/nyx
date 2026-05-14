@@ -18,6 +18,7 @@
 //! Build: no compilation step. Command is `php harness.php`.
 //! Build container: `nyx-build-php:{toolchain_id}` (deferred; §19.1).
 
+use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
@@ -45,6 +46,40 @@ impl LangEmitter for PhpEmitter {
             "php emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add Slim / Laravel / Symfony route + CLI shapes in phase 15"
         )
     }
+
+    fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
+        materialize_php(env)
+    }
+}
+
+/// Phase 09 — Track D.2: synthesise a `composer.json` with the captured
+/// PHP version pin and (where known) the framework deps.  Direct
+/// imports of namespaced classes are too coarse to pin without a
+/// vendor→package registry, so the manifest stays toolchain-only by
+/// default; Phase 10 corpus expansion will introduce the registry.
+pub fn materialize_php(env: &Environment) -> RuntimeArtifacts {
+    let mut artifacts = RuntimeArtifacts::new();
+    let php_ver = env
+        .toolchain
+        .version_string
+        .split('.')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".");
+    let php_ver = if php_ver.is_empty() {
+        "8.1".to_owned()
+    } else {
+        php_ver
+    };
+    let mut body = String::with_capacity(128);
+    body.push_str("{\n");
+    body.push_str("  \"name\": \"nyx/harness\",\n");
+    body.push_str("  \"require\": {\n");
+    body.push_str(&format!("    \"php\": \">={php_ver}\"\n"));
+    body.push_str("  }\n");
+    body.push_str("}\n");
+    artifacts.push("composer.json", body);
+    artifacts
 }
 
 /// Source of the `__nyx_probe` shim for the PHP harness (Phase 06 —

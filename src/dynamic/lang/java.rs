@@ -26,6 +26,7 @@
 //!
 //! Build container: `nyx-build-java:{toolchain_id}` (deferred; §19.1).
 
+use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
@@ -53,6 +54,79 @@ impl LangEmitter for JavaEmitter {
             "java emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add servlet / Spring / Quarkus shapes in phase 14"
         )
     }
+
+    fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
+        materialize_java(env)
+    }
+}
+
+/// Phase 09 — Track D.2: synthesise a minimal `pom.xml` that pins the
+/// Java toolchain and lists the direct dep top-level packages as
+/// dependencies.  Each direct dep maps to `<groupId>{pkg}</groupId>`
+/// with an artifact id matching the package name; this is a best-effort
+/// stub and Phase 10 corpus expansion will introduce a known-good
+/// group→artifact registry.
+pub fn materialize_java(env: &Environment) -> RuntimeArtifacts {
+    let mut artifacts = RuntimeArtifacts::new();
+    let java_version = env
+        .toolchain
+        .version_string
+        .split('.')
+        .next()
+        .unwrap_or("21")
+        .to_owned();
+    let mut deps: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in &env.direct_deps {
+        if is_java_stdlib(d) {
+            continue;
+        }
+        if seen.insert(d.clone()) {
+            deps.push(d.clone());
+        }
+    }
+    deps.sort_unstable();
+
+    let mut body = String::with_capacity(256);
+    body.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    body.push_str("<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n");
+    body.push_str("  <modelVersion>4.0.0</modelVersion>\n");
+    body.push_str("  <groupId>nyx</groupId>\n");
+    body.push_str("  <artifactId>harness</artifactId>\n");
+    body.push_str("  <version>0.0.1</version>\n");
+    body.push_str("  <properties>\n");
+    body.push_str(&format!(
+        "    <maven.compiler.source>{java_version}</maven.compiler.source>\n"
+    ));
+    body.push_str(&format!(
+        "    <maven.compiler.target>{java_version}</maven.compiler.target>\n"
+    ));
+    body.push_str("  </properties>\n");
+    if !deps.is_empty() {
+        body.push_str("  <dependencies>\n");
+        for d in &deps {
+            body.push_str("    <dependency>\n");
+            body.push_str(&format!("      <groupId>{d}</groupId>\n"));
+            body.push_str(&format!("      <artifactId>{d}</artifactId>\n"));
+            body.push_str("      <version>LATEST</version>\n");
+            body.push_str("    </dependency>\n");
+        }
+        body.push_str("  </dependencies>\n");
+    }
+    body.push_str("</project>\n");
+    artifacts.push("pom.xml", body);
+    artifacts
+}
+
+fn is_java_stdlib(name: &str) -> bool {
+    // Best-effort: only `java` / `javax` / `sun` are guaranteed JDK.
+    // `jakarta` ships separately under Jakarta EE so it stays out.
+    // Top-level segments `com` / `org` cover both JDK (`com.sun`) and
+    // third-party (`com.google`, `org.springframework`) — the import
+    // extractor only keeps the first segment, so a richer registry has
+    // to land before we can pin a meaningful Maven artifact from these.
+    // Phase 10 corpus expansion ships that registry.
+    matches!(name, "java" | "javax" | "sun" | "com" | "org" | "jakarta")
 }
 
 /// Source of the `__nyx_probe` shim for the Java harness (Phase 06 —

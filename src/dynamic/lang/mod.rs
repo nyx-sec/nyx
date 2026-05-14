@@ -23,6 +23,7 @@ pub mod ruby;
 pub mod rust;
 pub mod typescript;
 
+use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::spec::{EntryKind, HarnessSpec};
 use crate::evidence::UnsupportedReason;
 use crate::symbol::Lang;
@@ -76,6 +77,34 @@ pub trait LangEmitter {
     /// keep it specific (name the supported kinds, name the phase that will
     /// extend support).
     fn entry_kind_hint(&self, attempted: EntryKind) -> String;
+
+    /// Synthesise the language-specific manifest / lockfile contents that
+    /// pin the [`Environment`]'s direct deps + toolchain into a file the
+    /// build sandbox can consume.
+    ///
+    /// Default impl returns an empty bundle — every emitter that ships a
+    /// real build step overrides this (Python emits `requirements.txt`,
+    /// Rust emits a pinned `Cargo.toml`, etc.).  The harness builder
+    /// writes every returned `(rel_path, content)` pair into the workdir
+    /// alongside the generated source.
+    ///
+    /// Phase 09 - Track D.2 deliverable.  The default keeps the surface
+    /// area additive: emitters that have not yet been wired through the
+    /// capture path simply produce no manifest and the build cache key
+    /// degrades to the existing lockfile-hash path.
+    fn materialize_runtime(&self, _env: &Environment) -> RuntimeArtifacts {
+        RuntimeArtifacts::default()
+    }
+}
+
+/// Public free-fn dispatcher for [`LangEmitter::materialize_runtime`].
+///
+/// Returns an empty [`RuntimeArtifacts`] when `env.lang` has no
+/// registered emitter so callers do not need to special-case that path.
+/// Used by the harness builder to fold runtime manifest artifacts into
+/// the staged workdir (Phase 09 — Track D.2).
+pub fn materialize_runtime(env: &Environment) -> RuntimeArtifacts {
+    dispatch(env.lang, |e| e.materialize_runtime(env)).unwrap_or_default()
 }
 
 /// Dispatch to the appropriate language emitter.

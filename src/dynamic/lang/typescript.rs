@@ -15,6 +15,7 @@
 //! land, the supported list / hint shift here without affecting the JS
 //! emitter.
 
+use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{javascript, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec};
 use crate::evidence::UnsupportedReason;
@@ -49,6 +50,10 @@ impl LangEmitter for TypeScriptEmitter {
         format!(
             "typescript emitter supports {SUPPORTED:?} (delegates to the JavaScript emitter); this finding's enclosing context is `EntryKind::{attempted}` — Track B will add Next.js / jsdom shapes in phase 13"
         )
+    }
+
+    fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
+        javascript::materialize_node(env)
     }
 }
 

@@ -8,6 +8,7 @@
 //! a structured `Inconclusive(EntryKindUnsupported { … })` instead of
 //! silently dropping Ruby findings.
 
+use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec};
 use crate::evidence::UnsupportedReason;
@@ -125,6 +126,61 @@ impl LangEmitter for RubyEmitter {
             "ruby emitter is a stub; once Phase 15 (Track B Ruby vertical) lands it will support {SUPPORTED:?} plus Sinatra / Rails / Rack route shapes — attempted `EntryKind::{attempted}`"
         )
     }
+
+    fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
+        materialize_ruby(env)
+    }
+}
+
+/// Phase 09 — Track D.2: synthesise a `Gemfile` listing every captured
+/// gem name.  Ruby `require` statements give us first-segment package
+/// names directly so the manifest can name real gems.
+pub fn materialize_ruby(env: &Environment) -> RuntimeArtifacts {
+    let mut artifacts = RuntimeArtifacts::new();
+    let mut deps: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in &env.direct_deps {
+        if is_ruby_stdlib(d) {
+            continue;
+        }
+        if seen.insert(d.clone()) {
+            deps.push(d.clone());
+        }
+    }
+    deps.sort_unstable();
+
+    let mut body = String::with_capacity(64);
+    body.push_str("source 'https://rubygems.org'\n");
+    for d in &deps {
+        body.push_str(&format!("gem '{d}'\n"));
+    }
+    artifacts.push("Gemfile", body);
+    artifacts
+}
+
+fn is_ruby_stdlib(name: &str) -> bool {
+    matches!(
+        name,
+        "json"
+            | "yaml"
+            | "uri"
+            | "net"
+            | "time"
+            | "date"
+            | "csv"
+            | "logger"
+            | "fileutils"
+            | "tempfile"
+            | "open"
+            | "stringio"
+            | "set"
+            | "open3"
+            | "ostruct"
+            | "digest"
+            | "base64"
+            | "securerandom"
+            | "etc"
+    )
 }
 
 #[cfg(test)]

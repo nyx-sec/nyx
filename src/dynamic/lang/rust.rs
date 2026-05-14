@@ -21,6 +21,7 @@
 //!
 //! HTML_ESCAPE is n/a for Rust (§15.4).
 
+use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
@@ -49,6 +50,53 @@ impl LangEmitter for RustEmitter {
             "rust emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — Track B will add actix / axum / clap / libfuzzer shapes in phase 16"
         )
     }
+
+    fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
+        materialize_rust(env)
+    }
+}
+
+/// Phase 09 — Track D.2: synthesise a `Cargo.toml` that pins every
+/// captured crate dep.  The base cap-driven dep set lives in
+/// [`generate_cargo_toml`]; this function layers the user's direct
+/// crate imports on top so the harness build can resolve symbols from
+/// crates the entry actually uses.
+pub fn materialize_rust(env: &Environment) -> RuntimeArtifacts {
+    let mut artifacts = RuntimeArtifacts::new();
+    let mut deps: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for d in &env.direct_deps {
+        if is_rust_stdlib(d) {
+            continue;
+        }
+        if seen.insert(d.clone()) {
+            deps.push(d.clone());
+        }
+    }
+    deps.sort_unstable();
+
+    let mut body = String::with_capacity(256);
+    body.push_str("[package]\n");
+    body.push_str("name = \"nyx-harness\"\n");
+    body.push_str("version = \"0.1.0\"\n");
+    body.push_str("edition = \"2021\"\n\n");
+    body.push_str("[[bin]]\n");
+    body.push_str("name = \"nyx_harness\"\n");
+    body.push_str("path = \"src/main.rs\"\n\n");
+    body.push_str("[dependencies]\n");
+    for d in &deps {
+        body.push_str(d);
+        body.push_str(" = \"*\"\n");
+    }
+    artifacts.push("Cargo.toml", body);
+    artifacts
+}
+
+fn is_rust_stdlib(name: &str) -> bool {
+    matches!(
+        name,
+        "std" | "core" | "alloc" | "proc_macro" | "test" | "self" | "super" | "crate"
+    )
 }
 
 /// Source of the `__nyx_probe` shim for the Rust harness (Phase 06 —
