@@ -1,0 +1,7 @@
+// Phase 10 — RedisStub positive fixture.
+//
+// The harness connects to `NYX_REDIS_ENDPOINT` and issues a
+// `FLUSHALL` command with the untrusted payload concatenated into
+// the key.  Oracle: `Oracle::StubEvent { kind: StubKind::Redis,
+// needle: "FLUSHALL" }` fires because the command is destructive.
+FLUSHALL

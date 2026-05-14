@@ -11,6 +11,7 @@ use crate::dynamic::report::{AttemptSummary, VerifyResult, VerifyStatus};
 use crate::dynamic::runner::{run_spec, RunError};
 use crate::dynamic::sandbox::{toolchain_id_with_digest, SandboxOptions};
 use crate::dynamic::spec::{HarnessSpec, SPEC_FORMAT_VERSION};
+use crate::dynamic::stubs::StubHarness;
 use crate::dynamic::telemetry::{self, TelemetryEvent};
 use crate::dynamic::toolchain;
 use crate::evidence::{InconclusiveReason, SpecDerivationStrategy, UnsupportedReason};
@@ -437,8 +438,38 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         }
     }
 
+    // Phase 10 (Track D.3): spawn the boundary stubs the spec
+    // demands *before* the sandbox runs.  When `stubs_required` is
+    // empty `StubHarness::start` is a no-op so the 500 ms boot budget
+    // for stub-less harnesses stays intact.  The harness lives for
+    // the lifetime of this `verify_finding` call; its `Drop` releases
+    // listening sockets / removes tempdirs at function exit.
+    let stub_workdir = match opts.project_root.as_deref() {
+        Some(p) => p.to_owned(),
+        None => std::env::temp_dir(),
+    };
+    let stub_harness = match StubHarness::start(&spec.stubs_required, &stub_workdir) {
+        Ok(h) => Arc::new(h),
+        Err(_) => Arc::new(StubHarness::default()),
+    };
+
+    // Build a per-finding `SandboxOptions` clone that carries the
+    // stub endpoints + the live stub handle.  This is the only place
+    // that mutates the caller's options; downstream cloning happens
+    // inside `run_spec` so the original `opts.sandbox` is left
+    // untouched.
+    let mut sandbox_opts = opts.sandbox.clone();
+    let mut sandbox_extra_env = sandbox_opts.extra_env.clone();
+    for (name, value) in stub_harness.endpoints() {
+        sandbox_extra_env.push((name.to_owned(), value));
+    }
+    sandbox_opts.extra_env = sandbox_extra_env;
+    if !stub_harness.is_empty() {
+        sandbox_opts.stub_harness = Some(Arc::clone(&stub_harness));
+    }
+
     let start = Instant::now();
-    let result = run_spec(&spec, &opts.sandbox);
+    let result = run_spec(&spec, &sandbox_opts);
     let elapsed = start.elapsed();
 
     // Extract build_attempts before result is consumed by build_verdict.

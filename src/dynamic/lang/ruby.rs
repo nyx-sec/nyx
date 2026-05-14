@@ -215,6 +215,7 @@ mod tests {
             sink_line: 1,
             spec_hash: "0".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
         };
         assert_eq!(
             RubyEmitter.emit(&spec).unwrap_err(),

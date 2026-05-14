@@ -1,0 +1,6 @@
+// Phase 10 — FilesystemStub benign control.
+//
+// The harness reads a sanitised relative path that stays inside
+// the fake root.  Oracle's needle (`"/etc/passwd"`) is absent,
+// so the verdict stays `NotConfirmed`.
+read uploads/photo.png

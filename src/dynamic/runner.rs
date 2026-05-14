@@ -11,8 +11,9 @@ use crate::dynamic::corpus::{
 };
 use crate::dynamic::differential;
 use crate::dynamic::harness::{self, HarnessError};
-use crate::dynamic::oracle::{oracle_fired, probe_crash_signal, Oracle};
+use crate::dynamic::oracle::{oracle_fired_with_stubs, probe_crash_signal, Oracle};
 use crate::dynamic::probe::{ProbeChannel, SinkProbe};
+use crate::dynamic::stubs::StubEvent;
 use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
 use crate::evidence::{DifferentialOutcome, DifferentialVerdict};
@@ -292,8 +293,20 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             .as_ref()
             .map(|ch| ch.drain())
             .unwrap_or_default();
+        // Phase 10: drain boundary-stub events so the oracle can use
+        // them (`Oracle::StubEvent`, `ProbePredicate::StubEventMatches`).
+        let vuln_stub_events: Vec<StubEvent> = effective_opts
+            .stub_harness
+            .as_ref()
+            .map(|h| h.drain_all())
+            .unwrap_or_default();
 
-        let vuln_fired = oracle_fired(&payload.oracle, &outcome, &vuln_probes);
+        let vuln_fired = oracle_fired_with_stubs(
+            &payload.oracle,
+            &outcome,
+            &vuln_probes,
+            &vuln_stub_events,
+        );
         let sink_hit = outcome.sink_hit;
 
         // Phase 08 §C.4: a process-level crash with no matching sink-site
@@ -336,10 +349,16 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                         .as_ref()
                         .map(|ch| ch.drain())
                         .unwrap_or_default();
-                    let benign_fired = oracle_fired(
+                    let benign_stub_events: Vec<StubEvent> = effective_opts
+                        .stub_harness
+                        .as_ref()
+                        .map(|h| h.drain_all())
+                        .unwrap_or_default();
+                    let benign_fired = oracle_fired_with_stubs(
                         &benign.oracle,
                         &benign_outcome,
                         &benign_probes,
+                        &benign_stub_events,
                     );
                     let outcome_record = differential::build_outcome(
                         payload.label,

@@ -60,6 +60,8 @@ mod escape_tests {
             output_limit: 65536,
             oob_listener: None,
             probe_channel: None,
+            extra_env: vec![],
+            stub_harness: None,
         }
     }
 

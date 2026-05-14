@@ -144,6 +144,18 @@ pub struct SandboxOptions {
     /// drains the channel after each sandbox run and evaluates
     /// [`crate::dynamic::oracle::ProbePredicate`]s against the records.
     pub probe_channel: Option<Arc<ProbeChannel>>,
+    /// Phase 10 (Track D.3): extra env vars injected after
+    /// [`Self::env_passthrough`] / `harness.env`.  The verifier
+    /// populates this from
+    /// [`crate::dynamic::stubs::StubHarness::endpoints`] so each
+    /// boundary stub's endpoint reaches the harness via a stable
+    /// env-var name (e.g. `NYX_SQL_ENDPOINT`).
+    pub extra_env: Vec<(String, String)>,
+    /// Phase 10 (Track D.3): live boundary-stub harness used by the
+    /// runner to drain stub events between payload runs and feed them
+    /// into [`crate::dynamic::oracle::oracle_fired_with_stubs`].
+    /// `None` when the spec's `stubs_required` is empty.
+    pub stub_harness: Option<Arc<crate::dynamic::stubs::StubHarness>>,
 }
 
 impl Default for SandboxOptions {
@@ -156,6 +168,8 @@ impl Default for SandboxOptions {
             output_limit: 65536,
             oob_listener: None,
             probe_channel: None,
+            extra_env: Vec::new(),
+            stub_harness: None,
         }
     }
 }
@@ -1030,6 +1044,13 @@ fn run_process(
         }
     }
     for (k, v) in &harness.env {
+        cmd.env(k, v);
+    }
+    // Phase 10: stub endpoints (SQL DB path, HTTP origin URL, etc.)
+    // overlaid after harness.env so a per-language emitter cannot
+    // accidentally shadow a boundary endpoint with a placeholder of
+    // its own.
+    for (k, v) in &opts.extra_env {
         cmd.env(k, v);
     }
     // Payload injected via NYX_PAYLOAD env var.

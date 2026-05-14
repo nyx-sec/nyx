@@ -283,6 +283,7 @@ mod tests {
             sink_line: 5,
             spec_hash: "abcd1234abcd1234".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
         }
     }
 

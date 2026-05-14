@@ -196,6 +196,7 @@ mod tests {
             sink_line: 5,
             spec_hash: "0000000000000000".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
         };
         let err = build(&spec).unwrap_err();
         assert!(matches!(err, HarnessError::Unsupported(_)));
@@ -217,6 +218,7 @@ mod tests {
             sink_line: 10,
             spec_hash: "test0000abcd1234".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
         };
         let harness = build(&spec).unwrap();
         assert!(harness.workdir.join("harness.py").exists());

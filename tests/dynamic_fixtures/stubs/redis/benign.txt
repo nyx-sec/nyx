@@ -1,0 +1,6 @@
+// Phase 10 — RedisStub benign control.
+//
+// The harness issues a `GET sessions` against the stub.  Oracle's
+// needle (`"FLUSHALL"`) is absent, so the verdict stays
+// `NotConfirmed`.
+GET sessions

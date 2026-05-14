@@ -1,0 +1,7 @@
+// Phase 10 — SqlStub benign control.
+//
+// Same harness shape as `vuln.txt` but the recorded query does NOT
+// contain the tautology.  Oracle: `Oracle::StubEvent { kind:
+// StubKind::Sql, needle: "OR 1=1" }` does *not* fire so the
+// verdict stays `NotConfirmed`.
+SELECT * FROM users WHERE name = 'alice';

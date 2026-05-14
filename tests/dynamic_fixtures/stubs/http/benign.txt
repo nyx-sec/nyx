@@ -1,0 +1,7 @@
+// Phase 10 — HttpStub benign control.
+//
+// Same harness shape as the vuln fixture, but the recorded request
+// targets a benign host.  The oracle's needle (`"169.254"`) is
+// absent, so the verdict stays `NotConfirmed`.
+GET /health HTTP/1.1
+Host: example.com

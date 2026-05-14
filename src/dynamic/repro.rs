@@ -393,6 +393,7 @@ mod tests {
             sink_line: 10,
             spec_hash: "cafecafecafe0001".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
         }
     }
 

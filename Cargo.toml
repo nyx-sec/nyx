@@ -49,7 +49,7 @@ docgen = []
 # Dynamic verification layer: builds harnesses from findings, runs them in a
 # sandbox, reports back whether the sink fires. Off by default until the
 # static side is honest on real corpora (see ROADMAP.md).
-dynamic = []
+dynamic = ["dep:tempfile"]
 
 [lib]
 name = "nyx_scanner"
@@ -129,6 +129,7 @@ tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "signal",
 tokio-stream = { version = "0.1.18", features = ["sync"], optional = true }
 tower-http = { version = "0.6.10", features = ["cors", "compression-gzip", "trace", "set-header", "limit"], optional = true }
 z3 = { version = "0.20.0", optional = true}
+tempfile = { version = "3.27.0", optional = true }
 
 [profile.release]
 lto = true

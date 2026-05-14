@@ -461,6 +461,7 @@ mod tests {
             sink_line: 10,
             spec_hash: "rusttest00000001".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
         }
     }
 

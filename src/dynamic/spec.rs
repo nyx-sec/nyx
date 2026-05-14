@@ -20,6 +20,7 @@
 use crate::callgraph::{CallGraph, CallGraphAnalysis};
 use crate::commands::scan::Diag;
 use crate::dynamic::corpus::CORPUS_VERSION;
+use crate::dynamic::stubs::StubKind;
 use crate::evidence::{Confidence, FlowStepKind, UnsupportedReason};
 use crate::labels::Cap;
 use crate::summary::{FuncSummary, GlobalSummaries};
@@ -38,7 +39,7 @@ pub use crate::evidence::SpecDerivationStrategy;
 /// Bump whenever [`HarnessSpec`] fields change meaning or the spec hash
 /// inputs change. Downstream tools should reject specs with an unrecognised
 /// version.
-pub const SPEC_FORMAT_VERSION: u32 = 1;
+pub const SPEC_FORMAT_VERSION: u32 = 2;
 
 /// Identifies the entry point extracted from a taint flow.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +111,19 @@ pub struct HarnessSpec {
     /// with deserialised specs that pre-date the typed strategy.
     #[serde(default = "default_derivation_strategy")]
     pub derivation: SpecDerivationStrategy,
+    /// Stubs the verifier must spawn before the sandbox runs (Phase 10 —
+    /// Track D.3).  Derived from [`Self::expected_cap`] via
+    /// [`StubKind::for_cap`] at spec-construction time so the verifier
+    /// only starts the boundaries a payload actually needs — a Cap that
+    /// auto-derives no stub leaves this empty and
+    /// [`crate::dynamic::stubs::StubHarness::start`] is a no-op (the
+    /// "harness with `stubs_required: []` boots in under 500ms"
+    /// performance invariant).
+    ///
+    /// `#[serde(default)]` so specs persisted by pre-Phase-10 versions of
+    /// the cache deserialise as an empty list.
+    #[serde(default)]
+    pub stubs_required: Vec<StubKind>,
 }
 
 fn default_derivation_strategy() -> SpecDerivationStrategy {
@@ -975,6 +989,7 @@ fn finalize_spec(
     derivation: SpecDerivationStrategy,
 ) -> HarnessSpec {
     let toolchain_id = toolchain_id_for_lang(lang).to_owned();
+    let stubs_required = StubKind::for_cap(expected_cap);
     let mut spec = HarnessSpec {
         finding_id: format!("{:016x}", diag.stable_hash),
         entry_file,
@@ -989,6 +1004,7 @@ fn finalize_spec(
         sink_line,
         spec_hash: String::new(),
         derivation,
+        stubs_required,
     };
     spec.spec_hash = compute_spec_hash(&spec);
     spec
@@ -1087,6 +1103,16 @@ fn compute_spec_hash(spec: &HarnessSpec) -> String {
     h.update(b"\0");
     h.update(&spec.sink_line.to_le_bytes());
     h.update(&CORPUS_VERSION.to_le_bytes());
+
+    // Phase 10: spec hash must flip when stubs_required changes so the
+    // dynamic verdict cache evicts entries computed under a different
+    // boundary topology. Sort first so order-independence holds.
+    let mut stubs: Vec<&StubKind> = spec.stubs_required.iter().collect();
+    stubs.sort_unstable_by_key(|k| k.tag());
+    for s in stubs {
+        h.update(s.tag().as_bytes());
+        h.update(b"\0");
+    }
 
     let out = h.finalize();
     let bytes = out.as_bytes();
@@ -1255,6 +1281,7 @@ mod tests {
             sink_line: 10,
             spec_hash: String::new(),
             derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
         };
         spec.spec_hash = compute_spec_hash(&spec);
         spec

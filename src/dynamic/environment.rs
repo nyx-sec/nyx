@@ -950,6 +950,7 @@ mod tests {
             sink_line: 10,
             spec_hash: "test0000abcd1234".into(),
             derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
         }
     }
 

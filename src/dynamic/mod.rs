@@ -81,6 +81,7 @@ pub mod report;
 pub mod runner;
 pub mod sandbox;
 pub mod spec;
+pub mod stubs;
 pub mod telemetry;
 pub mod toolchain;
 pub mod verify;

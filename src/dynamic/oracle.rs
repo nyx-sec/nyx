@@ -26,6 +26,7 @@
 
 use crate::dynamic::probe::{ProbeKind, SinkProbe};
 use crate::dynamic::sandbox::SandboxOutcome;
+use crate::dynamic::stubs::{StubEvent, StubKind};
 use serde::{Deserialize, Serialize};
 
 /// POSIX-style signal name carried inside [`ProbeKind::Crash`] and the
@@ -167,6 +168,22 @@ pub enum ProbePredicate {
     /// The probe records at least `min_args` arguments.  Lets a payload
     /// pin the sink's arity without locking exact values.
     MinArgs(usize),
+    /// Phase 10 (Track D.3): predicate that fires when at least one
+    /// [`StubEvent`] of kind `kind` carries a summary containing
+    /// `needle`.  Lets a payload assert that a boundary stub (SQL, HTTP,
+    /// Redis, filesystem) actually observed the sink's effect — e.g.
+    /// `StubEventMatches { kind: StubKind::Sql, needle: "SELECT" }`.
+    ///
+    /// Evaluation is *cross-cutting*: predicates that target stub events
+    /// satisfy vacuously when no stub events were drained (they cannot
+    /// fail against a single probe).  Callers wanting per-probe pinning
+    /// pair this with another predicate that does anchor to the probe.
+    StubEventMatches {
+        /// Which stub kind to look at.
+        kind: StubKind,
+        /// Substring to find in `StubEvent::summary`.
+        needle: &'static str,
+    },
 }
 
 /// How we decide a sandbox run confirmed the sink fired.
@@ -207,17 +224,80 @@ pub enum Oracle {
     FileEscape,
     /// Non-zero exit with specific status.
     ExitStatus(i32),
+    /// Phase 10 (Track D.3): boundary-stub-driven oracle.  Fires when the
+    /// per-kind [`StubEvent`] log drained from
+    /// [`crate::dynamic::stubs::StubHarness`] contains an event of
+    /// `kind` whose summary contains `needle`.
+    ///
+    /// Distinct from the [`ProbePredicate::StubEventMatches`] *inside*
+    /// `SinkProbe` evaluation: this variant lets a payload skip probe
+    /// instrumentation entirely and confirm purely on the stub's
+    /// observed effect, which is the only signal available for sinks
+    /// the harness cannot wrap (e.g. opaque ORM calls).
+    StubEvent {
+        /// Which stub kind to look at.
+        kind: StubKind,
+        /// Substring to find in `StubEvent::summary`.
+        needle: &'static str,
+    },
 }
 
 /// Evaluate an oracle against a single sandbox outcome plus the records
 /// drained from the run's probe channel.  Returns `true` iff the run is
 /// considered to have fired the sink.
+///
+/// Backwards-compatible entry point — preserved verbatim for the
+/// runner's vuln + benign-control loops that pre-date Phase 10's stub
+/// layer.  When the active oracle inspects stub events (i.e.
+/// [`Oracle::StubEvent`]) callers should use
+/// [`oracle_fired_with_stubs`] which threads in a `&[StubEvent]`
+/// slice; this function treats the stub-event log as empty so the
+/// `Oracle::StubEvent` branch never fires under the legacy entry.
 #[allow(deprecated)]
 pub fn oracle_fired(oracle: &Oracle, outcome: &SandboxOutcome, probes: &[SinkProbe]) -> bool {
+    oracle_fired_with_stubs(oracle, outcome, probes, &[])
+}
+
+/// Phase 10: evaluate an oracle with the boundary-stub event log in
+/// scope.  See [`Oracle::StubEvent`] for the semantics of the new
+/// branch and [`ProbePredicate::StubEventMatches`] for the new
+/// `Oracle::SinkProbe` cross-cutting predicate.
+#[allow(deprecated)]
+pub fn oracle_fired_with_stubs(
+    oracle: &Oracle,
+    outcome: &SandboxOutcome,
+    probes: &[SinkProbe],
+    stub_events: &[StubEvent],
+) -> bool {
     match oracle {
-        Oracle::SinkProbe { predicates } => probes
-            .iter()
-            .any(|p| probe_satisfies_all(p, predicates)),
+        Oracle::SinkProbe { predicates } => {
+            // Predicate set split: per-probe vs cross-cutting (stub
+            // events).  A predicate that targets stub events cannot be
+            // evaluated against a single probe — it satisfies once
+            // globally when the stub log contains a matching event.
+            // Per-probe predicates must still hold for at least one
+            // captured probe.
+            let (cross, per_probe): (Vec<_>, Vec<_>) =
+                predicates.iter().partition(|p| is_cross_cutting(p));
+            let cross_ok = cross
+                .iter()
+                .all(|p| cross_cutting_satisfied(p, stub_events));
+            if !cross_ok {
+                return false;
+            }
+            match (cross.is_empty(), per_probe.is_empty()) {
+                // Empty predicate slice — legacy semantics: fire when
+                // at least one probe exists.
+                (true, true) => !probes.is_empty(),
+                // Only cross-cutting predicates, all satisfied → fire.
+                (false, true) => true,
+                // Per-probe predicates present — at least one probe
+                // must satisfy every per-probe predicate.
+                (_, false) => probes
+                    .iter()
+                    .any(|p| per_probe.iter().all(|pred| probe_satisfies_one(p, pred))),
+            }
+        }
         Oracle::SinkCrash { signals } => probes.iter().any(|p| match p.kind {
             ProbeKind::Crash { signal } => signals.contains(signal),
             ProbeKind::Normal => false,
@@ -230,6 +310,25 @@ pub fn oracle_fired(oracle: &Oracle, outcome: &SandboxOutcome, probes: &[SinkPro
         Oracle::OobCallback { .. } => outcome.oob_callback_seen,
         Oracle::FileEscape => false,
         Oracle::ExitStatus(code) => outcome.exit_code == Some(*code),
+        Oracle::StubEvent { kind, needle } => stub_events
+            .iter()
+            .any(|e| e.kind == *kind && e.summary.contains(*needle)),
+    }
+}
+
+/// True when `pred` evaluates against the stub-event log rather than
+/// any single [`SinkProbe`].  Used to partition predicate slices in
+/// [`oracle_fired_with_stubs`].
+fn is_cross_cutting(pred: &ProbePredicate) -> bool {
+    matches!(pred, ProbePredicate::StubEventMatches { .. })
+}
+
+fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> bool {
+    match pred {
+        ProbePredicate::StubEventMatches { kind, needle } => stub_events
+            .iter()
+            .any(|e| e.kind == *kind && e.summary.contains(*needle)),
+        _ => true,
     }
 }
 
@@ -260,6 +359,9 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
             .any(|a| a.as_str().map(|s| s.contains(*needle)).unwrap_or(false)),
         ProbePredicate::CalleeEquals(value) => probe.sink_callee == *value,
         ProbePredicate::MinArgs(n) => probe.args.len() >= *n,
+        // Cross-cutting predicate; not evaluable against a single probe.
+        // [`oracle_fired_with_stubs`] handles it via the partition path.
+        ProbePredicate::StubEventMatches { .. } => true,
     }
 }
 

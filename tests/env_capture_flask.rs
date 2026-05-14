@@ -57,6 +57,7 @@ fn flask_spec(entry_rel: &str) -> HarnessSpec {
         sink_line: 18,
         spec_hash: "phase09testabcd1".into(),
         derivation: SpecDerivationStrategy::FromCallgraphEntry,
+        stubs_required: vec![],
     }
 }
 
