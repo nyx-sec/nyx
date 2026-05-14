@@ -430,7 +430,7 @@ fn entry_subpath_for_shape(shape: JsShape, _is_typescript: bool) -> String {
 }
 
 fn generate_for_shape(spec: &HarnessSpec, shape: JsShape, entry_subpath: &str) -> String {
-    let preamble = harness_preamble(spec, entry_subpath, shape);
+    let preamble = harness_preamble(entry_subpath, shape);
     let body = match shape {
         JsShape::CommonJsExport => emit_commonjs(spec),
         JsShape::AsyncFunction => emit_async(spec),
@@ -446,7 +446,7 @@ fn generate_for_shape(spec: &HarnessSpec, shape: JsShape, entry_subpath: &str) -
 /// Shared preamble: shim, payload loader, entry import.  ESM default
 /// shape opts out of the eager require and pulls the module in via
 /// dynamic `import()` from its own body.
-fn harness_preamble(spec: &HarnessSpec, entry_subpath: &str, shape: JsShape) -> String {
+fn harness_preamble(entry_subpath: &str, shape: JsShape) -> String {
     let probe = probe_shim();
     let entry_require_path = entry_require_path(entry_subpath);
     let import_block = match shape {
@@ -463,16 +463,10 @@ try {{
         ),
     };
 
-    let sink_file = &spec.sink_file;
-    let sink_line = spec.sink_line;
-
     format!(
         r#"'use strict';
 // Nyx dynamic harness — auto-generated, do not edit.
 {probe}
-
-const _NYX_SINK_FILE = {sink_file:?};
-const _NYX_SINK_LINE = {sink_line};
 
 // ── Payload loading ────────────────────────────────────────────────────────────
 const _nyx_payload = (() => {{
