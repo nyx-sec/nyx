@@ -439,7 +439,7 @@ pub fn handle(
     let preview_tier_seen = Arc::new(AtomicBool::new(false));
 
     let mut diags: Vec<Diag> = if index_mode == IndexMode::Off {
-        scan_filesystem_with_observer(
+        let (diags, _surface_map) = scan_filesystem_with_observer(
             &scan_path,
             config,
             show_progress,
@@ -447,7 +447,8 @@ pub fn handle(
             None,
             None,
             Some(&preview_tier_seen),
-        )?
+        )?;
+        diags
     } else {
         if index_mode == IndexMode::Rebuild || !db_path.exists() {
             tracing::debug!("Scanning filesystem index filesystem");
@@ -1757,6 +1758,20 @@ pub(crate) fn scan_filesystem(
     show_progress: bool,
 ) -> NyxResult<Vec<Diag>> {
     scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None)
+        .map(|(diags, _surface_map)| diags)
+}
+
+/// Same as [`scan_filesystem`] but additionally returns the `SurfaceMap`
+/// built from the post-pass-2 view.  The non-indexed path used to drop
+/// the surface map on the floor; this entry-point lets `nyx surface` (and
+/// other consumers that need the attack-surface model alongside the
+/// findings) avoid running the analysis twice.
+pub(crate) fn scan_filesystem_with_surface_map(
+    root: &Path,
+    cfg: &Config,
+    show_progress: bool,
+) -> NyxResult<(Vec<Diag>, crate::surface::SurfaceMap)> {
+    scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None)
 }
 
 /// Walk the filesystem and perform a two-pass scan, optionally reporting
@@ -1774,7 +1789,7 @@ pub(crate) fn scan_filesystem_with_observer(
     metrics: Option<&Arc<ScanMetrics>>,
     logs: Option<&Arc<ScanLogCollector>>,
     preview_tier_seen: Option<&Arc<AtomicBool>>,
-) -> NyxResult<Vec<Diag>> {
+) -> NyxResult<(Vec<Diag>, crate::surface::SurfaceMap)> {
     // Ensure framework context is available (handle sets it, but direct
     // callers like scan_no_index may not).
     let owned_cfg = ensure_framework_ctx(root, cfg);
@@ -1905,7 +1920,8 @@ pub(crate) fn scan_filesystem_with_observer(
             p.set_stage(ScanStage::Complete);
         }
         post_process_diags(&mut diags, cfg);
-        return Ok(diags);
+        // AST-only mode does not produce a SurfaceMap (no CFG / summaries).
+        return Ok((diags, crate::surface::SurfaceMap::new()));
     }
 
     // ── Taint mode: two-pass with fused pass 1 ──────────────────────────
@@ -2180,9 +2196,10 @@ pub(crate) fn scan_filesystem_with_observer(
 
     // Phase 21: build the SurfaceMap from the post-pass-2 view.
     // No persistence here; the index-backed path persists into the
-    // `surface_map` SQLite table.  Errors here are swallowed: the
-    // surface map is an additive Phase F deliverable, not a gate.
-    let _surface_map = crate::surface::build::build_surface_map(
+    // `surface_map` SQLite table.  The map is returned alongside the
+    // diagnostics so consumers (e.g. `nyx surface`) can avoid scanning
+    // twice.
+    let surface_map = crate::surface::build::build_surface_map(
         &crate::surface::build::SurfaceBuildInputs {
             files: &all_paths,
             scan_root: Some(root),
@@ -2225,7 +2242,7 @@ pub(crate) fn scan_filesystem_with_observer(
         );
     }
 
-    Ok(diags)
+    Ok((diags, surface_map))
 }
 
 // --------------------------------------------------------------------------------------------

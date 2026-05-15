@@ -9,7 +9,7 @@
 //!   `Router::route(...)` registration in the same file references it).
 
 use crate::entry_points::HttpMethod;
-use crate::surface::lang::common::{loc_for, rel_file, string_node_value};
+use crate::surface::lang::common::{loc_for, rel_file, rust_uses_any, string_node_value};
 use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,8 +39,10 @@ pub fn detect_axum_routes(
     path: &Path,
     scan_root: Option<&Path>,
 ) -> Vec<SurfaceNode> {
-    let file_text = std::str::from_utf8(bytes).unwrap_or("");
-    if !file_text.contains("axum::") && !file_text.contains("use axum") {
+    // Phase 23 follow-up: gate on a real top-level `use axum…` /
+    // `extern crate axum` so a comment / string literal mentioning
+    // axum cannot trigger detection.
+    if !rust_uses_any(bytes, &["axum"]) {
         return Vec::new();
     }
     let file_rel = rel_file(path, scan_root);

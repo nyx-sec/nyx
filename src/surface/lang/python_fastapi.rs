@@ -12,7 +12,9 @@
 //! decorator-stack guards drawn from [`AUTH_DECORATORS`].
 
 use crate::entry_points::HttpMethod;
-use crate::surface::lang::common::{leaf_matches, loc_for, rel_file, string_node_value};
+use crate::surface::lang::common::{
+    leaf_matches, loc_for, python_imports_any, rel_file, string_node_value,
+};
 use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
@@ -51,13 +53,10 @@ pub fn detect_fastapi_routes(
     scan_root: Option<&Path>,
 ) -> Vec<SurfaceNode> {
     // File-level gate: avoid double-detection on Flask files that
-    // also use `app.get(...)` shape.  FastAPI / Starlette / APIRouter
-    // require an explicit import of the relevant package.
-    let file_text = std::str::from_utf8(bytes).unwrap_or("");
-    let has_fastapi_witness = file_text.contains("fastapi")
-        || file_text.contains("starlette")
-        || file_text.contains("APIRouter");
-    if !has_fastapi_witness {
+    // also use `app.get(...)` shape.  Phase 23 follow-up tightens the
+    // witness to actual top-level `import` / `from` statements so a
+    // comment or string mention of "fastapi" cannot trigger detection.
+    if !python_imports_any(bytes, &["fastapi", "starlette"]) {
         return Vec::new();
     }
     let file_rel = rel_file(path, scan_root);
@@ -314,7 +313,7 @@ mod tests {
 
     #[test]
     fn detects_router_post() {
-        let src = "router = APIRouter()\n@router.post('/items')\ndef create(): pass\n";
+        let src = "from fastapi import APIRouter\nrouter = APIRouter()\n@router.post('/items')\ndef create(): pass\n";
         let (tree, bytes) = parse(src);
         let nodes = detect_fastapi_routes(&tree, &bytes, &PathBuf::from("api.py"), None);
         let SurfaceNode::EntryPoint(ep) = &nodes[0] else {

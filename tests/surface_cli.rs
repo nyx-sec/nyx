@@ -118,3 +118,23 @@ fn load_or_build_falls_back_to_filesystem_when_no_db() {
         "expected at least one entry-point in fallback path"
     );
 }
+
+/// Phase 21 follow-up: the non-indexed scan path now returns the
+/// SurfaceMap built during pass 2 alongside the diagnostics, so
+/// consumers can avoid re-running the analysis to render the surface.
+#[test]
+fn scan_no_index_with_surface_map_returns_entry_points() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("app.py"),
+        "from flask import Flask\napp = Flask(__name__)\n@app.get('/x')\ndef x(): pass\n",
+    )
+    .unwrap();
+    let cfg = Config::default();
+    let (_diags, map) = nyx_scanner::scan_no_index_with_surface_map(tmp.path(), &cfg)
+        .expect("scan_no_index_with_surface_map should succeed");
+    assert!(
+        map.entry_points().next().is_some(),
+        "expected at least one entry-point in returned SurfaceMap"
+    );
+}

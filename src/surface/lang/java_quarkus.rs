@@ -16,7 +16,7 @@
 //! `@DenyAll` (Quarkus Security).
 
 use crate::entry_points::HttpMethod;
-use crate::surface::lang::common::{loc_for, rel_file};
+use crate::surface::lang::common::{java_imports_any, loc_for, rel_file};
 use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
@@ -53,7 +53,10 @@ pub fn detect_quarkus_routes(
     scan_root: Option<&Path>,
 ) -> Vec<SurfaceNode> {
     let file_rel = rel_file(path, scan_root);
-    if !file_uses_quarkus(tree.root_node(), bytes) {
+    // Phase 23 follow-up: tighten witness to top-level `import`
+    // statements with the strict package prefix, replacing the
+    // previous AST `import_declaration.contains(...)` substring scan.
+    if !java_imports_any(bytes, &["io.quarkus", "jakarta.ws.rs"]) {
         return Vec::new();
     }
     let mut out = Vec::new();
@@ -92,19 +95,6 @@ pub fn detect_quarkus_routes(
         }
     });
     out
-}
-
-fn file_uses_quarkus(root: Node, bytes: &[u8]) -> bool {
-    let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
-        if child.kind() == "import_declaration"
-            && let Ok(text) = child.utf8_text(bytes)
-            && (text.contains("io.quarkus") || text.contains("jakarta.ws.rs"))
-        {
-            return true;
-        }
-    }
-    false
 }
 
 fn class_is_quarkus_resource(class: Node, bytes: &[u8]) -> bool {

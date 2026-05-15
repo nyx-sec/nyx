@@ -19,7 +19,7 @@
 
 use crate::entry_points::HttpMethod;
 use crate::surface::lang::common::{
-    leaf_matches, loc_for, rel_file, string_node_value,
+    leaf_matches, loc_for, python_imports_any, rel_file, string_node_value,
 };
 use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::collections::HashMap;
@@ -59,12 +59,10 @@ pub fn detect_django_routes(
     scan_root: Option<&Path>,
 ) -> Vec<SurfaceNode> {
     // File-level gate: only fire when the file actually imports
-    // django (or extends the Django CBV bases via name witness).
-    let file_text = std::str::from_utf8(bytes).unwrap_or("");
-    let has_django_witness = file_text.contains("django")
-        || file_text.contains("rest_framework")
-        || CBV_BASES.iter().any(|b| file_text.contains(b));
-    if !has_django_witness {
+    // django or DRF.  Phase 23 follow-up tightens the witness to
+    // top-level `import` / `from` statements so a comment or string
+    // mention of "django" / "rest_framework" cannot trigger detection.
+    if !python_imports_any(bytes, &["django", "rest_framework"]) {
         return Vec::new();
     }
     let file_rel = rel_file(path, scan_root);
@@ -356,7 +354,7 @@ mod tests {
 
     #[test]
     fn detects_class_based_view() {
-        let src = "class UserList(APIView):\n    def get(self, request): pass\n    def post(self, request): pass\n";
+        let src = "from rest_framework.views import APIView\n\nclass UserList(APIView):\n    def get(self, request): pass\n    def post(self, request): pass\n";
         let (tree, bytes) = parse(src);
         let nodes = detect_django_routes(&tree, &bytes, &PathBuf::from("views.py"), None);
         assert_eq!(nodes.len(), 2);

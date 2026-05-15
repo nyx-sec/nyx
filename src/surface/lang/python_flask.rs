@@ -16,6 +16,7 @@
 //! and -JWT-Extended).
 
 use crate::entry_points::HttpMethod;
+use crate::surface::lang::common::python_imports_any;
 use crate::surface::{
     EntryPoint, Framework, SourceLocation, SurfaceNode, relative_path_string,
 };
@@ -52,13 +53,11 @@ pub fn detect_flask_routes(
 ) -> Vec<SurfaceNode> {
     // File-level gate: avoid double-detection on FastAPI files where
     // `app.get(...)` shape overlaps.  Phase 21 was lenient because no
-    // sibling probe existed; Phase 22 splits per-framework, so each
-    // probe only fires when its framework witness is present.
-    let file_text = std::str::from_utf8(bytes).unwrap_or("");
-    let has_flask_witness = file_text.contains("flask")
-        || file_text.contains("Flask")
-        || file_text.contains("Blueprint");
-    if !has_flask_witness {
+    // sibling probe existed; Phase 22 split per-framework via free
+    // text witness; Phase 23 follow-up tightens the witness to actual
+    // top-level `import` / `from` statements so a comment or vendored
+    // license header that names "flask" cannot trigger detection.
+    if !python_imports_any(bytes, &["flask"]) {
         return Vec::new();
     }
     let file_rel = relative_path_string(path, scan_root);

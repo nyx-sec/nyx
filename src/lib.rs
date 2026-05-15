@@ -148,3 +148,22 @@ use utils::config::Config;
 pub fn scan_no_index(root: &Path, cfg: &Config) -> NyxResult<Vec<commands::scan::Diag>> {
     commands::scan::scan_filesystem(root, cfg, false)
 }
+
+/// Same as [`scan_no_index`] but additionally returns the [`SurfaceMap`]
+/// built from the post-pass-2 view.
+///
+/// The non-indexed scan path used to drop the surface map on the floor,
+/// which forced `nyx surface` (and any other consumer that wanted both
+/// findings and the attack-surface model) to either run the analysis
+/// twice or fall back to an entry-point-only build with no DataStore /
+/// ExternalService / DangerousLocal nodes and no `Reaches` edges.
+///
+/// Use this entry point when you need both halves of the analysis.
+///
+/// [`SurfaceMap`]: surface::SurfaceMap
+pub fn scan_no_index_with_surface_map(
+    root: &Path,
+    cfg: &Config,
+) -> NyxResult<(Vec<commands::scan::Diag>, surface::SurfaceMap)> {
+    commands::scan::scan_filesystem_with_surface_map(root, cfg, false)
+}

@@ -141,12 +141,20 @@ pub fn render_text(map: &SurfaceMap, scan_root: Option<&Path>) -> String {
     } else {
         out.push_str("Surface map\n");
     }
+    let entry_count = count_kind(map, |n| matches!(n, SurfaceNode::EntryPoint(_)));
+    let ds_count = count_kind(map, |n| matches!(n, SurfaceNode::DataStore(_)));
+    let es_count = count_kind(map, |n| matches!(n, SurfaceNode::ExternalService(_)));
+    let dl_count = count_kind(map, |n| matches!(n, SurfaceNode::DangerousLocal(_)));
     out.push_str(&format!(
-        "  {} entry-points, {} data stores, {} external services, {} dangerous locals\n\n",
-        count_kind(map, |n| matches!(n, SurfaceNode::EntryPoint(_))),
-        count_kind(map, |n| matches!(n, SurfaceNode::DataStore(_))),
-        count_kind(map, |n| matches!(n, SurfaceNode::ExternalService(_))),
-        count_kind(map, |n| matches!(n, SurfaceNode::DangerousLocal(_))),
+        "  {} {}, {} {}, {} {}, {} {}\n\n",
+        entry_count,
+        plural(entry_count, "entry-point", "entry-points"),
+        ds_count,
+        plural(ds_count, "data store", "data stores"),
+        es_count,
+        plural(es_count, "external service", "external services"),
+        dl_count,
+        plural(dl_count, "dangerous local", "dangerous locals"),
     ));
 
     if map.nodes.is_empty() {
@@ -303,6 +311,10 @@ fn render_node_line(out: &mut String, node: &SurfaceNode, prefix: &str) {
 
 fn count_kind<F: Fn(&SurfaceNode) -> bool>(map: &SurfaceMap, f: F) -> usize {
     map.nodes.iter().filter(|n| f(n)).count()
+}
+
+fn plural(count: usize, singular: &'static str, plural: &'static str) -> &'static str {
+    if count == 1 { singular } else { plural }
 }
 
 fn method_str(m: crate::entry_points::HttpMethod) -> &'static str {

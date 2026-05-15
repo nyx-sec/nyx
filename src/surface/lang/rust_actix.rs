@@ -11,7 +11,7 @@
 //! `BearerAuth`, `JwtClaims`, etc.).
 
 use crate::entry_points::HttpMethod;
-use crate::surface::lang::common::{loc_for, rel_file};
+use crate::surface::lang::common::{loc_for, rel_file, rust_uses_any};
 use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
@@ -42,11 +42,11 @@ pub fn detect_actix_routes(
     path: &Path,
     scan_root: Option<&Path>,
 ) -> Vec<SurfaceNode> {
-    let file_text = std::str::from_utf8(bytes).unwrap_or("");
-    if !file_text.contains("actix_web::") && !file_text.contains("use actix_web") {
-        // Best-effort gate so the actix probe does not over-fire on
-        // Rocket / generic Rust files that also define a `#[get]`
-        // macro from a user crate.
+    // Phase 23 follow-up: gate on a real top-level `use actix_web…` /
+    // `extern crate actix_web` so a comment or string literal
+    // mentioning actix_web cannot trigger detection on a Rocket /
+    // generic Rust file that also defines a `#[get]` user macro.
+    if !rust_uses_any(bytes, &["actix_web"]) {
         return Vec::new();
     }
     let file_rel = rel_file(path, scan_root);

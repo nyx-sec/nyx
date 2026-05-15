@@ -90,6 +90,119 @@ pub fn child_or_named<'tree>(parent: Node<'tree>, kind: &str) -> Option<Node<'tr
     parent.children(&mut cursor).find(|c| c.kind() == kind)
 }
 
+/// Return `true` when `bytes` contains a top-level Python `import` /
+/// `from … import …` statement whose leading package segment starts
+/// with one of `modules` (case-insensitive prefix match).  This means
+/// `["flask"]` matches `flask`, `flask_login`, and `flask_jwt_extended`
+/// — the canonical Flask framework family — but does not match
+/// `os.flask_helper` or a comment that mentions flask.
+pub fn python_imports_any(bytes: &[u8], modules: &[&str]) -> bool {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    for line in text.lines() {
+        let line = line.trim_start();
+        let pkg = if let Some(rest) = line.strip_prefix("from ") {
+            rest.split_whitespace().next().unwrap_or("")
+        } else if let Some(rest) = line.strip_prefix("import ") {
+            rest.split([',', ' ', ';'])
+                .next()
+                .unwrap_or("")
+                .trim()
+        } else {
+            continue;
+        };
+        if pkg.is_empty() {
+            continue;
+        }
+        let head = pkg.split('.').next().unwrap_or(pkg);
+        if matches_prefix_ci(head, modules) {
+            return true;
+        }
+    }
+    false
+}
+
+fn matches_prefix_ci(head: &str, prefixes: &[&str]) -> bool {
+    let head_lc = head.to_ascii_lowercase();
+    prefixes
+        .iter()
+        .any(|p| head_lc.starts_with(&p.to_ascii_lowercase()))
+}
+
+/// Return `true` when `bytes` contains a top-level Rust `use` (or
+/// `extern crate`) statement whose leading path segment matches one of
+/// `crates` (case-insensitive). Optional `pub` / `pub(crate)` /
+/// `pub(super)` visibility prefixes are stripped before the `use`
+/// keyword check.
+pub fn rust_uses_any(bytes: &[u8], crates: &[&str]) -> bool {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    for line in text.lines() {
+        let mut line = line.trim_start();
+        if let Some(rest) = line.strip_prefix("pub") {
+            let rest = rest.trim_start();
+            line = if let Some(r) = rest.strip_prefix("(crate)") {
+                r.trim_start()
+            } else if let Some(r) = rest.strip_prefix("(super)") {
+                r.trim_start()
+            } else if let Some(r) = rest.strip_prefix("(self)") {
+                r.trim_start()
+            } else {
+                rest
+            };
+        }
+        let rest = if let Some(r) = line.strip_prefix("use ") {
+            r
+        } else if let Some(r) = line.strip_prefix("extern crate ") {
+            r
+        } else {
+            continue;
+        };
+        let head = rest
+            .split(['{', ';', ' ', ':', '/'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        if head.is_empty() {
+            continue;
+        }
+        if matches_prefix_ci(head, crates) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Return `true` when `bytes` contains a top-level Java `import`
+/// statement (including `import static`) whose package path begins
+/// with one of `prefixes`.  Comment-only mentions do *not* match.
+pub fn java_imports_any(bytes: &[u8], prefixes: &[&str]) -> bool {
+    let text = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    for line in text.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix("import ") else {
+            continue;
+        };
+        let path = rest
+            .strip_prefix("static ")
+            .unwrap_or(rest)
+            .trim()
+            .trim_end_matches(';')
+            .trim();
+        if prefixes.iter().any(|p| path.starts_with(p)) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Walk every descendant of `root`, invoking `visit` once per node.
 /// Useful when a probe needs to look at multiple node kinds in a single
 /// pass (e.g. annotations + method declarations on the same walk).
@@ -127,5 +240,64 @@ mod tests {
         assert!(leaf_matches("flask_login.login_required", &["login_required"]));
         assert!(leaf_matches("Auth::JwtRequired", &["JwtRequired"]));
         assert!(!leaf_matches("OtherDecorator", &["login_required"]));
+    }
+
+    #[test]
+    fn python_imports_any_matches_actual_imports() {
+        assert!(python_imports_any(b"from flask import Flask\n", &["flask"]));
+        assert!(python_imports_any(b"import flask\n", &["flask"]));
+        assert!(python_imports_any(b"from flask.app import Flask\n", &["flask"]));
+        assert!(python_imports_any(b"import django.urls\n", &["django"]));
+        // Comment-only mention must not match.
+        assert!(!python_imports_any(b"# flask is great\n", &["flask"]));
+        // String-only mention must not match.
+        assert!(!python_imports_any(b"x = 'flask'\n", &["flask"]));
+        // Wrong module.
+        assert!(!python_imports_any(b"import os\n", &["flask"]));
+    }
+
+    #[test]
+    fn rust_uses_any_matches_use_statements() {
+        assert!(rust_uses_any(b"use actix_web::web;\n", &["actix_web"]));
+        assert!(rust_uses_any(b"use actix_web;\n", &["actix_web"]));
+        assert!(rust_uses_any(
+            b"pub use axum::Router;\n",
+            &["axum"]
+        ));
+        assert!(rust_uses_any(
+            b"pub(crate) use axum::extract::Path;\n",
+            &["axum"]
+        ));
+        assert!(rust_uses_any(b"extern crate axum;\n", &["axum"]));
+        // Comment-only mention must not match.
+        assert!(!rust_uses_any(b"// use actix_web::web;\n", &["actix_web"]));
+        // Wrong crate.
+        assert!(!rust_uses_any(b"use serde::Deserialize;\n", &["actix_web"]));
+    }
+
+    #[test]
+    fn java_imports_any_matches_package_prefix() {
+        assert!(java_imports_any(
+            b"import io.quarkus.runtime.Quarkus;\n",
+            &["io.quarkus"]
+        ));
+        assert!(java_imports_any(
+            b"import jakarta.ws.rs.GET;\n",
+            &["jakarta.ws.rs"]
+        ));
+        assert!(java_imports_any(
+            b"import static io.quarkus.runtime.Quarkus.run;\n",
+            &["io.quarkus"]
+        ));
+        // Comment-only mention must not match.
+        assert!(!java_imports_any(
+            b"// import io.quarkus.runtime.Quarkus;\n",
+            &["io.quarkus"]
+        ));
+        // Wrong prefix.
+        assert!(!java_imports_any(
+            b"import org.springframework.web.bind.annotation.GetMapping;\n",
+            &["io.quarkus"]
+        ));
     }
 }

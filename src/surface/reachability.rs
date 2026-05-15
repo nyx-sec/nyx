@@ -60,16 +60,25 @@ pub fn populate_reaches_edges(
         // call graph cannot resolve the seed FuncKey.
         reachable_files.insert(ep.handler_location.file.clone());
 
-        // Locate seed FuncKeys whose `namespace` matches the entry's
-        // file and whose `name` matches the handler.  More than one
-        // seed is possible (overloaded methods, duplicate definitions).
+        // Locate seed FuncKeys whose `namespace` (project-relative
+        // POSIX path, optionally prefixed with `@pkg/name::`) matches
+        // the entry's file and whose `name` matches the handler.  More
+        // than one seed is possible (overloaded methods, duplicate
+        // definitions).
+        //
+        // Phase 23 follow-up: this used to be an `ends_with` substring
+        // check on both sides, which silently aliased same-basename
+        // files in sibling directories — `subdir/app.py` and
+        // `other/app.py` would both seed when the entry-point pointed
+        // at `app.py`.  We now compare the file part exactly so a
+        // handler in `subdir/app.py` only seeds the FuncKey whose
+        // namespace strips to `subdir/app.py`.
         let seeds = call_graph
             .index
             .iter()
             .filter(|(k, _)| k.name == ep.handler_name)
             .filter(|(k, _)| {
-                k.namespace.ends_with(&ep.handler_location.file)
-                    || ep.handler_location.file.ends_with(&k.namespace)
+                file_part_of_namespace(&k.namespace) == ep.handler_location.file
             })
             .map(|(_, idx)| *idx)
             .collect::<Vec<_>>();
@@ -106,6 +115,15 @@ pub fn populate_reaches_edges(
     }
 
     map.edges.extend(new_edges);
+}
+
+/// Strip the optional `@pkg/name::` package prefix from a `FuncKey`
+/// namespace, returning the project-relative POSIX file path part.
+/// `namespace_with_package` produces `"@scope/name::src/file.ts"` for
+/// JS/TS files inside resolved packages; the file part is what
+/// matches an entry-point's `handler_location.file`.
+fn file_part_of_namespace(ns: &str) -> &str {
+    ns.rsplit_once("::").map(|(_, rest)| rest).unwrap_or(ns)
 }
 
 /// Build a lookup from destination node index → destination file.
@@ -188,5 +206,20 @@ mod tests {
         assert_eq!(map.edges[0].kind, EdgeKind::Reaches);
         assert_eq!(map.edges[0].from, 0);
         assert_eq!(map.edges[0].to, 1);
+    }
+
+    #[test]
+    fn file_part_of_namespace_strips_package_prefix() {
+        assert_eq!(file_part_of_namespace("app.py"), "app.py");
+        assert_eq!(file_part_of_namespace("src/main.rs"), "src/main.rs");
+        assert_eq!(
+            file_part_of_namespace("@scope/name::src/file.ts"),
+            "src/file.ts"
+        );
+        // Last `::` wins, matching `namespace_with_package`'s shape.
+        assert_eq!(
+            file_part_of_namespace("@a/b::@c/d::lib/x.ts"),
+            "lib/x.ts"
+        );
     }
 }
