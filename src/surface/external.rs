@@ -119,12 +119,18 @@ pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode>
 }
 
 fn match_rule(callee: &str) -> Option<&'static ClientRule> {
-    let trimmed = callee.trim();
-    let leaf = trimmed.rsplit("::").next().unwrap_or(trimmed);
-    let leaf = leaf.rsplit('.').next().unwrap_or(leaf);
+    let cl = callee.trim().to_ascii_lowercase();
+    let cl_segments = cl.replace("::", ".");
     CLIENT_RULES.iter().find(|r| {
-        trimmed.to_ascii_lowercase().contains(&r.leaf.to_ascii_lowercase())
-            || leaf.eq_ignore_ascii_case(r.leaf)
+        let rl = r.leaf.to_ascii_lowercase();
+        if r.leaf.contains('.') || r.leaf.contains("::") {
+            // Qualified pattern: substring on full callee text.
+            cl.contains(&rl)
+        } else {
+            // Bare leaf: whole-segment match only.  Stops `prefetch` from
+            // matching `fetch`, `Faraday` substrings, etc.
+            cl_segments.split('.').any(|seg| seg == rl)
+        }
     })
 }
 
@@ -161,5 +167,47 @@ mod tests {
             panic!()
         };
         assert_eq!(es.label, "requests (Python)");
+    }
+
+    #[test]
+    fn bare_fetch_rule_does_not_match_prefetch_or_cachekey() {
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::JavaScript, "client.js", "load", None);
+        let summary = FuncSummary {
+            name: "load".to_string(),
+            file_path: "client.js".to_string(),
+            lang: "javascript".to_string(),
+            param_count: 0,
+            callees: vec![
+                CalleeSite::bare("prefetch".to_string()),
+                CalleeSite::bare("cacheKeyFetch".to_string()),
+                CalleeSite::bare("Faraday_token".to_string()),
+            ],
+            ..Default::default()
+        };
+        gs.insert(key, summary);
+        let nodes = detect_external_services(&gs);
+        assert!(nodes.is_empty(), "bare rules FP-matched on {nodes:?}");
+    }
+
+    #[test]
+    fn bare_got_rule_matches_segmented_callee() {
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::JavaScript, "client.js", "load", None);
+        let summary = FuncSummary {
+            name: "load".to_string(),
+            file_path: "client.js".to_string(),
+            lang: "javascript".to_string(),
+            param_count: 0,
+            callees: vec![CalleeSite::bare("got.post".to_string())],
+            ..Default::default()
+        };
+        gs.insert(key, summary);
+        let nodes = detect_external_services(&gs);
+        assert_eq!(nodes.len(), 1);
+        let SurfaceNode::ExternalService(es) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(es.label, "got (JS)");
     }
 }

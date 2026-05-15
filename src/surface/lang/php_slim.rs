@@ -81,7 +81,7 @@ fn match_slim_call(call: Node, bytes: &[u8], file_rel: &str) -> Option<SurfaceNo
         .unwrap_or_default();
     Some(SurfaceNode::EntryPoint(EntryPoint {
         location: loc_for(call, file_rel),
-        framework: Framework::Sinatra,
+        framework: Framework::Slim,
         method: *method,
         route,
         handler_name,

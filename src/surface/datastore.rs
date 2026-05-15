@@ -129,17 +129,23 @@ pub fn detect_data_stores(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
 }
 
 fn match_rule(callee: &str) -> Option<&'static DriverRule> {
-    let trimmed = callee.trim();
-    let leaf = trimmed.rsplit("::").next().unwrap_or(trimmed);
-    let leaf = leaf.rsplit('.').next().unwrap_or(leaf);
-    DRIVER_RULES
-        .iter()
-        .find(|r| {
-            // Match either the full callee text or its leaf segment
-            // against each rule's leaf, case-insensitive.
-            trimmed.to_ascii_lowercase().contains(&r.leaf.to_ascii_lowercase())
-                || leaf.eq_ignore_ascii_case(r.leaf)
-        })
+    let cl = callee.trim().to_ascii_lowercase();
+    // Normalize `::` → `.` so segment-split treats both as separators.
+    let cl_segments = cl.replace("::", ".");
+    DRIVER_RULES.iter().find(|r| {
+        let rl = r.leaf.to_ascii_lowercase();
+        if r.leaf.contains('.') || r.leaf.contains("::") {
+            // Qualified pattern (e.g. `psycopg2.connect`, `Eloquent::find`):
+            // substring on the full callee text.  Qualified shapes are
+            // unambiguous so substring is precise enough.
+            cl.contains(&rl)
+        } else {
+            // Bare leaf (e.g. `open`, `fetch`, `PrismaClient`): require a
+            // whole-segment match.  Prevents `fopen` / `OpenSearch` /
+            // `getPrismaClient` from FP-matching short bare leaves.
+            cl_segments.split('.').any(|seg| seg == rl)
+        }
+    })
 }
 
 /// Best-effort source location for a call site.  We only have file +
@@ -211,6 +217,47 @@ mod tests {
             "app.py",
             &["psycopg2.connect", "psycopg2.connect"],
         );
+        gs.insert(k, s);
+        let nodes = detect_data_stores(&gs);
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn bare_open_rule_does_not_match_fopen_or_opensearch() {
+        let mut gs = GlobalSummaries::new();
+        let (k, s) = summary_with_callees(
+            "init",
+            "app.py",
+            &[
+                "fopen",
+                "popen",
+                "OpenSearch",
+                "openssl_encrypt",
+                "MongoClient.openSession",
+            ],
+        );
+        gs.insert(k, s);
+        let nodes = detect_data_stores(&gs);
+        assert!(
+            nodes.is_empty(),
+            "bare `open` rule should not FP on {nodes:?}",
+        );
+    }
+
+    #[test]
+    fn bare_open_rule_still_matches_real_open() {
+        let mut gs = GlobalSummaries::new();
+        let (k, s) = summary_with_callees("loader", "app.py", &["open"]);
+        gs.insert(k, s);
+        let nodes = detect_data_stores(&gs);
+        assert_eq!(nodes.len(), 1);
+        let SurfaceNode::DataStore(ds) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(ds.kind, DataStoreKind::Filesystem);
+
+        let mut gs = GlobalSummaries::new();
+        let (k, s) = summary_with_callees("loader", "app.py", &["builtins.open"]);
         gs.insert(k, s);
         let nodes = detect_data_stores(&gs);
         assert_eq!(nodes.len(), 1);

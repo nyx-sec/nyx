@@ -68,7 +68,9 @@ fn match_express_call(call: Node, bytes: &[u8], file_rel: &str) -> Option<Surfac
         return None;
     }
     let object = func.child_by_field_name("object")?;
-    if !receiver_is_express(object, bytes) {
+    let file_text = std::str::from_utf8(bytes).unwrap_or("");
+    let has_express_witness = file_text.contains("express");
+    if !receiver_is_express(object, bytes, has_express_witness) {
         return None;
     }
     let prop = func.child_by_field_name("property")?;
@@ -161,22 +163,37 @@ fn arg_is_auth_marker(node: Node, bytes: &[u8]) -> bool {
     }
 }
 
-fn receiver_is_express(object: Node, bytes: &[u8]) -> bool {
-    fn name_matches(text: &str) -> bool {
+fn receiver_is_express(object: Node, bytes: &[u8], has_express_witness: bool) -> bool {
+    fn name_matches_strong(text: &str) -> bool {
         let lower = text.to_ascii_lowercase();
         lower == "app"
-            || lower == "router"
             || lower == "server"
             || lower.ends_with("_app")
-            || lower.ends_with("router")
             || lower.ends_with("api")
     }
+    fn name_matches_router(text: &str) -> bool {
+        let lower = text.to_ascii_lowercase();
+        lower == "router" || lower.ends_with("router")
+    }
+    let check_name = |text: &str| -> bool {
+        // `router` / `*router` is ambiguous with koa-router; require a
+        // file-level `express` witness before claiming it.  Strong
+        // shapes (`app`, `server`, `*_app`, `*api`) are Express-only
+        // conventions and don't need a witness.
+        if name_matches_strong(text) {
+            return true;
+        }
+        if name_matches_router(text) {
+            return has_express_witness;
+        }
+        false
+    };
     match object.kind() {
-        "identifier" => object.utf8_text(bytes).ok().is_some_and(name_matches),
+        "identifier" => object.utf8_text(bytes).ok().is_some_and(check_name),
         "member_expression" => object
             .child_by_field_name("property")
             .and_then(|p| p.utf8_text(bytes).ok())
-            .is_some_and(name_matches),
+            .is_some_and(check_name),
         "call_expression" => {
             let Some(callee) = object.child_by_field_name("function") else {
                 return false;
@@ -227,5 +244,23 @@ mod tests {
             panic!()
         };
         assert!(ep.auth_required);
+    }
+
+    #[test]
+    fn router_receiver_without_express_witness_does_not_match() {
+        // Pure koa-router file — express probe must not claim it.
+        let src = "const Router = require('@koa/router');\nconst router = new Router();\nrouter.get('/users', async ctx => {});\n";
+        let (tree, bytes) = parse(src);
+        let nodes = detect_express_routes(&tree, &bytes, &PathBuf::from("server.js"), None);
+        assert!(nodes.is_empty(), "express probe FP'd on koa-only file: {nodes:?}");
+    }
+
+    #[test]
+    fn router_receiver_with_express_witness_still_matches() {
+        // express + Router.get is a real Express idiom — must still detect.
+        let src = "const express = require('express');\nconst router = express.Router();\nrouter.get('/users', (req, res) => {});\n";
+        let (tree, bytes) = parse(src);
+        let nodes = detect_express_routes(&tree, &bytes, &PathBuf::from("server.js"), None);
+        assert_eq!(nodes.len(), 1);
     }
 }

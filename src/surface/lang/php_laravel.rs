@@ -87,7 +87,7 @@ fn match_laravel_call(call: Node, bytes: &[u8], file_rel: &str) -> Option<Surfac
     let auth_required = check_chained_middleware(call, bytes);
     Some(SurfaceNode::EntryPoint(EntryPoint {
         location: loc_for(call, file_rel),
-        framework: Framework::Sinatra, // PHP frameworks reuse the closest tag — Laravel folds into a generic surface entry-point
+        framework: Framework::Laravel,
         method: *method,
         route,
         handler_name,

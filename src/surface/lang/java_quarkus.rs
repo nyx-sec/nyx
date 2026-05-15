@@ -3,8 +3,8 @@
 //! Quarkus uses JAX-RS (`jakarta.ws.rs`) for HTTP routing on top of
 //! `RESTEasy Reactive` / `Quarkus REST`.  The annotations are
 //! identical to plain JAX-RS, so this probe overlaps with
-//! [`super::java_servlet`] but emits the [`Framework::JaxRs`] tag with
-//! a Quarkus-specific recogniser:
+//! [`super::java_servlet`] but emits the [`Framework::Quarkus`] tag
+//! via a Quarkus-specific recogniser:
 //!
 //! * The class is annotated with `@ApplicationScoped`,
 //!   `@RequestScoped`, or `@Singleton` (Quarkus DI markers); OR
@@ -77,7 +77,7 @@ pub fn detect_quarkus_routes(
                 let name = method_name(member, bytes).unwrap_or_default();
                 out.push(SurfaceNode::EntryPoint(EntryPoint {
                     location: loc_for(member, &file_rel),
-                    framework: Framework::JaxRs,
+                    framework: Framework::Quarkus,
                     method,
                     route: method_path,
                     handler_name: name,

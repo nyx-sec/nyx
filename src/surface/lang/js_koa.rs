@@ -101,7 +101,7 @@ fn match_koa_call(call: Node, bytes: &[u8], file_rel: &str) -> Option<SurfaceNod
     let handler_name = handler_function_name(*handler_node, bytes).unwrap_or_default();
     Some(SurfaceNode::EntryPoint(EntryPoint {
         location: loc_for(call, file_rel),
-        framework: Framework::Express, // koa shares the Express variant tag — Phase 22 reuses
+        framework: Framework::Koa,
         method,
         route,
         handler_name,

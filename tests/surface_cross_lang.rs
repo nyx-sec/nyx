@@ -111,11 +111,7 @@ fn js_express_fixture() {
 #[test]
 fn js_koa_fixture() {
     let map = build("js_koa");
-    // koa probe currently emits the Express variant tag because the
-    // SurfaceMap framework taxonomy folds koa-router under the
-    // generic "node http microframework" bucket.  See
-    // [`nyx_scanner::surface::lang::js_koa`] doc comment.
-    assert_entry(&map, Framework::Express, "/users");
+    assert_entry(&map, Framework::Koa, "/users");
 }
 
 #[test]
@@ -139,7 +135,7 @@ fn java_servlet_fixture() {
 #[test]
 fn java_quarkus_fixture() {
     let map = build("java_quarkus");
-    assert_entry(&map, Framework::JaxRs, "/api/hello");
+    assert_entry(&map, Framework::Quarkus, "/api/hello");
 }
 
 #[test]
@@ -157,16 +153,13 @@ fn go_gin_fixture() {
 #[test]
 fn php_laravel_fixture() {
     let map = build("php_laravel");
-    // Laravel folds into the generic Sinatra-like framework bucket
-    // because the SurfaceMap framework taxonomy is method-call shaped
-    // rather than per-stack.  See `surface::lang::php_laravel`.
-    assert_entry(&map, Framework::Sinatra, "/users");
+    assert_entry(&map, Framework::Laravel, "/users");
 }
 
 #[test]
 fn php_slim_fixture() {
     let map = build("php_slim");
-    assert_entry(&map, Framework::Sinatra, "/users");
+    assert_entry(&map, Framework::Slim, "/users");
 }
 
 #[test]
