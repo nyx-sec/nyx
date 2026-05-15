@@ -24,8 +24,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub mod build;
+pub mod dangerous;
+pub mod datastore;
+pub mod external;
 pub mod graph;
 pub mod lang;
+pub mod reachability;
 
 /// Stable source location used as the primary key for every
 /// [`SurfaceNode`].  `file` is a project-relative POSIX path so the

@@ -50,6 +50,17 @@ pub fn detect_flask_routes(
     path: &Path,
     scan_root: Option<&Path>,
 ) -> Vec<SurfaceNode> {
+    // File-level gate: avoid double-detection on FastAPI files where
+    // `app.get(...)` shape overlaps.  Phase 21 was lenient because no
+    // sibling probe existed; Phase 22 splits per-framework, so each
+    // probe only fires when its framework witness is present.
+    let file_text = std::str::from_utf8(bytes).unwrap_or("");
+    let has_flask_witness = file_text.contains("flask")
+        || file_text.contains("Flask")
+        || file_text.contains("Blueprint");
+    if !has_flask_witness {
+        return Vec::new();
+    }
     let file_rel = relative_path_string(path, scan_root);
     let mut out = Vec::new();
     walk_decorated(tree.root_node(), bytes, &mut |func_node, decorators| {
