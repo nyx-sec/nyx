@@ -1,0 +1,24 @@
+;; Phase 18 (Track E.2) — CODE_EXEC / command-injection profile.
+;;
+;; A tainted argv slot reaching `exec` or `os.system` is the sink under
+;; test, so process-exec must succeed (it is the observable behaviour
+;; the corpus oracle asserts on).  Filesystem-escape via the spawned
+;; child is still denied — even if the child runs `cat /etc/passwd` it
+;; inherits the sandbox profile and hits EPERM on the read.
+
+(version 1)
+(allow default)
+
+(deny file-read*
+    (literal "/etc/passwd")
+    (literal "/etc/master.passwd")
+    (literal "/etc/shadow")
+    (literal "/etc/sudoers")
+    (literal "/private/etc/passwd")
+    (literal "/private/etc/master.passwd")
+    (literal "/private/etc/shadow")
+    (literal "/private/etc/sudoers")
+    (subpath "/Users")
+    (subpath "/var/db")
+    (subpath "/private/var/db")
+    (subpath "/Library/Keychains"))

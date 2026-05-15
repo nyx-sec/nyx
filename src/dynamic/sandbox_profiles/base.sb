@@ -1,0 +1,34 @@
+;; Phase 18 (Track E.2) — base sandbox-exec profile.
+;;
+;; macOS interpreters (python3, node, ruby, java) need access to a wide
+;; surface of user-level frameworks, caches, and mach services that a
+;; deny-default profile cannot enumerate without breaking cold-start.
+;; The pragmatic baseline used here is `allow default` plus a targeted
+;; deny set covering filesystem-escape paths the dynamic verifier
+;; specifically wants to confine:
+;;
+;;   * `/etc/passwd` + `/private/etc/passwd` — the canonical "did you
+;;     escape the sandbox?" file used by path-traversal payloads.
+;;   * `/etc/master.passwd` + shadow files.
+;;   * `/etc/shadow` (Linux convention, present via openssh on some hosts).
+;;
+;; Per-cap profiles compose by `(import "base.sb")` and adding caps' own
+;; deny / allow rules.  Apple's `sandbox-exec(1)` resolves imports
+;; relative to `/usr/share/sandbox` so we hand absolute paths via
+;; `-f <abs path>` and skip `(import ...)` for portability across CI
+;; images.
+
+(version 1)
+(allow default)
+
+;; Filesystem-escape denylist: every cap profile inherits this set so
+;; even SSRF / CMDI runs cannot smuggle out the host password file.
+(deny file-read*
+    (literal "/etc/passwd")
+    (literal "/etc/master.passwd")
+    (literal "/etc/shadow")
+    (literal "/etc/sudoers")
+    (literal "/private/etc/passwd")
+    (literal "/private/etc/master.passwd")
+    (literal "/private/etc/shadow")
+    (literal "/private/etc/sudoers"))

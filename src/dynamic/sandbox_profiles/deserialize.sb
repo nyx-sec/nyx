@@ -1,0 +1,22 @@
+;; Phase 18 (Track E.2) — DESERIALIZE profile.
+;;
+;; Unsafe-deserialise gadgets (pickle / Marshal / unserialize /
+;; ObjectInputStream) commonly chain to `exec()` or filesystem reads
+;; once a gadget object lands.  `allow default` keeps the gadget paths
+;; runnable; the filesystem denylist prevents the gadget from
+;; exfiltrating host secrets.
+
+(version 1)
+(allow default)
+
+(deny file-read*
+    (literal "/etc/passwd")
+    (literal "/etc/master.passwd")
+    (literal "/etc/shadow")
+    (literal "/etc/sudoers")
+    (literal "/private/etc/passwd")
+    (literal "/private/etc/master.passwd")
+    (literal "/private/etc/shadow")
+    (literal "/private/etc/sudoers")
+    (subpath "/Users")
+    (subpath "/Library/Keychains"))

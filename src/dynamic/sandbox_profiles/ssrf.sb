@@ -1,0 +1,22 @@
+;; Phase 18 (Track E.2) — SSRF profile.
+;;
+;; Outbound network is allowed (the SSRF sink fires only when the
+;; harness actually makes the request, so an outbound-deny profile
+;; would mask the cap).  Filesystem-escape denylist stays in effect so
+;; an SSRF payload that pivots to read host secrets cannot exfiltrate
+;; them.
+
+(version 1)
+(allow default)
+
+(deny file-read*
+    (literal "/etc/passwd")
+    (literal "/etc/master.passwd")
+    (literal "/etc/shadow")
+    (literal "/etc/sudoers")
+    (literal "/private/etc/passwd")
+    (literal "/private/etc/master.passwd")
+    (literal "/private/etc/shadow")
+    (literal "/private/etc/sudoers")
+    (subpath "/Users")
+    (subpath "/Library/Keychains"))

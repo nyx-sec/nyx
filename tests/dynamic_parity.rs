@@ -107,6 +107,7 @@ mod parity_tests {
             verify_all_confidence: false,
             summaries: None,
             callgraph: None,
+            refuse_filesystem_confirm: false,
         }
     }
 
@@ -122,6 +123,7 @@ mod parity_tests {
             verify_all_confidence: false,
             summaries: None,
             callgraph: None,
+            refuse_filesystem_confirm: false,
         }
     }
 

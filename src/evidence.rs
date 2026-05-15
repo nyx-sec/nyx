@@ -317,6 +317,15 @@ pub enum InconclusiveReason {
     /// rather than letting an unrelated abort masquerade as a
     /// confirmed sink fire.
     UnrelatedCrash,
+    /// Phase 18 §E.2: the sandbox backend in use cannot enforce the
+    /// isolation a given oracle relies on (e.g. macOS process backend
+    /// without `sandbox-exec`, so filesystem-escape oracles would run
+    /// against an unconfined host).  Downgrades the verdict rather
+    /// than letting an unhardened backend produce a false `Confirmed`.
+    BackendInsufficient {
+        backend: String,
+        oracle_kind: String,
+    },
 }
 
 /// High-level outcome of a dynamic verification attempt.

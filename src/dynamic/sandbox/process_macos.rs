@@ -1,0 +1,400 @@
+//! Phase 18 (Track E.2) — macOS process backend hardening.
+//!
+//! macOS analogue of [`super::process_linux`].  Where the Linux backend
+//! installs a `pre_exec` sequence (prctl + rlimits + unshare + chroot +
+//! seccomp-bpf), the macOS backend wraps the harness command with
+//! `sandbox-exec(1)` driven by a per-capability `.sb` policy file.
+//!
+//! Profile selection
+//! -----------------
+//! [`profile_for_caps`] maps the [`SandboxOptions::seccomp_caps`] bitset
+//! (set by the verifier from `spec.expected_cap`) to a profile name in
+//! `src/dynamic/sandbox_profiles/`:
+//!
+//! | Cap bit          | Profile          |
+//! | ---------------- | ---------------- |
+//! | `FILE_IO`        | `path_traversal` |
+//! | `SSRF`           | `ssrf`           |
+//! | `CODE_EXEC`      | `cmdi`           |
+//! | `DESERIALIZE`    | `deserialize`    |
+//! | everything else  | `base`           |
+//!
+//! Profiles are baked into the binary via `include_str!` and materialised
+//! into a per-process tempdir on first use so `sandbox-exec -f` can read
+//! them.
+//!
+//! Fallback
+//! --------
+//! `sandbox-exec` is shipped on every supported macOS release but the
+//! binary path can be missing in stripped CI images.  When
+//! [`sandbox_exec_available`] returns `false`, the wrapper is a no-op
+//! and [`record_outcome`] tags the run as
+//! [`HardeningLevel::Trusted`] — the verifier reads this back via
+//! `VerifyOptions::refuse_filesystem_confirm` and downgrades filesystem-
+//! oracle verdicts to
+//! [`crate::evidence::InconclusiveReason::BackendInsufficient`].
+//!
+//! Tests
+//! -----
+//! See `tests/sandbox_hardening_macos.rs` for the per-primitive
+//! acceptance suite; `cfg(target_os = "macos")` gates every test so the
+//! Linux CI row sees only the skip placeholder.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+// ── HardeningLevel reporting ─────────────────────────────────────────────────
+
+/// Coarse summary of the macOS sandbox-exec wrap outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardeningLevel {
+    /// `sandbox-exec` was unavailable on the host — the harness ran
+    /// unconfined.  The verifier translates this into
+    /// `refuse_filesystem_confirm = true` so filesystem-escape oracles
+    /// degrade to `Inconclusive(BackendInsufficient)` rather than
+    /// silently returning `Confirmed` against an unhardened backend.
+    Trusted,
+    /// The harness was wrapped with `sandbox-exec -f <profile>` and the
+    /// profile selected matched [`profile_for_caps`].
+    Sandboxed,
+    /// `sandbox-exec` was available but the spawn returned a non-zero
+    /// status before the harness could run.  Same downgrade as
+    /// [`HardeningLevel::Trusted`] from the verifier's point of view.
+    Failed,
+}
+
+/// Per-run summary read back by [`last_hardening_outcome`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardeningOutcome {
+    pub level: HardeningLevel,
+    /// Name of the matched profile (e.g. `"path_traversal"`).  Empty
+    /// string when [`HardeningLevel::Trusted`].
+    pub profile: String,
+}
+
+static LAST_OUTCOME: OnceLock<Mutex<Option<HardeningOutcome>>> = OnceLock::new();
+
+fn outcome_cell() -> &'static Mutex<Option<HardeningOutcome>> {
+    LAST_OUTCOME.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn record_outcome(outcome: HardeningOutcome) {
+    if let Ok(mut g) = outcome_cell().lock() {
+        *g = Some(outcome);
+    }
+}
+
+/// Snapshot of the most-recent hardening outcome on macOS.  Tests +
+/// telemetry read this after `sandbox::run` returns.  Returns `None`
+/// until at least one wrap attempt has been recorded.
+pub fn last_hardening_outcome() -> Option<HardeningOutcome> {
+    outcome_cell().lock().ok().and_then(|g| g.clone())
+}
+
+/// Clear the last-outcome slot.  Tests use this between cases so a stale
+/// value from a prior spawn cannot leak into the assertion under test.
+pub fn reset_last_hardening_outcome() {
+    if let Ok(mut g) = outcome_cell().lock() {
+        *g = None;
+    }
+}
+
+// ── sandbox-exec availability + binary path ──────────────────────────────────
+
+/// Env override consulted by [`sandbox_exec_bin`]; tests set this to
+/// `"/nonexistent/sandbox-exec"` to force the unavailable branch.
+pub const SANDBOX_EXEC_BIN_ENV: &str = "NYX_SANDBOX_EXEC_BIN";
+
+/// Resolve the `sandbox-exec` binary path.  Honours
+/// [`SANDBOX_EXEC_BIN_ENV`] so tests can simulate a missing binary
+/// without touching `/usr/bin/sandbox-exec`.
+pub fn sandbox_exec_bin() -> PathBuf {
+    if let Ok(p) = std::env::var(SANDBOX_EXEC_BIN_ENV) {
+        return PathBuf::from(p);
+    }
+    PathBuf::from("/usr/bin/sandbox-exec")
+}
+
+/// `true` when [`sandbox_exec_bin`] points at an executable regular
+/// file.  Result is *not* cached across calls so the
+/// [`SANDBOX_EXEC_BIN_ENV`] override can be flipped per-test.
+pub fn sandbox_exec_available() -> bool {
+    let bin = sandbox_exec_bin();
+    match std::fs::metadata(&bin) {
+        Ok(m) => m.is_file(),
+        Err(_) => false,
+    }
+}
+
+// ── Profile selection + materialisation ──────────────────────────────────────
+
+/// Baked-in `.sb` source.  Each entry is the contents of one file under
+/// `src/dynamic/sandbox_profiles/`; the runtime materialises them into a
+/// per-process tempdir on first use.
+const PROFILE_SOURCES: &[(&str, &str)] = &[
+    ("base", include_str!("../sandbox_profiles/base.sb")),
+    ("cmdi", include_str!("../sandbox_profiles/cmdi.sb")),
+    (
+        "path_traversal",
+        include_str!("../sandbox_profiles/path_traversal.sb"),
+    ),
+    ("ssrf", include_str!("../sandbox_profiles/ssrf.sb")),
+    ("deserialize", include_str!("../sandbox_profiles/deserialize.sb")),
+];
+
+/// Cap → profile-name dispatch.  The most restrictive matching profile
+/// wins: `FILE_IO` outranks `SSRF` outranks `CODE_EXEC` outranks
+/// `DESERIALIZE`.  A cap bit with no matching profile falls back to the
+/// `base` profile.
+pub fn profile_for_caps(caps: u32) -> &'static str {
+    // Mirror the bit positions declared in `src/labels/mod.rs`.
+    const FILE_IO: u32 = 1 << 5;
+    const DESERIALIZE: u32 = 1 << 8;
+    const SSRF: u32 = 1 << 9;
+    const CODE_EXEC: u32 = 1 << 10;
+
+    if caps & FILE_IO != 0 {
+        "path_traversal"
+    } else if caps & SSRF != 0 {
+        "ssrf"
+    } else if caps & CODE_EXEC != 0 {
+        "cmdi"
+    } else if caps & DESERIALIZE != 0 {
+        "deserialize"
+    } else {
+        "base"
+    }
+}
+
+/// Lazy materialised tempdir holding the `.sb` files unpacked from the
+/// binary.  Survives for the lifetime of the process — the system's
+/// `tmp` reaper sweeps the dir on next boot.
+static PROFILE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+static PROFILE_PATHS: OnceLock<Mutex<BTreeMap<&'static str, PathBuf>>> = OnceLock::new();
+
+fn profile_dir() -> Option<&'static Path> {
+    PROFILE_DIR
+        .get_or_init(|| {
+            let dir = std::env::temp_dir().join("nyx-sandbox-profiles");
+            std::fs::create_dir_all(&dir).ok()?;
+            Some(dir)
+        })
+        .as_deref()
+}
+
+fn profile_paths() -> &'static Mutex<BTreeMap<&'static str, PathBuf>> {
+    PROFILE_PATHS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+/// Return the absolute path of the named profile, writing the
+/// `include_str!`-baked source to the per-process tempdir on first
+/// access.  Returns `None` when the profile name is unknown or the
+/// tempdir could not be created / written.
+pub fn profile_path(name: &str) -> Option<PathBuf> {
+    // Resolve the static source first so we hold a `&'static str` key.
+    let (key, source) = PROFILE_SOURCES.iter().find(|(k, _)| *k == name)?;
+    {
+        let cache = profile_paths().lock().ok()?;
+        if let Some(p) = cache.get(key) {
+            return Some(p.clone());
+        }
+    }
+    let dir = profile_dir()?;
+    let path = dir.join(format!("{key}.sb"));
+    if !path.exists() {
+        std::fs::write(&path, source).ok()?;
+    }
+    let mut cache = profile_paths().lock().ok()?;
+    cache.insert(*key, path.clone());
+    Some(path)
+}
+
+// ── Command wrapping ─────────────────────────────────────────────────────────
+
+/// Inputs to [`wrap_plan`] — the original harness command split into
+/// resolved-path + argv-tail form.  The caller is expected to have
+/// already resolved `cmd_path` via `find_in_host_path` so the wrapped
+/// `sandbox-exec` invocation receives an absolute target binary.
+pub struct WrapInput<'a> {
+    pub cmd_path: &'a Path,
+    pub cmd_args: &'a [String],
+    pub workdir: &'a Path,
+    pub caps: u32,
+    pub profile_override: Option<&'a str>,
+}
+
+/// Outputs of [`wrap_plan`] when sandbox-exec wrapping is in effect.
+/// `binary` is the `sandbox-exec` path (or the env-override) and `args`
+/// is the full argv (excluding `argv[0]`).
+pub struct WrapPlan {
+    pub binary: PathBuf,
+    pub args: Vec<String>,
+    pub profile: &'static str,
+}
+
+/// Build the `sandbox-exec -f <profile> -D WORKDIR=<workdir> -- <cmd>`
+/// argv for `cmd_path + cmd_args`.  Returns `None` when:
+///
+/// - `sandbox-exec` is not on the host (records [`HardeningLevel::Trusted`]),
+/// - the profile name is unknown (records [`HardeningLevel::Trusted`]), or
+/// - the profile file could not be materialised in `/tmp`
+///   (records [`HardeningLevel::Failed`]).
+///
+/// Callers use the returned `None` as a signal to fall back to the
+/// unwrapped command; the verifier's `refuse_filesystem_confirm` flag
+/// keeps the verdict honest in that case.
+pub fn wrap_plan(input: &WrapInput<'_>) -> Option<WrapPlan> {
+    if !sandbox_exec_available() {
+        record_outcome(HardeningOutcome {
+            level: HardeningLevel::Trusted,
+            profile: String::new(),
+        });
+        return None;
+    }
+    let profile = input.profile_override.unwrap_or_else(|| profile_for_caps(input.caps));
+    // Profile keys must be `&'static str` (from `PROFILE_SOURCES`); reject
+    // unknown overrides up-front so we don't accidentally wrap with a
+    // profile we have no source for.
+    let resolved_key = PROFILE_SOURCES
+        .iter()
+        .find(|(k, _)| *k == profile)
+        .map(|(k, _)| *k);
+    let resolved_key = match resolved_key {
+        Some(k) => k,
+        None => {
+            record_outcome(HardeningOutcome {
+                level: HardeningLevel::Trusted,
+                profile: String::new(),
+            });
+            return None;
+        }
+    };
+    let profile_file = match profile_path(resolved_key) {
+        Some(p) => p,
+        None => {
+            record_outcome(HardeningOutcome {
+                level: HardeningLevel::Failed,
+                profile: resolved_key.to_owned(),
+            });
+            return None;
+        }
+    };
+
+    let workdir_abs = std::fs::canonicalize(input.workdir).unwrap_or_else(|_| input.workdir.to_path_buf());
+
+    let mut args: Vec<String> = Vec::with_capacity(6 + input.cmd_args.len());
+    args.push("-f".to_owned());
+    args.push(profile_file.to_string_lossy().into_owned());
+    args.push("-D".to_owned());
+    args.push(format!("WORKDIR={}", workdir_abs.to_string_lossy()));
+    args.push(input.cmd_path.to_string_lossy().into_owned());
+    for a in input.cmd_args {
+        args.push(a.clone());
+    }
+
+    record_outcome(HardeningOutcome {
+        level: HardeningLevel::Sandboxed,
+        profile: resolved_key.to_owned(),
+    });
+
+    Some(WrapPlan {
+        binary: sandbox_exec_bin(),
+        args,
+        profile: resolved_key,
+    })
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_for_caps_prefers_file_io() {
+        const FILE_IO: u32 = 1 << 5;
+        const SSRF: u32 = 1 << 9;
+        const CODE_EXEC: u32 = 1 << 10;
+        assert_eq!(profile_for_caps(FILE_IO), "path_traversal");
+        assert_eq!(profile_for_caps(FILE_IO | SSRF), "path_traversal");
+        assert_eq!(profile_for_caps(SSRF | CODE_EXEC), "ssrf");
+        assert_eq!(profile_for_caps(CODE_EXEC), "cmdi");
+        assert_eq!(profile_for_caps(0), "base");
+    }
+
+    #[test]
+    fn profile_path_materialises_baked_source() {
+        let path = profile_path("base").expect("base profile");
+        let contents = std::fs::read_to_string(&path).expect("read .sb");
+        assert!(contents.contains("(version 1)"));
+        assert!(contents.contains("/etc/passwd"));
+
+        // The path_traversal profile substitutes WORKDIR at spawn time,
+        // so its baked source contains the param reference.
+        let trav = profile_path("path_traversal").expect("path_traversal profile");
+        let trav_src = std::fs::read_to_string(&trav).expect("read .sb");
+        assert!(trav_src.contains("(param \"WORKDIR\")"));
+    }
+
+    #[test]
+    fn profile_path_unknown_name_is_none() {
+        assert!(profile_path("does_not_exist").is_none());
+    }
+
+    #[test]
+    fn sandbox_exec_bin_honours_env_override() {
+        // SAFETY: tests are run serially with the macOS hardening suite;
+        // resetting the env var below restores the default for subsequent
+        // tests in the same process.
+        unsafe { std::env::set_var(SANDBOX_EXEC_BIN_ENV, "/nonexistent/sandbox-exec") };
+        assert_eq!(sandbox_exec_bin(), PathBuf::from("/nonexistent/sandbox-exec"));
+        assert!(!sandbox_exec_available());
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+    }
+
+    #[test]
+    fn wrap_plan_returns_none_when_sandbox_exec_missing() {
+        unsafe { std::env::set_var(SANDBOX_EXEC_BIN_ENV, "/nonexistent/sandbox-exec") };
+        reset_last_hardening_outcome();
+        let input = WrapInput {
+            cmd_path: Path::new("/usr/bin/true"),
+            cmd_args: &[],
+            workdir: Path::new("/tmp"),
+            caps: 0,
+            profile_override: None,
+        };
+        assert!(wrap_plan(&input).is_none());
+        let outcome = last_hardening_outcome().expect("outcome recorded");
+        assert_eq!(outcome.level, HardeningLevel::Trusted);
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn wrap_plan_returns_sandboxed_when_sandbox_exec_present() {
+        // Skip when the host doesn't actually have /usr/bin/sandbox-exec
+        // (e.g. someone reading SANDBOX_EXEC_BIN_ENV from a parent shell).
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+        if !sandbox_exec_available() {
+            eprintln!("SKIP: /usr/bin/sandbox-exec missing on this host");
+            return;
+        }
+        reset_last_hardening_outcome();
+        let input = WrapInput {
+            cmd_path: Path::new("/usr/bin/true"),
+            cmd_args: &[],
+            workdir: Path::new("/tmp"),
+            caps: 1 << 5, // FILE_IO
+            profile_override: None,
+        };
+        let plan = wrap_plan(&input).expect("plan");
+        assert_eq!(plan.profile, "path_traversal");
+        assert_eq!(plan.binary, PathBuf::from("/usr/bin/sandbox-exec"));
+        assert!(plan.args.iter().any(|a| a == "-f"));
+        assert!(plan.args.iter().any(|a| a.starts_with("WORKDIR=")));
+        let outcome = last_hardening_outcome().expect("outcome");
+        assert_eq!(outcome.level, HardeningLevel::Sandboxed);
+        assert_eq!(outcome.profile, "path_traversal");
+    }
+}

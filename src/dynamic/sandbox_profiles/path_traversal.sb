@@ -1,0 +1,50 @@
+;; Phase 18 (Track E.2) — FILE_IO / path-traversal profile.
+;;
+;; The strictest of the per-cap profiles: blocks every host secret /
+;; user-data path a filesystem-escape payload would target.  Read /
+;; write access to system libraries (`/usr`, `/System`, `/Library`) is
+;; preserved so the interpreter (python3 / node / java) can cold-start.
+;;
+;; Sensitive paths denied:
+;;   * `/etc/{passwd,master.passwd,shadow,sudoers}` + their
+;;     `/private/etc/...` mirrors — host credentials.
+;;   * `/Users` — every user's home directory.
+;;   * `/var/db` and `/private/var/db` — Open Directory and
+;;     opendirectoryd state.
+;;   * `/var/log` and `/private/var/log` — system + auth logs.
+;;   * `/Library/Keychains` — host keychain databases.
+;;
+;; Writes outside WORKDIR are denied broadly: a tainted path payload
+;; cannot drop files into `/tmp` peers, `/var/folders`, or the user's
+;; home.
+
+(version 1)
+(allow default)
+
+(deny file-read*
+    (literal "/etc/passwd")
+    (literal "/etc/master.passwd")
+    (literal "/etc/shadow")
+    (literal "/etc/sudoers")
+    (literal "/private/etc/passwd")
+    (literal "/private/etc/master.passwd")
+    (literal "/private/etc/shadow")
+    (literal "/private/etc/sudoers")
+    (subpath "/Users")
+    (subpath "/var/db")
+    (subpath "/private/var/db")
+    (subpath "/var/log")
+    (subpath "/private/var/log")
+    (subpath "/Library/Keychains"))
+
+;; Writes: deny everything outside WORKDIR + `/dev/null`.  The
+;; subpath-allow re-enables WORKDIR after the broad deny.
+(deny file-write*
+    (subpath "/")
+    (with no-log))
+(allow file-write*
+    (subpath (param "WORKDIR"))
+    (literal "/dev/null")
+    (literal "/dev/dtracehelper")
+    (literal "/dev/stdout")
+    (literal "/dev/stderr"))

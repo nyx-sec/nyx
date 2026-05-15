@@ -37,6 +37,9 @@ pub mod seccomp;
 #[cfg(target_os = "linux")]
 pub use process_linux::{HardeningLevel, HardeningOutcome};
 
+#[cfg(target_os = "macos")]
+pub mod process_macos;
+
 // ── Harness interpretation probe ──────────────────────────────────────────────
 
 /// Returns true when the harness is driven by an interpreter (Python, Node, …)
@@ -1211,8 +1214,43 @@ fn run_process(
         find_in_host_path(cmd_name).unwrap_or_else(|| std::path::PathBuf::from(cmd_name))
     };
 
-    let mut cmd = Command::new(&resolved_cmd_path);
-    cmd.args(&harness.command[1..]);
+    // Phase 18 (Track E.2): on macOS, wrap the command with
+    // `sandbox-exec -f <profile> -D WORKDIR=<workdir> ...` so per-cap
+    // policies confine the harness.  When `sandbox-exec` is missing or
+    // the wrap setup fails, `wrap_plan` returns `None` and we fall
+    // back to the unwrapped command; the verifier reads back the
+    // recorded [`process_macos::HardeningLevel::Trusted`] outcome and
+    // downgrades filesystem-oracle verdicts to
+    // [`crate::evidence::InconclusiveReason::BackendInsufficient`].
+    #[cfg(target_os = "macos")]
+    let macos_wrap = {
+        if matches!(opts.process_hardening, ProcessHardeningProfile::Strict) {
+            process_macos::wrap_plan(&process_macos::WrapInput {
+                cmd_path: &resolved_cmd_path,
+                cmd_args: &harness.command[1..],
+                workdir: &harness.workdir,
+                caps: opts.seccomp_caps,
+                profile_override: None,
+            })
+        } else {
+            None
+        }
+    };
+
+    #[cfg(target_os = "macos")]
+    let (effective_cmd_path, effective_cmd_args): (std::path::PathBuf, Vec<String>) =
+        match &macos_wrap {
+            Some(plan) => (plan.binary.clone(), plan.args.clone()),
+            None => (resolved_cmd_path.clone(), harness.command[1..].to_vec()),
+        };
+    #[cfg(not(target_os = "macos"))]
+    let (effective_cmd_path, effective_cmd_args): (std::path::PathBuf, Vec<String>) = (
+        resolved_cmd_path.clone(),
+        harness.command[1..].to_vec(),
+    );
+
+    let mut cmd = Command::new(&effective_cmd_path);
+    cmd.args(&effective_cmd_args);
     cmd.current_dir(&harness.workdir);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

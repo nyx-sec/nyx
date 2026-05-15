@@ -52,6 +52,16 @@ pub struct VerifyOptions {
     /// entry-point ancestor (route handler, CLI subcommand, `main`).
     /// `None` keeps strategy 4 on the legacy rule-id substring path.
     pub callgraph: Option<Arc<CallGraph>>,
+    /// Phase 18 (Track E.2): when `true`, refuse to stamp `Confirmed`
+    /// on findings whose [`HarnessSpec::expected_cap`] includes
+    /// [`crate::labels::Cap::FILE_IO`] because the active sandbox
+    /// backend cannot confine filesystem reach.  Set by
+    /// [`Self::from_config`] on macOS hosts where
+    /// `/usr/bin/sandbox-exec` is missing; the verifier downgrades
+    /// such findings to
+    /// [`crate::evidence::InconclusiveReason::BackendInsufficient`]
+    /// rather than running against an unhardened host.
+    pub refuse_filesystem_confirm: bool,
 }
 
 impl VerifyOptions {
@@ -82,6 +92,17 @@ impl VerifyOptions {
             Some(listener) => NetworkPolicy::OobOutbound { listener },
             None => NetworkPolicy::None,
         };
+        // Phase 18 (Track E.2): the macOS process backend depends on
+        // `/usr/bin/sandbox-exec` to confine filesystem reach.  When the
+        // binary is absent, surface that up-front so filesystem oracles
+        // degrade to `Inconclusive(BackendInsufficient)` instead of
+        // running against an unhardened host.
+        #[cfg(target_os = "macos")]
+        let refuse_filesystem_confirm =
+            !crate::dynamic::sandbox::process_macos::sandbox_exec_available();
+        #[cfg(not(target_os = "macos"))]
+        let refuse_filesystem_confirm = false;
+
         Self {
             sandbox: SandboxOptions {
                 backend,
@@ -93,6 +114,7 @@ impl VerifyOptions {
             verify_all_confidence: config.scanner.verify_all_confidence,
             summaries: None,
             callgraph: None,
+            refuse_filesystem_confirm,
         }
     }
 }
@@ -382,6 +404,41 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             spec.lang,
             spec.entry_kind,
         );
+    }
+
+    // Phase 18 (Track E.2): when the active backend cannot confine
+    // filesystem reach (macOS process backend without `sandbox-exec`),
+    // refuse to run filesystem-escape oracles up-front and emit a
+    // structured `Inconclusive(BackendInsufficient)` so operators see
+    // the backend gap instead of a quiet `Confirmed` against an
+    // unhardened host.
+    if opts.refuse_filesystem_confirm
+        && spec.expected_cap.contains(crate::labels::Cap::FILE_IO)
+    {
+        let backend = if cfg!(target_os = "macos") {
+            "macos-process-without-sandbox-exec"
+        } else {
+            "process"
+        };
+        return VerifyResult {
+            finding_id,
+            status: VerifyStatus::Inconclusive,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: Some(InconclusiveReason::BackendInsufficient {
+                backend: backend.to_owned(),
+                oracle_kind: "filesystem-escape".to_owned(),
+            }),
+            detail: Some(
+                "filesystem-escape oracle refused: sandbox backend cannot confine \
+                 file reach (sandbox-exec missing). Install Apple's `sandbox-exec` \
+                 binary or run via the docker backend."
+                    .to_owned(),
+            ),
+            attempts: vec![],
+            toolchain_match: None,
+            differential: None,
+        };
     }
 
     // Scan the entry file's directory for sensitive files (§17.3 mount filter).
