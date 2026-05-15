@@ -467,15 +467,15 @@ pub fn handle(
             let idx = Indexer::from_pool(&project_name, &pool)?;
             idx.vacuum()?;
         }
-        // Indexed scan path: Phase 25 chain composer needs a
-        // SurfaceMap.  The indexed pipeline does not yet thread one
-        // out — Phase 23's CLI loads it from SQLite when needed.  For
-        // now return an empty map so chain emission produces no
-        // chains; this matches pre-Phase-25 behaviour for indexed
-        // scans.
+        // Indexed scan path: persist + return the SurfaceMap so the
+        // Phase 25 chain composer can walk it.  `scan_with_index_parallel_observer`
+        // already builds and persists the map into the `surface_map`
+        // SQLite table; reload it through the same pool so the indexed
+        // chain emission matches the non-indexed branch.
+        let scan_pool = Arc::clone(&pool);
         let diags = scan_with_index_parallel_observer(
             &project_name,
-            pool,
+            scan_pool,
             config,
             show_progress,
             &scan_path,
@@ -484,7 +484,11 @@ pub fn handle(
             None,
             Some(&preview_tier_seen),
         )?;
-        (diags, crate::surface::SurfaceMap::new())
+        let surface_map = {
+            let idx = Indexer::from_pool(&project_name, &pool)?;
+            idx.load_surface_map()?.unwrap_or_default()
+        };
+        (diags, surface_map)
     };
 
     // Print the Preview-tier banner to stderr once, after file enumeration
@@ -646,7 +650,12 @@ pub fn handle(
             tracing::debug!("Printing to console");
             print!(
                 "{}",
-                crate::fmt::render_console(&diags, &project_name, Some(&stats))
+                crate::fmt::render_console(
+                    &diags_for_output,
+                    &project_name,
+                    Some(&stats),
+                    &chains,
+                )
             );
             if let Some(ref diff) = verdict_diff {
                 println!("\nBaseline comparison:");

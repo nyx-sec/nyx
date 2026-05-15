@@ -4,6 +4,7 @@
 //! severity hierarchy, normalised taint flow rendering, and stable wrapping.
 #![allow(clippy::collapsible_if)]
 
+use crate::chain::finding::ChainFinding;
 use crate::commands::scan::{Diag, SuppressionStats};
 use crate::patterns::Severity;
 use console::style;
@@ -17,13 +18,25 @@ const DEFAULT_WIDTH: usize = 100;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Render all diagnostics as grouped, formatted console output with a summary.
+///
+/// `chains` is the list of composed exploit chains emitted alongside
+/// `diags`.  When non-empty, a `Chains` section is printed ahead of the
+/// per-file findings.  Callers that have already gated constituent
+/// findings on `[output] show_chain_constituents` should pass the
+/// filtered `diags` slice so the constituent listing matches the JSON /
+/// SARIF emitters.
 pub fn render_console(
     diags: &[Diag],
     project_name: &str,
     suppression_stats: Option<&SuppressionStats>,
+    chains: &[ChainFinding],
 ) -> String {
     let width = terminal_width();
     let mut out = String::new();
+
+    if !chains.is_empty() {
+        out.push_str(&render_chains(chains, width));
+    }
 
     let mut grouped: BTreeMap<&str, Vec<&Diag>> = BTreeMap::new();
     for d in diags {
@@ -239,6 +252,61 @@ const LOGO: &[&str] = &[
 
 /// Indentation for body/evidence lines (spaces).
 const BODY_INDENT: usize = 6;
+
+/// Render the `Chains` header section.  Each chain is summarised on
+/// two lines: severity + impact + score header, then sink location +
+/// constituent count.
+fn render_chains(chains: &[ChainFinding], _width: usize) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{}\n",
+        style(format!("Chains ({})", chains.len())).bold().underlined()
+    ));
+    for c in chains {
+        let sev = chain_severity_tag(c.severity);
+        let impact = format!("{:?}", c.implied_impact);
+        let header = format!(
+            "  {} [{}] {}  (score: {:.1}, {} members)",
+            sev,
+            impact,
+            style(&c.sink.function_name).bold(),
+            c.score,
+            c.members.len()
+        );
+        out.push_str(&format!("{header}\n"));
+        out.push_str(&format!(
+            "      {} {}:{}:{}\n",
+            style("sink:").dim(),
+            c.sink.file,
+            c.sink.line,
+            c.sink.col
+        ));
+        for m in &c.members {
+            out.push_str(&format!(
+                "      {} {} {}:{}:{}\n",
+                style("via:").dim(),
+                style(&m.rule_id).dim(),
+                m.location.file,
+                m.location.line,
+                m.location.col
+            ));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Render a chain severity tag with the same shape as the per-diag
+/// severity tag so chain output reads consistently next to findings.
+fn chain_severity_tag(s: crate::chain::finding::ChainSeverity) -> String {
+    use crate::chain::finding::ChainSeverity;
+    match s {
+        ChainSeverity::Critical => format!("{} {}", style("✖").red().bold(), style("[CRITICAL]").red().bold()),
+        ChainSeverity::High => format!("{} {}", style("✖").red(), style("[HIGH]").red()),
+        ChainSeverity::Medium => format!("{} {}", style("⚠").yellow(), style("[MEDIUM]").yellow()),
+        ChainSeverity::Low => format!("{} {}", style("●").dim(), style("[LOW]").dim()),
+    }
+}
 
 /// Render a single diagnostic block.
 fn render_diag(d: &Diag, width: usize) -> String {
@@ -882,7 +950,7 @@ mod tests {
                 stable_hash: 0,
             },
         ];
-        let output = render_console(&diags, "test-project", None);
+        let output = render_console(&diags, "test-project", None, &[]);
         let stripped = strip_ansi(&output);
         assert!(stripped.contains("src/a.rs"));
         assert!(stripped.contains("src/b.rs"));
@@ -917,7 +985,7 @@ mod tests {
             alternative_finding_ids: Vec::new(),
             stable_hash: 0,
         }];
-        let output = render_console(&diags, "proj", None);
+        let output = render_console(&diags, "proj", None, &[]);
         let stripped = strip_ansi(&output);
         assert!(stripped.contains("Source:"), "should contain Source label");
         assert!(stripped.contains("Sink:"), "should contain Sink label");
@@ -976,7 +1044,7 @@ mod tests {
                 stable_hash: 0,
             },
         ];
-        let output = render_console(&diags, "proj", None);
+        let output = render_console(&diags, "proj", None, &[]);
         let stripped = strip_ansi(&output);
         // There should be a blank line between the two findings
         assert!(

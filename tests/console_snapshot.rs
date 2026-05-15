@@ -127,7 +127,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
 #[test]
 fn console_confirmed_shows_payload_id() {
     let diag = diag_with_verdict(VerifyStatus::Confirmed);
-    let output = render_console(&[diag], "proj", None);
+    let output = render_console(&[diag], "proj", None, &[]);
     let stripped = strip_ansi(&output);
     assert!(
         stripped.contains("[DYN: confirmed via sqli-tautology]"),
@@ -138,7 +138,7 @@ fn console_confirmed_shows_payload_id() {
 #[test]
 fn console_not_confirmed_shows_annotation() {
     let diag = diag_with_verdict(VerifyStatus::NotConfirmed);
-    let output = render_console(&[diag], "proj", None);
+    let output = render_console(&[diag], "proj", None, &[]);
     let stripped = strip_ansi(&output);
     assert!(
         stripped.contains("[DYN: not confirmed]"),
@@ -149,7 +149,7 @@ fn console_not_confirmed_shows_annotation() {
 #[test]
 fn console_unsupported_shows_reason() {
     let diag = diag_with_verdict(VerifyStatus::Unsupported);
-    let output = render_console(&[diag], "proj", None);
+    let output = render_console(&[diag], "proj", None, &[]);
     let stripped = strip_ansi(&output);
     assert!(
         stripped.contains("[DYN: unsupported (no payloads for cap)]"),
@@ -160,7 +160,7 @@ fn console_unsupported_shows_reason() {
 #[test]
 fn console_inconclusive_shows_reason() {
     let diag = diag_with_verdict(VerifyStatus::Inconclusive);
-    let output = render_console(&[diag], "proj", None);
+    let output = render_console(&[diag], "proj", None, &[]);
     let stripped = strip_ansi(&output);
     assert!(
         stripped.contains("[DYN: inconclusive (build failed)]"),
@@ -171,7 +171,7 @@ fn console_inconclusive_shows_reason() {
 #[test]
 fn console_no_annotation_when_no_dynamic_verdict() {
     let diag = base_diag();
-    let output = render_console(&[diag], "proj", None);
+    let output = render_console(&[diag], "proj", None, &[]);
     let stripped = strip_ansi(&output);
     assert!(
         !stripped.contains("[DYN:"),
@@ -183,7 +183,7 @@ fn console_no_annotation_when_no_dynamic_verdict() {
 fn console_no_annotation_when_evidence_has_no_verdict() {
     let mut diag = base_diag();
     diag.evidence = Some(Evidence::default());
-    let output = render_console(&[diag], "proj", None);
+    let output = render_console(&[diag], "proj", None, &[]);
     let stripped = strip_ansi(&output);
     assert!(
         !stripped.contains("[DYN:"),
