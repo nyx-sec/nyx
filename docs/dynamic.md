@@ -162,6 +162,12 @@ given finding makes the same keep-or-drop call across reruns. Confirmed and
 Inconclusive verdicts ignore the rate and are always retained (they gate the
 false-Confirmed budget and drive the spec-derivation roadmap).
 
+Rank-delta records (emitted by `emit_rank_delta` when a verdict shifts a
+finding's position in the ranked output) are also retained unconditionally and
+do **not** consult `sample_rate_other`. They are calibration-critical and small
+in volume, so the carve-out is intentional; setting `sample_rate_other = 0.0`
+to throttle log growth will still produce rank-delta lines.
+
 `NYX_NO_TELEMETRY=1` disables every write regardless of the policy.
 
 ## Opting in to feedback
