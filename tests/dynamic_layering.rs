@@ -17,6 +17,7 @@
 //! | `src/commands/mod.rs`        | `verify-feedback` subcommand (§21.2)      |
 //! | `src/server/` (any file)     | server start_scan verify wiring           |
 //! | `src/rank.rs`                | M7 rank-delta telemetry hook (§21 / M7)   |
+//! | `src/chain/reverify.rs`      | Phase 26 — composite chain re-verification |
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,9 @@ const ALLOWED: &[&str] = &[
     "commands/mod.rs",
     "server/",
     "rank.rs",
+    // Phase 26 — Track G.3: composite chain re-verification is the
+    // public bridge between the chain composer and the dynamic verifier.
+    "chain/reverify.rs",
     // The dynamic module itself is obviously allowed.
     "dynamic/",
 ];

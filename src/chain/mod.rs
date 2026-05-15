@@ -36,6 +36,8 @@ pub mod edges;
 pub mod feasibility;
 pub mod finding;
 pub mod impact;
+#[cfg(feature = "dynamic")]
+pub mod reverify;
 pub mod score;
 pub mod search;
 
@@ -43,6 +45,11 @@ pub use edges::{ChainEdge, FindingRef, findings_to_edges};
 pub use feasibility::Feasibility;
 pub use finding::{ChainFinding, ChainMember, ChainSeverity, ChainSink};
 pub use impact::{IMPACT_LATTICE, ImpactCategory, ImpactRule, lookup_impact};
+#[cfg(feature = "dynamic")]
+pub use reverify::{
+    ChainReverifyResult, CompositeReverifier, DefaultCompositeReverifier, reverify_chain,
+    reverify_chain_with, reverify_top_chains, reverify_top_chains_with,
+};
 pub use score::{ChainScoreConfig, category_weight, min_score_default, score_path};
 pub use search::{ChainSearchConfig, find_chains};
 

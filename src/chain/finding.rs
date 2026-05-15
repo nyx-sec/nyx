@@ -24,7 +24,7 @@
 
 use crate::chain::edges::FindingRef;
 use crate::chain::impact::ImpactCategory;
-use crate::evidence::VerifyResult;
+use crate::evidence::{VerifyResult, VerifyStatus};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -52,6 +52,24 @@ impl fmt::Display for ChainSeverity {
             ChainSeverity::High => "HIGH",
             ChainSeverity::Critical => "CRITICAL",
         })
+    }
+}
+
+impl ChainSeverity {
+    /// Phase 26 — drop one severity bucket.  Used by composite
+    /// re-verification when the chain's dynamic verdict is
+    /// `Inconclusive`: the chain stays on the wire but its severity
+    /// loses one notch so triagers see the verification gap.
+    ///
+    /// `Low` is the floor — calling `downgraded()` on `Low` returns
+    /// `Low` so the helper is idempotent.
+    pub fn downgraded(self) -> Self {
+        match self {
+            ChainSeverity::Critical => ChainSeverity::High,
+            ChainSeverity::High => ChainSeverity::Medium,
+            ChainSeverity::Medium => ChainSeverity::Low,
+            ChainSeverity::Low => ChainSeverity::Low,
+        }
     }
 }
 
@@ -91,10 +109,17 @@ pub struct ChainFinding {
     /// Numeric score from [`crate::chain::score::score_path`].
     /// Carried verbatim for JSON output so consumers can re-sort.
     pub score: f64,
-    /// Composite dynamic verification verdict.  `None` in Phase 25
-    /// (the composite re-verifier lands in Phase 26).
+    /// Composite dynamic verification verdict.  `None` until Phase 26's
+    /// `reverify_chain` runs over the chain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic_verdict: Option<VerifyResult>,
+    /// Phase 26 — Track G.3: human-readable reason when composite
+    /// re-verification altered the chain's outcome.  Populated when
+    /// `dynamic_verdict.status` is `Inconclusive` and the severity was
+    /// downgraded; `None` when the verdict either confirmed the chain
+    /// or left the severity untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverify_reason: Option<String>,
 }
 
 /// Sink terminus of a [`ChainFinding`].  Mirrors the
@@ -122,6 +147,35 @@ impl ChainFinding {
         let out = h.finalize();
         let bytes = out.as_bytes();
         u64::from_le_bytes(bytes[..8].try_into().unwrap())
+    }
+
+    /// Phase 26 — Track G.3: attach a composite verdict + apply the
+    /// `Inconclusive → severity downgrade` rule.
+    ///
+    /// - `Confirmed` / `NotConfirmed` / `Unsupported`: severity stays
+    ///   put; `reverify_reason` cleared.
+    /// - `Inconclusive`: severity drops one bucket
+    ///   ([`ChainSeverity::downgraded`]) and `reverify_reason` is set
+    ///   from the verdict's typed inconclusive reason (with a fallback
+    ///   to a generic "inconclusive composite verification" string when
+    ///   the verdict has no typed reason).
+    pub fn apply_dynamic_verdict(&mut self, verdict: VerifyResult) {
+        if verdict.status == VerifyStatus::Inconclusive {
+            self.severity = self.severity.downgraded();
+            let reason = match &verdict.inconclusive_reason {
+                Some(r) => format!("composite reverification inconclusive: {r:?}"),
+                None => match verdict.detail.as_deref() {
+                    Some(d) if !d.is_empty() => {
+                        format!("composite reverification inconclusive: {d}")
+                    }
+                    _ => "composite reverification inconclusive".to_owned(),
+                },
+            };
+            self.reverify_reason = Some(reason);
+        } else {
+            self.reverify_reason = None;
+        }
+        self.dynamic_verdict = Some(verdict);
     }
 }
 

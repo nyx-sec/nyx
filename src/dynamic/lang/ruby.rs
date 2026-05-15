@@ -27,7 +27,7 @@
 //! Build: no compilation step. Command is `ruby harness.rb`.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -63,6 +63,28 @@ impl LangEmitter for RubyEmitter {
 
     fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
         materialize_ruby(env)
+    }
+
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        chain_step(prev_output)
+    }
+}
+
+/// Phase 26 — Ruby chain-step harness.
+fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    let source = "prev = ENV[\"NYX_PREV_OUTPUT\"] || \"\"\n$stdout.write(prev)\n".to_owned();
+    ChainStepHarness {
+        source,
+        filename: "step.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "step.rb".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
     }
 }
 

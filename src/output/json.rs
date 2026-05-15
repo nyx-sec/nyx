@@ -119,6 +119,7 @@ mod tests {
             severity: ChainSeverity::Critical,
             score: 200.0,
             dynamic_verdict: None,
+            reverify_reason: None,
         }
     }
 

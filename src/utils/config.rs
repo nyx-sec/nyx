@@ -703,6 +703,10 @@ pub struct ChainConfig {
     /// this value are dropped.  Defaults to
     /// [`crate::chain::score::min_score_default`].
     pub min_score: f64,
+    /// Phase 26 — Track G.3: only the top-N chains (by score) are
+    /// considered for composite dynamic re-verification.  Defaults to
+    /// `5`.  Set to `0` to disable composite re-verification entirely.
+    pub reverify_top_n: usize,
 }
 
 impl Default for ChainConfig {
@@ -710,6 +714,7 @@ impl Default for ChainConfig {
         Self {
             max_depth: 4,
             min_score: 9.5,
+            reverify_top_n: 5,
         }
     }
 }

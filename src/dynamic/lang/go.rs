@@ -37,7 +37,7 @@
 //! Build container: `nyx-build-go:{toolchain_id}` (deferred; §19.1).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -74,6 +74,35 @@ impl LangEmitter for GoEmitter {
 
     fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
         materialize_go(env)
+    }
+
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        chain_step(prev_output)
+    }
+}
+
+/// Phase 26 — Go chain-step harness.
+///
+/// Emits a `main.go` driver that reads `NYX_PREV_OUTPUT` and forwards it
+/// on stdout.  The Go probe shim (`__nyx_probe`) is top-level Go code
+/// requiring extra stdlib imports; chain steps keep the harness minimal
+/// and rely on the sandbox runner's outer probe channel to observe the
+/// final sink fire.  Wiring the probe shim into chain steps is tracked
+/// alongside the Phase 15 emitter follow-up about probe shim splicing.
+fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    let source = "package main\n\nimport (\n    \"fmt\"\n    \"os\"\n)\n\nfunc main() {\n    prev := os.Getenv(\"NYX_PREV_OUTPUT\")\n    fmt.Print(prev)\n}\n".to_owned();
+    ChainStepHarness {
+        source,
+        filename: "step.go".to_owned(),
+        command: vec!["go".to_owned(), "run".to_owned(), "step.go".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
     }
 }
 

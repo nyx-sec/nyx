@@ -44,7 +44,6 @@
 //! `findings_to_edges` reach resolver.
 
 use crate::chain::edges::{ChainEdge, Reach};
-use crate::chain::feasibility::Feasibility;
 use crate::chain::finding::{ChainFinding, ChainSink};
 use crate::chain::impact::{ImpactCategory, lookup_impact};
 use crate::chain::score::score_path;
@@ -321,6 +320,7 @@ fn build_chain(
         severity,
         score,
         dynamic_verdict,
+        reverify_reason: None,
     }
 }
 
@@ -363,6 +363,7 @@ mod tests {
     use super::*;
     use crate::chain::ChainSeverity;
     use crate::chain::edges::FindingRef;
+    use crate::chain::feasibility::Feasibility;
     use crate::entry_points::HttpMethod;
     use crate::labels::Cap;
     use crate::surface::{

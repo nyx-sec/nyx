@@ -29,7 +29,7 @@
 //! Build container: `nyx-build-php:{toolchain_id}` (deferred; §19.1).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -66,6 +66,33 @@ impl LangEmitter for PhpEmitter {
 
     fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
         materialize_php(env)
+    }
+
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        chain_step(prev_output)
+    }
+}
+
+/// Phase 26 — PHP chain-step harness.
+///
+/// Emits a `step.php` script that reads `NYX_PREV_OUTPUT` via
+/// `getenv()` and forwards it on stdout.  The PHP probe shim is kept
+/// outside the chain step for now and wired in alongside the Phase 15
+/// emitter follow-up about probe shim splicing.
+fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    let source = "<?php\n$prev = getenv(\"NYX_PREV_OUTPUT\");\nif ($prev === false) { $prev = \"\"; }\necho $prev;\n".to_owned();
+    ChainStepHarness {
+        source,
+        filename: "step.php".to_owned(),
+        command: vec!["php".to_owned(), "step.php".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
     }
 }
 

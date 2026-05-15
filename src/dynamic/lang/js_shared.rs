@@ -24,7 +24,7 @@
 //! which preserves the pre-Phase-13 behaviour.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::HarnessSource;
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::utils::project::DetectedFramework;
@@ -392,6 +392,41 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         extra_files: extra_files_for_shape(shape),
         entry_subpath: Some(entry_subpath),
     })
+}
+
+/// Phase 26 — Node chain-step harness (shared between JS + TS emitters).
+///
+/// Splices the Node probe shim ([`probe_shim`]) in front of a minimal
+/// driver that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  The
+/// composite re-verifier swaps the trailing forward for the next member's
+/// payload-injection prologue when running a multi-step chain.
+pub fn chain_step(prev_output: Option<&[u8]>, is_typescript: bool) -> ChainStepHarness {
+    let probe = probe_shim();
+    let driver = "\nprocess.stdout.write(process.env.NYX_PREV_OUTPUT || '');\n";
+    let (filename, command) = if is_typescript {
+        (
+            "step.ts".to_owned(),
+            vec!["node".to_owned(), "step.ts".to_owned()],
+        )
+    } else {
+        (
+            "step.js".to_owned(),
+            vec!["node".to_owned(), "step.js".to_owned()],
+        )
+    };
+    ChainStepHarness {
+        source: format!("{probe}{driver}"),
+        filename,
+        command,
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
+    }
 }
 
 /// Public wrapper to detect the shape for a finalised [`HarnessSpec`].

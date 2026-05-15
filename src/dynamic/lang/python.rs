@@ -23,7 +23,7 @@
 //! - Other slots produce [`UnsupportedReason::PayloadSlotUnsupported`].
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::utils::project::DetectedFramework;
@@ -64,6 +64,34 @@ impl LangEmitter for PythonEmitter {
 
     fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
         materialize_python(env)
+    }
+
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        chain_step(prev_output)
+    }
+}
+
+/// Phase 26 — Python chain-step harness.
+///
+/// Splices the Python probe shim ([`probe_shim`]) in front of a minimal
+/// driver that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  The
+/// composite re-verifier swaps the trailing forward for the next member's
+/// payload-injection prologue when running a multi-step chain.
+fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    let probe = probe_shim();
+    let driver = "\nimport os, sys\nprev = os.environ.get('NYX_PREV_OUTPUT', '')\nsys.stdout.write(prev)\nsys.stdout.flush()\n";
+    ChainStepHarness {
+        source: format!("{probe}{driver}"),
+        filename: "step.py".to_owned(),
+        command: vec!["python3".to_owned(), "step.py".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
     }
 }
 

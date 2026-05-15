@@ -48,6 +48,33 @@ pub struct HarnessSource {
     pub entry_subpath: Option<String>,
 }
 
+/// Phase 26 — one step in a chain-composite harness.
+///
+/// The composite re-verifier walks every member of a chain and assembles
+/// a sequence of per-step harnesses.  Each step is invoked with the
+/// previous step's stdout threaded into the
+/// [`ChainStepHarness::PREV_OUTPUT_ENV`] env var so the harness can fold
+/// the chained input into its payload (e.g. browser-fetch → websocket
+/// message → shell tool).
+///
+/// `extra_env` is additive on top of the sandbox's own
+/// [`crate::dynamic::sandbox::SandboxOptions::extra_env`]; the runner is
+/// responsible for splicing both in.
+#[derive(Debug, Clone)]
+pub struct ChainStepHarness {
+    pub source: String,
+    pub filename: String,
+    pub command: Vec<String>,
+    pub extra_env: Vec<(String, String)>,
+}
+
+impl ChainStepHarness {
+    /// Env-var name the previous step's stdout is bound to in the next
+    /// step's environment.  Stable surface — kept distinct from
+    /// `NYX_PAYLOAD` so a chain step can read both at once.
+    pub const PREV_OUTPUT_ENV: &'static str = "NYX_PREV_OUTPUT";
+}
+
 /// Per-language harness emitter contract.
 ///
 /// Implementations are zero-sized unit structs (one per `src/dynamic/lang/*.rs`
@@ -96,6 +123,49 @@ pub trait LangEmitter {
     fn materialize_runtime(&self, _env: &Environment) -> RuntimeArtifacts {
         RuntimeArtifacts::default()
     }
+
+    /// Phase 26 — Track G.3: build one step of a chain-composite harness.
+    ///
+    /// `prev_output` carries the previous step's stdout (or `None` for
+    /// the chain's entry step).  The returned [`ChainStepHarness`]
+    /// reads `NYX_PREV_OUTPUT` from its env to fold the chained input
+    /// into the step's behaviour and (when the step terminates at a
+    /// sink) invokes the Phase 06 `__nyx_probe` shim so the runner's
+    /// probe channel observes the sink fire.
+    ///
+    /// Default impl produces a portable POSIX-shell stub that echoes
+    /// the previous step's output verbatim.  Concrete emitters override
+    /// to splice in the language-native probe shim.
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        default_chain_step(prev_output)
+    }
+}
+
+/// Default chain-step harness.  Emitted by [`LangEmitter::compose_chain_step`]
+/// when an emitter does not override the trait method.
+pub fn default_chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    ChainStepHarness {
+        source: "#!/bin/sh\nprintf '%s' \"${NYX_PREV_OUTPUT:-}\"\n".to_owned(),
+        filename: "step.sh".to_owned(),
+        command: vec!["sh".to_owned(), "step.sh".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// Public free-fn dispatcher for [`LangEmitter::compose_chain_step`].
+///
+/// Returns the lang-agnostic shell stub when `lang` has no registered
+/// emitter so callers do not need to special-case that path.
+pub fn compose_chain_step(lang: Lang, prev_output: Option<&[u8]>) -> ChainStepHarness {
+    dispatch(lang, |e| e.compose_chain_step(prev_output))
+        .unwrap_or_else(|| default_chain_step(prev_output))
 }
 
 /// Public free-fn dispatcher for [`LangEmitter::materialize_runtime`].

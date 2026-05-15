@@ -15,7 +15,7 @@
 //! Build step: `prepare_cpp()` in `build_sandbox.rs` runs
 //! `g++ -O0 -std=c++17 -o nyx_harness main.cpp` in the workdir.
 
-use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -279,6 +279,28 @@ impl LangEmitter for CppEmitter {
         format!(
             "cpp emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 16 shape dispatch (main / libFuzzer / free function)"
         )
+    }
+
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        chain_step(prev_output)
+    }
+}
+
+/// Phase 26 — C++ chain-step harness.
+fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    let source = "#include <cstdio>\n#include <cstdlib>\n\nint main() {\n    const char *prev = std::getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) std::fputs(prev, stdout);\n    return 0;\n}\n".to_owned();
+    ChainStepHarness {
+        source,
+        filename: "step.cpp".to_owned(),
+        command: vec!["c++".to_owned(), "step.cpp".to_owned(), "-o".to_owned(), "step".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
     }
 }
 

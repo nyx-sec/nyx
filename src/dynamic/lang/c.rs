@@ -27,7 +27,7 @@
 //! - `PayloadSlot::EnvVar(name)` — set env var before invoking entry.
 //! - `PayloadSlot::Argv(n)` — `main(argc, argv)` shape: appended to argv.
 
-use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -306,6 +306,28 @@ impl LangEmitter for CEmitter {
         format!(
             "c emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 16 shape dispatch (main / libFuzzer / free function)"
         )
+    }
+
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        chain_step(prev_output)
+    }
+}
+
+/// Phase 26 — C chain-step harness.
+fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    let source = "#include <stdio.h>\n#include <stdlib.h>\n\nint main(void) {\n    const char *prev = getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) fputs(prev, stdout);\n    return 0;\n}\n".to_owned();
+    ChainStepHarness {
+        source,
+        filename: "step.c".to_owned(),
+        command: vec!["cc".to_owned(), "step.c".to_owned(), "-o".to_owned(), "step".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
     }
 }
 

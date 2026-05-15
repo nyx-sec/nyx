@@ -36,7 +36,7 @@
 //! Build container: `nyx-build-java:{toolchain_id}` (deferred; §19.1).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -73,6 +73,34 @@ impl LangEmitter for JavaEmitter {
 
     fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
         materialize_java(env)
+    }
+
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        chain_step(prev_output)
+    }
+}
+
+/// Phase 26 — Java chain-step harness.
+///
+/// Emits a `Step.java` class whose `main` reads `NYX_PREV_OUTPUT` and
+/// forwards it on stdout.  The Java probe shim is class-level and
+/// requires `System`/`java.io.*` imports the chain step already pulls in
+/// implicitly; wiring the full shim is tracked alongside the Phase 14
+/// emitter follow-up about probe shim splicing.
+fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    let source = "public class Step {\n    public static void main(String[] args) {\n        String prev = System.getenv(\"NYX_PREV_OUTPUT\");\n        if (prev == null) prev = \"\";\n        System.out.print(prev);\n    }\n}\n".to_owned();
+    ChainStepHarness {
+        source,
+        filename: "Step.java".to_owned(),
+        command: vec!["java".to_owned(), "Step".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
     }
 }
 

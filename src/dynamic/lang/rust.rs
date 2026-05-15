@@ -22,7 +22,7 @@
 //! HTML_ESCAPE is n/a for Rust (§15.4).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::labels::Cap;
@@ -62,6 +62,34 @@ impl LangEmitter for RustEmitter {
 
     fn materialize_runtime(&self, env: &Environment) -> RuntimeArtifacts {
         materialize_rust(env)
+    }
+
+    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
+        chain_step(prev_output)
+    }
+}
+
+/// Phase 26 — Rust chain-step harness.
+///
+/// Emits a minimal `step.rs` file that reads `NYX_PREV_OUTPUT` and writes
+/// it on stdout.  The chain composer drives the step with `rustc step.rs`
+/// (single-file build) — full Cargo crate scaffolding is reserved for
+/// chain members whose underlying finding already produced a HarnessSpec
+/// via the standard emit path.
+fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+    let source = "use std::env;\nuse std::io::{self, Write};\n\nfn main() {\n    let prev = env::var(\"NYX_PREV_OUTPUT\").unwrap_or_default();\n    let _ = io::stdout().write_all(prev.as_bytes());\n}\n".to_owned();
+    ChainStepHarness {
+        source,
+        filename: "step.rs".to_owned(),
+        command: vec!["rustc".to_owned(), "step.rs".to_owned(), "-o".to_owned(), "step".to_owned()],
+        extra_env: prev_output
+            .map(|bytes| {
+                vec![(
+                    ChainStepHarness::PREV_OUTPUT_ENV.to_owned(),
+                    String::from_utf8_lossy(bytes).into_owned(),
+                )]
+            })
+            .unwrap_or_default(),
     }
 }
 
