@@ -161,6 +161,29 @@ const _: () = assert!(
     "Cap bit appears in both IMPACT_LATTICE_COVERED and IMPACT_LATTICE_UNCOVERED",
 );
 
+/// Union of every cap bit referenced by an [`IMPACT_LATTICE`] rule, as
+/// `source_cap` or `adjacent_cap`.  Computed at compile time.
+const fn rule_coverage_bits() -> u32 {
+    let mut acc: u32 = 0;
+    let mut i = 0;
+    while i < IMPACT_LATTICE.len() {
+        let rule = IMPACT_LATTICE[i];
+        acc |= rule.source_cap.bits();
+        acc |= match rule.adjacent_cap {
+            Some(a) => a.bits(),
+            None => 0,
+        };
+        i += 1;
+    }
+    acc
+}
+
+const _: () = assert!(
+    rule_coverage_bits() == IMPACT_LATTICE_COVERED,
+    "IMPACT_LATTICE_COVERED claims a cap bit that no IMPACT_LATTICE rule references; \
+     drop it from IMPACT_LATTICE_COVERED or add a rule that consumes it",
+);
+
 /// Look up an [`ImpactCategory`] for a (source, adjacent) cap pair.
 ///
 /// `adjacent` is `None` when the caller has not yet found a partner

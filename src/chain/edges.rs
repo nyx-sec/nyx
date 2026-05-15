@@ -20,6 +20,7 @@ use crate::surface::{SourceLocation, SurfaceMap, SurfaceNode};
 use serde::{Deserialize, Serialize};
 
 use super::feasibility::Feasibility;
+use super::impact::lookup_impact;
 
 /// Compact reference to a static finding embedded in a [`ChainEdge`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,9 +67,13 @@ pub enum Reach {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChainEdge {
     pub finding: FindingRef,
-    /// Primary cap classification.  Picked deterministically as the
-    /// lowest set bit of [`FindingRef::cap_bits`] so two scans of the
-    /// same source produce identical edges.
+    /// Primary cap classification.  Picked via [`pick_chain_cap`]: when
+    /// several cap bits are set, prefers a bit that has a standalone
+    /// rule in [`crate::chain::impact::IMPACT_LATTICE`] over the
+    /// lowest bit so a `SQL_QUERY | CODE_EXEC` finding lands on the
+    /// chain-relevant cap (`CODE_EXEC`).  Falls back to the lowest set
+    /// bit when no bit has a standalone rule, keeping single-cap
+    /// findings deterministic.
     pub primary_cap: Cap,
     /// Where the finding sits relative to the surface.
     pub reach: Reach,
@@ -101,7 +106,7 @@ fn build_edge(diag: &Diag, surface: &SurfaceMap) -> Option<ChainEdge> {
         return None;
     }
     let cap_bits = evidence.sink_caps;
-    let primary_cap = lowest_cap(cap_bits)?;
+    let primary_cap = pick_chain_cap(cap_bits)?;
     let location = SourceLocation::new(diag.path.clone(), diag.line as u32, diag.col as u32);
     let reach = locate_reach(&location, surface);
     let feasibility = Feasibility::for_finding(diag);
@@ -128,6 +133,35 @@ pub fn lowest_cap(bits: u32) -> Option<Cap> {
     }
     let lowest = 1u32 << bits.trailing_zeros();
     Cap::from_bits(lowest)
+}
+
+/// Pick the chain-relevant [`Cap`] from a sink-cap bitmask.
+///
+/// When multiple caps are set, prefer one that has a standalone rule in
+/// [`crate::chain::impact::IMPACT_LATTICE`] (e.g. `CODE_EXEC`,
+/// `DESERIALIZE`, `SSRF`) over the lowest set bit.  A finding with
+/// `sink_caps = SQL_QUERY | CODE_EXEC` previously resolved to
+/// `SQL_QUERY` (the lowest bit) and missed the `CODE_EXEC → Rce`
+/// lattice rule; this helper resolves it to `CODE_EXEC` instead.
+///
+/// Iterates bits low to high so ties between caps with standalone
+/// rules stay deterministic.  Falls back to [`lowest_cap`] when no
+/// bit has a standalone rule, preserving single-cap behaviour.
+pub fn pick_chain_cap(bits: u32) -> Option<Cap> {
+    if bits == 0 {
+        return None;
+    }
+    let mut remaining = bits;
+    while remaining != 0 {
+        let bit = 1u32 << remaining.trailing_zeros();
+        if let Some(cap) = Cap::from_bits(bit) {
+            if lookup_impact(cap, None).is_some() {
+                return Some(cap);
+            }
+        }
+        remaining &= !bit;
+    }
+    lowest_cap(bits)
 }
 
 fn locate_reach(loc: &SourceLocation, surface: &SurfaceMap) -> Reach {
@@ -173,6 +207,29 @@ mod tests {
     fn lowest_cap_picks_least_significant_bit() {
         let combined = Cap::SQL_QUERY | Cap::FILE_IO;
         assert_eq!(lowest_cap(combined.bits()), Some(Cap::FILE_IO));
+    }
+
+    #[test]
+    fn pick_chain_cap_prefers_standalone_rule_cap() {
+        // SQL_QUERY (bit 7) has no standalone lattice rule; CODE_EXEC
+        // (bit 10) does. Lowest-bit alone would pick SQL_QUERY.
+        let combined = Cap::SQL_QUERY | Cap::CODE_EXEC;
+        assert_eq!(pick_chain_cap(combined.bits()), Some(Cap::CODE_EXEC));
+    }
+
+    #[test]
+    fn pick_chain_cap_falls_back_to_lowest_when_no_standalone_rule() {
+        // SQL_QUERY + FILE_IO: neither has a standalone rule, fall
+        // back to lowest_cap behaviour.
+        let combined = Cap::SQL_QUERY | Cap::FILE_IO;
+        assert_eq!(pick_chain_cap(combined.bits()), Some(Cap::FILE_IO));
+    }
+
+    #[test]
+    fn pick_chain_cap_single_bit_unchanged() {
+        assert_eq!(pick_chain_cap(Cap::CODE_EXEC.bits()), Some(Cap::CODE_EXEC));
+        assert_eq!(pick_chain_cap(Cap::SQL_QUERY.bits()), Some(Cap::SQL_QUERY));
+        assert_eq!(pick_chain_cap(0), None);
     }
 
     #[test]
