@@ -40,6 +40,17 @@ pub use process_linux::{HardeningLevel, HardeningOutcome};
 #[cfg(target_os = "macos")]
 pub mod process_macos;
 
+/// Phase 19 (Track E.3) — pinned-digest docker backend helpers.
+///
+/// The functions in this module resolve [`crate::dynamic::toolchain::
+/// IMAGE_DIGESTS`] entries to docker image refs, render `docker run`
+/// flag slices that honour [`NetworkPolicy`], and mount the harness
+/// workdir at the fixed `/work` path.  The legacy entry points in this
+/// file ([`run_docker`] / [`run_native_binary_docker`]) call into
+/// `docker::ensure_image_pulled` so every harness run uses the catalogue
+/// pin when one is available.
+pub mod docker;
+
 // ── Harness interpretation probe ──────────────────────────────────────────────
 
 /// Returns true when the harness is driven by an interpreter (Python, Node, …)
@@ -725,6 +736,19 @@ fn start_container(
     image: &str,
     policy: &NetworkPolicy,
 ) -> Result<(), SandboxError> {
+    // Phase 19 (Track E.3): when `image` is a pinned reference produced by
+    // `docker::image_reference_for_toolchain`, make sure it is present on
+    // this host before `docker run` tries to start a container from it.
+    // `ensure_image_pulled` is a per-process cache, so the second harness
+    // against the same toolchain is free.
+    docker::ensure_image_pulled(image);
+
+    let workdir_mount = format!(
+        "{}:{}:rw",
+        workdir.to_string_lossy(),
+        docker::WORK_MOUNT_PATH,
+    );
+
     let mut run_args: Vec<String> = vec![
         "run".into(),
         "-d".into(),
@@ -733,6 +757,13 @@ fn start_container(
         "--cap-drop=ALL".into(),
         "--security-opt".into(), "no-new-privileges:true".into(),
         "--tmpfs".into(), "/tmp:size=128m,exec".into(),
+        // Phase 19 (Track E.3): bind-mount the host workdir at the fixed
+        // `/work` path read-write.  Harness code emitted in Phase 12+ can
+        // reference `/work/...` without threading the host tempdir
+        // through every layer.  The `docker cp` path below is retained so
+        // older harness command lines (which still look at `/workdir`)
+        // keep working until they are migrated.
+        "-v".into(), workdir_mount,
     ];
     match policy {
         NetworkPolicy::None => {
@@ -978,6 +1009,12 @@ fn exec_in_container(
 /// Dispatches by the basename of `command[0]` (e.g. `python3`, `node`, `java`,
 /// `php`). Falls back to `python:3-slim` for unrecognised interpreters.
 /// `NYX_TOOLCHAIN_ID` env var overrides the version portion of the image tag.
+///
+/// Phase 19 (Track E.3): when `NYX_TOOLCHAIN_ID` matches a pinned entry in
+/// `IMAGE_DIGESTS` we return the `<base>@sha256:…` reference directly so the
+/// container starts from byte-identical bits across hosts.  Unpinned entries
+/// fall through to the legacy tag mapping below so behaviour on a fresh
+/// catalogue stays unchanged.
 fn detect_image_for_harness(harness: &BuiltHarness) -> String {
     let cmd0 = harness.command.first().map(|s| s.as_str()).unwrap_or("python3");
     let base = std::path::Path::new(cmd0)
@@ -986,6 +1023,12 @@ fn detect_image_for_harness(harness: &BuiltHarness) -> String {
         .unwrap_or(cmd0);
 
     if let Ok(tid) = std::env::var("NYX_TOOLCHAIN_ID") {
+        if let Some(pinned) = docker::image_reference_for_toolchain(&tid) {
+            // Catalogue entry takes priority over the legacy hard-coded tag
+            // map — pinned or unpinned, the value here came from
+            // tools/image-builder/images.toml.
+            return pinned.to_owned();
+        }
         return match base {
             "node" | "nodejs" => node_image_for_toolchain(&tid),
             "java" => java_image_for_toolchain(&tid),

@@ -1,0 +1,125 @@
+# Pinned-digest catalogue consumed by `nyx-image-builder` and the
+# `build.rs` codegen that populates `src/dynamic/toolchain.rs::IMAGE_DIGESTS`.
+#
+# Each `[[image]]` entry corresponds to one `(lang, toolchain)` cell of the
+# Docker backend.  The `toolchain_id` matches the IDs surfaced by
+# `src/dynamic/toolchain.rs` (`python-3.11`, `node-20`, `java-21`, …) and is
+# the lookup key used by `IMAGE_DIGESTS`.
+#
+# Fields:
+#   - toolchain_id   string  Lookup key (see toolchain.rs).
+#   - base           string  Docker image reference (e.g. "python:3.11-slim").
+#                            The `nyx-image-builder verify` command refuses to
+#                            run if this is not pinnable to a digest.
+#   - toolchain      string  Human-readable interpreter / compiler version.
+#   - packages       table   Inline pinned package names → versions (apt /
+#                            apk pins applied during image build).  Empty `{}`
+#                            when the upstream image already covers everything.
+#   - digest         string  `sha256:…` content digest written back by
+#                            `nyx-image-builder build`.  Empty until the
+#                            first successful build.
+#
+# The CI workflow runs `nyx-image-builder build --all` daily.  When any digest
+# drifts, the workflow opens a PR updating this file; reviewers approve before
+# the new digest pin is merged.
+
+[[image]]
+toolchain_id = "python-3.11"
+base = "python:3.11-slim"
+toolchain = "Python 3.11"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "python-3.12"
+base = "python:3.12-slim"
+toolchain = "Python 3.12"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "python-3.13"
+base = "python:3.13-slim"
+toolchain = "Python 3.13"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "node-18"
+base = "node:18-slim"
+toolchain = "Node.js 18"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "node-20"
+base = "node:20-slim"
+toolchain = "Node.js 20"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "node-22"
+base = "node:22-slim"
+toolchain = "Node.js 22"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "java-17"
+base = "eclipse-temurin:17-jre-jammy"
+toolchain = "Eclipse Temurin 17 JRE"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "java-21"
+base = "eclipse-temurin:21-jre-jammy"
+toolchain = "Eclipse Temurin 21 JRE"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "php-8.1"
+base = "php:8.1-cli"
+toolchain = "PHP 8.1 CLI"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "php-8.2"
+base = "php:8.2-cli"
+toolchain = "PHP 8.2 CLI"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "php-8.3"
+base = "php:8.3-cli"
+toolchain = "PHP 8.3 CLI"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "ruby-3.2"
+base = "ruby:3.2-slim"
+toolchain = "Ruby 3.2"
+packages = {}
+digest = ""
+
+[[image]]
+toolchain_id = "ruby-3.3"
+base = "ruby:3.3-slim"
+toolchain = "Ruby 3.3"
+packages = {}
+digest = ""
+
+# Native runtime image: compiled Rust + Go binaries are copied into a
+# `debian:bookworm-slim` container.  Kept here so the image-builder workflow
+# pins it alongside the per-lang interpreter images.
+[[image]]
+toolchain_id = "native-binary"
+base = "debian:bookworm-slim"
+toolchain = "Debian 12 slim (native binary runner)"
+packages = {}
+digest = ""

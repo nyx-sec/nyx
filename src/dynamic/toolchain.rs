@@ -7,6 +7,37 @@
 
 use std::path::Path;
 
+// Phase 19 (Track E.3): generated lookup tables for pinned Docker image
+// digests.  Populated by `build.rs` from `tools/image-builder/images.toml`.
+//
+// - `IMAGE_DIGESTS`: `toolchain_id → "<base>@sha256:…"`.  Used by the docker
+//   backend (`src/dynamic/sandbox/docker.rs`) to pull a pinned digest so the
+//   sandboxed runtime is byte-identical between hosts.
+// - `IMAGE_BASES`:   `toolchain_id → "<base-tag>"`.  Fallback for the docker
+//   backend when no digest is pinned yet (e.g. fresh `images.toml` entry).
+include!(concat!(env!("OUT_DIR"), "/image_digests.rs"));
+
+/// Pinned image reference (`<base>@sha256:…`) for `toolchain_id`, or `None`
+/// when the catalogue entry has not been built yet.
+///
+/// Phase 19 keeps the pin pure-static: `nyx-image-builder build` writes the
+/// digest back into `images.toml`, the daily CI workflow opens a PR with the
+/// new bytes, and a regular Rust rebuild picks up the new digest via
+/// `build.rs`.  There is no runtime digest fetch on the hot path.
+pub fn pinned_image_ref(toolchain_id: &str) -> Option<&'static str> {
+    IMAGE_DIGESTS.get(toolchain_id).copied()
+}
+
+/// Base image tag (no digest) for `toolchain_id`, or `None` when the
+/// toolchain is not present in the catalogue.
+///
+/// Used by the docker backend when [`pinned_image_ref`] returns `None`: the
+/// backend issues a tag pull and records the resolved digest in telemetry so
+/// drift is visible to operators even when the catalogue is unpinned.
+pub fn base_image_ref(toolchain_id: &str) -> Option<&'static str> {
+    IMAGE_BASES.get(toolchain_id).copied()
+}
+
 /// Resolved toolchain information for a target directory.
 #[derive(Debug, Clone)]
 pub struct ToolchainResolution {

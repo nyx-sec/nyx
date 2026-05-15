@@ -50,6 +50,10 @@ docgen = []
 # sandbox, reports back whether the sink fires. Off by default until the
 # static side is honest on real corpora (see ROADMAP.md).
 dynamic = ["dep:tempfile"]
+# Phase 19 (Track E.3): the `nyx-image-builder` helper binary that builds
+# and pins per-toolchain Docker images.  Gated so it does not bloat the
+# default `nyx` build with extra TOML-write logic CI-only operators need.
+image-builder = []
 
 [lib]
 name = "nyx_scanner"
@@ -63,6 +67,11 @@ path = "src/main.rs"
 name = "nyx-docgen"
 path = "tools/docgen/main.rs"
 required-features = ["docgen"]
+
+[[bin]]
+name = "nyx-image-builder"
+path = "tools/image-builder/main.rs"
+required-features = ["image-builder"]
 
 [[bench]]
 name = "scan_bench"
