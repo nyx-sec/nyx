@@ -36,6 +36,7 @@ fn crashed_outcome() -> SandboxOutcome {
         oob_callback_seen: false,
         sink_hit: false,
         duration: Duration::from_millis(1),
+        hardening_outcome: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn clean_outcome() -> SandboxOutcome {
         oob_callback_seen: false,
         sink_hit: false,
         duration: Duration::from_millis(1),
+        hardening_outcome: None,
     }
 }
 

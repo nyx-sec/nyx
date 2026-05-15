@@ -37,7 +37,7 @@ use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 // ── HardeningLevel reporting ─────────────────────────────────────────────────
 
@@ -126,36 +126,6 @@ impl HardeningOutcome {
             (0, _) => HardeningLevel::None,
             _ => HardeningLevel::Partial,
         }
-    }
-}
-
-// ── Last outcome registry (read back by tests + telemetry) ───────────────────
-
-static LAST_OUTCOME: OnceLock<Mutex<Option<HardeningOutcome>>> = OnceLock::new();
-
-fn outcome_cell() -> &'static Mutex<Option<HardeningOutcome>> {
-    LAST_OUTCOME.get_or_init(|| Mutex::new(None))
-}
-
-fn record_outcome(outcome: HardeningOutcome) {
-    if let Ok(mut g) = outcome_cell().lock() {
-        *g = Some(outcome);
-    }
-}
-
-/// Snapshot of the most-recent hardening outcome.  Returns `None` until
-/// at least one [`install_pre_exec`] child has been spawned and waited
-/// on.  Tests + telemetry read this after `wait_for_outcome` to get the
-/// per-primitive status table.
-pub fn last_hardening_outcome() -> Option<HardeningOutcome> {
-    outcome_cell().lock().ok().and_then(|g| *g)
-}
-
-/// Reset the last-outcome slot.  Tests use this between cases so a stale
-/// value from a prior spawn cannot leak into the assertion under test.
-pub fn reset_last_hardening_outcome() {
-    if let Ok(mut g) = outcome_cell().lock() {
-        *g = None;
     }
 }
 
@@ -389,20 +359,23 @@ pub struct OutcomeCollector {
 }
 
 /// Background-drain handle returned by [`OutcomeCollector::after_spawn`].
-/// `run_process` awaits this after `child.wait()` so the outcome is
-/// guaranteed to be in the registry before the function returns; tests
-/// that bypass `run_process` can call [`OutcomeJoiner::await_outcome`]
-/// themselves.
+/// `run_process` awaits this after `child.wait()`, receiving the per-
+/// primitive [`HardeningOutcome`] the drain thread parsed off the
+/// status pipe.  Each spawn gets its own joiner, so the outcome flows
+/// back to exactly the caller that spawned it — no process-global
+/// singleton, no race when `verify_finding` runs under
+/// `rayon::par_iter`.
 pub struct OutcomeJoiner {
-    handle: Option<std::thread::JoinHandle<()>>,
+    handle: Option<std::thread::JoinHandle<Option<HardeningOutcome>>>,
 }
 
 impl OutcomeJoiner {
-    /// Block until the drain thread finishes recording the outcome.
-    pub fn await_outcome(mut self) {
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+    /// Block until the drain thread finishes, returning the per-
+    /// primitive outcome it parsed.  `None` when the status pipe was
+    /// drained but the wire record was truncated (rare: child died
+    /// before `pre_exec` could write).
+    pub fn await_outcome(mut self) -> Option<HardeningOutcome> {
+        self.handle.take().and_then(|h| h.join().ok().flatten())
     }
 }
 
@@ -419,16 +392,12 @@ impl OutcomeCollector {
     /// of the write fd so the kernel ref-count drops to whatever the
     /// child is still holding; once execve(2) closes the child's
     /// O_CLOEXEC copy too, the read end sees EOF and the drain thread
-    /// records the outcome via [`record_outcome`].  Returns a join
-    /// handle the caller can await to know the outcome is settled.
+    /// parses the outcome off the pipe and ships it back via the
+    /// returned [`OutcomeJoiner`].
     pub fn after_spawn(self) -> OutcomeJoiner {
         close_fd(self.write_fd);
         let read_fd = self.read_fd;
-        let handle = std::thread::spawn(move || {
-            if let Some(outcome) = drain_outcome(read_fd) {
-                record_outcome(outcome);
-            }
-        });
+        let handle = std::thread::spawn(move || drain_outcome(read_fd));
         OutcomeJoiner { handle: Some(handle) }
     }
 
@@ -638,20 +607,4 @@ mod tests {
         assert!(decode_outcome(&[0_u8; OUTCOME_LEN - 1]).is_none());
     }
 
-    #[test]
-    fn record_and_reset_round_trip() {
-        let original = last_hardening_outcome();
-        let probe = HardeningOutcome {
-            no_new_privs: PrimitiveStatus::Applied,
-            profile: ProcessHardeningProfileTag::Strict,
-            ..HardeningOutcome::default()
-        };
-        record_outcome(probe);
-        assert_eq!(last_hardening_outcome(), Some(probe));
-        reset_last_hardening_outcome();
-        assert!(last_hardening_outcome().is_none());
-        if let Some(prev) = original {
-            record_outcome(prev);
-        }
-    }
 }

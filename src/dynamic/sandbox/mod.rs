@@ -40,6 +40,29 @@ pub use process_linux::{HardeningLevel, HardeningOutcome};
 #[cfg(target_os = "macos")]
 pub mod process_macos;
 
+/// Phase 17 (Track E.1) + Phase 18 (Track E.2) per-run hardening outcome.
+///
+/// Returned by [`run_process`] on the [`SandboxOutcome`] so callers (tests +
+/// telemetry) can inspect the per-primitive status without consulting a
+/// process-global singleton.  The previous Phase 17/18 implementation kept
+/// the outcome in `process_linux::LAST_OUTCOME` / `process_macos::LAST_OUTCOME`
+/// statics; that worked under nextest's per-test process isolation but would
+/// race the moment `verify_finding` ran under `rayon::par_iter`.
+///
+/// The enum is platform-cfg'd because the Linux and macOS backends record
+/// different shapes: Linux captures per-primitive `PrimitiveStatus` for
+/// `prctl` / `rlimit` / `unshare` / `chroot` / `seccomp`; macOS captures a
+/// coarser `level + profile` pair after the `sandbox-exec` wrap decision.
+/// On other targets the enum has no constructible variants, so
+/// `Option<HardeningRecord>` is always `None`.
+#[derive(Debug, Clone)]
+pub enum HardeningRecord {
+    #[cfg(target_os = "linux")]
+    Linux(process_linux::HardeningOutcome),
+    #[cfg(target_os = "macos")]
+    Macos(process_macos::HardeningOutcome),
+}
+
 /// Phase 19 (Track E.3) — pinned-digest docker backend helpers.
 ///
 /// The functions in this module resolve [`crate::dynamic::toolchain::
@@ -140,6 +163,11 @@ pub struct SandboxOutcome {
     pub sink_hit: bool,
     /// Wall-clock duration of the run.
     pub duration: Duration,
+    /// Phase 17/18 hardening outcome captured by the process backend.
+    /// `None` when the run did not exercise a hardening path (docker
+    /// backend, non-Linux/non-macOS host, or `ProcessHardeningProfile`
+    /// of `Standard` with no primitive outcome to record).
+    pub hardening_outcome: Option<HardeningRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -1001,6 +1029,7 @@ fn exec_in_container(
         oob_callback_seen: false,
         sink_hit,
         duration,
+        hardening_outcome: None,
     })
 }
 
@@ -1218,6 +1247,7 @@ fn exec_native_binary_in_container(
         oob_callback_seen: false,
         sink_hit,
         duration,
+        hardening_outcome: None,
     })
 }
 
@@ -1260,21 +1290,22 @@ fn run_process(
     // Phase 18 (Track E.2): on macOS, wrap the command with
     // `sandbox-exec -f <profile> -D WORKDIR=<workdir> ...` so per-cap
     // policies confine the harness.  When `sandbox-exec` is missing or
-    // the wrap setup fails, `wrap_plan` returns `None` and we fall
-    // back to the unwrapped command; the verifier reads back the
-    // recorded [`process_macos::HardeningLevel::Trusted`] outcome and
-    // downgrades filesystem-oracle verdicts to
+    // the wrap setup fails, `wrap_plan` returns `plan = None` and we
+    // fall back to the unwrapped command; the verifier reads back the
+    // returned [`process_macos::HardeningLevel::Trusted`] outcome via
+    // [`SandboxOutcome::hardening_outcome`] and downgrades filesystem-
+    // oracle verdicts to
     // [`crate::evidence::InconclusiveReason::BackendInsufficient`].
     #[cfg(target_os = "macos")]
     let macos_wrap = {
         if matches!(opts.process_hardening, ProcessHardeningProfile::Strict) {
-            process_macos::wrap_plan(&process_macos::WrapInput {
+            Some(process_macos::wrap_plan(&process_macos::WrapInput {
                 cmd_path: &resolved_cmd_path,
                 cmd_args: &harness.command[1..],
                 workdir: &harness.workdir,
                 caps: opts.seccomp_caps,
                 profile_override: None,
-            })
+            }))
         } else {
             None
         }
@@ -1282,7 +1313,7 @@ fn run_process(
 
     #[cfg(target_os = "macos")]
     let (effective_cmd_path, effective_cmd_args): (std::path::PathBuf, Vec<String>) =
-        match &macos_wrap {
+        match macos_wrap.as_ref().and_then(|w| w.plan.as_ref()) {
             Some(plan) => (plan.binary.clone(), plan.args.clone()),
             None => (resolved_cmd_path.clone(), harness.command[1..].to_vec()),
         };
@@ -1405,13 +1436,12 @@ fn run_process(
 
     let status = child.wait().map_err(SandboxError::Io)?;
 
-    // Phase 17 (Track E.1): wait for the per-primitive HardeningOutcome
-    // drain thread before returning so callers (tests + telemetry) read
-    // a settled value via `process_linux::last_hardening_outcome()`.
+    // Phase 17 (Track E.1): drain the per-primitive HardeningOutcome
+    // off the pre_exec status pipe before returning so the caller sees
+    // the settled value on `SandboxOutcome::hardening_outcome` instead
+    // of consulting a process-global singleton.
     #[cfg(target_os = "linux")]
-    if let Some(joiner) = outcome_joiner {
-        joiner.await_outcome();
-    }
+    let linux_outcome = outcome_joiner.and_then(|j| j.await_outcome());
 
     let stdout_buf = stdout_handle
         .and_then(|h| h.join().ok())
@@ -1431,6 +1461,13 @@ fn run_process(
     let sink_hit = contains_subslice(&stdout_buf, SINK_HIT_SENTINEL)
         || contains_subslice(&stderr_buf, SINK_HIT_SENTINEL);
 
+    #[cfg(target_os = "linux")]
+    let hardening_outcome = linux_outcome.map(HardeningRecord::Linux);
+    #[cfg(target_os = "macos")]
+    let hardening_outcome = macos_wrap.map(|w| HardeningRecord::Macos(w.outcome));
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let hardening_outcome: Option<HardeningRecord> = None;
+
     Ok(SandboxOutcome {
         exit_code,
         stdout: stdout_buf,
@@ -1439,6 +1476,7 @@ fn run_process(
         oob_callback_seen: false,
         sink_hit,
         duration,
+        hardening_outcome,
     })
 }
 
@@ -1570,6 +1608,7 @@ mod tests {
             oob_callback_seen: false,
             sink_hit: false,
             duration: Duration::from_millis(10),
+            hardening_outcome: None,
         };
         const SENTINEL: &[u8] = b"__NYX_SINK_HIT__";
         outcome.sink_hit = contains_subslice(&outcome.stdout, SENTINEL);
@@ -1586,6 +1625,7 @@ mod tests {
             oob_callback_seen: false,
             sink_hit: false,
             duration: Duration::from_millis(10),
+            hardening_outcome: None,
         };
         assert!(!outcome.sink_hit);
     }

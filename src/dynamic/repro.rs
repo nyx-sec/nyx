@@ -406,6 +406,7 @@ mod tests {
             oob_callback_seen: false,
             sink_hit: true,
             duration: Duration::from_millis(250),
+            hardening_outcome: None,
         }
     }
 

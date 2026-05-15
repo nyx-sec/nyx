@@ -84,9 +84,25 @@ pub fn ensure_image_pulled(image: &str) -> bool {
     if let Some(entry) = cache.get(image) {
         return *entry;
     }
-    let ok = docker_pull(image);
+    // Fast path: a prior `docker pull` (often by an earlier nextest binary in
+    // the same machine) may already have the image locally.  `docker image
+    // inspect` is a no-network lookup against the local daemon — when it
+    // succeeds we can skip the network pull entirely.  When it fails we fall
+    // through to `docker pull` so registry-side rotations / first-time runs
+    // still settle.
+    let ok = if docker_image_present(image) { true } else { docker_pull(image) };
     cache.insert(image.to_owned(), ok);
     ok
+}
+
+fn docker_image_present(image: &str) -> bool {
+    Command::new(docker_bin())
+        .args(["image", "inspect", image])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn docker_pull(image: &str) -> bool {

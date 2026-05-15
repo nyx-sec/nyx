@@ -28,8 +28,8 @@
 //! `sandbox-exec` is shipped on every supported macOS release but the
 //! binary path can be missing in stripped CI images.  When
 //! [`sandbox_exec_available`] returns `false`, the wrapper is a no-op
-//! and [`record_outcome`] tags the run as
-//! [`HardeningLevel::Trusted`] — the verifier reads this back via
+//! and [`wrap_plan`] tags the run as [`HardeningLevel::Trusted`] on the
+//! returned [`WrapResult`] — the verifier reads this back via
 //! `VerifyOptions::refuse_filesystem_confirm` and downgrades filesystem-
 //! oracle verdicts to
 //! [`crate::evidence::InconclusiveReason::BackendInsufficient`].
@@ -43,6 +43,15 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+
+// ── HardeningOutcome flow ─────────────────────────────────────────────────────
+//
+// Phase 18 originally recorded the outcome to a process-global
+// `LAST_OUTCOME` singleton.  Phase 17/18 sweep dropped that singleton
+// because `verify_finding` runs under `rayon::par_iter` in `scan.rs`, so
+// concurrent wraps would overwrite each other.  [`wrap_plan`] now
+// returns the outcome via [`WrapResult`] and `run_process` stashes it on
+// the returned `SandboxOutcome`.
 
 // ── HardeningLevel reporting ─────────────────────────────────────────────────
 
@@ -64,40 +73,15 @@ pub enum HardeningLevel {
     Failed,
 }
 
-/// Per-run summary read back by [`last_hardening_outcome`].
+/// Per-run summary returned by [`wrap_plan`].  Threaded back to the
+/// caller through [`WrapResult`] so `run_process` can stash it on the
+/// [`crate::dynamic::sandbox::SandboxOutcome`] for the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HardeningOutcome {
     pub level: HardeningLevel,
     /// Name of the matched profile (e.g. `"path_traversal"`).  Empty
     /// string when [`HardeningLevel::Trusted`].
     pub profile: String,
-}
-
-static LAST_OUTCOME: OnceLock<Mutex<Option<HardeningOutcome>>> = OnceLock::new();
-
-fn outcome_cell() -> &'static Mutex<Option<HardeningOutcome>> {
-    LAST_OUTCOME.get_or_init(|| Mutex::new(None))
-}
-
-pub(crate) fn record_outcome(outcome: HardeningOutcome) {
-    if let Ok(mut g) = outcome_cell().lock() {
-        *g = Some(outcome);
-    }
-}
-
-/// Snapshot of the most-recent hardening outcome on macOS.  Tests +
-/// telemetry read this after `sandbox::run` returns.  Returns `None`
-/// until at least one wrap attempt has been recorded.
-pub fn last_hardening_outcome() -> Option<HardeningOutcome> {
-    outcome_cell().lock().ok().and_then(|g| g.clone())
-}
-
-/// Clear the last-outcome slot.  Tests use this between cases so a stale
-/// value from a prior spawn cannot leak into the assertion under test.
-pub fn reset_last_hardening_outcome() {
-    if let Ok(mut g) = outcome_cell().lock() {
-        *g = None;
-    }
 }
 
 // ── sandbox-exec availability + binary path ──────────────────────────────────
@@ -233,24 +217,35 @@ pub struct WrapPlan {
     pub profile: &'static str,
 }
 
+/// Result of [`wrap_plan`].  Always carries a [`HardeningOutcome`] so
+/// the caller can stash it on the `SandboxOutcome` even when wrapping
+/// itself was a no-op (`plan = None` + `outcome.level = Trusted`).
+pub struct WrapResult {
+    /// Wrap plan when `sandbox-exec` was applied; `None` when the
+    /// harness should run unwrapped.  The verifier's
+    /// `refuse_filesystem_confirm` flag keeps the verdict honest in the
+    /// `None` case.
+    pub plan: Option<WrapPlan>,
+    pub outcome: HardeningOutcome,
+}
+
 /// Build the `sandbox-exec -f <profile> -D WORKDIR=<workdir> -- <cmd>`
-/// argv for `cmd_path + cmd_args`.  Returns `None` when:
+/// argv for `cmd_path + cmd_args`.  The returned [`WrapResult`]
+/// `plan` is `None` when:
 ///
-/// - `sandbox-exec` is not on the host (records [`HardeningLevel::Trusted`]),
-/// - the profile name is unknown (records [`HardeningLevel::Trusted`]), or
+/// - `sandbox-exec` is not on the host (`outcome.level = Trusted`),
+/// - the profile name is unknown (`outcome.level = Trusted`), or
 /// - the profile file could not be materialised in `/tmp`
-///   (records [`HardeningLevel::Failed`]).
-///
-/// Callers use the returned `None` as a signal to fall back to the
-/// unwrapped command; the verifier's `refuse_filesystem_confirm` flag
-/// keeps the verdict honest in that case.
-pub fn wrap_plan(input: &WrapInput<'_>) -> Option<WrapPlan> {
+///   (`outcome.level = Failed`).
+pub fn wrap_plan(input: &WrapInput<'_>) -> WrapResult {
     if !sandbox_exec_available() {
-        record_outcome(HardeningOutcome {
-            level: HardeningLevel::Trusted,
-            profile: String::new(),
-        });
-        return None;
+        return WrapResult {
+            plan: None,
+            outcome: HardeningOutcome {
+                level: HardeningLevel::Trusted,
+                profile: String::new(),
+            },
+        };
     }
     let profile = input.profile_override.unwrap_or_else(|| profile_for_caps(input.caps));
     // Profile keys must be `&'static str` (from `PROFILE_SOURCES`); reject
@@ -263,21 +258,25 @@ pub fn wrap_plan(input: &WrapInput<'_>) -> Option<WrapPlan> {
     let resolved_key = match resolved_key {
         Some(k) => k,
         None => {
-            record_outcome(HardeningOutcome {
-                level: HardeningLevel::Trusted,
-                profile: String::new(),
-            });
-            return None;
+            return WrapResult {
+                plan: None,
+                outcome: HardeningOutcome {
+                    level: HardeningLevel::Trusted,
+                    profile: String::new(),
+                },
+            };
         }
     };
     let profile_file = match profile_path(resolved_key) {
         Some(p) => p,
         None => {
-            record_outcome(HardeningOutcome {
-                level: HardeningLevel::Failed,
-                profile: resolved_key.to_owned(),
-            });
-            return None;
+            return WrapResult {
+                plan: None,
+                outcome: HardeningOutcome {
+                    level: HardeningLevel::Failed,
+                    profile: resolved_key.to_owned(),
+                },
+            };
         }
     };
 
@@ -293,16 +292,17 @@ pub fn wrap_plan(input: &WrapInput<'_>) -> Option<WrapPlan> {
         args.push(a.clone());
     }
 
-    record_outcome(HardeningOutcome {
-        level: HardeningLevel::Sandboxed,
-        profile: resolved_key.to_owned(),
-    });
-
-    Some(WrapPlan {
-        binary: sandbox_exec_bin(),
-        args,
-        profile: resolved_key,
-    })
+    WrapResult {
+        plan: Some(WrapPlan {
+            binary: sandbox_exec_bin(),
+            args,
+            profile: resolved_key,
+        }),
+        outcome: HardeningOutcome {
+            level: HardeningLevel::Sandboxed,
+            profile: resolved_key.to_owned(),
+        },
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -356,7 +356,6 @@ mod tests {
     #[test]
     fn wrap_plan_returns_none_when_sandbox_exec_missing() {
         unsafe { std::env::set_var(SANDBOX_EXEC_BIN_ENV, "/nonexistent/sandbox-exec") };
-        reset_last_hardening_outcome();
         let input = WrapInput {
             cmd_path: Path::new("/usr/bin/true"),
             cmd_args: &[],
@@ -364,9 +363,9 @@ mod tests {
             caps: 0,
             profile_override: None,
         };
-        assert!(wrap_plan(&input).is_none());
-        let outcome = last_hardening_outcome().expect("outcome recorded");
-        assert_eq!(outcome.level, HardeningLevel::Trusted);
+        let result = wrap_plan(&input);
+        assert!(result.plan.is_none());
+        assert_eq!(result.outcome.level, HardeningLevel::Trusted);
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
     }
 
@@ -380,7 +379,6 @@ mod tests {
             eprintln!("SKIP: /usr/bin/sandbox-exec missing on this host");
             return;
         }
-        reset_last_hardening_outcome();
         let input = WrapInput {
             cmd_path: Path::new("/usr/bin/true"),
             cmd_args: &[],
@@ -388,13 +386,13 @@ mod tests {
             caps: 1 << 5, // FILE_IO
             profile_override: None,
         };
-        let plan = wrap_plan(&input).expect("plan");
+        let result = wrap_plan(&input);
+        let plan = result.plan.expect("plan");
         assert_eq!(plan.profile, "path_traversal");
         assert_eq!(plan.binary, PathBuf::from("/usr/bin/sandbox-exec"));
         assert!(plan.args.iter().any(|a| a == "-f"));
         assert!(plan.args.iter().any(|a| a.starts_with("WORKDIR=")));
-        let outcome = last_hardening_outcome().expect("outcome");
-        assert_eq!(outcome.level, HardeningLevel::Sandboxed);
-        assert_eq!(outcome.profile, "path_traversal");
+        assert_eq!(result.outcome.level, HardeningLevel::Sandboxed);
+        assert_eq!(result.outcome.profile, "path_traversal");
     }
 }

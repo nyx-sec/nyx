@@ -21,13 +21,21 @@ mod hardening_tests {
     use std::time::Duration;
 
     use nyx_scanner::dynamic::harness::BuiltHarness;
-    use nyx_scanner::dynamic::sandbox::process_linux::{
-        last_hardening_outcome, reset_last_hardening_outcome, HardeningLevel, PrimitiveStatus,
-    };
+    use nyx_scanner::dynamic::sandbox::process_linux::{HardeningLevel, PrimitiveStatus};
     use nyx_scanner::dynamic::sandbox::seccomp;
     use nyx_scanner::dynamic::sandbox::{
-        self, ProcessHardeningProfile, SandboxBackend, SandboxOptions,
+        self, HardeningRecord, ProcessHardeningProfile, SandboxBackend, SandboxOptions,
     };
+
+    fn linux_outcome(out: &sandbox::SandboxOutcome)
+        -> Option<nyx_scanner::dynamic::sandbox::process_linux::HardeningOutcome>
+    {
+        match out.hardening_outcome.as_ref()? {
+            HardeningRecord::Linux(o) => Some(*o),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
 
     // ── Probe build ───────────────────────────────────────────────────────────
 
@@ -161,7 +169,6 @@ mod hardening_tests {
         let tmp = workdir();
         let harness = build_harness_with_probe(tmp.path(), &[]);
         let opts = strict_opts();
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
         eprintln!("probe stdout under strict:\n{stdout}");
@@ -260,10 +267,9 @@ mod hardening_tests {
         let tmp = workdir();
         let harness = build_harness_with_probe(tmp.path(), &[]);
         let opts = strict_opts();
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
-        let outcome = last_hardening_outcome().expect("hardening outcome recorded");
+        let outcome = linux_outcome(&result).expect("hardening outcome recorded");
 
         // Parent's user-ns inode for comparison.
         let parent_user_ns =
@@ -310,10 +316,9 @@ mod hardening_tests {
         let tmp = workdir();
         let harness = build_harness_with_probe(tmp.path(), &[]);
         let opts = strict_opts();
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
-        let outcome = last_hardening_outcome().expect("hardening outcome recorded");
+        let outcome = linux_outcome(&result).expect("hardening outcome recorded");
 
         match outcome.chroot {
             PrimitiveStatus::Applied => {
@@ -349,10 +354,9 @@ mod hardening_tests {
         let tmp = workdir();
         let harness = build_harness_with_probe(tmp.path(), &["traverse"]);
         let opts = strict_opts();
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
-        let outcome = last_hardening_outcome().expect("hardening outcome recorded");
+        let outcome = linux_outcome(&result).expect("hardening outcome recorded");
 
         if matches!(outcome.chroot, PrimitiveStatus::Applied) {
             // NotConfirmed shape: the verifier maps a non-zero exit + no
@@ -390,10 +394,9 @@ mod hardening_tests {
         let tmp = workdir();
         let harness = build_harness_with_probe(tmp.path(), &[]);
         let opts = strict_opts();
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
-        let outcome = last_hardening_outcome().expect("hardening outcome recorded");
+        let outcome = linux_outcome(&result).expect("hardening outcome recorded");
 
         match outcome.seccomp {
             PrimitiveStatus::Applied => {
@@ -422,10 +425,9 @@ mod hardening_tests {
         let tmp = workdir();
         let harness = build_harness_with_probe(tmp.path(), &[]);
         let opts = standard_opts();
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
-        let outcome = last_hardening_outcome().expect("hardening outcome recorded");
+        let outcome = linux_outcome(&result).expect("hardening outcome recorded");
 
         assert_eq!(outcome.level(), HardeningLevel::Baseline);
         assert!(matches!(outcome.no_new_privs, PrimitiveStatus::Applied));

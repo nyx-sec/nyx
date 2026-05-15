@@ -47,6 +47,7 @@ mod repro_determinism_tests {
             oob_callback_seen: false,
             sink_hit: true,
             duration: Duration::from_millis(150),
+            hardening_outcome: None,
         }
     }
 

@@ -37,6 +37,7 @@ fn dummy_outcome() -> nyx_scanner::dynamic::sandbox::SandboxOutcome {
         oob_callback_seen: false,
         sink_hit: true,
         duration: Duration::from_millis(1),
+        hardening_outcome: None,
     }
 }
 

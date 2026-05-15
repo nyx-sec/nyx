@@ -21,12 +21,21 @@ mod hardening_tests {
 
     use nyx_scanner::dynamic::harness::BuiltHarness;
     use nyx_scanner::dynamic::sandbox::process_macos::{
-        last_hardening_outcome, profile_for_caps, reset_last_hardening_outcome,
-        sandbox_exec_available, HardeningLevel, SANDBOX_EXEC_BIN_ENV,
+        profile_for_caps, sandbox_exec_available, HardeningLevel, SANDBOX_EXEC_BIN_ENV,
     };
     use nyx_scanner::dynamic::sandbox::{
-        self, ProcessHardeningProfile, SandboxBackend, SandboxOptions,
+        self, HardeningRecord, ProcessHardeningProfile, SandboxBackend, SandboxOptions,
     };
+
+    fn macos_outcome(out: &sandbox::SandboxOutcome)
+        -> Option<&nyx_scanner::dynamic::sandbox::process_macos::HardeningOutcome>
+    {
+        match out.hardening_outcome.as_ref()? {
+            HardeningRecord::Macos(o) => Some(o),
+            #[allow(unreachable_patterns)]
+            _ => None,
+        }
+    }
 
     // ── Probe source + harness helpers ────────────────────────────────────────
 
@@ -145,11 +154,10 @@ except Exception as exc:
         let tmp = workdir();
         let harness = build_harness(tmp.path());
         let opts = strict_opts(FILE_IO);
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
         eprintln!("stdout under path_traversal:\n{stdout}");
-        let outcome = last_hardening_outcome().expect("hardening outcome recorded");
+        let outcome = macos_outcome(&result).expect("hardening outcome recorded");
         assert_eq!(outcome.level, HardeningLevel::Sandboxed);
         assert_eq!(outcome.profile, "path_traversal");
         assert!(
@@ -173,14 +181,16 @@ except Exception as exc:
         let tmp = workdir();
         let harness = build_harness(tmp.path());
         let opts = standard_opts();
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
         eprintln!("stdout under standard:\n{stdout}");
-        // Standard profile means the macOS wrap was never attempted; the
-        // outcome registry stays at `None` (no prior strict run in this
-        // test) or carries the prior strict run's outcome.  We don't
-        // assert on the registry — we assert on the probe's exit.
+        // Standard profile means the macOS wrap was never attempted —
+        // `hardening_outcome` stays `None` because `wrap_plan` was not
+        // called.  Assert on the probe's marker only.
+        assert!(
+            result.hardening_outcome.is_none(),
+            "standard profile should not produce a hardening outcome",
+        );
         assert!(
             stdout.contains("escape:escaped") || stdout.contains("escape:blocked"),
             "probe should at least print its marker; stdout:\n{stdout}"
@@ -188,7 +198,7 @@ except Exception as exc:
     }
 
     /// When `sandbox-exec` is unavailable the wrap is a no-op and the
-    /// outcome registry records `Trusted`.  Tests force the missing
+    /// returned outcome records `Trusted`.  Tests force the missing
     /// binary path via the [`SANDBOX_EXEC_BIN_ENV`] override.
     #[test]
     fn sandbox_exec_missing_records_trusted_outcome() {
@@ -197,14 +207,12 @@ except Exception as exc:
         let tmp = workdir();
         let harness = build_harness(tmp.path());
         let opts = strict_opts(FILE_IO);
-        reset_last_hardening_outcome();
         let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
         let stdout = stdout_string(&result);
-        let outcome = last_hardening_outcome().expect("hardening outcome recorded");
+        let outcome = macos_outcome(&result).expect("hardening outcome recorded");
         assert_eq!(outcome.level, HardeningLevel::Trusted);
         eprintln!("stdout when sandbox-exec missing:\n{stdout}");
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
-        let _ = result;
     }
 
     /// Phase 18 acceptance (b): when sandbox-exec is missing the
