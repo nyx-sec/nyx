@@ -29,6 +29,14 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+pub mod process_linux;
+#[cfg(target_os = "linux")]
+pub mod seccomp;
+
+#[cfg(target_os = "linux")]
+pub use process_linux::{HardeningLevel, HardeningOutcome};
+
 // ── Harness interpretation probe ──────────────────────────────────────────────
 
 /// Returns true when the harness is driven by an interpreter (Python, Node, …)
@@ -159,6 +167,40 @@ pub struct SandboxOptions {
     /// into [`crate::dynamic::oracle::oracle_fired_with_stubs`].
     /// `None` when the spec's `stubs_required` is empty.
     pub stub_harness: Option<Arc<crate::dynamic::stubs::StubHarness>>,
+    /// Phase 17 (Track E.1): cap bits used to minimise the seccomp-bpf
+    /// allowlist applied to the Linux process backend.  When `0`, the
+    /// process backend installs only the cap-independent `base` allowlist
+    /// from [`seccomp::seccomp_policy.toml`]; when non-zero, every cap bit
+    /// set adds its allowlisted syscalls on top.  Other backends ignore
+    /// this field.
+    pub seccomp_caps: u32,
+    /// Phase 17 (Track E.1): hardening profile applied by the Linux
+    /// process backend.  See [`ProcessHardeningProfile`] for the per-
+    /// variant primitive matrix.
+    pub process_hardening: ProcessHardeningProfile,
+}
+
+/// Phase 17 (Track E.1): selects which subset of the Linux process-
+/// backend hardening primitives is applied.
+///
+/// - [`ProcessHardeningProfile::Standard`] — the historical baseline:
+///   `prctl(PR_SET_NO_NEW_PRIVS)` + `setrlimit(RLIMIT_AS)` only.  No
+///   namespaces, no chroot, no seccomp.  Default for back-compat.
+/// - [`ProcessHardeningProfile::Strict`] — full Phase 17 sequence:
+///   no-new-privs, all rlimits, namespace unshare, chroot to workdir,
+///   default-deny seccomp filter scoped to [`SandboxOptions::seccomp_caps`].
+///   Each primitive is best-effort; failures degrade to
+///   [`HardeningLevel::Partial`] without aborting the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessHardeningProfile {
+    Standard,
+    Strict,
+}
+
+impl Default for ProcessHardeningProfile {
+    fn default() -> Self {
+        ProcessHardeningProfile::Standard
+    }
 }
 
 impl SandboxOptions {
@@ -186,6 +228,8 @@ impl Default for SandboxOptions {
             probe_channel: None,
             extra_env: Vec::new(),
             stub_harness: None,
+            seccomp_caps: 0,
+            process_hardening: ProcessHardeningProfile::Standard,
         }
     }
 }
@@ -1207,25 +1251,35 @@ fn run_process(
         cmd.env("NYX_PAYLOAD", std::ffi::OsStr::from_bytes(payload_bytes));
     }
 
-    // Enforce memory cap before exec on Linux via RLIMIT_AS + PR_SET_NO_NEW_PRIVS.
-    // RLIMIT_AS limits total virtual address space. Python uses significantly
-    // more virtual AS than RSS (shared libs, mmap arenas), so the enforced
-    // limit is memory_mib * 8 with a floor of 4 GiB.
+    // Phase 17 (Track E.1): install the Linux process-backend hardening
+    // sequence — `prctl(PR_SET_NO_NEW_PRIVS)`, `setrlimit` (CPU/NOFILE/AS),
+    // `unshare(CLONE_NEWPID|CLONE_NEWNS|CLONE_NEWUSER)`, `chroot` to the
+    // workdir, and a default-deny seccomp-bpf filter scoped to
+    // `opts.seccomp_caps`.  Each primitive is best-effort: failures
+    // downgrade to `HardeningLevel::Partial` instead of aborting the run.
     #[cfg(target_os = "linux")]
-    {
-        use std::os::unix::process::CommandExt;
-        let memory_mib = opts.memory_mib;
-        // Safety: called in the child after fork but before exec; no allocator use.
-        unsafe {
-            cmd.pre_exec(move || {
-                rlimit_as_linux(memory_mib)?;
-                prctl_no_new_privs()
-            });
-        }
-    }
+    let collector = process_linux::install_pre_exec(&mut cmd, opts, &harness.workdir);
 
     let start = Instant::now();
-    let mut child = cmd.spawn().map_err(SandboxError::Spawn)?;
+    let child_result = cmd.spawn();
+    #[cfg(target_os = "linux")]
+    let outcome_joiner;
+    let mut child = match child_result {
+        Ok(c) => {
+            #[cfg(target_os = "linux")]
+            {
+                outcome_joiner = collector.map(|c| c.after_spawn());
+            }
+            c
+        }
+        Err(e) => {
+            #[cfg(target_os = "linux")]
+            if let Some(c) = collector {
+                c.forget();
+            }
+            return Err(SandboxError::Spawn(e));
+        }
+    };
 
     let timeout = opts.timeout;
     let timed_out = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1269,6 +1323,14 @@ fn run_process(
     });
 
     let status = child.wait().map_err(SandboxError::Io)?;
+
+    // Phase 17 (Track E.1): wait for the per-primitive HardeningOutcome
+    // drain thread before returning so callers (tests + telemetry) read
+    // a settled value via `process_linux::last_hardening_outcome()`.
+    #[cfg(target_os = "linux")]
+    if let Some(joiner) = outcome_joiner {
+        joiner.await_outcome();
+    }
 
     let stdout_buf = stdout_handle
         .and_then(|h| h.join().ok())
@@ -1337,52 +1399,9 @@ fn base64_encode(data: &[u8]) -> String {
 
 // ── Linux-specific syscall wrappers ──────────────────────────────────────────
 
-/// Set RLIMIT_AS (virtual address space) in a `pre_exec` context on Linux.
-///
-/// `memory_mib` is the configured cap; we enforce `max(memory_mib * 8, 4096)`
-/// MiB of virtual AS to give Python's mmap-heavy runtime adequate headroom
-/// while still capping runaway memory bombs.
-///
-/// RLIMIT_AS = 9 on x86_64, aarch64, arm, ppc64, s390x, and all other major
-/// Linux architectures (kernel source: include/uapi/asm-generic/resource.h).
-#[cfg(target_os = "linux")]
-fn rlimit_as_linux(memory_mib: u64) -> std::io::Result<()> {
-    #[repr(C)]
-    struct Rlimit {
-        cur: u64,
-        max: u64,
-    }
-    unsafe extern "C" {
-        fn setrlimit(resource: i32, rlim: *const Rlimit) -> i32;
-    }
-    const RLIMIT_AS: i32 = 9;
-    let cap_mib = memory_mib.saturating_mul(8).max(4096);
-    let bytes = cap_mib.saturating_mul(1024 * 1024);
-    let rl = Rlimit { cur: bytes, max: bytes };
-    let ret = unsafe { setrlimit(RLIMIT_AS, &rl) };
-    if ret == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-/// Set PR_SET_NO_NEW_PRIVS to 1 in a `pre_exec` context on Linux.
-///
-/// This prevents the child process from acquiring new privileges via setuid
-/// binaries, file capabilities, or ptrace. Best-effort: silently succeeds
-/// even if the prctl call fails (e.g., in restricted environments).
-#[cfg(target_os = "linux")]
-fn prctl_no_new_privs() -> std::io::Result<()> {
-    unsafe extern "C" {
-        fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32;
-    }
-    const PR_SET_NO_NEW_PRIVS: i32 = 38;
-    // Failure is non-fatal: some container runtimes block prctl but are
-    // themselves already sandboxed. Don't abort the child for this.
-    unsafe { prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-    Ok(())
-}
+// `rlimit_as_linux`, `prctl_no_new_privs`, and the rest of the Linux process
+// backend hardening sequence now live in [`process_linux`].  See
+// [`process_linux::install_pre_exec`] for the call-site.
 
 #[cfg(unix)]
 fn libc_kill(pid: i32, sig: i32) -> i32 {

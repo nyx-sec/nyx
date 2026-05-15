@@ -58,12 +58,8 @@ mod escape_tests {
             timeout: Duration::from_secs(10),
             memory_mib: 256,
             backend: SandboxBackend::Docker,
-            env_passthrough: vec![],
-            output_limit: 65536,
             network_policy: NetworkPolicy::None,
-            probe_channel: None,
-            extra_env: vec![],
-            stub_harness: None,
+            ..SandboxOptions::default()
         }
     }
 
