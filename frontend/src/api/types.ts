@@ -892,3 +892,106 @@ export interface AuthAnalysisView {
   units: AuthUnitView[];
   enabled: boolean;
 }
+
+// ── Surface map (Phase 21–23) ───────────────────────────────────────
+
+export interface SurfaceSourceLocation {
+  file: string;
+  line: number;
+  col: number;
+}
+
+export type SurfaceFramework =
+  | 'flask'
+  | 'fast_api'
+  | 'django'
+  | 'express'
+  | 'koa'
+  | 'spring'
+  | 'jax_rs'
+  | 'quarkus'
+  | 'rails'
+  | 'sinatra'
+  | 'laravel'
+  | 'slim'
+  | 'axum'
+  | 'actix'
+  | 'rocket'
+  | 'net_http'
+  | 'gin'
+  | 'next_app_router'
+  | 'next_server_action';
+
+export type SurfaceHttpMethod =
+  | 'GET'
+  | 'HEAD'
+  | 'POST'
+  | 'PUT'
+  | 'PATCH'
+  | 'DELETE'
+  | 'OPTIONS';
+
+export type SurfaceDataStoreKind =
+  | 'sql'
+  | 'key_value'
+  | 'document'
+  | 'blob_store'
+  | 'filesystem'
+  | 'unknown';
+
+export type SurfaceExternalKind =
+  | 'http_api'
+  | 'message_broker'
+  | 'search_index'
+  | 'auth_provider'
+  | 'unknown';
+
+export type SurfaceEdgeKind =
+  | 'calls'
+  | 'reads_from'
+  | 'writes_to'
+  | 'talks_to'
+  | 'reaches'
+  | 'triggers'
+  | 'auth_required_on';
+
+export type SurfaceNode =
+  | {
+      node: 'entry_point';
+      location: SurfaceSourceLocation;
+      framework: SurfaceFramework;
+      method: SurfaceHttpMethod;
+      route: string;
+      handler_name: string;
+      handler_location: SurfaceSourceLocation;
+      auth_required: boolean;
+    }
+  | {
+      node: 'data_store';
+      location: SurfaceSourceLocation;
+      kind: SurfaceDataStoreKind;
+      label: string;
+    }
+  | {
+      node: 'external_service';
+      location: SurfaceSourceLocation;
+      kind: SurfaceExternalKind;
+      label: string;
+    }
+  | {
+      node: 'dangerous_local';
+      location: SurfaceSourceLocation;
+      function_name: string;
+      cap_bits: number;
+    };
+
+export interface SurfaceEdge {
+  from: number;
+  to: number;
+  kind: SurfaceEdgeKind;
+}
+
+export interface SurfaceMap {
+  nodes: SurfaceNode[];
+  edges: SurfaceEdge[];
+}

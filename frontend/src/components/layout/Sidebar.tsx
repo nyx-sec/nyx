@@ -69,6 +69,13 @@ const NAV_SECTIONS: NavItem[] = [
     group: 'secondary',
   },
   {
+    id: 'surface',
+    label: 'Surface',
+    path: '/surface',
+    Icon: ExplorerIcon,
+    group: 'secondary',
+  },
+  {
     id: 'debug',
     label: 'Debug',
     path: '/debug',

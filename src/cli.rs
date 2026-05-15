@@ -50,6 +50,7 @@ impl Commands {
             Commands::Scan { explain_engine, .. } => *explain_engine,
             Commands::List { .. } => true,
             Commands::Rules { .. } => true,
+            Commands::Surface { .. } => true,
             Commands::Config { action } => {
                 matches!(action, ConfigAction::Show { .. } | ConfigAction::Path)
             }
@@ -103,6 +104,32 @@ pub enum ScanMode {
     Cfg,
     /// Alias for cfg (CFG + taint analysis)
     Taint,
+}
+
+/// Output format for `nyx surface`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum, Default)]
+pub enum SurfaceFormat {
+    /// Indented tree, one entry-point per line, with reach summary.
+    #[default]
+    Text,
+    /// Canonical SurfaceMap JSON, byte-identical to the SQLite payload.
+    Json,
+    /// Graphviz DOT source; pipe through `dot -Tsvg` to render.
+    Dot,
+    /// SVG produced by spawning the local `dot` binary on the DOT
+    /// rendering.  Fails when graphviz is not installed.
+    Svg,
+}
+
+impl std::fmt::Display for SurfaceFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SurfaceFormat::Text => write!(f, "text"),
+            SurfaceFormat::Json => write!(f, "json"),
+            SurfaceFormat::Dot => write!(f, "dot"),
+            SurfaceFormat::Svg => write!(f, "svg"),
+        }
+    }
 }
 
 /// Engine-depth profile that sets the full stack of analysis toggles
@@ -562,6 +589,24 @@ pub enum Commands {
     Rules {
         #[command(subcommand)]
         action: RulesAction,
+    },
+
+    /// Print the project's attack-surface map.
+    ///
+    /// Loads the SurfaceMap persisted by the most recent indexed scan
+    /// when available, otherwise builds an entry-point-only map by
+    /// running the per-language framework probes against the on-disk
+    /// source.  Use `--format dot` and pipe through `dot -Tsvg` to
+    /// produce a renderable graph; `--format svg` does the same in one
+    /// step when graphviz is installed locally.
+    Surface {
+        /// Path to inspect (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: String,
+
+        /// Output format: text (default), json, dot, svg
+        #[arg(long, value_enum, default_value_t = SurfaceFormat::Text)]
+        format: SurfaceFormat,
     },
 
     /// Start the local web UI for browsing scan results

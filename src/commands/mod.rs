@@ -14,6 +14,7 @@ pub mod rules;
 pub mod scan;
 #[cfg(feature = "serve")]
 pub mod serve;
+pub mod surface;
 
 use crate::cli::{Commands, EngineProfile, IndexMode, ScanMode};
 use crate::errors::NyxResult;
@@ -417,6 +418,10 @@ pub fn handle_command(
         }
         Commands::Rules { action } => {
             self::rules::handle(action, config)?;
+        }
+        Commands::Surface { path, format } => {
+            install_from_config(config);
+            surface::handle(&path, format, database_dir, config)?;
         }
         Commands::Serve {
             path,
