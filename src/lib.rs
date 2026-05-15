@@ -95,6 +95,7 @@ pub mod baseline;
 pub mod callgraph;
 pub mod cfg;
 pub mod cfg_analysis;
+pub mod chain;
 pub mod cli;
 pub mod commands;
 pub mod constraint;
