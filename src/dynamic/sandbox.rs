@@ -553,6 +553,11 @@ fn php_image_for_toolchain(toolchain_id: &str) -> String {
     format!("php:{ver}-cli")
 }
 
+fn ruby_image_for_toolchain(toolchain_id: &str) -> String {
+    let ver = toolchain_id.strip_prefix("ruby-").unwrap_or("3");
+    format!("ruby:{ver}-slim")
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Run a built harness once with a chosen payload.
@@ -938,6 +943,7 @@ fn detect_image_for_harness(harness: &BuiltHarness) -> String {
             "node" | "nodejs" => node_image_for_toolchain(&tid),
             "java" => java_image_for_toolchain(&tid),
             "php" => php_image_for_toolchain(&tid),
+            "ruby" => ruby_image_for_toolchain(&tid),
             _ => python_image_for_toolchain(&tid),
         };
     }
@@ -946,6 +952,7 @@ fn detect_image_for_harness(harness: &BuiltHarness) -> String {
         "node" | "nodejs" => "node:20-slim".to_owned(),
         "java" => "eclipse-temurin:21-jre-jammy".to_owned(),
         "php" => "php:8-cli".to_owned(),
+        "ruby" => "ruby:3-slim".to_owned(),
         _ => "python:3-slim".to_owned(),
     }
 }
@@ -1524,6 +1531,13 @@ mod tests {
     }
 
     #[test]
+    fn ruby_image_for_known_toolchains() {
+        assert_eq!(ruby_image_for_toolchain("ruby-3"), "ruby:3-slim");
+        assert_eq!(ruby_image_for_toolchain("ruby-3.2"), "ruby:3.2-slim");
+        assert_eq!(ruby_image_for_toolchain("ruby-3.3"), "ruby:3.3-slim");
+    }
+
+    #[test]
     fn harness_is_interpreted_java() {
         let cmd = vec!["java".to_owned(), "-cp".to_owned(), ".".to_owned(), "NyxHarness".to_owned()];
         assert!(harness_is_interpreted(&cmd));
@@ -1558,6 +1572,15 @@ mod tests {
         assert_eq!(
             build_container_exec_args(&cmd),
             vec!["php", "/workdir/harness.php"]
+        );
+    }
+
+    #[test]
+    fn build_container_exec_args_ruby() {
+        let cmd = vec!["ruby".to_owned(), "harness.rb".to_owned()];
+        assert_eq!(
+            build_container_exec_args(&cmd),
+            vec!["ruby", "/workdir/harness.rb"]
         );
     }
 
