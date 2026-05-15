@@ -1,10 +1,14 @@
 //! Phase 17 (Track E.1) — seccomp-bpf default-deny filter.
 //!
-//! [`apply_for_caps`] composes the cap-tagged allowlist baked from
-//! `seccomp_policy.toml` (via `build.rs`) into a BPF program and installs
-//! it via `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program)`.  The
-//! filter is per-thread and inherited across `execve`, so the harness
+//! [`install_compiled_filter`] installs a pre-compiled BPF program (built
+//! from the cap-tagged allowlist baked from `seccomp_policy.toml` via
+//! `build.rs`) via `prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program)`.
+//! The filter is per-thread and inherited across `execve`, so the harness
 //! runs under it from the very first instruction of its image.
+//! The hardening pre_exec callback pre-compiles the program in the parent
+//! and hands a borrowed slice to [`install_compiled_filter`] from inside
+//! the child (allocator-free path; the post-fork allocator ban precludes
+//! compiling from the child).
 //!
 //! Layout
 //! ------
@@ -29,7 +33,7 @@ pub mod syscalls;
 
 use std::collections::BTreeSet;
 
-use crate::dynamic::sandbox::seccomp::bpf::{compile, SockFilter, SockFprog};
+use crate::dynamic::sandbox::seccomp::bpf::{SockFilter, SockFprog};
 use crate::dynamic::sandbox::seccomp::syscalls::{syscall_number, AUDIT_ARCH};
 
 include!(concat!(env!("OUT_DIR"), "/seccomp_policy.rs"));
@@ -107,18 +111,6 @@ pub fn install_compiled_filter(program: &[SockFilter]) -> std::io::Result<()> {
             *__errno_location()
         }))
     }
-}
-
-/// Convenience wrapper: compose the cap-aware allowlist via
-/// [`allowed_syscall_numbers`], compile a BPF program, and install it.
-/// Used by direct callers that don't pre-compile in the parent.
-pub fn apply_for_caps(caps: u32) -> std::io::Result<()> {
-    if AUDIT_ARCH == 0 {
-        return Ok(());
-    }
-    let nrs = allowed_syscall_numbers(caps);
-    let program: Vec<SockFilter> = compile(&nrs, AUDIT_ARCH);
-    install_compiled_filter(&program)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
