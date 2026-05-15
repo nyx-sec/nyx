@@ -40,6 +40,18 @@ pub use process_linux::{HardeningLevel, HardeningOutcome};
 #[cfg(target_os = "macos")]
 pub mod process_macos;
 
+/// Phase 20 (Track E.4) — Firecracker microVM backend skeleton.
+///
+/// The module is compiled in only when the `firecracker` Cargo feature is
+/// enabled.  Today it carries no live VM logic: the backend returns
+/// [`SandboxError::BackendUnavailable`] when the feature is on but the
+/// `firecracker` binary is missing on `PATH`, and the same error when the
+/// binary is present (no VM dispatch yet).  Phase 20's scope is the trait
+/// shape + the `SandboxBackend::Firecracker` enum variant — Phase 21 owns
+/// the live boot path.
+#[cfg(feature = "firecracker")]
+pub mod firecracker;
+
 /// Phase 17 (Track E.1) + Phase 18 (Track E.2) per-run hardening outcome.
 ///
 /// Returned by [`run_process`] on the [`SandboxOutcome`] so callers (tests +
@@ -91,7 +103,7 @@ pub mod docker;
 /// `confstr(_CS_PATH)` (`/usr/bin:/bin`) when the child has no `PATH`, which
 /// misses common installs like Homebrew's `/opt/homebrew/bin/node` or
 /// `nvm`-managed binaries under `~/.nvm/...`.
-fn find_in_host_path(name: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn find_in_host_path(name: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {
         let candidate = dir.join(name);
@@ -373,6 +385,13 @@ pub enum SandboxBackend {
     Auto,
     Docker,
     Process,
+    /// Phase 20 (Track E.4): Firecracker microVM backend.  Compiled in only
+    /// under `--features firecracker`; when the feature is off, this variant
+    /// is still selectable but [`run`] surfaces
+    /// [`SandboxError::BackendUnavailable`] immediately so callers can route
+    /// around it without conditional-compilation gymnastics at every call
+    /// site.
+    Firecracker,
 }
 
 #[derive(Debug)]
@@ -678,6 +697,30 @@ pub fn run(
             }
         }
         SandboxBackend::Process => run_process(harness, payload_bytes, opts),
+        SandboxBackend::Firecracker => run_firecracker(harness, payload_bytes, opts),
+    }
+}
+
+/// Phase 20 (Track E.4): dispatch the Firecracker backend.
+///
+/// When `--features firecracker` is off, the call returns
+/// [`SandboxError::BackendUnavailable`] immediately so existing call sites
+/// that route on `opts.backend` do not need a feature gate.  When the
+/// feature is on, the call is delegated to
+/// [`firecracker::run`] which is responsible for the `firecracker` binary
+/// availability probe + (eventually) the live boot path.
+fn run_firecracker(
+    _harness: &BuiltHarness,
+    _payload_bytes: &[u8],
+    _opts: &SandboxOptions,
+) -> Result<SandboxOutcome, SandboxError> {
+    #[cfg(feature = "firecracker")]
+    {
+        return firecracker::run(_harness, _payload_bytes, _opts);
+    }
+    #[cfg(not(feature = "firecracker"))]
+    {
+        Err(SandboxError::BackendUnavailable(SandboxBackend::Firecracker))
     }
 }
 

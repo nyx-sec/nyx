@@ -456,7 +456,7 @@ fn uses_docker_backend(opts: &SandboxOptions) -> bool {
     match opts.backend {
         SandboxBackend::Docker => true,
         SandboxBackend::Auto => sandbox::docker_available(),
-        SandboxBackend::Process => false,
+        SandboxBackend::Process | SandboxBackend::Firecracker => false,
     }
 }
 

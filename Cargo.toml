@@ -54,6 +54,14 @@ dynamic = ["dep:tempfile"]
 # and pins per-toolchain Docker images.  Gated so it does not bloat the
 # default `nyx` build with extra TOML-write logic CI-only operators need.
 image-builder = []
+# Phase 20 (Track E.4): the firecracker VM backend.  Off by default so
+# the standard build pulls in zero Firecracker-related code; turning it
+# on adds the `firecracker.rs` backend module and exposes
+# `SandboxBackend::Firecracker` to callers.  When the feature is on but
+# the `firecracker` binary is absent on PATH, the backend returns
+# `SandboxError::BackendUnavailable(SandboxBackend::Firecracker)` so the
+# verifier can route around it cleanly.
+firecracker = ["dynamic"]
 
 [lib]
 name = "nyx_scanner"

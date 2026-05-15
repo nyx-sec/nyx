@@ -82,6 +82,7 @@ impl VerifyOptions {
         let backend = match config.scanner.verify_backend.as_str() {
             "docker" => SandboxBackend::Docker,
             "process" => SandboxBackend::Process,
+            "firecracker" => SandboxBackend::Firecracker,
             _ => SandboxBackend::Auto,
         };
         // Phase 11 — Track D.5: surface the per-scan listener as a
