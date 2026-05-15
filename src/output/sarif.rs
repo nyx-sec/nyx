@@ -1,12 +1,11 @@
-//! Finding serialization and output routing.
+//! Finding serialization for SARIF output, with chain-extension
+//! support added in Phase 25.
 //!
-//! Serializes [`crate::commands::scan::Diag`] values to console, JSON, or
-//! SARIF based on the requested format. `PATTERN_DESCRIPTIONS` is a
-//! lazily-built map from pattern ID to human-readable description, populated
-//! from all language registries on first access. `sarif_base_id` normalizes
-//! source-location-suffixed finding IDs (like `"taint-unsanitised-flow (source 12:3)"`)
-//! to the canonical SARIF rule ID form.
+//! Serializes [`crate::commands::scan::Diag`] values to SARIF 2.1.0.
+//! Chains land on `runs[0].properties.chains` (SARIF v2.1.0 has no
+//! first-class chain concept); see [`build_sarif_with_chains`].
 
+use crate::chain::finding::ChainFinding;
 use crate::commands::scan::Diag;
 use crate::patterns::{self, Severity};
 use once_cell::sync::Lazy;
@@ -37,7 +36,7 @@ static PATTERN_DESCRIPTIONS: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
 });
 
 /// CFG rule descriptions for rules not in the pattern registry.
-fn cfg_rule_description(id: &str) -> Option<&'static str> {
+pub(crate) fn cfg_rule_description(id: &str) -> Option<&'static str> {
     match id {
         "cfg-unguarded-sink" => Some("Dangerous sink reachable without prior guard or sanitizer"),
         "cfg-unreachable-sink" => Some("Sink in unreachable code"),
@@ -64,7 +63,7 @@ fn cfg_rule_description(id: &str) -> Option<&'static str> {
 /// Cap-specific taint rule classes (e.g. `taint-data-exfiltration`) are
 /// preserved as distinct bases so consumers can filter on them rather than
 /// folding everything into `taint-unsanitised-flow`.
-fn sarif_base_id(id: &str) -> &str {
+pub(crate) fn sarif_base_id(id: &str) -> &str {
     if id.starts_with("taint-data-exfiltration") {
         "taint-data-exfiltration"
     } else if id.starts_with("taint-") {
@@ -75,8 +74,7 @@ fn sarif_base_id(id: &str) -> &str {
 }
 
 /// Look up a human-readable description for any rule ID.
-fn rule_description(id: &str) -> &str {
-    // Strip taint-specific suffix for lookup (e.g. "taint-unsanitised-flow:foo.rs:42" → base)
+pub(crate) fn rule_description(id: &str) -> &str {
     let base_id = sarif_base_id(id);
 
     if let Some(desc) = PATTERN_DESCRIPTIONS.get(base_id) {
@@ -94,7 +92,7 @@ fn rule_description(id: &str) -> &str {
     }
 }
 
-fn severity_to_level(sev: Severity) -> &'static str {
+pub(crate) fn severity_to_level(sev: Severity) -> &'static str {
     match sev {
         Severity::High => "error",
         Severity::Medium => "warning",
@@ -103,8 +101,27 @@ fn severity_to_level(sev: Severity) -> &'static str {
 }
 
 /// Build a SARIF 2.1.0 JSON value from a list of diagnostics.
+///
+/// Backwards-compatible wrapper for callers that do not yet have a
+/// chain list.  Equivalent to
+/// [`build_sarif_with_chains`] with an empty chain slice.
 pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
-    // Deduplicate rule IDs and build rules array.
+    build_sarif_with_chains(diags, &[], scan_root)
+}
+
+/// Build a SARIF 2.1.0 JSON value from a list of diagnostics, with
+/// composed exploit chains attached to `runs[0].properties.chains`.
+///
+/// `chains` is emitted verbatim into the run's `properties` object so
+/// SARIF v2.1.0 consumers that do not understand chains can still
+/// process the diagnostics.  When the slice is empty the
+/// `properties.chains` array is still emitted (as `[]`) so consumers
+/// can rely on the key existing.
+pub fn build_sarif_with_chains(
+    diags: &[Diag],
+    chains: &[ChainFinding],
+    scan_root: &Path,
+) -> Value {
     let mut rule_ids: Vec<String> = Vec::new();
     let mut rule_index_map: HashMap<String, usize> = HashMap::new();
 
@@ -127,15 +144,19 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
         })
         .collect();
 
+    // Map of finding stable_hash → chain stable_hash, used to set the
+    // per-result `chain_member_of` property.  Findings carry a u64
+    // stable hash; chains carry their own u64.  When a finding is a
+    // member of multiple chains, the first chain in
+    // `canonicalise`-order wins (deterministic).
+    let chain_member_of: HashMap<u64, u64> = build_chain_member_map(chains);
+
     let results: Vec<Value> = diags
         .iter()
         .map(|d| {
             let base = sarif_base_id(&d.id);
             let rule_index = rule_index_map[base];
 
-            // Make path relative to scan root. Fall back to a deterministic
-            // sentinel instead of the absolute path, SARIF must not leak
-            // home-directory or host-specific prefixes.
             let uri = match Path::new(&d.path).strip_prefix(scan_root) {
                 Ok(p) => p.to_string_lossy().to_string(),
                 Err(_) => {
@@ -148,7 +169,6 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 }
             };
 
-            // Prefer the per-finding message (e.g. from state analysis) over the generic rule description.
             let msg_text = d
                 .message
                 .as_deref()
@@ -170,10 +190,6 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 }]
             });
 
-            // Emit SARIF `codeFlows` when the finding carries structured flow
-            // steps.  Each step becomes a `threadFlows[0].locations[]` entry,
-            // the SARIF-idiomatic encoding for data-flow paths; the primary
-            // `locations[0]` above already names the true sink.
             if let Some(ev) = d.evidence.as_ref()
                 && !ev.flow_steps.is_empty()
             {
@@ -209,17 +225,12 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 }]);
             }
 
-            // Build properties object
             let mut props = serde_json::Map::new();
             props.insert("category".into(), json!(d.category.to_string()));
             if let Some(conf) = d.confidence {
                 props.insert("confidence".into(), json!(conf.to_string()));
             }
 
-            // `DATA_EXFIL` findings carry the destination object-literal
-            // field the leak reached (`body` / `headers` / `json`); surface
-            // it so SARIF consumers can pivot per-destination without
-            // reparsing the message.
             if let Some(field) = d
                 .evidence
                 .as_ref()
@@ -228,14 +239,6 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 props.insert("data_exfil_field".into(), json!(field));
             }
 
-            // Alternative-path cross-references.  When the dedup pass
-            // at `taint::analyse_file` preserves both a validated and
-            // an unvalidated flow for the same `(body, sink, source)`,
-            // or two flows that differ on the traversed intermediate
-            // variables, each finding carries its own stable ID plus
-            // the IDs of its siblings.  SARIF consumers can follow the
-            // links via `properties.finding_id` and
-            // `properties.relatedFindings`.
             if !d.finding_id.is_empty() {
                 props.insert("finding_id".into(), json!(d.finding_id));
             }
@@ -243,21 +246,6 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 props.insert("relatedFindings".into(), json!(d.alternative_finding_ids));
             }
 
-            // Engine provenance notes, surface any cap-hit / lowering
-            // bail / timeout signals recorded by the analysis engine so
-            // downstream consumers can tell "nothing found" from "engine
-            // stopped looking".
-            //
-            // Three properties are emitted together:
-            //   * `engine_notes`      , raw list of {kind, ...} entries
-            //   * `confidence_capped` , true iff any non-informational
-            //                            note is present (back-compat
-            //                            boolean; drives legacy dashboards)
-            //   * `loss_direction`    , worst `LossDirection` across
-            //                            the list ("under-report",
-            //                            "over-report", "bail").  Absent
-            //                            when only informational notes
-            //                            are attached.
             if let Some(engine_notes) = d.evidence.as_ref().and_then(|ev| {
                 if ev.engine_notes.is_empty() {
                     None
@@ -282,10 +270,6 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 }
             }
 
-            // Dynamic verification vendor extension (§5.4).
-            // `partialFingerprints.dynamic_verdict_status` is a stable string
-            // consumers can key on without parsing the full verdict object.
-            // `properties.nyx_dynamic_verdict` carries the full VerifyResult.
             if let Some(dv) = d.evidence.as_ref().and_then(|ev| ev.dynamic_verdict.as_ref()) {
                 result["partialFingerprints"] = json!({
                     "dynamic_verdict_status": serde_json::to_value(dv.status)
@@ -297,7 +281,6 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 );
             }
 
-            // Add rollup data if present
             if let Some(ref rollup) = d.rollup {
                 props.insert(
                     "rollup".into(),
@@ -306,7 +289,6 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                     }),
                 );
 
-                // Add rollup occurrences as relatedLocations
                 let related: Vec<Value> = rollup
                     .occurrences
                     .iter()
@@ -329,11 +311,25 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                 }
             }
 
+            // Phase 25: cross-reference back to the composed chain
+            // this finding participates in (if any).  Stable across
+            // reruns because both the finding's `stable_hash` and the
+            // chain's `stable_hash` are byte-deterministic.
+            if d.stable_hash != 0 {
+                if let Some(chain_hash) = chain_member_of.get(&d.stable_hash) {
+                    props.insert("chain_member_of".into(), json!(chain_hash));
+                }
+            }
+
             result["properties"] = Value::Object(props);
 
             result
         })
         .collect();
+
+    let run_properties = json!({
+        "chains": chains.iter().map(serialize_chain).collect::<Vec<_>>(),
+    });
 
     json!({
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
@@ -347,14 +343,29 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
                     "rules": rules
                 }
             },
-            "results": results
+            "results": results,
+            "properties": run_properties
         }]
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Tests
-// ─────────────────────────────────────────────────────────────────────────────
+fn build_chain_member_map(chains: &[ChainFinding]) -> HashMap<u64, u64> {
+    let mut out: HashMap<u64, u64> = HashMap::new();
+    for chain in chains {
+        for member in &chain.members {
+            out.entry(member.stable_hash).or_insert(chain.stable_hash);
+        }
+    }
+    out
+}
+
+/// JSON shape for one chain inside SARIF's `properties.chains`.  The
+/// JSON-findings emitter in [`crate::output::json`] serialises chains
+/// the same way (via `serde_json::to_value`), so consumers see an
+/// identical chain shape across both formats.
+pub(crate) fn serialize_chain(chain: &ChainFinding) -> Value {
+    serde_json::to_value(chain).unwrap_or(Value::Null)
+}
 
 #[cfg(test)]
 mod tests {
@@ -387,8 +398,6 @@ mod tests {
         }
     }
 
-    // ── severity_to_level ──────────────────────────────────────────────────
-
     #[test]
     fn severity_to_level_high_is_error() {
         assert_eq!(severity_to_level(Severity::High), "error");
@@ -403,8 +412,6 @@ mod tests {
     fn severity_to_level_low_is_note() {
         assert_eq!(severity_to_level(Severity::Low), "note");
     }
-
-    // ── cfg_rule_description ───────────────────────────────────────────────
 
     #[test]
     fn cfg_rule_description_known_ids() {
@@ -439,46 +446,30 @@ mod tests {
         assert!(cfg_rule_description("").is_none());
     }
 
-    // ── rule_description ──────────────────────────────────────────────────
-
     #[test]
     fn rule_description_taint_prefix_returns_fallback() {
-        // Any taint-* ID without a registered pattern description falls back
-        // to the hardcoded message.
         let desc = rule_description("taint-unsanitised-flow");
-        assert!(
-            desc.contains("Unsanitised"),
-            "expected taint fallback, got: {desc}"
-        );
+        assert!(desc.contains("Unsanitised"), "expected taint fallback, got: {desc}");
     }
 
     #[test]
     fn rule_description_taint_with_suffix_normalises_to_base() {
-        // IDs like "taint-unsanitised-flow:foo.rs:42" are stripped to base.
         let desc = rule_description("taint-unsanitised-flow:foo.rs:42");
-        assert!(
-            desc.contains("Unsanitised"),
-            "expected taint fallback, got: {desc}"
-        );
+        assert!(desc.contains("Unsanitised"), "expected taint fallback, got: {desc}");
     }
 
     #[test]
     fn rule_description_cfg_known_id_returns_description() {
         let desc = rule_description("cfg-auth-gap");
-        assert!(
-            desc.contains("authentication"),
-            "expected cfg-auth-gap description, got: {desc}"
-        );
+        assert!(desc.contains("authentication"));
     }
 
     #[test]
     fn rule_description_unknown_returns_id_itself() {
         let id = "totally-unknown-rule-zzzz";
         let desc = rule_description(id);
-        assert_eq!(desc, id, "unknown rule ID should be returned as-is");
+        assert_eq!(desc, id);
     }
-
-    // ── build_sarif ───────────────────────────────────────────────────────
 
     #[test]
     fn build_sarif_empty_diags_produces_valid_structure() {
@@ -506,12 +497,8 @@ mod tests {
         let loc = &result["locations"][0]["physicalLocation"];
         assert_eq!(loc["region"]["startLine"], 10);
         assert_eq!(loc["region"]["startColumn"], 5);
-        // Path should be relative to scan_root
         let uri = loc["artifactLocation"]["uri"].as_str().unwrap();
-        assert!(
-            !uri.starts_with("/scan_root"),
-            "URI should be relative, got: {uri}"
-        );
+        assert!(!uri.starts_with("/scan_root"));
         assert!(uri.contains("main.rs"));
     }
 
@@ -536,30 +523,26 @@ mod tests {
         let sarif = build_sarif(&[diag], Path::new("/scan_root"));
 
         let results = sarif["runs"][0]["results"].as_array().unwrap();
-        // ruleId should be the base ID, not the suffixed version
         assert_eq!(results[0]["ruleId"], "taint-unsanitised-flow");
 
         let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
             .as_array()
             .unwrap();
-        // Only one rule entry for the base ID
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0]["id"], "taint-unsanitised-flow");
     }
 
     #[test]
     fn build_sarif_duplicate_rule_ids_deduplicated() {
-        // Two findings with the same rule ID should produce only one rules entry.
         let d1 = make_diag("rs.security.sqli", Severity::High);
         let d2 = make_diag("rs.security.sqli", Severity::Medium);
         let sarif = build_sarif(&[d1, d2], Path::new("/"));
         let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
             .as_array()
             .unwrap();
-        assert_eq!(rules.len(), 1, "duplicate rule IDs should be deduplicated");
+        assert_eq!(rules.len(), 1);
         let results = sarif["runs"][0]["results"].as_array().unwrap();
         assert_eq!(results.len(), 2);
-        // Both results reference ruleIndex 0
         assert_eq!(results[0]["ruleIndex"], 0);
         assert_eq!(results[1]["ruleIndex"], 0);
     }
@@ -582,10 +565,7 @@ mod tests {
         let sarif = build_sarif(&[diag], Path::new("/scan_root"));
         let result = &sarif["runs"][0]["results"][0];
         let msg = result["message"]["text"].as_str().unwrap();
-        assert!(
-            msg.contains("authentication"),
-            "should use cfg-auth-gap description, got: {msg}"
-        );
+        assert!(msg.contains("authentication"));
     }
 
     #[test]
@@ -598,11 +578,9 @@ mod tests {
         let sarif = build_sarif(&[diag], Path::new("/scan_root"));
         let result = &sarif["runs"][0]["results"][0];
 
-        // Properties should include rollup count
         let props = &result["properties"];
         assert_eq!(props["rollup"]["count"], 3);
 
-        // relatedLocations should have 2 entries
         let related = result["relatedLocations"].as_array().unwrap();
         assert_eq!(related.len(), 2);
         assert_eq!(related[0]["physicalLocation"]["region"]["startLine"], 5);
@@ -614,11 +592,7 @@ mod tests {
         let diag = make_diag("rs.security.sql-injection", Severity::High);
         let sarif = build_sarif(&[diag], Path::new("/scan_root"));
         let result = &sarif["runs"][0]["results"][0];
-        // relatedLocations key should not be present when there's no rollup
-        assert!(
-            result.get("relatedLocations").is_none(),
-            "relatedLocations should be absent without rollup"
-        );
+        assert!(result.get("relatedLocations").is_none());
     }
 
     #[test]
@@ -636,9 +610,6 @@ mod tests {
 
     #[test]
     fn build_sarif_path_outside_scan_root_is_redacted() {
-        // Absolute host paths leak home-directory information, SARIF must
-        // substitute a deterministic token when a finding falls outside the
-        // scan root.
         let mut diag = make_diag("rule-x", Severity::High);
         diag.path = "/other/place/file.rs".into();
         let sarif = build_sarif(&[diag], Path::new("/workspace"));
@@ -672,10 +643,7 @@ mod tests {
     #[test]
     fn build_sarif_schema_and_version_fields_present() {
         let sarif = build_sarif(&[], Path::new("/"));
-        assert!(
-            sarif["$schema"].as_str().unwrap().contains("sarif"),
-            "schema should be a SARIF schema URL"
-        );
+        assert!(sarif["$schema"].as_str().unwrap().contains("sarif"));
         assert_eq!(sarif["version"], "2.1.0");
     }
 
@@ -697,5 +665,13 @@ mod tests {
         assert_eq!(results[0]["ruleIndex"], 0);
         assert_eq!(results[1]["ruleIndex"], 1);
         assert_eq!(results[2]["ruleIndex"], 2);
+    }
+
+    #[test]
+    fn build_sarif_with_chains_emits_properties_chains_array() {
+        let sarif = build_sarif_with_chains(&[], &[], Path::new("/scan_root"));
+        let run_props = &sarif["runs"][0]["properties"];
+        assert!(run_props["chains"].is_array());
+        assert_eq!(run_props["chains"].as_array().unwrap().len(), 0);
     }
 }

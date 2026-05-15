@@ -615,16 +615,24 @@ fn binary_json_output() {
     );
 
     let stdout = String::from_utf8_lossy(&cmd.stdout);
-    // Find the JSON array in stdout (config notes and "Finished" surround it)
-    let json_start = stdout.find('[').expect("Expected JSON array in stdout");
-    let json_end = stdout.rfind(']').expect("Expected closing bracket in JSON") + 1;
+    // Phase 25: JSON output is `{ "findings": [...], "chains": [...] }`.
+    let json_start = stdout.find('{').expect("Expected JSON object in stdout");
+    let json_end = stdout.rfind('}').expect("Expected closing brace in JSON") + 1;
     let json_str = &stdout[json_start..json_end];
-    let parsed: Vec<serde_json::Value> =
-        serde_json::from_str(json_str).expect("stdout should contain valid JSON array");
+    let parsed: serde_json::Value =
+        serde_json::from_str(json_str).expect("stdout should contain valid JSON object");
 
+    let findings = parsed["findings"]
+        .as_array()
+        .expect("JSON output must have a `findings` array");
     assert!(
-        !parsed.is_empty(),
+        !findings.is_empty(),
         "Expected at least 1 finding in JSON output"
+    );
+    // Phase 25: every scan emits a `chains` array (possibly empty).
+    assert!(
+        parsed["chains"].is_array(),
+        "JSON output must have a `chains` array"
     );
 }
 

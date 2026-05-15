@@ -438,8 +438,10 @@ pub fn handle(
     // functions below.  Set to true if any C / C++ file is enumerated.
     let preview_tier_seen = Arc::new(AtomicBool::new(false));
 
-    let mut diags: Vec<Diag> = if index_mode == IndexMode::Off {
-        let (diags, _surface_map) = scan_filesystem_with_observer(
+    let (mut diags, surface_map): (Vec<Diag>, crate::surface::SurfaceMap) = if index_mode
+        == IndexMode::Off
+    {
+        scan_filesystem_with_observer(
             &scan_path,
             config,
             show_progress,
@@ -447,8 +449,7 @@ pub fn handle(
             None,
             None,
             Some(&preview_tier_seen),
-        )?;
-        diags
+        )?
     } else {
         if index_mode == IndexMode::Rebuild || !db_path.exists() {
             tracing::debug!("Scanning filesystem index filesystem");
@@ -466,7 +467,13 @@ pub fn handle(
             let idx = Indexer::from_pool(&project_name, &pool)?;
             idx.vacuum()?;
         }
-        scan_with_index_parallel_observer(
+        // Indexed scan path: Phase 25 chain composer needs a
+        // SurfaceMap.  The indexed pipeline does not yet thread one
+        // out — Phase 23's CLI loads it from SQLite when needed.  For
+        // now return an empty map so chain emission produces no
+        // chains; this matches pre-Phase-25 behaviour for indexed
+        // scans.
+        let diags = scan_with_index_parallel_observer(
             &project_name,
             pool,
             config,
@@ -476,7 +483,8 @@ pub fn handle(
             None,
             None,
             Some(&preview_tier_seen),
-        )?
+        )?;
+        (diags, crate::surface::SurfaceMap::new())
     };
 
     // Print the Preview-tier banner to stderr once, after file enumeration
@@ -591,27 +599,40 @@ pub fn handle(
         None
     };
 
+    // ── Phase 25: compose exploit chains from findings + SurfaceMap ────
+    let chain_edges = crate::chain::findings_to_edges(&diags, &surface_map);
+    let chain_search_cfg = crate::chain::ChainSearchConfig {
+        max_depth: config.chain.max_depth,
+        min_score: config.chain.min_score,
+    };
+    let chains = crate::chain::find_chains(&chain_edges, &surface_map, chain_search_cfg);
+    let diags_for_output = crate::output::filter_constituents(
+        diags.clone(),
+        &chains,
+        config.output.show_chain_constituents,
+    );
+
     // ── Output ──────────────────────────────────────────────────────────
     match format {
         OutputFormat::Json => {
-            if let Some(ref diff) = verdict_diff {
-                // Wrap findings + verdict_diff into one JSON object so the
-                // diff is machine-readable alongside the findings.
-                let out = serde_json::json!({
-                    "findings": &diags,
-                    "verdict_diff": diff,
-                });
-                let json = serde_json::to_string(&out)
-                    .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
-                println!("{json}");
-            } else {
-                let json = serde_json::to_string(&diags)
-                    .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
-                println!("{json}");
-            }
+            let diff_value = verdict_diff
+                .as_ref()
+                .map(|d| serde_json::to_value(d).unwrap_or(serde_json::Value::Null));
+            let out = crate::output::build_findings_json(
+                &diags_for_output,
+                &chains,
+                diff_value.as_ref(),
+            );
+            let json = serde_json::to_string(&out)
+                .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
+            println!("{json}");
         }
         OutputFormat::Sarif => {
-            let sarif = crate::output::build_sarif(&diags, &scan_path);
+            let sarif = crate::output::build_sarif_with_chains(
+                &diags_for_output,
+                &chains,
+                &scan_path,
+            );
             let json = serde_json::to_string_pretty(&sarif)
                 .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
             println!("{json}");

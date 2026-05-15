@@ -34,11 +34,17 @@ use serde::{Deserialize, Serialize};
 
 pub mod edges;
 pub mod feasibility;
+pub mod finding;
 pub mod impact;
+pub mod score;
+pub mod search;
 
 pub use edges::{ChainEdge, FindingRef, findings_to_edges};
 pub use feasibility::Feasibility;
+pub use finding::{ChainFinding, ChainMember, ChainSeverity, ChainSink};
 pub use impact::{IMPACT_LATTICE, ImpactCategory, ImpactRule, lookup_impact};
+pub use score::{ChainScoreConfig, category_weight, min_score_default, score_path};
+pub use search::{ChainSearchConfig, find_chains};
 
 /// One node in a [`ChainGraph`].
 ///

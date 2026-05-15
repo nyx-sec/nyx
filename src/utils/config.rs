@@ -423,6 +423,17 @@ pub struct OutputConfig {
     /// Number of example locations to store in rollup findings.
     #[serde(default = "default_rollup_examples")]
     pub rollup_examples: u32,
+
+    /// Phase 25 — whether the JSON / SARIF / console output should
+    /// continue to emit constituent findings that already belong to a
+    /// composed [`crate::chain::ChainFinding`].
+    ///
+    /// Default `true` (preserve every individual finding so existing
+    /// pipelines see no behavioural change).  Set to `false` to fold
+    /// chain members into the `chains: [...]` array exclusively; the
+    /// findings array still emits every non-member.
+    #[serde(default = "default_show_chain_constituents")]
+    pub show_chain_constituents: bool,
 }
 
 fn default_max_low() -> u32 {
@@ -436,6 +447,9 @@ fn default_max_low_per_rule() -> u32 {
 }
 fn default_rollup_examples() -> u32 {
     5
+}
+fn default_show_chain_constituents() -> bool {
+    true
 }
 
 impl Default for OutputConfig {
@@ -454,6 +468,7 @@ impl Default for OutputConfig {
             max_low_per_file: 1,
             max_low_per_rule: 10,
             rollup_examples: 5,
+            show_chain_constituents: true,
         }
     }
 }
@@ -674,6 +689,31 @@ pub struct AnalysisRulesConfig {
     pub engine: crate::utils::AnalysisOptions,
 }
 
+/// Phase 25 — `[chain]` section of `nyx.toml`.
+///
+/// Drives the bounded-DFS path search in
+/// [`crate::chain::search::find_chains`].
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct ChainConfig {
+    /// Maximum number of per-finding hops in a single chain path.
+    /// Defaults to `4`.
+    pub max_depth: usize,
+    /// Path-search threshold.  Chains with a score strictly below
+    /// this value are dropped.  Defaults to
+    /// [`crate::chain::score::min_score_default`].
+    pub min_score: f64,
+}
+
+impl Default for ChainConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: 4,
+            min_score: 9.5,
+        }
+    }
+}
+
 /// Configuration for the local web UI server (`nyx serve`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -825,6 +865,10 @@ pub struct Config {
     pub output: OutputConfig,
     pub performance: PerformanceConfig,
     pub analysis: AnalysisRulesConfig,
+    /// Phase 25 — `[chain]` section.  Controls bounded path search
+    /// and the chain-emission score threshold.
+    #[serde(default)]
+    pub chain: ChainConfig,
     /// Per-detector knobs ([detectors.*] in nyx.conf).  Currently exposes
     /// `[detectors.data_exfil]` for cross-boundary leak suppression.
     #[serde(default)]
