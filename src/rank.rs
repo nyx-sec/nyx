@@ -222,13 +222,11 @@ pub fn rank_diags(diags: &mut [Diag]) {
                 .and_then(|ev| ev.dynamic_verdict.as_ref())
                 .map(|dv| format!("{:?}", dv.status))
                 .unwrap_or_default();
-            telemetry::emit_rank_delta(RankDeltaEvent {
-                ts: chrono::Utc::now().to_rfc3339(),
-                event_type: "rank_delta",
-                finding_id: d.finding_id.clone(),
+            telemetry::emit_rank_delta(RankDeltaEvent::new(
+                d.finding_id.clone(),
                 status,
                 delta,
-            });
+            ));
         }
     }
     diags.sort_by(|a, b| {

@@ -758,6 +758,30 @@ impl Default for ServerConfig {
     }
 }
 
+/// Phase 27 — `[telemetry]` section.  Controls the on-disk event log
+/// sampling policy.  Confirmed and Inconclusive verdicts are calibration
+/// critical and are retained by default; other verdict statuses can be
+/// downsampled via `sample_rate_other` to bound log growth on high-volume
+/// scans.  Decisions are seeded by `spec_hash` for determinism — see
+/// [`crate::dynamic::telemetry::SamplingPolicy`].
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    pub keep_all_confirmed: bool,
+    pub keep_all_inconclusive: bool,
+    pub sample_rate_other: f32,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            keep_all_confirmed: true,
+            keep_all_inconclusive: true,
+            sample_rate_other: 1.0,
+        }
+    }
+}
+
 /// Configuration for scan run persistence and history.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
@@ -880,6 +904,10 @@ pub struct Config {
     pub detectors: crate::utils::detector_options::DetectorOptions,
     pub server: ServerConfig,
     pub runs: RunsConfig,
+    /// Phase 27 — `[telemetry]` section.  Sampling policy for the dynamic
+    /// event log.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
     pub profiles: HashMap<String, ScanProfile>,
     /// Detected frameworks for the current project, set by the scan pipeline,
     /// not persisted to config files.
@@ -1185,6 +1213,9 @@ pub(crate) fn merge_configs(mut default: Config, user: Config) -> Config {
 
     // --- RunsConfig ---
     default.runs = user.runs;
+
+    // --- TelemetryConfig ---
+    default.telemetry = user.telemetry;
 
     // --- Profiles (user profile with same name fully replaces) ---
     for (name, profile) in user.profiles {

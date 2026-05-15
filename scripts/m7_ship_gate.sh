@@ -74,6 +74,14 @@ else
 fi
 
 # ── Gate 2: False-Confirmed rate ─────────────────────────────────────────────
+#
+# Phase 27 (Track H.1): the telemetry log is schema-versioned.  Gate 2 reads
+# `EXPECTED_SCHEMA_VERSION` against every record's `schema_version` field and
+# fails loudly with exit 3 when a mismatch is found — silently treating a
+# v0 (pre-Phase-27) log as "no data" would mask incompatible releases mixing
+# their records.
+EXPECTED_SCHEMA_VERSION=1
+
 if skip false-confirmed; then
   info "Gate 2 (false-confirmed): SKIPPED"
 else
@@ -82,20 +90,35 @@ else
   if [[ ! -f "$EVENTS" ]]; then
     info "Gate 2: telemetry log not found at $EVENTS; skipping (no data)"
   else
-    python3 - <<'PYEOF' "$EVENTS"
+    set +e
+    python3 - "$EVENTS" "$EXPECTED_SCHEMA_VERSION" <<'PYEOF'
 import json, sys, collections
 path = sys.argv[1]
+expected_schema = int(sys.argv[2])
 cap_counts = collections.defaultdict(lambda: {"confirmed": 0, "wrong": 0})
 with open(path) as f:
-    for line in f:
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
+    for line_no, raw in enumerate(f, start=1):
+        if not raw.strip():
             continue
-        if ev.get("kind") == "feedback" and ev.get("wrong"):
+        try:
+            ev = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print(f"FAIL  malformed JSON at {path} line {line_no}: {e}")
+            sys.exit(3)
+        if "schema_version" not in ev:
+            print(f"FAIL  missing schema_version at {path} line {line_no}")
+            sys.exit(3)
+        if ev["schema_version"] != expected_schema:
+            print(
+                f"FAIL  schema mismatch at {path} line {line_no}: "
+                f"expected {expected_schema}, found {ev['schema_version']}"
+            )
+            sys.exit(3)
+        kind = ev.get("kind", "")
+        if kind == "feedback" and ev.get("wrong"):
             cap = ev.get("cap", "unknown")
             cap_counts[cap]["wrong"] += 1
-        elif ev.get("kind") == "verdict" and ev.get("status") == "Confirmed":
+        elif kind == "verdict" and ev.get("status") == "Confirmed":
             cap = ev.get("cap", "unknown")
             cap_counts[cap]["confirmed"] += 1
 
@@ -115,8 +138,11 @@ for cap, counts in sorted(cap_counts.items()):
 sys.exit(2 if failed else 0)
 PYEOF
     RC=$?
+    set -e
     if [[ $RC -eq 0 ]]; then
       pass "Gate 2: false-Confirmed rate within threshold"
+    elif [[ $RC -eq 3 ]]; then
+      die "Gate 2: telemetry schema mismatch (expected v$EXPECTED_SCHEMA_VERSION) — refusing to silently skip"
     else
       die "Gate 2: false-Confirmed rate exceeds 2% for one or more caps"
     fi

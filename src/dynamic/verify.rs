@@ -12,7 +12,7 @@ use crate::dynamic::runner::{run_spec, RunError};
 use crate::dynamic::sandbox::{toolchain_id_with_digest, SandboxOptions};
 use crate::dynamic::spec::{HarnessSpec, SPEC_FORMAT_VERSION};
 use crate::dynamic::stubs::StubHarness;
-use crate::dynamic::telemetry::{self, TelemetryEvent};
+use crate::dynamic::telemetry::{self, SamplingPolicy, TelemetryEvent};
 use crate::dynamic::toolchain;
 use crate::evidence::{InconclusiveReason, SpecDerivationStrategy, UnsupportedReason};
 use crate::summary::GlobalSummaries;
@@ -62,6 +62,10 @@ pub struct VerifyOptions {
     /// [`crate::evidence::InconclusiveReason::BackendInsufficient`]
     /// rather than running against an unhardened host.
     pub refuse_filesystem_confirm: bool,
+    /// Phase 27 (Track H.2): sampling policy applied to every telemetry
+    /// event emitted from the verify pipeline.  Default `keep_all` so unit
+    /// tests and embedded callers do not silently lose records.
+    pub telemetry_policy: SamplingPolicy,
 }
 
 impl VerifyOptions {
@@ -116,6 +120,7 @@ impl VerifyOptions {
             summaries: None,
             callgraph: None,
             refuse_filesystem_confirm,
+            telemetry_policy: SamplingPolicy::from_config(&config.telemetry),
         }
     }
 }
@@ -242,6 +247,7 @@ fn entry_kind_unsupported_verdict(
     spec_entry_path: &str,
     lang: crate::symbol::Lang,
     attempted: crate::dynamic::spec::EntryKind,
+    policy: &SamplingPolicy,
 ) -> VerifyResult {
     let supported = crate::dynamic::lang::entry_kinds_supported(lang).to_vec();
     let hint = crate::dynamic::lang::entry_kind_hint(lang, attempted);
@@ -263,7 +269,7 @@ fn entry_kind_unsupported_verdict(
             Some(inconclusive_reason.clone()),
         ),
     };
-    telemetry::emit(&event);
+    telemetry::emit_with_policy(&event, policy);
     VerifyResult {
         finding_id,
         status: VerifyStatus::Inconclusive,
@@ -290,6 +296,7 @@ fn spec_derivation_failed_verdict(
     finding_id: String,
     diag: &Diag,
     reason: UnsupportedReason,
+    policy: &SamplingPolicy,
 ) -> VerifyResult {
     if matches!(reason, UnsupportedReason::SpecDerivationFailed) && should_be_inconclusive(diag) {
         let strategies: Vec<SpecDerivationStrategy> =
@@ -304,7 +311,7 @@ fn spec_derivation_failed_verdict(
             VerifyStatus::Inconclusive,
             Some(inconclusive_reason.clone()),
         );
-        telemetry::emit(&event);
+        telemetry::emit_with_policy(&event, policy);
         return VerifyResult {
             finding_id,
             status: VerifyStatus::Inconclusive,
@@ -319,7 +326,7 @@ fn spec_derivation_failed_verdict(
     }
 
     let event = TelemetryEvent::no_spec(diag, VerifyStatus::Unsupported, None);
-    telemetry::emit(&event);
+    telemetry::emit_with_policy(&event, policy);
 
     VerifyResult {
         finding_id,
@@ -388,7 +395,12 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     ) {
         Ok(s) => s,
         Err(reason) => {
-            return spec_derivation_failed_verdict(finding_id, diag, reason);
+            return spec_derivation_failed_verdict(
+                finding_id,
+                diag,
+                reason,
+                &opts.telemetry_policy,
+            );
         }
     };
 
@@ -404,6 +416,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             &spec.entry_file,
             spec.lang,
             spec.entry_kind,
+            &opts.telemetry_policy,
         );
     }
 
@@ -574,7 +587,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         elapsed,
         build_attempts,
     );
-    telemetry::emit(&event);
+    telemetry::emit_with_policy(&event, &opts.telemetry_policy);
 
     verdict
 }
@@ -809,6 +822,7 @@ fn build_verdict(
                         &spec.entry_file,
                         spec.lang,
                         spec.entry_kind,
+                        &opts.telemetry_policy,
                     );
                 }
             }

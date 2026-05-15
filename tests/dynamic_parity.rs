@@ -102,12 +102,7 @@ mod parity_tests {
                 timeout: Duration::from_secs(10),
                 ..SandboxOptions::default()
             },
-            project_root: None,
-            db_path: None,
-            verify_all_confidence: false,
-            summaries: None,
-            callgraph: None,
-            refuse_filesystem_confirm: false,
+            ..VerifyOptions::default()
         }
     }
 
@@ -118,12 +113,7 @@ mod parity_tests {
                 timeout: Duration::from_secs(30),
                 ..SandboxOptions::default()
             },
-            project_root: None,
-            db_path: None,
-            verify_all_confidence: false,
-            summaries: None,
-            callgraph: None,
-            refuse_filesystem_confirm: false,
+            ..VerifyOptions::default()
         }
     }
 
