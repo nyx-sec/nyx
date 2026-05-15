@@ -121,6 +121,7 @@ pub mod ssa;
 pub mod state;
 pub mod summary;
 pub mod suppress;
+pub mod surface;
 pub mod symbol;
 pub mod symex;
 pub mod taint;

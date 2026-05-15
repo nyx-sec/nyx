@@ -228,6 +228,15 @@ pub mod index {
         CREATE INDEX IF NOT EXISTS idx_dynamic_verdict_cache_spec_hash
             ON dynamic_verdict_cache(spec_hash);
 
+        -- Phase 21: persisted attack-surface map.  One row per project.
+        -- Stored as canonical JSON so the round-trip is byte-identical
+        -- across rescans (see `SurfaceMap::to_json`).
+        CREATE TABLE IF NOT EXISTS surface_map (
+            project TEXT PRIMARY KEY,
+            map_json BLOB NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
         -- Indexes on (project, file_path) for the per-file replace_* paths.
         -- Without these, every DELETE WHERE project=? AND file_path=? does a
         -- full table scan, which dominates indexing time as the cache grows.
@@ -544,6 +553,22 @@ pub mod index {
                     .unwrap_or(false);
                 if !cpi_exists {
                     tracing::info!("creating cross_package_imports table");
+                    conn.execute_batch(SCHEMA)?;
+                }
+
+                // Phase 21: ensure the `surface_map` table exists on
+                // DBs created before this column set was introduced.
+                let surface_exists: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM sqlite_master
+                         WHERE type = 'table' AND name = 'surface_map'",
+                        [],
+                        |_| Ok(true),
+                    )
+                    .optional()?
+                    .unwrap_or(false);
+                if !surface_exists {
+                    tracing::info!("creating surface_map table");
                     conn.execute_batch(SCHEMA)?;
                 }
 
@@ -1880,6 +1905,63 @@ pub mod index {
                 }
             }
             Ok(out)
+        }
+
+        /// Persist a [`crate::surface::SurfaceMap`] for this project.
+        ///
+        /// Replaces any previously-persisted map; the table holds one row
+        /// per project.  The map is canonicalised before serialisation so
+        /// `replace_surface_map` + `load_surface_map` round-trip is
+        /// byte-identical for structurally identical maps.
+        pub fn replace_surface_map(
+            &mut self,
+            map: &crate::surface::SurfaceMap,
+        ) -> NyxResult<()> {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+            let mut canon = map.clone();
+            let bytes = canon
+                .to_json()
+                .map_err(|e| NyxError::Msg(format!("surface map serialise: {e}")))?;
+            self.c().execute(
+                "INSERT OR REPLACE INTO surface_map (project, map_json, updated_at)
+                 VALUES (?1, ?2, ?3)",
+                params![self.project, bytes, now],
+            )?;
+            Ok(())
+        }
+
+        /// Load the persisted [`crate::surface::SurfaceMap`] for this
+        /// project, or `None` when no map has been written.
+        pub fn load_surface_map(&self) -> NyxResult<Option<crate::surface::SurfaceMap>> {
+            let row: Option<Vec<u8>> = self
+                .c()
+                .query_row(
+                    "SELECT map_json FROM surface_map WHERE project = ?1",
+                    params![self.project],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()?;
+            let Some(bytes) = row else {
+                return Ok(None);
+            };
+            let map = crate::surface::SurfaceMap::from_json(&bytes)
+                .map_err(|e| NyxError::Msg(format!("surface map deserialise: {e}")))?;
+            Ok(Some(map))
+        }
+
+        /// Return the raw JSON bytes stored for the surface map without
+        /// deserialising.  Used by the round-trip parity tests so they
+        /// can compare on-disk bytes across rescans.
+        pub fn load_surface_map_bytes(&self) -> NyxResult<Option<Vec<u8>>> {
+            let row: Option<Vec<u8>> = self
+                .c()
+                .query_row(
+                    "SELECT map_json FROM surface_map WHERE project = ?1",
+                    params![self.project],
+                    |r| r.get::<_, Vec<u8>>(0),
+                )
+                .optional()?;
+            Ok(row)
         }
 
         /// Remove a file and all derived persisted state for this project.

@@ -2126,6 +2126,7 @@ pub(crate) fn scan_filesystem_with_observer(
         );
     }
     let pass2_start = std::time::Instant::now();
+    let mut gs = global_summaries;
     let mut diags: Vec<Diag> = {
         let _span = tracing::info_span!("pass2_analysis", files = all_paths.len()).entered();
         let pb = make_progress_bar(
@@ -2156,7 +2157,6 @@ pub(crate) fn scan_filesystem_with_observer(
             );
         }
 
-        let mut gs = global_summaries;
         let total_batches = batches.len() as u64 + u64::from(!orphans.is_empty());
         if let Some(p) = progress {
             p.set_batches_total(total_batches);
@@ -2177,6 +2177,20 @@ pub(crate) fn scan_filesystem_with_observer(
         result
     };
     tracing::info!(diags = diags.len(), "pass 2 complete");
+
+    // Phase 21: build the SurfaceMap from the post-pass-2 view.
+    // No persistence here; the index-backed path persists into the
+    // `surface_map` SQLite table.  Errors here are swallowed: the
+    // surface map is an additive Phase F deliverable, not a gate.
+    let _surface_map = crate::surface::build::build_surface_map(
+        &crate::surface::build::SurfaceBuildInputs {
+            files: &all_paths,
+            scan_root: Some(root),
+            global_summaries: &gs,
+            call_graph: &call_graph,
+            config: cfg,
+        },
+    );
     if let Some(p) = progress {
         p.record_pass2_ms(pass2_start.elapsed().as_millis() as u64);
     }
@@ -2986,6 +3000,34 @@ pub fn scan_with_index_parallel_observer(
     }
 
     let mut diags = topo_diags;
+
+    // Phase 21: build + persist the SurfaceMap from the post-pass-2
+    // view.  Errors here are logged but not propagated — the surface
+    // map is an additive Phase F deliverable, not a scan gate.
+    {
+        let surface_map = crate::surface::build::build_surface_map(
+            &crate::surface::build::SurfaceBuildInputs {
+                files: &files,
+                scan_root: Some(scan_root),
+                global_summaries: &global_summaries,
+                call_graph: &call_graph,
+                config: cfg,
+            },
+        );
+        let mut idx = Indexer::from_pool(project, &pool)?;
+        if let Err(e) = idx.replace_surface_map(&surface_map) {
+            tracing::warn!("failed to persist surface_map: {e}");
+        } else if let Some(l) = logs {
+            l.info(
+                format!(
+                    "Surface map: {} nodes, {} edges",
+                    surface_map.node_count(),
+                    surface_map.edge_count()
+                ),
+                None,
+            );
+        }
+    }
 
     // NOTE: Taint-mode output is *not* filtered here.  `run_rules_on_bytes`
     // already gates AST queries and auth analyses behind `mode == Full`, so
