@@ -135,8 +135,5 @@ impl ChainGraph {
 /// Phase 25's path-search code calls this as a fast-path before
 /// consulting the full [`IMPACT_LATTICE`].
 pub fn standalone_impact(cap: Cap) -> Option<ImpactCategory> {
-    IMPACT_LATTICE
-        .iter()
-        .find(|rule| rule.source_cap == cap && rule.adjacent_cap.is_none())
-        .map(|rule| rule.result)
+    lookup_impact(cap, None)
 }

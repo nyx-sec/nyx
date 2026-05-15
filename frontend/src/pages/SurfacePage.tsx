@@ -77,33 +77,18 @@ function NodeCard({
       onClick={onClick}
       className={`surface-node-card${selected ? ' selected' : ''}`}
       style={{
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'flex-start',
-        gap: 'var(--space-1)',
-        padding: 'var(--space-3)',
         border: `1px solid ${selected ? color : 'var(--border)'}`,
         borderLeft: `4px solid ${color}`,
-        borderRadius: 'var(--radius-2)',
         background: selected ? 'var(--surface-2)' : 'var(--surface-1)',
-        cursor: 'pointer',
-        textAlign: 'left',
-        width: '100%',
       }}
     >
-      <span style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-tertiary)' }}>
+      <span className="surface-node-card-meta">
         #{index} · {node.node.replace('_', ' ')}
         {node.node === 'entry_point' && node.auth_required ? ' · auth' : ''}
       </span>
-      <span style={{ fontWeight: 600, fontSize: 'var(--text-sm)' }}>
-        {nodeTitle(node)}
-      </span>
-      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)' }}>
-        {nodeSubtitle(node)}
-      </span>
-      <code style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-tertiary)' }}>
-        {nodeLocation(node)}
-      </code>
+      <span className="surface-node-card-title">{nodeTitle(node)}</span>
+      <span className="surface-node-card-subtitle">{nodeSubtitle(node)}</span>
+      <code className="surface-node-card-loc">{nodeLocation(node)}</code>
     </button>
   );
 }
@@ -141,7 +126,7 @@ function NeighborList({
 }) {
   if (index === null) {
     return (
-      <p style={{ color: 'var(--text-tertiary)' }}>
+      <p className="surface-neighbor-empty">
         Select a node on the left to see its neighbours.
       </p>
     );
@@ -155,54 +140,26 @@ function NeighborList({
   const renderEdges = (edges: SurfaceEdge[], direction: 'in' | 'out') => {
     if (edges.length === 0) {
       return (
-        <p style={{ color: 'var(--text-tertiary)' }}>
+        <p className="surface-neighbor-empty">
           (no {direction === 'in' ? 'inbound' : 'outbound'} edges)
         </p>
       );
     }
     return (
-      <ul
-        style={{
-          listStyle: 'none',
-          padding: 0,
-          margin: 0,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 'var(--space-1)',
-        }}
-      >
+      <ul className="surface-neighbor-edges">
         {edges.map((e, i) => {
           const otherIdx = direction === 'in' ? e.from : e.to;
           const other = map.nodes[otherIdx];
           if (!other) return null;
           return (
-            <li
-              key={`${direction}-${i}`}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 'var(--space-2)',
-                fontSize: 'var(--text-xs)',
-              }}
-            >
-              <span
-                style={{
-                  padding: '2px 6px',
-                  borderRadius: 'var(--radius-1)',
-                  background: 'var(--surface-2)',
-                  color: 'var(--text-secondary)',
-                }}
-              >
+            <li key={`${direction}-${i}`} className="surface-neighbor-edge">
+              <span className="surface-neighbor-edge-kind">
                 {EDGE_KIND_LABELS[e.kind]}
               </span>
               <span>
                 {direction === 'in' ? '←' : '→'} <strong>{nodeTitle(other)}</strong>
               </span>
-              <code
-                style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-tertiary)' }}
-              >
-                {nodeLocation(other)}
-              </code>
+              <code className="surface-neighbor-edge-loc">{nodeLocation(other)}</code>
             </li>
           );
         })}
@@ -212,8 +169,8 @@ function NeighborList({
 
   return (
     <div>
-      <h3 style={{ marginTop: 0 }}>{nodeTitle(node)}</h3>
-      <p style={{ color: 'var(--text-secondary)', marginTop: 0 }}>
+      <h3 className="surface-neighbor-title">{nodeTitle(node)}</h3>
+      <p className="surface-neighbor-subtitle">
         {nodeSubtitle(node)} — <code>{nodeLocation(node)}</code>
       </p>
       <h4>Outbound</h4>
@@ -261,53 +218,26 @@ export function SurfacePage() {
 
   return (
     <div className="page-content">
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'baseline',
-          gap: 'var(--space-4)',
-          marginBottom: 'var(--space-4)',
-        }}
-      >
-        <h1 style={{ margin: 0 }}>Attack surface</h1>
-        <span style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)' }}>
+      <header className="surface-header">
+        <h1>Attack surface</h1>
+        <span className="surface-header-summary">
           {summary.entries} entry-points · {summary.stores} stores ·{' '}
           {summary.externals} services · {summary.dangerous} dangerous locals ·{' '}
           {data.edges.length} edges
         </span>
       </header>
-      <div
-        style={{
-          display: 'flex',
-          gap: 'var(--space-2)',
-          marginBottom: 'var(--space-3)',
-          flexWrap: 'wrap',
-        }}
-      >
+      <div className="surface-filter-row">
         <input
           type="search"
           value={query}
           placeholder="Filter by name, label, or path"
           onChange={(e) => setQuery(e.target.value)}
-          style={{
-            flex: '1 1 220px',
-            padding: 'var(--space-2)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-1)',
-            background: 'var(--surface-1)',
-            color: 'var(--text-primary)',
-          }}
+          className="surface-filter-input"
         />
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value as NodeKindFilter)}
-          style={{
-            padding: 'var(--space-2)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-1)',
-            background: 'var(--surface-1)',
-            color: 'var(--text-primary)',
-          }}
+          className="surface-filter-select"
         >
           <option value="all">All node kinds</option>
           <option value="entry_point">Entry points</option>
@@ -316,25 +246,10 @@ export function SurfacePage() {
           <option value="dangerous_local">Dangerous locals</option>
         </select>
       </div>
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1.4fr)',
-          gap: 'var(--space-4)',
-          alignItems: 'flex-start',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 'var(--space-2)',
-            maxHeight: '70vh',
-            overflowY: 'auto',
-          }}
-        >
+      <div className="surface-grid">
+        <div className="surface-node-list">
           {visible.length === 0 ? (
-            <p style={{ color: 'var(--text-tertiary)' }}>No nodes match.</p>
+            <p className="surface-node-list-empty">No nodes match.</p>
           ) : (
             visible.map(({ node, index }) => (
               <NodeCard
@@ -347,14 +262,7 @@ export function SurfacePage() {
             ))
           )}
         </div>
-        <aside
-          style={{
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-2)',
-            padding: 'var(--space-4)',
-            background: 'var(--surface-1)',
-          }}
-        >
+        <aside className="surface-sidebar">
           <NeighborList map={data} index={selected} />
         </aside>
       </div>

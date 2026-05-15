@@ -328,6 +328,68 @@ pub enum InconclusiveReason {
     },
 }
 
+impl fmt::Display for InconclusiveReason {
+    /// Human-readable phrasing per variant.  Used by callers that splice
+    /// the typed reason into a user-facing string (e.g. the
+    /// `reverify_reason` field on a chain finding).  Consumers that need
+    /// structured access should read the enum variant directly via
+    /// `VerifyResult::inconclusive_reason`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OracleCollisionSuspected => {
+                f.write_str("oracle collision suspected (marker matched without sink reach)")
+            }
+            Self::NonReproducible => f.write_str("repro artifact could not be written"),
+            Self::BuildFailed => f.write_str("harness build failed after retries"),
+            Self::SandboxError => f.write_str("sandbox error"),
+            Self::SpecDerivationFailed { tried, hint } => {
+                f.write_str("spec derivation failed (tried: ")?;
+                for (i, s) in tried.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{s}")?;
+                }
+                write!(f, "; hint: {hint})")
+            }
+            Self::EntryKindUnsupported {
+                lang,
+                attempted,
+                supported,
+                hint,
+            } => {
+                write!(
+                    f,
+                    "entry kind {attempted:?} unsupported for {lang:?} (supported: "
+                )?;
+                for (i, k) in supported.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{k:?}")?;
+                }
+                write!(f, "; hint: {hint})")
+            }
+            Self::NoBenignControl => {
+                f.write_str("no benign control payload available for differential confirmation")
+            }
+            Self::ReversedDifferential => f.write_str(
+                "reversed differential (benign payload fired, vulnerable payload did not)",
+            ),
+            Self::UnrelatedCrash => {
+                f.write_str("harness crashed outside the instrumented sink")
+            }
+            Self::BackendInsufficient {
+                backend,
+                oracle_kind,
+            } => write!(
+                f,
+                "{backend} backend cannot enforce isolation for {oracle_kind} oracle"
+            ),
+        }
+    }
+}
+
 /// High-level outcome of a dynamic verification attempt.
 ///
 /// Serializes as PascalCase (`"Confirmed"`, `"NotConfirmed"`, etc.).

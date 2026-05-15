@@ -126,7 +126,7 @@ fn composite_inconclusive_downgrades_one_bucket_and_records_reason() {
         .as_deref()
         .expect("reverify_reason recorded");
     assert!(
-        reason.contains("BuildFailed"),
+        reason.contains("harness build failed"),
         "reason carries typed inconclusive reason; got {reason:?}"
     );
 }

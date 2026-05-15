@@ -184,6 +184,37 @@ const _: () = assert!(
      drop it from IMPACT_LATTICE_COVERED or add a rule that consumes it",
 );
 
+/// Precomputed standalone-rule table indexed by `Cap` bit position.
+///
+/// Built once at compile time from [`IMPACT_LATTICE`].  `Cap` is a
+/// `bitflags!` u32, so each cap occupies one bit position 0..32; the
+/// table stores the standalone [`ImpactCategory`] (if any) for that
+/// position.  [`lookup_impact`] uses this to short-circuit its
+/// second-pass and third-pass walks in O(1).
+static STANDALONE_BY_BIT: [Option<ImpactCategory>; 32] = build_standalone_table();
+
+const fn build_standalone_table() -> [Option<ImpactCategory>; 32] {
+    let mut table = [None; 32];
+    let mut i = 0;
+    while i < IMPACT_LATTICE.len() {
+        let rule = IMPACT_LATTICE[i];
+        if rule.adjacent_cap.is_none() {
+            let bit = rule.source_cap.bits().trailing_zeros() as usize;
+            table[bit] = Some(rule.result);
+        }
+        i += 1;
+    }
+    table
+}
+
+fn standalone_lookup(cap: Cap) -> Option<ImpactCategory> {
+    let bits = cap.bits();
+    if bits == 0 || bits.count_ones() != 1 {
+        return None;
+    }
+    STANDALONE_BY_BIT[bits.trailing_zeros() as usize]
+}
+
 /// Look up an [`ImpactCategory`] for a (source, adjacent) cap pair.
 ///
 /// `adjacent` is `None` when the caller has not yet found a partner
@@ -192,6 +223,12 @@ const _: () = assert!(
 /// Phase 25's path search calls this once per candidate path with the
 /// path's primary and secondary caps; multiple cap matches choose the
 /// first rule in [`IMPACT_LATTICE`] order (specific before fallback).
+///
+/// The standalone-rule walks (second + third pass) are O(1) via
+/// [`STANDALONE_BY_BIT`].  The two-cap walk (first pass) stays linear
+/// because the 2-cap subset is small (today: three rules); promote
+/// to a sorted-pair binary search if the lattice grows past ~16
+/// pair-rules.
 pub fn lookup_impact(source: Cap, adjacent: Option<Cap>) -> Option<ImpactCategory> {
     // First pass: exact source + matching adjacency (or both ways).
     if let Some(adj) = adjacent {
@@ -205,20 +242,16 @@ pub fn lookup_impact(source: Cap, adjacent: Option<Cap>) -> Option<ImpactCategor
             }
         }
     }
-    // Second pass: standalone rule on source_cap.
-    for rule in IMPACT_LATTICE {
-        if rule.adjacent_cap.is_none() && rule.source_cap == source {
-            return Some(rule.result);
-        }
+    // Second pass: standalone rule on source_cap (O(1) table lookup).
+    if let Some(cat) = standalone_lookup(source) {
+        return Some(cat);
     }
     // Third pass: if `adjacent` is given but the pair didn't hit,
     // try the standalone rule on adjacent_cap so a CODE_EXEC + UNRELATED
     // pair still reaches `Rce`.
     if let Some(adj) = adjacent {
-        for rule in IMPACT_LATTICE {
-            if rule.adjacent_cap.is_none() && rule.source_cap == adj {
-                return Some(rule.result);
-            }
+        if let Some(cat) = standalone_lookup(adj) {
+            return Some(cat);
         }
     }
     None

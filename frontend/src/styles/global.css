@@ -8793,3 +8793,122 @@ input[type='checkbox'] {
 [data-theme='light'] .code-modal-title {
   color: var(--text);
 }
+
+/* SurfacePage */
+.surface-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.surface-header h1 {
+  margin: 0;
+}
+.surface-header-summary {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+.surface-filter-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  flex-wrap: wrap;
+}
+.surface-filter-input {
+  flex: 1 1 220px;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+.surface-filter-select {
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-1);
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+.surface-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(320px, 1.4fr);
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.surface-node-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.surface-node-list-empty {
+  color: var(--text-tertiary);
+}
+.surface-sidebar {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2);
+  padding: var(--space-4);
+  background: var(--surface-1);
+}
+.surface-node-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-radius: var(--radius-2);
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.surface-node-card-meta {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+.surface-node-card-title {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+.surface-node-card-subtitle {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+.surface-node-card-loc {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}
+.surface-neighbor-empty {
+  color: var(--text-tertiary);
+}
+.surface-neighbor-title {
+  margin-top: 0;
+}
+.surface-neighbor-subtitle {
+  color: var(--text-secondary);
+  margin-top: 0;
+}
+.surface-neighbor-edges {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.surface-neighbor-edge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+}
+.surface-neighbor-edge-kind {
+  padding: 2px 6px;
+  border-radius: var(--radius-1);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+.surface-neighbor-edge-loc {
+  font-size: var(--text-2xs);
+  color: var(--text-tertiary);
+}

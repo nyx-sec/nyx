@@ -163,7 +163,7 @@ impl ChainFinding {
         if verdict.status == VerifyStatus::Inconclusive {
             self.severity = self.severity.downgraded();
             let reason = match &verdict.inconclusive_reason {
-                Some(r) => format!("composite reverification inconclusive: {r:?}"),
+                Some(r) => format!("composite reverification inconclusive: {r}"),
                 None => match verdict.detail.as_deref() {
                     Some(d) if !d.is_empty() => {
                         format!("composite reverification inconclusive: {d}")

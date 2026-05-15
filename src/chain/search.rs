@@ -217,8 +217,24 @@ fn compose_chain(
     let sink_cap = sole_cap(sink.cap_bits)?;
     let (impact, member_impacts) =
         resolve_impact(&path, sink_cap, entry, local_listener_present)?;
-    Some(build_chain(entry, sink, &path, impact, &member_impacts))
+    let mut chain = build_chain(entry, sink, &path, impact, &member_impacts);
+    // SSRF + LocalListener refinement (Phase 24 deferred close): when
+    // the implied impact is `InternalNetworkAccess` AND the SurfaceMap
+    // exposes a loopback listener, the chain is more concrete than the
+    // bare lattice match — lift the score so it ranks above SSRF chains
+    // without a corroborating in-process target.
+    if impact == ImpactCategory::InternalNetworkAccess && local_listener_present {
+        chain.score *= LOCAL_LISTENER_BOOST;
+    }
+    Some(chain)
 }
+
+/// Score multiplier applied when an `InternalNetworkAccess` chain has
+/// a corroborating loopback listener in the SurfaceMap.  Calibrated to
+/// lift the chain above an otherwise-identical SSRF chain that lacks
+/// the listener context, without overtaking strictly more severe
+/// categories.
+const LOCAL_LISTENER_BOOST: f64 = 1.5;
 
 /// Pick the lowest-bit single [`Cap`] from `bits`, or `None` when no
 /// bit is set.  Sinks in the SurfaceMap may carry multi-bit
@@ -555,6 +571,61 @@ mod tests {
             let again_hashes: Vec<u64> = again.iter().map(|c| c.stable_hash).collect();
             assert_eq!(again_hashes, first_hashes);
         }
+    }
+
+    #[test]
+    fn ssrf_with_local_listener_scores_higher_than_without() {
+        use crate::surface::{DataStore, DataStoreKind};
+        let edge = || -> ChainEdge {
+            edge_with(
+                "app.py",
+                10,
+                "taint-ssrf",
+                Cap::SSRF,
+                "/fetch",
+                HttpMethod::POST,
+                Feasibility::Confirmed,
+            )
+        };
+        let mut surface_no_listener = SurfaceMap::new();
+        surface_no_listener.nodes.push(entry("app.py", "/fetch", false));
+        surface_no_listener
+            .nodes
+            .push(sink("app.py", 20, "requests.get", Cap::SSRF));
+        let baseline = find_chains(
+            &[edge()],
+            &surface_no_listener,
+            ChainSearchConfig {
+                max_depth: 4,
+                min_score: 0.0,
+            },
+        );
+        assert_eq!(baseline.len(), 1);
+        assert_eq!(baseline[0].implied_impact, ImpactCategory::InternalNetworkAccess);
+
+        let mut surface_with_listener = surface_no_listener.clone();
+        surface_with_listener
+            .nodes
+            .push(SurfaceNode::DataStore(DataStore {
+                location: loc("app.py", 5),
+                kind: DataStoreKind::KeyValue,
+                label: "redis://127.0.0.1:6379".into(),
+            }));
+        let boosted = find_chains(
+            &[edge()],
+            &surface_with_listener,
+            ChainSearchConfig {
+                max_depth: 4,
+                min_score: 0.0,
+            },
+        );
+        assert_eq!(boosted.len(), 1);
+        assert_eq!(boosted[0].implied_impact, ImpactCategory::InternalNetworkAccess);
+        let ratio = boosted[0].score / baseline[0].score;
+        assert!(
+            (ratio - LOCAL_LISTENER_BOOST).abs() < 1e-9,
+            "expected ×{LOCAL_LISTENER_BOOST} boost, got ratio={ratio}"
+        );
     }
 
     #[test]
