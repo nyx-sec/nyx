@@ -180,19 +180,22 @@ mod tests {
     use crate::symbol::Lang;
 
     #[test]
-    fn build_unsupported_lang_returns_err() {
-        // C is not supported (no emitter exists for it).
+    fn build_unsupported_entry_kind_returns_err() {
+        // The Python emitter advertises a specific entry-kind set; an
+        // unsupported entry kind short-circuits with
+        // [`UnsupportedReason::EntryKindUnsupported`] before any harness
+        // source is generated.
         let spec = HarnessSpec {
             finding_id: "0000000000000001".into(),
-            entry_file: "main.c".into(),
-            entry_name: "handleRequest".into(),
-            entry_kind: EntryKind::Function,
-            lang: Lang::C,
-            toolchain_id: "c-stable".into(),
+            entry_file: "src/app.py".into(),
+            entry_name: "handler".into(),
+            entry_kind: EntryKind::LibraryApi,
+            lang: Lang::Python,
+            toolchain_id: "python-3".into(),
             payload_slot: PayloadSlot::Param(0),
             expected_cap: Cap::SQL_QUERY,
             constraint_hints: vec![],
-            sink_file: "main.c".into(),
+            sink_file: "src/app.py".into(),
             sink_line: 5,
             spec_hash: "0000000000000000".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,

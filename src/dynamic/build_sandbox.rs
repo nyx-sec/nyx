@@ -808,6 +808,165 @@ fn compute_php_lockfile_hash(workdir: &Path) -> String {
     format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
 }
 
+// ── C build sandbox ───────────────────────────────────────────────────────────
+
+/// Prepare a compiled C binary for `spec`.
+///
+/// Checks a build cache keyed on `(main.c + entry.c hash, "c", toolchain_id)`.
+/// On a cache hit returns immediately; otherwise runs
+/// `cc -O0 -g -o nyx_harness main.c` in `workdir`.
+///
+/// Build isolation is NOT yet implemented (deferred). `cc` runs on the host.
+pub fn prepare_c(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
+    let source_hash = compute_c_source_hash(workdir);
+    let cache_path = build_cache_path(&source_hash, "c", &spec.toolchain_id)?;
+
+    let binary = cache_path.join("nyx_harness");
+    if binary.exists() {
+        return Ok(BuildResult {
+            venv_path: cache_path,
+            cache_hit: true,
+            duration: std::time::Duration::ZERO,
+        });
+    }
+
+    let start = std::time::Instant::now();
+    const MAX_ATTEMPTS: u32 = 2;
+    const BACKOFF: [u64; 2] = [1, 4];
+    let mut last_err = String::new();
+
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
+        }
+        let _ = std::fs::remove_dir_all(&cache_path);
+        std::fs::create_dir_all(&cache_path)?;
+
+        match try_build_c_binary(workdir, &binary) {
+            Ok(()) => {
+                return Ok(BuildResult {
+                    venv_path: cache_path,
+                    cache_hit: false,
+                    duration: start.elapsed(),
+                });
+            }
+            Err(e) => {
+                last_err = e;
+                let _ = std::fs::remove_file(&binary);
+            }
+        }
+    }
+
+    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+}
+
+fn try_build_c_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
+    let cc_bin = std::env::var("NYX_CC_BIN").unwrap_or_else(|_| "cc".to_owned());
+    let output = Command::new(&cc_bin)
+        .args(["-O0", "-g", "-o", binary_dest.to_str().unwrap_or("nyx_harness"), "main.c"])
+        .current_dir(workdir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .output()
+        .map_err(|e| format!("cc: {e}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(())
+}
+
+fn compute_c_source_hash(workdir: &Path) -> String {
+    let mut h = Hasher::new();
+    for fname in &["main.c", "entry.c", "Makefile"] {
+        if let Ok(content) = std::fs::read(workdir.join(fname)) {
+            h.update(fname.as_bytes());
+            h.update(&content);
+        }
+    }
+    let out = h.finalize();
+    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+}
+
+// ── C++ build sandbox ─────────────────────────────────────────────────────────
+
+/// Prepare a compiled C++ binary for `spec`.
+pub fn prepare_cpp(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
+    let source_hash = compute_cpp_source_hash(workdir);
+    let cache_path = build_cache_path(&source_hash, "cpp", &spec.toolchain_id)?;
+
+    let binary = cache_path.join("nyx_harness");
+    if binary.exists() {
+        return Ok(BuildResult {
+            venv_path: cache_path,
+            cache_hit: true,
+            duration: std::time::Duration::ZERO,
+        });
+    }
+
+    let start = std::time::Instant::now();
+    const MAX_ATTEMPTS: u32 = 2;
+    const BACKOFF: [u64; 2] = [1, 4];
+    let mut last_err = String::new();
+
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
+        }
+        let _ = std::fs::remove_dir_all(&cache_path);
+        std::fs::create_dir_all(&cache_path)?;
+
+        match try_build_cpp_binary(workdir, &binary) {
+            Ok(()) => {
+                return Ok(BuildResult {
+                    venv_path: cache_path,
+                    cache_hit: false,
+                    duration: start.elapsed(),
+                });
+            }
+            Err(e) => {
+                last_err = e;
+                let _ = std::fs::remove_file(&binary);
+            }
+        }
+    }
+
+    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+}
+
+fn try_build_cpp_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
+    let cxx_bin = std::env::var("NYX_CXX_BIN").unwrap_or_else(|_| {
+        // Prefer c++ which resolves to the system default compiler driver.
+        "c++".to_owned()
+    });
+    let output = Command::new(&cxx_bin)
+        .args(["-O0", "-g", "-std=c++17", "-o", binary_dest.to_str().unwrap_or("nyx_harness"), "main.cpp"])
+        .current_dir(workdir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .output()
+        .map_err(|e| format!("c++: {e}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    Ok(())
+}
+
+fn compute_cpp_source_hash(workdir: &Path) -> String {
+    let mut h = Hasher::new();
+    for fname in &["main.cpp", "entry.cpp", "CMakeLists.txt"] {
+        if let Ok(content) = std::fs::read(workdir.join(fname)) {
+            h.update(fname.as_bytes());
+            h.update(&content);
+        }
+    }
+    let out = h.finalize();
+    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+}
+
 // ── Docker-isolated build step functions ─────────────────────────────────────
 //
 // Each function runs the language's build tool inside a Docker container with

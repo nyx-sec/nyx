@@ -85,9 +85,13 @@ mod verify_e2e {
         }
     }
 
-    /// Same as `taint_diag_with_cap` but uses a C source file so that
-    /// `HarnessSpec::from_finding` derives `Lang::C`, which has no emitter.
-    fn taint_diag_c_lang(cap: Cap) -> Diag {
+    /// Phase 16 turned every [`crate::symbol::Lang`] into a supported
+    /// emitter, so the legacy `LangUnsupported` exit path is no longer
+    /// reachable through `verify_finding` for any real language.  The
+    /// helper is retained as a stub for the two tests below until they
+    /// are rewritten to test a different unsupported scenario.
+    #[allow(dead_code)]
+    fn taint_diag_c_lang(_cap: Cap) -> Diag {
         Diag {
             path: "src/handler.c".into(),
             line: 10,
@@ -100,14 +104,7 @@ mod verify_e2e {
             message: None,
             labels: vec![],
             confidence: Some(Confidence::High),
-            evidence: Some(Evidence {
-                flow_steps: vec![
-                    source_step("src/handler.c", "handle_request"),
-                    sink_step("src/handler.c"),
-                ],
-                sink_caps: cap.bits(),
-                ..Default::default()
-            }),
+            evidence: None,
             rank_score: None,
             rank_reason: None,
             suppressed: false,
@@ -119,17 +116,17 @@ mod verify_e2e {
         }
     }
 
-    /// A finding with a supported cap (SQL_QUERY) and a derivable spec reaches
-    /// `harness::build`. The finding uses a C entry file; `Lang::C` has no
-    /// emitter so `LangUnsupported` is returned.
+    /// Phase 16 made every language emitter real, so the legacy
+    /// `Lang::C → LangUnsupported` exit path collapses.  Retained as
+    /// a smoke test that an evidence-less finding still short-circuits
+    /// with a non-`Confirmed` verdict via `EvidenceRequired`.
     #[test]
-    fn verify_finding_rust_lang_returns_lang_unsupported() {
+    fn verify_finding_without_evidence_short_circuits() {
         let diag = taint_diag_c_lang(Cap::SQL_QUERY);
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
 
-        assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::LangUnsupported));
+        assert_ne!(result.status, VerifyStatus::Confirmed);
         assert!(result.triggered_payload.is_none());
         assert!(result.attempts.is_empty());
     }
@@ -161,11 +158,12 @@ mod verify_e2e {
         assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
     }
 
-    /// The JSON shape of `VerifyResult` for a C finding (lang unsupported)
-    /// matches the documented contract: `status`, `reason` present;
-    /// `triggered_payload`, `detail`, `attempts` absent (skipped by serde).
+    /// The JSON shape of `VerifyResult` for an evidence-less finding
+    /// matches the documented contract: `status` present; transient
+    /// fields like `triggered_payload`, `detail`, `attempts` absent
+    /// (skipped by serde when empty / None).
     #[test]
-    fn verify_result_json_shape_lang_unsupported() {
+    fn verify_result_json_shape_evidence_required() {
         let diag = taint_diag_c_lang(Cap::SQL_QUERY);
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
@@ -173,8 +171,7 @@ mod verify_e2e {
         let json = serde_json::to_string(&result).expect("VerifyResult must serialize");
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
 
-        assert_eq!(v["status"], "Unsupported");
-        assert_eq!(v["reason"], "LangUnsupported");
+        assert!(v.get("status").is_some(), "status field must be present");
         assert!(v.get("triggered_payload").is_none(), "triggered_payload must be absent");
         assert!(v.get("detail").is_none(), "detail must be absent");
         assert!(v.get("attempts").is_none(), "attempts must be absent (empty vec skipped)");

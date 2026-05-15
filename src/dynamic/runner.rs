@@ -220,6 +220,46 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                 _ => {}
             }
         }
+        Lang::C => {
+            // Compile the harness binary with `cc -o nyx_harness main.c`.
+            match build_sandbox::prepare_c(spec, &harness.workdir) {
+                Ok(build_result) => {
+                    let binary = build_result.venv_path.join("nyx_harness");
+                    if binary.exists() {
+                        harness.command = vec![binary.to_string_lossy().into_owned()];
+                    } else {
+                        let fallback = harness.workdir.join("nyx_harness");
+                        if fallback.exists() {
+                            harness.command = vec![fallback.to_string_lossy().into_owned()];
+                        }
+                    }
+                }
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                Err(_) => {}
+            }
+        }
+        Lang::Cpp => {
+            // Compile the harness binary with `c++ -o nyx_harness main.cpp`.
+            match build_sandbox::prepare_cpp(spec, &harness.workdir) {
+                Ok(build_result) => {
+                    let binary = build_result.venv_path.join("nyx_harness");
+                    if binary.exists() {
+                        harness.command = vec![binary.to_string_lossy().into_owned()];
+                    } else {
+                        let fallback = harness.workdir.join("nyx_harness");
+                        if fallback.exists() {
+                            harness.command = vec![fallback.to_string_lossy().into_owned()];
+                        }
+                    }
+                }
+                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
+                    return Err(RunError::BuildFailed { stderr, attempts });
+                }
+                Err(_) => {}
+            }
+        }
         _ => {
             // No build step for other languages.
         }

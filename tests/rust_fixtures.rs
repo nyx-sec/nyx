@@ -276,3 +276,175 @@ mod rust_fixture_tests {
         }
     }
 }
+
+// ── Phase 16: per-shape acceptance ───────────────────────────────────────────
+
+#[cfg(feature = "dynamic")]
+mod phase16_shape_tests {
+    use crate::common::fixture_harness::run_shape_fixture_lang;
+    use nyx_scanner::dynamic::spec::PayloadSlot;
+    use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+
+    fn rust_available() -> bool {
+        std::process::Command::new("cargo")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn assert_confirmed(shape: &str, result: &VerifyResult) {
+        assert_eq!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "{shape}/vuln: expected Confirmed, got {:?} ({:?})",
+            result.status,
+            result.detail,
+        );
+    }
+
+    fn assert_not_confirmed(shape: &str, result: &VerifyResult) {
+        assert!(
+            matches!(
+                result.status,
+                VerifyStatus::NotConfirmed | VerifyStatus::Inconclusive
+            ),
+            "{shape}/benign: expected NotConfirmed (or Inconclusive), got {:?} ({:?})",
+            result.status,
+            result.detail,
+        );
+        assert_ne!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "{shape}/benign: must not confirm",
+        );
+    }
+
+    fn run(
+        shape: &str,
+        file: &str,
+        func: &str,
+        cap: Cap,
+        sink_line: u32,
+        kind: EntryKind,
+        slot: PayloadSlot,
+    ) -> VerifyResult {
+        run_shape_fixture_lang(
+            Lang::Rust, "rust", shape, file, func, cap, sink_line, kind, slot,
+        )
+    }
+
+    // ── actix_route ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn actix_route_vuln_is_confirmed() {
+        if !rust_available() {
+            eprintln!("SKIP: cargo not available");
+            return;
+        }
+        let r = run(
+            "actix_route", "vuln.rs", "handler", Cap::CODE_EXEC, 16,
+            EntryKind::HttpRoute, PayloadSlot::Param(0),
+        );
+        assert_confirmed("actix_route", &r);
+    }
+
+    #[test]
+    fn actix_route_benign_not_confirmed() {
+        if !rust_available() {
+            eprintln!("SKIP: cargo not available");
+            return;
+        }
+        let r = run(
+            "actix_route", "benign.rs", "handler", Cap::CODE_EXEC, 14,
+            EntryKind::HttpRoute, PayloadSlot::Param(0),
+        );
+        assert_not_confirmed("actix_route", &r);
+    }
+
+    // ── axum_handler ────────────────────────────────────────────────────────
+
+    #[test]
+    fn axum_handler_vuln_is_confirmed() {
+        if !rust_available() {
+            eprintln!("SKIP: cargo not available");
+            return;
+        }
+        let r = run(
+            "axum_handler", "vuln.rs", "handler", Cap::CODE_EXEC, 15,
+            EntryKind::HttpRoute, PayloadSlot::Param(0),
+        );
+        assert_confirmed("axum_handler", &r);
+    }
+
+    #[test]
+    fn axum_handler_benign_not_confirmed() {
+        if !rust_available() {
+            eprintln!("SKIP: cargo not available");
+            return;
+        }
+        let r = run(
+            "axum_handler", "benign.rs", "handler", Cap::CODE_EXEC, 13,
+            EntryKind::HttpRoute, PayloadSlot::Param(0),
+        );
+        assert_not_confirmed("axum_handler", &r);
+    }
+
+    // ── clap_cli ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn clap_cli_vuln_is_confirmed() {
+        if !rust_available() {
+            eprintln!("SKIP: cargo not available");
+            return;
+        }
+        let r = run(
+            "clap_cli", "vuln.rs", "run", Cap::CODE_EXEC, 17,
+            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+        );
+        assert_confirmed("clap_cli", &r);
+    }
+
+    #[test]
+    fn clap_cli_benign_not_confirmed() {
+        if !rust_available() {
+            eprintln!("SKIP: cargo not available");
+            return;
+        }
+        let r = run(
+            "clap_cli", "benign.rs", "run", Cap::CODE_EXEC, 13,
+            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+        );
+        assert_not_confirmed("clap_cli", &r);
+    }
+
+    // ── libfuzzer_target ────────────────────────────────────────────────────
+
+    #[test]
+    fn libfuzzer_target_vuln_is_confirmed() {
+        if !rust_available() {
+            eprintln!("SKIP: cargo not available");
+            return;
+        }
+        let r = run(
+            "libfuzzer_target", "vuln.rs", "fuzz_target", Cap::CODE_EXEC, 15,
+            EntryKind::LibraryApi, PayloadSlot::Param(0),
+        );
+        assert_confirmed("libfuzzer_target", &r);
+    }
+
+    #[test]
+    fn libfuzzer_target_benign_not_confirmed() {
+        if !rust_available() {
+            eprintln!("SKIP: cargo not available");
+            return;
+        }
+        let r = run(
+            "libfuzzer_target", "benign.rs", "fuzz_target", Cap::CODE_EXEC, 13,
+            EntryKind::LibraryApi, PayloadSlot::Param(0),
+        );
+        assert_not_confirmed("libfuzzer_target", &r);
+    }
+}

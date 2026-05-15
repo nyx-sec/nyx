@@ -1,22 +1,108 @@
-//! C harness emitter (stub).
+//! C harness emitter.
 //!
-//! No harness source is generated yet — `emit` returns
-//! [`UnsupportedReason::LangUnsupported`].  The module exists so that
-//! [`crate::dynamic::lang::entry_kinds_supported`] can advertise the entry
-//! kinds Track B will deliver (Phase 16: `main(argc, argv)`,
-//! `LLVMFuzzerTestOneInput`, free functions with `(const char*, size_t)` or
-//! `(int, char**)` shapes) and so the verifier can surface
-//! `Inconclusive(EntryKindUnsupported { … })` instead of dropping C findings.
+//! Phase 16 (Track B Rust + C/C++ vertical) replaces the stub body with
+//! dispatch over [`CShape`] — the cross product of [`EntryKind`] and a
+//! lightweight per-file shape detector that inspects the entry file for
+//! `main(int argc, char *argv[])`, libFuzzer's `LLVMFuzzerTestOneInput`,
+//! and free functions with `(const char*, size_t)` signatures.
+//!
+//! Each shape emits a single `main.c` that:
+//! 1. Reads the payload from `NYX_PAYLOAD` / `NYX_PAYLOAD_B64` env vars.
+//! 2. `#include`s `entry.c` (the user's vulnerable code) and dispatches
+//!    via the per-shape adapter.
+//!
+//! Build step: `prepare_c()` in `build_sandbox.rs` runs
+//! `cc -O0 -o nyx_harness main.c` in the workdir.
+//!
+//! File layout in workdir:
+//! ```text
+//! main.c          ← harness entry point (generated, includes entry.c)
+//! entry.c         ← user entry source (copied from project)
+//! Makefile        ← optional, generated for reference
+//! ```
+//!
+//! Payload slot support:
+//! - `PayloadSlot::Param(0)` — pass payload as the first parameter (string
+//!   or `(buf, len)` pair depending on shape).
+//! - `PayloadSlot::EnvVar(name)` — set env var before invoking entry.
+//! - `PayloadSlot::Argv(n)` — `main(argc, argv)` shape: appended to argv.
 
 use crate::dynamic::lang::{HarnessSource, LangEmitter};
-use crate::dynamic::spec::{EntryKind, HarnessSpec};
+use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
+use std::path::PathBuf;
 
 /// Zero-sized [`LangEmitter`] handle for C.
 pub struct CEmitter;
 
-/// Entry kinds the C emitter intends to support once Phase 16 lands.
-const SUPPORTED: &[EntryKind] = &[EntryKind::Function];
+/// Entry kinds the C emitter understands after Phase 16.
+///
+/// `Function` covers free functions (libfuzzer-style + plain (const
+/// char*, size_t)).  `CliSubcommand` covers `main(argc, argv)`.
+/// `LibraryApi` covers libFuzzer `LLVMFuzzerTestOneInput`.
+const SUPPORTED: &[EntryKind] = &[
+    EntryKind::Function,
+    EntryKind::CliSubcommand,
+    EntryKind::LibraryApi,
+];
+
+// ── Phase 16: shape detector ─────────────────────────────────────────────────
+
+/// Concrete per-file shape resolved by reading the entry source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CShape {
+    /// `int main(int argc, char *argv[])`.  Harness embeds payload into
+    /// argv and calls `main(argc, argv)` directly.
+    MainArgv,
+    /// libFuzzer-style: `int LLVMFuzzerTestOneInput(const uint8_t *data,
+    /// size_t size)`.  Harness invokes with `payload` bytes + length.
+    LibfuzzerEntry,
+    /// Free function with `(const char *, size_t)` or `(const char *)`
+    /// signature.  Harness invokes directly.
+    FreeFn,
+}
+
+impl CShape {
+    /// Detect the shape from `(spec, source)`.
+    pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
+        let entry = spec.entry_name.as_str();
+        let kind = spec.entry_kind;
+
+        let has_main_argv = (source.contains("int main(") || source.contains("int main ("))
+            && (source.contains("argc") || source.contains("char *argv")
+                || source.contains("char* argv") || source.contains("char **argv"));
+        let has_libfuzzer = source.contains("LLVMFuzzerTestOneInput") || entry == "LLVMFuzzerTestOneInput";
+
+        if has_libfuzzer {
+            return Self::LibfuzzerEntry;
+        }
+        if entry == "main" || has_main_argv {
+            return Self::MainArgv;
+        }
+        match kind {
+            EntryKind::CliSubcommand => Self::MainArgv,
+            EntryKind::LibraryApi => Self::LibfuzzerEntry,
+            _ => Self::FreeFn,
+        }
+    }
+}
+
+/// Public wrapper: detect the shape for a finalised `HarnessSpec`, reading
+/// the entry file from disk.
+pub fn detect_shape(spec: &HarnessSpec) -> CShape {
+    let src = read_entry_source(&spec.entry_file);
+    CShape::detect(spec, &src)
+}
+
+fn read_entry_source(entry_file: &str) -> String {
+    let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
+    for path in &candidates {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            return s;
+        }
+    }
+    String::new()
+}
 
 /// Source of the `__nyx_probe` shim for the (future) C harness (Phase 06 —
 /// Track C.1).  Variadic over `const char *` args; hand-rolled JSON keeps
@@ -208,8 +294,8 @@ static void __nyx_install_crash_guard(const char *sink_callee) {
 }
 
 impl LangEmitter for CEmitter {
-    fn emit(&self, _spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
-        Err(UnsupportedReason::LangUnsupported)
+    fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+        emit(spec)
     }
 
     fn entry_kinds_supported(&self) -> &'static [EntryKind] {
@@ -218,18 +304,198 @@ impl LangEmitter for CEmitter {
 
     fn entry_kind_hint(&self, attempted: EntryKind) -> String {
         format!(
-            "c emitter is a stub; once Phase 16 (Track B Rust + C/C++ vertical) lands it will support {SUPPORTED:?} plus libFuzzer + main(argc, argv) shapes — attempted `EntryKind::{attempted}`"
+            "c emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 16 shape dispatch (main / libFuzzer / free function)"
         )
     }
+}
+
+/// Emit a C harness for `spec`.
+pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+    let shape = detect_shape(spec);
+
+    match (&spec.payload_slot, shape) {
+        (PayloadSlot::Param(0) | PayloadSlot::EnvVar(_), _) => {}
+        (PayloadSlot::Argv(_), CShape::MainArgv) => {}
+        _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
+    }
+
+    let main_c = generate_main_c(spec, shape);
+    let makefile = generate_makefile();
+
+    Ok(HarnessSource {
+        source: main_c,
+        filename: "main.c".into(),
+        command: vec!["./nyx_harness".into()],
+        extra_files: vec![("Makefile".into(), makefile)],
+        entry_subpath: Some("entry.c".into()),
+    })
+}
+
+/// Generate the harness `main.c` for the resolved shape.
+fn generate_main_c(spec: &HarnessSpec, shape: CShape) -> String {
+    let invocation = invoke_for_shape(spec, shape);
+
+    format!(
+        r#"/* Nyx dynamic harness — auto-generated, do not edit (Phase 16 — CShape::{shape:?}). */
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Forward declarations: the entry file is appended below via `#include`
+ * so the harness can call user-defined functions without a separate
+ * compilation unit. */
+static char *nyx_payload(void);
+
+#include "entry.c"
+
+int main(int argc, char *argv[]) {{
+    (void)argc; (void)argv;
+    char *payload = nyx_payload();
+    if (!payload) payload = (char*)"";
+
+{invocation}
+    /* Intentionally no free(payload): payload is either a strdup/b64_decode
+     * heap pointer or a string literal substituted above when allocation
+     * failed.  free() on the literal is UB; the process exits immediately
+     * so the kernel reclaims the heap copy. */
+    return 0;
+}}
+
+/* Minimal base64 decoder (no external deps). */
+static int nyx_b64_value(unsigned char c) {{
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}}
+
+static char *nyx_b64_decode(const char *in) {{
+    size_t n = strlen(in);
+    char *out = (char *)malloc(n + 1);
+    if (!out) return NULL;
+    size_t outi = 0;
+    int buf = 0, bits = 0;
+    for (size_t i = 0; i < n; ++i) {{
+        if (in[i] == '\n' || in[i] == '\r' || in[i] == '=') continue;
+        int v = nyx_b64_value((unsigned char)in[i]);
+        if (v < 0) {{ free(out); return NULL; }}
+        buf = (buf << 6) | v;
+        bits += 6;
+        if (bits >= 8) {{
+            bits -= 8;
+            out[outi++] = (char)((buf >> bits) & 0xFF);
+        }}
+    }}
+    out[outi] = '\0';
+    return out;
+}}
+
+static char *nyx_payload(void) {{
+    const char *v = getenv("NYX_PAYLOAD");
+    if (v && *v) {{
+        return strdup(v);
+    }}
+    const char *b64 = getenv("NYX_PAYLOAD_B64");
+    if (b64 && *b64) {{
+        return nyx_b64_decode(b64);
+    }}
+    return strdup("");
+}}
+"#,
+        shape = shape,
+        invocation = invocation,
+    )
+}
+
+fn invoke_for_shape(spec: &HarnessSpec, shape: CShape) -> String {
+    let entry_fn = &spec.entry_name;
+    match shape {
+        CShape::FreeFn => match &spec.payload_slot {
+            PayloadSlot::EnvVar(name) => format!(
+                "    setenv({name:?}, payload, 1);\n    {entry_fn}(payload, strlen(payload));\n",
+            ),
+            _ => format!("    {entry_fn}(payload, strlen(payload));\n"),
+        },
+        CShape::LibfuzzerEntry => {
+            // libFuzzer: `int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)`.
+            format!(
+                "    {entry_fn}((const uint8_t *)payload, strlen(payload));\n",
+                entry_fn = entry_fn,
+            )
+        }
+        CShape::MainArgv => {
+            // Rename the user-supplied entry to `nyx_entry_main` via macro so
+            // it does not collide with the harness `main` symbol when the
+            // entry source defines `int main(...)`.  Fixture authors should
+            // expose the entry as a function named in `spec.entry_name`.
+            let pad = match &spec.payload_slot {
+                PayloadSlot::Argv(n) => *n,
+                _ => 0,
+            };
+            let mut buf = String::from("    char *new_argv[8];\n");
+            buf.push_str("    int new_argc = 0;\n");
+            buf.push_str("    new_argv[new_argc++] = (char*)\"nyx_harness\";\n");
+            for _ in 0..pad {
+                buf.push_str("    new_argv[new_argc++] = (char*)\"\";\n");
+            }
+            buf.push_str("    new_argv[new_argc++] = payload;\n");
+            buf.push_str("    new_argv[new_argc] = NULL;\n");
+            buf.push_str(&format!("    {entry_fn}(new_argc, new_argv);\n"));
+            buf
+        }
+    }
+}
+
+fn generate_makefile() -> String {
+    r#"# Phase 16 — reference Makefile, not used by the runner (the build sandbox
+# calls cc directly).  Kept so reproductions can re-build the harness by hand.
+CC ?= cc
+CFLAGS ?= -O0 -g
+all: nyx_harness
+nyx_harness: main.c entry.c
+	$(CC) $(CFLAGS) -o nyx_harness main.c
+clean:
+	rm -f nyx_harness
+"#
+    .to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use crate::labels::Cap;
+    use crate::symbol::Lang;
+
+    fn make_spec(payload_slot: PayloadSlot) -> HarnessSpec {
+        HarnessSpec {
+            finding_id: "c00000000000001".into(),
+            entry_file: "entry.c".into(),
+            entry_name: "run".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::C,
+            toolchain_id: "gcc-stable".into(),
+            payload_slot,
+            expected_cap: Cap::CODE_EXEC,
+            constraint_hints: vec![],
+            sink_file: "entry.c".into(),
+            sink_line: 10,
+            spec_hash: "ctest0000000001".into(),
+            derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+        }
+    }
 
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!CEmitter.entry_kinds_supported().is_empty());
+        assert!(CEmitter.entry_kinds_supported().contains(&EntryKind::Function));
+        assert!(CEmitter.entry_kinds_supported().contains(&EntryKind::CliSubcommand));
+        assert!(CEmitter.entry_kinds_supported().contains(&EntryKind::LibraryApi));
     }
 
     #[test]
@@ -237,5 +503,68 @@ mod tests {
         let hint = CEmitter.entry_kind_hint(EntryKind::LibraryApi);
         assert!(hint.contains("LibraryApi"));
         assert!(hint.contains("Phase 16"));
+    }
+
+    #[test]
+    fn shape_detect_main_argv() {
+        let src = "int main(int argc, char *argv[]) { return 0; }";
+        let mut spec = make_spec(PayloadSlot::Argv(0));
+        spec.entry_kind = EntryKind::CliSubcommand;
+        spec.entry_name = "main".into();
+        assert_eq!(CShape::detect(&spec, src), CShape::MainArgv);
+    }
+
+    #[test]
+    fn shape_detect_libfuzzer_entry() {
+        let src = "int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) { return 0; }";
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_kind = EntryKind::LibraryApi;
+        spec.entry_name = "LLVMFuzzerTestOneInput".into();
+        assert_eq!(CShape::detect(&spec, src), CShape::LibfuzzerEntry);
+    }
+
+    #[test]
+    fn shape_detect_free_fn() {
+        let src = "void run(const char *s, size_t n) { (void)s; (void)n; }";
+        let spec = make_spec(PayloadSlot::Param(0));
+        assert_eq!(CShape::detect(&spec, src), CShape::FreeFn);
+    }
+
+    #[test]
+    fn emit_produces_source() {
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        assert_eq!(h.filename, "main.c");
+        assert!(h.source.contains("#include \"entry.c\""));
+        assert!(h.source.contains("run(payload, strlen(payload))"));
+        assert_eq!(h.command, vec!["./nyx_harness"]);
+        assert_eq!(h.entry_subpath, Some("entry.c".to_string()));
+    }
+
+    #[test]
+    fn emit_main_argv_shape_routes_through_new_argv() {
+        let mut spec = make_spec(PayloadSlot::Argv(0));
+        spec.entry_kind = EntryKind::CliSubcommand;
+        spec.entry_name = "nyx_entry_main".into();
+        let h = emit(&spec).unwrap();
+        assert!(h.source.contains("new_argv[new_argc++] = payload"));
+        assert!(h.source.contains("nyx_entry_main(new_argc, new_argv)"));
+    }
+
+    #[test]
+    fn emit_libfuzzer_shape_passes_bytes() {
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.entry_kind = EntryKind::LibraryApi;
+        spec.entry_name = "LLVMFuzzerTestOneInput".into();
+        let h = emit(&spec).unwrap();
+        assert!(h.source.contains("LLVMFuzzerTestOneInput((const uint8_t *)payload, strlen(payload))"));
+    }
+
+    #[test]
+    fn emit_makefile_in_extra_files() {
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        let mk = h.extra_files.iter().find(|(n, _)| n == "Makefile").expect("Makefile must be staged");
+        assert!(mk.1.contains("nyx_harness: main.c entry.c"));
     }
 }

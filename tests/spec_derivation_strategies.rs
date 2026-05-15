@@ -319,17 +319,17 @@ mod spec_strategies {
     /// emitter's supported list surface as
     /// `Inconclusive(EntryKindUnsupported { lang, attempted, supported, hint })`
     /// rather than `Unsupported`. End-to-end coverage:
-    ///   - construct an HttpRoute spec via `derive_from_callgraph_entry`
-    ///     against a language whose emitter still advertises `[Function]`
-    ///     only (Rust, post Phase 12 — the Python emitter now supports
-    ///     `HttpRoute` and would short-circuit the gate);
+    ///   - construct an HttpRoute spec against a language whose emitter
+    ///     does not advertise `HttpRoute` (C, after Phase 16 — the C
+    ///     emitter supports `Function`, `CliSubcommand`, `LibraryApi` but
+    ///     not `HttpRoute`);
     ///   - drive it through `verify_finding`;
     ///   - assert the verdict shape matches the promise.
     #[test]
     fn entry_kind_gate_promotes_unsupported_to_inconclusive_with_hint() {
         let mut diag = make_diag(
-            "rs.http.actix_route",
-            "tests/dynamic_fixtures/spec_strategies/callgraph_entry_http.rs",
+            "c.http.handler",
+            "tests/dynamic_fixtures/spec_strategies/callgraph_entry_http.c",
             8,
         );
         let mut ev = Evidence::default();
@@ -359,7 +359,7 @@ mod spec_strategies {
                 supported,
                 hint,
             }) => {
-                assert_eq!(lang, nyx_scanner::symbol::Lang::Rust);
+                assert_eq!(lang, nyx_scanner::symbol::Lang::C);
                 assert!(matches!(attempted, EntryKind::HttpRoute));
                 assert!(
                     !supported.is_empty(),
@@ -367,7 +367,7 @@ mod spec_strategies {
                 );
                 assert!(
                     supported.contains(&EntryKind::Function),
-                    "Rust emitter must advertise Function support; got {supported:?}"
+                    "C emitter must advertise Function support; got {supported:?}"
                 );
                 assert!(
                     !hint.is_empty(),
