@@ -1708,6 +1708,17 @@ fn runs_config_defaults() {
 }
 
 #[test]
+fn output_config_preserves_chain_constituents_by_default() {
+    // Phase 25 deferred decision (b): the default keeps every constituent
+    // finding in the `findings: [...]` array so existing pipelines see no
+    // behavioural change. Flipping this to `false` is a deliberate breaking
+    // change and must be done explicitly, not silently. Guarding both the
+    // `Default` impl and the serde-default getter so neither drifts alone.
+    assert!(OutputConfig::default().show_chain_constituents);
+    assert!(default_show_chain_constituents());
+}
+
+#[test]
 fn server_config_toml_roundtrip() {
     let toml_str = r#"
         [server]
