@@ -432,11 +432,20 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: CShape) -> String {
             // it does not collide with the harness `main` symbol when the
             // entry source defines `int main(...)`.  Fixture authors should
             // expose the entry as a function named in `spec.entry_name`.
+            //
+            // Heap-allocate `new_argv` so a future `PayloadSlot::Argv(n)` with
+            // `n >= 6` cannot overrun a fixed stack array.  Slots: 1
+            // ("nyx_harness") + pad + 1 (payload) + 1 (NULL terminator).
             let pad = match &spec.payload_slot {
                 PayloadSlot::Argv(n) => *n,
                 _ => 0,
             };
-            let mut buf = String::from("    char *new_argv[8];\n");
+            let slots = pad + 3;
+            let mut buf = String::new();
+            buf.push_str(&format!(
+                "    char **new_argv = (char**)calloc({slots}, sizeof(char*));\n",
+            ));
+            buf.push_str("    if (!new_argv) return 1;\n");
             buf.push_str("    int new_argc = 0;\n");
             buf.push_str("    new_argv[new_argc++] = (char*)\"nyx_harness\";\n");
             for _ in 0..pad {
@@ -445,6 +454,7 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: CShape) -> String {
             buf.push_str("    new_argv[new_argc++] = payload;\n");
             buf.push_str("    new_argv[new_argc] = NULL;\n");
             buf.push_str(&format!("    {entry_fn}(new_argc, new_argv);\n"));
+            buf.push_str("    free(new_argv);\n");
             buf
         }
     }
@@ -549,6 +559,30 @@ mod tests {
         let h = emit(&spec).unwrap();
         assert!(h.source.contains("new_argv[new_argc++] = payload"));
         assert!(h.source.contains("nyx_entry_main(new_argc, new_argv)"));
+    }
+
+    #[test]
+    fn emit_main_argv_uses_heap_allocation_sized_for_pad() {
+        // Phase 16 follow-up: heap-allocate `new_argv` so deep `Argv(n)` slots
+        // cannot overrun a fixed stack array.  Slots = pad + 3
+        // (nyx_harness + pad + payload + NULL).
+        let mut spec = make_spec(PayloadSlot::Argv(0));
+        spec.entry_kind = EntryKind::CliSubcommand;
+        spec.entry_name = "nyx_entry_main".into();
+        let h = emit(&spec).unwrap();
+        assert!(
+            !h.source.contains("char *new_argv[8]"),
+            "fixed-size stack array must be gone — Argv(n>=6) used to overrun",
+        );
+        assert!(h.source.contains("char **new_argv = (char**)calloc(3, sizeof(char*))"));
+        assert!(h.source.contains("free(new_argv);"));
+
+        let mut spec6 = make_spec(PayloadSlot::Argv(6));
+        spec6.entry_kind = EntryKind::CliSubcommand;
+        spec6.entry_name = "nyx_entry_main".into();
+        let h6 = emit(&spec6).unwrap();
+        assert!(h6.source.contains("char **new_argv = (char**)calloc(9, sizeof(char*))"));
+        assert!(h6.source.contains("free(new_argv);"));
     }
 
     #[test]
