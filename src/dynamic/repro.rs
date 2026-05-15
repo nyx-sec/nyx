@@ -7,10 +7,11 @@
 //! ```text
 //! {spec_hash}/
 //!   manifest.json
+//!   toolchain.lock            (Phase 28 — hermeticity manifest)
 //!   entry/
 //!     extracted_source.{ext}
 //!   harness/
-//!     harness.py           (language-specific)
+//!     harness.py              (language-specific)
 //!     Dockerfile.harness
 //!   payload/
 //!     payload.bin
@@ -19,11 +20,26 @@
 //!     options.json
 //!     env.allowlist.json
 //!   expected/
-//!     outcome.json         (redacted SandboxOutcome)
+//!     outcome.json            (redacted SandboxOutcome)
 //!     verdict.json
 //!   reproduce.sh
+//!   docker_pull.sh            (Phase 28 — present when toolchain pinned)
 //!   README.md
 //! ```
+//!
+//! # Phase 28 (Track H.3 — repro hermeticity)
+//!
+//! `toolchain.lock` records the bundle's expected toolchain id alongside a
+//! BLAKE3 hash of every bundle source file (Dockerfile, harness source,
+//! entry source, payload).  `reproduce.sh` reads the lock at startup and
+//! refuses to run in the process backend when the host's resolved
+//! interpreter / compiler does not match the expected toolchain id —
+//! callers who hit this case are expected to drop to `--docker` (which
+//! ignores the host toolchain because the runtime is supplied by the
+//! pinned image).  `docker_pull.sh` is emitted alongside when a digest
+//! pin is available from [`crate::dynamic::toolchain::pinned_image_ref`]
+//! so the bundle can be replayed on a clean machine without manual image
+//! resolution.
 
 use crate::dynamic::sandbox::{SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
@@ -169,6 +185,10 @@ pub fn write(
     // expected/verdict.json
     write_json(&root.join("expected").join("verdict.json"), verdict)?;
 
+    // toolchain.lock (Phase 28 — Track H.3, repro hermeticity)
+    let lock = build_toolchain_lock(spec, &root)?;
+    write_json(&root.join("toolchain.lock"), &lock)?;
+
     // reproduce.sh
     let reproduce_sh = reproduce_script(spec, payload_label);
     let reproduce_path = root.join("reproduce.sh");
@@ -177,6 +197,21 @@ pub fn write(
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&reproduce_path, fs::Permissions::from_mode(0o755))?;
+    }
+
+    // docker_pull.sh — emitted only when the toolchain id is pinned to a
+    // specific image digest by the Phase 19 catalogue.  Operators on a
+    // clean machine run `docker_pull.sh` once before `reproduce.sh --docker`
+    // to pre-warm the image cache; the script is a no-op convenience and
+    // not on the verification critical path.
+    if let Some(image_ref) = crate::dynamic::toolchain::pinned_image_ref(&spec.toolchain_id) {
+        let docker_pull_path = root.join("docker_pull.sh");
+        fs::write(&docker_pull_path, docker_pull_script(image_ref).as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&docker_pull_path, fs::Permissions::from_mode(0o755))?;
+        }
     }
 
     // README.md
@@ -284,6 +319,26 @@ fn reproduce_script(spec: &HarnessSpec, payload_label: &str) -> String {
         _ => "echo 'unsupported language' >&2; exit 2".to_owned(),
     };
 
+    // Toolchain-check command for the process backend.  Returns 0 when the
+    // host has the expected runtime; non-zero when the host is missing the
+    // toolchain and `reproduce.sh` must refuse to run in process mode.
+    //
+    // The check is intentionally coarse — `command -v python3` does not
+    // verify the exact 3.11 vs 3.12 minor — because the toolchain.lock
+    // records the expected id and an operator who reads "PROCESS BACKEND
+    // REFUSED — host toolchain X mismatches expected python-3.11" already
+    // knows what to install.  The fine-grained matching path is via
+    // `reproduce.sh --docker` which sources the runtime from the pinned
+    // image and bypasses the host toolchain entirely.
+    let host_probe_cmd = match spec.lang {
+        Lang::Rust | Lang::Go | Lang::C | Lang::Cpp => "./harness/nyx_harness --help >/dev/null 2>&1 || test -x ./harness/nyx_harness".to_owned(),
+        Lang::Python => "command -v python3".to_owned(),
+        Lang::JavaScript | Lang::TypeScript => "command -v node".to_owned(),
+        Lang::Java => "command -v java".to_owned(),
+        Lang::Php => "command -v php".to_owned(),
+        Lang::Ruby => "command -v ruby".to_owned(),
+    };
+
     // Docker image tag is derived from spec_hash so each finding gets its own image.
     let image_tag = format!("nyx-repro-{}", spec.spec_hash);
 
@@ -296,11 +351,16 @@ fn reproduce_script(spec: &HarnessSpec, payload_label: &str) -> String {
          #   ./reproduce.sh          — run via process backend (direct)\n\
          #   ./reproduce.sh --docker — run via Docker backend (isolated)\n\
          #\n\
-         # Exits 0 when sink_hit matches expected/outcome.json, 1 on mismatch.\n\
+         # Exit codes:\n\
+         #   0  sink_hit matches expected/outcome.json (replay green)\n\
+         #   1  sink_hit mismatch (replay diverged from recorded outcome)\n\
+         #   2  docker requested but unavailable\n\
+         #   3  host toolchain mismatch in process mode (Phase 28 hermeticity)\n\
          set -e\n\
          SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n\
          cd \"$SCRIPT_DIR\"\n\
          PAYLOAD=\"$(cat payload/payload.bin)\"\n\
+         EXPECTED_TOOLCHAIN=\"{expected_toolchain}\"\n\
          EXPECTED_SINK=$(grep -o '\"sink_hit\"[[:space:]]*:[[:space:]]*[a-z]*' \\\n\
            expected/outcome.json | grep -o '[a-z]*$')\n\
          \n\
@@ -315,6 +375,13 @@ fn reproduce_script(spec: &HarnessSpec, payload_label: &str) -> String {
 -e NYX_PAYLOAD=\"$PAYLOAD\" \"$IMAGE\" 2>&1) || ACTUAL=''\n\
            docker rmi \"$IMAGE\" >/dev/null 2>&1 || true\n\
          else\n\
+           # Phase 28 hermeticity check: refuse process-backend replay when\n\
+           # the host is missing the expected toolchain id.  Operators must\n\
+           # either install the toolchain or pass --docker.\n\
+           if ! sh -c '{host_probe_cmd}' >/dev/null 2>&1; then\n\
+             echo \"error: host toolchain does not match expected $EXPECTED_TOOLCHAIN; re-run with --docker\" >&2\n\
+             exit 3\n\
+           fi\n\
            ACTUAL=$(NYX_PAYLOAD=\"$PAYLOAD\" {process_run_cmd} 2>&1) || ACTUAL=''\n\
          fi\n\
          \n\
@@ -334,8 +401,148 @@ fn reproduce_script(spec: &HarnessSpec, payload_label: &str) -> String {
         finding_id = spec.finding_id,
         payload_label = payload_label,
         process_run_cmd = process_run_cmd,
+        host_probe_cmd = host_probe_cmd,
         image_tag = image_tag,
+        expected_toolchain = spec.toolchain_id,
     )
+}
+
+/// Phase 28 — Track H.3.  `docker_pull.sh` pre-pulls the pinned Docker
+/// image identified by [`crate::dynamic::toolchain::pinned_image_ref`]
+/// so an operator on a clean machine can warm the image cache before
+/// `reproduce.sh --docker` fires.  Returns the script body; emission
+/// is gated by the caller on the pinned-image lookup returning `Some`.
+fn docker_pull_script(image_ref: &str) -> String {
+    format!(
+        "#!/bin/sh\n\
+         # Nyx repro — pin-fetch the toolchain image used by this bundle.\n\
+         # Run this once on a fresh machine before `reproduce.sh --docker`.\n\
+         set -e\n\
+         IMAGE=\"{image_ref}\"\n\
+         if ! command -v docker >/dev/null 2>&1; then\n\
+           echo 'error: docker not installed' >&2; exit 2\n\
+         fi\n\
+         if ! docker info >/dev/null 2>&1; then\n\
+           echo 'error: docker daemon not reachable' >&2; exit 2\n\
+         fi\n\
+         docker pull \"$IMAGE\"\n",
+        image_ref = image_ref,
+    )
+}
+
+/// Phase 28 — Track H.3.  Build the `toolchain.lock` JSON for a bundle.
+///
+/// Records:
+/// - the expected toolchain id (`spec.toolchain_id`).
+/// - the pinned image reference, when [`crate::dynamic::toolchain::pinned_image_ref`]
+///   has a digest for this toolchain id (lets `docker_pull.sh` and a CI
+///   replay path resolve the image without re-reading the catalogue).
+/// - a BLAKE3 hash of every file in the bundle that influences the replay
+///   outcome (Dockerfile, harness source, entry source, payload, Cargo.toml
+///   when present).  An operator can re-hash the bundle in place and diff
+///   against the lock to detect tampering.
+fn build_toolchain_lock(spec: &HarnessSpec, root: &Path) -> Result<serde_json::Value, ReproError> {
+    use crate::symbol::Lang;
+
+    let mut files = serde_json::Map::new();
+    let mut record = |rel: &str| -> Result<(), ReproError> {
+        let abs = root.join(rel);
+        if abs.exists() {
+            let bytes = fs::read(&abs)?;
+            let digest = blake3::hash(&bytes);
+            files.insert(rel.to_owned(), serde_json::Value::String(digest.to_hex().to_string()));
+        }
+        Ok(())
+    };
+
+    record("harness/Dockerfile.harness")?;
+    let harness_rel = match spec.lang {
+        Lang::Rust => "harness/src/main.rs".to_owned(),
+        _ => format!("harness/harness.{}", source_ext_for_lang(&spec.lang)),
+    };
+    record(&harness_rel)?;
+    if matches!(spec.lang, Lang::Rust) {
+        record("harness/Cargo.toml")?;
+    }
+    record(&format!("entry/extracted_source.{}", source_ext_for_lang(&spec.lang)))?;
+    record("payload/payload.bin")?;
+
+    let pinned_image = crate::dynamic::toolchain::pinned_image_ref(&spec.toolchain_id);
+    Ok(serde_json::json!({
+        "lock_version": 1,
+        "toolchain_id": spec.toolchain_id,
+        "spec_hash": spec.spec_hash,
+        "pinned_image": pinned_image,
+        "files": serde_json::Value::Object(files),
+    }))
+}
+
+/// Phase 28 — Track H.3.  Outcome of [`replay_bundle`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplayResult {
+    /// `reproduce.sh` exited 0 — replay matched the recorded outcome.
+    Pass,
+    /// `reproduce.sh` exited 1 — replay diverged from the recorded outcome.
+    Mismatch,
+    /// `reproduce.sh` exited 2 — docker requested but unavailable.
+    DockerUnavailable,
+    /// `reproduce.sh` exited 3 — host toolchain mismatched in process mode.
+    ToolchainMismatch,
+    /// Any other non-zero exit code, treated as an unexpected error.  The
+    /// Phase 28 m7 Gate 5 inversion treats this as instability.
+    UnexpectedError {
+        /// Exit code surfaced by the script.
+        exit_code: i32,
+    },
+    /// `reproduce.sh` could not be invoked at all (script missing,
+    /// permissions, etc.).  Phase 28 Gate 5 treats this as instability.
+    ScriptInvocationFailed {
+        /// Human-readable error.
+        message: String,
+    },
+}
+
+/// Phase 28 — Track H.3.  Run `reproduce.sh` in `bundle_root` and map the
+/// shell exit code into a [`ReplayResult`].
+///
+/// `extra_args` is appended to `reproduce.sh` (`--docker` when the caller
+/// wants the docker backend; empty for the process backend).
+///
+/// This is the host-side companion to the M7 Gate 5 inversion: callers
+/// who want "did this bundle replay green?" semantics see a typed result
+/// and the M7 gate script gets a uniform contract to assert against.
+pub fn replay_bundle(
+    bundle_root: &Path,
+    extra_args: &[&str],
+) -> ReplayResult {
+    use std::process::Command;
+    let script = bundle_root.join("reproduce.sh");
+    if !script.exists() {
+        return ReplayResult::ScriptInvocationFailed {
+            message: format!("reproduce.sh missing at {}", script.display()),
+        };
+    }
+    let mut cmd = Command::new("sh");
+    cmd.arg(script);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    cmd.current_dir(bundle_root);
+    match cmd.output() {
+        Ok(out) => match out.status.code() {
+            Some(0) => ReplayResult::Pass,
+            Some(1) => ReplayResult::Mismatch,
+            Some(2) => ReplayResult::DockerUnavailable,
+            Some(3) => ReplayResult::ToolchainMismatch,
+            Some(code) => ReplayResult::UnexpectedError { exit_code: code },
+            None => ReplayResult::ScriptInvocationFailed {
+                message: "reproduce.sh terminated without an exit code".to_owned(),
+            },
+        },
+        Err(e) => ReplayResult::ScriptInvocationFailed {
+            message: format!("failed to invoke reproduce.sh: {e}"),
+        },
+    }
 }
 
 fn repro_readme(spec: &HarnessSpec, verdict: &VerifyResult) -> String {
@@ -465,6 +672,109 @@ mod tests {
         assert!(artifact.root.join("reproduce.sh").exists());
 
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    #[test]
+    fn toolchain_lock_records_expected_toolchain_and_hashes() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let spec = make_spec();
+        let opts = SandboxOptions::default();
+        let outcome = make_outcome();
+        let verdict = make_verdict();
+        let artifact = write(
+            &spec, &opts, &outcome, &verdict,
+            "# harness", "# entry", b"payload", "label", None,
+        ).unwrap();
+        let lock_path = artifact.root.join("toolchain.lock");
+        assert!(lock_path.exists(), "toolchain.lock missing");
+        let lock: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
+        assert_eq!(lock["toolchain_id"], "python-3.11");
+        assert_eq!(lock["lock_version"], 1);
+        let files = lock["files"].as_object().expect("files object");
+        assert!(files.contains_key("payload/payload.bin"));
+        assert!(files.contains_key("harness/harness.py"));
+        assert!(files.contains_key("harness/Dockerfile.harness"));
+        // Hashes are 64-hex BLAKE3 digests.
+        for (_, v) in files {
+            let hex = v.as_str().unwrap();
+            assert_eq!(hex.len(), 64, "hash should be 64 hex chars");
+            assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    #[test]
+    fn reproduce_sh_contains_toolchain_check_and_exit_codes() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let artifact = write(
+            &make_spec(), &SandboxOptions::default(), &make_outcome(), &make_verdict(),
+            "# harness", "# entry", b"payload", "label", None,
+        ).unwrap();
+        let script = std::fs::read_to_string(artifact.root.join("reproduce.sh")).unwrap();
+        // Exit code 3 documented + emitted on host toolchain mismatch.
+        assert!(script.contains("EXPECTED_TOOLCHAIN=\"python-3.11\""));
+        assert!(script.contains("exit 3"));
+        assert!(script.contains("re-run with --docker"));
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    #[test]
+    fn replay_bundle_returns_pass_on_green_replay() {
+        let dir = TempDir::new().unwrap();
+        // reproduce.sh shipping exit 0 stub; bundle layout simulated by hand.
+        let bundle = dir.path().join("bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("reproduce.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                bundle.join("reproduce.sh"),
+                std::fs::Permissions::from_mode(0o755),
+            ).unwrap();
+        }
+        assert_eq!(replay_bundle(&bundle, &[]), ReplayResult::Pass);
+    }
+
+    #[test]
+    fn replay_bundle_maps_exit_codes() {
+        let dir = TempDir::new().unwrap();
+        for (code, expected) in &[
+            (1, ReplayResult::Mismatch),
+            (2, ReplayResult::DockerUnavailable),
+            (3, ReplayResult::ToolchainMismatch),
+            (7, ReplayResult::UnexpectedError { exit_code: 7 }),
+        ] {
+            let bundle = dir.path().join(format!("b{code}"));
+            std::fs::create_dir_all(&bundle).unwrap();
+            std::fs::write(
+                bundle.join("reproduce.sh"),
+                format!("#!/bin/sh\nexit {code}\n"),
+            ).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    bundle.join("reproduce.sh"),
+                    std::fs::Permissions::from_mode(0o755),
+                ).unwrap();
+            }
+            assert_eq!(replay_bundle(&bundle, &[]), *expected);
+        }
+    }
+
+    #[test]
+    fn replay_bundle_reports_missing_script() {
+        let dir = TempDir::new().unwrap();
+        let bundle = dir.path().join("empty");
+        std::fs::create_dir_all(&bundle).unwrap();
+        match replay_bundle(&bundle, &[]) {
+            ReplayResult::ScriptInvocationFailed { .. } => {}
+            other => panic!("expected ScriptInvocationFailed, got {other:?}"),
+        }
     }
 
     #[test]

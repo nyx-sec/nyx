@@ -246,6 +246,16 @@ print(len(confirmed))
 fi
 
 # ── Gate 5: Repro stability ≥ 95% ────────────────────────────────────────────
+#
+# Phase 28 (Track H.4): inversion of the legacy "conservative — treat
+# unexpected errors as stable" rule.  Old behaviour silently counted any
+# subprocess error (timeout, missing toolchain, broken pipe) as stable,
+# which let the gate pass while bundles were structurally unreplayable.
+# Phase 28 flips that: known exit codes (0 = pass, 1 = sink mismatch,
+# 2 = docker unavailable, 3 = toolchain mismatch) are classified
+# normally, but any other failure (timeout, ENOENT on `sh`, non-zero
+# code outside the documented set) is flagged as instability so the
+# gate fails loudly instead of masking the problem.
 if skip repro-stability; then
   info "Gate 5 (repro-stability): SKIPPED"
 else
@@ -258,9 +268,16 @@ else
     python3 - <<'PYEOF' "$REPRO_DIR" "$NYX_BIN"
 import subprocess, sys, json, pathlib
 
+# Phase 28 documented reproduce.sh exit codes.
+EXIT_PASS = 0                # sink_hit matches expected/outcome.json
+EXIT_MISMATCH = 1            # sink_hit diverged from recorded outcome
+EXIT_DOCKER_UNAVAIL = 2      # --docker requested but unavailable
+EXIT_TOOLCHAIN_MISMATCH = 3  # host toolchain mismatch in process mode
+
 repro_root = pathlib.Path(sys.argv[1])
 total = 0
 stable = 0
+unstable = 0
 
 # Each bundle has expected/verdict.json (written by repro.rs).
 for verdict_file in repro_root.rglob("expected/verdict.json"):
@@ -269,14 +286,25 @@ for verdict_file in repro_root.rglob("expected/verdict.json"):
         with open(verdict_file) as f:
             orig = json.load(f)
         orig_status = orig.get("status", "")
-    except Exception:
+    except Exception as e:
+        # Bundle is malformed.  Phase 28 inversion: this is no longer
+        # silently "stable"; it is a broken bundle and counts against
+        # the stability rate.
+        unstable += 1
+        total += 1
+        print(f"UNSTABLE: {bundle_dir.name} — verdict.json unreadable ({e})")
         continue
     if orig_status != "Confirmed":
         continue
     total += 1
     reproduce_sh = bundle_dir / "reproduce.sh"
     if not reproduce_sh.exists():
-        stable += 1  # legacy bundle without reproduce.sh: treat as stable
+        # Legacy bundles without reproduce.sh used to be counted as
+        # stable; Phase 28 treats them as instability because the
+        # repro bundle layout has shipped reproduce.sh since the
+        # first cut of the dynamic feature.
+        unstable += 1
+        print(f"UNSTABLE: {bundle_dir.name} — reproduce.sh missing")
         continue
     try:
         result = subprocess.run(
@@ -284,21 +312,38 @@ for verdict_file in repro_root.rglob("expected/verdict.json"):
             capture_output=True,
             timeout=30,
         )
-        if result.returncode == 0:
+        rc = result.returncode
+        if rc == EXIT_PASS:
             stable += 1
+        elif rc == EXIT_MISMATCH:
+            unstable += 1
+            print(f"UNSTABLE: {bundle_dir.name} — sink_hit mismatch (exit 1)")
+        elif rc in (EXIT_DOCKER_UNAVAIL, EXIT_TOOLCHAIN_MISMATCH):
+            # Documented environmental skip codes — neither pass nor
+            # fail.  Exclude from the stability ratio so an offline
+            # CI row does not pollute the score.
+            total -= 1
+            print(f"SKIP: {bundle_dir.name} — environment exit {rc}")
         else:
-            print(f"UNSTABLE: {bundle_dir.name} — reproduce.sh exited {result.returncode}")
+            # Phase 28 inversion: any other non-zero code is unexpected.
+            unstable += 1
+            print(f"UNSTABLE: {bundle_dir.name} — unexpected exit {rc}")
     except subprocess.TimeoutExpired:
-        print(f"TIMEOUT: {bundle_dir.name} — reproduce.sh exceeded 30s")
+        unstable += 1
+        print(f"UNSTABLE: {bundle_dir.name} — reproduce.sh exceeded 30s")
     except Exception as e:
-        stable += 1  # conservative: treat unexpected errors as stable
+        # Phase 28 inversion: subprocess error is no longer silent
+        # success.  Anything that prevents the script from completing
+        # cleanly counts against stability.
+        unstable += 1
+        print(f"UNSTABLE: {bundle_dir.name} — invocation error ({e})")
 
 if total == 0:
     print("No Confirmed repro artifacts found; skipping stability check.")
     sys.exit(0)
 
 rate = stable / total
-print(f"Repro stability: {stable}/{total} = {rate:.1%}")
+print(f"Repro stability: {stable}/{total} = {rate:.1%} (unstable={unstable})")
 if rate < 0.95:
     print(f"FAIL: stability {rate:.1%} < 95%")
     sys.exit(2)

@@ -179,10 +179,16 @@ impl ProbeWitness {
     }
 
     /// Construct a bounded witness from raw inputs.  Goes through
-    /// [`crate::dynamic::policy::scrub_env`] and
-    /// [`crate::dynamic::policy::truncate_payload_bytes`] so the
-    /// host-side constructor cannot accidentally produce an
-    /// unscrubbed / unbounded witness.
+    /// [`crate::dynamic::policy::scrub_env`],
+    /// [`crate::dynamic::policy::truncate_payload_bytes`], and
+    /// [`crate::dynamic::policy::Scrubber`] (Phase 28 — Track H.5) so
+    /// the host-side constructor cannot accidentally produce an
+    /// unscrubbed / unbounded witness.  Every textual field
+    /// (`env_snapshot` values, `cwd`, each `args_repr` entry) is routed
+    /// through the scrubber before the witness is serialised; the
+    /// `payload_bytes` field is left as raw bytes because the curated
+    /// payload corpus is checked into the repo and grepping it is the
+    /// only reliable forensic signal for triage.
     pub fn from_inputs<I, S>(
         env: I,
         cwd: impl Into<String>,
@@ -194,12 +200,23 @@ impl ProbeWitness {
         I: IntoIterator<Item = (S, S)>,
         S: Into<String>,
     {
+        let scrubber = policy::Scrubber::project_default();
+        let env_snapshot: BTreeMap<String, String> = policy::scrub_env(env)
+            .into_iter()
+            .map(|(k, v)| (k, scrubber.scrub_string(&v)))
+            .collect();
+        let scrubbed_args: Vec<String> = args_repr
+            .into_iter()
+            .map(|s| scrubber.scrub_string(&s))
+            .collect();
+        let scrubbed_callee = scrubber.scrub_string(&callee.into());
+        let scrubbed_cwd = scrubber.scrub_string(&cwd.into());
         Self {
-            env_snapshot: policy::scrub_env(env),
-            cwd: cwd.into(),
+            env_snapshot,
+            cwd: scrubbed_cwd,
             payload_bytes: policy::truncate_payload_bytes(payload).to_vec(),
-            callee: callee.into(),
-            args_repr,
+            callee: scrubbed_callee,
+            args_repr: scrubbed_args,
         }
     }
 }
@@ -423,6 +440,27 @@ mod tests {
             drained[0].kind,
             ProbeKind::Crash { signal: Signal::Sigsegv }
         ));
+    }
+
+    #[test]
+    fn witness_from_inputs_hashes_pii_args() {
+        let env: Vec<(String, String)> = vec![];
+        let w = ProbeWitness::from_inputs(
+            env,
+            "/tmp/run",
+            b"payload",
+            "os.system",
+            vec!["nyx-stub-secret-aaa-bbb-ccc".to_owned()],
+        );
+        // The args_repr entry contained a project-stub-secret literal and
+        // must be hashed before the witness is serialised.
+        assert_eq!(w.args_repr.len(), 1);
+        assert!(
+            w.args_repr[0].starts_with(policy::SCRUB_HASH_PREFIX),
+            "args_repr value should be scrubbed; got {}",
+            w.args_repr[0]
+        );
+        assert!(!w.args_repr[0].contains("aaa-bbb-ccc"));
     }
 
     #[test]
