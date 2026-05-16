@@ -326,6 +326,19 @@ pub enum InconclusiveReason {
         backend: String,
         oracle_kind: String,
     },
+    /// Phase 30 §C — the dynamic policy module refused to execute a
+    /// finding whose static metadata mentions credentials, private
+    /// keys, or a production endpoint regex.  The second security
+    /// layer above the existing
+    /// [`crate::dynamic::policy::Scrubber`] forensic redaction: even a
+    /// successful confirmation is unsafe to obtain when the payload
+    /// would have to mention or transmit live secrets.  Carries the
+    /// rule name that fired (`credentials`, `private-key`,
+    /// `production-endpoint`) and an evidence excerpt for triage.
+    PolicyDeniedDynamic {
+        rule: String,
+        excerpt: String,
+    },
 }
 
 impl fmt::Display for InconclusiveReason {
@@ -385,6 +398,10 @@ impl fmt::Display for InconclusiveReason {
             } => write!(
                 f,
                 "{backend} backend cannot enforce isolation for {oracle_kind} oracle"
+            ),
+            Self::PolicyDeniedDynamic { rule, excerpt } => write!(
+                f,
+                "dynamic execution refused by policy rule {rule} (matched: {excerpt})"
             ),
         }
     }

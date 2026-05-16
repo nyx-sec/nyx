@@ -66,6 +66,11 @@ pub struct VerifyOptions {
     /// event emitted from the verify pipeline.  Default `keep_all` so unit
     /// tests and embedded callers do not silently lose records.
     pub telemetry_policy: SamplingPolicy,
+    /// Phase 30 (Track C observability): when `true` the verifier prints
+    /// every recorded [`crate::dynamic::trace::TraceEvent`] to stderr at
+    /// end-of-verify.  Wired to the future `--verbose` CLI flag; off by
+    /// default so non-interactive scans stay quiet.
+    pub trace_verbose: bool,
 }
 
 impl VerifyOptions {
@@ -121,6 +126,7 @@ impl VerifyOptions {
             callgraph: None,
             refuse_filesystem_confirm,
             telemetry_policy: SamplingPolicy::from_config(&config.telemetry),
+            trace_verbose: false,
         }
     }
 }
@@ -387,6 +393,61 @@ fn derivation_failure_hint(diag: &Diag) -> String {
 pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     let finding_id = format!("{:016x}", diag.stable_hash);
 
+    // Phase 30 (Track C observability): one trace per finding, threaded
+    // into [`SandboxOptions`] so the runner can append `build_*` /
+    // `sandbox_started` / `oracle_*` stages from inside `run_spec`.
+    let trace = Arc::new(crate::dynamic::trace::VerifyTrace::new());
+    trace.record(
+        crate::dynamic::trace::TraceStage::SpecStarted,
+        Some(format!("rule={} path={}", diag.id, diag.path)),
+    );
+
+    // Phase 30 §C — cross-cutting policy deny rules.  Findings whose
+    // static metadata mentions credentials, private keys, or production
+    // endpoint regexes are refused up front: the sandbox is never
+    // started and no payload is materialised, so a leaked secret cannot
+    // round-trip through the harness even if the deny rule is wrong.
+    // The verifier returns `Inconclusive(PolicyDeniedDynamic)` so the
+    // operator sees *why* dynamic execution was skipped without losing
+    // the static finding from the report.
+    if let crate::dynamic::policy::PolicyDecision::Deny { rule, excerpt } =
+        crate::dynamic::policy::evaluate(diag)
+    {
+        trace.record(
+            crate::dynamic::trace::TraceStage::Verdict,
+            Some(format!("policy_denied rule={rule}")),
+        );
+        if opts.trace_verbose {
+            trace.print_to_stderr();
+        }
+        let inconclusive_reason = InconclusiveReason::PolicyDeniedDynamic {
+            rule: rule.to_owned(),
+            excerpt: excerpt.clone(),
+        };
+        // Emit telemetry so the Phase 27 events log records the deny —
+        // operators triaging refusals need it on the wire even though
+        // the sandbox never ran.
+        let tel_event = TelemetryEvent::no_spec(
+            diag,
+            VerifyStatus::Inconclusive,
+            Some(inconclusive_reason.clone()),
+        );
+        telemetry::emit_with_policy(&tel_event, &opts.telemetry_policy);
+        return VerifyResult {
+            finding_id,
+            status: VerifyStatus::Inconclusive,
+            triggered_payload: None,
+            reason: None,
+            inconclusive_reason: Some(inconclusive_reason),
+            detail: Some(format!(
+                "dynamic execution refused by policy rule {rule}"
+            )),
+            attempts: vec![],
+            toolchain_match: None,
+            differential: None,
+        };
+    }
+
     let spec = match HarnessSpec::from_finding_full(
         diag,
         opts.verify_all_confidence,
@@ -395,6 +456,13 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     ) {
         Ok(s) => s,
         Err(reason) => {
+            trace.record(
+                crate::dynamic::trace::TraceStage::Verdict,
+                Some(format!("spec_derivation_failed reason={reason:?}")),
+            );
+            if opts.trace_verbose {
+                trace.print_to_stderr();
+            }
             return spec_derivation_failed_verdict(
                 finding_id,
                 diag,
@@ -403,6 +471,13 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             );
         }
     };
+    trace.record(
+        crate::dynamic::trace::TraceStage::SpecDone,
+        Some(format!(
+            "spec_hash={} lang={:?} entry_kind={:?}",
+            spec.spec_hash, spec.lang, spec.entry_kind
+        )),
+    );
 
     // Pre-flight gate: surface a structured `Inconclusive(EntryKindUnsupported)`
     // up-front when the spec's [`EntryKind`] is not in the lang emitter's
@@ -545,6 +620,11 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     if !stub_harness.is_empty() {
         sandbox_opts.stub_harness = Some(Arc::clone(&stub_harness));
     }
+    // Phase 30: hand the runner an `Arc` clone so it can append
+    // `build_*` / `sandbox_started` / `oracle_*` stages from inside
+    // `run_spec`.  The verifier still owns the trace for verdict-stage
+    // appending after `run_spec` returns.
+    sandbox_opts.trace = Some(Arc::clone(&trace));
 
     let start = Instant::now();
     let result = run_spec(&spec, &sandbox_opts);
@@ -589,8 +669,20 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     );
     telemetry::emit_with_policy(&event, &opts.telemetry_policy);
 
+    // Phase 30 — verdict is the terminal trace stage.  Recorded after
+    // cache insert + telemetry so the trace reflects the full pipeline
+    // the operator just saw run.
+    trace.record(
+        crate::dynamic::trace::TraceStage::Verdict,
+        Some(format!("status={:?}", verdict.status)),
+    );
+    if opts.trace_verbose {
+        trace.print_to_stderr();
+    }
+
     verdict
 }
+
 
 fn build_verdict(
     finding_id: &str,

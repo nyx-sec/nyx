@@ -232,6 +232,14 @@ pub struct SandboxOptions {
     /// process backend.  See [`ProcessHardeningProfile`] for the per-
     /// variant primitive matrix.
     pub process_hardening: ProcessHardeningProfile,
+    /// Phase 30 (Track C observability): optional [`VerifyTrace`] handle
+    /// the runner appends pipeline stages to (`build_started`,
+    /// `build_done`, `sandbox_started`, `oracle_wait`, `oracle_observed`).
+    /// `None` keeps the runner silent — sandbox-level callers that do
+    /// not want a trace pay zero cost.  Held as `Arc` so the verifier
+    /// can clone the same trace across attempt loops in
+    /// [`crate::dynamic::runner::run_spec`] without copying events.
+    pub trace: Option<Arc<crate::dynamic::trace::VerifyTrace>>,
 }
 
 /// Phase 17 (Track E.1): selects which subset of the Linux process-
@@ -284,6 +292,7 @@ impl Default for SandboxOptions {
             stub_harness: None,
             seccomp_caps: 0,
             process_hardening: ProcessHardeningProfile::Standard,
+            trace: None,
         }
     }
 }

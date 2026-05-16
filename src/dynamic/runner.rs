@@ -16,9 +16,37 @@ use crate::dynamic::probe::{ProbeChannel, SinkProbe};
 use crate::dynamic::stubs::StubEvent;
 use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
+use crate::dynamic::trace::{TraceStage, VerifyTrace};
 use crate::evidence::{DifferentialOutcome, DifferentialVerdict};
 use crate::symbol::Lang;
 use std::sync::Arc;
+
+/// Record a trace event on the caller's [`VerifyTrace`] handle if one
+/// was attached to [`SandboxOptions::trace`].  No-op otherwise — keeps
+/// every direct `crate::dynamic::sandbox::run` caller (tests, parity
+/// fixtures) free of trace boilerplate.
+fn trace_record(trace: Option<&Arc<VerifyTrace>>, stage: TraceStage, detail: Option<String>) {
+    if let Some(t) = trace {
+        t.record(stage, detail);
+    }
+}
+
+/// Short, stable variant tag used in [`TraceStage::SandboxStarted`]
+/// details so a trace line names the oracle without dumping the full
+/// `Debug` repr (which includes payload-specific `predicates` slices).
+#[allow(deprecated)]
+fn oracle_short_name(oracle: &Oracle) -> &'static str {
+    match oracle {
+        Oracle::SinkProbe { .. } => "SinkProbe",
+        Oracle::SinkCrash { .. } => "SinkCrash",
+        Oracle::OutputContains(_) => "OutputContains",
+        Oracle::Crash => "Crash",
+        Oracle::OobCallback { .. } => "OobCallback",
+        Oracle::FileEscape => "FileEscape",
+        Oracle::ExitStatus(_) => "ExitStatus",
+        Oracle::StubEvent { .. } => "StubEvent",
+    }
+}
 
 /// Max harness-build attempts before giving up.
 const MAX_BUILD_ATTEMPTS: u32 = 2;
@@ -90,6 +118,13 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     if payloads.is_empty() {
         return Err(RunError::NoPayloadsForCap);
     }
+
+    let trace_handle = opts.trace.as_ref().cloned();
+    trace_record(
+        trace_handle.as_ref(),
+        TraceStage::BuildStarted,
+        Some(format!("lang={:?} spec_hash={}", spec.lang, spec.spec_hash)),
+    );
 
     // Build harness with retry.
     const BACKOFF: [u64; 1] = [1];
@@ -265,6 +300,12 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         }
     }
 
+    trace_record(
+        trace_handle.as_ref(),
+        TraceStage::BuildDone,
+        Some(format!("attempts={build_attempts}")),
+    );
+
     let harness_source = harness.source.clone();
     let entry_source = harness.entry_source.clone();
 
@@ -317,7 +358,25 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             let _ = ch.clear();
         }
 
+        trace_record(
+            trace_handle.as_ref(),
+            TraceStage::SandboxStarted,
+            Some(format!(
+                "attempt={i} payload={} oracle={}",
+                payload.label,
+                oracle_short_name(&payload.oracle)
+            )),
+        );
+
         let mut outcome = sandbox::run(&harness, &effective_bytes, &effective_opts)?;
+        trace_record(
+            trace_handle.as_ref(),
+            TraceStage::OracleWait,
+            Some(format!(
+                "attempt={i} exit_code={:?} timed_out={}",
+                outcome.exit_code, outcome.timed_out
+            )),
+        );
 
         // For OOB payloads, check the nonce listener and update the outcome flag.
         if let (Some(nonce), Some(listener)) = (&oob_nonce, effective_opts.oob_listener()) {
@@ -348,6 +407,13 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             &vuln_stub_events,
         );
         let sink_hit = outcome.sink_hit;
+        trace_record(
+            trace_handle.as_ref(),
+            TraceStage::OracleObserved,
+            Some(format!(
+                "attempt={i} fired={vuln_fired} sink_hit={sink_hit}"
+            )),
+        );
 
         // Phase 08 §C.4: a process-level crash with no matching sink-site
         // Crash probe is an "unrelated abort" (setup code, harness build,

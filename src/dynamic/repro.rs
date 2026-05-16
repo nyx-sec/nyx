@@ -22,6 +22,7 @@
 //!   expected/
 //!     outcome.json            (redacted SandboxOutcome)
 //!     verdict.json
+//!     trace.jsonl             (Phase 30 — VerifyTrace, when attached)
 //!   reproduce.sh
 //!   docker_pull.sh            (Phase 28 — present when toolchain pinned)
 //!   README.md
@@ -184,6 +185,19 @@ pub fn write(
 
     // expected/verdict.json
     write_json(&root.join("expected").join("verdict.json"), verdict)?;
+
+    // expected/trace.jsonl — Phase 30 (Track C observability).  Records
+    // the verifier's per-stage timeline so a repro replay can compare
+    // sandbox runs against the canonical sequence.  Omitted when no
+    // trace was attached to the sandbox options, which keeps direct
+    // `sandbox::run` callers (parity fixtures, unit tests) free of
+    // bundle-shape changes.
+    if let Some(trace) = opts.trace.as_ref() {
+        fs::write(
+            root.join("expected").join("trace.jsonl"),
+            trace.to_jsonl().as_bytes(),
+        )?;
+    }
 
     // toolchain.lock (Phase 28 — Track H.3, repro hermeticity)
     let lock = build_toolchain_lock(spec, &root)?;

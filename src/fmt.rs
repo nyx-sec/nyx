@@ -612,6 +612,9 @@ fn format_inconclusive_reason(r: &crate::evidence::InconclusiveReason) -> String
         InconclusiveReason::BackendInsufficient { backend, oracle_kind } => {
             format!("backend {backend} cannot enforce {oracle_kind} oracle")
         }
+        InconclusiveReason::PolicyDeniedDynamic { rule, .. } => {
+            format!("dynamic execution refused by policy ({rule})")
+        }
     }
 }
 

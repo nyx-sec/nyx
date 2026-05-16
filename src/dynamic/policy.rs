@@ -228,6 +228,227 @@ fn hash_token(secret: &str) -> String {
     format!("{SCRUB_HASH_PREFIX}{prefix}>")
 }
 
+/// Outcome of [`evaluate`].
+///
+/// Either `Allow` (let the verifier execute the finding) or `Deny` with
+/// the rule that fired and an evidence excerpt that triage can quote in
+/// the audit log.  `Deny` is the second security layer above the
+/// per-witness [`Scrubber`]: the scrubber redacts already-captured
+/// bytes, while `Deny` short-circuits execution before the sandbox ever
+/// loads the payload, so the credential never touches the harness in
+/// the first place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyDecision {
+    /// Finding cleared every deny rule; the verifier may proceed.
+    Allow,
+    /// Finding matched a deny rule.
+    Deny {
+        /// Stable rule identifier — one of [`DenyRule::CREDENTIALS`],
+        /// [`DenyRule::PRIVATE_KEY`], [`DenyRule::PRODUCTION_ENDPOINT`].
+        rule: &'static str,
+        /// Short text excerpt (max 120 chars, scrubbed via
+        /// [`Scrubber::scrub_string`]) of the offending field so an
+        /// operator can identify *why* the deny fired without having to
+        /// re-derive the match.
+        excerpt: String,
+    },
+}
+
+impl PolicyDecision {
+    /// Convenience accessor; lets call sites match on the boolean
+    /// outcome before unpacking the typed reason.
+    pub fn is_deny(&self) -> bool {
+        matches!(self, PolicyDecision::Deny { .. })
+    }
+}
+
+/// Rule-name constants exposed for the
+/// [`crate::evidence::InconclusiveReason::PolicyDeniedDynamic`] field
+/// and for tests that need to assert *which* deny rule fired.  Strings
+/// rather than an enum so they read identically in JSON output, audit
+/// logs, and the `Display` impl on `InconclusiveReason`.
+pub struct DenyRule;
+
+impl DenyRule {
+    /// Finding mentions a credential-shaped token (AWS key, GitHub /
+    /// Slack / OpenAI token, `password=` query string, `Bearer`
+    /// header) — re-uses the project-wide secret regex set via
+    /// [`crate::utils::redact::contains_secret`].
+    pub const CREDENTIALS: &'static str = "credentials";
+    /// Finding mentions a private key (PEM block opener, OpenSSH
+    /// private key block, base64-shaped key payload).
+    pub const PRIVATE_KEY: &'static str = "private-key";
+    /// Finding's path or evidence references a production endpoint
+    /// (e.g. `api.prod.example.com`, `*.production.*`,
+    /// `*-prod.amazonaws.com`).  Conservative: matched against the
+    /// short list in [`PROD_ENDPOINT_REGEXES`].
+    pub const PRODUCTION_ENDPOINT: &'static str = "production-endpoint";
+}
+
+/// Substrings that mark a [`DenyRule::PRIVATE_KEY`] hit on their own,
+/// independent of the [`crate::utils::redact`] regex set.  The redact
+/// regex covers the `-----BEGIN ... PRIVATE KEY-----` shape; the
+/// literals below add coverage for evidence-snippet excerpts where the
+/// trailing newline has been stripped (a common occurrence in CLI
+/// output that gets folded into a one-line `notes` entry).
+const PRIVATE_KEY_LITERALS: &[&str] = &[
+    "-----begin rsa private key",
+    "-----begin openssh private key",
+    "-----begin ec private key",
+    "-----begin private key",
+    "-----begin dsa private key",
+    "-----begin pgp private key",
+    "ssh-rsa aaaa",
+    "ssh-ed25519 aaaa",
+];
+
+/// Substrings that mark a [`DenyRule::PRODUCTION_ENDPOINT`] hit.
+///
+/// Conservative starter set: the regex shapes most security teams ban
+/// from a dynamic re-execution sandbox.  Matched case-insensitively as
+/// a substring of the diag's path / sink callee / flow-step snippets.
+///
+/// `*.production.*` and `*-prod.*` shapes are folded into a single
+/// `".prod"` / `"-prod"` / `"production"` substring set rather than
+/// using a full regex engine — the regex shape would be more
+/// permissive but at the cost of a dependency the dynamic crate does
+/// not currently pull in.  The substring set deliberately false-
+/// positives on `productionalize` / `reproduction` because both reads
+/// of the data deserve a human eye before dynamic execution.
+const PROD_ENDPOINT_REGEXES: &[&str] = &[
+    "api.prod.",
+    "api-prod.",
+    ".production.",
+    "-production.",
+    "-prod.amazonaws.com",
+    "prod.example.com",
+    "prod-api.",
+    "prod-db.",
+    "prod-cluster.",
+];
+
+/// Evaluate `diag` against the cross-cutting security deny list.
+///
+/// Walks the finding's id, path, message, evidence notes, flow-step
+/// snippets, and the `SpanEvidence` snippets for source/sink/guard/
+/// sanitizer entries.  Each text is fed to three predicates in turn
+/// — [`DenyRule::CREDENTIALS`] (via [`crate::utils::redact::contains_secret`]),
+/// [`DenyRule::PRIVATE_KEY`] (via [`PRIVATE_KEY_LITERALS`]),
+/// [`DenyRule::PRODUCTION_ENDPOINT`] (via [`PROD_ENDPOINT_REGEXES`]).
+/// The first match wins and the verifier short-circuits to
+/// [`crate::evidence::InconclusiveReason::PolicyDeniedDynamic`].
+///
+/// Multiple rules matching the same evidence pick private-key first
+/// (most precise — PEM blocks also satisfy the credentials regex set,
+/// so private-key is checked first to avoid burying the precise label
+/// under a generic one), credentials second, production-endpoint
+/// third — the ordering surfaces the most actionable rule label given
+/// the leak shape.
+pub fn evaluate(diag: &crate::commands::scan::Diag) -> PolicyDecision {
+    let texts = collect_diag_texts(diag);
+    for text in &texts {
+        if let Some(hit) = match_text(text) {
+            return PolicyDecision::Deny {
+                rule: hit.0,
+                excerpt: excerpt_with_scrubber(hit.1),
+            };
+        }
+    }
+    PolicyDecision::Allow
+}
+
+fn collect_diag_texts(diag: &crate::commands::scan::Diag) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if !diag.id.is_empty() {
+        out.push(diag.id.clone());
+    }
+    if !diag.path.is_empty() {
+        out.push(diag.path.clone());
+    }
+    if let Some(msg) = diag.message.as_ref() {
+        out.push(msg.clone());
+    }
+    if let Some(ev) = diag.evidence.as_ref() {
+        for note in &ev.notes {
+            out.push(note.clone());
+        }
+        if let Some(exp) = ev.explanation.as_ref() {
+            out.push(exp.clone());
+        }
+        for s in [&ev.source, &ev.sink] {
+            if let Some(span) = s.as_ref() {
+                out.push(span.path.clone());
+                if let Some(sn) = span.snippet.as_ref() {
+                    out.push(sn.clone());
+                }
+            }
+        }
+        for span in ev.guards.iter().chain(ev.sanitizers.iter()) {
+            if let Some(sn) = span.snippet.as_ref() {
+                out.push(sn.clone());
+            }
+        }
+        for step in &ev.flow_steps {
+            if !step.file.is_empty() {
+                out.push(step.file.clone());
+            }
+            if let Some(sn) = step.snippet.as_ref() {
+                out.push(sn.clone());
+            }
+            if let Some(callee) = step.callee.as_ref() {
+                out.push(callee.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Match a single text against the deny set.  Returns
+/// `Some((rule_name, matched_text))` on hit, `None` otherwise.  Matched
+/// text is the original text (not the rule needle) so the excerpt
+/// surfaced on the verdict shows the operator *which* field caused the
+/// refusal, not just the rule that fired.
+fn match_text(text: &str) -> Option<(&'static str, &str)> {
+    if text.is_empty() {
+        return None;
+    }
+    let lower = text.to_ascii_lowercase();
+    // Private-key literals checked first: PEM blocks also satisfy the
+    // generic credentials regex set in [`crate::utils::redact`], so a
+    // PEM hit would otherwise misclassify as `credentials`.  Surfacing
+    // the more precise rule lets operators triage the leak shape from
+    // the verdict alone.
+    if PRIVATE_KEY_LITERALS.iter().any(|n| lower.contains(*n)) {
+        return Some((DenyRule::PRIVATE_KEY, text));
+    }
+    if redact::contains_secret(text.as_bytes()) {
+        return Some((DenyRule::CREDENTIALS, text));
+    }
+    if PROD_ENDPOINT_REGEXES.iter().any(|n| lower.contains(*n)) {
+        return Some((DenyRule::PRODUCTION_ENDPOINT, text));
+    }
+    None
+}
+
+/// Build a short excerpt suitable for embedding in a
+/// [`crate::evidence::InconclusiveReason::PolicyDeniedDynamic`].
+///
+/// Routes the text through [`Scrubber::scrub_string`] first so the
+/// excerpt itself cannot leak the credential, then truncates to 120
+/// `chars` to keep the audit log compact.  Truncation walks
+/// codepoints (not bytes) because PROD_ENDPOINT hits pass through the
+/// scrubber unchanged — a long file-path or snippet with non-ASCII
+/// content (e.g. Unicode in a source comment) would otherwise panic
+/// the verifier on a mid-codepoint byte slice.
+fn excerpt_with_scrubber(text: &str) -> String {
+    let scrubbed = Scrubber::project_default().scrub_string(text);
+    let mut indices = scrubbed.char_indices();
+    match indices.nth(120) {
+        None => scrubbed,
+        Some((cut, _)) => format!("{}…", &scrubbed[..cut]),
+    }
+}
+
 /// Truncate `bytes` to at most [`PAYLOAD_CAPTURE_LIMIT_BYTES`].
 ///
 /// Head-keeping: the prefix the sink reads first is retained; the tail is

@@ -76,6 +76,7 @@ pub mod oob;
 pub mod oracle;
 pub mod policy;
 pub mod probe;
+pub mod rand;
 pub mod repro;
 pub mod report;
 pub mod runner;
@@ -84,6 +85,7 @@ pub mod spec;
 pub mod stubs;
 pub mod telemetry;
 pub mod toolchain;
+pub mod trace;
 pub mod verify;
 
 pub use report::{VerifyResult, VerifyStatus};
