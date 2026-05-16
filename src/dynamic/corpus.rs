@@ -22,7 +22,7 @@
 //! tracks the history of incompatible corpus changes; bumping it invalidates
 //! all `dynamic_verdict_cache` entries whose spec touched the changed cap.
 
-use crate::dynamic::oracle::ProbePredicate;
+use crate::dynamic::oracle::{ProbePredicate, SignalSet};
 use crate::labels::Cap;
 
 /// Re-exported canonical [`Oracle`] type.
@@ -45,7 +45,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 2       | 2025-12-15 | SSRF OOB-variant added; oracle semantics tightened |
 /// | 3       | 2026-05-12 | Migrated to `CuratedPayload`; provenance + fixture_paths enforced; SSRF OOB-nonce slot added |
 /// | 4       | 2026-05-14 | Phase 07: `benign_control` paired refs + benign payloads added to SQLI / CMDI / SSRF (file-scheme) |
-pub const CORPUS_VERSION: u32 = 4;
+/// | 5       | 2026-05-16 | FMT_STRING SinkCrash payload + benign control (Phase 08 unrelated-crash acceptance fixture) |
+pub const CORPUS_VERSION: u32 = 5;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,11 +138,11 @@ pub type Payload = CuratedPayload;
 /// | FILE_IO            | yes       | path traversal + benign control    |
 /// | SSRF               | yes       | file:// scheme + OOB nonce slot    |
 /// | HTML_ESCAPE        | yes       | XSS script marker + benign control |
+/// | FMT_STRING         | yes       | SinkCrash + benign control (Phase 08) |
 /// | ENV_VAR            | no        | source-only cap; no sink oracle    |
 /// | SHELL_ESCAPE       | no        | sanitizer cap; no sink oracle      |
 /// | URL_ENCODE         | no        | sanitizer cap; no sink oracle      |
 /// | JSON_PARSE         | no        | no reliable oracle                 |
-/// | FMT_STRING         | no        | no reliable oracle                 |
 /// | DESERIALIZE        | no        | no reliable oracle                 |
 /// | CRYPTO             | no        | no reliable oracle                 |
 /// | UNAUTHORIZED_ID    | no        | auth bypass; no oracle             |
@@ -160,13 +161,13 @@ const CORPUS_SUPPORTED: u32 = Cap::SQL_QUERY.bits()
     | Cap::CODE_EXEC.bits()
     | Cap::FILE_IO.bits()
     | Cap::SSRF.bits()
-    | Cap::HTML_ESCAPE.bits();
+    | Cap::HTML_ESCAPE.bits()
+    | Cap::FMT_STRING.bits();
 
 const CORPUS_UNSUPPORTED: u32 = Cap::ENV_VAR.bits()
     | Cap::SHELL_ESCAPE.bits()
     | Cap::URL_ENCODE.bits()
     | Cap::JSON_PARSE.bits()
-    | Cap::FMT_STRING.bits()
     | Cap::DESERIALIZE.bits()
     | Cap::CRYPTO.bits()
     | Cap::UNAUTHORIZED_ID.bits()
@@ -200,6 +201,9 @@ pub fn payloads_for(cap: Cap) -> &'static [CuratedPayload] {
     }
     if cap.contains(Cap::HTML_ESCAPE) {
         return XSS;
+    }
+    if cap.contains(Cap::FMT_STRING) {
+        return FMT_STRING;
     }
     &[]
 }
@@ -298,13 +302,14 @@ mod tests {
         assert!(!payloads_for(Cap::FILE_IO).is_empty());
         assert!(!payloads_for(Cap::SSRF).is_empty());
         assert!(!payloads_for(Cap::HTML_ESCAPE).is_empty());
+        assert!(!payloads_for(Cap::FMT_STRING).is_empty());
     }
 
     #[test]
     fn unsupported_caps_return_empty() {
         let unsupported = [
             Cap::ENV_VAR, Cap::SHELL_ESCAPE, Cap::URL_ENCODE, Cap::JSON_PARSE,
-            Cap::FMT_STRING, Cap::DESERIALIZE, Cap::CRYPTO, Cap::UNAUTHORIZED_ID,
+            Cap::DESERIALIZE, Cap::CRYPTO, Cap::UNAUTHORIZED_ID,
             Cap::DATA_EXFIL, Cap::LDAP_INJECTION, Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION, Cap::OPEN_REDIRECT, Cap::SSTI, Cap::XXE,
             Cap::PROTOTYPE_POLLUTION,
@@ -329,10 +334,34 @@ mod tests {
 
     #[test]
     fn vuln_payloads_not_benign() {
-        for cap in [Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::HTML_ESCAPE] {
+        for cap in [
+            Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::HTML_ESCAPE,
+            Cap::FMT_STRING,
+        ] {
             let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
             assert!(has_vuln, "{cap:?} must have at least one vuln (non-benign) payload");
         }
+    }
+
+    #[test]
+    fn fmt_string_has_sink_crash_oracle_and_benign_control() {
+        let payloads = payloads_for(Cap::FMT_STRING);
+        let vuln = payloads
+            .iter()
+            .find(|p| !p.is_benign)
+            .expect("FMT_STRING must have a vuln payload");
+        assert!(
+            matches!(vuln.oracle, Oracle::SinkCrash { .. }),
+            "FMT_STRING vuln payload oracle must be SinkCrash (Phase 08)"
+        );
+        let bref = vuln
+            .benign_control
+            .expect("FMT_STRING vuln must reference a benign control");
+        assert!(
+            resolve_benign_control(vuln, Cap::FMT_STRING).is_some(),
+            "FMT_STRING benign-control label '{}' must resolve",
+            bref.label,
+        );
     }
 
     #[test]
@@ -345,7 +374,10 @@ mod tests {
 
     #[test]
     fn all_payloads_have_fixture_paths() {
-        let caps = [Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF, Cap::HTML_ESCAPE];
+        let caps = [
+            Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF,
+            Cap::HTML_ESCAPE, Cap::FMT_STRING,
+        ];
         for cap in caps {
             for p in payloads_for(cap) {
                 assert!(
@@ -359,7 +391,10 @@ mod tests {
 
     #[test]
     fn all_payloads_have_valid_since_corpus_version() {
-        let caps = [Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF, Cap::HTML_ESCAPE];
+        let caps = [
+            Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF,
+            Cap::HTML_ESCAPE, Cap::FMT_STRING,
+        ];
         for cap in caps {
             for p in payloads_for(cap) {
                 assert!(
@@ -442,7 +477,10 @@ mod tests {
 
     #[test]
     fn benign_entries_are_terminal() {
-        let caps = [Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF, Cap::HTML_ESCAPE];
+        let caps = [
+            Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF,
+            Cap::HTML_ESCAPE, Cap::FMT_STRING,
+        ];
         for cap in caps {
             for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
                 assert!(
@@ -661,6 +699,53 @@ const XSS: &[CuratedPayload] = &[
         since_corpus_version: 1,
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/benchmark/corpus/rust/xss/axum_html/main.rs"],
+        oob_nonce_slot: false,
+        probe_predicates: &[],
+        benign_control: None,
+    },
+];
+
+// ── Format string (Phase 08 SinkCrash variant) ────────────────────────────────
+// The vuln payload confirms via a sink-site Crash probe rather than an
+// output marker.  The bytes themselves are not load-bearing — the
+// detection contract is "process aborts inside the entry call AFTER the
+// crash-guard installs".  Fixtures choose how to crash on the payload;
+// the canonical example is a printf-family sink that interprets `%n`
+// against a controlled destination pointer on a guard-compiled binary.
+//
+// The benign control must reach the same entry without crashing; its
+// bytes carry `NYX_BENIGN` so fixture code can short-circuit before
+// the fault path.
+const FMT_STRING: &[CuratedPayload] = &[
+    CuratedPayload {
+        bytes: b"%n%n%n%n%n%n%n%n%n%n",
+        label: "fmt-string-percent-n-crash",
+        oracle: Oracle::SinkCrash {
+            signals: SignalSet::all(),
+        },
+        is_benign: false,
+        provenance: PayloadProvenance::Curated,
+        since_corpus_version: 5,
+        deprecated_at_corpus_version: None,
+        fixture_paths: &[
+            "tests/dynamic_fixtures/c/free_fn/sink_fault.c",
+            "tests/dynamic_fixtures/c/free_fn/setup_fault.c",
+        ],
+        oob_nonce_slot: false,
+        probe_predicates: &[],
+        benign_control: Some(PayloadRef { label: "fmt-string-benign" }),
+    },
+    CuratedPayload {
+        bytes: b"benign_safe_fmt_NYX_BENIGN",
+        label: "fmt-string-benign",
+        oracle: Oracle::SinkCrash {
+            signals: SignalSet::all(),
+        },
+        is_benign: true,
+        provenance: PayloadProvenance::Curated,
+        since_corpus_version: 5,
+        deprecated_at_corpus_version: None,
+        fixture_paths: &["tests/dynamic_fixtures/c/free_fn/sink_fault.c"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

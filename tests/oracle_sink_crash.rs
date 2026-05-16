@@ -11,8 +11,15 @@
 //! - (a) sink-site crash → `Confirmed`
 //! - (b) crash outside sink → `Inconclusive(UnrelatedCrash)`
 //! - (c) bounded witness capture for known payloads
+//!
+//! End-to-end fixtures at the bottom of this file drive the full
+//! [`run_spec`] pipeline against compiled C harnesses, locking in that
+//! the `__nyx_install_crash_guard` ordering inside the emitted `main.c`
+//! routes setup-fault and sink-fault crashes to the right verdicts.
 
 #![cfg(feature = "dynamic")]
+
+mod common;
 
 use nyx_scanner::dynamic::oracle::{
     oracle_fired, probe_crash_signal, Oracle, Signal, SignalSet,
@@ -278,4 +285,144 @@ fn signal_set_const_construction_is_order_independent() {
     assert!(B.contains(Signal::Sigsegv));
     assert!(B.contains(Signal::Sigabrt));
     assert!(!A.contains(Signal::Sigfpe));
+}
+
+// ── End-to-end Phase 08 acceptance via compiled C harnesses ───────────────────
+//
+// These tests drive the full `run_spec` pipeline against the FMT_STRING
+// curated payload + paired benign control, against two purpose-built
+// fixtures under `tests/dynamic_fixtures/c/free_fn/`.  Both pin the
+// install ordering inside the emitted `main.c`:
+//
+//   nyx_payload()                       <- harness setup
+//   __nyx_install_crash_guard(callee)   <- install
+//   run(payload, len)                   <- entry
+//
+// `setup_fault.c` aborts in a global constructor (before `main` runs),
+// so the handler never installs and `Oracle::SinkCrash` cannot fire —
+// the verifier downgrades to `Inconclusive(UnrelatedCrash)`.
+//
+// `sink_fault.c` prints the in-harness sink-hit sentinel and then
+// NULL-dereferences on the vuln payload only.  The handler is installed
+// by the time the deref happens, a Crash probe lands in `NYX_PROBE_PATH`,
+// and the differential rule (§4.1) confirms because the benign payload
+// short-circuits without crashing.
+
+mod e2e_phase_08 {
+    use crate::common::fixture_harness::FIXTURE_LOCK;
+    use nyx_scanner::dynamic::runner::{run_spec, RunOutcome};
+    use nyx_scanner::dynamic::sandbox::SandboxOptions;
+    use nyx_scanner::dynamic::spec::{
+        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+    };
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+    use std::path::PathBuf;
+
+    fn cc_available() -> bool {
+        let bin = std::env::var("NYX_CC_BIN").unwrap_or_else(|_| "cc".to_owned());
+        std::process::Command::new(&bin)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Stage `tests/dynamic_fixtures/c/free_fn/<file>` into a fresh
+    /// tempdir and synthesise a [`HarnessSpec`] pointing at the copy.
+    /// Returns the spec plus the tempdir guard (caller drops it after
+    /// `run_spec` completes so the workdir survives the test).
+    fn build_spec(file: &str) -> (HarnessSpec, tempfile::TempDir) {
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/c/free_fn")
+            .join(file);
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join(file);
+        std::fs::copy(&fixture_src, &dst).expect("copy fixture");
+
+        let entry_file = dst.to_string_lossy().into_owned();
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"phase08-c-e2e|");
+        digest.update(file.as_bytes());
+        let spec_hash = format!("{:016x}", {
+            let bytes = digest.finalize();
+            u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+        });
+
+        let spec = HarnessSpec {
+            finding_id: spec_hash.clone(),
+            entry_file: entry_file.clone(),
+            entry_name: "run".to_owned(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::C,
+            toolchain_id: default_toolchain_id(Lang::C).into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::FMT_STRING,
+            constraint_hints: vec![],
+            sink_file: entry_file,
+            sink_line: 22,
+            spec_hash: spec_hash.clone(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+        };
+
+        (spec, tmp)
+    }
+
+    fn run(file: &str) -> Option<RunOutcome> {
+        if !cc_available() {
+            eprintln!("SKIP {file}: cc not available");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (spec, _tmp) = build_spec(file);
+        let opts = SandboxOptions::default();
+        match run_spec(&spec, &opts) {
+            Ok(outcome) => Some(outcome),
+            Err(e) => panic!("run_spec({file}) errored: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn setup_fault_routes_to_unrelated_crash() {
+        let Some(outcome) = run("setup_fault.c") else { return };
+        assert!(
+            outcome.triggered_by.is_none(),
+            "setup_fault must not Confirm — handler is never installed: {outcome:?}",
+        );
+        assert!(
+            outcome.unrelated_crash,
+            "setup_fault must set unrelated_crash so verifier downgrades to Inconclusive(UnrelatedCrash): {outcome:?}",
+        );
+        let any_attempt_crashed = outcome
+            .attempts
+            .iter()
+            .any(|a| a.outcome.exit_code.is_none() && !a.outcome.timed_out);
+        assert!(
+            any_attempt_crashed,
+            "setup_fault constructor must abort the process at least once across attempts",
+        );
+    }
+
+    #[test]
+    fn sink_fault_confirms_via_sink_crash_probe() {
+        let Some(outcome) = run("sink_fault.c") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "sink_fault must Confirm via SinkCrash + differential: {outcome:?}",
+        );
+        let label = outcome
+            .triggered_by
+            .and_then(|i| outcome.attempts.get(i))
+            .map(|a| a.payload_label);
+        assert_eq!(
+            label,
+            Some("fmt-string-percent-n-crash"),
+            "triggering payload must be the FMT_STRING vuln entry"
+        );
+        assert!(
+            !outcome.unrelated_crash,
+            "sink_fault attempt should NOT set unrelated_crash — probe was written: {outcome:?}",
+        );
+    }
 }
