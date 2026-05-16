@@ -290,19 +290,11 @@ mod rust_fixture_tests {
 
 #[cfg(feature = "dynamic")]
 mod phase16_shape_tests {
-    use crate::common::fixture_harness::run_shape_fixture_lang;
+    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
     use nyx_scanner::symbol::Lang;
-
-    fn rust_available() -> bool {
-        std::process::Command::new("cargo")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
 
     fn assert_confirmed(shape: &str, result: &VerifyResult) {
         assert_eq!(
@@ -339,9 +331,24 @@ mod phase16_shape_tests {
         sink_line: u32,
         kind: EntryKind,
         slot: PayloadSlot,
-    ) -> VerifyResult {
-        run_shape_fixture_lang(
-            Lang::Rust, "rust", shape, file, func, cap, sink_line, kind, slot,
+    ) -> Option<VerifyResult> {
+        // Phase 29 (Track I): replace the bespoke `rust_available()` +
+        // per-test `eprintln!("SKIP ..."); return;` blocks with the
+        // structured `Prerequisite::CommandAvailable("cargo")` gate.
+        // The helper emits the same SKIP line and returns `None` so
+        // each test can short-circuit via `let Some(r) = run(...) else
+        // { return; };`.
+        run_shape_fixture_lang_or_skip(
+            &[Prerequisite::CommandAvailable("cargo")],
+            Lang::Rust,
+            "rust",
+            shape,
+            file,
+            func,
+            cap,
+            sink_line,
+            kind,
+            slot,
         )
     }
 
@@ -349,27 +356,23 @@ mod phase16_shape_tests {
 
     #[test]
     fn actix_route_vuln_is_confirmed() {
-        if !rust_available() {
-            eprintln!("SKIP: cargo not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "actix_route", "vuln.rs", "handler", Cap::CODE_EXEC, 16,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("actix_route", &r);
     }
 
     #[test]
     fn actix_route_benign_not_confirmed() {
-        if !rust_available() {
-            eprintln!("SKIP: cargo not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "actix_route", "benign.rs", "handler", Cap::CODE_EXEC, 14,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("actix_route", &r);
     }
 
@@ -377,27 +380,23 @@ mod phase16_shape_tests {
 
     #[test]
     fn axum_handler_vuln_is_confirmed() {
-        if !rust_available() {
-            eprintln!("SKIP: cargo not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "axum_handler", "vuln.rs", "handler", Cap::CODE_EXEC, 15,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("axum_handler", &r);
     }
 
     #[test]
     fn axum_handler_benign_not_confirmed() {
-        if !rust_available() {
-            eprintln!("SKIP: cargo not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "axum_handler", "benign.rs", "handler", Cap::CODE_EXEC, 13,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("axum_handler", &r);
     }
 
@@ -405,27 +404,23 @@ mod phase16_shape_tests {
 
     #[test]
     fn clap_cli_vuln_is_confirmed() {
-        if !rust_available() {
-            eprintln!("SKIP: cargo not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "clap_cli", "vuln.rs", "run", Cap::CODE_EXEC, 17,
             EntryKind::CliSubcommand, PayloadSlot::Argv(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("clap_cli", &r);
     }
 
     #[test]
     fn clap_cli_benign_not_confirmed() {
-        if !rust_available() {
-            eprintln!("SKIP: cargo not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "clap_cli", "benign.rs", "run", Cap::CODE_EXEC, 13,
             EntryKind::CliSubcommand, PayloadSlot::Argv(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("clap_cli", &r);
     }
 
@@ -433,27 +428,23 @@ mod phase16_shape_tests {
 
     #[test]
     fn libfuzzer_target_vuln_is_confirmed() {
-        if !rust_available() {
-            eprintln!("SKIP: cargo not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "libfuzzer_target", "vuln.rs", "fuzz_target", Cap::CODE_EXEC, 15,
             EntryKind::LibraryApi, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("libfuzzer_target", &r);
     }
 
     #[test]
     fn libfuzzer_target_benign_not_confirmed() {
-        if !rust_available() {
-            eprintln!("SKIP: cargo not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "libfuzzer_target", "benign.rs", "fuzz_target", Cap::CODE_EXEC, 13,
             EntryKind::LibraryApi, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("libfuzzer_target", &r);
     }
 }

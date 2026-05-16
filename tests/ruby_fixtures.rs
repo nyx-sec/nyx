@@ -13,19 +13,11 @@ mod common;
 
 #[cfg(feature = "dynamic")]
 mod phase15_shape_tests {
-    use crate::common::fixture_harness::run_shape_fixture_lang;
+    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
     use nyx_scanner::symbol::Lang;
-
-    fn ruby_available() -> bool {
-        std::process::Command::new("ruby")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
 
     fn assert_confirmed(shape: &str, result: &VerifyResult) {
         assert_eq!(
@@ -62,9 +54,21 @@ mod phase15_shape_tests {
         sink_line: u32,
         kind: EntryKind,
         slot: PayloadSlot,
-    ) -> VerifyResult {
-        run_shape_fixture_lang(
-            Lang::Ruby, "ruby", shape, file, func, cap, sink_line, kind, slot,
+    ) -> Option<VerifyResult> {
+        // Phase 29 (Track I): structured prerequisite gating replaces
+        // the bespoke `ruby_available()` + per-test
+        // `eprintln!("SKIP ..."); return;` pattern.
+        run_shape_fixture_lang_or_skip(
+            &[Prerequisite::CommandAvailable("ruby")],
+            Lang::Ruby,
+            "ruby",
+            shape,
+            file,
+            func,
+            cap,
+            sink_line,
+            kind,
+            slot,
         )
     }
 
@@ -72,27 +76,23 @@ mod phase15_shape_tests {
 
     #[test]
     fn sinatra_route_vuln_is_confirmed() {
-        if !ruby_available() {
-            eprintln!("SKIP: ruby not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "sinatra_route", "vuln.rb", "run", Cap::CODE_EXEC, 7,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("sinatra_route", &r);
     }
 
     #[test]
     fn sinatra_route_benign_not_confirmed() {
-        if !ruby_available() {
-            eprintln!("SKIP: ruby not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "sinatra_route", "benign.rb", "run", Cap::CODE_EXEC, 10,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("sinatra_route", &r);
     }
 
@@ -100,27 +100,23 @@ mod phase15_shape_tests {
 
     #[test]
     fn rails_action_vuln_is_confirmed() {
-        if !ruby_available() {
-            eprintln!("SKIP: ruby not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "rails_action", "vuln.rb", "index", Cap::CODE_EXEC, 17,
             EntryKind::HttpRoute, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("rails_action", &r);
     }
 
     #[test]
     fn rails_action_benign_not_confirmed() {
-        if !ruby_available() {
-            eprintln!("SKIP: ruby not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "rails_action", "benign.rb", "index", Cap::CODE_EXEC, 20,
             EntryKind::HttpRoute, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("rails_action", &r);
     }
 
@@ -128,27 +124,23 @@ mod phase15_shape_tests {
 
     #[test]
     fn rack_middleware_vuln_is_confirmed() {
-        if !ruby_available() {
-            eprintln!("SKIP: ruby not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "rack_middleware", "vuln.rb", "call", Cap::CODE_EXEC, 9,
             EntryKind::HttpRoute, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("rack_middleware", &r);
     }
 
     #[test]
     fn rack_middleware_benign_not_confirmed() {
-        if !ruby_available() {
-            eprintln!("SKIP: ruby not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "rack_middleware", "benign.rb", "call", Cap::CODE_EXEC, 11,
             EntryKind::HttpRoute, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("rack_middleware", &r);
     }
 
@@ -156,27 +148,23 @@ mod phase15_shape_tests {
 
     #[test]
     fn controller_method_vuln_is_confirmed() {
-        if !ruby_available() {
-            eprintln!("SKIP: ruby not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "controller_method", "vuln.rb", "authenticate", Cap::CODE_EXEC, 7,
             EntryKind::Function, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("controller_method", &r);
     }
 
     #[test]
     fn controller_method_benign_not_confirmed() {
-        if !ruby_available() {
-            eprintln!("SKIP: ruby not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "controller_method", "benign.rb", "authenticate", Cap::CODE_EXEC, 10,
             EntryKind::Function, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("controller_method", &r);
     }
 }

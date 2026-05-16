@@ -562,6 +562,86 @@ pub fn run_shape_fixture_lang(
     }
 }
 
+/// Phase 29 (Track I) — `run_shape_fixture_lang` with structured
+/// prerequisite gating.
+///
+/// Checks `requires` against the host before staging the fixture; when
+/// a prerequisite is unmet, eprintln-skips with a [`SkipReason`] (so
+/// `cargo nextest` surfaces the line in test output) and returns
+/// `None`.  Callers migrate from the bespoke
+/// `python3_available()` / `go_available()` / etc. helpers + per-test
+/// `eprintln!("SKIP ...") ; return;` blocks to a single
+/// `let Some(r) = run_shape_fixture_lang_or_skip(...) else { return; };`
+/// at the call site.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+pub fn run_shape_fixture_lang_or_skip(
+    requires: &[Prerequisite],
+    lang: nyx_scanner::symbol::Lang,
+    lang_dir: &str,
+    shape_dir: &str,
+    file: &str,
+    func: &str,
+    cap: Cap,
+    sink_line: u32,
+    entry_kind: EntryKind,
+    payload_slot: nyx_scanner::dynamic::spec::PayloadSlot,
+) -> Option<VerifyResult> {
+    if let Err(reason) = check_prerequisites(requires) {
+        eprintln!("SKIP {lang_dir}/{shape_dir}/{file}: {reason}");
+        return None;
+    }
+    Some(run_shape_fixture_lang(
+        lang,
+        lang_dir,
+        shape_dir,
+        file,
+        func,
+        cap,
+        sink_line,
+        entry_kind,
+        payload_slot,
+    ))
+}
+
+/// Phase 29 (Track I) — `run_harness_snapshot_lang` with structured
+/// prerequisite gating.  Returns `false` and eprintln-skips when a
+/// prerequisite is unmet; otherwise runs the snapshot to completion
+/// and returns `true`.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
+pub fn run_harness_snapshot_lang_or_skip(
+    requires: &[Prerequisite],
+    lang: nyx_scanner::symbol::Lang,
+    lang_dir: &str,
+    snapshot_ext: &str,
+    shape_dir: &str,
+    file: &str,
+    func: &str,
+    cap: Cap,
+    sink_line: u32,
+    entry_kind: EntryKind,
+    payload_slot: nyx_scanner::dynamic::spec::PayloadSlot,
+) -> bool {
+    if let Err(reason) = check_prerequisites(requires) {
+        eprintln!("SKIP {lang_dir}/{shape_dir}/{file}: {reason}");
+        return false;
+    }
+    run_harness_snapshot_lang(
+        lang,
+        lang_dir,
+        snapshot_ext,
+        shape_dir,
+        file,
+        func,
+        cap,
+        sink_line,
+        entry_kind,
+        payload_slot,
+    );
+    true
+}
+
 /// Phase 12 — Python-specific harness snapshot wrapper.
 ///
 /// Pins lang to [`Lang::Python`] and the lang dir to `python` so legacy

@@ -442,6 +442,220 @@ fn python_http_shim_recorder_is_noop_without_log_env() {
 }
 
 #[test]
+fn node_http_stub_captures_attempted_outbound_via_shim_recorder() {
+    // Phase 10 (Track D.3) HTTP recording: Node leg of the side-channel
+    // `__nyx_stub_http_record` helper.  Mirrors the Python HTTP test —
+    // records an SSRF attempt without issuing the actual network call.
+    if !node_available() {
+        eprintln!("SKIP: node not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("HttpStub must publish a recording endpoint");
+
+    let fixture =
+        std::fs::read_to_string(fixture_path("node/http/vuln/main.js")).expect("read fixture");
+    let mut combined = String::with_capacity(node_probe_shim().len() + fixture.len() + 64);
+    combined.push_str(node_probe_shim());
+    combined.push_str("\n// ── fixture begins ─\n");
+    combined.push_str(&fixture);
+
+    let script_path = workdir.path().join("driver_http.js");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("node")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("node driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "HttpStub must capture at least one event after the Node shim recorder fires"
+    );
+    let hit = events
+        .iter()
+        .find(|e| e.summary.contains("169.254.169.254"))
+        .expect("recorded URL must contain the SSRF marker");
+    assert_eq!(
+        hit.detail.get("method").map(String::as_str),
+        Some("GET"),
+        "method detail must surface on the recorded event"
+    );
+    assert_eq!(
+        hit.detail.get("url").map(String::as_str),
+        Some("http://169.254.169.254/latest/meta-data/"),
+    );
+    assert_eq!(
+        hit.detail.get("driver").map(String::as_str),
+        Some("node:http"),
+        "kwargs passed to __nyx_stub_http_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn node_http_shim_recorder_is_noop_without_log_env() {
+    if !node_available() {
+        eprintln!("SKIP: node not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let fixture =
+        std::fs::read_to_string(fixture_path("node/http/vuln/main.js")).expect("read fixture");
+    let mut combined = String::new();
+    combined.push_str(node_probe_shim());
+    combined.push('\n');
+    combined.push_str(&fixture);
+    let script_path = workdir.path().join("driver_http_no_log.js");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("node")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env_remove("NYX_HTTP_LOG")
+        .output()
+        .expect("node driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_HTTP_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
+fn php_http_stub_captures_attempted_outbound_via_shim_recorder() {
+    // Phase 10 (Track D.3) HTTP recording: PHP leg of the side-channel
+    // `__nyx_stub_http_record` helper.  Mirrors the Python HTTP test —
+    // records an SSRF attempt without issuing the actual network call.
+    if !php_available() {
+        eprintln!("SKIP: php not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("HttpStub must publish a recording endpoint");
+
+    let fixture =
+        std::fs::read_to_string(fixture_path("php/http/vuln/main.php")).expect("read fixture");
+    let body = strip_php_open_tag(&fixture);
+    let mut combined = String::with_capacity(php_probe_shim().len() + body.len() + 64);
+    combined.push_str("<?php\n");
+    combined.push_str(php_probe_shim());
+    combined.push_str("\n// ── fixture begins ─\n");
+    combined.push_str(body);
+
+    let script_path = workdir.path().join("driver_http.php");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("php")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("php driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "HttpStub must capture at least one event after the PHP shim recorder fires"
+    );
+    let hit = events
+        .iter()
+        .find(|e| e.summary.contains("169.254.169.254"))
+        .expect("recorded URL must contain the SSRF marker");
+    assert_eq!(
+        hit.detail.get("method").map(String::as_str),
+        Some("GET"),
+        "method detail must surface on the recorded event"
+    );
+    assert_eq!(
+        hit.detail.get("url").map(String::as_str),
+        Some("http://169.254.169.254/latest/meta-data/"),
+    );
+    assert_eq!(
+        hit.detail.get("driver").map(String::as_str),
+        Some("curl"),
+        "kwargs passed to __nyx_stub_http_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn php_http_shim_recorder_is_noop_without_log_env() {
+    if !php_available() {
+        eprintln!("SKIP: php not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let fixture =
+        std::fs::read_to_string(fixture_path("php/http/vuln/main.php")).expect("read fixture");
+    let body = strip_php_open_tag(&fixture);
+    let mut combined = String::new();
+    combined.push_str("<?php\n");
+    combined.push_str(php_probe_shim());
+    combined.push('\n');
+    combined.push_str(body);
+    let script_path = workdir.path().join("driver_http_no_log.php");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("php")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env_remove("NYX_HTTP_LOG")
+        .output()
+        .expect("php driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_HTTP_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
 fn node_sql_shim_recorder_is_noop_without_log_env() {
     if !node_available() {
         eprintln!("SKIP: node not available");
