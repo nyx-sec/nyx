@@ -88,7 +88,11 @@ fn read_entry_source(entry_file: &str) -> String {
 /// (Phase 06 — Track C.1).  Uses `<fstream>` + variadic templates; the
 /// JSON-emit format matches [`crate::dynamic::probe::SinkProbe`].
 pub fn probe_shim() -> &'static str {
-    r#"
+    // The body holds literal `"# key: value\n"` log-line formats for the
+    // Phase 10 stub recorders, so the surrounding raw string uses
+    // `r##"..."##` to keep `"#` substrings from terminating it early
+    // (same trick the Rust / Java / Go / Ruby siblings use).
+    r##"
 /* ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ── */
 #include <algorithm>
 #include <array>
@@ -263,7 +267,47 @@ inline void __nyx_install_crash_guard(const char *sink_callee) {
         sigaction(sig, &sa, nullptr);
     }
 }
-"#
+
+/* Phase 10 (Track D.3) stub recorder helpers.  See the C-side commentary
+ * for the contract — these are the same helpers expressed in C++ idiom
+ * (std::ofstream + std::initializer_list of {key, value} pairs).  Both
+ * are no-ops when the relevant NYX_*_LOG env var is unset. */
+inline void __nyx_stub_sql_record(
+    const std::string &query,
+    std::initializer_list<std::pair<std::string, std::string>> detail = {}) {
+    const char *p = std::getenv("NYX_SQL_LOG");
+    if (!p || *p == '\0') return;
+    std::ofstream f(p, std::ios::app);
+    if (!f.is_open()) return;
+    for (const auto &kv : detail) {
+        f << "# " << kv.first << ": " << kv.second << "\n";
+    }
+    f << query;
+    if (query.empty() || query.back() != '\n') {
+        f << "\n";
+    }
+}
+
+inline void __nyx_stub_http_record(
+    const std::string &method,
+    const std::string &url,
+    const std::string &body = std::string(),
+    std::initializer_list<std::pair<std::string, std::string>> detail = {}) {
+    const char *p = std::getenv("NYX_HTTP_LOG");
+    if (!p || *p == '\0') return;
+    std::ofstream f(p, std::ios::app);
+    if (!f.is_open()) return;
+    f << "# method: " << method << "\n";
+    f << "# url: " << url << "\n";
+    if (!body.empty()) {
+        f << "# body: " << body << "\n";
+    }
+    for (const auto &kv : detail) {
+        f << "# " << kv.first << ": " << kv.second << "\n";
+    }
+    f << method << " " << url << "\n";
+}
+"##
 }
 
 impl LangEmitter for CppEmitter {
@@ -646,6 +690,31 @@ mod tests {
         assert!(
             h.source.contains("__nyx_install_crash_guard(\"__nyx_entry_main\");"),
             "install_crash_guard must use post-rename symbol when entry_name == 'main'",
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_sql_and_http_recorders() {
+        // Phase 10 (Track D.3): the C++ probe shim ships the manual-record
+        // stub helpers so a C++ harness can surface attempted DB / outbound
+        // calls to the host-side SqlStub / HttpStub through their
+        // NYX_SQL_LOG / NYX_HTTP_LOG side channels.
+        let shim = probe_shim();
+        assert!(
+            shim.contains("inline void __nyx_stub_sql_record("),
+            "C++ probe shim must define __nyx_stub_sql_record",
+        );
+        assert!(
+            shim.contains("inline void __nyx_stub_http_record("),
+            "C++ probe shim must define __nyx_stub_http_record",
+        );
+        assert!(
+            shim.contains("std::getenv(\"NYX_SQL_LOG\")"),
+            "SQL recorder must read NYX_SQL_LOG so the SqlStub side channel picks it up",
+        );
+        assert!(
+            shim.contains("std::getenv(\"NYX_HTTP_LOG\")"),
+            "HTTP recorder must read NYX_HTTP_LOG so the HttpStub side channel picks it up",
         );
     }
 

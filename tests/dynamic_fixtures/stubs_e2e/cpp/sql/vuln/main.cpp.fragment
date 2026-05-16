@@ -1,0 +1,13 @@
+// Phase 10 (Track D.3) — C++ SQL recorder body-only fragment.
+//
+// Wrapped at test time by `wrap_cpp_fragment(body, shim)` in
+// `tests/stubs_e2e_per_lang.rs`: the wrapper prepends the C++
+// probe shim (which carries `__nyx_stub_sql_record`) and a
+// `int main()` shell so `c++ <source>.cpp -o <bin> && ./<bin>`
+// builds the program in place.
+//
+// Records the attempted tautology query through the shim recorder
+// so the host-side SqlStub captures it as `driver = "manual"` —
+// no libsqlite3 / sqlite3pp dependency on the dynamic CI matrix.
+std::string query = "SELECT 1 WHERE 'a' = 'a' OR 1=1 --";
+__nyx_stub_sql_record(query, { {"driver", "manual"} });

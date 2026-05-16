@@ -20,6 +20,8 @@
 
 #![cfg(feature = "dynamic")]
 
+use nyx_scanner::dynamic::lang::c::probe_shim as c_probe_shim;
+use nyx_scanner::dynamic::lang::cpp::probe_shim as cpp_probe_shim;
 use nyx_scanner::dynamic::lang::go::probe_shim as go_probe_shim;
 use nyx_scanner::dynamic::lang::java::probe_shim as java_probe_shim;
 use nyx_scanner::dynamic::lang::javascript::probe_shim as node_probe_shim;
@@ -78,6 +80,34 @@ fn cargo_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+fn cc_available() -> bool {
+    // Honours the same NYX_CC_BIN override used by the Phase 29
+    // CommandAvailableEnvOverride prereq variant in the C fixture suite.
+    let bin = std::env::var("NYX_CC_BIN").unwrap_or_else(|_| "cc".to_owned());
+    Command::new(bin)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn cxx_available() -> bool {
+    let bin = std::env::var("NYX_CXX_BIN").unwrap_or_else(|_| "c++".to_owned());
+    Command::new(bin)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn cc_bin() -> String {
+    std::env::var("NYX_CC_BIN").unwrap_or_else(|_| "cc".to_owned())
+}
+
+fn cxx_bin() -> String {
+    std::env::var("NYX_CXX_BIN").unwrap_or_else(|_| "c++".to_owned())
 }
 
 fn java_available() -> bool {
@@ -163,6 +193,38 @@ fn wrap_rust_fragment(body: &str, shim: &str) -> String {
 /// `CARGO_TARGET_DIR` when nextest runs the Rust stub tests in
 /// parallel (every test still benefits from the cached `libc` build,
 /// only the final `nyx-stub-driver-<slug>` link is per-test).
+/// Wrap a body-only C fragment in a complete translation unit: prepend
+/// the C probe shim (which carries `__nyx_stub_sql_record` /
+/// `__nyx_stub_http_record`) at file scope, then wrap the fragment as
+/// the body of `int main(void)`.  The shim's own `#include` directives
+/// pull in stdio / string / signal headers, so the fragment can use
+/// `NULL`, string literals, and the recorder helpers without any
+/// additional preamble.
+fn wrap_c_fragment(body: &str, shim: &str) -> String {
+    format!(
+        "{shim}\n\
+         int main(void) {{\n\
+         {body}\n\
+         return 0;\n\
+         }}\n"
+    )
+}
+
+/// Wrap a body-only C++ fragment in a complete translation unit: prepend
+/// the C++ probe shim and wrap the fragment as the body of `int main()`.
+/// The shim's own `#include` block covers `<string>` / `<fstream>` /
+/// `<utility>` so initializer-list `{key, value}` literals + `std::string`
+/// in the fragment compile cleanly.
+fn wrap_cpp_fragment(body: &str, shim: &str) -> String {
+    format!(
+        "{shim}\n\
+         int main() {{\n\
+         {body}\n\
+         return 0;\n\
+         }}\n"
+    )
+}
+
 fn rust_stub_cargo_toml(slug: &str) -> String {
     format!(
         "[package]\n\
@@ -1657,6 +1719,443 @@ fn rust_sql_shim_recorder_is_noop_without_log_env() {
     assert!(
         output.status.success(),
         "driver must exit 0 even without NYX_SQL_LOG; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+// ── C ────────────────────────────────────────────────────────────────────────
+
+/// Build + run a wrapped C source: writes the source to
+/// `<workdir>/<slug>.c`, drives `cc` to compile to `<workdir>/<slug>`,
+/// runs the binary with the supplied env block.  Returns the binary's
+/// own `Output` so tests assert on exit code + stdout/stderr.  Build
+/// failures surface as a panic with the compiler's stderr.
+fn build_and_run_c(
+    workdir: &std::path::Path,
+    slug: &str,
+    source: &str,
+    extra_env: &[(&str, &str)],
+    suppress_env: &[&str],
+) -> std::process::Output {
+    let src_path = workdir.join(format!("{slug}.c"));
+    let bin_path = workdir.join(slug);
+    std::fs::write(&src_path, source).expect("write C source");
+
+    let build = Command::new(cc_bin())
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("invoke cc");
+    assert!(
+        build.status.success(),
+        "cc must build the wrapped C source; stderr = {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let mut cmd = Command::new(&bin_path);
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    for k in suppress_env {
+        cmd.env_remove(*k);
+    }
+    cmd.output().expect("run C driver")
+}
+
+fn build_and_run_cpp(
+    workdir: &std::path::Path,
+    slug: &str,
+    source: &str,
+    extra_env: &[(&str, &str)],
+    suppress_env: &[&str],
+) -> std::process::Output {
+    let src_path = workdir.join(format!("{slug}.cpp"));
+    let bin_path = workdir.join(slug);
+    std::fs::write(&src_path, source).expect("write C++ source");
+
+    let build = Command::new(cxx_bin())
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&bin_path)
+        .output()
+        .expect("invoke c++");
+    assert!(
+        build.status.success(),
+        "c++ must build the wrapped C++ source; stderr = {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let mut cmd = Command::new(&bin_path);
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    for k in suppress_env {
+        cmd.env_remove(*k);
+    }
+    cmd.output().expect("run C++ driver")
+}
+
+#[test]
+fn c_sql_stub_captures_tautology_query_via_shim_recorder() {
+    // Phase 10 (Track D.3) SQL recording: C leg of the side-channel
+    // `__nyx_stub_sql_record` helper.  Mirrors the Rust SQL test —
+    // the C fragment never opens a live SQLite handle (no sqlite3.h
+    // dependency on the dynamic CI matrix) so it surfaces the
+    // attempted tautology query through the shim recorder as
+    // `driver = "manual"`.
+    if !cc_available() {
+        eprintln!("SKIP: cc not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("SqlStub must publish a recording endpoint");
+
+    let fragment = std::fs::read_to_string(fixture_path("c/sql/vuln/main.c.fragment"))
+        .expect("read c sql fragment");
+    let source = wrap_c_fragment(&fragment, c_probe_shim());
+
+    let output = build_and_run_c(
+        workdir.path(),
+        "driver_c_sql",
+        &source,
+        &[
+            ("NYX_SQL_ENDPOINT", endpoint.as_str()),
+            (recording.0, recording.1.as_str()),
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "SqlStub must capture at least one event after the C shim recorder fires"
+    );
+    let tautology = events
+        .iter()
+        .find(|e| e.summary.contains("OR 1=1"))
+        .expect("recorded query must contain the tautology marker");
+    assert_eq!(
+        tautology.detail.get("driver").map(String::as_str),
+        Some("manual"),
+        "parallel-array detail passed to __nyx_stub_sql_record must surface as event detail"
+    );
+}
+
+#[test]
+fn c_sql_shim_recorder_is_noop_without_log_env() {
+    if !cc_available() {
+        eprintln!("SKIP: cc not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("c/sql/vuln/main.c.fragment"))
+        .expect("read c sql fragment");
+    let source = wrap_c_fragment(&fragment, c_probe_shim());
+
+    let output = build_and_run_c(
+        workdir.path(),
+        "driver_c_sql_no_log",
+        &source,
+        &[("NYX_SQL_ENDPOINT", endpoint.as_str())],
+        &["NYX_SQL_LOG"],
+    );
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_SQL_LOG; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
+fn c_http_stub_captures_attempted_outbound_via_shim_recorder() {
+    if !cc_available() {
+        eprintln!("SKIP: cc not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("HttpStub must publish a recording endpoint");
+
+    let fragment = std::fs::read_to_string(fixture_path("c/http/vuln/main.c.fragment"))
+        .expect("read c http fragment");
+    let source = wrap_c_fragment(&fragment, c_probe_shim());
+
+    let output = build_and_run_c(
+        workdir.path(),
+        "driver_c_http",
+        &source,
+        &[
+            ("NYX_HTTP_ENDPOINT", endpoint.as_str()),
+            (recording.0, recording.1.as_str()),
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "HttpStub must capture at least one event after the C shim recorder fires"
+    );
+    let imds = events
+        .iter()
+        .find(|e| e.summary.contains("169.254.169.254"))
+        .expect("recorded URL must contain the IMDS metadata host");
+    assert_eq!(
+        imds.detail.get("method").map(String::as_str),
+        Some("GET"),
+        "method line must surface in the recorded event detail"
+    );
+}
+
+#[test]
+fn c_http_shim_recorder_is_noop_without_log_env() {
+    if !cc_available() {
+        eprintln!("SKIP: cc not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("c/http/vuln/main.c.fragment"))
+        .expect("read c http fragment");
+    let source = wrap_c_fragment(&fragment, c_probe_shim());
+
+    let output = build_and_run_c(
+        workdir.path(),
+        "driver_c_http_no_log",
+        &source,
+        &[("NYX_HTTP_ENDPOINT", endpoint.as_str())],
+        &["NYX_HTTP_LOG"],
+    );
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_HTTP_LOG; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+// ── C++ ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn cpp_sql_stub_captures_tautology_query_via_shim_recorder() {
+    if !cxx_available() {
+        eprintln!("SKIP: c++ not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("SqlStub must publish a recording endpoint");
+
+    let fragment = std::fs::read_to_string(fixture_path("cpp/sql/vuln/main.cpp.fragment"))
+        .expect("read cpp sql fragment");
+    let source = wrap_cpp_fragment(&fragment, cpp_probe_shim());
+
+    let output = build_and_run_cpp(
+        workdir.path(),
+        "driver_cpp_sql",
+        &source,
+        &[
+            ("NYX_SQL_ENDPOINT", endpoint.as_str()),
+            (recording.0, recording.1.as_str()),
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "SqlStub must capture at least one event after the C++ shim recorder fires"
+    );
+    let tautology = events
+        .iter()
+        .find(|e| e.summary.contains("OR 1=1"))
+        .expect("recorded query must contain the tautology marker");
+    assert_eq!(
+        tautology.detail.get("driver").map(String::as_str),
+        Some("manual"),
+        "initializer-list detail passed to __nyx_stub_sql_record must surface as event detail"
+    );
+}
+
+#[test]
+fn cpp_sql_shim_recorder_is_noop_without_log_env() {
+    if !cxx_available() {
+        eprintln!("SKIP: c++ not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("cpp/sql/vuln/main.cpp.fragment"))
+        .expect("read cpp sql fragment");
+    let source = wrap_cpp_fragment(&fragment, cpp_probe_shim());
+
+    let output = build_and_run_cpp(
+        workdir.path(),
+        "driver_cpp_sql_no_log",
+        &source,
+        &[("NYX_SQL_ENDPOINT", endpoint.as_str())],
+        &["NYX_SQL_LOG"],
+    );
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_SQL_LOG; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
+fn cpp_http_stub_captures_attempted_outbound_via_shim_recorder() {
+    if !cxx_available() {
+        eprintln!("SKIP: c++ not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("HttpStub must publish a recording endpoint");
+
+    let fragment = std::fs::read_to_string(fixture_path("cpp/http/vuln/main.cpp.fragment"))
+        .expect("read cpp http fragment");
+    let source = wrap_cpp_fragment(&fragment, cpp_probe_shim());
+
+    let output = build_and_run_cpp(
+        workdir.path(),
+        "driver_cpp_http",
+        &source,
+        &[
+            ("NYX_HTTP_ENDPOINT", endpoint.as_str()),
+            (recording.0, recording.1.as_str()),
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "HttpStub must capture at least one event after the C++ shim recorder fires"
+    );
+    let imds = events
+        .iter()
+        .find(|e| e.summary.contains("169.254.169.254"))
+        .expect("recorded URL must contain the IMDS metadata host");
+    assert_eq!(
+        imds.detail.get("method").map(String::as_str),
+        Some("GET"),
+        "method line must surface in the recorded event detail"
+    );
+}
+
+#[test]
+fn cpp_http_shim_recorder_is_noop_without_log_env() {
+    if !cxx_available() {
+        eprintln!("SKIP: c++ not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("cpp/http/vuln/main.cpp.fragment"))
+        .expect("read cpp http fragment");
+    let source = wrap_cpp_fragment(&fragment, cpp_probe_shim());
+
+    let output = build_and_run_cpp(
+        workdir.path(),
+        "driver_cpp_http_no_log",
+        &source,
+        &[("NYX_HTTP_ENDPOINT", endpoint.as_str())],
+        &["NYX_HTTP_LOG"],
+    );
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_HTTP_LOG; stdout = {}\nstderr = {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

@@ -128,19 +128,35 @@ const PROFILE_SOURCES: &[(&str, &str)] = &[
 ];
 
 /// Cap → profile-name dispatch.  The most restrictive matching profile
-/// wins: `FILE_IO` outranks `SSRF` outranks `CODE_EXEC` outranks
-/// `DESERIALIZE`.  A cap bit with no matching profile falls back to the
-/// `base` profile.
+/// wins: filesystem caps outrank network caps outrank CODE_EXEC outranks
+/// DESERIALIZE.  Filesystem-shaped caps (`FILE_IO`, `SQL_QUERY` — DBs are
+/// files in WORKDIR) map to `path_traversal`; outbound-network-shaped caps
+/// (`SSRF`, `HEADER_INJECTION`, `OPEN_REDIRECT`, `UNVALIDATED_REDIRECT`,
+/// `LDAP_INJECTION`, `XPATH_INJECTION`) map to `ssrf` since they share the
+/// "outbound allowed; host secrets denied" shape.  Caps with no shared
+/// shape (CRYPTO, AUTH, RACE, MEMORY_SAFETY, XSS, XXE) fall back to `base`
+/// — XXE in particular would want a network-deny profile for entity
+/// resolution, which the bundled `.sb` set does not yet ship.
 pub fn profile_for_caps(caps: u32) -> &'static str {
     // Mirror the bit positions declared in `src/labels/mod.rs`.
     const FILE_IO: u32 = 1 << 5;
+    const SQL_QUERY: u32 = 1 << 7;
     const DESERIALIZE: u32 = 1 << 8;
     const SSRF: u32 = 1 << 9;
     const CODE_EXEC: u32 = 1 << 10;
+    const LDAP_INJECTION: u32 = 1 << 14;
+    const XPATH_INJECTION: u32 = 1 << 15;
+    const HEADER_INJECTION: u32 = 1 << 16;
+    const OPEN_REDIRECT: u32 = 1 << 17;
+    const UNVALIDATED_REDIRECT: u32 = 1 << 18;
 
-    if caps & FILE_IO != 0 {
+    const FS_SHAPED: u32 = FILE_IO | SQL_QUERY;
+    const NET_SHAPED: u32 =
+        SSRF | LDAP_INJECTION | XPATH_INJECTION | HEADER_INJECTION | OPEN_REDIRECT | UNVALIDATED_REDIRECT;
+
+    if caps & FS_SHAPED != 0 {
         "path_traversal"
-    } else if caps & SSRF != 0 {
+    } else if caps & NET_SHAPED != 0 {
         "ssrf"
     } else if caps & CODE_EXEC != 0 {
         "cmdi"
@@ -321,6 +337,48 @@ mod tests {
         assert_eq!(profile_for_caps(SSRF | CODE_EXEC), "ssrf");
         assert_eq!(profile_for_caps(CODE_EXEC), "cmdi");
         assert_eq!(profile_for_caps(0), "base");
+    }
+
+    #[test]
+    fn profile_for_caps_routes_filesystem_shaped_caps_to_path_traversal() {
+        // SQL_QUERY shares the `file-write into WORKDIR / file-read of
+        // host secrets denied` shape with FILE_IO (SQLite DBs live as
+        // files in the workdir), so it routes to the same profile.
+        const SQL_QUERY: u32 = 1 << 7;
+        const CODE_EXEC: u32 = 1 << 10;
+        assert_eq!(profile_for_caps(SQL_QUERY), "path_traversal");
+        // Filesystem shape outranks the lesser-restrictive cmdi profile.
+        assert_eq!(profile_for_caps(SQL_QUERY | CODE_EXEC), "path_traversal");
+    }
+
+    #[test]
+    fn profile_for_caps_routes_outbound_network_caps_to_ssrf() {
+        // Outbound HTTP request sinks (HEADER_INJECTION / OPEN_REDIRECT /
+        // UNVALIDATED_REDIRECT) and other network-traffic injection caps
+        // (LDAP_INJECTION / XPATH_INJECTION) all share the SSRF shape:
+        // outbound allowed, host-secret reads denied.
+        const LDAP_INJECTION: u32 = 1 << 14;
+        const XPATH_INJECTION: u32 = 1 << 15;
+        const HEADER_INJECTION: u32 = 1 << 16;
+        const OPEN_REDIRECT: u32 = 1 << 17;
+        const UNVALIDATED_REDIRECT: u32 = 1 << 18;
+        assert_eq!(profile_for_caps(LDAP_INJECTION), "ssrf");
+        assert_eq!(profile_for_caps(XPATH_INJECTION), "ssrf");
+        assert_eq!(profile_for_caps(HEADER_INJECTION), "ssrf");
+        assert_eq!(profile_for_caps(OPEN_REDIRECT), "ssrf");
+        assert_eq!(profile_for_caps(UNVALIDATED_REDIRECT), "ssrf");
+    }
+
+    #[test]
+    fn profile_for_caps_falls_back_to_base_for_unmapped_caps() {
+        // CRYPTO / AUTH / RACE / MEMORY_SAFETY / XSS / XXE do not yet
+        // have a cap-specific .sb profile.  XXE in particular would want
+        // a network-deny profile (entity resolution), but the bundled .sb
+        // set does not ship one — track in deferred.md.
+        const CRYPTO: u32 = 1 << 11;
+        const XXE: u32 = 1 << 19;
+        assert_eq!(profile_for_caps(CRYPTO), "base");
+        assert_eq!(profile_for_caps(XXE), "base");
     }
 
     #[test]

@@ -108,7 +108,11 @@ fn read_entry_source(entry_file: &str) -> String {
 /// Track C.1).  Variadic over `const char *` args; hand-rolled JSON keeps
 /// the only dep on libc / stdio.
 pub fn probe_shim() -> &'static str {
-    r#"
+    // The body holds literal `"# key: value\n"` log-line formats for the
+    // Phase 10 stub recorders, so the surrounding raw string uses
+    // `r##"..."##` to keep `"#` substrings from terminating it early
+    // (same trick the Rust / Java / Go / Ruby siblings use).
+    r##"
 /* ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ── */
 #include <signal.h>
 #include <stdarg.h>
@@ -290,7 +294,67 @@ static void __nyx_install_crash_guard(const char *sink_callee) {
         sigaction(sigs[i], &sa, NULL);
     }
 }
-"#
+
+/* Phase 10 (Track D.3) stub recorder helpers.  When the verifier spawns a
+ * SqlStub it publishes the queries-log path through NYX_SQL_LOG; a sink
+ * call site that wants the host-side stub to see its query appends one
+ * record-per-call.  Detail kv pairs use parallel arrays so the helper is
+ * variadic in arity without depending on stdarg-with-typed args.  The
+ * helper is a no-op when the env var is unset so the same source still
+ * runs under harness modes that did not spawn a stub. */
+static void __nyx_stub_sql_record(const char *query,
+                                  const char **detail_keys,
+                                  const char **detail_vals,
+                                  int detail_count) {
+    const char *p = getenv("NYX_SQL_LOG");
+    if (!p || *p == '\0') return;
+    FILE *f = fopen(p, "a");
+    if (!f) return;
+    for (int i = 0; i < detail_count; ++i) {
+        if (detail_keys && detail_vals && detail_keys[i] && detail_vals[i]) {
+            fprintf(f, "# %s: %s\n", detail_keys[i], detail_vals[i]);
+        }
+    }
+    if (query) {
+        size_t qlen = strlen(query);
+        fputs(query, f);
+        if (qlen == 0 || query[qlen - 1] != '\n') {
+            fputc('\n', f);
+        }
+    }
+    fclose(f);
+}
+
+/* Phase 10 (Track D.3) HTTP recording helper.  When the verifier spawns an
+ * HttpStub it publishes the side-channel log path through NYX_HTTP_LOG; a
+ * sink call site whose outbound request never reaches the on-the-wire
+ * listener (DNS-mocked, network-isolated sandbox, pre-flight check) can
+ * call this helper to surface the attempted call.  Format matches the SQL
+ * helper so the host-side merger parses both streams identically. */
+static void __nyx_stub_http_record(const char *method,
+                                   const char *url,
+                                   const char *body,
+                                   const char **detail_keys,
+                                   const char **detail_vals,
+                                   int detail_count) {
+    const char *p = getenv("NYX_HTTP_LOG");
+    if (!p || *p == '\0') return;
+    FILE *f = fopen(p, "a");
+    if (!f) return;
+    if (method) fprintf(f, "# method: %s\n", method);
+    if (url)    fprintf(f, "# url: %s\n", url);
+    if (body)   fprintf(f, "# body: %s\n", body);
+    for (int i = 0; i < detail_count; ++i) {
+        if (detail_keys && detail_vals && detail_keys[i] && detail_vals[i]) {
+            fprintf(f, "# %s: %s\n", detail_keys[i], detail_vals[i]);
+        }
+    }
+    if (method && url) {
+        fprintf(f, "%s %s\n", method, url);
+    }
+    fclose(f);
+}
+"##
 }
 
 impl LangEmitter for CEmitter {
@@ -727,6 +791,33 @@ mod tests {
         assert!(
             payload_pos < install_pos && install_pos < invoke_pos,
             "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_sql_and_http_recorders() {
+        // Phase 10 (Track D.3): the C probe shim ships the manual-record
+        // stub helpers so a C harness can surface attempted DB / outbound
+        // calls to the host-side SqlStub / HttpStub through their
+        // NYX_SQL_LOG / NYX_HTTP_LOG side channels.  Helpers must be
+        // declared before `__nyx_install_crash_guard` so a sink-rewrite
+        // pass can reference them from anywhere in the entry source.
+        let shim = probe_shim();
+        assert!(
+            shim.contains("static void __nyx_stub_sql_record("),
+            "C probe shim must define __nyx_stub_sql_record",
+        );
+        assert!(
+            shim.contains("static void __nyx_stub_http_record("),
+            "C probe shim must define __nyx_stub_http_record",
+        );
+        assert!(
+            shim.contains("getenv(\"NYX_SQL_LOG\")"),
+            "SQL recorder must read NYX_SQL_LOG so the SqlStub side channel picks it up",
+        );
+        assert!(
+            shim.contains("getenv(\"NYX_HTTP_LOG\")"),
+            "HTTP recorder must read NYX_HTTP_LOG so the HttpStub side channel picks it up",
         );
     }
 
