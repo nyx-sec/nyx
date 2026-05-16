@@ -26,6 +26,7 @@ use nyx_scanner::dynamic::lang::javascript::probe_shim as node_probe_shim;
 use nyx_scanner::dynamic::lang::php::probe_shim as php_probe_shim;
 use nyx_scanner::dynamic::lang::python::probe_shim as python_probe_shim;
 use nyx_scanner::dynamic::lang::ruby::probe_shim as ruby_probe_shim;
+use nyx_scanner::dynamic::lang::rust::probe_shim as rust_probe_shim;
 use nyx_scanner::dynamic::stubs::{HttpStub, SqlStub, StubProvider};
 use std::path::PathBuf;
 use std::process::Command;
@@ -65,6 +66,14 @@ fn go_available() -> bool {
 
 fn ruby_available() -> bool {
     Command::new("ruby")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn cargo_available() -> bool {
+    Command::new("cargo")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -126,6 +135,39 @@ fn wrap_go_fragment(body: &str, shim: &str) -> String {
          }}\n"
     )
 }
+
+/// Wrap the body-only Rust HTTP fragment in a complete crate: prepend
+/// the Rust probe shim (which carries `__nyx_stub_http_record`) at
+/// file scope and wrap the fragment as the body of `fn main()`.  The
+/// caller writes the result alongside a one-line `Cargo.toml` that
+/// pins `libc = "0.2"` (the shim's `__nyx_install_crash_guard` path
+/// references `libc::sigaction`) and drives the build through
+/// `cargo run --quiet`.  Mirrors the production Rust emitter ordering
+/// — shim at file scope, then `fn main()` calling into it.
+fn wrap_rust_fragment(body: &str, shim: &str) -> String {
+    format!(
+        "{shim}\n\
+         fn main() {{\n\
+         {body}\n\
+         }}\n"
+    )
+}
+
+/// One-line Cargo.toml for the Rust stub-recorder driver.  Mirrors
+/// the Phase 26 chain_step manifest (session 0014) — `[[bin]]` points
+/// at `main.rs` so `cargo run --quiet` builds the source the test
+/// just wrote, and `libc = "0.2"` is unconditionally pinned because
+/// the spliced probe shim's `__nyx_install_crash_guard` references
+/// `libc::sigaction` on Unix.
+const RUST_STUB_CARGO_TOML: &str = "[package]\n\
+                                     name = \"nyx-stub-driver\"\n\
+                                     version = \"0.0.1\"\n\
+                                     edition = \"2021\"\n\n\
+                                     [[bin]]\n\
+                                     name = \"stub_driver\"\n\
+                                     path = \"main.rs\"\n\n\
+                                     [dependencies]\n\
+                                     libc = \"0.2\"\n";
 
 fn fixture_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1076,6 +1118,135 @@ fn node_sql_shim_recorder_is_noop_without_log_env() {
     assert!(
         output.status.success(),
         "driver must exit 0 even without NYX_SQL_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+/// Returns a shared CARGO_TARGET_DIR for Rust stub-recorder tests so
+/// repeated runs reuse the libc build artifacts instead of paying
+/// the full compile cost per test.  Lives under the host crate's
+/// own `target/` so `cargo clean` still wipes it.
+fn rust_stub_target_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("stubs_e2e_rust")
+}
+
+#[test]
+fn rust_http_stub_captures_attempted_outbound_via_shim_recorder() {
+    // Phase 10 (Track D.3) HTTP recording: Rust leg of the side-channel
+    // `__nyx_stub_http_record` helper.  Mirrors the Python / Node / PHP /
+    // Go / Ruby / Java HTTP tests — records an SSRF attempt without
+    // issuing the actual network call.  Uses the `extra_files`-driven
+    // `Cargo.toml` shape session 0014 prototyped for chain steps: write
+    // a one-line manifest alongside the wrapped fragment so `cargo run
+    // --quiet` resolves `libc` (referenced by the spliced probe shim's
+    // `__nyx_install_crash_guard`) without any host crate-cache assumptions.
+    if !cargo_available() {
+        eprintln!("SKIP: cargo not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("HttpStub must publish a recording endpoint");
+
+    let fragment = std::fs::read_to_string(fixture_path("rust/http/vuln/main.rs"))
+        .expect("read rust fragment");
+    let source = wrap_rust_fragment(&fragment, rust_probe_shim());
+
+    let crate_dir = workdir.path().join("driver");
+    std::fs::create_dir_all(&crate_dir).expect("create crate dir");
+    std::fs::write(crate_dir.join("Cargo.toml"), RUST_STUB_CARGO_TOML)
+        .expect("write Cargo.toml");
+    std::fs::write(crate_dir.join("main.rs"), source).expect("write main.rs");
+
+    let output = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(crate_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", rust_stub_target_dir())
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("cargo run rust driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "HttpStub must capture at least one event after the Rust shim recorder fires"
+    );
+    let hit = events
+        .iter()
+        .find(|e| e.summary.contains("169.254.169.254"))
+        .expect("recorded URL must contain the SSRF marker");
+    assert_eq!(
+        hit.detail.get("method").map(String::as_str),
+        Some("GET"),
+        "method detail must surface on the recorded event"
+    );
+    assert_eq!(
+        hit.detail.get("url").map(String::as_str),
+        Some("http://169.254.169.254/latest/meta-data/"),
+    );
+    assert_eq!(
+        hit.detail.get("driver").map(String::as_str),
+        Some("manual"),
+        "detail slice passed to __nyx_stub_http_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn rust_http_shim_recorder_is_noop_without_log_env() {
+    if !cargo_available() {
+        eprintln!("SKIP: cargo not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("rust/http/vuln/main.rs"))
+        .expect("read rust fragment");
+    let source = wrap_rust_fragment(&fragment, rust_probe_shim());
+
+    let crate_dir = workdir.path().join("driver_no_log");
+    std::fs::create_dir_all(&crate_dir).expect("create crate dir");
+    std::fs::write(crate_dir.join("Cargo.toml"), RUST_STUB_CARGO_TOML)
+        .expect("write Cargo.toml");
+    std::fs::write(crate_dir.join("main.rs"), source).expect("write main.rs");
+
+    let output = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(crate_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", rust_stub_target_dir())
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env_remove("NYX_HTTP_LOG")
+        .output()
+        .expect("cargo run rust driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_HTTP_LOG; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 

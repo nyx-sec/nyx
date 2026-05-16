@@ -74,6 +74,16 @@ pub enum Prerequisite {
     /// the resolution path skips with a structured reason instead of
     /// failing the test.
     NodeModuleAvailable(&'static str),
+    /// A binary must resolve on `PATH` and respond to `--version` with
+    /// exit code 0, but the binary name can be overridden via an env
+    /// var.  Used by the C / C++ fixture suites where `cc` / `c++` can
+    /// be swapped in for `clang` / `gcc` via `NYX_CC_BIN` / `NYX_CXX_BIN`.
+    /// The env var's *value* (when set) names the binary to probe;
+    /// otherwise `default` is used.
+    CommandAvailableEnvOverride {
+        env_var: &'static str,
+        default: &'static str,
+    },
 }
 
 /// Phase 29 (Track I): why the harness skipped a fixture.  Carried by
@@ -118,6 +128,27 @@ pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
                     .unwrap_or(false);
                 if !ok {
                     return Err(SkipReason::MissingCommand(cmd));
+                }
+            }
+            Prerequisite::CommandAvailableEnvOverride { env_var, default } => {
+                // Resolve binary name from the env var when set; fall
+                // back to `default` so an unset override stays
+                // transparent to the existing acceptance contract.  The
+                // suite under test reads the SAME env var to pick the
+                // binary it will execute, so the prereq probe lines up
+                // with the actual invocation.
+                let env_value = std::env::var(env_var).ok();
+                let bin: &str = match env_value.as_deref() {
+                    Some(v) if !v.is_empty() => v,
+                    _ => default,
+                };
+                let ok = std::process::Command::new(bin)
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if !ok {
+                    return Err(SkipReason::MissingCommand(default));
                 }
             }
             Prerequisite::EnvVar(var) => {

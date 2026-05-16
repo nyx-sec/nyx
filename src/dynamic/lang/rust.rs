@@ -160,7 +160,15 @@ fn is_rust_stdlib(name: &str) -> bool {
 /// the shim's only dep on `std`; matches the
 /// [`crate::dynamic::probe::SinkProbe`] wire format.
 pub fn probe_shim() -> &'static str {
-    r#"
+    // Raw-string delimiter is `r##"..."##` (not `r#"..."#`) so the
+    // body can contain literal `"# ...` byte sequences without
+    // terminating the raw string early.  The Phase 10 stub recorder
+    // helpers below emit hash-prefixed log lines (`"# method: ..."`)
+    // that would otherwise close `r#"..."#` at the first `"#`.  Same
+    // workaround as Java's shim raw string (session 0018) — defensive
+    // so future shim extensions that introduce `"#` substrings drop
+    // in without further bumps.
+    r##"
 // ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──────
 #[allow(dead_code)]
 const __NYX_DENY_SUBSTRINGS: &[&str] = &[
@@ -352,7 +360,90 @@ fn __nyx_install_crash_guard(sink_callee: &'static str) {
 #[cfg(not(unix))]
 #[allow(dead_code)]
 fn __nyx_install_crash_guard(_sink_callee: &'static str) {}
-"#
+
+// Phase 10 (Track D.3) SQL recording helper.  Mirrors the
+// Python/Node/PHP/Go/Ruby/Java siblings: when the verifier spawned a
+// SqlStub it publishes the side-channel log path on `NYX_SQL_LOG`; a
+// sink callsite whose query never reaches the on-the-wire SQLite
+// engine can call this helper to surface the attempted query.  Hash-
+// prefixed detail lines followed by the query line so the host-side
+// merger parses every language stream identically.  No-op when the
+// env var is unset.
+#[allow(dead_code)]
+fn __nyx_stub_sql_record(query: &str, detail: &[(&str, &str)]) {
+    use std::io::Write;
+    let path = match std::env::var("NYX_SQL_LOG") {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let mut buf = String::with_capacity(128);
+    for (k, v) in detail {
+        buf.push_str("# ");
+        buf.push_str(k);
+        buf.push_str(": ");
+        buf.push_str(v);
+        buf.push('\n');
+    }
+    buf.push_str(query);
+    if !query.ends_with('\n') {
+        buf.push('\n');
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(buf.as_bytes());
+    }
+}
+
+// Phase 10 (Track D.3) HTTP recording helper.  When the verifier
+// spawned an HttpStub it publishes the side-channel log path on
+// `NYX_HTTP_LOG`; a sink callsite whose outbound request never
+// reaches the on-the-wire listener (DNS-mocked, network-isolated
+// sandbox, pre-flight check) can call this helper to surface the
+// attempted call.  Format matches the SQL helper so the host-side
+// merger parses both streams identically.  No-op when the env var
+// is unset.
+#[allow(dead_code)]
+fn __nyx_stub_http_record(method: &str, url: &str, body: Option<&str>, detail: &[(&str, &str)]) {
+    use std::io::Write;
+    let path = match std::env::var("NYX_HTTP_LOG") {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let mut buf = String::with_capacity(128);
+    buf.push_str("# method: ");
+    buf.push_str(method);
+    buf.push('\n');
+    buf.push_str("# url: ");
+    buf.push_str(url);
+    buf.push('\n');
+    if let Some(b) = body {
+        buf.push_str("# body: ");
+        buf.push_str(b);
+        buf.push('\n');
+    }
+    for (k, v) in detail {
+        buf.push_str("# ");
+        buf.push_str(k);
+        buf.push_str(": ");
+        buf.push_str(v);
+        buf.push('\n');
+    }
+    buf.push_str(method);
+    buf.push(' ');
+    buf.push_str(url);
+    buf.push('\n');
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(buf.as_bytes());
+    }
+}
+"##
 }
 
 // ── Phase 16: shape detector ─────────────────────────────────────────────────
@@ -924,6 +1015,34 @@ mod tests {
                 .any(|(k, v)| k == ChainStepHarness::PREV_OUTPUT_ENV && v == "prev-output"),
             "prev_output must be threaded through extra_env, got {:?}",
             step.extra_env,
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_recorders() {
+        // Phase 10 (Track D.3): the Rust probe shim ships the SQL +
+        // HTTP recording helpers alongside the existing crash-guard /
+        // probe-emit machinery so a sink callsite can surface
+        // attempted boundary calls when the on-the-wire stub never
+        // sees them.  Asserts the helper names + the `NYX_*_LOG` env
+        // hooks are present so future raw-string-delimiter regressions
+        // (`r#"..."#` → `r##"..."##`) get caught early.
+        let shim = probe_shim();
+        assert!(
+            shim.contains("fn __nyx_stub_sql_record("),
+            "Rust probe shim must define __nyx_stub_sql_record",
+        );
+        assert!(
+            shim.contains("fn __nyx_stub_http_record("),
+            "Rust probe shim must define __nyx_stub_http_record",
+        );
+        assert!(
+            shim.contains("NYX_SQL_LOG"),
+            "SQL recorder must read NYX_SQL_LOG",
+        );
+        assert!(
+            shim.contains("NYX_HTTP_LOG"),
+            "HTTP recorder must read NYX_HTTP_LOG",
         );
     }
 
