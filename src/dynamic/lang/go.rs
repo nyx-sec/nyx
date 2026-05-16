@@ -412,6 +412,7 @@ fn generate_main_go(spec: &HarnessSpec, shape: GoShape) -> String {
     let pre_call = pre_call_setup(spec);
     let imports = imports_for_shape(shape);
     let invocation = invoke_for_shape(spec, shape, &entry_fn);
+    let shim = probe_shim();
 
     format!(
         r#"// Nyx dynamic harness — auto-generated, do not edit (Phase 15 — GoShape::{shape:?}).
@@ -419,10 +420,12 @@ package main
 
 import (
 {imports})
-
+{shim}
 func main() {{
 	payload := nyxPayload()
 	_ = payload
+	__nyx_install_crash_guard("{entry_fn}")
+	defer __nyx_recover_crash("{entry_fn}")()
 {pre_call}{invocation}
 }}
 
@@ -442,27 +445,57 @@ func nyxPayload() string {{
         imports = imports,
         pre_call = pre_call,
         invocation = invocation,
+        shim = shim,
+        entry_fn = entry_fn,
     )
 }
 
-fn imports_for_shape(shape: GoShape) -> &'static str {
-    match shape {
-        GoShape::Generic => {
-            "\t\"encoding/base64\"\n\t\"os\"\n\n\t\"nyx-harness/entry\"\n"
-        }
-        GoShape::HttpHandlerFunc => {
-            "\t\"encoding/base64\"\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"os\"\n\t\"strings\"\n\n\t\"nyx-harness/entry\"\n"
-        }
-        GoShape::GinHandler => {
-            "\t\"encoding/base64\"\n\t\"net/http\"\n\t\"net/http/httptest\"\n\t\"os\"\n\t\"strings\"\n\n\t\"nyx-harness/entry\"\n\t\"nyx-harness/entry/gin\"\n"
-        }
-        GoShape::FlagParseCli => {
-            "\t\"encoding/base64\"\n\t\"os\"\n\n\t\"nyx-harness/entry\"\n"
-        }
-        GoShape::FuzzVariadic => {
-            "\t\"encoding/base64\"\n\t\"os\"\n\n\t\"nyx-harness/entry\"\n"
-        }
+/// Imports required by the spliced probe shim.  Always present, deduped
+/// against per-shape additions in [`imports_for_shape`].
+const SHIM_IMPORTS: &[&str] = &[
+    "encoding/json",
+    "os/signal",
+    "strings",
+    "syscall",
+    "time",
+];
+
+fn imports_for_shape(shape: GoShape) -> String {
+    let stdlib_base: &[&str] = &["encoding/base64", "os"];
+    let shape_extras: &[&str] = match shape {
+        GoShape::Generic | GoShape::FlagParseCli | GoShape::FuzzVariadic => &[],
+        GoShape::HttpHandlerFunc => &["net/http", "net/http/httptest"],
+        GoShape::GinHandler => &["net/http", "net/http/httptest"],
+    };
+    let local_pkgs: &[&str] = match shape {
+        GoShape::GinHandler => &["nyx-harness/entry", "nyx-harness/entry/gin"],
+        _ => &["nyx-harness/entry"],
+    };
+
+    let mut stdlib: Vec<&str> = stdlib_base
+        .iter()
+        .copied()
+        .chain(shape_extras.iter().copied())
+        .chain(SHIM_IMPORTS.iter().copied())
+        .collect();
+    stdlib.sort_unstable();
+    stdlib.dedup();
+
+    let mut out = String::new();
+    for path in &stdlib {
+        out.push('\t');
+        out.push('"');
+        out.push_str(path);
+        out.push_str("\"\n");
     }
+    out.push('\n');
+    for path in local_pkgs {
+        out.push('\t');
+        out.push('"');
+        out.push_str(path);
+        out.push_str("\"\n");
+    }
+    out
 }
 
 fn pre_call_setup(spec: &HarnessSpec) -> String {
@@ -771,5 +804,46 @@ mod tests {
         let spec = make_spec_with(EntryKind::Function, "FuzzHandle", "entry.go");
         let src = generate_main_go(&spec, GoShape::FuzzVariadic);
         assert!(src.contains("entry.FuzzHandle([]byte(payload))"));
+    }
+
+    #[test]
+    fn emit_splices_probe_shim_and_installs_crash_guard() {
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("__nyx_probe shim (Phase 06 — Track C.1"),
+            "probe_shim banner missing from generated main.go — splicing regressed",
+        );
+        assert!(
+            h.source.contains("func __nyx_install_crash_guard("),
+            "install_crash_guard definition missing from generated main.go",
+        );
+        assert!(
+            h.source.contains("__nyx_install_crash_guard(\"HandleRequest\")"),
+            "install_crash_guard call site missing or wrong callee in main()",
+        );
+        let install_pos = h
+            .source
+            .find("__nyx_install_crash_guard(\"HandleRequest\")")
+            .unwrap();
+        let payload_pos = h.source.find("payload := nyxPayload()").unwrap();
+        let invoke_pos = h.source.find("entry.HandleRequest(payload)").unwrap();
+        assert!(
+            payload_pos < install_pos && install_pos < invoke_pos,
+            "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn emit_includes_shim_imports_in_import_block() {
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        for path in SHIM_IMPORTS {
+            let quoted = format!("\"{path}\"");
+            assert!(
+                h.source.contains(&quoted),
+                "expected shim-required import {quoted} in generated main.go",
+            );
+        }
     }
 }

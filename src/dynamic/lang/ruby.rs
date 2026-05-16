@@ -351,10 +351,12 @@ fn generate_source(spec: &HarnessSpec, shape: RubyShape) -> String {
     let entry_fn = &spec.entry_name;
     let pre_call = build_pre_call(spec);
     let invocation = invoke_for_shape(spec, shape, entry_fn);
+    let shim = probe_shim();
+    let crash_callee = if entry_fn.is_empty() { "main" } else { entry_fn.as_str() };
 
     format!(
         r#"# Nyx dynamic harness — auto-generated, do not edit (Phase 15 — RubyShape::{shape:?}).
-
+{shim}
 # ── Payload loading ──────────────────────────────────────────────────────────
 def nyx_payload
   v = ENV['NYX_PAYLOAD']
@@ -372,6 +374,12 @@ def nyx_payload
 end
 
 $nyx_payload = nyx_payload
+
+# Phase 08 sink-site signal trap: install AFTER payload decode so a crash
+# inside `nyx_payload` writes no Crash probe and routes the verifier to
+# `Inconclusive(UnrelatedCrash)`.  A fatal signal inside the entry call
+# below DOES fire the handler and writes a Crash probe to `NYX_PROBE_PATH`.
+__nyx_install_crash_guard('{crash_callee}')
 {pre_call}
 # ── Sinatra route registry ──────────────────────────────────────────────────
 $nyx_sinatra_routes ||= []
@@ -733,5 +741,31 @@ mod tests {
         assert_eq!(parse_first_class_name("class Foo\nend\n"), Some("Foo".to_owned()));
         assert_eq!(parse_first_class_name("class Bar < Base\nend\n"), Some("Bar".to_owned()));
         assert_eq!(parse_first_class_name("def foo\nend\n"), None);
+    }
+
+    #[test]
+    fn emit_splices_probe_shim_and_installs_crash_guard() {
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("__nyx_probe shim (Phase 06 — Track C.1"),
+            "probe_shim banner missing from generated harness.rb — splicing regressed",
+        );
+        assert!(
+            h.source.contains("def __nyx_install_crash_guard(sink_callee)"),
+            "install_crash_guard definition missing from generated harness.rb",
+        );
+        assert!(
+            h.source.contains("__nyx_install_crash_guard('login')"),
+            "install_crash_guard call site missing or wrong callee in harness body",
+        );
+        let install_pos = h.source.find("__nyx_install_crash_guard('login')").unwrap();
+        let payload_pos = h.source.find("$nyx_payload = nyx_payload").unwrap();
+        // The invocation is `login($nyx_payload)` for the default Generic shape.
+        let invoke_pos = h.source.find("login($nyx_payload)").unwrap();
+        assert!(
+            payload_pos < install_pos && install_pos < invoke_pos,
+            "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
     }
 }

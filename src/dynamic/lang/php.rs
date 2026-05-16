@@ -359,11 +359,13 @@ fn generate_source(spec: &HarnessSpec, shape: PhpShape) -> String {
     let pre_call = build_pre_call(spec, shape);
     let entry_block = build_entry_block(shape);
     let call_expr = build_call_expr(spec, shape, entry_fn);
+    let shim = probe_shim();
+    let crash_callee = if entry_fn.is_empty() { "main" } else { entry_fn.as_str() };
 
     format!(
         r#"<?php
 // Nyx dynamic harness — auto-generated, do not edit (Phase 15 — PhpShape::{shape:?}).
-
+{shim}
 // ── Payload loading ────────────────────────────────────────────────────────────
 function nyx_payload(): string {{
     $v = getenv('NYX_PAYLOAD');
@@ -378,6 +380,12 @@ function nyx_payload(): string {{
 }}
 
 $payload = nyx_payload();
+
+// Phase 08 sink-site signal handler: install AFTER payload decode so a crash
+// inside `nyx_payload` writes no Crash probe and routes the verifier to
+// `Inconclusive(UnrelatedCrash)`.  A fatal-error inside the entry call below
+// DOES fire the handler and writes a Crash probe to `NYX_PROBE_PATH`.
+__nyx_install_crash_guard('{crash_callee}');
 
 // ── Pre-call setup ─────────────────────────────────────────────────────────────
 {pre_call}
@@ -397,6 +405,8 @@ try {{
         pre_call = pre_call,
         entry_block = entry_block,
         call_expr = call_expr,
+        shim = shim,
+        crash_callee = crash_callee,
     )
 }
 
@@ -672,5 +682,34 @@ mod tests {
         let src = generate_source(&spec, PhpShape::TopLevelScript);
         assert!(src.contains("require_once"));
         assert!(src.contains("$result = null"));
+    }
+
+    #[test]
+    fn emit_splices_probe_shim_and_installs_crash_guard() {
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("__nyx_probe shim (Phase 06 — Track C.1"),
+            "probe_shim banner missing from generated harness.php — splicing regressed",
+        );
+        assert!(
+            h.source
+                .contains("function __nyx_install_crash_guard(string $sinkCallee)"),
+            "install_crash_guard definition missing from generated harness.php",
+        );
+        assert!(
+            h.source.contains("__nyx_install_crash_guard('login');"),
+            "install_crash_guard call site missing or wrong callee in harness body",
+        );
+        let install_pos = h
+            .source
+            .find("__nyx_install_crash_guard('login');")
+            .unwrap();
+        let payload_pos = h.source.find("$payload = nyx_payload();").unwrap();
+        let invoke_pos = h.source.find("login($payload)").unwrap();
+        assert!(
+            payload_pos < install_pos && install_pos < invoke_pos,
+            "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
     }
 }
