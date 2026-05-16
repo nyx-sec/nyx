@@ -273,7 +273,7 @@ fn is_go_stdlib(path: &str) -> bool {
 /// Track C.1).  Variadic over `string` so callers can pass any number of
 /// captured args at the sink site.
 pub fn probe_shim() -> &'static str {
-    r#"
+    r##"
 // ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──────
 var __nyx_deny_substrings = []string{
     "TOKEN","SECRET","PASSWORD","PASSWD","API_KEY","APIKEY","PRIVATE_KEY",
@@ -402,7 +402,38 @@ func __nyx_recover_crash(sinkCallee string) func() {
         }
     }
 }
-"#
+
+// Phase 10 (Track D.3) HTTP recording helper.  When the verifier
+// spawned an HttpStub it publishes the side-channel log path
+// through NYX_HTTP_LOG; a sink call site whose outbound request
+// never reaches the on-the-wire listener (DNS-mocked,
+// network-isolated sandbox, pre-flight check) can call this helper
+// to surface the attempted call.  Hash-prefixed detail lines plus a
+// trailing summary line match the Python / Node / PHP siblings so
+// the host-side HttpStub merger parses all four streams identically.
+// No-op when NYX_HTTP_LOG is unset so the same harness still runs
+// cleanly under modes that did not spawn a stub.
+func __nyx_stub_http_record(method, url, body string, detail map[string]string) {
+    p := os.Getenv("NYX_HTTP_LOG")
+    if p == "" {
+        return
+    }
+    f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    if err != nil {
+        return
+    }
+    defer f.Close()
+    f.WriteString("# method: " + method + "\n")
+    f.WriteString("# url: " + url + "\n")
+    if body != "" {
+        f.WriteString("# body: " + body + "\n")
+    }
+    for k, v := range detail {
+        f.WriteString("# " + k + ": " + v + "\n")
+    }
+    f.WriteString(method + " " + url + "\n")
+}
+"##
 }
 
 /// Emit a Go harness for `spec`.
@@ -875,6 +906,19 @@ mod tests {
                 "expected shim-required import {quoted} in generated main.go",
             );
         }
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_http_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("func __nyx_stub_http_record"),
+            "Go probe shim must define __nyx_stub_http_record"
+        );
+        assert!(
+            shim.contains("NYX_HTTP_LOG"),
+            "stub recorder must read NYX_HTTP_LOG"
+        );
     }
 
     #[test]

@@ -20,6 +20,7 @@
 
 #![cfg(feature = "dynamic")]
 
+use nyx_scanner::dynamic::lang::go::probe_shim as go_probe_shim;
 use nyx_scanner::dynamic::lang::javascript::probe_shim as node_probe_shim;
 use nyx_scanner::dynamic::lang::php::probe_shim as php_probe_shim;
 use nyx_scanner::dynamic::lang::python::probe_shim as python_probe_shim;
@@ -50,6 +51,39 @@ fn php_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+fn go_available() -> bool {
+    Command::new("go")
+        .arg("version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Wrap the body-only Go HTTP fixture in a complete `package main`
+/// program: stdlib imports needed by the spliced probe shim plus the
+/// fragment's own `fmt` / `os` references, the shim itself, and the
+/// fragment as the body of `func main`.  Comments inside the body
+/// remain valid Go.
+fn wrap_go_fragment(body: &str, shim: &str) -> String {
+    format!(
+        "package main\n\
+         \n\
+         import (\n\
+         \t\"encoding/json\"\n\
+         \t\"fmt\"\n\
+         \t\"os\"\n\
+         \t\"os/signal\"\n\
+         \t\"strings\"\n\
+         \t\"syscall\"\n\
+         \t\"time\"\n\
+         )\n\
+         {shim}\n\
+         func main() {{\n\
+         {body}\n\
+         }}\n"
+    )
 }
 
 fn fixture_path(rel: &str) -> PathBuf {
@@ -641,6 +675,110 @@ fn php_http_shim_recorder_is_noop_without_log_env() {
         .env_remove("NYX_HTTP_LOG")
         .output()
         .expect("php driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_HTTP_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
+fn go_http_stub_captures_attempted_outbound_via_shim_recorder() {
+    // Phase 10 (Track D.3) HTTP recording: Go leg of the side-channel
+    // `__nyx_stub_http_record` helper.  Mirrors the Python HTTP test —
+    // records an SSRF attempt without issuing the actual network call.
+    if !go_available() {
+        eprintln!("SKIP: go not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("HttpStub must publish a recording endpoint");
+
+    // Go fragments need wrapping: the file under tests/dynamic_fixtures
+    // is a body-only fragment, not a standalone program.
+    let fragment = std::fs::read_to_string(fixture_path("go/http/vuln/main.go"))
+        .expect("read go fragment");
+    let combined = wrap_go_fragment(&fragment, go_probe_shim());
+
+    let script_path = workdir.path().join("driver_http.go");
+    std::fs::write(&script_path, combined).expect("write go driver");
+
+    let output = Command::new("go")
+        .arg("run")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("go driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "HttpStub must capture at least one event after the Go shim recorder fires"
+    );
+    let hit = events
+        .iter()
+        .find(|e| e.summary.contains("169.254.169.254"))
+        .expect("recorded URL must contain the SSRF marker");
+    assert_eq!(
+        hit.detail.get("method").map(String::as_str),
+        Some("GET"),
+        "method detail must surface on the recorded event"
+    );
+    assert_eq!(
+        hit.detail.get("url").map(String::as_str),
+        Some("http://169.254.169.254/latest/meta-data/"),
+    );
+    assert_eq!(
+        hit.detail.get("driver").map(String::as_str),
+        Some("net/http"),
+        "detail map passed to __nyx_stub_http_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn go_http_shim_recorder_is_noop_without_log_env() {
+    if !go_available() {
+        eprintln!("SKIP: go not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("go/http/vuln/main.go"))
+        .expect("read go fragment");
+    let combined = wrap_go_fragment(&fragment, go_probe_shim());
+
+    let script_path = workdir.path().join("driver_http_no_log.go");
+    std::fs::write(&script_path, combined).expect("write go driver");
+
+    let output = Command::new("go")
+        .arg("run")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env_remove("NYX_HTTP_LOG")
+        .output()
+        .expect("go driver");
     assert!(
         output.status.success(),
         "driver must exit 0 even without NYX_HTTP_LOG; stderr = {}",

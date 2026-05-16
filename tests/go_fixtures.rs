@@ -455,19 +455,11 @@ mod go_fixture_tests {
 
 #[cfg(feature = "dynamic")]
 mod phase15_shape_tests {
-    use crate::common::fixture_harness::run_shape_fixture_lang;
+    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
     use nyx_scanner::symbol::Lang;
-
-    fn go_available() -> bool {
-        std::process::Command::new("go")
-            .arg("version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
 
     fn assert_confirmed(shape: &str, result: &VerifyResult) {
         assert_eq!(
@@ -504,8 +496,15 @@ mod phase15_shape_tests {
         sink_line: u32,
         kind: EntryKind,
         slot: PayloadSlot,
-    ) -> VerifyResult {
-        run_shape_fixture_lang(
+    ) -> Option<VerifyResult> {
+        // Phase 29 (Track I): replace the bespoke `go_available()` +
+        // per-test `eprintln!("SKIP ..."); return;` blocks with the
+        // structured `Prerequisite::CommandAvailable("go")` gate.  The
+        // helper emits the same SKIP line and returns `None` so each
+        // test can short-circuit via `let Some(r) = run(...) else {
+        // return; };`.
+        run_shape_fixture_lang_or_skip(
+            &[Prerequisite::CommandAvailable("go")],
             Lang::Go, "go", shape, file, func, cap, sink_line, kind, slot,
         )
     }
@@ -514,27 +513,23 @@ mod phase15_shape_tests {
 
     #[test]
     fn handler_func_vuln_is_confirmed() {
-        if !go_available() {
-            eprintln!("SKIP: go not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "handler_func", "vuln.go", "Handle", Cap::CODE_EXEC, 17,
             EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("handler_func", &r);
     }
 
     #[test]
     fn handler_func_benign_not_confirmed() {
-        if !go_available() {
-            eprintln!("SKIP: go not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "handler_func", "benign.go", "Handle", Cap::CODE_EXEC, 14,
             EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("handler_func", &r);
     }
 
@@ -542,27 +537,23 @@ mod phase15_shape_tests {
 
     #[test]
     fn gin_handler_vuln_is_confirmed() {
-        if !go_available() {
-            eprintln!("SKIP: go not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "gin_handler", "vuln.go", "Handle", Cap::CODE_EXEC, 16,
             EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("gin_handler", &r);
     }
 
     #[test]
     fn gin_handler_benign_not_confirmed() {
-        if !go_available() {
-            eprintln!("SKIP: go not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "gin_handler", "benign.go", "Handle", Cap::CODE_EXEC, 14,
             EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("gin_handler", &r);
     }
 
@@ -570,27 +561,23 @@ mod phase15_shape_tests {
 
     #[test]
     fn flag_cli_vuln_is_confirmed() {
-        if !go_available() {
-            eprintln!("SKIP: go not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "flag_cli", "vuln.go", "Run", Cap::CODE_EXEC, 19,
             EntryKind::CliSubcommand, PayloadSlot::Argv(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("flag_cli", &r);
     }
 
     #[test]
     fn flag_cli_benign_not_confirmed() {
-        if !go_available() {
-            eprintln!("SKIP: go not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "flag_cli", "benign.go", "Run", Cap::CODE_EXEC, 15,
             EntryKind::CliSubcommand, PayloadSlot::Argv(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("flag_cli", &r);
     }
 
@@ -598,27 +585,23 @@ mod phase15_shape_tests {
 
     #[test]
     fn fuzz_variadic_vuln_is_confirmed() {
-        if !go_available() {
-            eprintln!("SKIP: go not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "fuzz_variadic", "vuln.go", "FuzzHandle", Cap::CODE_EXEC, 14,
             EntryKind::Function, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("fuzz_variadic", &r);
     }
 
     #[test]
     fn fuzz_variadic_benign_not_confirmed() {
-        if !go_available() {
-            eprintln!("SKIP: go not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "fuzz_variadic", "benign.go", "FuzzHandle", Cap::CODE_EXEC, 14,
             EntryKind::Function, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("fuzz_variadic", &r);
     }
 }
