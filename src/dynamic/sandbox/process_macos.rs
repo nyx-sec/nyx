@@ -125,18 +125,21 @@ const PROFILE_SOURCES: &[(&str, &str)] = &[
     ),
     ("ssrf", include_str!("../sandbox_profiles/ssrf.sb")),
     ("deserialize", include_str!("../sandbox_profiles/deserialize.sb")),
+    ("xxe", include_str!("../sandbox_profiles/xxe.sb")),
 ];
 
 /// Cap → profile-name dispatch.  The most restrictive matching profile
 /// wins: filesystem caps outrank network caps outrank CODE_EXEC outranks
-/// DESERIALIZE.  Filesystem-shaped caps (`FILE_IO`, `SQL_QUERY` — DBs are
-/// files in WORKDIR) map to `path_traversal`; outbound-network-shaped caps
-/// (`SSRF`, `HEADER_INJECTION`, `OPEN_REDIRECT`, `UNVALIDATED_REDIRECT`,
-/// `LDAP_INJECTION`, `XPATH_INJECTION`) map to `ssrf` since they share the
-/// "outbound allowed; host secrets denied" shape.  Caps with no shared
-/// shape (CRYPTO, AUTH, RACE, MEMORY_SAFETY, XSS, XXE) fall back to `base`
-/// — XXE in particular would want a network-deny profile for entity
-/// resolution, which the bundled `.sb` set does not yet ship.
+/// DESERIALIZE outranks XXE.  Filesystem-shaped caps (`FILE_IO`,
+/// `SQL_QUERY` — DBs are files in WORKDIR) map to `path_traversal`;
+/// outbound-network-shaped caps (`SSRF`, `HEADER_INJECTION`,
+/// `OPEN_REDIRECT`, `UNVALIDATED_REDIRECT`, `LDAP_INJECTION`,
+/// `XPATH_INJECTION`) map to `ssrf` since they share the "outbound
+/// allowed; host secrets denied" shape.  `XXE` maps to its own profile
+/// which denies non-loopback outbound (entity fetch) on top of the
+/// shared secret-file denylist.  Remaining caps with no shared shape
+/// (CRYPTO, AUTH, RACE, MEMORY_SAFETY, XSS) fall back to `base` because
+/// they are code-path bugs rather than sandbox-boundary sinks.
 pub fn profile_for_caps(caps: u32) -> &'static str {
     // Mirror the bit positions declared in `src/labels/mod.rs`.
     const FILE_IO: u32 = 1 << 5;
@@ -149,6 +152,7 @@ pub fn profile_for_caps(caps: u32) -> &'static str {
     const HEADER_INJECTION: u32 = 1 << 16;
     const OPEN_REDIRECT: u32 = 1 << 17;
     const UNVALIDATED_REDIRECT: u32 = 1 << 18;
+    const XXE: u32 = 1 << 19;
 
     const FS_SHAPED: u32 = FILE_IO | SQL_QUERY;
     const NET_SHAPED: u32 =
@@ -162,6 +166,8 @@ pub fn profile_for_caps(caps: u32) -> &'static str {
         "cmdi"
     } else if caps & DESERIALIZE != 0 {
         "deserialize"
+    } else if caps & XXE != 0 {
+        "xxe"
     } else {
         "base"
     }
@@ -371,14 +377,42 @@ mod tests {
 
     #[test]
     fn profile_for_caps_falls_back_to_base_for_unmapped_caps() {
-        // CRYPTO / AUTH / RACE / MEMORY_SAFETY / XSS / XXE do not yet
-        // have a cap-specific .sb profile.  XXE in particular would want
-        // a network-deny profile (entity resolution), but the bundled .sb
-        // set does not ship one — track in deferred.md.
+        // CRYPTO / AUTH / RACE / MEMORY_SAFETY / XSS are code-path bugs
+        // without a sandbox-boundary kill path, so they fall back to the
+        // baseline secret-file denylist.
         const CRYPTO: u32 = 1 << 11;
-        const XXE: u32 = 1 << 19;
+        const AUTH: u32 = 1 << 12;
+        const RACE: u32 = 1 << 20;
+        const MEMORY_SAFETY: u32 = 1 << 21;
+        const XSS: u32 = 1 << 6;
         assert_eq!(profile_for_caps(CRYPTO), "base");
-        assert_eq!(profile_for_caps(XXE), "base");
+        assert_eq!(profile_for_caps(AUTH), "base");
+        assert_eq!(profile_for_caps(RACE), "base");
+        assert_eq!(profile_for_caps(MEMORY_SAFETY), "base");
+        assert_eq!(profile_for_caps(XSS), "base");
+    }
+
+    #[test]
+    fn profile_for_caps_routes_xxe_to_xxe_profile() {
+        // XXE entity resolution kills via an outbound HTTP / DNS fetch
+        // against an attacker-controlled SYSTEM URL.  The dedicated
+        // profile denies non-loopback outbound so the entity fetch faults
+        // before the parser hands the leaked data back.
+        const XXE: u32 = 1 << 19;
+        const DESERIALIZE: u32 = 1 << 8;
+        assert_eq!(profile_for_caps(XXE), "xxe");
+        // DESERIALIZE outranks XXE in the dispatch chain (gadget chains
+        // commonly subsume entity-style payloads).
+        assert_eq!(profile_for_caps(XXE | DESERIALIZE), "deserialize");
+    }
+
+    #[test]
+    fn profile_path_materialises_xxe_profile_source() {
+        let path = profile_path("xxe").expect("xxe profile");
+        let contents = std::fs::read_to_string(&path).expect("read .sb");
+        assert!(contents.contains("(version 1)"));
+        assert!(contents.contains("(deny network-outbound)"));
+        assert!(contents.contains("/etc/passwd"));
     }
 
     #[test]

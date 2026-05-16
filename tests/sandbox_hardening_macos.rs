@@ -107,6 +107,39 @@ except Exception as exc:
 
     // ── Tests ─────────────────────────────────────────────────────────────────
 
+    /// XXE probe: simulates an XML parser issuing the outbound HTTP
+    /// fetch for an external SYSTEM entity.  Targets TEST-NET-1 so the
+    /// DNS layer is sidestepped; under the `xxe.sb` profile the
+    /// outbound connect is denied with EPERM and the probe exits 7.
+    /// Under a default-allow sandbox the connect attempt proceeds and
+    /// the probe exits 0 with the `network-attempted` marker.
+    ///
+    /// The probe source is read in at compile time and written into
+    /// the harness workdir at run time so the sandbox-exec
+    /// `(subpath "/Users")` deny does not block the script load.
+    const XXE_PROBE_SOURCE: &str =
+        include_str!("dynamic_fixtures/hardening/xxe_probe.py");
+
+    fn write_xxe_probe(workdir: &Path) -> PathBuf {
+        let path = workdir.join("xxe_probe.py");
+        std::fs::write(&path, XXE_PROBE_SOURCE).expect("write xxe probe");
+        path
+    }
+
+    fn build_xxe_harness(workdir: &Path) -> BuiltHarness {
+        let probe = write_xxe_probe(workdir);
+        BuiltHarness {
+            workdir: workdir.to_path_buf(),
+            command: vec![
+                "/usr/bin/python3".to_owned(),
+                probe.to_string_lossy().into_owned(),
+            ],
+            env: vec![],
+            source: String::new(),
+            entry_source: String::new(),
+        }
+    }
+
     /// Profile selection: `FILE_IO` selects `path_traversal`, etc.
     #[test]
     fn profile_for_caps_matches_phase18_table() {
@@ -114,9 +147,11 @@ except Exception as exc:
         const DESERIALIZE: u32 = 1 << 8;
         const SSRF: u32 = 1 << 9;
         const CODE_EXEC: u32 = 1 << 10;
+        const XXE: u32 = 1 << 19;
         assert_eq!(profile_for_caps(FILE_IO), "path_traversal");
         assert_eq!(profile_for_caps(SSRF), "ssrf");
         assert_eq!(profile_for_caps(CODE_EXEC), "cmdi");
+        assert_eq!(profile_for_caps(XXE), "xxe");
         assert_eq!(profile_for_caps(DESERIALIZE), "deserialize");
         assert_eq!(profile_for_caps(0), "base");
     }
@@ -231,6 +266,71 @@ except Exception as exc:
             "expected refuse_filesystem_confirm=true when sandbox-exec is missing on macOS"
         );
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+    }
+
+    /// Phase 18 acceptance (c): the XXE entity-resolution kill path
+    /// runs the probe under the `xxe.sb` profile and asserts the
+    /// outbound TCP connect against TEST-NET-1 is denied at the
+    /// kernel layer (EPERM).  Sanity-cross-checked against the
+    /// `standard` profile run: without the wrap, the same probe gets
+    /// a non-EPERM error class (or a stub-loopback connect succeeds)
+    /// and exits 0 with the `network-attempted` marker.
+    #[test]
+    fn xxe_outbound_blocked_under_strict_xxe_profile() {
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+        if !sandbox_exec_available() {
+            eprintln!("SKIP: /usr/bin/sandbox-exec missing — cannot exercise xxe profile");
+            return;
+        }
+        const XXE: u32 = 1 << 19;
+        let tmp = workdir();
+        let harness = build_xxe_harness(tmp.path());
+        let opts = strict_opts(XXE);
+        let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
+        let stdout = stdout_string(&result);
+        eprintln!("stdout under xxe profile:\n{stdout}");
+        let outcome = macos_outcome(&result).expect("hardening outcome recorded");
+        assert_eq!(outcome.level, HardeningLevel::Sandboxed);
+        assert_eq!(outcome.profile, "xxe");
+        assert!(
+            stdout.contains("xxe:network-denied"),
+            "expected sandbox-exec to deny outbound connect with EPERM; stdout:\n{stdout}"
+        );
+        assert_eq!(
+            result.exit_code,
+            Some(7),
+            "probe should exit 7 on EPERM-denied connect; stdout:\n{stdout}"
+        );
+    }
+
+    /// Cross-check: the same probe under the `standard` profile (no
+    /// sandbox-exec wrap) does not receive EPERM on the outbound
+    /// connect.  This guards against a future regression where every
+    /// fixture starts surfacing EPERM and the `xxe` test passes
+    /// vacuously.
+    #[test]
+    fn xxe_probe_under_standard_does_not_surface_eperm() {
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+        let tmp = workdir();
+        let harness = build_xxe_harness(tmp.path());
+        let opts = standard_opts();
+        let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
+        let stdout = stdout_string(&result);
+        eprintln!("stdout under standard:\n{stdout}");
+        assert!(
+            result.hardening_outcome.is_none(),
+            "standard profile should not produce a hardening outcome",
+        );
+        // The probe should NOT report EPERM under the unwrapped run —
+        // it should report `network-attempted` (typical) or
+        // `probe-error` (extremely unlikely).  EPERM here would mean
+        // a host-level firewall is independently denying the syscall,
+        // which would mask the sandbox effect.
+        assert!(
+            !stdout.contains("xxe:network-denied"),
+            "standard profile produced an EPERM signal — host firewall \
+             may be masking the sandbox effect; stdout:\n{stdout}"
+        );
     }
 
     /// Companion to the case above: with `sandbox-exec` reachable the

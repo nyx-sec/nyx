@@ -1,0 +1,43 @@
+;; Phase 18 (Track E.2) — XXE profile.
+;;
+;; XML eXternal Entity (XXE) payloads ship malicious DOCTYPE blocks
+;; that declare a parameter entity whose SYSTEM identifier points at
+;; an attacker-controlled URL (`http://attacker.example/leak.dtd`) or
+;; a host secret (`file:///etc/passwd`).  When the parser resolves the
+;; entity it issues an outbound HTTP request or opens the local file,
+;; either of which surfaces the leak.  This profile blocks both
+;; kill paths while keeping the harness itself reachable:
+;;
+;;   * Outbound non-loopback network is denied so the entity fetch
+;;     against `http://attacker.example/...` cannot leave the host.
+;;     Loopback stays open so `StubHarness` endpoints bound on
+;;     127.0.0.1 / ::1 / localhost remain reachable from the harness.
+;;   * `file://` reads of host secrets (`/etc/passwd` etc.) are
+;;     denied via the standard filesystem denylist.  WORKDIR-local
+;;     reads stay open so the harness can read its own XML input.
+;;
+;; The denylist mirrors the other per-cap profiles' shape; only the
+;; `(deny network-outbound)` block is XXE-specific.
+
+(version 1)
+(allow default)
+
+;; Outbound network: deny by default, re-allow loopback so the
+;; harness ↔ stub IPC over 127.0.0.1 / ::1 keeps working.
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*"))
+
+;; Standard filesystem-escape denylist — shared shape with the other
+;; per-cap profiles.  `file://`-scheme entity reads of these paths
+;; will fault out before the parser hands the contents back.
+(deny file-read*
+    (literal "/etc/passwd")
+    (literal "/etc/master.passwd")
+    (literal "/etc/shadow")
+    (literal "/etc/sudoers")
+    (literal "/private/etc/passwd")
+    (literal "/private/etc/master.passwd")
+    (literal "/private/etc/shadow")
+    (literal "/private/etc/sudoers")
+    (subpath "/Users")
+    (subpath "/Library/Keychains"))
