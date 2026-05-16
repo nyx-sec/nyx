@@ -287,12 +287,19 @@ impl LangEmitter for CppEmitter {
 }
 
 /// Phase 26 — C++ chain-step harness.
+///
+/// Shell-wraps `c++` + run so the compiled binary actually executes
+/// after the build completes (see C-side commentary for the rationale).
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
     let source = "#include <cstdio>\n#include <cstdlib>\n\nint main() {\n    const char *prev = std::getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) std::fputs(prev, stdout);\n    return 0;\n}\n".to_owned();
     ChainStepHarness {
         source,
         filename: "step.cpp".to_owned(),
-        command: vec!["c++".to_owned(), "step.cpp".to_owned(), "-o".to_owned(), "step".to_owned()],
+        command: vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "c++ step.cpp -o step && ./step".to_owned(),
+        ],
         extra_env: prev_output
             .map(|bytes| {
                 vec![(
@@ -328,6 +335,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
 fn generate_main_cpp(spec: &HarnessSpec, shape: CppShape) -> String {
     let invocation = invoke_for_shape(spec, shape);
+    let (entry_open, entry_close) = entry_include_guards(spec);
 
     format!(
         r#"// Nyx dynamic harness — auto-generated, do not edit (Phase 16 — CppShape::{shape:?}).
@@ -341,8 +349,8 @@ fn generate_main_cpp(spec: &HarnessSpec, shape: CppShape) -> String {
 
 static std::string nyx_payload();
 
-#include "entry.cpp"
-
+{entry_open}#include "entry.cpp"
+{entry_close}
 int main(int argc, char *argv[]) {{
     (void)argc; (void)argv;
     std::string payload = nyx_payload();
@@ -390,11 +398,29 @@ static std::string nyx_payload() {{
 "#,
         shape = shape,
         invocation = invocation,
+        entry_open = entry_open,
+        entry_close = entry_close,
     )
 }
 
+/// Preprocessor guards that rename the entry source's `int main(...)` to
+/// `__nyx_entry_main(...)` when the spec entry symbol IS `main`.  Mirrors
+/// the C-side fix; without it the user's `main` collides with the harness's
+/// own `main` at link time.
+fn entry_include_guards(spec: &HarnessSpec) -> (&'static str, &'static str) {
+    if spec.entry_name == "main" {
+        ("#define main __nyx_entry_main\n", "#undef main\n")
+    } else {
+        ("", "")
+    }
+}
+
 fn invoke_for_shape(spec: &HarnessSpec, shape: CppShape) -> String {
-    let entry_fn = &spec.entry_name;
+    let entry_fn: &str = if spec.entry_name == "main" {
+        "__nyx_entry_main"
+    } else {
+        spec.entry_name.as_str()
+    };
     match shape {
         CppShape::FreeFn => match &spec.payload_slot {
             PayloadSlot::EnvVar(name) => format!(
@@ -537,6 +563,35 @@ mod tests {
         let h = emit(&spec).unwrap();
         assert!(h.source.contains("argv_storage.push_back(payload)"));
         assert!(h.source.contains("nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())"));
+    }
+
+    #[test]
+    fn emit_main_argv_renames_main_when_entry_named_main() {
+        // Real-world Track B CLI vuln: spec.entry_name IS "main".  Without
+        // preprocessor rename guards, the entry's `int main(...)` collides
+        // with the harness's own `main` at link time.
+        let mut spec = make_spec(PayloadSlot::Argv(0));
+        spec.entry_kind = EntryKind::CliSubcommand;
+        spec.entry_name = "main".into();
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("#define main __nyx_entry_main"),
+            "rename guard missing",
+        );
+        assert!(h.source.contains("#undef main"), "undef guard missing");
+        assert!(
+            h.source.contains("__nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())"),
+            "harness call site must target the renamed symbol",
+        );
+        assert!(h.source.contains("int main(int argc, char *argv[])"));
+        // Guards must not fire for fixture-style non-main entry names.
+        let mut fixture_spec = make_spec(PayloadSlot::Argv(0));
+        fixture_spec.entry_kind = EntryKind::CliSubcommand;
+        fixture_spec.entry_name = "nyx_entry_main".into();
+        let fh = emit(&fixture_spec).unwrap();
+        assert!(!fh.source.contains("#define main"));
+        assert!(!fh.source.contains("#undef main"));
+        assert!(fh.source.contains("nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())"));
     }
 
     #[test]

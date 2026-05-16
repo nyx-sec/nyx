@@ -83,16 +83,23 @@ impl LangEmitter for JavaEmitter {
 /// Phase 26 — Java chain-step harness.
 ///
 /// Emits a `Step.java` class whose `main` reads `NYX_PREV_OUTPUT` and
-/// forwards it on stdout.  The Java probe shim is class-level and
-/// requires `System`/`java.io.*` imports the chain step already pulls in
-/// implicitly; wiring the full shim is tracked alongside the Phase 14
-/// emitter follow-up about probe shim splicing.
+/// forwards it on stdout.  The command shell-wraps `javac` + `java` so
+/// the step actually runs after the build step completes (the
+/// `ChainStepHarness.command` slot models a single process).  The Java
+/// probe shim is class-level and requires `System` / `java.io.*` imports
+/// the chain step already pulls in implicitly; wiring the full shim is
+/// tracked alongside the Phase 14 emitter follow-up about probe shim
+/// splicing.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
     let source = "public class Step {\n    public static void main(String[] args) {\n        String prev = System.getenv(\"NYX_PREV_OUTPUT\");\n        if (prev == null) prev = \"\";\n        System.out.print(prev);\n    }\n}\n".to_owned();
     ChainStepHarness {
         source,
         filename: "Step.java".to_owned(),
-        command: vec!["java".to_owned(), "Step".to_owned()],
+        command: vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "javac Step.java && java Step".to_owned(),
+        ],
         extra_env: prev_output
             .map(|bytes| {
                 vec![(

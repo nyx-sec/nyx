@@ -403,10 +403,21 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
 pub fn chain_step(prev_output: Option<&[u8]>, is_typescript: bool) -> ChainStepHarness {
     let probe = probe_shim();
     let driver = "\nprocess.stdout.write(process.env.NYX_PREV_OUTPUT || '');\n";
+    // The chain-step source is pure JS even under the TypeScript emitter
+    // — the probe shim uses no TS-specific syntax — so we keep the `.ts`
+    // filename intent (so the workdir reflects which emitter produced
+    // the step) but stage a `.js` sibling and run that.  Without this,
+    // `node step.ts` fails on stock Node before 22.6 (the
+    // `--experimental-strip-types` flag) and on any host that has not
+    // installed `tsx` / `ts-node`.
     let (filename, command) = if is_typescript {
         (
             "step.ts".to_owned(),
-            vec!["node".to_owned(), "step.ts".to_owned()],
+            vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "cp step.ts step.js && node step.js".to_owned(),
+            ],
         )
     } else {
         (

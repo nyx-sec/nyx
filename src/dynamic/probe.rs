@@ -185,10 +185,12 @@ impl ProbeWitness {
     /// the host-side constructor cannot accidentally produce an
     /// unscrubbed / unbounded witness.  Every textual field
     /// (`env_snapshot` values, `cwd`, each `args_repr` entry) is routed
-    /// through the scrubber before the witness is serialised; the
-    /// `payload_bytes` field is left as raw bytes because the curated
-    /// payload corpus is checked into the repo and grepping it is the
-    /// only reliable forensic signal for triage.
+    /// through the scrubber before the witness is serialised, and the
+    /// truncated `payload_bytes` slice is routed through the
+    /// byte-aware [`crate::dynamic::policy::Scrubber::scrub_bytes`] so
+    /// real-world payloads carrying credential tokens are replaced with
+    /// a deterministic same-length placeholder while curated corpus
+    /// payloads pass through unchanged.
     pub fn from_inputs<I, S>(
         env: I,
         cwd: impl Into<String>,
@@ -211,10 +213,12 @@ impl ProbeWitness {
             .collect();
         let scrubbed_callee = scrubber.scrub_string(&callee.into());
         let scrubbed_cwd = scrubber.scrub_string(&cwd.into());
+        let truncated = policy::truncate_payload_bytes(payload);
+        let scrubbed_payload = scrubber.scrub_bytes(truncated);
         Self {
             env_snapshot,
             cwd: scrubbed_cwd,
-            payload_bytes: policy::truncate_payload_bytes(payload).to_vec(),
+            payload_bytes: scrubbed_payload,
             callee: scrubbed_callee,
             args_repr: scrubbed_args,
         }

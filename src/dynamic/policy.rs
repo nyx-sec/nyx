@@ -218,6 +218,37 @@ impl Scrubber {
             text.to_owned()
         }
     }
+
+    /// Scrub raw bytes from a sink-side payload capture.  Returns the
+    /// input unchanged when no project secret pattern matches; on a hit,
+    /// returns a deterministic same-length placeholder derived from the
+    /// blake3 digest of the input so downstream forensic tooling that
+    /// keys on payload length (e.g. corpus-promote diffing) keeps its
+    /// invariants.
+    ///
+    /// The deferred Phase 28 follow-up flagged this gap: the textual
+    /// scrubber already covers `env_snapshot` / `cwd` / `args_repr` /
+    /// `callee`, but `ProbeWitness::payload_bytes` was passed through
+    /// raw because curated corpus payloads are deterministic literals
+    /// known not to contain credentials.  Real-world Track B sinks can
+    /// surface attacker-controlled bytes that contain credentials, and
+    /// this routes that path through the same regex set as everything
+    /// else.
+    pub fn scrub_bytes(&self, bytes: &[u8]) -> Vec<u8> {
+        if !redact::contains_secret(bytes) {
+            return bytes.to_vec();
+        }
+        // Same-length deterministic placeholder: tile the input's blake3
+        // hex digest across `bytes.len()`.  Length is preserved so any
+        // downstream tooling that asserts on payload length (the
+        // `events.jsonl` size budget, the corpus-promote diff) keeps
+        // working; content is replaced with a fixed-vocabulary marker
+        // derived from a one-way hash of the original.
+        let digest = blake3::hash(bytes).to_hex();
+        let hex = digest.as_bytes();
+        debug_assert!(!hex.is_empty(), "blake3 hex digest is never empty");
+        (0..bytes.len()).map(|i| hex[i % hex.len()]).collect()
+    }
 }
 
 /// Hash a matched secret into the `<scrubbed-hash:<prefix>>` shape.
@@ -560,6 +591,47 @@ mod tests {
         let a = s.scrub_string("AKIAFAKETEST00000000");
         let b = s.scrub_string("AKIAFAKETEST11111111");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn scrub_bytes_passes_through_clean_payload() {
+        let s = Scrubber::project_default();
+        let original = b"<script>NYX_XSS_CONFIRMED</script>".to_vec();
+        let out = s.scrub_bytes(&original);
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn scrub_bytes_replaces_credential_payload_same_length() {
+        let s = Scrubber::project_default();
+        let original = b"username=admin&token=AKIAFAKETEST00000000&action=login".to_vec();
+        let out = s.scrub_bytes(&original);
+        assert_eq!(out.len(), original.len(), "same-length contract");
+        assert!(!out.windows(20).any(|w| w == b"AKIAFAKETEST00000000"));
+        assert!(out.iter().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn scrub_bytes_is_deterministic() {
+        let s = Scrubber::project_default();
+        let original = b"AKIAFAKETEST00000000 payload tail".to_vec();
+        let a = s.scrub_bytes(&original);
+        let b = s.scrub_bytes(&original);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn scrub_bytes_differs_for_different_inputs() {
+        let s = Scrubber::project_default();
+        let a = s.scrub_bytes(b"AKIAFAKETEST00000000 alpha");
+        let b = s.scrub_bytes(b"AKIAFAKETEST11111111 alpha");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn scrub_bytes_handles_empty() {
+        let s = Scrubber::project_default();
+        assert_eq!(s.scrub_bytes(&[]), Vec::<u8>::new());
     }
 
     #[test]

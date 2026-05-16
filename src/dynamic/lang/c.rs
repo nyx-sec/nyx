@@ -314,12 +314,20 @@ impl LangEmitter for CEmitter {
 }
 
 /// Phase 26 — C chain-step harness.
+///
+/// Shell-wraps `cc` + run so the compiled binary actually executes after
+/// the build completes — `ChainStepHarness.command` models a single
+/// process, so the build-then-run sequence must collapse to one `sh -c`.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
     let source = "#include <stdio.h>\n#include <stdlib.h>\n\nint main(void) {\n    const char *prev = getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) fputs(prev, stdout);\n    return 0;\n}\n".to_owned();
     ChainStepHarness {
         source,
         filename: "step.c".to_owned(),
-        command: vec!["cc".to_owned(), "step.c".to_owned(), "-o".to_owned(), "step".to_owned()],
+        command: vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "cc step.c -o step && ./step".to_owned(),
+        ],
         extra_env: prev_output
             .map(|bytes| {
                 vec![(
@@ -356,6 +364,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 /// Generate the harness `main.c` for the resolved shape.
 fn generate_main_c(spec: &HarnessSpec, shape: CShape) -> String {
     let invocation = invoke_for_shape(spec, shape);
+    let (entry_open, entry_close) = entry_include_guards(spec);
 
     format!(
         r#"/* Nyx dynamic harness — auto-generated, do not edit (Phase 16 — CShape::{shape:?}). */
@@ -370,8 +379,8 @@ fn generate_main_c(spec: &HarnessSpec, shape: CShape) -> String {
  * compilation unit. */
 static char *nyx_payload(void);
 
-#include "entry.c"
-
+{entry_open}#include "entry.c"
+{entry_close}
 int main(int argc, char *argv[]) {{
     (void)argc; (void)argv;
     char *payload = nyx_payload();
@@ -430,11 +439,33 @@ static char *nyx_payload(void) {{
 "#,
         shape = shape,
         invocation = invocation,
+        entry_open = entry_open,
+        entry_close = entry_close,
     )
 }
 
+/// Preprocessor wrapper around `#include "entry.c"` that renames the user's
+/// `int main(...)` to `__nyx_entry_main(...)` when the spec's entry symbol IS
+/// `main` (i.e. a real CLI under Track B).  Without this, the entry's `main`
+/// collides with the harness's own `main` at link time.
+///
+/// Fixture authors who already expose a non-`main` entry name (e.g.
+/// `nyx_entry_main` under `tests/dynamic_fixtures/c/main_argv/`) get
+/// empty guards.
+fn entry_include_guards(spec: &HarnessSpec) -> (&'static str, &'static str) {
+    if spec.entry_name == "main" {
+        ("#define main __nyx_entry_main\n", "#undef main\n")
+    } else {
+        ("", "")
+    }
+}
+
 fn invoke_for_shape(spec: &HarnessSpec, shape: CShape) -> String {
-    let entry_fn = &spec.entry_name;
+    let entry_fn: &str = if spec.entry_name == "main" {
+        "__nyx_entry_main"
+    } else {
+        spec.entry_name.as_str()
+    };
     match shape {
         CShape::FreeFn => match &spec.payload_slot {
             PayloadSlot::EnvVar(name) => format!(
@@ -450,14 +481,15 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: CShape) -> String {
             )
         }
         CShape::MainArgv => {
-            // Rename the user-supplied entry to `nyx_entry_main` via macro so
-            // it does not collide with the harness `main` symbol when the
-            // entry source defines `int main(...)`.  Fixture authors should
-            // expose the entry as a function named in `spec.entry_name`.
-            //
             // Heap-allocate `new_argv` so a future `PayloadSlot::Argv(n)` with
             // `n >= 6` cannot overrun a fixed stack array.  Slots: 1
             // ("nyx_harness") + pad + 1 (payload) + 1 (NULL terminator).
+            //
+            // When `spec.entry_name == "main"` the entry's `int main(...)` is
+            // renamed to `__nyx_entry_main` via the preprocessor guards on
+            // `#include "entry.c"`, and the call site below targets that
+            // renamed symbol.  Fixtures that already expose a non-`main`
+            // entry symbol are called by name unchanged.
             let pad = match &spec.payload_slot {
                 PayloadSlot::Argv(n) => *n,
                 _ => 0,
@@ -605,6 +637,40 @@ mod tests {
         let h6 = emit(&spec6).unwrap();
         assert!(h6.source.contains("char **new_argv = (char**)calloc(9, sizeof(char*))"));
         assert!(h6.source.contains("free(new_argv);"));
+    }
+
+    #[test]
+    fn emit_main_argv_renames_main_when_entry_named_main() {
+        // Real-world Track B CLI vuln: the spec.entry_name IS "main", and the
+        // entry source defines `int main(int argc, char *argv[])`.  Without
+        // preprocessor rename guards, the entry's `main` collides with the
+        // harness's own `main` at link time.
+        let mut spec = make_spec(PayloadSlot::Argv(0));
+        spec.entry_kind = EntryKind::CliSubcommand;
+        spec.entry_name = "main".into();
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("#define main __nyx_entry_main"),
+            "rename guard missing from emitted source",
+        );
+        assert!(
+            h.source.contains("#undef main"),
+            "undef guard missing — harness `int main(...)` definition follows the include",
+        );
+        assert!(
+            h.source.contains("__nyx_entry_main(new_argc, new_argv)"),
+            "harness call site must target the renamed symbol",
+        );
+        // The harness's own `main` must remain a real entry point.
+        assert!(h.source.contains("int main(int argc, char *argv[])"));
+        // Guards must NOT fire for fixture-style non-main entry names.
+        let mut fixture_spec = make_spec(PayloadSlot::Argv(0));
+        fixture_spec.entry_kind = EntryKind::CliSubcommand;
+        fixture_spec.entry_name = "nyx_entry_main".into();
+        let fh = emit(&fixture_spec).unwrap();
+        assert!(!fh.source.contains("#define main"));
+        assert!(!fh.source.contains("#undef main"));
+        assert!(fh.source.contains("nyx_entry_main(new_argc, new_argv)"));
     }
 
     #[test]

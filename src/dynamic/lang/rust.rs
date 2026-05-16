@@ -78,10 +78,17 @@ impl LangEmitter for RustEmitter {
 /// via the standard emit path.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
     let source = "use std::env;\nuse std::io::{self, Write};\n\nfn main() {\n    let prev = env::var(\"NYX_PREV_OUTPUT\").unwrap_or_default();\n    let _ = io::stdout().write_all(prev.as_bytes());\n}\n".to_owned();
+    // Shell-wrap build + run so the step actually executes the compiled binary.
+    // `ChainStepHarness.command` models a single process; without the wrap the
+    // step ends after `rustc` exits and the next chain member sees no output.
     ChainStepHarness {
         source,
         filename: "step.rs".to_owned(),
-        command: vec!["rustc".to_owned(), "step.rs".to_owned(), "-o".to_owned(), "step".to_owned()],
+        command: vec![
+            "sh".to_owned(),
+            "-c".to_owned(),
+            "rustc step.rs -o step && ./step".to_owned(),
+        ],
         extra_env: prev_output
             .map(|bytes| {
                 vec![(

@@ -18,7 +18,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 
 #[cfg(feature = "dynamic")]
-use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy};
 #[cfg(feature = "dynamic")]
 use nyx_scanner::labels::Cap;
 #[cfg(feature = "dynamic")]
@@ -39,6 +39,8 @@ fn make_rust_sqli_spec() -> HarnessSpec {
         sink_file: "tests/dynamic_fixtures/rust/sqli_positive.rs".into(),
         sink_line: 18,
         spec_hash: "benchrustsqli0001".into(),
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
     }
 }
 
@@ -57,6 +59,8 @@ fn make_sqli_spec() -> HarnessSpec {
         sink_file: "tests/dynamic_fixtures/python/sqli_positive.py".into(),
         sink_line: 7,
         spec_hash: "benchsqli000001".into(),
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
     }
 }
 
@@ -101,7 +105,7 @@ fn bench_sandbox_run_payload(c: &mut Criterion) {
     };
 
     c.bench_function("sandbox_run_payload", |b| {
-        b.iter(|| sandbox::run(&harness, payload, &opts).expect("sandbox run"));
+        b.iter(|| sandbox::run(&harness, &payload.bytes, &opts).expect("sandbox run"));
     });
 }
 
@@ -213,7 +217,7 @@ fn bench_docker_payload_cost(c: &mut Criterion) {
 
     c.bench_function("docker_payload_cost", |b| {
         b.iter(|| {
-            let _ = sandbox::run(&built, payload, &opts);
+            let _ = sandbox::run(&built, &payload.bytes, &opts);
         });
     });
 }
@@ -253,6 +257,8 @@ fn make_js_sqli_spec() -> HarnessSpec {
         sink_file: "tests/dynamic_fixtures/js/sqli_positive.js".into(),
         sink_line: 8,
         spec_hash: "benchjssqli000001".into(),
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
     }
 }
 
@@ -271,6 +277,8 @@ fn make_go_sqli_spec() -> HarnessSpec {
         sink_file: "tests/dynamic_fixtures/go/sqli_positive.go".into(),
         sink_line: 12,
         spec_hash: "benchgosqli000001".into(),
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
     }
 }
 
@@ -289,6 +297,8 @@ fn make_java_sqli_spec() -> HarnessSpec {
         sink_file: "tests/dynamic_fixtures/java/sqli_positive.java".into(),
         sink_line: 9,
         spec_hash: "benchjavasqli00001".into(),
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
     }
 }
 
@@ -307,6 +317,8 @@ fn make_php_sqli_spec() -> HarnessSpec {
         sink_file: "tests/dynamic_fixtures/php/sqli_positive.php".into(),
         sink_line: 9,
         spec_hash: "benchphpsqli000001".into(),
+        derivation: SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
     }
 }
 
