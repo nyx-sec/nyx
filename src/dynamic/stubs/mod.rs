@@ -193,6 +193,18 @@ pub trait StubProvider: Send + Sync + std::fmt::Debug {
     /// empty vec (the oracle treats "no events" as "stub was not
     /// touched").
     fn drain_events(&self) -> Vec<StubEvent>;
+
+    /// Optional companion env var that publishes a host-visible
+    /// recording-path the harness can append observations to.  The
+    /// primary [`StubProvider::endpoint`] is the *connection* the
+    /// harness uses (e.g. a SQLite DB path); the recording endpoint is
+    /// the *side channel* a per-language shim helper writes structured
+    /// records into so the host can correlate them on
+    /// [`StubProvider::drain_events`].  Default `None` means the stub
+    /// does not need a side-channel recording path.
+    fn recording_endpoint(&self) -> Option<(&'static str, String)> {
+        None
+    }
 }
 
 /// Aggregate handle the verifier owns for the lifetime of one
@@ -242,11 +254,22 @@ impl StubHarness {
     /// the sandbox env. The order matches `StubHarness::start`'s kinds
     /// argument so later entries override earlier ones if a harness is
     /// re-used with conflicting requests (it currently never is).
+    ///
+    /// Each stub publishes its primary connection endpoint
+    /// ([`StubKind::env_var`]) first, then any companion recording
+    /// endpoint ([`StubProvider::recording_endpoint`]) it owns.  Today
+    /// only [`SqlStub`] publishes a recording endpoint
+    /// (`NYX_SQL_LOG`); the other three stubs keep their primary
+    /// endpoint as the sole pair.
     pub fn endpoints(&self) -> Vec<(&'static str, String)> {
-        self.stubs
-            .iter()
-            .map(|s| (s.kind().env_var(), s.endpoint()))
-            .collect()
+        let mut out = Vec::with_capacity(self.stubs.len() * 2);
+        for s in &self.stubs {
+            out.push((s.kind().env_var(), s.endpoint()));
+            if let Some(pair) = s.recording_endpoint() {
+                out.push(pair);
+            }
+        }
+        out
     }
 
     /// Borrow the underlying stub list (for tests and oracle wiring).
@@ -378,5 +401,30 @@ mod tests {
         assert!(names.contains(&"NYX_SQL_ENDPOINT"));
         assert!(names.contains(&"NYX_HTTP_ENDPOINT"));
         assert!(names.contains(&"NYX_FS_ROOT"));
+    }
+
+    #[test]
+    fn endpoints_includes_sql_recording_path_companion_var() {
+        let dir = TempDir::new().unwrap();
+        let h = StubHarness::start(&[StubKind::Sql], dir.path()).unwrap();
+        let pairs = h.endpoints();
+        let names: Vec<&str> = pairs.iter().map(|(n, _)| *n).collect();
+        assert!(
+            names.contains(&"NYX_SQL_ENDPOINT"),
+            "primary endpoint must be present"
+        );
+        assert!(
+            names.contains(&"NYX_SQL_LOG"),
+            "SqlStub recording-path companion env var must be published"
+        );
+        let log_pair = pairs
+            .iter()
+            .find(|(n, _)| *n == "NYX_SQL_LOG")
+            .expect("NYX_SQL_LOG entry");
+        assert!(
+            log_pair.1.ends_with("nyx_sql_stub.queries.log"),
+            "recording path must point at the queries log file, got {}",
+            log_pair.1
+        );
     }
 }

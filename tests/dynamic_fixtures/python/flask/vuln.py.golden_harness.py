@@ -121,6 +121,26 @@ def __nyx_install_crash_guard(sink_callee):
         except (OSError, ValueError):
             pass
 
+# Phase 10 (Track D.3) stub helpers.  When the verifier spawned a SqlStub it
+# publishes the queries-log path through NYX_SQL_LOG; a sink call site that
+# wants the host-side stub to see its query appends one record-per-call.  The
+# helper is a no-op when NYX_SQL_LOG is unset so the same fixture source still
+# runs under harness modes that didn't spawn a stub.
+def __nyx_stub_sql_record(query, **detail):
+    import os
+    p = os.environ.get("NYX_SQL_LOG")
+    if not p:
+        return
+    try:
+        with open(p, "a") as _f:
+            for k, v in detail.items():
+                _f.write('# %s: %s\n' % (str(k), str(v)))
+            _f.write(str(query))
+            if not str(query).endswith('\n'):
+                _f.write('\n')
+    except OSError:
+        pass
+
 
 _NYX_SINK_FILE = "<TMPDIR>/<ENTRY_FILE>"
 _NYX_SINK_LINE = 18

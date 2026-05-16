@@ -111,6 +111,11 @@ impl SqlStub {
     }
 }
 
+/// Companion env var that publishes [`SqlStub::log_path`] so a
+/// language-side shim can append executed queries the host will pick
+/// up on [`SqlStub::drain_events`].
+pub const SQL_STUB_LOG_ENV_VAR: &str = "NYX_SQL_LOG";
+
 impl StubProvider for SqlStub {
     fn kind(&self) -> StubKind {
         StubKind::Sql
@@ -118,6 +123,10 @@ impl StubProvider for SqlStub {
 
     fn endpoint(&self) -> String {
         self.db_path.to_string_lossy().into_owned()
+    }
+
+    fn recording_endpoint(&self) -> Option<(&'static str, String)> {
+        Some((SQL_STUB_LOG_ENV_VAR, self.log_path.to_string_lossy().into_owned()))
     }
 
     fn drain_events(&self) -> Vec<StubEvent> {
@@ -262,5 +271,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let stub = SqlStub::start(dir.path()).unwrap();
         assert_eq!(stub.kind(), StubKind::Sql);
+    }
+
+    #[test]
+    fn recording_endpoint_publishes_log_path_under_nyx_sql_log() {
+        let dir = TempDir::new().unwrap();
+        let stub = SqlStub::start(dir.path()).unwrap();
+        let pair = stub
+            .recording_endpoint()
+            .expect("SqlStub must publish a recording endpoint");
+        assert_eq!(pair.0, SQL_STUB_LOG_ENV_VAR);
+        assert_eq!(pair.0, "NYX_SQL_LOG");
+        assert_eq!(pair.1, stub.log_path().to_string_lossy());
     }
 }

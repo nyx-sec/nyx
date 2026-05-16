@@ -75,12 +75,17 @@ impl LangEmitter for PhpEmitter {
 
 /// Phase 26 — PHP chain-step harness.
 ///
-/// Emits a `step.php` script that reads `NYX_PREV_OUTPUT` via
-/// `getenv()` and forwards it on stdout.  The PHP probe shim is kept
-/// outside the chain step for now and wired in alongside the Phase 15
-/// emitter follow-up about probe shim splicing.
+/// Splices the PHP probe shim ([`probe_shim`]) in front of a minimal
+/// driver that reads `NYX_PREV_OUTPUT` via `getenv()` and forwards it
+/// on stdout.  The composite re-verifier swaps the trailing forward for
+/// the next member's payload-injection prologue when running a
+/// multi-step chain; the shim has to be in the same file so a chain
+/// step that terminates at a sink can also drive the `__nyx_probe`
+/// channel.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
-    let source = "<?php\n$prev = getenv(\"NYX_PREV_OUTPUT\");\nif ($prev === false) { $prev = \"\"; }\necho $prev;\n".to_owned();
+    let shim = probe_shim();
+    let driver = "$prev = getenv(\"NYX_PREV_OUTPUT\");\nif ($prev === false) { $prev = \"\"; }\necho $prev;\n";
+    let source = format!("<?php\n{shim}\n{driver}");
     ChainStepHarness {
         source,
         filename: "step.php".to_owned(),
@@ -710,6 +715,29 @@ mod tests {
         assert!(
             payload_pos < install_pos && install_pos < invoke_pos,
             "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn chain_step_splices_probe_shim_for_composite_reverify() {
+        let step = chain_step(Some(b"<prev>"));
+        assert!(
+            step.source.contains("__nyx_probe"),
+            "PHP chain step must splice the probe shim"
+        );
+        assert!(
+            step.source.starts_with("<?php"),
+            "PHP chain step must open with <?php"
+        );
+        assert!(
+            step.source.contains("getenv(\"NYX_PREV_OUTPUT\")"),
+            "PHP chain step must keep its NYX_PREV_OUTPUT forwarder"
+        );
+        let shim_pos = step.source.find("__nyx_probe").unwrap();
+        let driver_pos = step.source.find("getenv(\"NYX_PREV_OUTPUT\")").unwrap();
+        assert!(
+            shim_pos < driver_pos,
+            "probe shim must come before the driver so the shim's helpers are in scope when a sink rewrite splices in"
         );
     }
 }

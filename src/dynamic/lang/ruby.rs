@@ -71,8 +71,16 @@ impl LangEmitter for RubyEmitter {
 }
 
 /// Phase 26 — Ruby chain-step harness.
+///
+/// Splices the Ruby probe shim ([`probe_shim`]) in front of a minimal
+/// driver that reads `NYX_PREV_OUTPUT` from `ENV` and forwards it on
+/// stdout.  Mirrors the Python / Node steps: a step that terminates at
+/// a sink needs the shim in the same file so it can drive the
+/// `__nyx_probe` channel.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
-    let source = "prev = ENV[\"NYX_PREV_OUTPUT\"] || \"\"\n$stdout.write(prev)\n".to_owned();
+    let shim = probe_shim();
+    let driver = "prev = ENV[\"NYX_PREV_OUTPUT\"] || \"\"\n$stdout.write(prev)\n";
+    let source = format!("{shim}\n{driver}");
     ChainStepHarness {
         source,
         filename: "step.rb".to_owned(),
@@ -766,6 +774,25 @@ mod tests {
         assert!(
             payload_pos < install_pos && install_pos < invoke_pos,
             "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn chain_step_splices_probe_shim_for_composite_reverify() {
+        let step = chain_step(Some(b"<prev>"));
+        assert!(
+            step.source.contains("__nyx_probe"),
+            "Ruby chain step must splice the probe shim"
+        );
+        assert!(
+            step.source.contains("ENV[\"NYX_PREV_OUTPUT\"]"),
+            "Ruby chain step must keep its NYX_PREV_OUTPUT forwarder"
+        );
+        let shim_pos = step.source.find("__nyx_probe").unwrap();
+        let driver_pos = step.source.find("ENV[\"NYX_PREV_OUTPUT\"]").unwrap();
+        assert!(
+            shim_pos < driver_pos,
+            "probe shim must come before the driver so a sink rewrite has the shim's helpers in scope"
         );
     }
 }
