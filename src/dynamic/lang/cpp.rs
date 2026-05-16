@@ -336,6 +336,8 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 fn generate_main_cpp(spec: &HarnessSpec, shape: CppShape) -> String {
     let invocation = invoke_for_shape(spec, shape);
     let (entry_open, entry_close) = entry_include_guards(spec);
+    let shim = probe_shim();
+    let crash_callee = entry_symbol_for_spec(spec);
 
     format!(
         r#"// Nyx dynamic harness — auto-generated, do not edit (Phase 16 — CppShape::{shape:?}).
@@ -346,7 +348,7 @@ fn generate_main_cpp(spec: &HarnessSpec, shape: CppShape) -> String {
 #include <string>
 #include <vector>
 #include <iostream>
-
+{shim}
 static std::string nyx_payload();
 
 {entry_open}#include "entry.cpp"
@@ -355,6 +357,11 @@ int main(int argc, char *argv[]) {{
     (void)argc; (void)argv;
     std::string payload = nyx_payload();
 
+    // Phase 08 sink-site signal handler: install AFTER payload decode so a
+    // crash in nyx_payload / nyx_b64_decode (harness setup) writes no Crash
+    // probe.  A crash inside the entry call below fires the handler and
+    // writes a Crash probe to NYX_PROBE_PATH for `Oracle::SinkCrash`.
+    __nyx_install_crash_guard("{crash_callee}");
 {invocation}
     return 0;
 }}
@@ -415,12 +422,19 @@ fn entry_include_guards(spec: &HarnessSpec) -> (&'static str, &'static str) {
     }
 }
 
-fn invoke_for_shape(spec: &HarnessSpec, shape: CppShape) -> String {
-    let entry_fn: &str = if spec.entry_name == "main" {
+/// Effective C++ symbol used to invoke the entry from the harness `main`,
+/// after [`entry_include_guards`] has rewritten an entry-side `main` to
+/// `__nyx_entry_main`.
+fn entry_symbol_for_spec(spec: &HarnessSpec) -> &str {
+    if spec.entry_name == "main" {
         "__nyx_entry_main"
     } else {
         spec.entry_name.as_str()
-    };
+    }
+}
+
+fn invoke_for_shape(spec: &HarnessSpec, shape: CppShape) -> String {
+    let entry_fn: &str = entry_symbol_for_spec(spec);
     match shape {
         CppShape::FreeFn => match &spec.payload_slot {
             PayloadSlot::EnvVar(name) => format!(
@@ -592,6 +606,46 @@ mod tests {
         assert!(!fh.source.contains("#define main"));
         assert!(!fh.source.contains("#undef main"));
         assert!(fh.source.contains("nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())"));
+    }
+
+    #[test]
+    fn emit_splices_probe_shim_and_installs_crash_guard_for_free_fn() {
+        // Phase 16 follow-up: C++ emitter now splices probe_shim() and
+        // installs the sink-site signal handler around the entry call.
+        // Mirrors the C-side splicing tests.
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("__nyx_probe shim (Phase 06 — Track C.1"),
+            "probe_shim banner missing from generated main.cpp",
+        );
+        assert!(
+            h.source.contains("inline void __nyx_install_crash_guard("),
+            "install_crash_guard definition missing from generated main.cpp",
+        );
+        assert!(
+            h.source.contains("__nyx_install_crash_guard(\"run\");"),
+            "install_crash_guard call site missing or wrong callee",
+        );
+        let install_pos = h.source.find("__nyx_install_crash_guard(\"run\");").unwrap();
+        let payload_pos = h.source.find("std::string payload = nyx_payload();").unwrap();
+        let invoke_pos = h.source.find("run(payload.c_str(), payload.size());").unwrap();
+        assert!(
+            payload_pos < install_pos && install_pos < invoke_pos,
+            "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn emit_install_crash_guard_targets_renamed_main_entry() {
+        let mut spec = make_spec(PayloadSlot::Argv(0));
+        spec.entry_kind = EntryKind::CliSubcommand;
+        spec.entry_name = "main".into();
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("__nyx_install_crash_guard(\"__nyx_entry_main\");"),
+            "install_crash_guard must use post-rename symbol when entry_name == 'main'",
+        );
     }
 
     #[test]

@@ -365,6 +365,8 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 fn generate_main_c(spec: &HarnessSpec, shape: CShape) -> String {
     let invocation = invoke_for_shape(spec, shape);
     let (entry_open, entry_close) = entry_include_guards(spec);
+    let shim = probe_shim();
+    let crash_callee = entry_symbol_for_spec(spec);
 
     format!(
         r#"/* Nyx dynamic harness — auto-generated, do not edit (Phase 16 — CShape::{shape:?}). */
@@ -373,7 +375,7 @@ fn generate_main_c(spec: &HarnessSpec, shape: CShape) -> String {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+{shim}
 /* Forward declarations: the entry file is appended below via `#include`
  * so the harness can call user-defined functions without a separate
  * compilation unit. */
@@ -386,6 +388,13 @@ int main(int argc, char *argv[]) {{
     char *payload = nyx_payload();
     if (!payload) payload = (char*)"";
 
+    /* Phase 08 sink-site signal handler: install AFTER payload decode so a
+     * crash inside `nyx_payload`/`nyx_b64_decode` (harness setup) writes no
+     * Crash probe, routing the verifier to `Inconclusive(UnrelatedCrash)`.
+     * A crash inside the entry call below DOES fire the handler and writes
+     * a Crash probe to `NYX_PROBE_PATH`, lifting an `Oracle::SinkCrash`
+     * payload to `Confirmed`. */
+    __nyx_install_crash_guard("{crash_callee}");
 {invocation}
     /* Intentionally no free(payload): payload is either a strdup/b64_decode
      * heap pointer or a string literal substituted above when allocation
@@ -460,12 +469,21 @@ fn entry_include_guards(spec: &HarnessSpec) -> (&'static str, &'static str) {
     }
 }
 
-fn invoke_for_shape(spec: &HarnessSpec, shape: CShape) -> String {
-    let entry_fn: &str = if spec.entry_name == "main" {
+/// Effective C symbol used to invoke the entry from the harness `main`.
+/// Mirrors the rename inserted by [`entry_include_guards`]: when the user's
+/// entry function IS named `main` it is renamed to `__nyx_entry_main` via
+/// the preprocessor wrap, so both the call site in [`invoke_for_shape`] and
+/// the `__nyx_install_crash_guard` callee label use this helper.
+fn entry_symbol_for_spec(spec: &HarnessSpec) -> &str {
+    if spec.entry_name == "main" {
         "__nyx_entry_main"
     } else {
         spec.entry_name.as_str()
-    };
+    }
+}
+
+fn invoke_for_shape(spec: &HarnessSpec, shape: CShape) -> String {
+    let entry_fn: &str = entry_symbol_for_spec(spec);
     match shape {
         CShape::FreeFn => match &spec.payload_slot {
             PayloadSlot::EnvVar(name) => format!(
@@ -671,6 +689,60 @@ mod tests {
         assert!(!fh.source.contains("#define main"));
         assert!(!fh.source.contains("#undef main"));
         assert!(fh.source.contains("nyx_entry_main(new_argc, new_argv)"));
+    }
+
+    #[test]
+    fn emit_splices_probe_shim_and_installs_crash_guard_for_free_fn() {
+        // Phase 16 follow-up: the C emitter now splices probe_shim() into the
+        // generated harness AND installs the sink-site signal handler around
+        // the entry invocation.  This is the joint unblock for Phase 08
+        // (a) / (b) — a SIGSEGV inside the entry writes a Crash probe to
+        // `NYX_PROBE_PATH`; a SIGSEGV during `nyx_payload` setup (before the
+        // install) writes nothing, routing to `Inconclusive(UnrelatedCrash)`.
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        // The shim text is identified by its banner comment.
+        assert!(
+            h.source.contains("__nyx_probe shim (Phase 06 — Track C.1"),
+            "probe_shim banner missing from generated main.c — splicing regressed",
+        );
+        // The signal-handler installer is callable from the harness body.
+        assert!(
+            h.source.contains("static void __nyx_install_crash_guard("),
+            "install_crash_guard definition missing from generated main.c",
+        );
+        // The install call references the entry symbol (here `run`, since
+        // `make_spec` sets `entry_name = "run"`).
+        assert!(
+            h.source.contains("__nyx_install_crash_guard(\"run\");"),
+            "install_crash_guard call site missing or wrong callee in main()",
+        );
+        // The install must come after `nyx_payload()` returns and before the
+        // entry invocation — otherwise a crash inside payload decode would
+        // be misattributed to the sink (would defeat Phase 08(b)).
+        let install_pos = h.source.find("__nyx_install_crash_guard(\"run\");").unwrap();
+        let payload_pos = h.source.find("char *payload = nyx_payload();").unwrap();
+        let invoke_pos = h.source.find("run(payload, strlen(payload));").unwrap();
+        assert!(
+            payload_pos < install_pos && install_pos < invoke_pos,
+            "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn emit_install_crash_guard_targets_renamed_main_entry() {
+        // Real-world Track B CLI vuln: spec.entry_name == "main" → the entry
+        // is renamed to __nyx_entry_main by entry_include_guards, and the
+        // install call must reference the renamed symbol so the Crash probe
+        // attributes correctly.
+        let mut spec = make_spec(PayloadSlot::Argv(0));
+        spec.entry_kind = EntryKind::CliSubcommand;
+        spec.entry_name = "main".into();
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("__nyx_install_crash_guard(\"__nyx_entry_main\");"),
+            "install_crash_guard must use the post-rename symbol when entry_name == 'main'",
+        );
     }
 
     #[test]

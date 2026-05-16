@@ -473,9 +473,15 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 /// Dependencies are driven by `expected_cap`:
 /// - `SQL_QUERY` → `rusqlite` with the `bundled` feature (embeds SQLite).
 /// - Other caps use only std (no extra deps).
+///
+/// `libc` is always pinned because the Phase 16 probe shim (spliced into
+/// `src/main.rs` by [`generate_main_rs`]) calls `libc::sigaction` from
+/// `__nyx_install_crash_guard`.  The shim is unconditionally compiled so
+/// the dep must be unconditional too.
 pub fn generate_cargo_toml(cap: Cap) -> String {
     let mut deps = String::new();
 
+    deps.push_str("libc = \"0.2\"\n");
     if cap.contains(Cap::SQL_QUERY) {
         deps.push_str("rusqlite = { version = \"0.39\", features = [\"bundled\"] }\n");
     }
@@ -496,18 +502,28 @@ pub fn generate_cargo_toml(cap: Cap) -> String {
 /// Generate `src/main.rs` — the harness entry point.
 ///
 /// Reads the payload from env, calls `entry::{entry_name}` with the payload
-/// routed according to `spec.payload_slot` and `shape`.
+/// routed according to `spec.payload_slot` and `shape`.  The probe shim
+/// (Phase 06 / Phase 08) is spliced in at file scope so
+/// `__nyx_install_crash_guard` is callable from `main` before the entry
+/// invocation.
 fn generate_main_rs(spec: &HarnessSpec, shape: RustShape) -> String {
     let entry_fn = &spec.entry_name;
     let (pre_call, call_expr) = build_call(spec, entry_fn, shape);
+    let shim = probe_shim();
+    let entry_label = spec.entry_name.replace('\\', "\\\\").replace('"', "\\\"");
 
     format!(
         r#"//! Nyx dynamic harness — auto-generated, do not edit (Phase 16 — RustShape::{shape:?}).
 mod entry;
-
+{shim}
 fn main() {{
     let payload = nyx_payload();
     let _ = &payload;
+    // Phase 08 sink-site signal handler: install AFTER payload decode so a
+    // crash in `nyx_payload` / `b64_decode` (harness setup) writes no Crash
+    // probe.  A crash inside the entry call below fires the handler and
+    // writes a Crash probe to NYX_PROBE_PATH for `Oracle::SinkCrash`.
+    __nyx_install_crash_guard("{entry_label}");
 {pre_call}    {call_expr}
 }}
 
@@ -807,6 +823,51 @@ mod tests {
         let spec = make_spec_with(EntryKind::LibraryApi, "fuzz_target", "src/entry.rs");
         let src = generate_main_rs(&spec, RustShape::LibfuzzerTarget);
         assert!(src.contains("entry::fuzz_target(payload.as_bytes())"));
+    }
+
+    #[test]
+    fn emit_splices_probe_shim_and_installs_crash_guard() {
+        // Phase 16 follow-up: Rust emitter now splices probe_shim() into
+        // src/main.rs and installs the sink-site signal handler around the
+        // entry call.  Mirrors the C / C++ splicing tests.
+        let spec = make_spec(PayloadSlot::Param(0));
+        let h = emit(&spec).unwrap();
+        assert!(
+            h.source.contains("__nyx_probe shim (Phase 06 — Track C.1"),
+            "probe_shim banner missing from generated src/main.rs",
+        );
+        assert!(
+            h.source.contains("fn __nyx_install_crash_guard("),
+            "install_crash_guard definition missing from generated src/main.rs",
+        );
+        assert!(
+            h.source.contains("__nyx_install_crash_guard(\"run\");"),
+            "install_crash_guard call site missing or wrong callee",
+        );
+        let install_pos = h
+            .source
+            .find("__nyx_install_crash_guard(\"run\");")
+            .unwrap();
+        let payload_pos = h.source.find("let payload = nyx_payload();").unwrap();
+        let invoke_pos = h.source.find("entry::run(&payload);").unwrap();
+        assert!(
+            payload_pos < install_pos && install_pos < invoke_pos,
+            "install_crash_guard ordering wrong: payload={payload_pos} install={install_pos} invoke={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn cargo_toml_always_pins_libc_for_probe_shim() {
+        // Phase 16 follow-up: the probe shim calls `libc::sigaction` so
+        // `libc` must be unconditionally pinned (independent of the
+        // expected_cap dep matrix).
+        for cap in [Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF] {
+            let cargo = generate_cargo_toml(cap);
+            assert!(
+                cargo.contains("libc = \"0.2\""),
+                "libc dep missing for cap={cap:?}",
+            );
+        }
     }
 
     #[test]
