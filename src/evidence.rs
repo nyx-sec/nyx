@@ -506,6 +506,42 @@ pub struct DifferentialProbeRecord {
     pub payload_id: String,
 }
 
+/// Per-primitive entry inside [`HardeningSummary::primitives`].
+///
+/// Mirrors the Linux process backend's `PrimitiveStatus`-per-primitive
+/// table without depending on the `dynamic` feature.  `status` is one of
+/// `"applied"`, `"failed"`, or `"skipped"`; `errno` is populated when
+/// `status == "failed"`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HardeningPrimitive {
+    pub name: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errno: Option<i32>,
+}
+
+/// Portable, JSON-serialisable projection of the per-run hardening
+/// outcome the process backend stamps on `SandboxOutcome`.
+///
+/// Stored on [`VerifyResult::hardening_outcome`] so callers (eval-corpus
+/// tabulator, repro round-trips, end-to-end acceptance tests) can assert
+/// on the matched profile and per-primitive status without depending on
+/// the platform-cfg'd `HardeningRecord` enum.  `backend` is one of
+/// `"linux-process"` or `"macos-process"`; `level` is the coarse outcome
+/// (`"trusted"` / `"sandboxed"` / `"failed"` on macOS;
+/// `"baseline"` / `"full"` / `"partial"` / `"none"` on Linux); `profile`
+/// is the matched `.sb` name on macOS and empty on Linux; `primitives`
+/// is empty on macOS and one entry per primitive on Linux.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HardeningSummary {
+    pub backend: String,
+    pub level: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub profile: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub primitives: Vec<HardeningPrimitive>,
+}
+
 /// Full record of a Phase 07 differential confirmation run.
 ///
 /// Captures the rule's verdict plus the raw probe traces from both the
@@ -584,6 +620,14 @@ pub struct VerifyResult {
     /// `wrong_confirmed` column in `tests/eval_corpus/tabulate.py`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wrong: Option<bool>,
+    /// Phase 17/18 per-run hardening outcome, projected from the
+    /// triggering attempt's [`crate::dynamic::sandbox::SandboxOutcome`].
+    /// Populated only when a payload actually ran under the process
+    /// backend on Linux or macOS and the run captured a primitive
+    /// outcome; `None` for docker-backend runs, host platforms with no
+    /// hardening primitives, or verdicts that never executed a payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardening_outcome: Option<HardeningSummary>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -131,6 +131,7 @@ impl CompositeReverifier for DefaultCompositeReverifier {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         }
     }
 }
@@ -256,6 +257,7 @@ mod tests {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         }
     }
 

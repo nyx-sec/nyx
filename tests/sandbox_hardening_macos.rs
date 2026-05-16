@@ -350,6 +350,111 @@ except Exception as exc:
             "refuse_filesystem_confirm should be false when sandbox-exec is reachable"
         );
     }
+
+    /// Phase 18 verifier-side projection: when a real strict run lands a
+    /// macOS `HardeningRecord`, `summarize_hardening` collapses it into
+    /// the portable [`crate::evidence::HardeningSummary`] that
+    /// `build_verdict` stamps on a `Confirmed` `VerifyResult`.  Drives
+    /// the same `sandbox::run` path the existing
+    /// `path_traversal_payload_blocked_under_strict` test uses, then
+    /// asserts on the projection that would land on
+    /// `VerifyResult::hardening_outcome` if this run had triggered the
+    /// finding's oracle.
+    #[test]
+    fn summarize_hardening_lands_path_traversal_on_strict_file_io_run() {
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+        if !sandbox_exec_available() {
+            eprintln!("SKIP: /usr/bin/sandbox-exec missing — cannot exercise wrap");
+            return;
+        }
+        const FILE_IO: u32 = 1 << 5;
+        let tmp = workdir();
+        let harness = build_harness(tmp.path());
+        let opts = strict_opts(FILE_IO);
+        let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
+        let summary = nyx_scanner::dynamic::verify::summarize_hardening(&result)
+            .expect("hardening summary should populate after a strict macOS run");
+        assert_eq!(summary.backend, "macos-process");
+        assert_eq!(summary.level, "sandboxed");
+        assert_eq!(
+            summary.profile, "path_traversal",
+            "FILE_IO-cap strict run should select the path_traversal profile"
+        );
+        assert!(
+            summary.primitives.is_empty(),
+            "macOS backend records no per-primitive entries"
+        );
+    }
+
+    /// Standard-profile runs leave `SandboxOutcome::hardening_outcome`
+    /// unset, so `summarize_hardening` returns `None` and
+    /// `VerifyResult::hardening_outcome` stays `None`.  Companion to
+    /// `standard_profile_does_not_wrap_with_sandbox_exec`.
+    #[test]
+    fn summarize_hardening_returns_none_for_standard_profile_run() {
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+        let tmp = workdir();
+        let harness = build_harness(tmp.path());
+        let opts = standard_opts();
+        let result = sandbox::run(&harness, b"", &opts).expect("sandbox::run");
+        assert!(
+            nyx_scanner::dynamic::verify::summarize_hardening(&result).is_none(),
+            "standard profile should leave hardening_outcome unset"
+        );
+    }
+
+    /// Round-trip the portable summary through JSON to lock in the
+    /// repro-bundle wire shape: `VerifyResult::hardening_outcome` lands
+    /// on `expected/verdict.json` so the eval-corpus tabulator and any
+    /// downstream replay reads the same fields back.
+    #[test]
+    fn hardening_summary_round_trips_through_json() {
+        use nyx_scanner::evidence::{HardeningSummary, HardeningPrimitive};
+        let summary = HardeningSummary {
+            backend: "macos-process".into(),
+            level: "sandboxed".into(),
+            profile: "path_traversal".into(),
+            primitives: vec![],
+        };
+        let json = serde_json::to_string(&summary).expect("serialize");
+        let parsed: HardeningSummary = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, summary);
+
+        // Defaults: missing `profile` and `primitives` must decode as
+        // empty so older `verdict.json` payloads keep round-tripping.
+        let minimal: HardeningSummary =
+            serde_json::from_str(r#"{"backend":"linux-process","level":"full"}"#)
+                .expect("minimal decode");
+        assert_eq!(minimal.profile, "");
+        assert!(minimal.primitives.is_empty());
+
+        // Linux-shape: per-primitive entries decode + re-encode with
+        // their `errno` field intact when populated.
+        let with_primitives = HardeningSummary {
+            backend: "linux-process".into(),
+            level: "partial".into(),
+            profile: "strict".into(),
+            primitives: vec![
+                HardeningPrimitive {
+                    name: "no_new_privs".into(),
+                    status: "applied".into(),
+                    errno: None,
+                },
+                HardeningPrimitive {
+                    name: "seccomp".into(),
+                    status: "failed".into(),
+                    errno: Some(1),
+                },
+            ],
+        };
+        let json = serde_json::to_string(&with_primitives).expect("serialize primitives");
+        assert!(
+            json.contains("\"errno\":1"),
+            "errno field should survive JSON round-trip; got: {json}"
+        );
+        let parsed: HardeningSummary = serde_json::from_str(&json).expect("decode primitives");
+        assert_eq!(parsed, with_primitives);
+    }
 }
 
 // Non-macOS placeholder so `cargo nextest run --test sandbox_hardening_macos`

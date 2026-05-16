@@ -584,6 +584,7 @@ pub fn run_shape_fixture_lang(
                 differential: None,
                 replay_stable: None,
                 wrong: None,
+                hardening_outcome: None,
             }
         }
         Err(RunError::NoPayloadsForCap) => VerifyResult {
@@ -598,6 +599,7 @@ pub fn run_shape_fixture_lang(
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
         Err(e) => VerifyResult {
             finding_id: spec.finding_id.clone(),
@@ -611,6 +613,7 @@ pub fn run_shape_fixture_lang(
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
     }
 }

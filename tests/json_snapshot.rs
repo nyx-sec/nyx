@@ -60,6 +60,7 @@ fn json_dynamic_verdict_confirmed_serialises_correctly() {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         }),
         ..Default::default()
     });
@@ -100,6 +101,7 @@ fn json_dynamic_verdict_not_confirmed_serialises_correctly() {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         }),
         ..Default::default()
     });
@@ -165,6 +167,7 @@ fn json_unsupported_verdict_has_reason() {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         }),
         ..Default::default()
     });

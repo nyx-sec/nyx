@@ -76,6 +76,7 @@ fn sarif_confirmed_verdict_sets_partial_fingerprint() {
         differential: None,
         replay_stable: None,
         wrong: None,
+        hardening_outcome: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -111,6 +112,7 @@ fn sarif_not_confirmed_verdict_sets_partial_fingerprint() {
         differential: None,
         replay_stable: None,
         wrong: None,
+        hardening_outcome: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -140,6 +142,7 @@ fn sarif_unsupported_verdict_sets_partial_fingerprint() {
         differential: None,
         replay_stable: None,
         wrong: None,
+        hardening_outcome: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -174,6 +177,7 @@ fn sarif_inconclusive_verdict_sets_partial_fingerprint() {
         differential: None,
         replay_stable: None,
         wrong: None,
+        hardening_outcome: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -224,6 +228,7 @@ fn sarif_confirmed_verdict_nyx_dynamic_verdict_contains_triggered_payload() {
         differential: None,
         replay_stable: None,
         wrong: None,
+        hardening_outcome: None,
     };
 
     let result = sarif_result(diag_with_verdict(verdict));
@@ -257,6 +262,7 @@ fn sarif_all_four_statuses_produce_partial_fingerprint() {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         };
 
         let result = sarif_result(diag_with_verdict(verdict));

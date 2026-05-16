@@ -14,7 +14,9 @@ use crate::dynamic::spec::{HarnessSpec, SPEC_FORMAT_VERSION};
 use crate::dynamic::stubs::StubHarness;
 use crate::dynamic::telemetry::{self, SamplingPolicy, TelemetryEvent};
 use crate::dynamic::toolchain;
-use crate::evidence::{InconclusiveReason, SpecDerivationStrategy, UnsupportedReason};
+use crate::evidence::{HardeningSummary, InconclusiveReason, SpecDerivationStrategy, UnsupportedReason};
+#[cfg(target_os = "linux")]
+use crate::evidence::HardeningPrimitive;
 use crate::summary::GlobalSummaries;
 use crate::utils::config::Config;
 use std::path::Path;
@@ -305,6 +307,7 @@ fn entry_kind_unsupported_verdict(
         differential: None,
         replay_stable: None,
         wrong: None,
+        hardening_outcome: None,
     }
 }
 
@@ -349,6 +352,7 @@ fn spec_derivation_failed_verdict(
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         };
     }
 
@@ -367,6 +371,7 @@ fn spec_derivation_failed_verdict(
         differential: None,
         replay_stable: None,
         wrong: None,
+        hardening_outcome: None,
     }
 }
 
@@ -474,6 +479,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         };
     }
 
@@ -558,6 +564,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         };
     }
 
@@ -588,6 +595,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
                     differential: None,
                     replay_stable: None,
                     wrong: None,
+                    hardening_outcome: None,
                 };
             }
         }
@@ -732,6 +740,91 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
 }
 
 
+/// Project the platform-cfg'd [`crate::dynamic::sandbox::HardeningRecord`]
+/// into the portable [`HardeningSummary`] that lands on
+/// [`VerifyResult::hardening_outcome`].  Returns `None` when the run did
+/// not record a hardening outcome (docker backend, non-Linux/non-macOS
+/// host, or `Standard` profile on a host whose backend skipped the wrap).
+///
+/// Exposed for tests so a `sandbox::run`-driven probe can assert that the
+/// projection lands the same record `build_verdict` would stamp on a
+/// `Confirmed` `VerifyResult` from the same triggering attempt.
+pub fn summarize_hardening(
+    outcome: &crate::dynamic::sandbox::SandboxOutcome,
+) -> Option<HardeningSummary> {
+    use crate::dynamic::sandbox::HardeningRecord;
+    let record = outcome.hardening_outcome.as_ref()?;
+    match record {
+        #[cfg(target_os = "linux")]
+        HardeningRecord::Linux(o) => {
+            use crate::dynamic::sandbox::process_linux::{
+                HardeningLevel, PrimitiveStatus, ProcessHardeningProfileTag,
+            };
+            fn status_str(s: PrimitiveStatus) -> (String, Option<i32>) {
+                match s {
+                    PrimitiveStatus::Skipped => ("skipped".to_owned(), None),
+                    PrimitiveStatus::Applied => ("applied".to_owned(), None),
+                    PrimitiveStatus::Failed(errno) => ("failed".to_owned(), Some(errno)),
+                }
+            }
+            let primitives = [
+                ("no_new_privs", o.no_new_privs),
+                ("rlimit_cpu", o.rlimit_cpu),
+                ("rlimit_nofile", o.rlimit_nofile),
+                ("rlimit_as", o.rlimit_as),
+                ("unshare", o.unshare),
+                ("chroot", o.chroot),
+                ("seccomp", o.seccomp),
+            ]
+            .into_iter()
+            .map(|(name, st)| {
+                let (status, errno) = status_str(st);
+                HardeningPrimitive {
+                    name: name.to_owned(),
+                    status,
+                    errno,
+                }
+            })
+            .collect();
+            let level = match o.level() {
+                HardeningLevel::Baseline => "baseline",
+                HardeningLevel::Full => "full",
+                HardeningLevel::Partial => "partial",
+                HardeningLevel::None => "none",
+            };
+            // The Linux backend uses the same `.sb`-style profile name
+            // surface (Standard / Strict) as macOS via the profile tag.
+            let profile = match o.profile {
+                ProcessHardeningProfileTag::Standard => String::new(),
+                ProcessHardeningProfileTag::Strict => "strict".to_owned(),
+            };
+            Some(HardeningSummary {
+                backend: "linux-process".to_owned(),
+                level: level.to_owned(),
+                profile,
+                primitives,
+            })
+        }
+        #[cfg(target_os = "macos")]
+        HardeningRecord::Macos(o) => {
+            use crate::dynamic::sandbox::process_macos::HardeningLevel;
+            let level = match o.level {
+                HardeningLevel::Trusted => "trusted",
+                HardeningLevel::Sandboxed => "sandboxed",
+                HardeningLevel::Failed => "failed",
+            };
+            Some(HardeningSummary {
+                backend: "macos-process".to_owned(),
+                level: level.to_owned(),
+                profile: o.profile.clone(),
+                primitives: Vec::new(),
+            })
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        _ => None,
+    }
+}
+
 fn build_verdict(
     finding_id: &str,
     spec: &HarnessSpec,
@@ -762,6 +855,7 @@ fn build_verdict(
                     .get(i)
                     .map(|p| p.bytes)
                     .unwrap_or(b"");
+                let hardening_outcome = summarize_hardening(&run.attempts[i].outcome);
 
                 // Emit repro artifact.
                 let repro_result = crate::dynamic::repro::write(
@@ -780,6 +874,7 @@ fn build_verdict(
                         differential: run.differential.clone(),
                         replay_stable: None,
                         wrong: None,
+                        hardening_outcome: hardening_outcome.clone(),
                     },
                     &run.harness_source,
                     &run.entry_source,
@@ -802,6 +897,7 @@ fn build_verdict(
                         differential: run.differential,
                         replay_stable: None,
                         wrong: None,
+                        hardening_outcome,
                     };
                 }
 
@@ -817,6 +913,7 @@ fn build_verdict(
                     differential: run.differential,
                     replay_stable: None,
                     wrong: None,
+                    hardening_outcome,
                 }
             } else if run.unrelated_crash {
                 // Phase 08 §C.4: the harness crashed but the death
@@ -838,6 +935,7 @@ fn build_verdict(
                     differential: None,
                     replay_stable: None,
                     wrong: None,
+                    hardening_outcome: None,
                 }
             } else if run.no_benign_control {
                 // Phase 07 §4.1: vuln oracle + sink-hit fired but the
@@ -858,6 +956,7 @@ fn build_verdict(
                     differential: None,
                     replay_stable: None,
                     wrong: None,
+                    hardening_outcome: None,
                 }
             } else if let Some(d) = run.differential.as_ref() {
                 // Differential ran but didn't produce `Confirmed`.  Map
@@ -881,6 +980,7 @@ fn build_verdict(
                             differential: run.differential,
                             replay_stable: None,
                             wrong: None,
+                            hardening_outcome: None,
                         }
                     }
                     crate::evidence::DifferentialVerdict::ReversedDifferential => {
@@ -900,6 +1000,7 @@ fn build_verdict(
                             differential: run.differential,
                             replay_stable: None,
                             wrong: None,
+                            hardening_outcome: None,
                         }
                     }
                     crate::evidence::DifferentialVerdict::Confirmed
@@ -915,6 +1016,7 @@ fn build_verdict(
                         differential: run.differential,
                         replay_stable: None,
                         wrong: None,
+                        hardening_outcome: None,
                     },
                 }
             } else if run.oracle_collision {
@@ -933,6 +1035,7 @@ fn build_verdict(
                     differential: None,
                     replay_stable: None,
                     wrong: None,
+                    hardening_outcome: None,
                 }
             } else {
                 VerifyResult {
@@ -947,6 +1050,7 @@ fn build_verdict(
                     differential: None,
                     replay_stable: None,
                     wrong: None,
+                    hardening_outcome: None,
                 }
             }
         }
@@ -962,6 +1066,7 @@ fn build_verdict(
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
         Err(RunError::Harness(e)) => {
             // Defence-in-depth residual for `EntryKindUnsupported` from the
@@ -1007,6 +1112,7 @@ fn build_verdict(
                 differential: None,
                 replay_stable: None,
                 wrong: None,
+                hardening_outcome: None,
             }
         }
         Err(RunError::BuildFailed { stderr, attempts: build_att }) => VerifyResult {
@@ -1021,6 +1127,7 @@ fn build_verdict(
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
         Err(RunError::Sandbox(e)) => VerifyResult {
             finding_id: finding_id.to_owned(),
@@ -1034,6 +1141,7 @@ fn build_verdict(
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
     }
 }
@@ -1142,6 +1250,7 @@ mod tests {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         };
 
         // Insert.
@@ -1193,6 +1302,7 @@ mod tests {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         };
 
         insert_verdict_cache(&db_path, "spec_aaa", "hash_xyz", "", "python-3.11", &result);
@@ -1230,6 +1340,7 @@ mod tests {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         };
         insert_verdict_cache(db_path, "spec", "hash", "", "python-3", &result);
         assert!(!db_path.exists(), "insert must not create a new DB");
@@ -1286,6 +1397,7 @@ mod tests {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         };
 
         // Insert directly with the old corpus_version bypassing the helper.

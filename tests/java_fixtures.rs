@@ -69,6 +69,7 @@ mod java_fixture_tests {
                 differential: None,
                 replay_stable: None,
                 wrong: None,
+                hardening_outcome: None,
             };
         }
 

@@ -76,6 +76,7 @@ fn verdict(status: VerifyStatus, reason: Option<InconclusiveReason>) -> VerifyRe
         differential: None,
         replay_stable: None,
         wrong: None,
+        hardening_outcome: None,
     }
 }
 

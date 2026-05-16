@@ -74,6 +74,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
         VerifyStatus::NotConfirmed => VerifyResult {
             finding_id: "abc123".into(),
@@ -93,6 +94,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
         VerifyStatus::Unsupported => VerifyResult {
             finding_id: "abc123".into(),
@@ -106,6 +108,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
         VerifyStatus::Inconclusive => VerifyResult {
             finding_id: "abc123".into(),
@@ -119,6 +122,7 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         },
     };
 

@@ -70,6 +70,7 @@ mod repro_determinism_tests {
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         }
     }
 

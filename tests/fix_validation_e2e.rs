@@ -55,6 +55,7 @@ fn set_verdict(
             differential: None,
             replay_stable: None,
             wrong: None,
+            hardening_outcome: None,
         });
     }
 }
@@ -170,6 +171,7 @@ fn new_confirmed_fails_no_new_confirmed_gate() {
                 differential: None,
                 replay_stable: None,
                 wrong: None,
+                hardening_outcome: None,
             });
         }
     }
