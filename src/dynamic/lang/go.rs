@@ -83,14 +83,22 @@ impl LangEmitter for GoEmitter {
 
 /// Phase 26 — Go chain-step harness.
 ///
-/// Emits a `main.go` driver that reads `NYX_PREV_OUTPUT` and forwards it
-/// on stdout.  The Go probe shim (`__nyx_probe`) is top-level Go code
-/// requiring extra stdlib imports; chain steps keep the harness minimal
-/// and rely on the sandbox runner's outer probe channel to observe the
-/// final sink fire.  Wiring the probe shim into chain steps is tracked
-/// alongside the Phase 15 emitter follow-up about probe shim splicing.
+/// Splices the Go probe shim ([`probe_shim`]) ahead of a minimal driver
+/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  The composite
+/// re-verifier swaps the trailing forward for the next member's
+/// payload-injection prologue when running a multi-step chain; the shim
+/// has to be in the same compilation unit so a chain step that terminates
+/// at a sink can drive the `__nyx_probe` channel directly.
+///
+/// Imports are the union of the driver imports (`fmt`, `os`) and the
+/// shim's [`SHIM_IMPORTS`], deduped + sorted so `go run step.go`
+/// compiles in a single command.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
-    let source = "package main\n\nimport (\n    \"fmt\"\n    \"os\"\n)\n\nfunc main() {\n    prev := os.Getenv(\"NYX_PREV_OUTPUT\")\n    fmt.Print(prev)\n}\n".to_owned();
+    let imports = chain_step_imports();
+    let shim = probe_shim();
+    let driver =
+        "func main() {\n    prev := os.Getenv(\"NYX_PREV_OUTPUT\")\n    fmt.Print(prev)\n}\n";
+    let source = format!("package main\n\nimport (\n{imports})\n{shim}\n{driver}");
     ChainStepHarness {
         source,
         filename: "step.go".to_owned(),
@@ -104,6 +112,27 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             })
             .unwrap_or_default(),
     }
+}
+
+/// Sorted, deduped tab-prefixed import lines covering the driver's
+/// `fmt` + `os` plus everything in [`SHIM_IMPORTS`].
+fn chain_step_imports() -> String {
+    let driver_imports: &[&str] = &["fmt", "os"];
+    let mut all: Vec<&str> = driver_imports
+        .iter()
+        .copied()
+        .chain(SHIM_IMPORTS.iter().copied())
+        .collect();
+    all.sort_unstable();
+    all.dedup();
+    let mut out = String::new();
+    for path in &all {
+        out.push('\t');
+        out.push('"');
+        out.push_str(path);
+        out.push_str("\"\n");
+    }
+    out
 }
 
 // ── Phase 15: shape detector ─────────────────────────────────────────────────
@@ -845,5 +874,43 @@ mod tests {
                 "expected shim-required import {quoted} in generated main.go",
             );
         }
+    }
+
+    #[test]
+    fn chain_step_splices_probe_shim_for_composite_reverify() {
+        let step = chain_step(Some(b"<prev>"));
+        assert!(
+            step.source.contains("__nyx_probe"),
+            "Go chain step must splice the probe shim"
+        );
+        assert!(
+            step.source.starts_with("package main"),
+            "Go chain step must open with package main"
+        );
+        assert!(
+            step.source.contains("os.Getenv(\"NYX_PREV_OUTPUT\")"),
+            "Go chain step must keep its NYX_PREV_OUTPUT forwarder"
+        );
+        let import_close = step.source.find(")\n").expect("import block must close");
+        let shim_pos = step.source.find("__nyx_probe").unwrap();
+        let main_pos = step.source.find("func main()").unwrap();
+        assert!(
+            import_close < shim_pos,
+            "probe shim must come after the import block",
+        );
+        assert!(
+            shim_pos < main_pos,
+            "probe shim must come before func main() so its helpers are in scope when a sink rewrite splices in",
+        );
+        for path in SHIM_IMPORTS {
+            let quoted = format!("\"{path}\"");
+            assert!(
+                step.source.contains(&quoted),
+                "Go chain step must merge shim-required import {quoted} into its import block",
+            );
+        }
+        // Driver imports preserved alongside the shim imports.
+        assert!(step.source.contains("\"fmt\""));
+        assert!(step.source.contains("\"os\""));
     }
 }

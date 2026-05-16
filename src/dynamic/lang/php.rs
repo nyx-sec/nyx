@@ -332,6 +332,26 @@ function __nyx_install_crash_guard(string $sinkCallee): void {
         }
     }
 }
+
+// Phase 10 (Track D.3) stub helpers.  When the verifier spawned a SqlStub it
+// publishes the queries-log path through NYX_SQL_LOG; a sink call site that
+// wants the host-side stub to see its query appends one record-per-call.  The
+// helper is a no-op when NYX_SQL_LOG is unset so the same fixture source still
+// runs under harness modes that didn't spawn a stub.  Mirrors the Python and
+// Node shims so the host-side SqlStub log-line format (hash-space-prefixed
+// detail lines, then the query line) is identical across language emitters.
+function __nyx_stub_sql_record($query, array $detail = []): void {
+    $p = getenv('NYX_SQL_LOG');
+    if ($p === false || $p === '') return;
+    $buf = '';
+    foreach ($detail as $k => $v) {
+        $buf .= '# ' . (string)$k . ': ' . (string)$v . "\n";
+    }
+    $q = (string)$query;
+    $buf .= $q;
+    if (substr($q, -1) !== "\n") $buf .= "\n";
+    @file_put_contents($p, $buf, FILE_APPEND);
+}
 "#
 }
 
@@ -715,6 +735,19 @@ mod tests {
         assert!(
             payload_pos < install_pos && install_pos < invoke_pos,
             "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_sql_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("function __nyx_stub_sql_record"),
+            "PHP probe shim must define __nyx_stub_sql_record"
+        );
+        assert!(
+            shim.contains("NYX_SQL_LOG"),
+            "stub recorder must read NYX_SQL_LOG"
         );
     }
 
