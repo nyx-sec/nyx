@@ -305,6 +305,29 @@ def __nyx_stub_http_record(method, url, body = nil, **detail)
   rescue StandardError
   end
 end
+
+# Phase 10 (Track D.3) SQL recording helper.  When the verifier spawned a
+# SqlStub it publishes the side-channel log path through NYX_SQL_LOG; a
+# sink call site whose query never reaches the on-the-wire SQLite engine
+# (no sqlite3 gem on the host, query pre-flighted before
+# SQLite3::Database.open) can call this helper to surface the attempted
+# query.  Hash-prefixed detail lines followed by the query line so
+# SqlStub::drain_events parses every language stream identically.  No-op
+# when NYX_SQL_LOG is unset.  Single-quoted Ruby string literals keep this
+# helper free of the literal hash-after-double-quote sequence.
+def __nyx_stub_sql_record(query, **detail)
+  p = ENV['NYX_SQL_LOG']
+  return if p.nil? || p.empty?
+  begin
+    File.open(p, 'a') do |f|
+      detail.each { |k, v| f.puts('# ' + k.to_s + ': ' + v.to_s) }
+      line = query.to_s
+      line += "\n" unless line.end_with?("\n")
+      f.write(line)
+    end
+  rescue StandardError
+  end
+end
 "#
 }
 
@@ -822,6 +845,23 @@ mod tests {
         assert!(
             shim.contains("# url: "),
             "Ruby HTTP recorder must emit a hash-prefixed url detail line"
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_sql_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("def __nyx_stub_sql_record"),
+            "Ruby probe shim must define __nyx_stub_sql_record"
+        );
+        assert!(
+            shim.contains("ENV['NYX_SQL_LOG']"),
+            "Ruby SQL recorder must read NYX_SQL_LOG to find the side-channel log"
+        );
+        assert!(
+            shim.contains("line.end_with?"),
+            "Ruby SQL recorder must guarantee a trailing newline on the query line so SqlStub::drain_events frames each record"
         );
     }
 

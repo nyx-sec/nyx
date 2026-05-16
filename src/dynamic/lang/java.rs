@@ -404,6 +404,35 @@ pub fn probe_shim() -> &'static str {
             // best-effort
         }
     }
+
+    // Phase 10 (Track D.3) SQL recording helper.  When the verifier spawned a
+    // SqlStub it publishes the side-channel log path through NYX_SQL_LOG; a
+    // sink call site whose query never reaches the on-the-wire SQLite engine
+    // (e.g. classpath lacks sqlite-jdbc, or the harness pre-flights the SQL
+    // string before opening the connection) can call this helper to surface
+    // the attempted query.  Hash-prefixed detail lines followed by the query
+    // line so SqlStub::drain_events parses every language stream identically.
+    // Same hash-via-String.valueOf trick as __nyx_stub_http_record so this
+    // method body contains no literal `"#` sequence that would terminate the
+    // surrounding Rust raw string.
+    static void __nyx_stub_sql_record(String query, java.util.Map<String,String> detail) {
+        String p = System.getenv("NYX_SQL_LOG");
+        if (p == null || p.isEmpty()) return;
+        String hashSp = String.valueOf('#') + " ";
+        try (java.io.FileWriter fw = new java.io.FileWriter(p, true)) {
+            if (detail != null) {
+                for (java.util.Map.Entry<String,String> e : detail.entrySet()) {
+                    fw.write(hashSp + e.getKey() + ": " + e.getValue() + "\n");
+                }
+            }
+            fw.write(query);
+            if (!query.endsWith("\n")) {
+                fw.write("\n");
+            }
+        } catch (java.io.IOException e) {
+            // best-effort
+        }
+    }
 "##
 }
 
@@ -1091,6 +1120,23 @@ mod tests {
         assert!(
             shim.contains("\"url: \""),
             "Java HTTP recorder must emit a url detail line"
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_sql_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("static void __nyx_stub_sql_record"),
+            "Java probe shim must define __nyx_stub_sql_record"
+        );
+        assert!(
+            shim.contains("\"NYX_SQL_LOG\""),
+            "Java SQL recorder must read NYX_SQL_LOG to find the side-channel log"
+        );
+        assert!(
+            shim.contains("query.endsWith(\"\\n\")"),
+            "Java SQL recorder must guarantee a trailing newline on the query line so SqlStub::drain_events frames each record"
         );
     }
 

@@ -153,21 +153,29 @@ fn wrap_rust_fragment(body: &str, shim: &str) -> String {
     )
 }
 
-/// One-line Cargo.toml for the Rust stub-recorder driver.  Mirrors
+/// Per-fixture Cargo.toml for the Rust stub-recorder driver.  Mirrors
 /// the Phase 26 chain_step manifest (session 0014) — `[[bin]]` points
 /// at `main.rs` so `cargo run --quiet` builds the source the test
 /// just wrote, and `libc = "0.2"` is unconditionally pinned because
 /// the spliced probe shim's `__nyx_install_crash_guard` references
-/// `libc::sigaction` on Unix.
-const RUST_STUB_CARGO_TOML: &str = "[package]\n\
-                                     name = \"nyx-stub-driver\"\n\
-                                     version = \"0.0.1\"\n\
-                                     edition = \"2021\"\n\n\
-                                     [[bin]]\n\
-                                     name = \"stub_driver\"\n\
-                                     path = \"main.rs\"\n\n\
-                                     [dependencies]\n\
-                                     libc = \"0.2\"\n";
+/// `libc::sigaction` on Unix.  Caller supplies a unique `slug` per
+/// test so the package + binary names do not collide in the shared
+/// `CARGO_TARGET_DIR` when nextest runs the Rust stub tests in
+/// parallel (every test still benefits from the cached `libc` build,
+/// only the final `nyx-stub-driver-<slug>` link is per-test).
+fn rust_stub_cargo_toml(slug: &str) -> String {
+    format!(
+        "[package]\n\
+         name = \"nyx-stub-driver-{slug}\"\n\
+         version = \"0.0.1\"\n\
+         edition = \"2021\"\n\n\
+         [[bin]]\n\
+         name = \"stub_driver_{slug}\"\n\
+         path = \"main.rs\"\n\n\
+         [dependencies]\n\
+         libc = \"0.2\"\n"
+    )
+}
 
 fn fixture_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -877,6 +885,103 @@ fn go_http_shim_recorder_is_noop_without_log_env() {
 }
 
 #[test]
+fn go_sql_stub_captures_tautology_query_via_shim_recorder() {
+    // Phase 10 (Track D.3) SQL recording: Go leg of the side-channel
+    // `__nyx_stub_sql_record` helper.  Mirrors the Python / Node / PHP /
+    // Rust / Java SQL tests — the Go fragment never opens a live
+    // `database/sql` handle (no driver imported; pulling go-sqlite3 /
+    // pgx / mysql would force a go.mod dep onto every dynamic CI matrix
+    // row) so it surfaces the attempted tautology query through the
+    // shim recorder as `driver = "manual"`.
+    if !go_available() {
+        eprintln!("SKIP: go not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("SqlStub must publish a recording endpoint");
+
+    let fragment =
+        std::fs::read_to_string(fixture_path("go/sql/vuln/main.go")).expect("read go fragment");
+    let combined = wrap_go_fragment(&fragment, go_probe_shim());
+
+    let script_path = workdir.path().join("driver_sql.go");
+    std::fs::write(&script_path, combined).expect("write go driver");
+
+    let output = Command::new("go")
+        .arg("run")
+        .arg(&script_path)
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("go driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "SqlStub must capture at least one event after the Go shim recorder fires"
+    );
+    let tautology = events
+        .iter()
+        .find(|e| e.summary.contains("OR 1=1"))
+        .expect("recorded query must contain the tautology marker");
+    assert_eq!(
+        tautology.detail.get("driver").map(String::as_str),
+        Some("manual"),
+        "detail map entries passed to __nyx_stub_sql_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn go_sql_shim_recorder_is_noop_without_log_env() {
+    if !go_available() {
+        eprintln!("SKIP: go not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment =
+        std::fs::read_to_string(fixture_path("go/sql/vuln/main.go")).expect("read go fragment");
+    let combined = wrap_go_fragment(&fragment, go_probe_shim());
+
+    let script_path = workdir.path().join("driver_sql_no_log.go");
+    std::fs::write(&script_path, combined).expect("write go driver");
+
+    let output = Command::new("go")
+        .arg("run")
+        .arg(&script_path)
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env_remove("NYX_SQL_LOG")
+        .output()
+        .expect("go driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_SQL_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
 fn ruby_http_stub_captures_attempted_outbound_via_shim_recorder() {
     // Phase 10 (Track D.3) HTTP recording: Ruby leg of the side-channel
     // `__nyx_stub_http_record` helper.  Mirrors the Python HTTP test —
@@ -984,6 +1089,105 @@ fn ruby_http_shim_recorder_is_noop_without_log_env() {
 }
 
 #[test]
+fn ruby_sql_stub_captures_tautology_query_via_shim_recorder() {
+    // Phase 10 (Track D.3) SQL recording: Ruby leg of the side-channel
+    // `__nyx_stub_sql_record` helper.  Mirrors the Python / Node / PHP /
+    // Rust / Java / Go SQL tests — the Ruby fragment never opens a live
+    // sqlite3 handle (no require, no gem dep) so it surfaces the
+    // attempted tautology query through the shim recorder as
+    // `driver = "manual"`.
+    if !ruby_available() {
+        eprintln!("SKIP: ruby not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("SqlStub must publish a recording endpoint");
+
+    let fixture =
+        std::fs::read_to_string(fixture_path("ruby/sql/vuln/main.rb")).expect("read fixture");
+    let mut combined = String::with_capacity(ruby_probe_shim().len() + fixture.len() + 64);
+    combined.push_str(ruby_probe_shim());
+    combined.push_str("\n# ── fixture begins ─\n");
+    combined.push_str(&fixture);
+
+    let script_path = workdir.path().join("driver_sql.rb");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("ruby")
+        .arg(&script_path)
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("ruby driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "SqlStub must capture at least one event after the Ruby shim recorder fires"
+    );
+    let tautology = events
+        .iter()
+        .find(|e| e.summary.contains("OR 1=1"))
+        .expect("recorded query must contain the tautology marker");
+    assert_eq!(
+        tautology.detail.get("driver").map(String::as_str),
+        Some("manual"),
+        "kwargs passed to __nyx_stub_sql_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn ruby_sql_shim_recorder_is_noop_without_log_env() {
+    if !ruby_available() {
+        eprintln!("SKIP: ruby not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let fixture =
+        std::fs::read_to_string(fixture_path("ruby/sql/vuln/main.rb")).expect("read fixture");
+    let mut combined = String::new();
+    combined.push_str(ruby_probe_shim());
+    combined.push('\n');
+    combined.push_str(&fixture);
+    let script_path = workdir.path().join("driver_sql_no_log.rb");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("ruby")
+        .arg(&script_path)
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env_remove("NYX_SQL_LOG")
+        .output()
+        .expect("ruby driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_SQL_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
 fn java_http_stub_captures_attempted_outbound_via_shim_recorder() {
     // Phase 10 (Track D.3) HTTP recording: Java leg of the side-channel
     // `__nyx_stub_http_record` helper.  Mirrors the Python / Node / PHP /
@@ -1048,6 +1252,100 @@ fn java_http_stub_captures_attempted_outbound_via_shim_recorder() {
         hit.detail.get("driver").map(String::as_str),
         Some("HttpURLConnection"),
         "detail map entries passed to __nyx_stub_http_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn java_sql_stub_captures_tautology_query_via_shim_recorder() {
+    // Phase 10 (Track D.3) SQL recording: Java leg of the side-channel
+    // `__nyx_stub_sql_record` helper.  Mirrors the Python / Node / PHP /
+    // Rust SQL tests — the Java fragment never opens a live JDBC handle
+    // (sqlite-jdbc is not stdlib; pulling it would force a classpath
+    // prereq onto the dynamic CI matrix) so it surfaces the attempted
+    // tautology query through the shim recorder as `driver = "manual"`.
+    if !java_available() {
+        eprintln!("SKIP: java not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("SqlStub must publish a recording endpoint");
+
+    let fragment = std::fs::read_to_string(fixture_path("java/sql/vuln/main.java.fragment"))
+        .expect("read java sql fragment");
+    let combined = wrap_java_fragment(&fragment, java_probe_shim());
+
+    let script_path = workdir.path().join("Main.java");
+    std::fs::write(&script_path, combined).expect("write java driver");
+
+    let output = Command::new("java")
+        .arg(&script_path)
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("java driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "SqlStub must capture at least one event after the Java shim recorder fires"
+    );
+    let tautology = events
+        .iter()
+        .find(|e| e.summary.contains("OR 1=1"))
+        .expect("recorded query must contain the tautology marker");
+    assert_eq!(
+        tautology.detail.get("driver").map(String::as_str),
+        Some("manual"),
+        "detail map entries passed to __nyx_stub_sql_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn java_sql_shim_recorder_is_noop_without_log_env() {
+    if !java_available() {
+        eprintln!("SKIP: java not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("java/sql/vuln/main.java.fragment"))
+        .expect("read java sql fragment");
+    let combined = wrap_java_fragment(&fragment, java_probe_shim());
+
+    let script_path = workdir.path().join("Main.java");
+    std::fs::write(&script_path, combined).expect("write java driver");
+
+    let output = Command::new("java")
+        .arg(&script_path)
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env_remove("NYX_SQL_LOG")
+        .output()
+        .expect("java driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_SQL_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
     );
 }
 
@@ -1166,7 +1464,7 @@ fn rust_http_stub_captures_attempted_outbound_via_shim_recorder() {
 
     let crate_dir = workdir.path().join("driver");
     std::fs::create_dir_all(&crate_dir).expect("create crate dir");
-    std::fs::write(crate_dir.join("Cargo.toml"), RUST_STUB_CARGO_TOML)
+    std::fs::write(crate_dir.join("Cargo.toml"), rust_stub_cargo_toml("http"))
         .expect("write Cargo.toml");
     std::fs::write(crate_dir.join("main.rs"), source).expect("write main.rs");
 
@@ -1229,7 +1527,7 @@ fn rust_http_shim_recorder_is_noop_without_log_env() {
 
     let crate_dir = workdir.path().join("driver_no_log");
     std::fs::create_dir_all(&crate_dir).expect("create crate dir");
-    std::fs::write(crate_dir.join("Cargo.toml"), RUST_STUB_CARGO_TOML)
+    std::fs::write(crate_dir.join("Cargo.toml"), rust_stub_cargo_toml("http_no_log"))
         .expect("write Cargo.toml");
     std::fs::write(crate_dir.join("main.rs"), source).expect("write main.rs");
 
@@ -1246,6 +1544,119 @@ fn rust_http_shim_recorder_is_noop_without_log_env() {
     assert!(
         output.status.success(),
         "driver must exit 0 even without NYX_HTTP_LOG; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
+fn rust_sql_stub_captures_tautology_query_via_shim_recorder() {
+    // Phase 10 (Track D.3) SQL recording: Rust leg of the side-channel
+    // `__nyx_stub_sql_record` helper.  Mirrors the Python / Node / PHP
+    // SQL tests — the Rust fragment never opens a live SQLite handle
+    // (no stdlib driver; rusqlite would force libsqlite3-dev onto the
+    // CI matrix) so it surfaces the attempted tautology query through
+    // the shim recorder as `driver = "manual"`.  Uses the same
+    // `extra_files`-driven `Cargo.toml` shape as the HTTP siblings so
+    // `cargo run --quiet` resolves `libc` (referenced by the spliced
+    // probe shim's `__nyx_install_crash_guard`).
+    if !cargo_available() {
+        eprintln!("SKIP: cargo not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("SqlStub must publish a recording endpoint");
+
+    let fragment = std::fs::read_to_string(fixture_path("rust/sql/vuln/main.rs"))
+        .expect("read rust sql fragment");
+    let source = wrap_rust_fragment(&fragment, rust_probe_shim());
+
+    let crate_dir = workdir.path().join("driver_sql");
+    std::fs::create_dir_all(&crate_dir).expect("create crate dir");
+    std::fs::write(crate_dir.join("Cargo.toml"), rust_stub_cargo_toml("sql"))
+        .expect("write Cargo.toml");
+    std::fs::write(crate_dir.join("main.rs"), source).expect("write main.rs");
+
+    let output = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(crate_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", rust_stub_target_dir())
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("cargo run rust sql driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stdout = {}\nstderr = {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "SqlStub must capture at least one event after the Rust shim recorder fires"
+    );
+    let tautology = events
+        .iter()
+        .find(|e| e.summary.contains("OR 1=1"))
+        .expect("recorded query must contain the tautology marker");
+    assert_eq!(
+        tautology.detail.get("driver").map(String::as_str),
+        Some("manual"),
+        "detail slice passed to __nyx_stub_sql_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn rust_sql_shim_recorder_is_noop_without_log_env() {
+    if !cargo_available() {
+        eprintln!("SKIP: cargo not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("rust/sql/vuln/main.rs"))
+        .expect("read rust sql fragment");
+    let source = wrap_rust_fragment(&fragment, rust_probe_shim());
+
+    let crate_dir = workdir.path().join("driver_sql_no_log");
+    std::fs::create_dir_all(&crate_dir).expect("create crate dir");
+    std::fs::write(crate_dir.join("Cargo.toml"), rust_stub_cargo_toml("sql_no_log"))
+        .expect("write Cargo.toml");
+    std::fs::write(crate_dir.join("main.rs"), source).expect("write main.rs");
+
+    let output = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(crate_dir.join("Cargo.toml"))
+        .env("CARGO_TARGET_DIR", rust_stub_target_dir())
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env_remove("NYX_SQL_LOG")
+        .output()
+        .expect("cargo run rust sql driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_SQL_LOG; stdout = {}\nstderr = {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
