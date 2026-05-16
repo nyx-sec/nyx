@@ -41,7 +41,7 @@ pub mod reverify;
 pub mod score;
 pub mod search;
 
-pub use edges::{ChainEdge, FindingRef, findings_to_edges};
+pub use edges::{ChainEdge, FindingRef, findings_to_edges, findings_to_edges_with_reach};
 pub use feasibility::Feasibility;
 pub use finding::{ChainFinding, ChainMember, ChainSeverity, ChainSink};
 pub use impact::{IMPACT_LATTICE, ImpactCategory, ImpactRule, lookup_impact};
@@ -51,7 +51,7 @@ pub use reverify::{
     reverify_chain_with, reverify_top_chains, reverify_top_chains_with,
 };
 pub use score::{ChainScoreConfig, category_weight, min_score_default, score_path};
-pub use search::{ChainSearchConfig, find_chains};
+pub use search::{ChainSearchConfig, find_chains, find_chains_with_reach};
 
 /// One node in a [`ChainGraph`].
 ///

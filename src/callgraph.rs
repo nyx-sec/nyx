@@ -863,6 +863,100 @@ pub fn callers_of(cg: &CallGraph, callee: &FuncKey) -> Vec<FuncKey> {
         .collect()
 }
 
+/// Reverse-edge BFS: return every [`FuncKey`] that *transitively* calls
+/// `callee`, i.e. the union of [`callers_of`] applied recursively until
+/// the reverse frontier is exhausted.
+///
+/// Used by the chain composer to widen file-scoped reach: a sink inside
+/// `internal_helper.py` whose enclosing function is reached only through
+/// `routes.py` is *reachable* in the chain sense, but the file-local
+/// match in [`crate::chain::edges::locate_reach`] / [`crate::chain::search::compose_chain`]
+/// misses it.  This helper produces the closure once so callers can
+/// resolve reach in O(1) afterwards.
+///
+/// Excludes `callee` itself from the returned set, matching the
+/// "strictly upstream" semantics callers want.  Empty when `callee` is
+/// unknown to the graph.
+///
+/// Cost: O(V + E) BFS from `callee`'s reverse frontier; bounded by the
+/// connected component size.
+pub fn callers_transitive(cg: &CallGraph, callee: &FuncKey) -> std::collections::HashSet<FuncKey> {
+    let mut seen: std::collections::HashSet<FuncKey> = std::collections::HashSet::new();
+    let Some(&start) = cg.index.get(callee) else {
+        return seen;
+    };
+    let mut frontier: Vec<NodeIndex> = cg
+        .graph
+        .neighbors_directed(start, petgraph::Direction::Incoming)
+        .collect();
+    while let Some(node) = frontier.pop() {
+        let key = cg.graph[node].clone();
+        if !seen.insert(key) {
+            continue;
+        }
+        for next in cg
+            .graph
+            .neighbors_directed(node, petgraph::Direction::Incoming)
+        {
+            if !seen.contains(&cg.graph[next]) {
+                frontier.push(next);
+            }
+        }
+    }
+    seen
+}
+
+/// File-level transitive reach map built from a [`CallGraph`].
+///
+/// For each `namespace` (file path) in the graph, records every other
+/// namespace that contains at least one transitive caller.  Built once
+/// per scan so the chain composer can widen a finding's
+/// `Reach::Reachable` decision beyond the file-local heuristic in
+/// [`crate::chain::edges::locate_reach`] without re-running BFS per
+/// finding.
+///
+/// Map shape: `callee_namespace → { caller_namespace, … }`.  A file
+/// always appears in its own caller set so intra-file recursion stays
+/// reachable.
+#[derive(Debug, Default, Clone)]
+pub struct FileReachMap {
+    by_callee_ns: HashMap<String, std::collections::HashSet<String>>,
+}
+
+impl FileReachMap {
+    /// Build the map from every function's reverse transitive closure.
+    ///
+    /// O(V × (V + E)) worst case, but the per-function BFS is sparse on
+    /// real call graphs (median in-degree < 4 on the eval corpus).
+    pub fn build(cg: &CallGraph) -> Self {
+        let mut by_callee_ns: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+        for callee in cg.index.keys() {
+            let entry = by_callee_ns.entry(callee.namespace.clone()).or_default();
+            entry.insert(callee.namespace.clone());
+            for caller in callers_transitive(cg, callee) {
+                entry.insert(caller.namespace);
+            }
+        }
+        FileReachMap { by_callee_ns }
+    }
+
+    /// True when `caller_ns` transitively reaches at least one function
+    /// defined in `callee_ns`.  False when either namespace is unknown
+    /// to the graph (conservative: chain composer falls back to the
+    /// file-local heuristic).
+    pub fn reaches(&self, caller_ns: &str, callee_ns: &str) -> bool {
+        self.by_callee_ns
+            .get(callee_ns)
+            .is_some_and(|set| set.contains(caller_ns))
+    }
+
+    /// Number of distinct callee namespaces tracked.  Exposed for
+    /// diagnostics / tests.
+    pub fn callee_ns_len(&self) -> usize {
+        self.by_callee_ns.len()
+    }
+}
+
 /// Compute the set of file namespaces that must be re-analysed when a
 /// given set of callee [`FuncKey`]s have had their summaries refined.
 ///
@@ -2798,5 +2892,74 @@ mod tests {
         assert_eq!(cg.graph.edge_count(), 1);
         assert!(cg.unresolved_not_found.is_empty());
         assert!(cg.unresolved_ambiguous.is_empty());
+    }
+
+    // ── callers_transitive + FileReachMap ───────────────────────────────
+
+    /// Three-hop chain across three files:
+    /// `routes.py::handle -> service.py::process -> helper.py::sink`
+    /// `callers_transitive(sink)` must return both `process` and `handle`.
+    /// `FileReachMap` must record `routes.py` and `service.py` as callers
+    /// of `helper.py`.
+    #[test]
+    fn callers_transitive_walks_multi_hop_chain() {
+        let handle = make_summary("handle", "routes.py", "python", 0, vec!["process"]);
+        let process = make_summary("process", "service.py", "python", 0, vec!["sink"]);
+        let sink = make_summary("sink", "helper.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![handle, process, sink], None);
+        let cg = build_call_graph(&gs, &[]);
+
+        let sink_key = FuncKey {
+            lang: Lang::Python,
+            namespace: "helper.py".into(),
+            name: "sink".into(),
+            arity: Some(0),
+            ..Default::default()
+        };
+        let transitive = callers_transitive(&cg, &sink_key);
+        let caller_names: std::collections::HashSet<String> =
+            transitive.iter().map(|k| k.name.clone()).collect();
+        assert!(caller_names.contains("process"), "process should reach sink");
+        assert!(caller_names.contains("handle"), "handle should reach sink");
+        assert_eq!(transitive.len(), 2, "sink itself must be excluded");
+
+        let reach = FileReachMap::build(&cg);
+        assert!(reach.reaches("routes.py", "helper.py"));
+        assert!(reach.reaches("service.py", "helper.py"));
+        assert!(reach.reaches("helper.py", "helper.py"), "self-reach");
+        assert!(!reach.reaches("helper.py", "routes.py"));
+    }
+
+    #[test]
+    fn callers_transitive_empty_for_unknown_key() {
+        let leaf = make_summary("leaf", "a.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![leaf], None);
+        let cg = build_call_graph(&gs, &[]);
+        let ghost = FuncKey {
+            lang: Lang::Python,
+            namespace: "nowhere.py".into(),
+            name: "ghost".into(),
+            arity: Some(0),
+            ..Default::default()
+        };
+        assert!(callers_transitive(&cg, &ghost).is_empty());
+    }
+
+    #[test]
+    fn file_reach_map_handles_disconnected_components() {
+        let a_caller = make_summary("a_caller", "a.py", "python", 0, vec!["a_sink"]);
+        let a_sink = make_summary("a_sink", "a.py", "python", 0, vec![]);
+        let b_caller = make_summary("b_caller", "b.py", "python", 0, vec!["b_sink"]);
+        let b_sink = make_summary("b_sink", "b.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![a_caller, a_sink, b_caller, b_sink], None);
+        let cg = build_call_graph(&gs, &[]);
+        let reach = FileReachMap::build(&cg);
+
+        assert!(reach.reaches("a.py", "a.py"));
+        assert!(reach.reaches("b.py", "b.py"));
+        // Disconnected: a.py does not reach b.py.
+        assert!(!reach.reaches("a.py", "b.py"));
+        assert!(!reach.reaches("b.py", "a.py"));
+        assert_eq!(reach.callee_ns_len(), 2);
     }
 }

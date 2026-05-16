@@ -13,6 +13,7 @@
 //! search or do call-graph traversal: edges are emitted at finding
 //! granularity and carry only the file-local reach hint.
 
+use crate::callgraph::FileReachMap;
 use crate::commands::scan::Diag;
 use crate::entry_points::HttpMethod;
 use crate::labels::Cap;
@@ -94,13 +95,39 @@ pub struct ChainEdge {
 /// The output order mirrors `findings`; the caller is responsible for
 /// any further canonicalisation.
 pub fn findings_to_edges(findings: &[Diag], surface: &SurfaceMap) -> Vec<ChainEdge> {
+    findings_to_edges_with_reach(findings, surface, None)
+}
+
+/// Like [`findings_to_edges`] but optionally consults a [`FileReachMap`]
+/// to widen `Reach::Reachable` beyond the file-local match.
+///
+/// When `reach` is `Some`, a finding's enclosing file is also considered
+/// `Reachable` whenever any [`SurfaceNode::EntryPoint`]'s
+/// `handler_location.file` transitively reaches the finding's file via
+/// the call graph.  The first matching entry-point (surface-canonical
+/// order) is used to populate the `route` / `method` / `auth_required`
+/// fields.
+///
+/// `reach = None` is byte-identical to the legacy [`findings_to_edges`]
+/// behaviour.  Path strings on both sides must use the same convention
+/// (project-relative POSIX) for the widening to fire; mismatched paths
+/// silently fall through to the file-local heuristic.
+pub fn findings_to_edges_with_reach(
+    findings: &[Diag],
+    surface: &SurfaceMap,
+    reach: Option<&FileReachMap>,
+) -> Vec<ChainEdge> {
     findings
         .iter()
-        .filter_map(|d| build_edge(d, surface))
+        .filter_map(|d| build_edge(d, surface, reach))
         .collect()
 }
 
-fn build_edge(diag: &Diag, surface: &SurfaceMap) -> Option<ChainEdge> {
+fn build_edge(
+    diag: &Diag,
+    surface: &SurfaceMap,
+    reach: Option<&FileReachMap>,
+) -> Option<ChainEdge> {
     let evidence = diag.evidence.as_ref()?;
     if evidence.sink_caps == 0 {
         return None;
@@ -108,7 +135,7 @@ fn build_edge(diag: &Diag, surface: &SurfaceMap) -> Option<ChainEdge> {
     let cap_bits = evidence.sink_caps;
     let primary_cap = pick_chain_cap(cap_bits)?;
     let location = SourceLocation::new(diag.path.clone(), diag.line as u32, diag.col as u32);
-    let reach = locate_reach(&location, surface);
+    let reach_kind = locate_reach(&location, surface, reach);
     let feasibility = Feasibility::for_finding(diag);
     let finding = FindingRef {
         finding_id: diag.finding_id.clone(),
@@ -120,7 +147,7 @@ fn build_edge(diag: &Diag, surface: &SurfaceMap) -> Option<ChainEdge> {
     Some(ChainEdge {
         finding,
         primary_cap,
-        reach,
+        reach: reach_kind,
         feasibility,
     })
 }
@@ -164,7 +191,12 @@ pub fn pick_chain_cap(bits: u32) -> Option<Cap> {
     lowest_cap(bits)
 }
 
-fn locate_reach(loc: &SourceLocation, surface: &SurfaceMap) -> Reach {
+fn locate_reach(
+    loc: &SourceLocation,
+    surface: &SurfaceMap,
+    reach: Option<&FileReachMap>,
+) -> Reach {
+    // Pass 1: file-local match (legacy behaviour, always applies).
     for node in &surface.nodes {
         if let SurfaceNode::EntryPoint(ep) = node {
             if ep.handler_location.file == loc.file {
@@ -174,6 +206,23 @@ fn locate_reach(loc: &SourceLocation, surface: &SurfaceMap) -> Reach {
                     route: ep.route.clone(),
                     auth_required: ep.auth_required,
                 };
+            }
+        }
+    }
+    // Pass 2: transitive caller match via the call graph.  Only fires
+    // when `reach` is supplied — keeps the legacy file-local behaviour
+    // for callers that have not yet wired the call-graph reach map.
+    if let Some(reach) = reach {
+        for node in &surface.nodes {
+            if let SurfaceNode::EntryPoint(ep) = node {
+                if reach.reaches(&ep.handler_location.file, &loc.file) {
+                    return Reach::Reachable {
+                        location: ep.location.clone(),
+                        method: ep.method,
+                        route: ep.route.clone(),
+                        auth_required: ep.auth_required,
+                    };
+                }
             }
         }
     }
@@ -246,5 +295,62 @@ mod tests {
         let edges = findings_to_edges(&[d], &SurfaceMap::new());
         assert_eq!(edges.len(), 1);
         assert!(matches!(edges[0].reach, Reach::Unreachable));
+    }
+
+    /// Cross-file finding becomes Reachable when the call-graph reach
+    /// map records a transitive caller in the entry-point's file.
+    #[test]
+    fn reach_widens_with_file_reach_map() {
+        use crate::callgraph::{FileReachMap, build_call_graph};
+        use crate::entry_points::HttpMethod;
+        use crate::summary::{FuncSummary, merge_summaries};
+        use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
+
+        // routes.py::handle -> helper.py::sink
+        let handle = FuncSummary {
+            name: "handle".into(),
+            file_path: "routes.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            callees: vec![crate::summary::CalleeSite::bare("sink")],
+            ..Default::default()
+        };
+        let sink = FuncSummary {
+            name: "sink".into(),
+            file_path: "helper.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            ..Default::default()
+        };
+        let gs = merge_summaries(vec![handle, sink], None);
+        let cg = build_call_graph(&gs, &[]);
+        let reach = FileReachMap::build(&cg);
+
+        let mut surface = SurfaceMap::new();
+        surface.nodes.push(SurfaceNode::EntryPoint(EntryPoint {
+            location: SourceLocation::new("routes.py", 1, 1),
+            framework: Framework::Flask,
+            method: HttpMethod::GET,
+            route: "/".into(),
+            handler_name: "handle".into(),
+            handler_location: SourceLocation::new("routes.py", 2, 1),
+            auth_required: false,
+        }));
+
+        let d = diag_with_cap("helper.py", 10, Cap::CODE_EXEC);
+
+        // Without reach: file-local lookup leaves the finding Unreachable.
+        let edges = findings_to_edges(&[d.clone()], &surface);
+        assert!(matches!(edges[0].reach, Reach::Unreachable));
+
+        // With reach: transitive caller in `routes.py` lifts to Reachable.
+        let edges = findings_to_edges_with_reach(&[d], &surface, Some(&reach));
+        match &edges[0].reach {
+            Reach::Reachable { route, method, .. } => {
+                assert_eq!(route, "/");
+                assert_eq!(*method, HttpMethod::GET);
+            }
+            other => panic!("expected Reachable, got {other:?}"),
+        }
     }
 }

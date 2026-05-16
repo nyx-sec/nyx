@@ -249,6 +249,7 @@ impl JobManager {
                         Some(&metrics),
                         Some(&log_collector),
                         None,
+                        None,
                     )
                 });
             let elapsed = start.elapsed().as_secs_f64();

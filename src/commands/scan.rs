@@ -439,6 +439,13 @@ pub fn handle(
     // functions below.  Set to true if any C / C++ file is enumerated.
     let preview_tier_seen = Arc::new(AtomicBool::new(false));
 
+    // Call-graph-derived file reachability map.  Populated by the inner
+    // observer once the call graph is built, then consumed by the chain
+    // composer below to widen cross-file Reach beyond the file-local
+    // heuristic in `findings_to_edges`.
+    let chain_reach_slot: std::sync::OnceLock<crate::callgraph::FileReachMap> =
+        std::sync::OnceLock::new();
+
     let (mut diags, surface_map): (Vec<Diag>, crate::surface::SurfaceMap) = if index_mode
         == IndexMode::Off
     {
@@ -450,6 +457,7 @@ pub fn handle(
             None,
             None,
             Some(&preview_tier_seen),
+            Some(&chain_reach_slot),
         )?
     } else {
         if index_mode == IndexMode::Rebuild || !db_path.exists() {
@@ -484,6 +492,7 @@ pub fn handle(
             None,
             None,
             Some(&preview_tier_seen),
+            Some(&chain_reach_slot),
         )?;
         let surface_map = {
             let idx = Indexer::from_pool(&project_name, &pool)?;
@@ -623,12 +632,25 @@ pub fn handle(
     };
 
     // ── Phase 25: compose exploit chains from findings + SurfaceMap ────
-    let chain_edges = crate::chain::findings_to_edges(&diags, &surface_map);
+    // When the inner scan populated the call-graph reach map, pass it
+    // to the chain layer so a finding in an internal helper whose
+    // enclosing function is only reached through a route handler still
+    // composes against a sink in the handler's file.  When the slot is
+    // empty (legacy / AST-only paths that never built a call graph),
+    // the chain layer falls back to file-local reach.
+    let chain_reach = chain_reach_slot.get();
+    let chain_edges =
+        crate::chain::findings_to_edges_with_reach(&diags, &surface_map, chain_reach);
     let chain_search_cfg = crate::chain::ChainSearchConfig {
         max_depth: config.chain.max_depth,
         min_score: config.chain.min_score,
     };
-    let chains = crate::chain::find_chains(&chain_edges, &surface_map, chain_search_cfg);
+    let chains = crate::chain::find_chains_with_reach(
+        &chain_edges,
+        &surface_map,
+        chain_search_cfg,
+        chain_reach,
+    );
     let diags_for_output = crate::output::filter_constituents(
         diags.clone(),
         &chains,
@@ -1806,7 +1828,7 @@ pub(crate) fn scan_filesystem(
     cfg: &Config,
     show_progress: bool,
 ) -> NyxResult<Vec<Diag>> {
-    scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None)
+    scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None, None)
         .map(|(diags, _surface_map)| diags)
 }
 
@@ -1820,7 +1842,7 @@ pub(crate) fn scan_filesystem_with_surface_map(
     cfg: &Config,
     show_progress: bool,
 ) -> NyxResult<(Vec<Diag>, crate::surface::SurfaceMap)> {
-    scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None)
+    scan_filesystem_with_observer(root, cfg, show_progress, None, None, None, None, None)
 }
 
 /// Walk the filesystem and perform a two-pass scan, optionally reporting
@@ -1838,6 +1860,7 @@ pub(crate) fn scan_filesystem_with_observer(
     metrics: Option<&Arc<ScanMetrics>>,
     logs: Option<&Arc<ScanLogCollector>>,
     preview_tier_seen: Option<&Arc<AtomicBool>>,
+    chain_reach_out: Option<&std::sync::OnceLock<crate::callgraph::FileReachMap>>,
 ) -> NyxResult<(Vec<Diag>, crate::surface::SurfaceMap)> {
     // Ensure framework context is available (handle sets it, but direct
     // callers like scan_no_index may not).
@@ -2177,6 +2200,10 @@ pub(crate) fn scan_filesystem_with_observer(
         );
     }
 
+    if let Some(out) = chain_reach_out {
+        let _ = out.set(crate::callgraph::FileReachMap::build(&call_graph));
+    }
+
     // ── Pass 2: re-run with cross-file global summaries ──────────────────
     if let Some(p) = progress {
         p.set_stage(ScanStage::Analyzing);
@@ -2326,6 +2353,7 @@ pub fn scan_with_index_parallel(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -2341,6 +2369,7 @@ pub fn scan_with_index_parallel_observer(
     metrics: Option<&Arc<ScanMetrics>>,
     logs: Option<&Arc<ScanLogCollector>>,
     preview_tier_seen: Option<&Arc<AtomicBool>>,
+    chain_reach_out: Option<&std::sync::OnceLock<crate::callgraph::FileReachMap>>,
 ) -> NyxResult<Vec<Diag>> {
     // Match scan_filesystem_with_observer: auto-fill framework detection when
     // the caller didn't supply one.  Without this, directly-invoked indexed
@@ -2964,6 +2993,10 @@ pub fn scan_with_index_parallel_observer(
             ),
             None,
         );
+    }
+
+    if let Some(out) = chain_reach_out {
+        let _ = out.set(crate::callgraph::FileReachMap::build(&call_graph));
     }
 
     let (batches, orphans) = crate::callgraph::scc_file_batches_with_metadata(

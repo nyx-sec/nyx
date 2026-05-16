@@ -43,6 +43,7 @@
 //! adjacent when they share a source file, mirroring Phase 24's
 //! `findings_to_edges` reach resolver.
 
+use crate::callgraph::FileReachMap;
 use crate::chain::edges::{ChainEdge, Reach};
 use crate::chain::finding::{ChainFinding, ChainSink};
 use crate::chain::impact::{ImpactCategory, lookup_impact};
@@ -76,6 +77,24 @@ pub fn find_chains(
     surface: &SurfaceMap,
     cfg: ChainSearchConfig,
 ) -> Vec<ChainFinding> {
+    find_chains_with_reach(edges, surface, cfg, None)
+}
+
+/// Like [`find_chains`] but optionally consults a [`FileReachMap`] to
+/// widen the per-entry-per-sink file-scope filter beyond literal
+/// file-equality.
+///
+/// When `reach` is `Some`, a candidate edge is in scope for a given
+/// sink whenever the finding's file *or* a transitive caller of it
+/// reaches the sink's file via the call graph.  `reach = None`
+/// preserves the legacy file-local behaviour for callers that have
+/// not yet wired the call-graph reach map.
+pub fn find_chains_with_reach(
+    edges: &[ChainEdge],
+    surface: &SurfaceMap,
+    cfg: ChainSearchConfig,
+    reach: Option<&FileReachMap>,
+) -> Vec<ChainFinding> {
     if cfg.max_depth == 0 || edges.is_empty() {
         return Vec::new();
     }
@@ -96,18 +115,18 @@ pub fn find_chains(
                 .cmp(&(b.finding.stable_hash, &b.finding.rule_id, &b.finding.location))
         });
         for sink in &sinks {
-            // Phase 25 limits per-entry-per-sink search to those
-            // candidates that share a file with the sink.  Phase 25's
-            // deferred call-graph follow-up will widen this.
+            // Scope candidates to the sink: same-file match (legacy),
+            // optionally widened by a call-graph-derived reach map so
+            // a finding in `internal_helper.py` whose enclosing
+            // function is reached only through `routes.py` still
+            // composes against a sink in `routes.py`.
             let scoped: Vec<&ChainEdge> = candidates
                 .iter()
                 .filter(|e| {
-                    // Surface DangerousLocal location uses POSIX path;
-                    // the per-finding location is whatever the analyser
-                    // recorded.  Match on the trailing path segment so
-                    // a project-relative vs absolute mismatch does not
-                    // gate the chain.
                     paths_overlap(&e.finding.location.file, &sink.location.file)
+                        || reach.is_some_and(|r| {
+                            r.reaches(&e.finding.location.file, &sink.location.file)
+                        })
                 })
                 .copied()
                 .collect();
@@ -650,5 +669,75 @@ mod tests {
         };
         let chains = find_chains(&[e], &surface, cfg);
         assert!(chains.is_empty());
+    }
+
+    /// Sink in a different file than the finding composes only when the
+    /// call-graph reach map records a transitive caller relationship.
+    #[test]
+    fn cross_file_chain_requires_reach_map() {
+        use crate::callgraph::{FileReachMap, build_call_graph};
+        use crate::summary::{FuncSummary, merge_summaries};
+
+        let mut surface = SurfaceMap::new();
+        surface.nodes.push(entry("routes.py", "/exec", false));
+        // Sink lives in a helper file the entry handler transitively
+        // reaches, not the entry file itself.
+        surface.nodes.push(sink(
+            "helper.py",
+            20,
+            "os.system",
+            Cap::CODE_EXEC,
+        ));
+        let e = edge_with(
+            "routes.py",
+            10,
+            "taint-codeexec",
+            Cap::CODE_EXEC,
+            "/exec",
+            HttpMethod::POST,
+            Feasibility::Unverified,
+        );
+
+        let cfg = ChainSearchConfig {
+            max_depth: 4,
+            min_score: 0.0,
+        };
+
+        // No reach map: routes.py finding cannot compose against
+        // helper.py sink because `paths_overlap` rejects the pair.
+        let baseline = find_chains(std::slice::from_ref(&e), &surface, cfg);
+        assert!(
+            baseline.is_empty(),
+            "without reach map, cross-file chain must not compose"
+        );
+
+        // Reach map: routes.py::handle calls helper.py::sink so
+        // helper.py is reachable from routes.py.
+        let handle = FuncSummary {
+            name: "handle".into(),
+            file_path: "routes.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            callees: vec![crate::summary::CalleeSite::bare("sink")],
+            ..Default::default()
+        };
+        let sink_fn = FuncSummary {
+            name: "sink".into(),
+            file_path: "helper.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            ..Default::default()
+        };
+        let gs = merge_summaries(vec![handle, sink_fn], None);
+        let cg = build_call_graph(&gs, &[]);
+        let reach = FileReachMap::build(&cg);
+
+        let chains = find_chains_with_reach(&[e], &surface, cfg, Some(&reach));
+        assert_eq!(
+            chains.len(),
+            1,
+            "reach map should widen scope to include helper.py sink"
+        );
+        assert_eq!(chains[0].implied_impact, ImpactCategory::Rce);
     }
 }
