@@ -4,6 +4,30 @@ Nyx verifies every `Confidence >= Medium` finding by default: it builds
 a minimal harness, runs your code's entry point against a curated payload corpus
 inside a sandbox, and records the verdict in each finding's evidence block.
 
+## Headline metrics
+
+The dynamic-verification overhaul ships with four published acceptance targets,
+gated end-to-end by `scripts/m7_ship_gate.sh` (Phase 31) against the eval
+corpus (OWASP Benchmark v1.2 + NIST SARD subset + the in-house curated set
+from `tests/benchmark/corpus`):
+
+| Metric | Target | Gate | Source |
+| --- | --- | --- | --- |
+| Unsupported% per `(cap, lang)` cell | < 20% | M7 Gate 1 | `tests/eval_corpus/budget.toml` → `[default].unsupported_rate` |
+| False-Confirmed% per cap | < 2% | M7 Gate 2 | `~/.cache/nyx/dynamic/events.jsonl` (`kind: feedback`, `wrong: true`) |
+| Repro stability | ≥ 95% | M7 Gate 5 | `~/.cache/nyx/dynamic/repro/*/reproduce.sh` exit 0 |
+| Wall-clock cost | ≤ 2× static-only | M7 Gate 3 | `benches/fixtures/` (default vs `--no-verify`) |
+
+The corresponding orchestrator is `tests/eval_corpus/run_full.sh`; it bundles
+the three corpus sets, writes a canonical `tests/eval_corpus/results.json`,
+and propagates the per-cell budget through `tabulate.py` and `report.py`.
+
+A non-zero exit from `m7_ship_gate.sh` is a hard merge blocker for the
+default-on flip.  Failures map back to the engine follow-ups recorded in
+`.pitboss/play/deferred.md` (per-language probe-shim splicing, composite
+chain reverifier wiring, telemetry-stability stamping, et al.).
+
+
 ## Default-on semantics
 
 ```
