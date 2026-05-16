@@ -12,7 +12,7 @@ mod common;
 #[cfg(feature = "dynamic")]
 mod rust_fixture_tests {
     use crate::common::fixture_harness::{
-        run_fixture_and_compare_to_golden, CopyStrategy, FixtureSpec,
+        run_fixture_and_compare_to_golden, CopyStrategy, FixtureSpec, Prerequisite,
     };
     use nyx_scanner::commands::scan::Diag;
     use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
@@ -32,6 +32,11 @@ mod rust_fixture_tests {
             sink_line,
             confidence: Confidence::High,
             copy: CopyStrategy::RustEntry,
+            // Phase 29 (Track I): the Rust harness emitter shells out
+            // to `cargo` during verify, so the host must have a Rust
+            // toolchain on PATH.  Missing cargo triggers a structured
+            // skip rather than a panic.
+            requires: vec![Prerequisite::CommandAvailable("cargo")],
         }
     }
 
@@ -49,6 +54,10 @@ mod rust_fixture_tests {
             sink_line,
             confidence: Confidence::Low,
             copy: CopyStrategy::RustEntry,
+            // Low-confidence rows short-circuit to
+            // `Unsupported(ConfidenceTooLow)` before the harness ever
+            // shells out to cargo.
+            requires: vec![],
         }
     }
 

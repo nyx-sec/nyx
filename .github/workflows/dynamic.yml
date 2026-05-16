@@ -1,0 +1,152 @@
+# Phase 29 (Track I): dedicated dynamic-verification matrix.
+#
+# Three rows exercise the dynamic harness pipeline (`cargo nextest run
+# --features dynamic`) under the host configurations the Phase 17–28
+# tracks documented as supported:
+#
+#   linux-process-only — Ubuntu host, no docker daemon.  Forces the
+#                        process backend and exercises the Phase 17
+#                        Linux hardening primitives (chroot, seccomp,
+#                        unshare, no_new_privs).  `libc6-dev` is
+#                        installed so the hardening probe + escape
+#                        suite can `cc -static`; without it the
+#                        chroot-leg of the escape suite skips silently
+#                        (Phase 20 follow-up #4 in deferred.md).
+#
+#   linux-with-docker  — Ubuntu host with docker-in-docker.  Exercises
+#                        the docker backend (Phase 19) and the
+#                        differential-confirmation parity tests.
+#
+#   macos              — macOS-latest, no docker.  Exercises the
+#                        Phase-18 `sandbox-exec` primitives plus the
+#                        process backend on Darwin.  Track-I acceptance
+#                        literal: "cargo nextest run --features dynamic
+#                        is green on macOS without docker."
+
+name: dynamic
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-process-only:
+    name: dynamic / linux-process-only
+    runs-on: ubuntu-latest
+    env:
+      # Force the process backend even when callers default to Auto so
+      # docker-unavailable paths cannot accidentally hide a regression.
+      NYX_SANDBOX_BACKEND: process
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      # Phase 17 / Phase 20 follow-up: the hardening probe + escape
+      # suite chroot leg need static glibc.  Without these packages the
+      # `cc -static probe.c` step in tests/sandbox_hardening_linux.rs +
+      # tests/sandbox_escape_suite.rs falls back to dynamic linking and
+      # the chroot leg silently skips.
+      - name: Install fixture prerequisites (static libc)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends libc6-dev libc-dev-bin
+
+      - name: Smoke-test interpreter availability
+        run: |
+          python3 --version
+          node --version || sudo apt-get install -y --no-install-recommends nodejs
+          ruby --version || true
+          php --version || true
+
+      - name: Dynamic suite (process backend only)
+        run: cargo nextest run --features dynamic
+
+  linux-with-docker:
+    name: dynamic / linux-with-docker
+    runs-on: ubuntu-latest
+    services:
+      docker:
+        image: docker:dind
+        options: --privileged
+    env:
+      DOCKER_TLS_CERTDIR: ""
+      DOCKER_HOST: tcp://docker:2375
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Install fixture prerequisites (static libc)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends libc6-dev libc-dev-bin
+
+      - name: Pull language images for sandbox tests
+        run: |
+          docker pull python:3-slim
+          docker pull node:20-slim
+          docker pull eclipse-temurin:21-jre-jammy
+          docker pull php:8-cli
+
+      - name: Smoke-test docker interpreter availability
+        run: |
+          docker run --rm python:3-slim python3 --version
+          docker run --rm node:20-slim node --version
+          docker run --rm eclipse-temurin:21-jre-jammy java -version
+          docker run --rm php:8-cli php --version
+
+      - name: Dynamic suite (process + docker backends)
+        run: cargo nextest run --features dynamic
+
+  macos:
+    name: dynamic / macos
+    runs-on: macos-latest
+    env:
+      # macOS runners ship without docker; force process backend so the
+      # `Auto` resolver in src/dynamic/sandbox.rs cannot accidentally
+      # pick up a stray Lima/Colima daemon and confuse the matrix.
+      NYX_SANDBOX_BACKEND: process
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: true
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Smoke-test sandbox-exec availability
+        run: |
+          /usr/bin/sandbox-exec -p '(version 1)(allow default)' /bin/echo ok
+
+      - name: Smoke-test interpreter availability
+        run: |
+          python3 --version
+          node --version
+          ruby --version
+
+      # Phase 29 acceptance literal: "cargo nextest run --features
+      # dynamic is green on macOS without docker (process-only row)."
+      - name: Dynamic suite (macOS, process backend)
+        run: cargo nextest run --features dynamic

@@ -6,6 +6,7 @@
 #
 # Usage:
 #   scripts/m7_ship_gate.sh [--nyx BIN] [--corpus-dir DIR] [--skip GATE,...]
+#                           [--budget FILE] [--diff FILE]
 #
 # Gates:
 #   1. unsupported-rate   — per-cell (cap × lang) Unsupported% within budget
@@ -13,6 +14,11 @@
 #   3. wall-clock         — default scan ≤ 2× static-only on bench suite
 #   4. sandbox-escape     — sandbox escape suite green for all langs
 #   5. repro-stability    — repro artifact regenerates identical verdict ≥ 95%
+#
+# Phase 29 (Track I): Gate 1 consumes per-cell budgets from
+# `tests/eval_corpus/budget.toml` and, when `--diff PREV.json` is
+# supplied, fails on any monotonic-improvement regression vs the
+# previous run.
 
 set -euo pipefail
 
@@ -23,12 +29,17 @@ CORPUS_DIR="${CORPUS_DIR:-${HOME}/.cache/nyx/eval_corpus}"
 SKIP_GATES=""
 GATE_ERRORS=0
 GATE_LOG="${REPO_ROOT}/target/m7_gate.log"
+# Phase 29 (Track I): per-cell budgets + monotonic diff.
+BUDGET_FILE="${BUDGET_FILE:-${REPO_ROOT}/tests/eval_corpus/budget.toml}"
+DIFF_FILE="${DIFF_FILE:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --nyx)         NYX_BIN="$2"; shift 2 ;;
     --corpus-dir)  CORPUS_DIR="$2"; shift 2 ;;
     --skip)        SKIP_GATES="$2"; shift 2 ;;
+    --budget)      BUDGET_FILE="$2"; shift 2 ;;
+    --diff)        DIFF_FILE="$2"; shift 2 ;;
     *)             shift ;;
   esac
 done
@@ -45,28 +56,46 @@ mkdir -p "$(dirname "$GATE_LOG")"
 echo "# M7 ship gate — $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$GATE_LOG"
 info "nyx: $NYX_BIN"
 info "corpus: $CORPUS_DIR"
+info "budget: $BUDGET_FILE"
+info "diff:   ${DIFF_FILE:-<none>}"
 info ""
 
-# ── Gate 1: Unsupported-rate budget ─────────────────────────────────────────
+# ── Gate 1: Per-cell budget + monotonic-improvement diff ───────────────────
+#
+# Phase 29 (Track I): the single global Unsupported threshold is replaced
+# by per-cell (cap × lang) budgets in tests/eval_corpus/budget.toml.
+# `tests/eval_corpus/run.sh` invokes `tabulate.py` per set and `report.py`
+# at the end with `--budget` (and `--diff` when DIFF_FILE is set), so
+# any per-cell failure (or any regression vs the prior run) propagates
+# back as exit 2.
 if skip unsupported-rate; then
   info "Gate 1 (unsupported-rate): SKIPPED"
 else
-  info "Gate 1: per-cell Unsupported rate within budget..."
+  info "Gate 1: per-cell budget within tolerance + no monotonic regressions..."
   EVAL_RESULTS="${REPO_ROOT}/target/eval_results.json"
   echo "[]" > "$EVAL_RESULTS"
 
-  # Run eval corpus runner (in-house set always present).
-  if bash "${REPO_ROOT}/tests/eval_corpus/run.sh" \
+  if [[ ! -f "$BUDGET_FILE" ]]; then
+    die "Gate 1: budget file not found at $BUDGET_FILE"
+  else
+    # Run eval corpus runner (in-house set always present).
+    set +e
+    bash "${REPO_ROOT}/tests/eval_corpus/run.sh" \
       --nyx "$NYX_BIN" \
       --sets inhouse \
-      --output "$(dirname "$EVAL_RESULTS")" 2>>"$GATE_LOG"; then
-    # Copy result to our location.
-    cp "$(dirname "$EVAL_RESULTS")/eval_results.json" "$EVAL_RESULTS" 2>/dev/null || true
-    pass "Gate 1: unsupported-rate check passed"
-  else
+      --output "$(dirname "$EVAL_RESULTS")" \
+      --budget "$BUDGET_FILE" \
+      ${DIFF_FILE:+--diff "$DIFF_FILE"} \
+      >>"$GATE_LOG" 2>>"$GATE_LOG"
     RC=$?
-    if [[ $RC -eq 2 ]]; then
-      die "Gate 1: Unsupported rate exceeds budget for one or more (cap, lang) cells"
+    set -e
+    cp "$(dirname "$EVAL_RESULTS")/eval_results.json" "$EVAL_RESULTS" 2>/dev/null || true
+    if [[ $RC -eq 0 ]]; then
+      pass "Gate 1: per-cell budget + diff check passed"
+    elif [[ $RC -eq 2 ]]; then
+      die "Gate 1: per-cell budget exceeded OR monotonic-improvement regression (see $GATE_LOG)"
+    elif [[ $RC -eq 3 ]]; then
+      die "Gate 1: budget/diff configuration is malformed (see $GATE_LOG)"
     else
       info "Gate 1: eval runner returned $RC (corpus may not be downloaded; treating as SKIP)"
     fi

@@ -15,7 +15,7 @@ mod common;
 mod python_fixture_tests {
     use crate::common::fixture_harness::{
         run_fixture_and_compare_to_golden, run_harness_snapshot, run_shape_fixture,
-        CopyStrategy, FixtureSpec,
+        CopyStrategy, FixtureSpec, Prerequisite,
     };
     use nyx_scanner::commands::scan::Diag;
     use nyx_scanner::dynamic::spec::PayloadSlot;
@@ -48,6 +48,12 @@ mod python_fixture_tests {
             sink_line,
             confidence: Confidence::High,
             copy: CopyStrategy::PreserveName,
+            // Phase 29 (Track I): the Python harness emitter shells out
+            // to `python3` during verify, so the host must have it.
+            // The harness short-circuits with a structured skip when
+            // missing; CI rows that intentionally omit Python still go
+            // green.
+            requires: vec![Prerequisite::CommandAvailable("python3")],
         }
     }
 
@@ -65,6 +71,10 @@ mod python_fixture_tests {
             sink_line,
             confidence: Confidence::Low,
             copy: CopyStrategy::PreserveName,
+            // Low-confidence rows short-circuit to
+            // `Unsupported(ConfidenceTooLow)` before the harness ever
+            // shells out to python3, so no prerequisite is needed.
+            requires: vec![],
         }
     }
 

@@ -1,0 +1,210 @@
+# Per-cell (cap × lang) budgets for the dynamic-verification eval corpus.
+#
+# Phase 29 (Track I): replaces the single global Unsupported-rate gate in
+# tests/eval_corpus/report.py with per-cell targets. Each cell records the
+# largest tolerated rate today plus a deadline date for the next ratchet.
+#
+# Schema:
+#
+#   [default]
+#   unsupported_rate    = 0.80   # max(Unsupported / total) per cell
+#   false_confirmed_rate = 0.02  # max(wrong / Confirmed) per cell
+#   repro_stability     = 0.95   # min(stable / Confirmed) per cell
+#   ratchet_deadline    = "2026-08-01"
+#
+#   [[cell]]
+#   cap                 = "sqli"
+#   lang                = "python"
+#   unsupported_rate    = 0.50
+#   false_confirmed_rate = 0.02
+#   repro_stability     = 0.97
+#   ratchet_deadline    = "2026-07-15"
+#
+# `cap` matches tabulate.py's _CAP_BIT_TABLE / _CAP_RULE_TABLE labels.
+# `lang` matches the ext_map values (`python`, `javascript`, …).
+# A wildcard `"*"` matches any cell that does not have an exact entry.
+
+[default]
+# Inherited by any cell not overridden below.  Aligned with the legacy
+# Gate-1 / Gate-2 / Gate-5 thresholds in scripts/m7_ship_gate.sh.
+unsupported_rate     = 0.80
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-08-01"
+
+# Python verticals (Phase 12 — most mature; tightest budgets).
+
+[[cell]]
+cap = "sqli"
+lang = "python"
+unsupported_rate     = 0.40
+false_confirmed_rate = 0.02
+repro_stability      = 0.97
+ratchet_deadline     = "2026-07-15"
+
+[[cell]]
+cap = "cmdi"
+lang = "python"
+unsupported_rate     = 0.40
+false_confirmed_rate = 0.02
+repro_stability      = 0.97
+ratchet_deadline     = "2026-07-15"
+
+[[cell]]
+cap = "path_traversal"
+lang = "python"
+unsupported_rate     = 0.50
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-07-15"
+
+[[cell]]
+cap = "ssrf"
+lang = "python"
+unsupported_rate     = 0.50
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-07-15"
+
+[[cell]]
+cap = "deserialize"
+lang = "python"
+unsupported_rate     = 0.60
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-08-01"
+
+# JavaScript / TypeScript (Phase 13 — second-most-mature).
+
+[[cell]]
+cap = "sqli"
+lang = "javascript"
+unsupported_rate     = 0.55
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-08-01"
+
+[[cell]]
+cap = "cmdi"
+lang = "javascript"
+unsupported_rate     = 0.55
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-08-01"
+
+[[cell]]
+cap = "ssrf"
+lang = "javascript"
+unsupported_rate     = 0.60
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-08-01"
+
+[[cell]]
+cap = "xss"
+lang = "javascript"
+unsupported_rate     = 0.70
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-08-15"
+
+[[cell]]
+cap = "sqli"
+lang = "typescript"
+unsupported_rate     = 0.60
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-08-15"
+
+# Java (Phase 14).
+
+[[cell]]
+cap = "sqli"
+lang = "java"
+unsupported_rate     = 0.65
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-08-15"
+
+[[cell]]
+cap = "deserialize"
+lang = "java"
+unsupported_rate     = 0.70
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-09-01"
+
+# Phase 15 / 16 verticals (Go, PHP, Ruby, Rust, C, C++) — newer; broader
+# tolerance until their probe-shim splicing follow-ups land.
+
+[[cell]]
+cap = "cmdi"
+lang = "go"
+unsupported_rate     = 0.75
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-09-01"
+
+[[cell]]
+cap = "sqli"
+lang = "go"
+unsupported_rate     = 0.75
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-09-01"
+
+[[cell]]
+cap = "cmdi"
+lang = "php"
+unsupported_rate     = 0.75
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-09-01"
+
+[[cell]]
+cap = "deserialize"
+lang = "php"
+unsupported_rate     = 0.75
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-09-01"
+
+[[cell]]
+cap = "cmdi"
+lang = "ruby"
+unsupported_rate     = 0.75
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-09-01"
+
+[[cell]]
+cap = "sqli"
+lang = "rust"
+unsupported_rate     = 0.80
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-09-15"
+
+[[cell]]
+cap = "fmt_string"
+lang = "c"
+unsupported_rate     = 0.85
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-09-15"
+
+[[cell]]
+cap = "memory"
+lang = "c"
+unsupported_rate     = 0.90
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-10-01"
+
+[[cell]]
+cap = "memory"
+lang = "cpp"
+unsupported_rate     = 0.90
+false_confirmed_rate = 0.02
+repro_stability      = 0.95
+ratchet_deadline     = "2026-10-01"

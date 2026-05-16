@@ -48,6 +48,131 @@ pub enum CopyStrategy {
     RustEntry,
 }
 
+/// Phase 29 (Track I): host-environment prerequisite a fixture needs in
+/// order to run. The harness consults the list before staging the
+/// fixture; any unsatisfied prerequisite triggers a structured skip
+/// rather than a panic, so non-applicable matrix rows (process-only
+/// macOS, dockerless CI, missing static libc) still see green ticks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum Prerequisite {
+    /// A binary must resolve on `PATH` and respond to `--version` with
+    /// exit code 0 (e.g. `python3`, `node`, `go`, `cargo`).
+    CommandAvailable(&'static str),
+    /// A specific env var must be set (used to gate feature-flagged
+    /// suites — e.g. `NYX_ENABLE_FLAKY_FIXTURES=1`).
+    EnvVar(&'static str),
+    /// The docker daemon must be reachable.  Equivalent to
+    /// `docker info` returning exit 0.
+    DockerAvailable,
+    /// A static C library archive (e.g. `libc.a`) must be linkable.
+    /// Used by the Phase-17/20 hardening probe fixtures.
+    StaticLib(&'static str),
+}
+
+/// Phase 29 (Track I): why the harness skipped a fixture.  Carried by
+/// every skip so callers can distinguish "host did not have python3" from
+/// "host has docker but daemon refused" from "intentional env-var gate".
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum SkipReason {
+    MissingCommand(&'static str),
+    MissingEnvVar(&'static str),
+    DockerUnavailable,
+    MissingStaticLib(&'static str),
+}
+
+impl std::fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SkipReason::MissingCommand(c) => write!(f, "missing command on PATH: {c}"),
+            SkipReason::MissingEnvVar(v) => write!(f, "env var not set: {v}"),
+            SkipReason::DockerUnavailable => write!(f, "docker daemon unavailable"),
+            SkipReason::MissingStaticLib(l) => write!(f, "static lib not linkable: {l}"),
+        }
+    }
+}
+
+/// Returns the first unsatisfied prerequisite, or `Ok(())` when every
+/// requirement holds. Exposed for tests that want to gate their own
+/// per-shape helpers without going through `FixtureSpec`.
+#[allow(dead_code)]
+pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
+    for req in reqs {
+        match req {
+            Prerequisite::CommandAvailable(cmd) => {
+                let ok = std::process::Command::new(cmd)
+                    .arg("--version")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if !ok {
+                    return Err(SkipReason::MissingCommand(cmd));
+                }
+            }
+            Prerequisite::EnvVar(var) => {
+                if std::env::var(var).is_err() {
+                    return Err(SkipReason::MissingEnvVar(var));
+                }
+            }
+            Prerequisite::DockerAvailable => {
+                let ok = std::process::Command::new("docker")
+                    .arg("info")
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if !ok {
+                    return Err(SkipReason::DockerUnavailable);
+                }
+            }
+            Prerequisite::StaticLib(lib) => {
+                // Treat the lib as linkable iff `cc -static -l<lib>` on
+                // an empty TU succeeds.  Slow but reliable; only called
+                // by the small Phase-17 hardening suite.
+                let probe = match tempfile::NamedTempFile::new() {
+                    Ok(f) => f,
+                    Err(_) => return Err(SkipReason::MissingStaticLib(lib)),
+                };
+                use std::io::Write;
+                let mut handle = match std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(probe.path())
+                {
+                    Ok(h) => h,
+                    Err(_) => return Err(SkipReason::MissingStaticLib(lib)),
+                };
+                let _ = writeln!(handle, "int main(void) {{ return 0; }}");
+                drop(handle);
+                let out = tempfile::Builder::new()
+                    .prefix("nyx-prereq-")
+                    .tempfile()
+                    .map(|f| f.path().to_path_buf())
+                    .ok();
+                let out = match out {
+                    Some(p) => p,
+                    None => return Err(SkipReason::MissingStaticLib(lib)),
+                };
+                let status = std::process::Command::new("cc")
+                    .args([
+                        "-x", "c", "-static",
+                        probe.path().to_str().unwrap_or(""),
+                        "-o",
+                        out.to_str().unwrap_or(""),
+                        &format!("-l{lib}"),
+                    ])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                let _ = std::fs::remove_file(&out);
+                if !status {
+                    return Err(SkipReason::MissingStaticLib(lib));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Per-fixture specification.
 pub struct FixtureSpec<'a> {
     /// Subdirectory under `tests/dynamic_fixtures/` (e.g. `"python"`, `"rust"`).
@@ -67,6 +192,11 @@ pub struct FixtureSpec<'a> {
     pub confidence: Confidence,
     /// File-layout strategy for the temp-dir copy.
     pub copy: CopyStrategy,
+    /// Phase 29 (Track I): host-environment prerequisites. Empty means
+    /// "always runs"; otherwise the harness checks each entry before
+    /// staging the fixture and skips with a structured [`SkipReason`]
+    /// when any prerequisite is unmet.
+    pub requires: Vec<Prerequisite>,
 }
 
 /// Trimmed verdict shape persisted in the `.golden.json` file.
@@ -100,6 +230,14 @@ impl From<&VerifyResult> for GoldenVerdict {
 /// stored golden or — when `NYX_UPDATE_GOLDENS=1` — overwrite the golden
 /// with the current verdict.
 pub fn run_fixture_and_compare_to_golden(spec: &FixtureSpec<'_>) {
+    if let Err(reason) = check_prerequisites(&spec.requires) {
+        eprintln!(
+            "SKIP {}/{}: prerequisite unmet — {reason}",
+            spec.lang_dir, spec.fixture
+        );
+        return;
+    }
+
     let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let fixture_root = fixture_dir(spec.lang_dir);

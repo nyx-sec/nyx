@@ -29,12 +29,17 @@ OUTPUT_DIR=""
 NYX_BIN="${NYX_BIN:-${REPO_ROOT}/target/release/nyx}"
 CORPUS_CACHE="${NYX_EVAL_CORPUS_DIR:-${HOME}/.cache/nyx/eval_corpus}"
 SETS="owasp,sard,inhouse"
+# Phase 29 (Track I): per-cell budgets + monotonic-improvement diff.
+BUDGET_FILE=""
+DIFF_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output) OUTPUT_DIR="$2"; shift 2 ;;
     --nyx)    NYX_BIN="$2"; shift 2 ;;
     --sets)   SETS="$2"; shift 2 ;;
+    --budget) BUDGET_FILE="$2"; shift 2 ;;
+    --diff)   DIFF_FILE="$2"; shift 2 ;;
     *)        shift ;;
   esac
 done
@@ -83,6 +88,8 @@ if [[ "$SETS" == *owasp* ]]; then
         --scan /tmp/nyx_owasp.json \
         --ground-truth "${SCRIPT_DIR}/ground_truth/owasp_benchmark_v1.2.json" \
         --append "$RESULTS_JSON" \
+        ${BUDGET_FILE:+--budget "$BUDGET_FILE"} \
+        ${DIFF_FILE:+--diff "$DIFF_FILE"} \
         || info "  tabulate.py failed; ground truth file may be absent"
     fi
   fi
@@ -111,6 +118,8 @@ if [[ "$SETS" == *sard* ]]; then
         --scan /tmp/nyx_sard.json \
         --ground-truth "${SCRIPT_DIR}/ground_truth/nist_sard.json" \
         --append "$RESULTS_JSON" \
+        ${BUDGET_FILE:+--budget "$BUDGET_FILE"} \
+        ${DIFF_FILE:+--diff "$DIFF_FILE"} \
         || info "  tabulate.py failed; ground truth file may be absent"
     fi
   fi
@@ -140,6 +149,8 @@ if [[ "$SETS" == *inhouse* ]]; then
       --scan "/tmp/nyx_${label}.json" \
       --inhouse \
       --append "$RESULTS_JSON" \
+      ${BUDGET_FILE:+--budget "$BUDGET_FILE"} \
+      ${DIFF_FILE:+--diff "$DIFF_FILE"} \
       || info "  tabulate.py failed on $label"
   done
 fi
@@ -156,12 +167,20 @@ if [[ ! -f "${SCRIPT_DIR}/report.py" ]]; then
 fi
 
 set +e
-python3 "${SCRIPT_DIR}/report.py" --results "$RESULTS_JSON"
+python3 "${SCRIPT_DIR}/report.py" \
+  --results "$RESULTS_JSON" \
+  ${BUDGET_FILE:+--budget "$BUDGET_FILE"} \
+  ${DIFF_FILE:+--diff "$DIFF_FILE"}
 REPORT_RC=$?
 set -e
-# Propagate gate-fail (exit 2). Treat other non-zero as setup error (exit 1).
+# Propagate gate-fail (exit 2) and malformed-config (exit 3) so the
+# m7_ship_gate.sh Gate-1 dispatch can tell them apart.  Treat other
+# non-zero as setup error (exit 1).
 if [[ $REPORT_RC -eq 2 ]]; then
   exit 2
+elif [[ $REPORT_RC -eq 3 ]]; then
+  info "report.py: budget/diff configuration malformed; see $RESULTS_JSON"
+  exit 3
 elif [[ $REPORT_RC -ne 0 ]]; then
   info "report.py crashed (exit $REPORT_RC); raw results at $RESULTS_JSON"
   exit 1
