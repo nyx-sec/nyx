@@ -2201,7 +2201,9 @@ pub(crate) fn scan_filesystem_with_observer(
     }
 
     if let Some(out) = chain_reach_out {
-        let _ = out.set(crate::callgraph::FileReachMap::build(&call_graph));
+        let _ = out.set(
+            crate::callgraph::FileReachMap::build(&call_graph).with_scan_root(Some(root)),
+        );
     }
 
     // ── Pass 2: re-run with cross-file global summaries ──────────────────
@@ -2996,7 +2998,9 @@ pub fn scan_with_index_parallel_observer(
     }
 
     if let Some(out) = chain_reach_out {
-        let _ = out.set(crate::callgraph::FileReachMap::build(&call_graph));
+        let _ = out.set(
+            crate::callgraph::FileReachMap::build(&call_graph).with_scan_root(Some(scan_root)),
+        );
     }
 
     let (batches, orphans) = crate::callgraph::scc_file_batches_with_metadata(

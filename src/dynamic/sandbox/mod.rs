@@ -837,12 +837,11 @@ fn start_container(
         "--cap-drop=ALL".into(),
         "--security-opt".into(), "no-new-privileges:true".into(),
         "--tmpfs".into(), "/tmp:size=128m,exec".into(),
-        // Phase 19 (Track E.3): bind-mount the host workdir at the fixed
-        // `/work` path read-write.  Harness code emitted in Phase 12+ can
-        // reference `/work/...` without threading the host tempdir
-        // through every layer.  The `docker cp` path below is retained so
-        // older harness command lines (which still look at `/workdir`)
-        // keep working until they are migrated.
+        // Bind-mount the host workdir at the fixed `/work` path
+        // read-write so harness code can reference `/work/...` without
+        // threading the host tempdir through every layer.  The mount
+        // alone is sufficient to deliver harness files into the
+        // container — no follow-up `docker cp` is needed.
         "-v".into(), workdir_mount,
     ];
     match policy {
@@ -868,7 +867,6 @@ fn start_container(
     }
     run_args.extend([image.into(), "sleep".into(), "300".into()]);
 
-    // Start container (no volume mount).
     let status = std::process::Command::new(docker_bin())
         .args(&run_args)
         .stdout(std::process::Stdio::null())
@@ -880,55 +878,24 @@ fn start_container(
         return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
     }
 
-    // Copy harness files into /workdir inside the container.
-    let workdir_str = workdir.to_string_lossy();
-    let status = std::process::Command::new(docker_bin())
-        .args([
-            "exec",
-            name,
-            "mkdir", "-p", "/workdir",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(SandboxError::Io)?;
-
-    if !status.success() {
-        return Err(SandboxError::BackendUnavailable(SandboxBackend::Docker));
+    // Apply OOB egress filter on Linux when the OOB listener is active.
+    // This restricts the bridge-networked container to only reach the
+    // host on the OOB port; all other egress is dropped (§17.2).
+    #[cfg(target_os = "linux")]
+    if let NetworkPolicy::OobOutbound { listener } = policy {
+        apply_oob_egress_filter(name, listener.port());
     }
-
-    // Copy workdir contents (harness.py + entry module) into the container.
-    let cp_src = format!("{workdir_str}/."); // trailing /. copies dir contents
-    let cp_dst = format!("{name}:/workdir");
-    let status = std::process::Command::new(docker_bin())
-        .args(["cp", &cp_src, &cp_dst])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(SandboxError::Io)?;
-
-    if status.success() {
-        // Apply OOB egress filter on Linux when the OOB listener is active.
-        // This restricts the bridge-networked container to only reach the host
-        // on the OOB port; all other egress is dropped (§17.2).
-        #[cfg(target_os = "linux")]
-        if let NetworkPolicy::OobOutbound { listener } = policy {
-            apply_oob_egress_filter(name, listener.port());
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = policy; // policy already consumed structurally above
-        Ok(())
-    } else {
-        Err(SandboxError::BackendUnavailable(SandboxBackend::Docker))
-    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = policy; // policy already consumed structurally above
+    Ok(())
 }
 
 /// Build the inner-container command args for `docker exec`.
 ///
 /// For 2-arg interpreted commands (`python3 harness.py`, `node harness.js`,
-/// `php harness.php`) the file arg is prefixed with `/workdir/`.
+/// `php harness.php`) the file arg is prefixed with `/work/`.
 /// For Java (`java -cp /host/abs/path NyxHarness`) the classpath argument is
-/// replaced with `/workdir` (the container-side mount path, not the host path
+/// replaced with `/work` (the container-side mount path, not the host path
 /// that runner.rs wrote after `javac`).
 fn build_container_exec_args(command: &[String]) -> Vec<String> {
     let mut args = Vec::new();
@@ -948,7 +915,7 @@ fn build_container_exec_args(command: &[String]) -> Vec<String> {
             if command[i] == "-cp" || command[i] == "-classpath" {
                 args.push(command[i].clone());
                 i += 1;
-                args.push("/workdir".to_owned());
+                args.push(docker::WORK_MOUNT_PATH.to_owned());
                 i += 1;
             } else {
                 args.push(command[i].clone());
@@ -961,7 +928,7 @@ fn build_container_exec_args(command: &[String]) -> Vec<String> {
             if harness_file.starts_with('/') {
                 args.push(harness_file.clone());
             } else {
-                args.push(format!("/workdir/{harness_file}"));
+                args.push(format!("{}/{harness_file}", docker::WORK_MOUNT_PATH));
             }
         }
     }
@@ -1173,8 +1140,11 @@ fn run_native_binary_docker(
             &opts.network_policy,
         )?;
 
-        // Copy the compiled binary into the container as /workdir/nyx_harness.
-        let cp_dst = format!("{container_name}:/workdir/nyx_harness");
+        // Copy the compiled binary into the container as
+        // `/work/nyx_harness`.  The destination resolves through the
+        // workdir bind mount, so the file also appears on the host
+        // workdir and survives container restarts.
+        let cp_dst = format!("{container_name}:{}/nyx_harness", docker::WORK_MOUNT_PATH);
         let cp_status = std::process::Command::new(docker_bin())
             .args(["cp", &binary_path, &cp_dst])
             .stdout(std::process::Stdio::null())
@@ -1186,8 +1156,9 @@ fn run_native_binary_docker(
         }
 
         // Ensure execute bit is set (docker cp preserves it on Linux, but be explicit).
+        let chmod_path = format!("{}/nyx_harness", docker::WORK_MOUNT_PATH);
         let chmod_status = std::process::Command::new(docker_bin())
-            .args(["exec", &container_name, "chmod", "+x", "/workdir/nyx_harness"])
+            .args(["exec", &container_name, "chmod", "+x", &chmod_path])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -1202,7 +1173,7 @@ fn run_native_binary_docker(
     exec_native_binary_in_container(&container_name, harness, payload_bytes, opts)
 }
 
-/// Execute a native binary already in the container at `/workdir/nyx_harness`.
+/// Execute a native binary already in the container at `/work/nyx_harness`.
 fn exec_native_binary_in_container(
     container_name: &str,
     harness: &BuiltHarness,
@@ -1224,7 +1195,7 @@ fn exec_native_binary_in_container(
         cmd_args.push(format!("{k}={v}"));
     }
     cmd_args.push(container_name.into());
-    cmd_args.push("/workdir/nyx_harness".into());
+    cmd_args.push(format!("{}/nyx_harness", docker::WORK_MOUNT_PATH));
 
     let mut cmd = Command::new(docker_bin());
     cmd.args(&cmd_args);
@@ -1745,7 +1716,7 @@ mod tests {
         let cmd = vec!["python3".to_owned(), "harness.py".to_owned()];
         assert_eq!(
             build_container_exec_args(&cmd),
-            vec!["python3", "/workdir/harness.py"]
+            vec!["python3", "/work/harness.py"]
         );
     }
 
@@ -1754,7 +1725,7 @@ mod tests {
         let cmd = vec!["node".to_owned(), "harness.js".to_owned()];
         assert_eq!(
             build_container_exec_args(&cmd),
-            vec!["node", "/workdir/harness.js"]
+            vec!["node", "/work/harness.js"]
         );
     }
 
@@ -1763,7 +1734,7 @@ mod tests {
         let cmd = vec!["php".to_owned(), "harness.php".to_owned()];
         assert_eq!(
             build_container_exec_args(&cmd),
-            vec!["php", "/workdir/harness.php"]
+            vec!["php", "/work/harness.php"]
         );
     }
 
@@ -1772,7 +1743,7 @@ mod tests {
         let cmd = vec!["ruby".to_owned(), "harness.rb".to_owned()];
         assert_eq!(
             build_container_exec_args(&cmd),
-            vec!["ruby", "/workdir/harness.rb"]
+            vec!["ruby", "/work/harness.rb"]
         );
     }
 
@@ -1786,7 +1757,7 @@ mod tests {
         ];
         assert_eq!(
             build_container_exec_args(&cmd),
-            vec!["java", "-cp", "/workdir", "NyxHarness"]
+            vec!["java", "-cp", "/work", "NyxHarness"]
         );
     }
 

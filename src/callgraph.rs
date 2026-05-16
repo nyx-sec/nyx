@@ -918,9 +918,21 @@ pub fn callers_transitive(cg: &CallGraph, callee: &FuncKey) -> std::collections:
 /// Map shape: `callee_namespace → { caller_namespace, … }`.  A file
 /// always appears in its own caller set so intra-file recursion stays
 /// reachable.
+///
+/// `scan_root` is optional path-normalisation context.  Callers that
+/// build the map without a scan root must pass project-relative POSIX
+/// paths to [`FileReachMap::reaches`] directly.  When a root is set
+/// (typical in production scans), [`FileReachMap::reaches`] applies
+/// [`crate::symbol::normalize_namespace`] to its arguments before
+/// lookup so absolute host paths (the convention on
+/// [`crate::commands::scan::Diag::path`]) and project-relative paths
+/// (the convention on call-graph [`FuncKey::namespace`] and
+/// [`crate::surface::SourceLocation::file`]) both resolve to the
+/// stored keys.
 #[derive(Debug, Default, Clone)]
 pub struct FileReachMap {
     by_callee_ns: HashMap<String, std::collections::HashSet<String>>,
+    scan_root: Option<String>,
 }
 
 impl FileReachMap {
@@ -928,6 +940,10 @@ impl FileReachMap {
     ///
     /// O(V × (V + E)) worst case, but the per-function BFS is sparse on
     /// real call graphs (median in-degree < 4 on the eval corpus).
+    ///
+    /// The returned map has no scan root configured; pair with
+    /// [`FileReachMap::with_scan_root`] when callers may pass absolute
+    /// paths.
     pub fn build(cg: &CallGraph) -> Self {
         let mut by_callee_ns: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
         for callee in cg.index.keys() {
@@ -937,23 +953,49 @@ impl FileReachMap {
                 entry.insert(caller.namespace);
             }
         }
-        FileReachMap { by_callee_ns }
+        FileReachMap {
+            by_callee_ns,
+            scan_root: None,
+        }
     }
 
-    /// True when `caller_ns` transitively reaches at least one function
-    /// defined in `callee_ns`.  False when either namespace is unknown
-    /// to the graph (conservative: chain composer falls back to the
-    /// file-local heuristic).
-    pub fn reaches(&self, caller_ns: &str, callee_ns: &str) -> bool {
+    /// Attach a scan root so [`FileReachMap::reaches`] can normalise
+    /// absolute host paths back to the project-relative POSIX form the
+    /// map keys use.  Pass `None` to clear an existing root.
+    pub fn with_scan_root<P: AsRef<std::path::Path>>(mut self, root: Option<P>) -> Self {
+        self.scan_root = root.map(|p| p.as_ref().to_string_lossy().into_owned());
+        self
+    }
+
+    /// True when `caller` transitively reaches at least one function
+    /// defined in `callee`.  Inputs may be either project-relative
+    /// POSIX paths (matching the call-graph namespace convention) or
+    /// absolute host paths when a scan root was set via
+    /// [`FileReachMap::with_scan_root`].  False when either path is
+    /// unknown to the graph (conservative: chain composer falls back
+    /// to the file-local heuristic).
+    pub fn reaches(&self, caller: &str, callee: &str) -> bool {
+        let lookup_callee = self.normalize(callee);
+        let lookup_caller = self.normalize(caller);
         self.by_callee_ns
-            .get(callee_ns)
-            .is_some_and(|set| set.contains(caller_ns))
+            .get(lookup_callee.as_ref())
+            .is_some_and(|set| set.contains(lookup_caller.as_ref()))
     }
 
     /// Number of distinct callee namespaces tracked.  Exposed for
     /// diagnostics / tests.
     pub fn callee_ns_len(&self) -> usize {
         self.by_callee_ns.len()
+    }
+
+    fn normalize<'a>(&self, path: &'a str) -> std::borrow::Cow<'a, str> {
+        match self.scan_root.as_deref() {
+            Some(root) => std::borrow::Cow::Owned(crate::symbol::normalize_namespace(
+                path,
+                Some(root),
+            )),
+            None => std::borrow::Cow::Borrowed(path),
+        }
     }
 }
 
@@ -2961,5 +3003,56 @@ mod tests {
         assert!(!reach.reaches("a.py", "b.py"));
         assert!(!reach.reaches("b.py", "a.py"));
         assert_eq!(reach.callee_ns_len(), 2);
+    }
+
+    /// `with_scan_root` normalises absolute host paths to the
+    /// project-relative POSIX form the map keys carry, so
+    /// `reaches("/abs/scan/routes.py", "/abs/scan/helper.py")` finds
+    /// the same entry as the project-relative
+    /// `reaches("routes.py", "helper.py")` call.  Mirrors the
+    /// production wire-up in `src/commands/scan.rs`: the call-graph
+    /// uses project-relative namespaces while `Diag.path` (from
+    /// `src/ast.rs`) is the absolute walker path.
+    #[test]
+    fn file_reach_map_with_scan_root_normalises_absolute_paths() {
+        let handle = make_summary("handle", "routes.py", "python", 0, vec!["sink"]);
+        let sink = make_summary("sink", "helper.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![handle, sink], None);
+        let cg = build_call_graph(&gs, &[]);
+        let scan_root = std::path::Path::new("/abs/scan");
+        let reach = FileReachMap::build(&cg).with_scan_root(Some(scan_root));
+
+        // Mixed conventions: surface (project-relative) caller,
+        // Diag (absolute) callee.  Pre-fix this returned false.
+        assert!(reach.reaches("routes.py", "/abs/scan/helper.py"));
+        // Both absolute: also resolves.
+        assert!(reach.reaches("/abs/scan/routes.py", "/abs/scan/helper.py"));
+        // Trailing-slash root works.
+        let reach_trail =
+            FileReachMap::build(&cg).with_scan_root(Some(std::path::Path::new("/abs/scan/")));
+        assert!(reach_trail.reaches("/abs/scan/routes.py", "/abs/scan/helper.py"));
+        // Both project-relative: still resolves (legacy behaviour).
+        assert!(reach.reaches("routes.py", "helper.py"));
+        // Path outside the root falls through normalize_namespace
+        // unchanged and does not collide with a project-relative key.
+        assert!(!reach.reaches("/other/root/routes.py", "/other/root/helper.py"));
+    }
+
+    /// `with_scan_root(None)` clears a previously set root and
+    /// restores strict project-relative lookup semantics.
+    #[test]
+    fn file_reach_map_with_scan_root_none_clears_root() {
+        let handle = make_summary("handle", "routes.py", "python", 0, vec!["sink"]);
+        let sink = make_summary("sink", "helper.py", "python", 0, vec![]);
+        let gs = merge_summaries(vec![handle, sink], None);
+        let cg = build_call_graph(&gs, &[]);
+        let reach: FileReachMap = FileReachMap::build(&cg)
+            .with_scan_root(Some(std::path::Path::new("/abs/scan")))
+            .with_scan_root::<&std::path::Path>(None);
+
+        // Absolute lookup no longer resolves once root is cleared.
+        assert!(!reach.reaches("/abs/scan/routes.py", "/abs/scan/helper.py"));
+        // Project-relative still works.
+        assert!(reach.reaches("routes.py", "helper.py"));
     }
 }
