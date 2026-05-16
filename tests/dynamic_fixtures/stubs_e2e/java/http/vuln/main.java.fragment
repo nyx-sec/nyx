@@ -1,0 +1,24 @@
+// Phase 10 (Track D.3) stub-end-to-end fixture: Java + HTTP.
+//
+// The verifier publishes:
+//
+//   * NYX_HTTP_ENDPOINT — http://127.0.0.1:{port} the HttpStub listens on.
+//   * NYX_HTTP_LOG      — companion log path the harness appends attempted
+//     outbound calls to so the host HttpStub picks them up on
+//     drain_events() even when the request bypasses the on-the-wire
+//     listener (DNS-mocked, network-isolated sandbox, pre-flight check).
+//
+// This file is a body-only fragment: the companion test in
+// tests/stubs_e2e_per_lang.rs wraps it with a `public class Main { … }`
+// shell that splices the Java probe shim as class members ahead of
+// `public static void main`, so the shim's __nyx_stub_http_record helper
+// is in scope without needing an import. java.net.HttpURLConnection is
+// JDK stdlib, so no extra classpath dep is required.
+String method = "GET";
+String url = "http://169.254.169.254/latest/meta-data/";
+String body = "";
+java.util.Map<String,String> detail = new java.util.LinkedHashMap<>();
+detail.put("driver", "HttpURLConnection");
+__nyx_stub_http_record(method, url, body, detail);
+String ep = System.getenv("NYX_HTTP_ENDPOINT");
+System.out.println(ep == null ? "no-endpoint" : ep);

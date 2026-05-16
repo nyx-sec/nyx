@@ -240,7 +240,7 @@ impl JavaShape {
 /// dependencies; matches the
 /// [`crate::dynamic::probe::SinkProbe`] wire format.
 pub fn probe_shim() -> &'static str {
-    r#"
+    r##"
     // ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──
     private static final String[] __NYX_DENY = {
         "TOKEN","SECRET","PASSWORD","PASSWD","API_KEY","APIKEY","PRIVATE_KEY",
@@ -371,7 +371,40 @@ pub fn probe_shim() -> &'static str {
             }
         }
     }
-"#
+
+    // Phase 10 (Track D.3) HTTP recording helper.  When the verifier spawned an
+    // HttpStub it publishes the side-channel log path through NYX_HTTP_LOG; a
+    // sink call site whose outbound request never reaches the on-the-wire
+    // listener (DNS-mocked, network-isolated sandbox, pre-flight check) can
+    // call this helper to surface the attempted call.  Format matches the
+    // Python / Node / PHP / Go / Ruby siblings so the host-side HttpStub
+    // log-line merger parses all six streams identically.  No-op when
+    // NYX_HTTP_LOG is unset so the same harness still runs cleanly under
+    // modes that did not spawn a stub.  The hash prefix is emitted via
+    // String.valueOf('#') so this method body contains no literal hash-after-
+    // double-quote sequence that would terminate the surrounding Rust raw
+    // string.
+    static void __nyx_stub_http_record(String method, String url, String body, java.util.Map<String,String> detail) {
+        String p = System.getenv("NYX_HTTP_LOG");
+        if (p == null || p.isEmpty()) return;
+        String hashSp = String.valueOf('#') + " ";
+        try (java.io.FileWriter fw = new java.io.FileWriter(p, true)) {
+            fw.write(hashSp + "method: " + method + "\n");
+            fw.write(hashSp + "url: " + url + "\n");
+            if (body != null) {
+                fw.write(hashSp + "body: " + body + "\n");
+            }
+            if (detail != null) {
+                for (java.util.Map.Entry<String,String> e : detail.entrySet()) {
+                    fw.write(hashSp + e.getKey() + ": " + e.getValue() + "\n");
+                }
+            }
+            fw.write(method + " " + url + "\n");
+        } catch (java.io.IOException e) {
+            // best-effort
+        }
+    }
+"##
 }
 
 // ── Runtime / pom.xml synthesis (Phase 09) ──────────────────────────────────
@@ -1038,6 +1071,27 @@ mod tests {
         spec.entry_file = "/nonexistent/Vuln.java".into();
         let harness = emit(&spec).unwrap();
         assert_eq!(harness.entry_subpath, Some("Entry.java".to_owned()));
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_http_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("static void __nyx_stub_http_record"),
+            "Java probe shim must define __nyx_stub_http_record"
+        );
+        assert!(
+            shim.contains("\"NYX_HTTP_LOG\""),
+            "Java HTTP recorder must read NYX_HTTP_LOG to find the side-channel log"
+        );
+        assert!(
+            shim.contains("\"method: \""),
+            "Java HTTP recorder must emit a method detail line"
+        );
+        assert!(
+            shim.contains("\"url: \""),
+            "Java HTTP recorder must emit a url detail line"
+        );
     }
 
     #[test]

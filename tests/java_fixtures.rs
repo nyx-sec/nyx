@@ -463,24 +463,11 @@ mod java_fixture_tests {
 
 #[cfg(feature = "dynamic")]
 mod phase14_shape_tests {
-    use crate::common::fixture_harness::run_shape_fixture_lang;
+    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
     use nyx_scanner::symbol::Lang;
-
-    fn java_available() -> bool {
-        std::process::Command::new("javac")
-            .arg("-version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-            && std::process::Command::new("java")
-                .arg("-version")
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-    }
 
     fn assert_confirmed(shape: &str, result: &VerifyResult) {
         assert_eq!(
@@ -517,8 +504,18 @@ mod phase14_shape_tests {
         sink_line: u32,
         kind: EntryKind,
         slot: PayloadSlot,
-    ) -> VerifyResult {
-        run_shape_fixture_lang(
+    ) -> Option<VerifyResult> {
+        // Phase 29 (Track I): replace the bespoke `java_available()` +
+        // per-test `eprintln!("SKIP ..."); return;` blocks with the
+        // structured `Prerequisite::CommandAvailable("javac"|"java")`
+        // gate.  The helper emits the same SKIP line and returns `None`
+        // so each test can short-circuit via `let Some(r) = run(...)
+        // else { return; };`.
+        run_shape_fixture_lang_or_skip(
+            &[
+                Prerequisite::CommandAvailable("javac"),
+                Prerequisite::CommandAvailable("java"),
+            ],
             Lang::Java, "java", shape, file, func, cap, sink_line, kind, slot,
         )
     }
@@ -527,27 +524,23 @@ mod phase14_shape_tests {
 
     #[test]
     fn static_method_vuln_is_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "static_method", "Vuln.java", "processInput", Cap::CODE_EXEC, 12,
             EntryKind::Function, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("static_method", &r);
     }
 
     #[test]
     fn static_method_benign_not_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "static_method", "Benign.java", "processInput", Cap::CODE_EXEC, 13,
             EntryKind::Function, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("static_method", &r);
     }
 
@@ -555,27 +548,23 @@ mod phase14_shape_tests {
 
     #[test]
     fn static_main_vuln_is_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "static_main", "Vuln.java", "main", Cap::CODE_EXEC, 13,
             EntryKind::CliSubcommand, PayloadSlot::Argv(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("static_main", &r);
     }
 
     #[test]
     fn static_main_benign_not_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "static_main", "Benign.java", "main", Cap::CODE_EXEC, 12,
             EntryKind::CliSubcommand, PayloadSlot::Argv(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("static_main", &r);
     }
 
@@ -583,27 +572,23 @@ mod phase14_shape_tests {
 
     #[test]
     fn servlet_doget_vuln_is_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "servlet_doget", "Vuln.java", "doGet", Cap::CODE_EXEC, 14,
             EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("servlet_doget", &r);
     }
 
     #[test]
     fn servlet_doget_benign_not_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "servlet_doget", "Benign.java", "doGet", Cap::CODE_EXEC, 14,
             EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("servlet_doget", &r);
     }
 
@@ -611,27 +596,23 @@ mod phase14_shape_tests {
 
     #[test]
     fn servlet_dopost_vuln_is_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "servlet_dopost", "Vuln.java", "doPost", Cap::CODE_EXEC, 13,
             EntryKind::HttpRoute, PayloadSlot::HttpBody,
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("servlet_dopost", &r);
     }
 
     #[test]
     fn servlet_dopost_benign_not_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "servlet_dopost", "Benign.java", "doPost", Cap::CODE_EXEC, 12,
             EntryKind::HttpRoute, PayloadSlot::HttpBody,
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("servlet_dopost", &r);
     }
 
@@ -639,27 +620,23 @@ mod phase14_shape_tests {
 
     #[test]
     fn spring_controller_vuln_is_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "spring_controller", "Vuln.java", "run", Cap::CODE_EXEC, 16,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("spring_controller", &r);
     }
 
     #[test]
     fn spring_controller_benign_not_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "spring_controller", "Benign.java", "run", Cap::CODE_EXEC, 14,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("spring_controller", &r);
     }
 
@@ -667,27 +644,23 @@ mod phase14_shape_tests {
 
     #[test]
     fn junit_test_vuln_is_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "junit_test", "Vuln.java", "testRun", Cap::CODE_EXEC, 17,
             EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("junit_test", &r);
     }
 
     #[test]
     fn junit_test_benign_not_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "junit_test", "Benign.java", "testRun", Cap::CODE_EXEC, 15,
             EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("junit_test", &r);
     }
 
@@ -695,27 +668,23 @@ mod phase14_shape_tests {
 
     #[test]
     fn quarkus_route_vuln_is_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "quarkus_route", "Vuln.java", "run", Cap::CODE_EXEC, 17,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_confirmed("quarkus_route", &r);
     }
 
     #[test]
     fn quarkus_route_benign_not_confirmed() {
-        if !java_available() {
-            eprintln!("SKIP: javac/java not available");
-            return;
-        }
-        let r = run(
+        let Some(r) = run(
             "quarkus_route", "Benign.java", "run", Cap::CODE_EXEC, 14,
             EntryKind::HttpRoute, PayloadSlot::Param(0),
-        );
+        ) else {
+            return;
+        };
         assert_not_confirmed("quarkus_route", &r);
     }
 

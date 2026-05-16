@@ -21,6 +21,7 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::lang::go::probe_shim as go_probe_shim;
+use nyx_scanner::dynamic::lang::java::probe_shim as java_probe_shim;
 use nyx_scanner::dynamic::lang::javascript::probe_shim as node_probe_shim;
 use nyx_scanner::dynamic::lang::php::probe_shim as php_probe_shim;
 use nyx_scanner::dynamic::lang::python::probe_shim as python_probe_shim;
@@ -68,6 +69,37 @@ fn ruby_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
+}
+
+fn java_available() -> bool {
+    // The Java shim helpers use `java MainSource.java` single-file
+    // source-mode (JEP 330, JDK 11+) so only the `java` runtime is
+    // strictly required.  An older `java` binary that does not support
+    // source-mode is treated as missing and the test eprintln-skips.
+    Command::new("java")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Wrap the body-only Java HTTP fixture in a complete `public class Main`
+/// source: splice the Java probe shim as class members ahead of
+/// `public static void main`, then put the fragment in the method body.
+/// Mirrors the production [`JavaEmitter::emit`] ordering — the shim is
+/// declared first so any sink rewrite in the body has the shim helpers
+/// in scope.  The throws clause lets the fragment use checked-exception
+/// stdlib calls without per-line try/catch.
+fn wrap_java_fragment(body: &str, shim: &str) -> String {
+    format!(
+        "public class Main {{\n\
+         {shim}\n\
+         \n\
+         public static void main(String[] args) throws Exception {{\n\
+         {body}\n\
+         }}\n\
+         }}\n"
+    )
 }
 
 /// Wrap the body-only Go HTTP fixture in a complete `package main`
@@ -895,6 +927,112 @@ fn ruby_http_shim_recorder_is_noop_without_log_env() {
         .env_remove("NYX_HTTP_LOG")
         .output()
         .expect("ruby driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_HTTP_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
+fn java_http_stub_captures_attempted_outbound_via_shim_recorder() {
+    // Phase 10 (Track D.3) HTTP recording: Java leg of the side-channel
+    // `__nyx_stub_http_record` helper.  Mirrors the Python / Node / PHP /
+    // Go / Ruby HTTP tests — records an SSRF attempt without issuing the
+    // actual network call.  Uses `java MainSource.java` single-file
+    // source-mode (JEP 330, JDK 11+) so no separate `javac` step is
+    // required.
+    if !java_available() {
+        eprintln!("SKIP: java not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("HttpStub must publish a recording endpoint");
+
+    let fragment = std::fs::read_to_string(fixture_path("java/http/vuln/main.java.fragment"))
+        .expect("read java fragment");
+    let combined = wrap_java_fragment(&fragment, java_probe_shim());
+
+    // Single-file source-mode requires the filename to match the public
+    // class — name the file `Main.java` so `java Main.java` compiles
+    // and runs in one step.
+    let script_path = workdir.path().join("Main.java");
+    std::fs::write(&script_path, combined).expect("write java driver");
+
+    let output = Command::new("java")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("java driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "HttpStub must capture at least one event after the Java shim recorder fires"
+    );
+    let hit = events
+        .iter()
+        .find(|e| e.summary.contains("169.254.169.254"))
+        .expect("recorded URL must contain the SSRF marker");
+    assert_eq!(
+        hit.detail.get("method").map(String::as_str),
+        Some("GET"),
+        "method detail must surface on the recorded event"
+    );
+    assert_eq!(
+        hit.detail.get("url").map(String::as_str),
+        Some("http://169.254.169.254/latest/meta-data/"),
+    );
+    assert_eq!(
+        hit.detail.get("driver").map(String::as_str),
+        Some("HttpURLConnection"),
+        "detail map entries passed to __nyx_stub_http_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn java_http_shim_recorder_is_noop_without_log_env() {
+    if !java_available() {
+        eprintln!("SKIP: java not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let fragment = std::fs::read_to_string(fixture_path("java/http/vuln/main.java.fragment"))
+        .expect("read java fragment");
+    let combined = wrap_java_fragment(&fragment, java_probe_shim());
+
+    let script_path = workdir.path().join("Main.java");
+    std::fs::write(&script_path, combined).expect("write java driver");
+
+    let output = Command::new("java")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env_remove("NYX_HTTP_LOG")
+        .output()
+        .expect("java driver");
     assert!(
         output.status.success(),
         "driver must exit 0 even without NYX_HTTP_LOG; stderr = {}",
