@@ -241,7 +241,7 @@ impl StubHarness {
             seen.push(k);
             let stub: Arc<dyn StubProvider> = match k {
                 StubKind::Sql => Arc::new(SqlStub::start(workdir)?),
-                StubKind::Http => Arc::new(HttpStub::start()?),
+                StubKind::Http => Arc::new(HttpStub::start(workdir)?),
                 StubKind::Redis => Arc::new(RedisStub::start()?),
                 StubKind::Filesystem => Arc::new(FilesystemStub::start(workdir)?),
             };

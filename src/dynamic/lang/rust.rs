@@ -71,24 +71,31 @@ impl LangEmitter for RustEmitter {
 
 /// Phase 26 — Rust chain-step harness.
 ///
-/// Emits a minimal `step.rs` file that reads `NYX_PREV_OUTPUT` and writes
-/// it on stdout.  The chain composer drives the step with `rustc step.rs`
-/// (single-file build) — full Cargo crate scaffolding is reserved for
-/// chain members whose underlying finding already produced a HarnessSpec
-/// via the standard emit path.
+/// Splices the Rust probe shim ([`probe_shim`]) in front of a minimal
+/// driver that reads `NYX_PREV_OUTPUT` and writes it on stdout.  The
+/// shim references `libc::*` from its `__nyx_install_crash_guard`
+/// definition, so a single-file `rustc step.rs` build cannot resolve
+/// the symbols.  Instead the step ships a companion `Cargo.toml`
+/// pinning `libc = "0.2"` via [`ChainStepHarness::extra_files`] and
+/// drives the build through `cargo run --quiet`.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
-    let source = "use std::env;\nuse std::io::{self, Write};\n\nfn main() {\n    let prev = env::var(\"NYX_PREV_OUTPUT\").unwrap_or_default();\n    let _ = io::stdout().write_all(prev.as_bytes());\n}\n".to_owned();
-    // Shell-wrap build + run so the step actually executes the compiled binary.
-    // `ChainStepHarness.command` models a single process; without the wrap the
-    // step ends after `rustc` exits and the next chain member sees no output.
+    let shim = probe_shim();
+    let driver = "use std::env;\nuse std::io::{self, Write};\n\nfn main() {\n    let prev = env::var(\"NYX_PREV_OUTPUT\").unwrap_or_default();\n    let _ = io::stdout().write_all(prev.as_bytes());\n}\n";
+    let source = format!("{shim}\n{driver}");
+    let cargo_toml = "[package]\n\
+                      name = \"nyx-chain-step\"\n\
+                      version = \"0.0.1\"\n\
+                      edition = \"2021\"\n\n\
+                      [[bin]]\n\
+                      name = \"step\"\n\
+                      path = \"step.rs\"\n\n\
+                      [dependencies]\n\
+                      libc = \"0.2\"\n"
+        .to_owned();
     ChainStepHarness {
         source,
         filename: "step.rs".to_owned(),
-        command: vec![
-            "sh".to_owned(),
-            "-c".to_owned(),
-            "rustc step.rs -o step && ./step".to_owned(),
-        ],
+        command: vec!["cargo".to_owned(), "run".to_owned(), "--quiet".to_owned()],
         extra_env: prev_output
             .map(|bytes| {
                 vec![(
@@ -97,6 +104,7 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
                 )]
             })
             .unwrap_or_default(),
+        extra_files: vec![("Cargo.toml".to_owned(), cargo_toml)],
     }
 }
 
@@ -877,5 +885,68 @@ mod tests {
         let _ = generate_cargo_toml(Cap::FILE_IO);
         let _ = generate_cargo_toml(Cap::CODE_EXEC);
         let _ = generate_cargo_toml(Cap::SSRF);
+    }
+
+    #[test]
+    fn chain_step_splices_probe_shim_for_composite_reverify() {
+        // Phase 26 follow-up: Rust chain_step now splices the probe
+        // shim ahead of the driver so a chain step that terminates at
+        // a sink can drive the `__nyx_probe` channel directly.  The
+        // shim references `libc::*` so the step also ships a companion
+        // `Cargo.toml` via `extra_files` and drives the build through
+        // `cargo run --quiet` rather than single-file `rustc`.
+        let step = chain_step(Some(b"prev-output"));
+        assert!(
+            step.source.contains("__nyx_probe shim (Phase 06"),
+            "probe_shim banner missing from chain step source",
+        );
+        assert!(
+            step.source.contains("fn __nyx_install_crash_guard("),
+            "install_crash_guard missing from chain step source",
+        );
+        let shim_pos = step
+            .source
+            .find("__nyx_probe shim (Phase 06")
+            .expect("shim banner");
+        let main_pos = step.source.find("fn main()").expect("main fn");
+        assert!(
+            shim_pos < main_pos,
+            "shim must be spliced before fn main(): shim={shim_pos} main={main_pos}",
+        );
+        assert_eq!(step.filename, "step.rs");
+        assert_eq!(
+            step.command,
+            vec!["cargo".to_owned(), "run".to_owned(), "--quiet".to_owned()],
+        );
+        assert!(
+            step.extra_env
+                .iter()
+                .any(|(k, v)| k == ChainStepHarness::PREV_OUTPUT_ENV && v == "prev-output"),
+            "prev_output must be threaded through extra_env, got {:?}",
+            step.extra_env,
+        );
+    }
+
+    #[test]
+    fn chain_step_emits_cargo_toml_with_libc_dep() {
+        let step = chain_step(None);
+        let cargo = step
+            .extra_files
+            .iter()
+            .find(|(n, _)| n == "Cargo.toml")
+            .expect("Cargo.toml must be in extra_files for cargo run");
+        let body = &cargo.1;
+        assert!(
+            body.contains("libc = \"0.2\""),
+            "Cargo.toml must pin libc for the probe shim's sigaction path, got: {body}",
+        );
+        assert!(
+            body.contains("path = \"step.rs\""),
+            "[[bin]] must point at step.rs so cargo run picks it up, got: {body}",
+        );
+        assert!(
+            body.contains("edition = \"2021\""),
+            "Cargo.toml must declare edition 2021, got: {body}",
+        );
     }
 }

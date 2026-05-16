@@ -98,6 +98,7 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
                 )]
             })
             .unwrap_or_default(),
+        extra_files: Vec::new(),
     }
 }
 
@@ -350,6 +351,28 @@ function __nyx_stub_sql_record($query, array $detail = []): void {
     $q = (string)$query;
     $buf .= $q;
     if (substr($q, -1) !== "\n") $buf .= "\n";
+    @file_put_contents($p, $buf, FILE_APPEND);
+}
+
+// Phase 10 (Track D.3) HTTP recording helper.  When the verifier spawned an
+// HttpStub it publishes the side-channel log path through NYX_HTTP_LOG; a
+// sink call site whose outbound request never reaches the on-the-wire
+// listener (DNS-mocked, network-isolated sandbox, pre-flight check) can
+// call this helper to surface the attempted call.  Format matches the SQL
+// helper so the host-side merger parses both streams identically.
+function __nyx_stub_http_record($method, $url, $body = null, array $detail = []): void {
+    $p = getenv('NYX_HTTP_LOG');
+    if ($p === false || $p === '') return;
+    $buf = '';
+    $buf .= '# method: ' . (string)$method . "\n";
+    $buf .= '# url: ' . (string)$url . "\n";
+    if ($body !== null) {
+        $buf .= '# body: ' . (string)$body . "\n";
+    }
+    foreach ($detail as $k => $v) {
+        $buf .= '# ' . (string)$k . ': ' . (string)$v . "\n";
+    }
+    $buf .= (string)$method . ' ' . (string)$url . "\n";
     @file_put_contents($p, $buf, FILE_APPEND);
 }
 "#
@@ -748,6 +771,19 @@ mod tests {
         assert!(
             shim.contains("NYX_SQL_LOG"),
             "stub recorder must read NYX_SQL_LOG"
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_http_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("function __nyx_stub_http_record"),
+            "PHP probe shim must define __nyx_stub_http_record"
+        );
+        assert!(
+            shim.contains("NYX_HTTP_LOG"),
+            "stub recorder must read NYX_HTTP_LOG"
         );
     }
 

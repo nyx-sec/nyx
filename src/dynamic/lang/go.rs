@@ -111,6 +111,7 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
                 )]
             })
             .unwrap_or_default(),
+        extra_files: Vec::new(),
     }
 }
 

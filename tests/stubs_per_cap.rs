@@ -159,7 +159,8 @@ fn sql_stub_captured_query_threads_through_probe_predicate() {
 
 #[test]
 fn http_stub_vuln_fixture_confirms_recorded_request() {
-    let stub = HttpStub::start().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let stub = HttpStub::start(workdir.path()).unwrap();
     let payload = extract_payload(&read_fixture("http", "vuln.txt"));
     assert!(payload.contains("169.254"), "vuln fixture must carry metadata host");
 
@@ -177,7 +178,8 @@ fn http_stub_vuln_fixture_confirms_recorded_request() {
 
 #[test]
 fn http_stub_benign_fixture_does_not_confirm() {
-    let stub = HttpStub::start().unwrap();
+    let workdir = TempDir::new().unwrap();
+    let stub = HttpStub::start(workdir.path()).unwrap();
     let payload = extract_payload(&read_fixture("http", "benign.txt"));
     stub.record(payload);
     let events = stub.drain_events();

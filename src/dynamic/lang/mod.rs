@@ -66,6 +66,14 @@ pub struct ChainStepHarness {
     pub filename: String,
     pub command: Vec<String>,
     pub extra_env: Vec<(String, String)>,
+    /// Companion files staged alongside [`Self::source`] in the chain
+    /// step's workdir.  Each entry is `(relative_path, content)`;
+    /// subdirectories in `relative_path` are created automatically.
+    /// Mirrors [`HarnessSource::extra_files`] so an emitter whose chain
+    /// step needs a build manifest (Rust's `Cargo.toml`, future
+    /// `pom.xml`, etc.) can ship it without smuggling everything into
+    /// `source`.
+    pub extra_files: Vec<(String, String)>,
 }
 
 impl ChainStepHarness {
@@ -156,6 +164,7 @@ pub fn default_chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
                 )]
             })
             .unwrap_or_default(),
+        extra_files: Vec::new(),
     }
 }
 

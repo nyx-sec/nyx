@@ -141,6 +141,29 @@ def __nyx_stub_sql_record(query, **detail):
     except OSError:
         pass
 
+# Phase 10 (Track D.3) HTTP recording helper.  When the verifier spawned an
+# HttpStub it publishes the side-channel log path through NYX_HTTP_LOG; a
+# sink call site whose outbound request never reaches the on-the-wire
+# listener (DNS-mocked, network-isolated sandbox, pre-flight check) can
+# call this helper to surface the attempted call.  Format matches the SQL
+# helper so the host-side merger parses both streams identically.
+def __nyx_stub_http_record(method, url, body=None, **detail):
+    import os
+    p = os.environ.get("NYX_HTTP_LOG")
+    if not p:
+        return
+    try:
+        with open(p, "a") as _f:
+            _f.write('# method: %s\n' % str(method))
+            _f.write('# url: %s\n' % str(url))
+            if body is not None:
+                _f.write('# body: %s\n' % str(body))
+            for k, v in detail.items():
+                _f.write('# %s: %s\n' % (str(k), str(v)))
+            _f.write('%s %s\n' % (str(method), str(url)))
+    except OSError:
+        pass
+
 
 _NYX_SINK_FILE = "<TMPDIR>/<ENTRY_FILE>"
 _NYX_SINK_LINE = 16

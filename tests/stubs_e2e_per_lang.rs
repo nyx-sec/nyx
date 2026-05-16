@@ -23,7 +23,7 @@
 use nyx_scanner::dynamic::lang::javascript::probe_shim as node_probe_shim;
 use nyx_scanner::dynamic::lang::php::probe_shim as php_probe_shim;
 use nyx_scanner::dynamic::lang::python::probe_shim as python_probe_shim;
-use nyx_scanner::dynamic::stubs::{SqlStub, StubProvider};
+use nyx_scanner::dynamic::stubs::{HttpStub, SqlStub, StubProvider};
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
@@ -323,6 +323,113 @@ fn php_sql_shim_recorder_is_noop_without_log_env() {
     assert!(
         output.status.success(),
         "driver must exit 0 even without NYX_SQL_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
+fn python_http_stub_captures_attempted_outbound_via_shim_recorder() {
+    // Phase 10 (Track D.3) HTTP recording: the side-channel
+    // `__nyx_stub_http_record` lets a harness surface outbound HTTP
+    // attempts even when the request never reaches the on-the-wire
+    // listener (DNS-mocked, network-isolated sandbox, pre-flight
+    // check).  This test drives the Python helper.
+    if !python3_available() {
+        eprintln!("SKIP: python3 not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("HttpStub must publish a recording endpoint");
+
+    let fixture =
+        std::fs::read_to_string(fixture_path("python/http/vuln/main.py")).expect("read fixture");
+    let mut combined = String::with_capacity(python_probe_shim().len() + fixture.len() + 64);
+    combined.push_str(python_probe_shim());
+    combined.push_str("\n# ── fixture begins ─\n");
+    combined.push_str(&fixture);
+
+    let script_path = workdir.path().join("driver_http.py");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("python3")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("python3 driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "HttpStub must capture at least one event after the shim recorder fires"
+    );
+    let hit = events
+        .iter()
+        .find(|e| e.summary.contains("169.254.169.254"))
+        .expect("recorded URL must contain the SSRF marker");
+    assert_eq!(
+        hit.detail.get("method").map(String::as_str),
+        Some("GET"),
+        "method detail must surface on the recorded event"
+    );
+    assert_eq!(
+        hit.detail.get("url").map(String::as_str),
+        Some("http://169.254.169.254/latest/meta-data/"),
+    );
+    assert_eq!(
+        hit.detail.get("driver").map(String::as_str),
+        Some("urllib"),
+        "kwargs passed to __nyx_stub_http_record must surface as event detail entries"
+    );
+}
+
+#[test]
+fn python_http_shim_recorder_is_noop_without_log_env() {
+    if !python3_available() {
+        eprintln!("SKIP: python3 not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
+
+    let endpoint = stub.endpoint();
+    let fixture =
+        std::fs::read_to_string(fixture_path("python/http/vuln/main.py")).expect("read fixture");
+    let mut combined = String::new();
+    combined.push_str(python_probe_shim());
+    combined.push('\n');
+    combined.push_str(&fixture);
+    let script_path = workdir.path().join("driver_http_no_log.py");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("python3")
+        .arg(&script_path)
+        .env("NYX_HTTP_ENDPOINT", &endpoint)
+        .env_remove("NYX_HTTP_LOG")
+        .output()
+        .expect("python3 driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_HTTP_LOG; stderr = {}",
         String::from_utf8_lossy(&output.stderr)
     );
 

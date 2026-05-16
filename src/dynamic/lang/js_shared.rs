@@ -278,6 +278,35 @@ function __nyx_stub_sql_record(query, detail) {
         // best-effort: stub recorder write failure is non-fatal.
     }
 }
+
+// Phase 10 (Track D.3) HTTP recording helper.  When the verifier spawned an
+// HttpStub it publishes the side-channel log path through NYX_HTTP_LOG; a
+// sink call site whose outbound request never reaches the on-the-wire
+// listener (DNS-mocked, network-isolated sandbox, pre-flight check) can
+// call this helper to surface the attempted call.  Format matches the SQL
+// helper so the host-side merger parses both streams identically.
+function __nyx_stub_http_record(method, url, body, detail) {
+    const _p = process.env.NYX_HTTP_LOG;
+    if (!_p) return;
+    const _fs = require('fs');
+    try {
+        let _buf = '';
+        _buf += '# method: ' + String(method) + '\n';
+        _buf += '# url: ' + String(url) + '\n';
+        if (body !== undefined && body !== null) {
+            _buf += '# body: ' + String(body) + '\n';
+        }
+        if (detail && typeof detail === 'object') {
+            for (const _k of Object.keys(detail)) {
+                _buf += '# ' + String(_k) + ': ' + String(detail[_k]) + '\n';
+            }
+        }
+        _buf += String(method) + ' ' + String(url) + '\n';
+        _fs.appendFileSync(_p, _buf);
+    } catch (e) {
+        // best-effort: stub recorder write failure is non-fatal.
+    }
+}
 "#
 }
 
@@ -465,6 +494,7 @@ pub fn chain_step(prev_output: Option<&[u8]>, is_typescript: bool) -> ChainStepH
                 )]
             })
             .unwrap_or_default(),
+        extra_files: Vec::new(),
     }
 }
 
@@ -1072,6 +1102,19 @@ mod tests {
         assert!(
             shim.contains("appendFileSync"),
             "stub recorder must append to the log file"
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_http_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("function __nyx_stub_http_record"),
+            "Node probe shim must define __nyx_stub_http_record"
+        );
+        assert!(
+            shim.contains("NYX_HTTP_LOG"),
+            "stub recorder must read NYX_HTTP_LOG"
         );
     }
 }
