@@ -25,7 +25,7 @@
 use crate::dynamic::harness::BuiltHarness;
 use crate::dynamic::oob::OobListener;
 use crate::dynamic::probe::{ProbeChannel, PROBE_PATH_ENV};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -735,6 +735,51 @@ fn run_firecracker(
 
 // ── Docker backend ────────────────────────────────────────────────────────────
 
+/// Host paths of every `StubKind::Filesystem` stub in `opts.stub_harness`.
+///
+/// Ordered by spawn position in the harness so `Vec::iter().enumerate()`
+/// indexes match the container-side mount layout produced by
+/// [`docker::stub_mount_args`] (`/nyx/stubs/<idx>`).
+fn collect_fs_stub_roots(opts: &SandboxOptions) -> Vec<PathBuf> {
+    let Some(h) = opts.stub_harness.as_ref() else {
+        return Vec::new();
+    };
+    h.stubs()
+        .iter()
+        .filter(|s| s.kind() == crate::dynamic::stubs::StubKind::Filesystem)
+        .map(|s| PathBuf::from(s.endpoint()))
+        .collect()
+}
+
+/// Rewrite `(key, value)` env pairs for delivery into a container.
+///
+/// `NYX_FS_ROOT` values whose host path matches an entry in `fs_stub_roots`
+/// are rewritten to `<STUB_MOUNT_ROOT>/<idx>` so the harness sees the
+/// in-container mount path the docker run line set up via
+/// [`docker::stub_mount_args`].  All other pairs are passed through verbatim.
+fn rewrite_extra_env_for_container(
+    extra_env: &[(String, String)],
+    fs_stub_roots: &[PathBuf],
+) -> Vec<(String, String)> {
+    extra_env
+        .iter()
+        .map(|(k, v)| {
+            if k == "NYX_FS_ROOT" {
+                if let Some(idx) = fs_stub_roots
+                    .iter()
+                    .position(|p| p.as_os_str() == std::ffi::OsStr::new(v))
+                {
+                    return (
+                        k.clone(),
+                        format!("{}/{idx}", docker::STUB_MOUNT_ROOT),
+                    );
+                }
+            }
+            (k.clone(), v.clone())
+        })
+        .collect()
+}
+
 /// Docker backend: image per toolchain_id, container reuse via `docker exec`.
 fn run_docker(
     harness: &BuiltHarness,
@@ -758,15 +803,23 @@ fn run_docker(
         false
     };
 
+    let fs_stub_roots = collect_fs_stub_roots(opts);
+
     if !reused {
         // Determine the Python image from the harness command (first element).
         // Fall back to python:3-slim when the command is not recognised.
         let image = detect_image_for_harness(harness);
-        start_container(&container_name, &harness.workdir, &image, &opts.network_policy)?;
+        start_container(
+            &container_name,
+            &harness.workdir,
+            &image,
+            &opts.network_policy,
+            &fs_stub_roots,
+        )?;
         registry.insert(container_name.clone(), container_name.clone());
     }
 
-    exec_in_container(&container_name, harness, payload_bytes, opts)
+    exec_in_container(&container_name, harness, payload_bytes, opts, &fs_stub_roots)
 }
 
 /// Returns true when `docker info` succeeds using the current `NYX_DOCKER_BIN`.
@@ -815,6 +868,7 @@ fn start_container(
     workdir: &Path,
     image: &str,
     policy: &NetworkPolicy,
+    fs_stub_roots: &[PathBuf],
 ) -> Result<(), SandboxError> {
     // Phase 19 (Track E.3): when `image` is a pinned reference produced by
     // `docker::image_reference_for_toolchain`, make sure it is present on
@@ -844,6 +898,11 @@ fn start_container(
         // container — no follow-up `docker cp` is needed.
         "-v".into(), workdir_mount,
     ];
+    // Phase 10 / Phase 19 (Track D.3 + E.3): bind-mount each
+    // filesystem-stub root at `STUB_MOUNT_ROOT/<idx>:rw` so the
+    // harness can resolve `NYX_FS_ROOT` to a container-side path the
+    // sandbox can reach.  Empty when no `FilesystemStub` is active.
+    run_args.extend(docker::stub_mount_args(fs_stub_roots));
     match policy {
         NetworkPolicy::None => {
             run_args.extend(["--network".into(), "none".into()]);
@@ -941,6 +1000,7 @@ fn exec_in_container(
     harness: &BuiltHarness,
     payload_bytes: &[u8],
     opts: &SandboxOptions,
+    fs_stub_roots: &[PathBuf],
 ) -> Result<SandboxOutcome, SandboxError> {
     use std::io::Read;
     use std::process::{Command, Stdio};
@@ -961,6 +1021,16 @@ fn exec_in_container(
     ];
     // Forward harness-specific env vars.
     for (k, v) in &harness.env {
+        cmd_args.push("-e".into());
+        cmd_args.push(format!("{k}={v}"));
+    }
+    // Phase 10 (Track D.3): boundary-stub endpoints from
+    // `opts.extra_env` overlay AFTER `harness.env` so an emitter-supplied
+    // placeholder cannot accidentally shadow a verifier-set endpoint.
+    // `NYX_FS_ROOT` is rewritten from its host path to the
+    // container-side mount path produced by `start_container`'s
+    // `docker::stub_mount_args` extension.
+    for (k, v) in rewrite_extra_env_for_container(&opts.extra_env, fs_stub_roots) {
         cmd_args.push("-e".into());
         cmd_args.push(format!("{k}={v}"));
     }
@@ -1132,12 +1202,15 @@ fn run_native_binary_docker(
         false
     };
 
+    let fs_stub_roots = collect_fs_stub_roots(opts);
+
     if !reused {
         start_container(
             &container_name,
             &harness.workdir,
             NATIVE_BINARY_IMAGE,
             &opts.network_policy,
+            &fs_stub_roots,
         )?;
 
         // Copy the compiled binary into the container as
@@ -1170,7 +1243,7 @@ fn run_native_binary_docker(
         registry.insert(container_name.clone(), container_name.clone());
     }
 
-    exec_native_binary_in_container(&container_name, harness, payload_bytes, opts)
+    exec_native_binary_in_container(&container_name, harness, payload_bytes, opts, &fs_stub_roots)
 }
 
 /// Execute a native binary already in the container at `/work/nyx_harness`.
@@ -1179,6 +1252,7 @@ fn exec_native_binary_in_container(
     harness: &BuiltHarness,
     payload_bytes: &[u8],
     opts: &SandboxOptions,
+    fs_stub_roots: &[PathBuf],
 ) -> Result<SandboxOutcome, SandboxError> {
     use std::io::Read;
     use std::process::{Command, Stdio};
@@ -1191,6 +1265,15 @@ fn exec_native_binary_in_container(
         "-e".into(), format!("NYX_PAYLOAD_B64={payload_b64}"),
     ];
     for (k, v) in &harness.env {
+        cmd_args.push("-e".into());
+        cmd_args.push(format!("{k}={v}"));
+    }
+    // Phase 10 (Track D.3): mirror the boundary-stub env overlay from
+    // `exec_in_container` so the native-binary docker path delivers
+    // `NYX_SQL_ENDPOINT` / `NYX_HTTP_ENDPOINT` / `NYX_FS_ROOT` to the
+    // harness.  Stub endpoints from `opts.extra_env` follow `harness.env`
+    // so emitter-supplied placeholders cannot shadow them.
+    for (k, v) in rewrite_extra_env_for_container(&opts.extra_env, fs_stub_roots) {
         cmd_args.push("-e".into());
         cmd_args.push(format!("{k}={v}"));
     }
@@ -1917,5 +2000,97 @@ mod tests {
         );
         assert_eq!(docker_image_for_toolchain_id("rust-stable"), None);
         assert_eq!(docker_image_for_toolchain_id("go-1.22"), None);
+    }
+
+    #[test]
+    fn rewrite_extra_env_passes_unrelated_pairs_through() {
+        let extra = vec![
+            ("NYX_SQL_ENDPOINT".to_owned(), "/tmp/abc.db".to_owned()),
+            ("NYX_HTTP_ENDPOINT".to_owned(), "http://127.0.0.1:12345".to_owned()),
+        ];
+        let out = rewrite_extra_env_for_container(&extra, &[]);
+        assert_eq!(out, extra);
+    }
+
+    #[test]
+    fn rewrite_extra_env_maps_fs_root_to_container_mount() {
+        let host_root = PathBuf::from("/tmp/host-fs-root-abc");
+        let extra = vec![
+            ("NYX_FS_ROOT".to_owned(), host_root.to_string_lossy().into_owned()),
+        ];
+        let out = rewrite_extra_env_for_container(&extra, &[host_root]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "NYX_FS_ROOT");
+        assert_eq!(out[0].1, format!("{}/0", docker::STUB_MOUNT_ROOT));
+    }
+
+    #[test]
+    fn rewrite_extra_env_leaves_fs_root_alone_when_no_root_matches() {
+        // Defensive: an NYX_FS_ROOT value that does not appear in the
+        // active fs_stub_roots list is passed through unchanged.  This
+        // keeps the rewrite from accidentally clobbering an emitter-
+        // supplied placeholder.
+        let extra = vec![
+            ("NYX_FS_ROOT".to_owned(), "/some/host/path".to_owned()),
+        ];
+        let out = rewrite_extra_env_for_container(
+            &extra,
+            &[PathBuf::from("/different/host/path")],
+        );
+        assert_eq!(out, extra);
+    }
+
+    #[test]
+    fn rewrite_extra_env_indexes_multiple_fs_roots() {
+        let root_a = PathBuf::from("/tmp/fs-a");
+        let root_b = PathBuf::from("/tmp/fs-b");
+        let extra = vec![
+            ("NYX_FS_ROOT".to_owned(), root_b.to_string_lossy().into_owned()),
+        ];
+        let out = rewrite_extra_env_for_container(&extra, &[root_a, root_b]);
+        assert_eq!(out[0].1, format!("{}/1", docker::STUB_MOUNT_ROOT));
+    }
+
+    #[test]
+    fn collect_fs_stub_roots_returns_empty_without_harness() {
+        let opts = SandboxOptions::default();
+        assert!(collect_fs_stub_roots(&opts).is_empty());
+    }
+
+    #[test]
+    fn collect_fs_stub_roots_returns_paths_for_filesystem_stubs() {
+        use crate::dynamic::stubs::StubKind;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let harness = crate::dynamic::stubs::StubHarness::start(
+            &[StubKind::Filesystem],
+            dir.path(),
+        )
+        .expect("start stub harness");
+        let endpoint = harness.stubs()[0].endpoint();
+        let opts = SandboxOptions {
+            stub_harness: Some(Arc::new(harness)),
+            ..SandboxOptions::default()
+        };
+        let roots = collect_fs_stub_roots(&opts);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0], PathBuf::from(endpoint));
+    }
+
+    #[test]
+    fn collect_fs_stub_roots_skips_network_stubs() {
+        use crate::dynamic::stubs::StubKind;
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let harness = crate::dynamic::stubs::StubHarness::start(
+            &[StubKind::Http, StubKind::Sql],
+            dir.path(),
+        )
+        .expect("start stub harness");
+        let opts = SandboxOptions {
+            stub_harness: Some(Arc::new(harness)),
+            ..SandboxOptions::default()
+        };
+        // Sql endpoint is a host path but its kind is not Filesystem,
+        // so it must not appear in fs_stub_roots.
+        assert!(collect_fs_stub_roots(&opts).is_empty());
     }
 }

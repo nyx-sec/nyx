@@ -495,12 +495,26 @@ pub fn run_shape_fixture_lang(
     // [`VerifyStatus`] directly without learning the runner's API.
     match outcome {
         Ok(run) => {
-            let status = if run.triggered_by.is_some() {
-                VerifyStatus::Confirmed
+            let (status, inconclusive_reason) = if run.triggered_by.is_some() {
+                (VerifyStatus::Confirmed, None)
             } else if run.oracle_collision {
-                VerifyStatus::Inconclusive
+                (
+                    VerifyStatus::Inconclusive,
+                    Some(nyx_scanner::evidence::InconclusiveReason::OracleCollisionSuspected),
+                )
+            } else if run.unrelated_crash {
+                // Mirror the runner's downgrade in
+                // `src/dynamic/runner.rs:425-432`: a process-level crash
+                // outside the sink probe routes to
+                // `Inconclusive(UnrelatedCrash)`.  Shape suites that
+                // exercise SinkCrash oracles pin this branch instead of
+                // recreating `run_spec` plumbing inline.
+                (
+                    VerifyStatus::Inconclusive,
+                    Some(nyx_scanner::evidence::InconclusiveReason::UnrelatedCrash),
+                )
             } else {
-                VerifyStatus::NotConfirmed
+                (VerifyStatus::NotConfirmed, None)
             };
             VerifyResult {
                 finding_id: spec.finding_id.clone(),
@@ -510,7 +524,7 @@ pub fn run_shape_fixture_lang(
                     .and_then(|i| run.attempts.get(i))
                     .map(|a| a.payload_label.to_owned()),
                 reason: None,
-                inconclusive_reason: None,
+                inconclusive_reason,
                 detail: None,
                 attempts: vec![],
                 toolchain_match: None,
