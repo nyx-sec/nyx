@@ -85,13 +85,21 @@ impl LangEmitter for JavaEmitter {
 /// Emits a `Step.java` class whose `main` reads `NYX_PREV_OUTPUT` and
 /// forwards it on stdout.  The command shell-wraps `javac` + `java` so
 /// the step actually runs after the build step completes (the
-/// `ChainStepHarness.command` slot models a single process).  The Java
-/// probe shim is class-level and requires `System` / `java.io.*` imports
-/// the chain step already pulls in implicitly; wiring the full shim is
-/// tracked alongside the Phase 14 emitter follow-up about probe shim
-/// splicing.
+/// `ChainStepHarness.command` slot models a single process).
+///
+/// The Java probe shim (`__nyx_probe`, `__nyx_install_crash_guard`,
+/// helpers) is spliced as class-member declarations inside `class Step
+/// { … }` between the class-open brace and `public static void main`,
+/// so a downstream sink rewrite within the step body has the shim
+/// helpers already in scope.  The shim uses only `java.lang.*` plus
+/// fully-qualified `java.util.TreeMap` / `java.io.FileWriter` /
+/// `java.nio.charset.StandardCharsets`, so no extra `import` lines
+/// are needed beyond what stock Java implicitly imports.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
-    let source = "public class Step {\n    public static void main(String[] args) {\n        String prev = System.getenv(\"NYX_PREV_OUTPUT\");\n        if (prev == null) prev = \"\";\n        System.out.print(prev);\n    }\n}\n".to_owned();
+    let shim = probe_shim();
+    let source = format!(
+        "public class Step {{\n{shim}\n    public static void main(String[] args) {{\n        String prev = System.getenv(\"NYX_PREV_OUTPUT\");\n        if (prev == null) prev = \"\";\n        System.out.print(prev);\n    }}\n}}\n"
+    );
     ChainStepHarness {
         source,
         filename: "Step.java".to_owned(),
@@ -1029,6 +1037,35 @@ mod tests {
         spec.entry_file = "/nonexistent/Vuln.java".into();
         let harness = emit(&spec).unwrap();
         assert_eq!(harness.entry_subpath, Some("Entry.java".to_owned()));
+    }
+
+    #[test]
+    fn chain_step_splices_probe_shim_for_composite_reverify() {
+        let step = chain_step(Some(b"<prev>"));
+        assert!(
+            step.source.contains("__nyx_probe"),
+            "Java chain step must splice the probe shim"
+        );
+        assert!(
+            step.source.starts_with("public class Step {"),
+            "Java chain step must open with the `public class Step {{` declaration"
+        );
+        assert!(
+            step.source.contains("System.getenv(\"NYX_PREV_OUTPUT\")"),
+            "Java chain step must keep its NYX_PREV_OUTPUT forwarder"
+        );
+        let shim_pos = step.source.find("__nyx_probe").unwrap();
+        let driver_pos = step.source.find("System.getenv(\"NYX_PREV_OUTPUT\")").unwrap();
+        assert!(
+            shim_pos < driver_pos,
+            "probe shim must come before the driver so the shim's helpers are in scope when a sink rewrite splices in"
+        );
+        let main_pos = step.source.find("public static void main").unwrap();
+        assert!(
+            shim_pos < main_pos,
+            "probe shim members must be declared before `main` so the class compiles cleanly"
+        );
+        assert_eq!(step.filename, "Step.java");
     }
 
     #[test]

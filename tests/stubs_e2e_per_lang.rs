@@ -20,6 +20,7 @@
 
 #![cfg(feature = "dynamic")]
 
+use nyx_scanner::dynamic::lang::javascript::probe_shim as node_probe_shim;
 use nyx_scanner::dynamic::lang::python::probe_shim as python_probe_shim;
 use nyx_scanner::dynamic::stubs::{SqlStub, StubProvider};
 use std::path::PathBuf;
@@ -28,6 +29,14 @@ use tempfile::TempDir;
 
 fn python3_available() -> bool {
     Command::new("python3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn node_available() -> bool {
+    Command::new("node")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -129,6 +138,106 @@ fn python_sql_shim_recorder_is_noop_without_log_env() {
         .env_remove("NYX_SQL_LOG")
         .output()
         .expect("python3 driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0 even without NYX_SQL_LOG; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        events.is_empty(),
+        "no events expected when the recording env var is unset, got {} entries",
+        events.len()
+    );
+}
+
+#[test]
+fn node_sql_stub_captures_tautology_query_via_shim_recorder() {
+    if !node_available() {
+        eprintln!("SKIP: node not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let recording = stub
+        .recording_endpoint()
+        .expect("SqlStub must publish a recording endpoint");
+
+    // Splice the Node probe shim ahead of the fixture source so the
+    // generated program carries the `__nyx_stub_sql_record` helper.
+    // Mirrors the production `JavaScriptEmitter::emit` ordering.
+    let fixture =
+        std::fs::read_to_string(fixture_path("node/sql/vuln/main.js")).expect("read fixture");
+    let mut combined = String::with_capacity(node_probe_shim().len() + fixture.len() + 64);
+    combined.push_str(node_probe_shim());
+    combined.push_str("\n// ── fixture begins ─\n");
+    combined.push_str(&fixture);
+
+    let script_path = workdir.path().join("driver.js");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("node")
+        .arg(&script_path)
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env(recording.0, &recording.1)
+        .output()
+        .expect("node driver");
+    assert!(
+        output.status.success(),
+        "driver must exit 0; stderr = {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = stub.drain_events();
+    assert!(
+        !events.is_empty(),
+        "SqlStub must capture at least one event after the Node shim recorder fires"
+    );
+    let tautology = events
+        .iter()
+        .find(|e| e.summary.contains("OR 1=1"))
+        .expect("recorded query must contain the tautology marker");
+    let driver = tautology
+        .detail
+        .get("driver")
+        .map(String::as_str)
+        .expect("Node shim must publish driver detail on the recorded event");
+    assert!(
+        driver == "node:sqlite" || driver == "none",
+        "driver detail must report node:sqlite when available or `none` when the stdlib module is missing; got {driver:?}"
+    );
+}
+
+#[test]
+fn node_sql_shim_recorder_is_noop_without_log_env() {
+    if !node_available() {
+        eprintln!("SKIP: node not available");
+        return;
+    }
+
+    let workdir = TempDir::new().expect("tempdir");
+    let stub = SqlStub::start(workdir.path()).expect("SqlStub::start");
+
+    let endpoint = stub.endpoint();
+    let fixture =
+        std::fs::read_to_string(fixture_path("node/sql/vuln/main.js")).expect("read fixture");
+    let mut combined = String::new();
+    combined.push_str(node_probe_shim());
+    combined.push('\n');
+    combined.push_str(&fixture);
+    let script_path = workdir.path().join("driver_no_log.js");
+    std::fs::write(&script_path, combined).expect("write driver");
+
+    let output = Command::new("node")
+        .arg(&script_path)
+        .env("NYX_SQL_ENDPOINT", &endpoint)
+        .env_remove("NYX_SQL_LOG")
+        .output()
+        .expect("node driver");
     assert!(
         output.status.success(),
         "driver must exit 0 even without NYX_SQL_LOG; stderr = {}",

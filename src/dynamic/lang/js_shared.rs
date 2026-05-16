@@ -250,6 +250,34 @@ function __nyx_install_crash_guard(sinkCallee) {
         } catch (e) { /* runtime refused signal handler */ }
     }
 }
+
+// Phase 10 (Track D.3) stub helpers.  When the verifier spawned a SqlStub it
+// publishes the queries-log path through NYX_SQL_LOG; a sink call site that
+// wants the host-side stub to see its query appends one record-per-call.  The
+// helper is a no-op when NYX_SQL_LOG is unset so the same fixture source still
+// runs under harness modes that didn't spawn a stub.  Mirrors the Python
+// shim's __nyx_stub_sql_record so the host-side SqlStub log-line format
+// (key/value detail lines prefixed with hash-space, followed by the query
+// line) is identical across language emitters.
+function __nyx_stub_sql_record(query, detail) {
+    const _p = process.env.NYX_SQL_LOG;
+    if (!_p) return;
+    const _fs = require('fs');
+    try {
+        let _buf = '';
+        if (detail && typeof detail === 'object') {
+            for (const _k of Object.keys(detail)) {
+                _buf += '# ' + String(_k) + ': ' + String(detail[_k]) + '\n';
+            }
+        }
+        const _q = String(query);
+        _buf += _q;
+        if (!_q.endsWith('\n')) _buf += '\n';
+        _fs.appendFileSync(_p, _buf);
+    } catch (e) {
+        // best-effort: stub recorder write failure is non-fatal.
+    }
+}
 "#
 }
 
@@ -1028,5 +1056,22 @@ mod tests {
         let h_ts = emit(&spec, true).unwrap();
         assert_eq!(h_js.entry_subpath, h_ts.entry_subpath);
         assert_eq!(h_js.entry_subpath.as_deref(), Some("entry.js"));
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_sql_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("function __nyx_stub_sql_record"),
+            "Node probe shim must define __nyx_stub_sql_record"
+        );
+        assert!(
+            shim.contains("NYX_SQL_LOG"),
+            "stub recorder must read NYX_SQL_LOG"
+        );
+        assert!(
+            shim.contains("appendFileSync"),
+            "stub recorder must append to the log file"
+        );
     }
 }
