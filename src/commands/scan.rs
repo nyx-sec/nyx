@@ -570,8 +570,22 @@ pub fn handle(
                 opts.callgraph = Some(load_verify_callgraph(s));
             }
         }
+        // Phase 29 follow-up: resolve the telemetry events log path once
+        // per scan so the per-finding `wrong:` stamp is a cheap fs read,
+        // not a directories-crate lookup each iteration.  `None` (no
+        // log path resolvable on this host) leaves every `wrong` as
+        // `None` — the eval-corpus tabulator treats that as "no signal."
+        let telemetry_log = crate::dynamic::telemetry::log_path();
         for diag in &mut diags {
-            let result = crate::dynamic::verify::verify_finding(diag, &opts);
+            let mut result = crate::dynamic::verify::verify_finding(diag, &opts);
+            if result.status == crate::dynamic::report::VerifyStatus::Confirmed {
+                if let Some(ref log_path) = telemetry_log {
+                    result.wrong = crate::dynamic::telemetry::feedback_wrong_for_finding(
+                        log_path,
+                        &result.finding_id,
+                    );
+                }
+            }
             if let Some(ref mut ev) = diag.evidence {
                 ev.dynamic_verdict = Some(result);
             }

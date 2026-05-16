@@ -30,14 +30,24 @@
 //! # Phase 28 extension (Track H.5 — PII scrubber)
 //!
 //! [`Scrubber`] hashes probe-witness values whose textual shape matches a
-//! project secret pattern.  The pattern set is the same one
-//! [`crate::utils::redact`] already uses for `--show-suppressed` console
-//! output and repro `outcome.json` redaction: AWS access key IDs, GitHub /
+//! project secret pattern.  The pattern set is the one
+//! [`crate::utils::redact`] already applies to dynamic sandbox output —
+//! repro bundle `outcome.json` redaction and telemetry payload scrubbing
+//! before they hit disk.  Covered shapes: AWS access key IDs, GitHub /
 //! Slack / OpenAI tokens, PEM blocks, `password=` / `api_key=` / `secret=`
 //! query strings, and `Bearer` headers.  Re-using the redactor's pattern
 //! list keeps the rule "what counts as PII" defined in exactly one place
 //! across the project — adding a new pattern in `redact.rs` also tightens
 //! probe-witness scrubbing without a second registry to maintain.
+//!
+//! Note on the `--show-suppressed` CLI flag: that flag is a boolean
+//! toggle for inline-comment suppression of static findings
+//! ([`crate::commands::scan`] `show_suppressed`); it does not consume
+//! the secret-pattern set defined here.  A future user-configurable
+//! "what counts as a secret in this project" regex list (e.g. a
+//! `[scrubber]` section in `default-nyx.conf`) would plug into
+//! [`Scrubber::project_default`] alongside the static
+//! [`crate::utils::redact`] patterns, not the suppression flag.
 //!
 //! The witness scrubber differs from the redactor in one respect: instead
 //! of erasing the secret behind a `<REDACTED>` placeholder it replaces it

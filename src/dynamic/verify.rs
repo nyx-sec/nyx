@@ -71,6 +71,18 @@ pub struct VerifyOptions {
     /// end-of-verify.  Wired to the future `--verbose` CLI flag; off by
     /// default so non-interactive scans stay quiet.
     pub trace_verbose: bool,
+    /// Phase 29 follow-up: when `true`, the verifier re-runs
+    /// `reproduce.sh` against the freshly written repro bundle whenever a
+    /// finding is `Confirmed` and stamps the typed
+    /// [`crate::evidence::VerifyResult::replay_stable`] field via
+    /// [`crate::dynamic::repro::replay_stability`]. Opt-in because
+    /// invoking `reproduce.sh` per Confirmed finding doubles wall-clock
+    /// cost — the eval-corpus driver flips it on; interactive `nyx scan`
+    /// keeps it off and leaves `replay_stable: None`.
+    ///
+    /// Default `false`. [`Self::from_config`] honours the
+    /// `NYX_VERIFY_REPLAY_STABLE` environment variable (`1` / `true`).
+    pub replay_stable_check: bool,
 }
 
 impl VerifyOptions {
@@ -113,6 +125,10 @@ impl VerifyOptions {
         #[cfg(not(target_os = "macos"))]
         let refuse_filesystem_confirm = false;
 
+        let replay_stable_check = std::env::var("NYX_VERIFY_REPLAY_STABLE")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+            .unwrap_or(false);
+
         Self {
             sandbox: SandboxOptions {
                 backend,
@@ -127,6 +143,7 @@ impl VerifyOptions {
             refuse_filesystem_confirm,
             telemetry_policy: SamplingPolicy::from_config(&config.telemetry),
             trace_verbose: false,
+            replay_stable_check,
         }
     }
 }
@@ -653,7 +670,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         _ => 1,
     };
 
-    let verdict = build_verdict(
+    let mut verdict = build_verdict(
         &finding_id,
         &spec,
         result,
@@ -661,6 +678,21 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         opts,
         elapsed,
     );
+
+    // Phase 29 follow-up: stamp `replay_stable` from a `reproduce.sh` rerun
+    // against the freshly written bundle.  Opt-in (see
+    // `VerifyOptions::replay_stable_check`) because invoking the script
+    // per Confirmed finding doubles wall-clock cost — the eval-corpus
+    // driver flips it on so the tabulated `stable_replays` column becomes
+    // non-vacuous; interactive `nyx scan` keeps `replay_stable: None`.
+    if verdict.status == VerifyStatus::Confirmed
+        && opts.replay_stable_check
+        && let Some(bundle) = crate::dynamic::repro::bundle_root_for(&spec.spec_hash)
+        && bundle.join("reproduce.sh").exists()
+    {
+        let replay = crate::dynamic::repro::replay_bundle(&bundle, &[]);
+        verdict.replay_stable = crate::dynamic::repro::replay_stability(&replay);
+    }
 
     // Store result in verdict cache (best-effort; errors are silently ignored).
     if let Some(ref db_path) = opts.db_path {
@@ -1042,6 +1074,33 @@ mod tests {
     #[test]
     fn transitive_import_digest_placeholder_is_stable() {
         assert_eq!(transitive_import_digest_placeholder(), "");
+    }
+
+    #[test]
+    fn from_config_defaults_replay_stable_check_off() {
+        // Make sure the test is hermetic — `from_config` reads the env
+        // var, so a stale process-wide setting could mask the default.
+        unsafe { std::env::remove_var("NYX_VERIFY_REPLAY_STABLE") };
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(
+            !opts.replay_stable_check,
+            "NYX_VERIFY_REPLAY_STABLE absent must leave the opt-in off so \
+             interactive `nyx scan` does not pay the per-finding reproduce.sh cost"
+        );
+    }
+
+    #[test]
+    fn from_config_picks_up_replay_stable_env_flag() {
+        unsafe { std::env::set_var("NYX_VERIFY_REPLAY_STABLE", "1") };
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(opts.replay_stable_check);
+        unsafe { std::env::set_var("NYX_VERIFY_REPLAY_STABLE", "true") };
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(opts.replay_stable_check);
+        unsafe { std::env::set_var("NYX_VERIFY_REPLAY_STABLE", "0") };
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(!opts.replay_stable_check);
+        unsafe { std::env::remove_var("NYX_VERIFY_REPLAY_STABLE") };
     }
 
     #[test]

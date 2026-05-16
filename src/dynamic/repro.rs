@@ -269,6 +269,23 @@ fn repro_root(spec_hash: &str) -> Result<PathBuf, ReproError> {
     Ok(root)
 }
 
+/// Resolve the bundle path for `spec_hash` without creating any directories.
+///
+/// Returns the same path [`write`] uses (`~/.cache/nyx/dynamic/repro/{spec_hash}/`)
+/// so callers can locate an existing bundle for replay. Respects the
+/// `NYX_REPRO_BASE` test override.
+///
+/// Returns `None` when the host has no resolvable cache dir.
+pub fn bundle_root_for(spec_hash: &str) -> Option<PathBuf> {
+    let base = if let Ok(p) = std::env::var("NYX_REPRO_BASE") {
+        PathBuf::from(p)
+    } else {
+        let dirs = ProjectDirs::from("", "", "nyx")?;
+        dirs.cache_dir().join("dynamic").join("repro")
+    };
+    Some(base.join(spec_hash))
+}
+
 fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), ReproError> {
     let json = serde_json::to_string_pretty(value)?;
     fs::write(path, json.as_bytes())?;
@@ -833,6 +850,36 @@ mod tests {
             ReplayResult::ScriptInvocationFailed { .. } => {}
             other => panic!("expected ScriptInvocationFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn bundle_root_for_honours_test_override() {
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let root = bundle_root_for("cafe0001").unwrap();
+        assert_eq!(root, dir.path().join("cafe0001"));
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    #[test]
+    fn bundle_root_for_matches_write_output_under_override() {
+        // The path returned by `bundle_root_for` must equal the bundle path
+        // that `write` produces — replay callers locate the bundle without
+        // re-creating directories, so a drift between the two helpers would
+        // silently skip the replay for every Confirmed finding.
+        let dir = TempDir::new().unwrap();
+        unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
+        let spec = make_spec();
+        let opts = SandboxOptions::default();
+        let outcome = make_outcome();
+        let verdict = make_verdict();
+        let artifact = write(
+            &spec, &opts, &outcome, &verdict,
+            "# harness", "# entry", b"payload", "label", None,
+        ).unwrap();
+        let resolved = bundle_root_for(&spec.spec_hash).unwrap();
+        assert_eq!(resolved, artifact.root);
+        unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
 
     #[test]
