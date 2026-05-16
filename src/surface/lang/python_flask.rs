@@ -28,15 +28,7 @@ use tree_sitter::{Node, Tree};
 /// last `attribute` / `identifier` segment — so `@login_required`,
 /// `@auth.login_required`, and `@flask_login.login_required` all
 /// match.  Match is case-insensitive on the underscored form.
-pub const AUTH_DECORATORS: &[&str] = &[
-    "login_required",
-    "auth_required",
-    "jwt_required",
-    "token_required",
-    "requires_auth",
-    "authenticated",
-    "require_login",
-];
+pub use crate::auth_analysis::auth_markers::FLASK_DECORATORS as AUTH_DECORATORS;
 
 /// Detect every Flask route in a parsed Python file.
 ///

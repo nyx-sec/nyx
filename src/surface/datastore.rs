@@ -92,6 +92,20 @@ const DRIVER_RULES: &[DriverRule] = &[
     DriverRule { leaf: "diesel::sql_query", kind: DataStoreKind::Sql, label: "Diesel" },
     DriverRule { leaf: "PgConnection::establish", kind: DataStoreKind::Sql, label: "Diesel" },
 
+    // Type-qualified — fires when the SSA type-fact engine resolves a
+    // receiver to `TypeKind::DatabaseConnection` regardless of the bare
+    // callee name (e.g. `conn = psycopg2.connect(); conn.cursor()` →
+    // typed_call_receivers maps the `.cursor` ordinal to "DatabaseConnection").
+    DriverRule { leaf: "DatabaseConnection.cursor",  kind: DataStoreKind::Sql, label: "Database connection" },
+    DriverRule { leaf: "DatabaseConnection.execute", kind: DataStoreKind::Sql, label: "Database connection" },
+    DriverRule { leaf: "DatabaseConnection.query",   kind: DataStoreKind::Sql, label: "Database connection" },
+    DriverRule { leaf: "DatabaseConnection.exec",    kind: DataStoreKind::Sql, label: "Database connection" },
+    DriverRule { leaf: "DatabaseConnection.prepare", kind: DataStoreKind::Sql, label: "Database connection" },
+    DriverRule { leaf: "DatabaseConnection.commit",  kind: DataStoreKind::Sql, label: "Database connection" },
+    DriverRule { leaf: "FileHandle.read",  kind: DataStoreKind::Filesystem, label: "Filesystem" },
+    DriverRule { leaf: "FileHandle.write", kind: DataStoreKind::Filesystem, label: "Filesystem" },
+    DriverRule { leaf: "FileHandle.close", kind: DataStoreKind::Filesystem, label: "Filesystem" },
+
     // Filesystem (best-effort: language-agnostic open()-family)
     DriverRule { leaf: "open",             kind: DataStoreKind::Filesystem, label: "Filesystem" },
 ];
@@ -99,15 +113,28 @@ const DRIVER_RULES: &[DriverRule] = &[
 /// Walk every function summary's callee list and emit one
 /// [`SurfaceNode::DataStore`] per matched driver call.  De-duped on
 /// `(file, line, label)`.
+///
+/// When the bare callee name does not hit a rule, the type-fact engine's
+/// per-call `typed_call_receivers` map (read off the matching
+/// [`crate::summary::SsaFuncSummary`]) is consulted: a callee whose
+/// receiver was resolved to `TypeKind::DatabaseConnection` or
+/// `TypeKind::FileHandle` is retried under the type-qualified name
+/// `"DatabaseConnection.<method>"` / `"FileHandle.<method>"`, picking up
+/// the bound-receiver call shapes (`conn.cursor()` after
+/// `conn = psycopg2.connect()`) that the name-only matcher misses.
 pub fn detect_data_stores(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
     let mut out: Vec<SurfaceNode> = Vec::new();
     let mut seen: std::collections::HashSet<(String, u32, String)> =
         std::collections::HashSet::new();
     for (key, summary) in summaries.iter() {
+        let typed = summaries.get_ssa(key).map(|s| s.typed_call_receivers.as_slice());
         for callee in &summary.callees {
-            let Some(rule) = match_rule(&callee.name) else {
-                continue;
-            };
+            let rule = match_rule(&callee.name).or_else(|| {
+                typed
+                    .and_then(|t| container_for_ordinal(t, callee.ordinal))
+                    .and_then(|c| match_rule(&qualify(c, &callee.name)))
+            });
+            let Some(rule) = rule else { continue };
             let location = call_site_location(summary, callee);
             let dedup = (
                 location.file.clone(),
@@ -117,7 +144,6 @@ pub fn detect_data_stores(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
             if !seen.insert(dedup) {
                 continue;
             }
-            let _ = key;
             out.push(SurfaceNode::DataStore(DataStore {
                 location,
                 kind: rule.kind,
@@ -126,6 +152,25 @@ pub fn detect_data_stores(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
         }
     }
     out
+}
+
+/// Last segment of a callee text after the final `.` or `::`.
+fn leaf_segment(name: &str) -> &str {
+    let after_colon = name.rsplit("::").next().unwrap_or(name);
+    after_colon.rsplit('.').next().unwrap_or(after_colon)
+}
+
+/// Build a type-qualified callee name (`"{container}.{method}"`) for
+/// retry-matching when the bare callee text did not hit any rule.
+fn qualify(container: &str, callee_name: &str) -> String {
+    format!("{}.{}", container, leaf_segment(callee_name))
+}
+
+/// Linear-scan helper since `typed_call_receivers` is a small
+/// `Vec<(ordinal, container)>` per function. Typical lengths are 0 to a
+/// few dozen; a HashMap-per-summary would be wasteful.
+fn container_for_ordinal(typed: &[(u32, String)], ordinal: u32) -> Option<&str> {
+    typed.iter().find(|(o, _)| *o == ordinal).map(|(_, c)| c.as_str())
 }
 
 fn match_rule(callee: &str) -> Option<&'static DriverRule> {
@@ -289,5 +334,57 @@ mod tests {
         gs.insert(k, s);
         let nodes = detect_data_stores(&gs);
         assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn typed_receiver_database_connection_resolves_bound_cursor() {
+        // `conn = psycopg2.connect(); conn.cursor()` — the bare callee
+        // `conn.cursor` is not in DRIVER_RULES, but the SSA type-fact
+        // engine populates `typed_call_receivers` with
+        // `(ordinal, "DatabaseConnection")` for the `.cursor` ordinal.
+        // The detector retries under `DatabaseConnection.cursor` and
+        // emits a Sql datastore node.
+        use crate::summary::ssa_summary::SsaFuncSummary;
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::Python, "app.py", "load", None);
+        let summary = FuncSummary {
+            name: "load".into(),
+            file_path: "app.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            callees: vec![
+                {
+                    let mut c = CalleeSite::bare("conn.cursor");
+                    c.ordinal = 7;
+                    c.span = Some((4, 8));
+                    c
+                },
+            ],
+            ..Default::default()
+        };
+        gs.insert(key.clone(), summary);
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers
+            .push((7, "DatabaseConnection".into()));
+        gs.insert_ssa(key, ssa);
+        let nodes = detect_data_stores(&gs);
+        assert_eq!(nodes.len(), 1, "expected typed retry to hit; got {nodes:?}");
+        let SurfaceNode::DataStore(ds) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(ds.kind, DataStoreKind::Sql);
+        assert_eq!(ds.label, "Database connection");
+        assert_eq!(ds.location.line, 4);
+    }
+
+    #[test]
+    fn typed_receiver_without_ssa_summary_falls_through() {
+        // No SsaFuncSummary inserted → bare `client.cursor` does not match
+        // any rule and `typed_call_receivers` is unreachable. Detector
+        // emits zero nodes (no panic on missing SSA side).
+        let mut gs = GlobalSummaries::new();
+        let (k, s) = summary_with_callees("load", "app.py", &["client.cursor"]);
+        gs.insert(k, s);
+        assert!(detect_data_stores(&gs).is_empty());
     }
 }

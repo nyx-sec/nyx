@@ -16,14 +16,7 @@ use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
-pub const AUTH_EXTRACTORS: &[&str] = &[
-    "Identity",
-    "BearerAuth",
-    "BasicAuth",
-    "JwtClaims",
-    "Authenticated",
-    "User",
-];
+pub use crate::auth_analysis::auth_markers::ACTIX_EXTRACTORS as AUTH_EXTRACTORS;
 
 const ROUTE_MACROS: &[(&str, Option<HttpMethod>)] = &[
     ("get", Some(HttpMethod::GET)),

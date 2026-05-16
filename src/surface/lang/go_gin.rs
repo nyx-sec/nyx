@@ -18,16 +18,7 @@ use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
-pub const AUTH_MIDDLEWARES: &[&str] = &[
-    "AuthRequired",
-    "JWT",
-    "JWTAuth",
-    "Auth",
-    "RequireAuth",
-    "RequireUser",
-    "VerifyToken",
-    "BasicAuth",
-];
+pub use crate::auth_analysis::auth_markers::GIN_MIDDLEWARES as AUTH_MIDDLEWARES;
 
 const VERBS: &[&str] = &[
     "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "Any",

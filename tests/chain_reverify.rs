@@ -74,6 +74,8 @@ fn verdict(status: VerifyStatus, reason: Option<InconclusiveReason>) -> VerifyRe
         attempts: vec![],
         toolchain_match: None,
         differential: None,
+        replay_stable: None,
+        wrong: None,
     }
 }
 

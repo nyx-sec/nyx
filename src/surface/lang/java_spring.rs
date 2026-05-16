@@ -16,13 +16,7 @@ use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
-pub const AUTH_ANNOTATIONS: &[&str] = &[
-    "PreAuthorize",
-    "PostAuthorize",
-    "Secured",
-    "RolesAllowed",
-    "AuthenticationPrincipal",
-];
+pub use crate::auth_analysis::auth_markers::SPRING_ANNOTATIONS as AUTH_ANNOTATIONS;
 
 const MAPPING_ANNOTATIONS: &[(&str, Option<HttpMethod>)] = &[
     ("RequestMapping", None),

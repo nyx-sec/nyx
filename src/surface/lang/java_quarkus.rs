@@ -21,12 +21,7 @@ use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
-pub const AUTH_ANNOTATIONS: &[&str] = &[
-    "Authenticated",
-    "RolesAllowed",
-    "DenyAll",
-    "RequiresAuthentication",
-];
+pub use crate::auth_analysis::auth_markers::QUARKUS_ANNOTATIONS as AUTH_ANNOTATIONS;
 
 const QUARKUS_DI: &[&str] = &[
     "ApplicationScoped",

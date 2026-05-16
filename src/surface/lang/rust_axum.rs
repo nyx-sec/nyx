@@ -25,13 +25,7 @@ const VERBS: &[(&str, HttpMethod)] = &[
     ("options", HttpMethod::OPTIONS),
 ];
 
-pub const AUTH_EXTRACTORS: &[&str] = &[
-    "Extension<User",
-    "BearerAuth",
-    "RequireAuth",
-    "AuthenticatedUser",
-    "JwtClaims",
-];
+pub use crate::auth_analysis::auth_markers::AXUM_EXTRACTORS as AUTH_EXTRACTORS;
 
 pub fn detect_axum_routes(
     tree: &Tree,

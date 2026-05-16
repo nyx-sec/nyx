@@ -76,17 +76,50 @@ const CLIENT_RULES: &[ClientRule] = &[
     ClientRule { leaf: "socket.gethostbyname", kind: ExternalServiceKind::HttpApi, label: "DNS resolver" },
     ClientRule { leaf: "dns.lookup",           kind: ExternalServiceKind::HttpApi, label: "DNS resolver" },
     ClientRule { leaf: "net.LookupIP",         kind: ExternalServiceKind::HttpApi, label: "DNS resolver" },
+
+    // Type-qualified — fires when the SSA type-fact engine resolves a
+    // receiver to `TypeKind::HttpClient` regardless of the bare callee
+    // name (`session = requests.Session(); session.get(url)` →
+    // typed_call_receivers maps the `.get` ordinal to "HttpClient", so
+    // the bound-receiver call surfaces as an outbound HTTP node even
+    // though `requests.get` is the only direct-import rule above).
+    ClientRule { leaf: "HttpClient.get",      kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
+    ClientRule { leaf: "HttpClient.post",     kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
+    ClientRule { leaf: "HttpClient.put",      kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
+    ClientRule { leaf: "HttpClient.delete",   kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
+    ClientRule { leaf: "HttpClient.patch",    kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
+    ClientRule { leaf: "HttpClient.request",  kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
+    ClientRule { leaf: "HttpClient.head",     kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
+    ClientRule { leaf: "HttpClient.options",  kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
+    ClientRule { leaf: "RequestBuilder.send", kind: ExternalServiceKind::HttpApi, label: "HTTP request builder" },
+    ClientRule { leaf: "URL.openConnection",  kind: ExternalServiceKind::HttpApi, label: "URL connection" },
+    ClientRule { leaf: "URL.openStream",      kind: ExternalServiceKind::HttpApi, label: "URL connection" },
 ];
 
+/// Walk every function summary's callee list and emit one
+/// [`SurfaceNode::ExternalService`] per matched outbound-client call.
+///
+/// When the bare callee name does not hit a rule, the type-fact engine's
+/// per-call `typed_call_receivers` map (read off the matching
+/// [`crate::summary::SsaFuncSummary`]) is consulted: a callee whose
+/// receiver was resolved to `TypeKind::HttpClient` /
+/// `TypeKind::RequestBuilder` / `TypeKind::Url` is retried under the
+/// type-qualified name `"{container}.<method>"`, picking up the
+/// bound-receiver call shapes (`client = requests.Session();
+/// client.get(url)`) that the name-only matcher misses.
 pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
     let mut out: Vec<SurfaceNode> = Vec::new();
     let mut seen: std::collections::HashSet<(String, String)> =
         std::collections::HashSet::new();
-    for (_key, summary) in summaries.iter() {
+    for (key, summary) in summaries.iter() {
+        let typed = summaries.get_ssa(key).map(|s| s.typed_call_receivers.as_slice());
         for callee in &summary.callees {
-            let Some(rule) = match_rule(&callee.name) else {
-                continue;
-            };
+            let rule = match_rule(&callee.name).or_else(|| {
+                typed
+                    .and_then(|t| container_for_ordinal(t, callee.ordinal))
+                    .and_then(|c| match_rule(&qualify(c, &callee.name)))
+            });
+            let Some(rule) = rule else { continue };
             let location = call_site_location(summary, Some(callee));
             if !seen.insert((location.file.clone(), rule.label.to_string())) {
                 continue;
@@ -116,6 +149,19 @@ pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode>
         }
     }
     out
+}
+
+fn leaf_segment(name: &str) -> &str {
+    let after_colon = name.rsplit("::").next().unwrap_or(name);
+    after_colon.rsplit('.').next().unwrap_or(after_colon)
+}
+
+fn qualify(container: &str, callee_name: &str) -> String {
+    format!("{}.{}", container, leaf_segment(callee_name))
+}
+
+fn container_for_ordinal(typed: &[(u32, String)], ordinal: u32) -> Option<&str> {
+    typed.iter().find(|(o, _)| *o == ordinal).map(|(_, c)| c.as_str())
 }
 
 fn match_rule(callee: &str) -> Option<&'static ClientRule> {
@@ -193,6 +239,41 @@ mod tests {
         gs.insert(key, summary);
         let nodes = detect_external_services(&gs);
         assert!(nodes.is_empty(), "bare rules FP-matched on {nodes:?}");
+    }
+
+    #[test]
+    fn typed_receiver_http_client_resolves_bound_session_get() {
+        // `client = requests.Session(); client.get(url)` — the bare
+        // callee `client.get` is not in CLIENT_RULES, but the SSA type
+        // engine resolves the receiver to `TypeKind::HttpClient`. The
+        // detector retries under `HttpClient.get` and emits an HTTP
+        // external-service node.
+        use crate::summary::ssa_summary::SsaFuncSummary;
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::Python, "client.py", "fetch", None);
+        let summary = FuncSummary {
+            name: "fetch".into(),
+            file_path: "client.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            callees: vec![{
+                let mut c = CalleeSite::bare("client.get");
+                c.ordinal = 3;
+                c.span = Some((9, 5));
+                c
+            }],
+            ..Default::default()
+        };
+        gs.insert(key.clone(), summary);
+        let mut ssa = SsaFuncSummary::default();
+        ssa.typed_call_receivers.push((3, "HttpClient".into()));
+        gs.insert_ssa(key, ssa);
+        let nodes = detect_external_services(&gs);
+        assert_eq!(nodes.len(), 1, "expected typed retry to hit; got {nodes:?}");
+        let SurfaceNode::ExternalService(es) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(es.label, "HTTP client");
     }
 
     #[test]

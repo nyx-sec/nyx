@@ -502,6 +502,51 @@ pub fn read_events(path: &Path) -> Result<Vec<serde_json::Value>, TelemetryReadE
     Ok(out)
 }
 
+/// Scan the `verify_feedback` records in an events log for the given
+/// finding id and return the matching `VerifyResult::wrong` value.
+///
+/// * `Some(true)` — most-recent feedback for this finding was
+///   `wrong:<reason>`.
+/// * `Some(false)` — most-recent feedback was `right`.
+/// * `None` — no feedback recorded for this finding.
+///
+/// Multiple records for the same finding collapse to the **last** one
+/// in file order: callers run `nyx verify-feedback` more than once when
+/// they correct an earlier judgment, and the latest reading is the
+/// authoritative one. The events log is read via the raw JSONL path
+/// (NOT [`read_events`]) because `verify_feedback` rows were written
+/// before the `schema_version`-envelope migration and may legitimately
+/// pre-date the schema bump; a missing `schema_version` here is not
+/// fatal.
+pub fn feedback_wrong_for_finding(path: &Path, finding_id: &str) -> Option<bool> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut latest: Option<bool> = None;
+    for line in reader.lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        if value.get("event").and_then(|v| v.as_str()) != Some("verify_feedback") {
+            continue;
+        }
+        if value.get("finding_id").and_then(|v| v.as_str()) != Some(finding_id) {
+            continue;
+        }
+        let Some(feedback) = value.get("feedback").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if feedback.starts_with("wrong:") || feedback == "wrong" {
+            latest = Some(true);
+        } else if feedback == "right" {
+            latest = Some(false);
+        }
+    }
+    latest
+}
+
 // ── Rank delta telemetry ──────────────────────────────────────────────────────
 
 /// One telemetry event per ranked finding that carries a dynamic verdict delta.
@@ -596,6 +641,44 @@ mod tests {
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
         }
+    }
+
+    #[test]
+    fn feedback_wrong_for_finding_returns_latest_record() {
+        use std::io::Write;
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("events.jsonl");
+        let mut f = std::fs::File::create(&log).unwrap();
+        // Three records for the same finding: initial wrong, later
+        // overridden by right.  The latest wins.
+        writeln!(
+            f,
+            r#"{{"event":"verify_feedback","finding_id":"abc1","feedback":"wrong:sample"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"event":"verify_feedback","finding_id":"abc2","feedback":"wrong:other"}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"event":"verify_feedback","finding_id":"abc1","feedback":"right"}}"#
+        )
+        .unwrap();
+        // Non-feedback rows are ignored.
+        writeln!(f, r#"{{"event":"verify","finding_id":"abc1"}}"#).unwrap();
+        f.flush().unwrap();
+        assert_eq!(feedback_wrong_for_finding(&log, "abc1"), Some(false));
+        assert_eq!(feedback_wrong_for_finding(&log, "abc2"), Some(true));
+        assert_eq!(feedback_wrong_for_finding(&log, "missing"), None);
+    }
+
+    #[test]
+    fn feedback_wrong_for_finding_tolerates_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let log = dir.path().join("nonexistent.jsonl");
+        assert_eq!(feedback_wrong_for_finding(&log, "abc1"), None);
     }
 
     #[test]

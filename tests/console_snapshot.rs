@@ -72,6 +72,8 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             }],
             toolchain_match: Some("exact".into()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         },
         VerifyStatus::NotConfirmed => VerifyResult {
             finding_id: "abc123".into(),
@@ -89,6 +91,8 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             }],
             toolchain_match: Some("exact".into()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         },
         VerifyStatus::Unsupported => VerifyResult {
             finding_id: "abc123".into(),
@@ -100,6 +104,8 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         },
         VerifyStatus::Inconclusive => VerifyResult {
             finding_id: "abc123".into(),
@@ -111,6 +117,8 @@ fn diag_with_verdict(status: VerifyStatus) -> Diag {
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         },
     };
 

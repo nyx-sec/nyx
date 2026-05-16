@@ -286,6 +286,8 @@ fn entry_kind_unsupported_verdict(
         attempts: vec![],
         toolchain_match: None,
         differential: None,
+        replay_stable: None,
+        wrong: None,
     }
 }
 
@@ -328,6 +330,8 @@ fn spec_derivation_failed_verdict(
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         };
     }
 
@@ -344,6 +348,8 @@ fn spec_derivation_failed_verdict(
         attempts: vec![],
         toolchain_match: None,
         differential: None,
+        replay_stable: None,
+        wrong: None,
     }
 }
 
@@ -449,6 +455,8 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         };
     }
 
@@ -531,6 +539,8 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         };
     }
 
@@ -559,6 +569,8 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
                     attempts: vec![],
                     toolchain_match: None,
                     differential: None,
+                    replay_stable: None,
+                    wrong: None,
                 };
             }
         }
@@ -734,6 +746,8 @@ fn build_verdict(
                         attempts: attempts.clone(),
                         toolchain_match: Some(toolchain_match.to_owned()),
                         differential: run.differential.clone(),
+                        replay_stable: None,
+                        wrong: None,
                     },
                     &run.harness_source,
                     &run.entry_source,
@@ -754,6 +768,8 @@ fn build_verdict(
                         attempts,
                         toolchain_match: Some(toolchain_match.to_owned()),
                         differential: run.differential,
+                        replay_stable: None,
+                        wrong: None,
                     };
                 }
 
@@ -767,6 +783,8 @@ fn build_verdict(
                     attempts,
                     toolchain_match: Some(toolchain_match.to_owned()),
                     differential: run.differential,
+                    replay_stable: None,
+                    wrong: None,
                 }
             } else if run.unrelated_crash {
                 // Phase 08 §C.4: the harness crashed but the death
@@ -786,6 +804,8 @@ fn build_verdict(
                     attempts,
                     toolchain_match: Some(toolchain_match.to_owned()),
                     differential: None,
+                    replay_stable: None,
+                    wrong: None,
                 }
             } else if run.no_benign_control {
                 // Phase 07 §4.1: vuln oracle + sink-hit fired but the
@@ -804,6 +824,8 @@ fn build_verdict(
                     attempts,
                     toolchain_match: Some(toolchain_match.to_owned()),
                     differential: None,
+                    replay_stable: None,
+                    wrong: None,
                 }
             } else if let Some(d) = run.differential.as_ref() {
                 // Differential ran but didn't produce `Confirmed`.  Map
@@ -825,6 +847,8 @@ fn build_verdict(
                             attempts,
                             toolchain_match: Some(toolchain_match.to_owned()),
                             differential: run.differential,
+                            replay_stable: None,
+                            wrong: None,
                         }
                     }
                     crate::evidence::DifferentialVerdict::ReversedDifferential => {
@@ -842,6 +866,8 @@ fn build_verdict(
                             attempts,
                             toolchain_match: Some(toolchain_match.to_owned()),
                             differential: run.differential,
+                            replay_stable: None,
+                            wrong: None,
                         }
                     }
                     crate::evidence::DifferentialVerdict::Confirmed
@@ -855,6 +881,8 @@ fn build_verdict(
                         attempts,
                         toolchain_match: Some(toolchain_match.to_owned()),
                         differential: run.differential,
+                        replay_stable: None,
+                        wrong: None,
                     },
                 }
             } else if run.oracle_collision {
@@ -871,6 +899,8 @@ fn build_verdict(
                     attempts,
                     toolchain_match: Some(toolchain_match.to_owned()),
                     differential: None,
+                    replay_stable: None,
+                    wrong: None,
                 }
             } else {
                 VerifyResult {
@@ -883,6 +913,8 @@ fn build_verdict(
                     attempts,
                     toolchain_match: Some(toolchain_match.to_owned()),
                     differential: None,
+                    replay_stable: None,
+                    wrong: None,
                 }
             }
         }
@@ -896,6 +928,8 @@ fn build_verdict(
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         },
         Err(RunError::Harness(e)) => {
             // Defence-in-depth residual for `EntryKindUnsupported` from the
@@ -939,6 +973,8 @@ fn build_verdict(
                 attempts: vec![],
                 toolchain_match: None,
                 differential: None,
+                replay_stable: None,
+                wrong: None,
             }
         }
         Err(RunError::BuildFailed { stderr, attempts: build_att }) => VerifyResult {
@@ -951,6 +987,8 @@ fn build_verdict(
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         },
         Err(RunError::Sandbox(e)) => VerifyResult {
             finding_id: finding_id.to_owned(),
@@ -962,6 +1000,8 @@ fn build_verdict(
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         },
     }
 }
@@ -1041,6 +1081,8 @@ mod tests {
             attempts: vec![],
             toolchain_match: Some("exact".to_owned()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         };
 
         // Insert.
@@ -1090,6 +1132,8 @@ mod tests {
             attempts: vec![],
             toolchain_match: Some("exact".to_owned()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         };
 
         insert_verdict_cache(&db_path, "spec_aaa", "hash_xyz", "", "python-3.11", &result);
@@ -1125,6 +1169,8 @@ mod tests {
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         };
         insert_verdict_cache(db_path, "spec", "hash", "", "python-3", &result);
         assert!(!db_path.exists(), "insert must not create a new DB");
@@ -1179,6 +1225,8 @@ mod tests {
             attempts: vec![],
             toolchain_match: Some("exact".to_owned()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         };
 
         // Insert directly with the old corpus_version bypassing the helper.

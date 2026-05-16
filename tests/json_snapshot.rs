@@ -58,6 +58,8 @@ fn json_dynamic_verdict_confirmed_serialises_correctly() {
             }],
             toolchain_match: Some("exact".into()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         }),
         ..Default::default()
     });
@@ -96,6 +98,8 @@ fn json_dynamic_verdict_not_confirmed_serialises_correctly() {
             attempts: vec![],
             toolchain_match: Some("exact".into()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         }),
         ..Default::default()
     });
@@ -159,6 +163,8 @@ fn json_unsupported_verdict_has_reason() {
             attempts: vec![],
             toolchain_match: None,
             differential: None,
+            replay_stable: None,
+            wrong: None,
         }),
         ..Default::default()
     });

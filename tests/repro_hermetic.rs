@@ -87,6 +87,8 @@ mod repro_hermetic_tests {
             }],
             toolchain_match: Some("exact".into()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         }
     }
 

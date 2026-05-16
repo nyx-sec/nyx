@@ -21,17 +21,7 @@ use tree_sitter::{Node, Tree};
 
 /// Auth markers recognised in the decorator stack.  FastAPI's primary
 /// auth idiom is `Depends(...)` parameter injection, handled separately.
-pub const AUTH_DECORATORS: &[&str] = &[
-    "login_required",
-    "auth_required",
-    "jwt_required",
-    "token_required",
-    "requires_auth",
-    "authenticated",
-    "require_auth",
-    "require_login",
-    "current_user",
-];
+pub use crate::auth_analysis::auth_markers::FASTAPI_DECORATORS as AUTH_DECORATORS;
 
 /// Auth-callee names recognised inside a `Depends(...)` parameter.
 const AUTH_DEPENDS_CALLEES: &[&str] = &[

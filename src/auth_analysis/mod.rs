@@ -56,6 +56,7 @@
 //! - [`sql_semantics`]: ACL-join and `user_id`-predicate detection without a
 //!   SQL parser
 
+pub mod auth_markers;
 pub mod checks;
 pub mod config;
 pub mod extract;

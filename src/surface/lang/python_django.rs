@@ -26,15 +26,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
-pub const AUTH_DECORATORS: &[&str] = &[
-    "login_required",
-    "permission_required",
-    "user_passes_test",
-    "staff_member_required",
-    "csrf_protect",
-    "require_authenticated",
-    "auth_required",
-];
+pub use crate::auth_analysis::auth_markers::DJANGO_DECORATORS as AUTH_DECORATORS;
 
 const CBV_BASES: &[&str] = &[
     "View",

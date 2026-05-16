@@ -18,12 +18,7 @@ use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
-pub const AUTH_ANNOTATIONS: &[&str] = &[
-    "RolesAllowed",
-    "DenyAll",
-    "RequiresAuthentication",
-    "RequiresUser",
-];
+pub use crate::auth_analysis::auth_markers::SERVLET_ANNOTATIONS as AUTH_ANNOTATIONS;
 
 const SERVLET_VERBS: &[(&str, HttpMethod)] = &[
     ("doGet", HttpMethod::GET),

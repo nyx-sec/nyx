@@ -516,6 +516,26 @@ pub enum ReplayResult {
     },
 }
 
+/// Tri-state map of [`ReplayResult`] onto the eval-corpus
+/// `VerifyResult::replay_stable` field shape.
+///
+/// * `Some(true)` — replay matched the recorded outcome.
+/// * `Some(false)` — replay diverged or aborted in a way that the M7
+///   Gate-5 inversion treats as instability.
+/// * `None` — replay was not informative (toolchain mismatched, docker
+///   unavailable, or the bundle had no `reproduce.sh`).  The corpus
+///   tabulator treats `None` as "no signal" and excludes the row from
+///   the per-cell `stable_replays` numerator.
+pub fn replay_stability(result: &ReplayResult) -> Option<bool> {
+    match result {
+        ReplayResult::Pass => Some(true),
+        ReplayResult::Mismatch | ReplayResult::UnexpectedError { .. } => Some(false),
+        ReplayResult::DockerUnavailable
+        | ReplayResult::ToolchainMismatch
+        | ReplayResult::ScriptInvocationFailed { .. } => None,
+    }
+}
+
 /// Phase 28 — Track H.3.  Run `reproduce.sh` in `bundle_root` and map the
 /// shell exit code into a [`ReplayResult`].
 ///
@@ -648,6 +668,8 @@ mod tests {
             }],
             toolchain_match: Some("exact".into()),
             differential: None,
+            replay_stable: None,
+            wrong: None,
         }
     }
 
@@ -778,6 +800,28 @@ mod tests {
             }
             assert_eq!(replay_bundle(&bundle, &[]), *expected);
         }
+    }
+
+    #[test]
+    fn replay_stability_maps_to_eval_corpus_tristate() {
+        // The eval-corpus tabulator wants Pass → stable, anything that
+        // looks like instability → unstable, and infra-blocked variants
+        // → no signal (None) so the per-cell stable_replays denominator
+        // is not inflated by a row that never had a chance to replay.
+        assert_eq!(replay_stability(&ReplayResult::Pass), Some(true));
+        assert_eq!(replay_stability(&ReplayResult::Mismatch), Some(false));
+        assert_eq!(
+            replay_stability(&ReplayResult::UnexpectedError { exit_code: 9 }),
+            Some(false)
+        );
+        assert_eq!(replay_stability(&ReplayResult::DockerUnavailable), None);
+        assert_eq!(replay_stability(&ReplayResult::ToolchainMismatch), None);
+        assert_eq!(
+            replay_stability(&ReplayResult::ScriptInvocationFailed {
+                message: "missing".into()
+            }),
+            None,
+        );
     }
 
     #[test]

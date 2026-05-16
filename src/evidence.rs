@@ -566,6 +566,24 @@ pub struct VerifyResult {
     /// `BuildFailed`, `NoBenignControl`, `NotConfirmed` with vuln-only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub differential: Option<DifferentialOutcome>,
+    /// Eval-corpus repro stability flag.  `Some(true)` when `reproduce.sh`
+    /// inside the verifier's bundle replayed green (`ReplayResult::Pass`),
+    /// `Some(false)` when it diverged or aborted, `None` when no replay
+    /// has been attempted (host infrastructure missing, backend not
+    /// supported, etc.).  Drives the `stable_replays` column in
+    /// `tests/eval_corpus/tabulate.py` — the eval-corpus
+    /// `repro_stability` budget cannot fire until this field carries a
+    /// `Some(true)` for at least one Confirmed row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_stable: Option<bool>,
+    /// Eval-corpus manual-triage flag.  `Some(true)` when the user
+    /// recorded a `wrong:<reason>` verdict via `nyx verify-feedback` or
+    /// when an automated ground-truth pass marked this finding as a
+    /// false confirmed.  `Some(false)` when explicitly marked right;
+    /// `None` when no triage has happened.  Drives the
+    /// `wrong_confirmed` column in `tests/eval_corpus/tabulate.py`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrong: Option<bool>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

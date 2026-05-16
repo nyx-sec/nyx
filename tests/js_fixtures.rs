@@ -60,6 +60,8 @@ mod js_fixture_tests {
                 attempts: vec![],
                 toolchain_match: None,
                 differential: None,
+                replay_stable: None,
+                wrong: None,
             };
         }
 
