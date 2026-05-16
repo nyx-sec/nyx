@@ -337,6 +337,12 @@ pub enum InconclusiveReason {
     /// `production-endpoint`) and an evidence excerpt for triage.
     PolicyDeniedDynamic {
         rule: String,
+        /// Logical name of the diag field that matched the deny rule
+        /// (e.g. `path`, `evidence.notes[2]`, `flow_steps[1].snippet`).
+        /// Empty string for verdicts loaded from older telemetry that
+        /// did not capture this field.
+        #[serde(default)]
+        field: String,
         excerpt: String,
     },
 }
@@ -399,10 +405,23 @@ impl fmt::Display for InconclusiveReason {
                 f,
                 "{backend} backend cannot enforce isolation for {oracle_kind} oracle"
             ),
-            Self::PolicyDeniedDynamic { rule, excerpt } => write!(
-                f,
-                "dynamic execution refused by policy rule {rule} (matched: {excerpt})"
-            ),
+            Self::PolicyDeniedDynamic {
+                rule,
+                field,
+                excerpt,
+            } => {
+                if field.is_empty() {
+                    write!(
+                        f,
+                        "dynamic execution refused by policy rule {rule} (matched: {excerpt})"
+                    )
+                } else {
+                    write!(
+                        f,
+                        "dynamic execution refused by policy rule {rule} (matched {field}: {excerpt})"
+                    )
+                }
+            }
         }
     }
 }

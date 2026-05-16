@@ -82,8 +82,16 @@ fn credentials_rule_fires_on_aws_key_in_flow_step_snippet() {
     )];
     diag.evidence = Some(ev);
     match policy::evaluate(&diag) {
-        PolicyDecision::Deny { rule, excerpt } => {
+        PolicyDecision::Deny {
+            rule,
+            field,
+            excerpt,
+        } => {
             assert_eq!(rule, DenyRule::CREDENTIALS);
+            assert!(
+                field.starts_with("flow_steps[") && field.ends_with(".snippet"),
+                "deny must record the source field, got {field:?}"
+            );
             assert!(
                 !excerpt.contains("AKIAFAKETEST00000000"),
                 "excerpt must scrub the raw token, got {excerpt:?}"
@@ -209,8 +217,16 @@ fn verify_finding_short_circuits_without_sandbox() {
         .inconclusive_reason
         .expect("PolicyDeniedDynamic must populate inconclusive_reason");
     match reason {
-        InconclusiveReason::PolicyDeniedDynamic { rule, excerpt } => {
+        InconclusiveReason::PolicyDeniedDynamic {
+            rule,
+            field,
+            excerpt,
+        } => {
             assert_eq!(rule, DenyRule::CREDENTIALS);
+            assert!(
+                field.starts_with("evidence.notes["),
+                "deny must record the source field, got {field:?}"
+            );
             assert!(
                 !excerpt.contains("hunter2-supersecret-test"),
                 "excerpt must scrub the raw secret, got {excerpt:?}"

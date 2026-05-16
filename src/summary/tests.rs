@@ -1791,6 +1791,7 @@ fn callee_site_structured_roundtrip() {
                 receiver: Some("obj".into()),
                 qualifier: None,
                 ordinal: 1,
+                ..Default::default()
             },
             CalleeSite {
                 name: "env::var".into(),
@@ -1798,6 +1799,7 @@ fn callee_site_structured_roundtrip() {
                 receiver: None,
                 qualifier: Some("env".into()),
                 ordinal: 2,
+                ..Default::default()
             },
         ],
         ..Default::default()

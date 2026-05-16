@@ -277,6 +277,12 @@ pub enum PolicyDecision {
         /// Stable rule identifier — one of [`DenyRule::CREDENTIALS`],
         /// [`DenyRule::PRIVATE_KEY`], [`DenyRule::PRODUCTION_ENDPOINT`].
         rule: &'static str,
+        /// Logical name of the diag field that produced the matched text
+        /// (e.g. `path`, `message`, `evidence.notes[2]`,
+        /// `flow_steps[1].snippet`).  Lets operators triage *where* the
+        /// rule fired without having to re-derive the match from the
+        /// scrubbed excerpt alone.
+        field: String,
         /// Short text excerpt (max 120 chars, scrubbed via
         /// [`Scrubber::scrub_string`]) of the offending field so an
         /// operator can identify *why* the deny fired without having to
@@ -377,10 +383,11 @@ const PROD_ENDPOINT_REGEXES: &[&str] = &[
 /// the leak shape.
 pub fn evaluate(diag: &crate::commands::scan::Diag) -> PolicyDecision {
     let texts = collect_diag_texts(diag);
-    for text in &texts {
+    for (field, text) in &texts {
         if let Some(hit) = match_text(text) {
             return PolicyDecision::Deny {
                 rule: hit.0,
+                field: field.clone(),
                 excerpt: excerpt_with_scrubber(hit.1),
             };
         }
@@ -388,46 +395,56 @@ pub fn evaluate(diag: &crate::commands::scan::Diag) -> PolicyDecision {
     PolicyDecision::Allow
 }
 
-fn collect_diag_texts(diag: &crate::commands::scan::Diag) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// Collect every text fragment from `diag` paired with a stable name for
+/// the source field.  The returned field names are intentionally
+/// human-readable (e.g. `evidence.notes[2]`, `flow_steps[1].snippet`)
+/// rather than enum variants so they read identically in audit logs and
+/// in `Display` output.
+fn collect_diag_texts(diag: &crate::commands::scan::Diag) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
     if !diag.id.is_empty() {
-        out.push(diag.id.clone());
+        out.push(("id".into(), diag.id.clone()));
     }
     if !diag.path.is_empty() {
-        out.push(diag.path.clone());
+        out.push(("path".into(), diag.path.clone()));
     }
     if let Some(msg) = diag.message.as_ref() {
-        out.push(msg.clone());
+        out.push(("message".into(), msg.clone()));
     }
     if let Some(ev) = diag.evidence.as_ref() {
-        for note in &ev.notes {
-            out.push(note.clone());
+        for (i, note) in ev.notes.iter().enumerate() {
+            out.push((format!("evidence.notes[{i}]"), note.clone()));
         }
         if let Some(exp) = ev.explanation.as_ref() {
-            out.push(exp.clone());
+            out.push(("evidence.explanation".into(), exp.clone()));
         }
-        for s in [&ev.source, &ev.sink] {
+        for (label, s) in [("source", &ev.source), ("sink", &ev.sink)] {
             if let Some(span) = s.as_ref() {
-                out.push(span.path.clone());
+                out.push((format!("evidence.{label}.path"), span.path.clone()));
                 if let Some(sn) = span.snippet.as_ref() {
-                    out.push(sn.clone());
+                    out.push((format!("evidence.{label}.snippet"), sn.clone()));
                 }
             }
         }
-        for span in ev.guards.iter().chain(ev.sanitizers.iter()) {
+        for (i, span) in ev.guards.iter().enumerate() {
             if let Some(sn) = span.snippet.as_ref() {
-                out.push(sn.clone());
+                out.push((format!("evidence.guards[{i}].snippet"), sn.clone()));
             }
         }
-        for step in &ev.flow_steps {
+        for (i, span) in ev.sanitizers.iter().enumerate() {
+            if let Some(sn) = span.snippet.as_ref() {
+                out.push((format!("evidence.sanitizers[{i}].snippet"), sn.clone()));
+            }
+        }
+        for (i, step) in ev.flow_steps.iter().enumerate() {
             if !step.file.is_empty() {
-                out.push(step.file.clone());
+                out.push((format!("flow_steps[{i}].file"), step.file.clone()));
             }
             if let Some(sn) = step.snippet.as_ref() {
-                out.push(sn.clone());
+                out.push((format!("flow_steps[{i}].snippet"), sn.clone()));
             }
             if let Some(callee) = step.callee.as_ref() {
-                out.push(callee.clone());
+                out.push((format!("flow_steps[{i}].callee"), callee.clone()));
             }
         }
     }

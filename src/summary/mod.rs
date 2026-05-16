@@ -191,6 +191,11 @@ const SYNTHETIC_DISAMBIG_BIT: u32 = 0x8000_0000;
 /// * `ordinal`, the per-function call ordinal matching
 ///   `CallMeta.call_ordinal`, allowing cross-file consumers to address a
 ///   specific call site rather than just a callee name.
+/// * `span`, optional 1-based `(line, col)` source coordinate of the call
+///   expression, populated at CFG-build time when source bytes are
+///   available.  `None` for legacy summaries loaded from SQLite that
+///   pre-date the span field, and for synthetic test fixtures that build
+///   `CalleeSite` values directly.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct CalleeSite {
     pub name: String,
@@ -202,6 +207,8 @@ pub struct CalleeSite {
     pub qualifier: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub ordinal: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<(u32, u32)>,
 }
 
 fn is_zero_u32(n: &u32) -> bool {

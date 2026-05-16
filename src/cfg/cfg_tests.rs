@@ -3958,3 +3958,42 @@ fn rhs_array_literal_elements_recognise_per_language_shapes() {
     // Non-array-shape node returns empty (defensive guard).
     assert!(run("javascript", b"const x = tainted;\n", &["identifier"]).is_empty());
 }
+
+/// `CalleeSite.span` should carry the 1-based (line, col) of each call's
+/// node span so downstream consumers (surface map, datastore/external
+/// detectors) can render real coordinates instead of `line: 0`.
+#[test]
+fn callee_site_span_carries_line_and_column() {
+    // Three calls on three different lines.  The leading newline puts
+    // line 1 at the blank line; `helper(x, y);` is on line 3, etc.
+    let src = b"
+function outer(obj, x, y) {
+    helper(x, y);
+    obj.method(x);
+}
+";
+    let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
+    let (_key, outer) = file_cfg
+        .summaries
+        .iter()
+        .find(|(k, _)| k.name == "outer")
+        .expect("outer summary should exist");
+
+    let helper_site = outer
+        .callees
+        .iter()
+        .find(|c| c.name == "helper")
+        .expect("helper call should be recorded");
+    let (line, col) = helper_site.span.expect("span populated at CFG-build time");
+    assert_eq!(line, 3, "helper(...) sits on the 3rd source line");
+    assert!(col >= 5, "indented 4 spaces — column is 1-based and > 4");
+
+    let method_site = outer
+        .callees
+        .iter()
+        .find(|c| c.name.ends_with("method"))
+        .expect("method call should be recorded");
+    let (mline, _) = method_site.span.expect("method span populated");
+    assert_eq!(mline, 4, "obj.method(x) on line 4");
+}

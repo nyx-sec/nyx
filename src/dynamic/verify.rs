@@ -410,18 +410,22 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     // The verifier returns `Inconclusive(PolicyDeniedDynamic)` so the
     // operator sees *why* dynamic execution was skipped without losing
     // the static finding from the report.
-    if let crate::dynamic::policy::PolicyDecision::Deny { rule, excerpt } =
-        crate::dynamic::policy::evaluate(diag)
+    if let crate::dynamic::policy::PolicyDecision::Deny {
+        rule,
+        field,
+        excerpt,
+    } = crate::dynamic::policy::evaluate(diag)
     {
         trace.record(
             crate::dynamic::trace::TraceStage::Verdict,
-            Some(format!("policy_denied rule={rule}")),
+            Some(format!("policy_denied rule={rule} field={field}")),
         );
         if opts.trace_verbose {
             trace.print_to_stderr();
         }
         let inconclusive_reason = InconclusiveReason::PolicyDeniedDynamic {
             rule: rule.to_owned(),
+            field: field.clone(),
             excerpt: excerpt.clone(),
         };
         // Emit telemetry so the Phase 27 events log records the deny —

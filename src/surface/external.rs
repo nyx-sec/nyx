@@ -9,7 +9,7 @@
 
 use super::{ExternalService, ExternalServiceKind, SourceLocation, SurfaceNode};
 use crate::labels::Cap;
-use crate::summary::{FuncSummary, GlobalSummaries};
+use crate::summary::{CalleeSite, FuncSummary, GlobalSummaries};
 
 struct ClientRule {
     leaf: &'static str,
@@ -87,7 +87,7 @@ pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode>
             let Some(rule) = match_rule(&callee.name) else {
                 continue;
             };
-            let location = call_site_location(summary);
+            let location = call_site_location(summary, Some(callee));
             if !seen.insert((location.file.clone(), rule.label.to_string())) {
                 continue;
             }
@@ -104,7 +104,7 @@ pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode>
     // file as the location and synthesise a generic label.
     for (_key, summary) in summaries.iter() {
         if summary.sink_caps().contains(Cap::SSRF) {
-            let loc = call_site_location(summary);
+            let loc = call_site_location(summary, None);
             let dedup = (loc.file.clone(), "Outbound HTTP".to_string());
             if seen.insert(dedup) {
                 out.push(SurfaceNode::ExternalService(ExternalService {
@@ -134,11 +134,16 @@ fn match_rule(callee: &str) -> Option<&'static ClientRule> {
     })
 }
 
-fn call_site_location(summary: &FuncSummary) -> SourceLocation {
+/// Source location of an external-service call site.  Reads the 1-based
+/// `(line, col)` recorded on the [`CalleeSite`] at CFG-build time when
+/// available; otherwise (sink-cap–only fallback path, or legacy summaries
+/// loaded from SQLite) returns the function's host file with line 0.
+fn call_site_location(summary: &FuncSummary, callee: Option<&CalleeSite>) -> SourceLocation {
+    let (line, col) = callee.and_then(|c| c.span).unwrap_or((0, 0));
     SourceLocation {
         file: summary.file_path.clone(),
-        line: 0,
-        col: 0,
+        line,
+        col,
     }
 }
 

@@ -13,7 +13,7 @@
 //! that fires on its own.
 
 use super::{DataStore, DataStoreKind, SourceLocation, SurfaceNode};
-use crate::summary::{FuncSummary, GlobalSummaries};
+use crate::summary::{CalleeSite, FuncSummary, GlobalSummaries};
 
 /// One detection rule: leaf-name pattern → store kind + label.  Stored
 /// as a flat list so adding a new ORM / driver is a one-line edit.
@@ -108,7 +108,7 @@ pub fn detect_data_stores(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
             let Some(rule) = match_rule(&callee.name) else {
                 continue;
             };
-            let location = call_site_location(summary, callee.ordinal);
+            let location = call_site_location(summary, callee);
             let dedup = (
                 location.file.clone(),
                 location.line,
@@ -148,22 +148,23 @@ fn match_rule(callee: &str) -> Option<&'static DriverRule> {
     })
 }
 
-/// Best-effort source location for a call site.  We only have file +
-/// (sometimes) sink-attribution metadata on `FuncSummary`, so the
-/// location falls back to the function's file with line 0 when no
-/// finer-grained data is available.
-fn call_site_location(summary: &FuncSummary, _ordinal: u32) -> SourceLocation {
+/// Source location of a call site.  Reads the 1-based `(line, col)`
+/// recorded on the [`CalleeSite`] at CFG-build time (populated for every
+/// summary produced after the span field landed); for legacy summaries
+/// loaded from SQLite with no span, falls back to the function's host
+/// file with line 0.
+fn call_site_location(summary: &FuncSummary, callee: &CalleeSite) -> SourceLocation {
+    let (line, col) = callee.span.unwrap_or((0, 0));
     SourceLocation {
         file: summary.file_path.clone(),
-        line: 0,
-        col: 0,
+        line,
+        col,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::summary::CalleeSite;
     use crate::symbol::{FuncKey, Lang};
 
     fn summary_with_callees(name: &str, file: &str, callees: &[&str]) -> (FuncKey, FuncSummary) {
@@ -180,6 +181,33 @@ mod tests {
             ..Default::default()
         };
         (key, summary)
+    }
+
+    #[test]
+    fn datastore_carries_callee_span_when_present() {
+        // When the CFG populates `CalleeSite.span`, the detected datastore
+        // node's `SourceLocation` must reflect that 1-based `(line, col)`
+        // — not the legacy `(0, 0)` fallback.
+        let mut gs = GlobalSummaries::new();
+        let key = FuncKey::new_function(Lang::Python, "app.py", "init", None);
+        let mut callee = CalleeSite::bare("psycopg2.connect");
+        callee.span = Some((42, 13));
+        let summary = FuncSummary {
+            name: "init".into(),
+            file_path: "app.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            callees: vec![callee],
+            ..Default::default()
+        };
+        gs.insert(key, summary);
+        let nodes = detect_data_stores(&gs);
+        assert_eq!(nodes.len(), 1);
+        let SurfaceNode::DataStore(ds) = &nodes[0] else {
+            panic!()
+        };
+        assert_eq!(ds.location.line, 42);
+        assert_eq!(ds.location.col, 13);
     }
 
     #[test]

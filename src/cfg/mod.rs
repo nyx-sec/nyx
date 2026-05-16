@@ -5664,7 +5664,7 @@ pub(super) fn build_sub<'a>(
             for idx in fn_graph.node_indices() {
                 let info = &fn_graph[idx];
                 if let Some(callee) = &info.call.callee {
-                    let site = build_callee_site(callee, info, lang);
+                    let site = build_callee_site(callee, info, lang, code);
                     // Dedup by (name, arity, receiver, qualifier, ordinal).  A
                     // single function may legitimately contain multiple distinct
                     // calls to the same callee (e.g. different ordinals or
@@ -6632,7 +6632,12 @@ fn apply_gated_label_rules(
 ///   remains the single segment immediately before the leaf (back-compat
 ///   with the legacy heuristic).  For method calls the qualifier is
 ///   redundant with `receiver` and is left `None`.
-fn build_callee_site(callee: &str, info: &NodeInfo, lang: &str) -> crate::summary::CalleeSite {
+fn build_callee_site(
+    callee: &str,
+    info: &NodeInfo,
+    lang: &str,
+    code: &[u8],
+) -> crate::summary::CalleeSite {
     use crate::summary::CalleeSite;
 
     let receiver = info.call.receiver.clone();
@@ -6661,13 +6666,37 @@ fn build_callee_site(callee: &str, info: &NodeInfo, lang: &str) -> crate::summar
         None
     };
 
+    let span = callee_span_line_col(code, info.ast.span.0);
+
     CalleeSite {
         name: callee.to_string(),
         arity,
         receiver,
         qualifier,
         ordinal: info.call.call_ordinal,
+        span,
     }
+}
+
+/// Convert a byte offset into a 1-based `(line, col)` pair against `code`.
+///
+/// Returns `None` only when `code` is empty (no source to resolve against);
+/// out-of-range offsets are clamped to `code.len()` so a synthetic node
+/// whose span overshoots the file still produces the last-line coordinate
+/// rather than `None`.
+fn callee_span_line_col(code: &[u8], offset: usize) -> Option<(u32, u32)> {
+    if code.is_empty() {
+        return None;
+    }
+    let clamped = offset.min(code.len());
+    let prefix = &code[..clamped];
+    let line = prefix.iter().filter(|&&b| b == b'\n').count() as u32 + 1;
+    let col_bytes = match prefix.iter().rposition(|&b| b == b'\n') {
+        Some(idx) => clamped - idx - 1,
+        None => clamped,
+    } as u32
+        + 1;
+    Some((line, col_bytes))
 }
 
 /// Convert the graph‑local `FuncSummaries` into serialisable [`FuncSummary`]

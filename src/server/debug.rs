@@ -809,6 +809,8 @@ pub struct CalleeSiteView {
     pub qualifier: Option<String>,
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub ordinal: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<(u32, u32)>,
 }
 
 fn is_zero_u32(n: &u32) -> bool {
@@ -884,6 +886,7 @@ impl FuncSummaryView {
                     receiver: c.receiver.clone(),
                     qualifier: c.qualifier.clone(),
                     ordinal: c.ordinal,
+                    span: c.span,
                 })
                 .collect(),
             ssa_summary: ssa_view,
