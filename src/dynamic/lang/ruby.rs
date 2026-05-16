@@ -279,6 +279,32 @@ def __nyx_install_crash_guard(sink_callee)
     end
   end
 end
+
+# Phase 10 (Track D.3) HTTP recording helper.  When the verifier spawned an
+# HttpStub it publishes the side-channel log path through NYX_HTTP_LOG; a
+# sink call site whose outbound request never reaches the on-the-wire
+# listener (DNS-mocked, network-isolated sandbox, pre-flight check) can
+# call this helper to surface the attempted call.  Format matches the
+# Python / Node / PHP / Go siblings so the host-side HttpStub log-line
+# merger parses all five streams identically.  No-op when NYX_HTTP_LOG is
+# unset so the same harness still runs cleanly under modes that did not
+# spawn a stub.  Single-quoted Ruby string literals keep this helper free
+# of the literal hash-after-double-quote sequence that would terminate
+# the surrounding Rust raw string.
+def __nyx_stub_http_record(method, url, body = nil, **detail)
+  p = ENV['NYX_HTTP_LOG']
+  return if p.nil? || p.empty?
+  begin
+    File.open(p, 'a') do |f|
+      f.puts('# method: ' + method.to_s)
+      f.puts('# url: ' + url.to_s)
+      f.puts('# body: ' + body.to_s) unless body.nil?
+      detail.each { |k, v| f.puts('# ' + k.to_s + ': ' + v.to_s) }
+      f.puts(method.to_s + ' ' + url.to_s)
+    end
+  rescue StandardError
+  end
+end
 "#
 }
 
@@ -775,6 +801,27 @@ mod tests {
         assert!(
             payload_pos < install_pos && install_pos < invoke_pos,
             "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
+        );
+    }
+
+    #[test]
+    fn probe_shim_publishes_stub_http_recorder() {
+        let shim = probe_shim();
+        assert!(
+            shim.contains("def __nyx_stub_http_record"),
+            "Ruby probe shim must define __nyx_stub_http_record"
+        );
+        assert!(
+            shim.contains("ENV['NYX_HTTP_LOG']"),
+            "Ruby HTTP recorder must read NYX_HTTP_LOG to find the side-channel log"
+        );
+        assert!(
+            shim.contains("# method: "),
+            "Ruby HTTP recorder must emit a hash-prefixed method detail line"
+        );
+        assert!(
+            shim.contains("# url: "),
+            "Ruby HTTP recorder must emit a hash-prefixed url detail line"
         );
     }
 

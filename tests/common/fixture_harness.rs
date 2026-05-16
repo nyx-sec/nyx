@@ -68,6 +68,12 @@ pub enum Prerequisite {
     /// A static C library archive (e.g. `libc.a`) must be linkable.
     /// Used by the Phase-17/20 hardening probe fixtures.
     StaticLib(&'static str),
+    /// A Node.js module must be importable via `require.resolve`.  Used
+    /// by the JavaScript / TypeScript framework-bound shape suites
+    /// (express / koa / next / jsdom) so a host without the package on
+    /// the resolution path skips with a structured reason instead of
+    /// failing the test.
+    NodeModuleAvailable(&'static str),
 }
 
 /// Phase 29 (Track I): why the harness skipped a fixture.  Carried by
@@ -80,6 +86,7 @@ pub enum SkipReason {
     MissingEnvVar(&'static str),
     DockerUnavailable,
     MissingStaticLib(&'static str),
+    MissingNodeModule(&'static str),
 }
 
 impl std::fmt::Display for SkipReason {
@@ -89,6 +96,9 @@ impl std::fmt::Display for SkipReason {
             SkipReason::MissingEnvVar(v) => write!(f, "env var not set: {v}"),
             SkipReason::DockerUnavailable => write!(f, "docker daemon unavailable"),
             SkipReason::MissingStaticLib(l) => write!(f, "static lib not linkable: {l}"),
+            SkipReason::MissingNodeModule(m) => {
+                write!(f, "Node module not resolvable via require.resolve: {m}")
+            }
         }
     }
 }
@@ -123,6 +133,18 @@ pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
                     .unwrap_or(false);
                 if !ok {
                     return Err(SkipReason::DockerUnavailable);
+                }
+            }
+            Prerequisite::NodeModuleAvailable(name) => {
+                let probe = format!("require.resolve('{name}')");
+                let ok = std::process::Command::new("node")
+                    .arg("-e")
+                    .arg(&probe)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if !ok {
+                    return Err(SkipReason::MissingNodeModule(name));
                 }
             }
             Prerequisite::StaticLib(lib) => {
