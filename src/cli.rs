@@ -272,6 +272,17 @@ pub enum Commands {
         #[arg(long, help_heading = "Output")]
         quiet: bool,
 
+        /// Print the dynamic-verifier trace to stderr at end-of-verify.
+        ///
+        /// When dynamic verification is enabled, the verifier records a
+        /// per-finding [`crate::dynamic::trace::VerifyTrace`].  Setting this
+        /// flag flushes every recorded `TraceEvent` to stderr after each
+        /// verdict, matching the stream that already lands in the repro
+        /// bundle at `expected/trace.jsonl`.  Off by default so non-interactive
+        /// scans stay quiet.
+        #[arg(long, help_heading = "Output")]
+        verbose: bool,
+
         /// Exit with code 1 if any finding meets or exceeds this severity
         ///
         /// Useful for CI gating. Example: --fail-on HIGH

@@ -404,6 +404,7 @@ pub fn handle(
     baseline: Option<&Path>,
     baseline_write: Option<&Path>,
     gate: Option<&str>,
+    #[cfg_attr(not(feature = "dynamic"), allow(unused_variables))] verbose: bool,
 ) -> NyxResult<()> {
     let scan_path = Path::new(path).canonicalize()?;
     let (project_name, db_path) = get_project_info(&scan_path, database_dir)?;
@@ -548,6 +549,10 @@ pub fn handle(
     #[cfg(feature = "dynamic")]
     if config.scanner.verify {
         let mut opts = crate::dynamic::verify::VerifyOptions::from_config(config);
+        // Phase 30 (Track C observability): surface the per-finding
+        // [`crate::dynamic::trace::VerifyTrace`] on stderr when the
+        // operator passes `--verbose`.
+        opts.trace_verbose = verbose;
         // Enable the verdict cache (§12 Q5) when an index DB is in use.
         // When index_mode is Off, the DB is never created, so no cache.
         if index_mode != IndexMode::Off && db_path.exists() {

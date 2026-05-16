@@ -58,6 +58,7 @@ pub fn handle_command(
             all_targets,
             keep_nonprod_severity,
             quiet,
+            verbose,
             fail_on,
             no_state,
             no_rank,
@@ -378,6 +379,7 @@ pub fn handle_command(
                 baseline.as_deref().map(std::path::Path::new),
                 baseline_write.as_deref().map(std::path::Path::new),
                 gate.as_deref(),
+                verbose,
             )?;
         }
         #[cfg(feature = "dynamic")]
