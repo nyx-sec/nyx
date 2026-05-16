@@ -57,9 +57,60 @@ pub const NYX_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Corpus-version label written into every record.  Kept as a `&'static str`
 /// so it can sit on a `Serialize`-derived struct alongside the other envelope
 /// fields without an allocation.  Mirrors
-/// [`crate::dynamic::corpus::CORPUS_VERSION`]; the
-/// [`corpus_version_const_matches_corpus_module`] test guards drift.
+/// [`crate::dynamic::corpus::CORPUS_VERSION`]; the compile-time assertion
+/// below + the [`corpus_version_const_matches_corpus_module`] runtime test
+/// jointly guard drift.
 pub const CORPUS_VERSION: &str = "4";
+
+/// Compile-time guard that pins [`CORPUS_VERSION`] (this module) to the
+/// textual form of [`crate::dynamic::corpus::CORPUS_VERSION`].  Bumping the
+/// `u32` constant without updating the `&str` here (or vice versa) fails
+/// the build, so the manual-bookkeeping risk the Phase 27 follow-up flagged
+/// is caught at `cargo build` rather than at test time.
+const _: () = assert_corpus_version_str_matches_u32();
+
+const fn assert_corpus_version_str_matches_u32() {
+    let int_val = crate::dynamic::corpus::CORPUS_VERSION;
+    let bytes = CORPUS_VERSION.as_bytes();
+
+    // Render `int_val` into a 10-byte buffer (u32::MAX is 10 digits).
+    let mut buf = [0u8; 10];
+    let mut len: usize = 0;
+    if int_val == 0 {
+        buf[0] = b'0';
+        len = 1;
+    } else {
+        let mut v = int_val;
+        while v > 0 {
+            buf[len] = b'0' + (v % 10) as u8;
+            v /= 10;
+            len += 1;
+        }
+        // Reverse the first `len` bytes so the most-significant digit lands first.
+        let mut i: usize = 0;
+        while i < len / 2 {
+            let tmp = buf[i];
+            buf[i] = buf[len - 1 - i];
+            buf[len - 1 - i] = tmp;
+            i += 1;
+        }
+    }
+
+    if bytes.len() != len {
+        panic!(
+            "CORPUS_VERSION &str length disagrees with crate::dynamic::corpus::CORPUS_VERSION u32 — update both in lockstep"
+        );
+    }
+    let mut i: usize = 0;
+    while i < len {
+        if bytes[i] != buf[i] {
+            panic!(
+                "CORPUS_VERSION &str differs from crate::dynamic::corpus::CORPUS_VERSION u32 — update both in lockstep"
+            );
+        }
+        i += 1;
+    }
+}
 
 /// One telemetry event per verdict.
 ///
