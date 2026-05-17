@@ -1060,7 +1060,21 @@ fn build_container_exec_args(command: &[String]) -> Vec<String> {
             }
         }
     } else {
-        args.push(cmd0.to_owned());
+        // Interpreter rewrite: `runner.rs` overwrites `command[0]` with the
+        // absolute host path to a venv-cache interpreter (e.g.
+        // `~/Library/Caches/nyx/dynamic/build-cache/<hash>-python-<tid>/bin/python3`)
+        // after `prepare_python` / `prepare_node` succeed.  That host path
+        // does not exist inside the container, so `docker exec` would fail
+        // with `OCI runtime exec failed: ... no such file or directory`.
+        // Strip to the interpreter basename so the container image's
+        // interpreter on `PATH` is invoked (python:3-slim ships
+        // `/usr/local/bin/python3`, node:20-slim ships `/usr/local/bin/node`,
+        // etc.).  Bare names like `python3` already round-trip unchanged.
+        // Note: venv-installed packages live on the host and are not
+        // available in the container; fixtures with dependencies need a
+        // requirements.txt at the workdir root for pip to install them
+        // inside the harness build (handled separately by `prepare_python`).
+        args.push(base.to_owned());
         if let Some(harness_file) = command.get(1) {
             if harness_file.starts_with('/') {
                 args.push(harness_file.clone());
@@ -1943,6 +1957,32 @@ mod tests {
     #[test]
     fn build_container_exec_args_empty() {
         assert!(build_container_exec_args(&[]).is_empty());
+    }
+
+    #[test]
+    fn build_container_exec_args_strips_host_venv_path_for_python() {
+        let cmd = vec![
+            "/Users/elipeter/Library/Caches/nyx/dynamic/build-cache/abcd-python-python-3/bin/python3"
+                .to_owned(),
+            "harness.py".to_owned(),
+        ];
+        assert_eq!(
+            build_container_exec_args(&cmd),
+            vec!["python3", "/work/harness.py"]
+        );
+    }
+
+    #[test]
+    fn build_container_exec_args_strips_host_venv_path_for_node() {
+        let cmd = vec![
+            "/Users/elipeter/Library/Caches/nyx/dynamic/build-cache/abcd-node-node-20/bin/node"
+                .to_owned(),
+            "harness.js".to_owned(),
+        ];
+        assert_eq!(
+            build_container_exec_args(&cmd),
+            vec!["node", "/work/harness.js"]
+        );
     }
 
     /// Verify that a second sandbox::run call for the same workdir does NOT
