@@ -99,6 +99,19 @@ allow = [
     "sched_yield",
     "prctl",
     "membarrier",
+    # Interpreter cold-start additions.  These are universal enough that
+    # cap-gating them buys nothing while breaking real harnesses:
+    # - `socketpair(AF_UNIX, ...)` — Node v18+ binds an internal worker
+    #   thread via an anonymous Unix-domain pair; not a network reach.
+    # - `umask` — Python's `tempfile` calls it during stdlib init; only
+    #   mutates the calling process's file-creation mask.
+    # - `setrlimit` — older glibc `__libc_setrlimit` shims fall through to
+    #   the legacy syscall instead of `prlimit64`; the caller can only
+    #   lower its own limits (raise is gated by the hard limit set by the
+    #   parent before exec).
+    "socketpair",
+    "umask",
+    "setrlimit",
 ]
 
 [cap.SQL_QUERY]

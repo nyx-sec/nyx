@@ -168,4 +168,24 @@ mod tests {
         assert!(nrs.contains(&write));
         assert!(nrs.contains(&close));
     }
+
+    /// `BASE` carries the interpreter cold-start trio:
+    /// `socketpair` (Node worker init), `umask` (Python tempfile init),
+    /// `setrlimit` (older glibc fallback for `prlimit64`).  Without these
+    /// a Python or Node harness aborts before printing a single line and
+    /// the Confirmed-via-`verify_finding` path is structurally
+    /// unreachable, so a regression that drops one is a load-bearing
+    /// outage rather than a code-cleanliness slip.
+    #[test]
+    fn base_allows_interpreter_cold_start_syscalls() {
+        let nrs = allowed_syscall_numbers(0);
+        for name in ["socketpair", "umask", "setrlimit"] {
+            let nr = syscall_number(name)
+                .unwrap_or_else(|| panic!("{name} missing from per-arch syscall map"));
+            assert!(
+                nrs.contains(&nr),
+                "BASE allowlist must include {name} (interpreter cold-start)",
+            );
+        }
+    }
 }

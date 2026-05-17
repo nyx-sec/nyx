@@ -12,6 +12,7 @@
 //! Failed-build retry policy (§12 Q4): one retry on `BuildFailed` with
 //! backoff (1s, 4s), then `Inconclusive(BuildFailed, attempts: 2)`.
 
+use crate::dynamic::sandbox::ProcessHardeningProfile;
 use crate::dynamic::spec::HarnessSpec;
 use blake3::Hasher;
 use directories::ProjectDirs;
@@ -817,8 +818,13 @@ fn compute_php_lockfile_hash(workdir: &Path) -> String {
 /// `cc -O0 -g -o nyx_harness main.c` in `workdir`.
 ///
 /// Build isolation is NOT yet implemented (deferred). `cc` runs on the host.
-pub fn prepare_c(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
-    let source_hash = compute_c_source_hash(workdir);
+pub fn prepare_c(
+    spec: &HarnessSpec,
+    workdir: &Path,
+    profile: ProcessHardeningProfile,
+) -> Result<BuildResult, BuildError> {
+    let static_link = static_link_for_profile(profile);
+    let source_hash = compute_c_source_hash(workdir, static_link);
     let cache_path = build_cache_path(&source_hash, "c", &spec.toolchain_id)?;
 
     let binary = cache_path.join("nyx_harness");
@@ -842,7 +848,7 @@ pub fn prepare_c(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Buil
         let _ = std::fs::remove_dir_all(&cache_path);
         std::fs::create_dir_all(&cache_path)?;
 
-        match try_build_c_binary(workdir, &binary) {
+        match try_build_c_binary(workdir, &binary, static_link) {
             Ok(()) => {
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -860,18 +866,18 @@ pub fn prepare_c(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Buil
     Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
 }
 
-fn try_build_c_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
+fn try_build_c_binary(workdir: &Path, binary_dest: &Path, static_link: bool) -> Result<(), String> {
     let cc_bin = std::env::var("NYX_CC_BIN").unwrap_or_else(|_| "cc".to_owned());
 
-    // When `NYX_BUILD_STATIC=1` (typically set by the Linux Strict-profile
-    // path so the harness survives `chroot(workdir)`), try `cc -static`
-    // first.  Fall back to the dynamic link if static fails — the host may
-    // lack `libc.a` (musl-cross or `libc6-dev` are the usual sources) and
-    // a dynamic-linked binary still works for non-chroot runs.  The
-    // fallback is announced via `NYX_BUILD_STATIC_FALLBACK=1` so downstream
-    // chroot-acceptance tests can skip the leg they need static linking
-    // for instead of asserting against a broken harness.
-    if static_link_requested() {
+    // When the Linux Strict-profile path requests it (or an operator sets
+    // `NYX_BUILD_STATIC=1`), try `cc -static` first so the harness survives
+    // `chroot(workdir)`.  Fall back to the dynamic link if static fails —
+    // the host may lack `libc.a` (musl-cross or `libc6-dev` are the usual
+    // sources) and a dynamic-linked binary still works for non-chroot runs.
+    // The fallback is announced via `NYX_BUILD_STATIC_FALLBACK=1` so
+    // downstream chroot-acceptance tests can skip the leg they need static
+    // linking for instead of asserting against a broken harness.
+    if static_link {
         match run_cc(&cc_bin, workdir, binary_dest, &["-static", "-O0", "-g"]) {
             Ok(()) => return Ok(()),
             Err(stderr) => {
@@ -885,7 +891,25 @@ fn try_build_c_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> 
     run_cc(&cc_bin, workdir, binary_dest, &["-O0", "-g"])
 }
 
-fn static_link_requested() -> bool {
+/// Decide whether the C harness should be linked with `-static`.
+///
+/// Returns `true` when the caller's hardening profile is
+/// [`ProcessHardeningProfile::Strict`] — chroot to the workdir hides the
+/// host's `/lib`/`/lib64` from the dynamic loader, so a dynamic-linked
+/// binary aborts before `main()`.  Operators can also force the static
+/// path on a `Standard` run via `NYX_BUILD_STATIC=1` (or `=true`) without
+/// flipping the wider hardening profile.
+pub(crate) fn static_link_for_profile(profile: ProcessHardeningProfile) -> bool {
+    if profile == ProcessHardeningProfile::Strict {
+        return true;
+    }
+    static_link_env_override()
+}
+
+/// Manual operator override read from `NYX_BUILD_STATIC`.  Lives separately
+/// from [`static_link_for_profile`] so the env-var contract stays testable
+/// without standing up a full `ProcessHardeningProfile` plumb.
+pub(crate) fn static_link_env_override() -> bool {
     matches!(
         std::env::var("NYX_BUILD_STATIC").as_deref(),
         Ok("1") | Ok("true")
@@ -912,7 +936,7 @@ fn run_cc(cc_bin: &str, workdir: &Path, binary_dest: &Path, leading_flags: &[&st
     Ok(())
 }
 
-fn compute_c_source_hash(workdir: &Path) -> String {
+fn compute_c_source_hash(workdir: &Path, static_link: bool) -> String {
     let mut h = Hasher::new();
     for fname in &["main.c", "entry.c", "Makefile"] {
         if let Ok(content) = std::fs::read(workdir.join(fname)) {
@@ -923,7 +947,7 @@ fn compute_c_source_hash(workdir: &Path) -> String {
     // Fold the static-link toggle into the cache key so a single workdir
     // can produce both a static and a dynamic binary without one shadowing
     // the other in the cache (`prepare_c` keys on this hash).
-    if static_link_requested() {
+    if static_link {
         h.update(b"static");
     }
     let out = h.finalize();
@@ -1377,17 +1401,19 @@ mod tests {
         fn unset_env_means_dynamic_link() {
             let _lock = ENV_LOCK.lock().unwrap();
             let _g = EnvGuard::set(None);
-            assert!(!static_link_requested());
+            assert!(!static_link_env_override());
+            assert!(!static_link_for_profile(ProcessHardeningProfile::Standard));
         }
 
         #[test]
         fn truthy_env_requests_static_link() {
             let _lock = ENV_LOCK.lock().unwrap();
             let _g = EnvGuard::set(Some("1"));
-            assert!(static_link_requested());
+            assert!(static_link_env_override());
+            assert!(static_link_for_profile(ProcessHardeningProfile::Standard));
 
             let _g2 = EnvGuard::set(Some("true"));
-            assert!(static_link_requested());
+            assert!(static_link_env_override());
         }
 
         #[test]
@@ -1396,10 +1422,27 @@ mod tests {
             for value in &["0", "false", "yes", "static", ""] {
                 let _g = EnvGuard::set(Some(value));
                 assert!(
-                    !static_link_requested(),
+                    !static_link_env_override(),
                     "value {value:?} must not request static link",
                 );
+                assert!(
+                    !static_link_for_profile(ProcessHardeningProfile::Standard),
+                    "value {value:?} must not request static link via Standard profile",
+                );
             }
+        }
+
+        #[test]
+        fn strict_profile_forces_static_link() {
+            let _lock = ENV_LOCK.lock().unwrap();
+            // Even with the env var absent, Strict must pick the static
+            // leg so chroot(workdir) does not strand the dynamic loader.
+            let _g = EnvGuard::set(None);
+            assert!(static_link_for_profile(ProcessHardeningProfile::Strict));
+
+            // Env var off should not flip Strict back to dynamic.
+            let _g2 = EnvGuard::set(Some("0"));
+            assert!(static_link_for_profile(ProcessHardeningProfile::Strict));
         }
 
         #[test]
@@ -1408,15 +1451,37 @@ mod tests {
             let dir = tempfile::TempDir::new().unwrap();
             std::fs::write(dir.path().join("main.c"), "int main(){return 0;}").unwrap();
 
-            let _g = EnvGuard::set(None);
-            let dyn_hash = compute_c_source_hash(dir.path());
-
-            let _g2 = EnvGuard::set(Some("1"));
-            let static_hash = compute_c_source_hash(dir.path());
+            let dyn_hash = compute_c_source_hash(dir.path(), false);
+            let static_hash = compute_c_source_hash(dir.path(), true);
 
             assert_ne!(
                 dyn_hash, static_hash,
                 "static and dynamic builds must key into different cache slots",
+            );
+        }
+
+        #[test]
+        fn strict_profile_and_standard_profile_produce_distinct_cache_keys() {
+            let _lock = ENV_LOCK.lock().unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            std::fs::write(dir.path().join("main.c"), "int main(){return 0;}").unwrap();
+
+            // No env override; the static bit is derived from the profile.
+            let _g = EnvGuard::set(None);
+            let standard_hash = compute_c_source_hash(
+                dir.path(),
+                static_link_for_profile(ProcessHardeningProfile::Standard),
+            );
+            let strict_hash = compute_c_source_hash(
+                dir.path(),
+                static_link_for_profile(ProcessHardeningProfile::Strict),
+            );
+
+            assert_ne!(
+                standard_hash, strict_hash,
+                "Strict-profile builds must key into a different cache slot \
+                 from Standard-profile builds so a chroot-bound static binary \
+                 does not shadow the dynamic one (or vice versa)",
             );
         }
     }

@@ -257,7 +257,10 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         }
         Lang::C => {
             // Compile the harness binary with `cc -o nyx_harness main.c`.
-            match build_sandbox::prepare_c(spec, &harness.workdir) {
+            // Pass the sandbox profile so the build chooses `-static` when
+            // the run will chroot into `harness.workdir` and the dynamic
+            // loader would otherwise miss `/lib*`.
+            match build_sandbox::prepare_c(spec, &harness.workdir, opts.process_hardening) {
                 Ok(build_result) => {
                     let binary = build_result.venv_path.join("nyx_harness");
                     if binary.exists() {
