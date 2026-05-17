@@ -258,20 +258,22 @@ mod tests {
     }
 
     #[test]
-    fn image_reference_for_toolchain_known_returns_base_when_unpinned() {
-        // The catalogue ships with empty digests; we therefore expect the
-        // bare base tag for known IDs.  When the daily CI run pins a real
-        // digest this test will start seeing `<base>@sha256:…` instead, and
-        // we update the assertion accordingly.
-        let r = image_reference_for_toolchain("python-3.11");
-        assert!(r.is_some());
-        assert!(r.unwrap().contains("python"));
+    fn image_reference_for_toolchain_known_returns_pinned_digest() {
+        // The catalogue ships with hand-seeded sha256 digests for every
+        // catalogue entry, so known IDs resolve to `<base>@sha256:…` refs.
+        let r = image_reference_for_toolchain("python-3.11")
+            .expect("python-3.11 is in the catalogue");
+        assert!(r.starts_with("python:3.11-slim@sha256:"), "got {r}");
     }
 
     #[test]
-    fn toolchain_is_pinned_false_when_digest_empty() {
-        // Fresh catalogue ships with empty digests, so every known toolchain
-        // is still considered unpinned until the daily CI run.
-        assert!(!toolchain_is_pinned("python-3.11"));
+    fn toolchain_is_pinned_true_for_seeded_catalogue() {
+        // Every catalogue entry carries a seeded digest from the manual
+        // Path B walk on a host with a live docker daemon.  The daily CI
+        // workflow refreshes these in place; the assertion stays "pinned"
+        // because empty digests are a regression we want to catch.
+        assert!(toolchain_is_pinned("python-3.11"));
+        assert!(toolchain_is_pinned("node-20"));
+        assert!(toolchain_is_pinned("java-21"));
     }
 }
