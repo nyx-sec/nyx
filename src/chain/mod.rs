@@ -47,8 +47,9 @@ pub use finding::{ChainFinding, ChainMember, ChainSeverity, ChainSink};
 pub use impact::{IMPACT_LATTICE, ImpactCategory, ImpactRule, lookup_impact};
 #[cfg(feature = "dynamic")]
 pub use reverify::{
-    ChainReverifyResult, CompositeReverifier, DefaultCompositeReverifier, reverify_chain,
-    reverify_chain_with, reverify_top_chains, reverify_top_chains_with,
+    ChainReverifyResult, ChainStepSpec, CompositeReverifier, DefaultCompositeReverifier,
+    chain_step_specs, reverify_chain, reverify_chain_with, reverify_top_chains,
+    reverify_top_chains_with,
 };
 pub use score::{ChainScoreConfig, category_weight, min_score_default, score_path};
 pub use search::{ChainSearchConfig, find_chains, find_chains_with_reach};

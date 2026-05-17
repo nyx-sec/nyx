@@ -21,11 +21,12 @@ use nyx_scanner::chain::edges::FindingRef;
 use nyx_scanner::chain::finding::{ChainFinding, ChainSeverity, ChainSink};
 use nyx_scanner::chain::impact::ImpactCategory;
 use nyx_scanner::chain::reverify::{
-    CompositeReverifier, reverify_chain_with, reverify_top_chains_with,
+    CompositeReverifier, chain_step_specs, reverify_chain_with, reverify_top_chains_with,
 };
+use nyx_scanner::commands::scan::Diag;
 use nyx_scanner::dynamic::lang::{ChainStepHarness, compose_chain_step};
 use nyx_scanner::dynamic::verify::VerifyOptions;
-use nyx_scanner::evidence::{InconclusiveReason, VerifyResult, VerifyStatus};
+use nyx_scanner::evidence::{InconclusiveReason, UnsupportedReason, VerifyResult, VerifyStatus};
 use nyx_scanner::surface::{SourceLocation, SurfaceMap};
 use nyx_scanner::symbol::Lang;
 
@@ -85,6 +86,7 @@ impl CompositeReverifier for StubReverifier {
     fn reverify(
         &self,
         _chain: &ChainFinding,
+        _member_diags: &[Diag],
         _surface: &SurfaceMap,
         _opts: &VerifyOptions,
     ) -> VerifyResult {
@@ -99,7 +101,7 @@ fn composite_confirms_keeps_severity_and_attaches_verdict() {
     let opts = VerifyOptions::default();
     let stub = StubReverifier(verdict(VerifyStatus::Confirmed, None));
 
-    let result = reverify_chain_with(&mut chain, &surface, &opts, &stub);
+    let result = reverify_chain_with(&mut chain, &[], &surface, &opts, &stub);
     assert!(!result.was_downgraded(), "Confirmed must not downgrade");
     assert_eq!(result.severity_before, ChainSeverity::Critical);
     assert_eq!(result.severity_after, ChainSeverity::Critical);
@@ -119,7 +121,7 @@ fn composite_inconclusive_downgrades_one_bucket_and_records_reason() {
         Some(InconclusiveReason::BuildFailed),
     ));
 
-    let result = reverify_chain_with(&mut chain, &surface, &opts, &stub);
+    let result = reverify_chain_with(&mut chain, &[], &surface, &opts, &stub);
     assert!(result.was_downgraded(), "Inconclusive must downgrade");
     assert_eq!(result.severity_before, ChainSeverity::Critical);
     assert_eq!(result.severity_after, ChainSeverity::High);
@@ -151,7 +153,7 @@ fn top_n_limits_composite_reverification() {
     let opts = VerifyOptions::default();
     let stub = StubReverifier(verdict(VerifyStatus::Confirmed, None));
 
-    let results = reverify_top_chains_with(&mut chains, &surface, &opts, 2, &stub);
+    let results = reverify_top_chains_with(&mut chains, &[], &surface, &opts, 2, &stub);
     assert_eq!(results.len(), 2);
     assert!(chains[0].dynamic_verdict.is_some());
     assert!(chains[1].dynamic_verdict.is_some());
@@ -200,4 +202,109 @@ fn compose_chain_step_threads_prev_output_for_every_emitter() {
 fn compose_chain_step_with_no_prev_output_has_empty_extra_env() {
     let step = compose_chain_step(Lang::Python, None);
     assert!(step.extra_env.is_empty());
+}
+
+#[test]
+fn chain_step_specs_aligns_results_to_member_order_and_reports_missing_diags() {
+    let chain = ChainFinding {
+        stable_hash: 0x1234,
+        members: vec![
+            FindingRef {
+                finding_id: "f-1".into(),
+                stable_hash: 1,
+                location: loc("a.py", 10),
+                rule_id: "r1".into(),
+                cap_bits: 0,
+            },
+            FindingRef {
+                finding_id: "f-2".into(),
+                stable_hash: 2,
+                location: loc("a.py", 20),
+                rule_id: "r2".into(),
+                cap_bits: 0,
+            },
+            FindingRef {
+                finding_id: "f-3".into(),
+                stable_hash: 3,
+                location: loc("a.py", 30),
+                rule_id: "r3".into(),
+                cap_bits: 0,
+            },
+        ],
+        sink: ChainSink {
+            file: "a.py".into(),
+            line: 40,
+            col: 1,
+            function_name: "sink".into(),
+            cap_bits: 0,
+        },
+        implied_impact: ImpactCategory::Rce,
+        severity: ChainSeverity::Critical,
+        score: 100.0,
+        dynamic_verdict: None,
+        reverify_reason: None,
+    };
+    // No diags threaded in — every member misses lookup and records
+    // `NoFlowSteps`.  Result order must match member order.
+    let opts = VerifyOptions::default();
+    let specs = chain_step_specs(&chain, &[], &opts);
+    assert_eq!(specs.len(), 3);
+    assert_eq!(specs[0].member_hash, 1);
+    assert_eq!(specs[1].member_hash, 2);
+    assert_eq!(specs[2].member_hash, 3);
+    for s in &specs {
+        assert!(
+            matches!(s.result, Err(UnsupportedReason::NoFlowSteps)),
+            "missing-diag fallback got {:?}",
+            s.result
+        );
+    }
+}
+
+#[test]
+fn default_reverifier_detail_carries_zero_over_member_count() {
+    use nyx_scanner::chain::reverify::reverify_chain;
+    let mut chain = ChainFinding {
+        stable_hash: 0xCAFE,
+        members: vec![
+            FindingRef {
+                finding_id: "f-1".into(),
+                stable_hash: 11,
+                location: loc("a.py", 1),
+                rule_id: "r".into(),
+                cap_bits: 0,
+            },
+            FindingRef {
+                finding_id: "f-2".into(),
+                stable_hash: 22,
+                location: loc("a.py", 2),
+                rule_id: "r".into(),
+                cap_bits: 0,
+            },
+        ],
+        sink: ChainSink {
+            file: "a.py".into(),
+            line: 5,
+            col: 1,
+            function_name: "sink".into(),
+            cap_bits: 0,
+        },
+        implied_impact: ImpactCategory::Rce,
+        severity: ChainSeverity::Critical,
+        score: 100.0,
+        dynamic_verdict: None,
+        reverify_reason: None,
+    };
+    let surface = SurfaceMap::new();
+    let opts = VerifyOptions::default();
+    let result = reverify_chain(&mut chain, &[], &surface, &opts);
+    let detail = result
+        .verdict
+        .detail
+        .as_deref()
+        .expect("default reverifier populates detail");
+    assert!(
+        detail.contains("0/2"),
+        "detail must report 0/2 specs derived for the two-member chain; got {detail:?}"
+    );
 }

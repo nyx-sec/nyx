@@ -18,6 +18,20 @@
 //! `Inconclusive` drops the chain one bucket and records a reason;
 //! every other status leaves the severity intact.
 //!
+//! # Per-member harness specs
+//!
+//! Both the default reverifier and out-of-tree callers consume
+//! [`chain_step_specs`] to materialise one [`HarnessSpec`] per
+//! `chain.members` slot.  The helper looks each member up in the
+//! caller-supplied `member_diags` slice by
+//! [`crate::chain::edges::FindingRef::stable_hash`] and reuses
+//! [`HarnessSpec::from_finding_full`] so the chain's per-step specs
+//! match what the per-finding verifier would have derived.  This is
+//! the API-shape sub-task of the Phase 26 live-execution split: it
+//! lets callers (today: the default reverifier; tomorrow: a live
+//! sandbox composer) inspect whether every step is drivable before
+//! committing to a build / run pass.
+//!
 //! # Cost control
 //!
 //! Re-verification is opt-in via
@@ -36,9 +50,12 @@
 //! be exercised without a live sandbox backend.
 
 use crate::chain::finding::{ChainFinding, ChainSeverity};
+use crate::commands::scan::Diag;
+use crate::dynamic::spec::HarnessSpec;
 use crate::dynamic::verify::VerifyOptions;
-use crate::evidence::{InconclusiveReason, VerifyResult, VerifyStatus};
+use crate::evidence::{InconclusiveReason, UnsupportedReason, VerifyResult, VerifyStatus};
 use crate::surface::SurfaceMap;
+use std::collections::HashMap;
 
 /// Outcome of composite re-verification for a single chain.
 ///
@@ -71,18 +88,90 @@ impl ChainReverifyResult {
     }
 }
 
+/// Per-member harness-spec derivation result.
+///
+/// One entry per `chain.members` slot, in chain order.  `member_hash`
+/// is copied from the [`crate::chain::edges::FindingRef::stable_hash`];
+/// `result` is the outcome of running [`HarnessSpec::from_finding_full`]
+/// against the matching [`Diag`] from the caller's slice.
+///
+/// A member whose hash has no diag match records
+/// [`UnsupportedReason::NoFlowSteps`] so the caller can distinguish
+/// "spec derivation failed" from "diag missing from the scan input".
+#[derive(Debug, Clone)]
+pub struct ChainStepSpec {
+    pub member_hash: u64,
+    pub result: Result<HarnessSpec, UnsupportedReason>,
+}
+
+/// Derive one [`HarnessSpec`] per chain member, in chain order.
+///
+/// Looks each member up in `member_diags` by stable hash (zero-hash
+/// diags are skipped — the pre-`compute_stable_hash` placeholder
+/// produced by tests and synthetic harnesses).  Members whose hash has
+/// no diag match record [`UnsupportedReason::NoFlowSteps`] so the
+/// caller can tell the difference between "spec derivation failed" and
+/// "diag missing from the scan input".
+///
+/// The function does **not** run anything: it returns derived specs so
+/// the caller (today: [`DefaultCompositeReverifier`]; tomorrow: a live
+/// sandbox composer) can decide whether to commit to a build / run
+/// pass.  Used as the API-shape half of the Phase 26 live-execution
+/// split — see the crate-level docs for the wider design.
+pub fn chain_step_specs(
+    chain: &ChainFinding,
+    member_diags: &[Diag],
+    opts: &VerifyOptions,
+) -> Vec<ChainStepSpec> {
+    let mut by_hash: HashMap<u64, &Diag> = HashMap::with_capacity(member_diags.len());
+    for d in member_diags {
+        if d.stable_hash != 0 {
+            by_hash.insert(d.stable_hash, d);
+        }
+    }
+    chain
+        .members
+        .iter()
+        .map(|m| {
+            let result = match by_hash.get(&m.stable_hash).copied() {
+                Some(d) => HarnessSpec::from_finding_full(
+                    d,
+                    opts.verify_all_confidence,
+                    opts.summaries.as_deref(),
+                    opts.callgraph.as_deref(),
+                ),
+                None => Err(UnsupportedReason::NoFlowSteps),
+            };
+            ChainStepSpec {
+                member_hash: m.stable_hash,
+                result,
+            }
+        })
+        .collect()
+}
+
 /// Pluggable composite-reverifier surface.
 ///
 /// Production callers use [`DefaultCompositeReverifier`] (which drives
 /// the per-step harness compose path).  Tests substitute a stub that
 /// returns canned [`VerifyResult`]s so the downgrade-and-record
 /// machinery can be exercised without a live sandbox backend.
+///
+/// `member_diags` carries the [`Diag`]s that produced `chain.members`,
+/// in any order — implementations look them up by
+/// [`crate::chain::edges::FindingRef::stable_hash`] via
+/// [`chain_step_specs`].  Threading the slice (instead of a pre-built
+/// `HashMap`) mirrors how
+/// [`crate::dynamic::verify::VerifyOptions::summaries`] flows:
+/// callers hold the full project diag list and the trait surface
+/// stays free of cross-coupling.
 pub trait CompositeReverifier {
     /// Run the composite dynamic re-verification for `chain` and return
     /// the resulting verdict.
     fn reverify(
         &self,
         chain: &ChainFinding,
+        member_diags: &[Diag],
         surface: &SurfaceMap,
         opts: &VerifyOptions,
     ) -> VerifyResult;
@@ -90,29 +179,36 @@ pub trait CompositeReverifier {
 
 /// Phase 26 default composite reverifier.
 ///
-/// The composite-harness composer walks `chain.members`, calls
-/// [`crate::dynamic::lang::compose_chain_step`] for each member's
-/// language to assemble a per-step harness, and threads the previous
-/// step's stdout into the next via
-/// [`crate::dynamic::lang::ChainStepHarness::PREV_OUTPUT_ENV`].
+/// The composite-harness composer walks `chain.members`, derives one
+/// [`HarnessSpec`] per member via [`chain_step_specs`], and (in a
+/// future session) will call
+/// [`crate::dynamic::lang::compose_chain_step`] per step to assemble a
+/// per-step harness with `NYX_PREV_OUTPUT` threading.
 ///
-/// Today the default reverifier surfaces `Inconclusive(BackendInsufficient)`
-/// when invoked: chain composer scaffolding lands in Phase 26 but the
-/// live composite execution path depends on the per-emitter probe-shim
-/// splicing that several language emitters still defer (see the
-/// Phase 06 / 15 / 16 follow-ups in `.pitboss/play/deferred.md`).
-/// Callers that need a deterministic outcome (tests, CI) use
-/// [`reverify_chain_with`] with a stubbed reverifier.
+/// Today the default reverifier surfaces
+/// `Inconclusive(BackendInsufficient)` when invoked, but the `detail`
+/// field reports how many of `chain.members` produced a derivable
+/// [`HarnessSpec`] so operators (and the [`reverify_top_chains`]
+/// caller) can see the spec-derivation coverage before the live
+/// execution path lands.  Callers that need a deterministic outcome
+/// (tests, CI) use [`reverify_chain_with`] with a stubbed reverifier.
 pub struct DefaultCompositeReverifier;
 
 impl CompositeReverifier for DefaultCompositeReverifier {
     fn reverify(
         &self,
         chain: &ChainFinding,
+        member_diags: &[Diag],
         _surface: &SurfaceMap,
-        _opts: &VerifyOptions,
+        opts: &VerifyOptions,
     ) -> VerifyResult {
         let finding_id = format!("chain-{:016x}", chain.stable_hash);
+        let specs = chain_step_specs(chain, member_diags, opts);
+        let total = specs.len();
+        let derived = specs.iter().filter(|s| s.result.is_ok()).count();
+        let detail = format!(
+            "composite chain re-verification not yet wired for live runs; derived {derived}/{total} harness specs"
+        );
         VerifyResult {
             finding_id,
             status: VerifyStatus::Inconclusive,
@@ -122,10 +218,7 @@ impl CompositeReverifier for DefaultCompositeReverifier {
                 backend: "composite-chain".to_owned(),
                 oracle_kind: "chain-step-harness".to_owned(),
             }),
-            detail: Some(
-                "composite chain re-verification not yet wired for live runs; per-emitter probe-shim splicing pending — see Phase 26 deferred follow-ups"
-                    .to_owned(),
-            ),
+            detail: Some(detail),
             attempts: vec![],
             toolchain_match: None,
             differential: None,
@@ -142,10 +235,11 @@ impl CompositeReverifier for DefaultCompositeReverifier {
 /// Wraps [`reverify_chain_with`] with the [`DefaultCompositeReverifier`].
 pub fn reverify_chain(
     chain: &mut ChainFinding,
+    member_diags: &[Diag],
     surface: &SurfaceMap,
     opts: &VerifyOptions,
 ) -> ChainReverifyResult {
-    reverify_chain_with(chain, surface, opts, &DefaultCompositeReverifier)
+    reverify_chain_with(chain, member_diags, surface, opts, &DefaultCompositeReverifier)
 }
 
 /// Inject-the-reverifier flavour of [`reverify_chain`].
@@ -156,13 +250,14 @@ pub fn reverify_chain(
 /// the transition.
 pub fn reverify_chain_with(
     chain: &mut ChainFinding,
+    member_diags: &[Diag],
     surface: &SurfaceMap,
     opts: &VerifyOptions,
     reverifier: &dyn CompositeReverifier,
 ) -> ChainReverifyResult {
     let chain_hash = chain.stable_hash;
     let severity_before = chain.severity;
-    let verdict = reverifier.reverify(chain, surface, opts);
+    let verdict = reverifier.reverify(chain, member_diags, surface, opts);
     chain.apply_dynamic_verdict(verdict.clone());
     ChainReverifyResult {
         chain_hash,
@@ -180,21 +275,34 @@ pub fn reverify_chain_with(
 /// so the slice prefix is already the right set).  `top_n == 0`
 /// short-circuits the entire pass.
 ///
+/// `member_diags` is the full project diag list — each chain's
+/// reverifier looks up its own constituent diags by stable hash via
+/// [`chain_step_specs`].
+///
 /// Mutates `chains` in place; returns one [`ChainReverifyResult`] per
 /// re-verified chain.  Chains past the `top_n` cut keep their
 /// pre-existing `dynamic_verdict` / `reverify_reason` / `severity`.
 pub fn reverify_top_chains(
     chains: &mut [ChainFinding],
+    member_diags: &[Diag],
     surface: &SurfaceMap,
     opts: &VerifyOptions,
     top_n: usize,
 ) -> Vec<ChainReverifyResult> {
-    reverify_top_chains_with(chains, surface, opts, top_n, &DefaultCompositeReverifier)
+    reverify_top_chains_with(
+        chains,
+        member_diags,
+        surface,
+        opts,
+        top_n,
+        &DefaultCompositeReverifier,
+    )
 }
 
 /// Inject-the-reverifier flavour of [`reverify_top_chains`].
 pub fn reverify_top_chains_with(
     chains: &mut [ChainFinding],
+    member_diags: &[Diag],
     surface: &SurfaceMap,
     opts: &VerifyOptions,
     top_n: usize,
@@ -207,7 +315,7 @@ pub fn reverify_top_chains_with(
     chains
         .iter_mut()
         .take(bound)
-        .map(|c| reverify_chain_with(c, surface, opts, reverifier))
+        .map(|c| reverify_chain_with(c, member_diags, surface, opts, reverifier))
         .collect()
 }
 
@@ -266,6 +374,7 @@ mod tests {
         fn reverify(
             &self,
             _chain: &ChainFinding,
+            _member_diags: &[Diag],
             _surface: &SurfaceMap,
             _opts: &VerifyOptions,
         ) -> VerifyResult {
@@ -280,6 +389,7 @@ mod tests {
         let opts = VerifyOptions::default();
         let result = reverify_chain_with(
             &mut chain,
+            &[],
             &surface,
             &opts,
             &StubReverifier(VerifyStatus::Confirmed),
@@ -298,6 +408,7 @@ mod tests {
         let opts = VerifyOptions::default();
         let result = reverify_chain_with(
             &mut chain,
+            &[],
             &surface,
             &opts,
             &StubReverifier(VerifyStatus::Inconclusive),
@@ -316,6 +427,7 @@ mod tests {
         let opts = VerifyOptions::default();
         let result = reverify_chain_with(
             &mut chain,
+            &[],
             &surface,
             &opts,
             &StubReverifier(VerifyStatus::Inconclusive),
@@ -337,6 +449,7 @@ mod tests {
         let opts = VerifyOptions::default();
         let results = reverify_top_chains_with(
             &mut chains,
+            &[],
             &surface,
             &opts,
             0,
@@ -359,6 +472,7 @@ mod tests {
         let opts = VerifyOptions::default();
         let results = reverify_top_chains_with(
             &mut chains,
+            &[],
             &surface,
             &opts,
             2,
@@ -378,7 +492,7 @@ mod tests {
         let mut chain = mk_chain(99, ChainSeverity::Critical, ImpactCategory::Rce);
         let surface = SurfaceMap::new();
         let opts = VerifyOptions::default();
-        let result = reverify_chain(&mut chain, &surface, &opts);
+        let result = reverify_chain(&mut chain, &[], &surface, &opts);
         assert_eq!(result.verdict.status, VerifyStatus::Inconclusive);
         assert!(matches!(
             result.verdict.inconclusive_reason,
@@ -386,5 +500,33 @@ mod tests {
         ));
         // Severity dropped one bucket because the default is inconclusive.
         assert_eq!(chain.severity, ChainSeverity::High);
+    }
+
+    #[test]
+    fn default_reverifier_detail_reports_spec_derivation_coverage() {
+        let mut chain = mk_chain(0xDE, ChainSeverity::High, ImpactCategory::SessionHijack);
+        // No diags threaded in — every member should fall through to
+        // `NoFlowSteps` and the detail string should report 0/N.
+        let surface = SurfaceMap::new();
+        let opts = VerifyOptions::default();
+        let result = reverify_chain(&mut chain, &[], &surface, &opts);
+        let detail = result.verdict.detail.as_deref().expect("detail populated");
+        assert!(
+            detail.contains("0/1"),
+            "detail must report 0/1 specs derived for a single-member chain with no diags; got {detail:?}"
+        );
+    }
+
+    #[test]
+    fn chain_step_specs_reports_no_flow_steps_for_missing_diag() {
+        let chain = mk_chain(7, ChainSeverity::Medium, ImpactCategory::InfoDisclosure);
+        let opts = VerifyOptions::default();
+        let specs = chain_step_specs(&chain, &[], &opts);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].member_hash, 7);
+        assert!(matches!(
+            specs[0].result,
+            Err(UnsupportedReason::NoFlowSteps)
+        ));
     }
 }
