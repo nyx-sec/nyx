@@ -4,6 +4,7 @@ import { LoadingState } from '../components/ui/LoadingState';
 import { ErrorState } from '../components/ui/ErrorState';
 import { EmptyState } from '../components/ui/EmptyState';
 import { usePageTitle } from '../hooks/usePageTitle';
+import { SurfaceGraphCanvas } from '../graph/components/SurfaceGraphCanvas';
 import type {
   SurfaceEdge,
   SurfaceEdgeKind,
@@ -182,6 +183,7 @@ function NeighborList({
 }
 
 type NodeKindFilter = 'all' | SurfaceNode['node'];
+type SurfaceViewMode = 'list' | 'graph';
 
 export function SurfacePage() {
   usePageTitle('Surface');
@@ -189,6 +191,7 @@ export function SurfacePage() {
   const [selected, setSelected] = useState<number | null>(null);
   const [filter, setFilter] = useState<NodeKindFilter>('all');
   const [query, setQuery] = useState('');
+  const [viewMode, setViewMode] = useState<SurfaceViewMode>('list');
 
   const visible = useMemo(() => {
     if (!data) return [] as Array<{ node: SurfaceNode; index: number }>;
@@ -233,11 +236,13 @@ export function SurfacePage() {
           placeholder="Filter by name, label, or path"
           onChange={(e) => setQuery(e.target.value)}
           className="surface-filter-input"
+          disabled={viewMode === 'graph'}
         />
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value as NodeKindFilter)}
           className="surface-filter-select"
+          disabled={viewMode === 'graph'}
         >
           <option value="all">All node kinds</option>
           <option value="entry_point">Entry points</option>
@@ -245,23 +250,53 @@ export function SurfacePage() {
           <option value="external_service">External services</option>
           <option value="dangerous_local">Dangerous locals</option>
         </select>
+        <div className="surface-view-toggle" role="tablist" aria-label="Surface view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === 'list'}
+            className={`surface-view-toggle-button${viewMode === 'list' ? ' selected' : ''}`}
+            onClick={() => setViewMode('list')}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={viewMode === 'graph'}
+            className={`surface-view-toggle-button${viewMode === 'graph' ? ' selected' : ''}`}
+            onClick={() => setViewMode('graph')}
+          >
+            Graph
+          </button>
+        </div>
       </div>
       <div className="surface-grid">
-        <div className="surface-node-list">
-          {visible.length === 0 ? (
-            <p className="surface-node-list-empty">No nodes match.</p>
-          ) : (
-            visible.map(({ node, index }) => (
-              <NodeCard
-                key={index}
-                node={node}
-                index={index}
-                selected={selected === index}
-                onClick={() => setSelected(index)}
-              />
-            ))
-          )}
-        </div>
+        {viewMode === 'list' ? (
+          <div className="surface-node-list">
+            {visible.length === 0 ? (
+              <p className="surface-node-list-empty">No nodes match.</p>
+            ) : (
+              visible.map(({ node, index }) => (
+                <NodeCard
+                  key={index}
+                  node={node}
+                  index={index}
+                  selected={selected === index}
+                  onClick={() => setSelected(index)}
+                />
+              ))
+            )}
+          </div>
+        ) : (
+          <div className="surface-graph-frame">
+            <SurfaceGraphCanvas
+              data={data}
+              selectedNodeId={selected}
+              onSelectNode={(id) => setSelected(id)}
+            />
+          </div>
+        )}
         <aside className="surface-sidebar">
           <NeighborList map={data} index={selected} />
         </aside>

@@ -195,6 +195,94 @@ function cfgNodeStyle(
   }
 }
 
+function surfaceNodeStyle(
+  type: string,
+  palette: GraphThemePalette,
+): NodeStyle {
+  switch (type) {
+    case 'EntryPoint':
+      return {
+        fill: palette.success,
+        stroke: withAlpha(palette.success, 0.85),
+        textFill: '#ffffff',
+        secondaryFill: withAlpha('#ffffff', 0.78),
+        shape: 'double',
+        strokeWidth: 1.8,
+        accentFill: palette.accent,
+        neighborFill: withAlpha(palette.success, 0.75),
+      };
+    case 'DataStore':
+      return {
+        fill: palette.warning,
+        stroke: withAlpha(palette.warning, 0.85),
+        textFill: '#ffffff',
+        secondaryFill: withAlpha('#ffffff', 0.8),
+        shape: 'rect',
+        strokeWidth: 1.5,
+        accentFill: palette.accent,
+        neighborFill: withAlpha(palette.warning, 0.76),
+      };
+    case 'ExternalService':
+      return {
+        fill: palette.accent,
+        stroke: withAlpha(palette.accent, 0.82),
+        textFill: '#ffffff',
+        secondaryFill: withAlpha('#ffffff', 0.8),
+        shape: 'rect',
+        strokeWidth: 1.5,
+        accentFill: palette.accent,
+        neighborFill: palette.accentSoft,
+      };
+    case 'DangerousLocal':
+      return {
+        fill: palette.danger,
+        stroke: withAlpha(palette.danger, 0.86),
+        textFill: '#ffffff',
+        secondaryFill: withAlpha('#ffffff', 0.8),
+        shape: 'terminal',
+        strokeWidth: 1.7,
+        accentFill: palette.accent,
+        neighborFill: withAlpha(palette.danger, 0.75),
+      };
+    default:
+      return {
+        fill: withAlpha(palette.neutral, 0.92),
+        stroke: withAlpha(palette.neutral, 0.8),
+        textFill: '#ffffff',
+        secondaryFill: withAlpha('#ffffff', 0.78),
+        shape: 'rect',
+        strokeWidth: 1.2,
+        accentFill: palette.accent,
+        neighborFill: withAlpha(palette.neutralSoft, 0.88),
+      };
+  }
+}
+
+function surfaceEdgeStyle(type: string, palette: GraphThemePalette): EdgeStyle {
+  switch (type) {
+    case 'calls':
+      return { color: withAlpha(palette.textSecondary, 0.78), width: 1.4, dash: [] };
+    case 'reads_from':
+      return { color: palette.success, width: 1.5, dash: [] };
+    case 'writes_to':
+      return { color: palette.warning, width: 1.6, dash: [] };
+    case 'talks_to':
+      return { color: palette.accent, width: 1.4, dash: [] };
+    case 'reaches':
+      return { color: palette.danger, width: 1.7, dash: [] };
+    case 'triggers':
+      return { color: palette.success, width: 1.5, dash: [4, 3] };
+    case 'auth_required_on':
+      return { color: palette.textTertiary, width: 1.3, dash: [2, 4] };
+    default:
+      return {
+        color: withAlpha(palette.textTertiary, 0.78),
+        width: 1.3,
+        dash: [],
+      };
+  }
+}
+
 function callGraphNodeStyle(
   palette: GraphThemePalette,
   metadata?: GraphMetadata,
@@ -221,9 +309,15 @@ export function getNodeStyle(
   metadata?: GraphMetadata,
   palette = FALLBACK_PALETTE,
 ): NodeStyle {
-  return graphKind === 'callgraph'
-    ? callGraphNodeStyle(palette, metadata)
-    : cfgNodeStyle(type, palette, metadata);
+  switch (graphKind) {
+    case 'callgraph':
+      return callGraphNodeStyle(palette, metadata);
+    case 'surface':
+      return surfaceNodeStyle(type, palette);
+    case 'cfg':
+    default:
+      return cfgNodeStyle(type, palette, metadata);
+  }
 }
 
 export function getEdgeStyle(
@@ -237,6 +331,10 @@ export function getEdgeStyle(
       width: 1.2,
       dash: [],
     };
+  }
+
+  if (graphKind === 'surface') {
+    return surfaceEdgeStyle(type, palette);
   }
 
   switch (type) {
