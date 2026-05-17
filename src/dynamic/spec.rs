@@ -383,6 +383,42 @@ pub fn derive_from_rule_namespace_with(
     evidence: &crate::evidence::Evidence,
     summaries: Option<&GlobalSummaries>,
 ) -> Option<HarnessSpec> {
+    // Path is required to locate the sink and to extension-check the lang.
+    if diag.path.is_empty() {
+        return None;
+    }
+
+    // Language-agnostic `taint-*` rule ids (e.g. `taint-ldap-injection`,
+    // `taint-sql-injection`, `taint-data-exfiltration`) carry the cap in the
+    // rule slug itself; the language comes from the file extension. Try this
+    // shortcut first so taint findings with no flow_steps can still derive.
+    if let Some(taint_cap) = cap_for_taint_rule_id(&diag.id) {
+        let lang = lang_from_path(&diag.path)?;
+        let expected_cap = {
+            let from_ev = Cap::from_bits_truncate(evidence.sink_caps);
+            if !from_ev.is_empty() {
+                from_ev
+            } else {
+                taint_cap
+            }
+        };
+        if expected_cap.is_empty() {
+            return None;
+        }
+        let entry_function = resolve_enclosing_function(diag, evidence, summaries, lang)
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        return Some(finalize_spec(
+            diag,
+            diag.path.clone(),
+            entry_function,
+            lang,
+            expected_cap,
+            diag.path.clone(),
+            diag.line as u32,
+            SpecDerivationStrategy::FromRuleNamespace,
+        ));
+    }
+
     let mut iter = diag.id.split('.');
     let lang_prefix = iter.next()?;
     let category = iter.next()?;
@@ -405,10 +441,6 @@ pub fn derive_from_rule_namespace_with(
         return None;
     }
 
-    // Path is required to locate the sink and to extension-check the lang.
-    if diag.path.is_empty() {
-        return None;
-    }
     // Cross-check: the diag's file extension must agree with the rule's
     // language prefix when both are available. Disagreement is a stronger
     // signal of a mis-rooted finding than a missing extension.
@@ -431,6 +463,23 @@ pub fn derive_from_rule_namespace_with(
         diag.line as u32,
         SpecDerivationStrategy::FromRuleNamespace,
     ))
+}
+
+/// Map a language-agnostic `taint-*` rule id (as registered in
+/// [`crate::labels::CAP_RULE_REGISTRY`]) to its [`Cap`].
+///
+/// Returns `None` for rule ids that are not registered as a class entry,
+/// including the legacy generic `taint-unsanitised-flow` (which is not in
+/// the registry — its findings carry their actual cap through evidence,
+/// not the rule slug).
+fn cap_for_taint_rule_id(rule_id: &str) -> Option<Cap> {
+    if !rule_id.starts_with("taint-") {
+        return None;
+    }
+    crate::labels::CAP_RULE_REGISTRY
+        .iter()
+        .find(|meta| meta.rule_id == rule_id)
+        .map(|meta| meta.cap)
 }
 
 // ── Strategy 3: walk a FuncSummary for the sink's enclosing function ─────────
@@ -1460,12 +1509,77 @@ mod tests {
     }
 
     #[test]
-    fn rule_namespace_strategy_skips_legacy_taint_ids() {
+    fn rule_namespace_strategy_skips_unknown_taint_ids() {
         use crate::labels::Cap;
-        // `taint-...` is *not* a language-namespace prefix; rule-namespace
-        // strategy must skip it so the next strategy can try.
-        let diag = diag_with_rule_id("taint-unsanitised-flow", "app/handler.py", Cap::SHELL_ESCAPE.bits());
+        // Unregistered `taint-*` rule slugs (e.g. the legacy generic
+        // `taint-unsanitised-flow`) are not in `CAP_RULE_REGISTRY`; the
+        // shortcut must skip them so downstream strategies can try.
+        let diag =
+            diag_with_rule_id("taint-unsanitised-flow", "app/handler.py", Cap::SHELL_ESCAPE.bits());
         // No flow_steps, no http/cli marker → ends in SpecDerivationFailed.
+        assert_eq!(
+            HarnessSpec::from_finding(&diag).unwrap_err(),
+            UnsupportedReason::SpecDerivationFailed
+        );
+    }
+
+    #[test]
+    fn rule_namespace_strategy_resolves_registered_taint_ldap_injection() {
+        use crate::labels::Cap;
+        // Java OWASP fixtures emit `taint-ldap-injection` with no flow_steps;
+        // the rule slug carries the cap, the file extension carries the lang.
+        let diag = diag_with_rule_id(
+            "taint-ldap-injection",
+            "src/main/java/org/owasp/benchmark/Vuln.java",
+            Cap::LDAP_INJECTION.bits(),
+        );
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
+        assert_eq!(spec.lang, Lang::Java);
+        assert_eq!(spec.expected_cap, Cap::LDAP_INJECTION);
+        assert_eq!(spec.sink_line, 12);
+    }
+
+    #[test]
+    fn rule_namespace_strategy_taint_id_falls_back_to_registry_cap_when_evidence_zero() {
+        use crate::labels::Cap;
+        // sink_caps=0 → use the cap from `CAP_RULE_REGISTRY`.
+        let diag = diag_with_rule_id("taint-sql-injection", "app/handler.py", 0);
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
+        assert_eq!(spec.lang, Lang::Python);
+        assert_eq!(spec.expected_cap, Cap::SQL_QUERY);
+    }
+
+    #[test]
+    fn rule_namespace_strategy_taint_id_lang_follows_path_extension() {
+        use crate::labels::Cap;
+        // Same rule slug, different file extension → derives a Go spec.
+        let diag =
+            diag_with_rule_id("taint-data-exfiltration", "cmd/leak.go", Cap::DATA_EXFIL.bits());
+        let spec = HarnessSpec::from_finding(&diag).unwrap();
+        assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
+        assert_eq!(spec.lang, Lang::Go);
+        assert_eq!(spec.expected_cap, Cap::DATA_EXFIL);
+    }
+
+    #[test]
+    fn rule_namespace_strategy_taint_id_requires_path() {
+        use crate::labels::Cap;
+        // Path empty → cannot infer lang; strategy bails so callgraph-entry
+        // can try.
+        let diag = crate::commands::scan::Diag {
+            id: "taint-ldap-injection".into(),
+            path: String::new(),
+            line: 12,
+            col: 4,
+            confidence: Some(Confidence::Medium),
+            evidence: Some(Evidence {
+                sink_caps: Cap::LDAP_INJECTION.bits(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
         assert_eq!(
             HarnessSpec::from_finding(&diag).unwrap_err(),
             UnsupportedReason::SpecDerivationFailed
