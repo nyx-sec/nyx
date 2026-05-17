@@ -243,6 +243,18 @@ pub struct SandboxOptions {
     /// today's behaviour; opt-in callers (interpreted-language harness
     /// builders) set the field when an interpreter is on the run path.
     pub bind_mount_host_libs: bool,
+    /// Phase 20 follow-up (Track E.4 ablation harness): when `Some`, the
+    /// Linux process backend skips or extends individual hardening
+    /// primitives so the escape-fixture matrix can verify "removing any
+    /// one primitive flips at least one fixture red".  Always `None` in
+    /// production — the field is marked `#[doc(hidden)]` so it does not
+    /// surface in the public API but is reachable from integration tests
+    /// in sibling crates (`tests/sandbox_escape_suite.rs`,
+    /// `tests/sandbox_hardening_linux.rs`).  Ignored on macOS and by
+    /// every non-process backend.  See [`AblationMask`] for the per-
+    /// primitive toggles.
+    #[doc(hidden)]
+    pub ablation: Option<AblationMask>,
     /// Phase 30 (Track C observability): optional [`VerifyTrace`] handle
     /// the runner appends pipeline stages to (`build_started`,
     /// `build_done`, `sandbox_started`, `oracle_wait`, `oracle_observed`).
@@ -276,6 +288,59 @@ impl Default for ProcessHardeningProfile {
     }
 }
 
+/// Phase 20 follow-up (Track E.4 ablation harness): selectively skip or
+/// loosen individual Strict-profile primitives so the escape-fixture
+/// matrix can prove the acceptance literal "removing any one Phase 17
+/// hardening primitive flips at least one escape fixture to red".
+///
+/// Each boolean field defaults to `false` (no ablation).  The Linux
+/// process backend honours every field that targets a Linux-only
+/// primitive; macOS / docker / firecracker backends ignore the mask
+/// entirely because their hardening surface is different.
+///
+/// Hidden from the public API via `#[doc(hidden)]` on
+/// [`SandboxOptions::ablation`] — the production verifier never
+/// constructs an `AblationMask`.  Integration tests in sibling crates
+/// (`tests/sandbox_escape_suite.rs`) can still set the mask because
+/// the struct is reachable through the public re-export.
+///
+/// Wire-format invariant: each ablated primitive emits
+/// `PrimitiveStatus::Skipped` in the [`HardeningOutcome`] record, so
+/// the existing 15-byte encoding does not grow.  Ablation-mode tests
+/// assert on the per-primitive status fields directly.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AblationMask {
+    /// Skip `chroot(2)` + the bind-mount prep that feeds it.  Escape
+    /// fixtures that rely on the chroot read `/etc/passwd` from the
+    /// host root when this is set.
+    pub no_chroot: bool,
+    /// Add the socket / connect / bind syscall family back to the
+    /// allowlist regardless of the active `seccomp_caps` cap bits.
+    /// The `raw_socket_bind` escape fixture lands a packet socket
+    /// when this is set.
+    pub no_seccomp_socket: bool,
+    /// Add the setuid / setgid / setreuid / setregid family back to
+    /// the allowlist.  The `setuid_zero` escape fixture flips when
+    /// this is set in concert with [`Self::no_userns`] (the
+    /// unprivileged user namespace uid map already blocks the call
+    /// independently).
+    pub no_seccomp_setuid: bool,
+    /// Drop `CLONE_NEWUSER` from the `unshare(2)` flag set.  The
+    /// `setuid_zero` and `proc_root_passwd` fixtures flip red when
+    /// the unprivileged user namespace is gone.
+    pub no_userns: bool,
+    /// Drop `CLONE_NEWPID` from the `unshare(2)` flag set.  The
+    /// `proc_root_passwd` fixture reads the host PID 1 cmdline when
+    /// the PID namespace is gone.
+    pub no_pidns: bool,
+    /// Skip `prctl(PR_SET_NO_NEW_PRIVS)`.  The `chmod_4755` fixture
+    /// flips red when the no-new-privs bit is unset because a setuid
+    /// binary the harness execs after the chmod re-acquires the
+    /// missing privileges.
+    pub no_no_new_privs: bool,
+}
+
 impl SandboxOptions {
     /// Borrow the OOB listener handle when the network policy carries
     /// one.  Returns `None` for every variant except
@@ -304,6 +369,7 @@ impl Default for SandboxOptions {
             seccomp_caps: 0,
             process_hardening: ProcessHardeningProfile::Standard,
             bind_mount_host_libs: false,
+            ablation: None,
             trace: None,
         }
     }

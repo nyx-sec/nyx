@@ -52,6 +52,19 @@ unsafe extern "C" {
 /// `BTreeSet` and resolved to numbers via [`syscall_number`].  Unknown
 /// names (not in the per-arch table) are silently dropped.
 pub fn allowed_syscall_numbers(caps: u32) -> Vec<u32> {
+    allowed_syscall_numbers_with_extras(caps, std::iter::empty())
+}
+
+/// Same as [`allowed_syscall_numbers`] but additionally folds in every
+/// name yielded by `extras`.  Used by the Phase 20 ablation harness to
+/// add the socket / setuid families back to the allowlist when a
+/// per-primitive escape fixture wants to prove that removing the
+/// corresponding seccomp filter flips the fixture red.  Unknown names
+/// are silently dropped, identical to the base path.
+pub fn allowed_syscall_numbers_with_extras<I>(caps: u32, extras: I) -> Vec<u32>
+where
+    I: IntoIterator<Item = &'static str>,
+{
     let mut names: BTreeSet<&'static str> = BTreeSet::new();
     for &n in BASE.iter() {
         names.insert(n);
@@ -63,11 +76,51 @@ pub fn allowed_syscall_numbers(caps: u32) -> Vec<u32> {
             }
         }
     }
+    for n in extras {
+        names.insert(n);
+    }
     let mut nrs: Vec<u32> = names.into_iter().filter_map(syscall_number).collect();
     nrs.sort_unstable();
     nrs.dedup();
     nrs
 }
+
+/// Syscall names re-allowed when [`crate::dynamic::sandbox::AblationMask::no_seccomp_socket`]
+/// is set.  Covers the socket-family entries of every cap allowlist
+/// plus the raw / packet-socket primitives the
+/// `tests/sandbox_escape_suite.rs::raw_socket_bind` fixture exercises.
+pub const ABLATION_SOCKET_FAMILY: &[&str] = &[
+    "socket",
+    "socketpair",
+    "connect",
+    "bind",
+    "listen",
+    "accept",
+    "accept4",
+    "sendto",
+    "recvfrom",
+    "sendmsg",
+    "recvmsg",
+    "shutdown",
+    "getsockname",
+    "getpeername",
+    "getsockopt",
+    "setsockopt",
+];
+
+/// Syscall names re-allowed when [`crate::dynamic::sandbox::AblationMask::no_seccomp_setuid`]
+/// is set.  Covers the uid / gid mutation entries the
+/// `tests/sandbox_escape_suite.rs::setuid_zero` fixture exercises.
+pub const ABLATION_SETUID_FAMILY: &[&str] = &[
+    "setuid",
+    "setgid",
+    "setreuid",
+    "setregid",
+    "setresuid",
+    "setresgid",
+    "setfsuid",
+    "setfsgid",
+];
 
 /// Install a pre-compiled seccomp filter on the calling thread.
 ///

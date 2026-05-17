@@ -31,7 +31,7 @@
 
 use crate::dynamic::sandbox::seccomp;
 use crate::dynamic::sandbox::seccomp::bpf::SockFilter;
-use crate::dynamic::sandbox::{ProcessHardeningProfile, SandboxOptions};
+use crate::dynamic::sandbox::{AblationMask, ProcessHardeningProfile, SandboxOptions};
 use std::io::Read;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::process::CommandExt;
@@ -308,16 +308,38 @@ fn apply_no_new_privs() -> PrimitiveStatus {
 }
 
 fn apply_unshare() -> PrimitiveStatus {
+    apply_unshare_with_flags(CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS)
+}
+
+fn apply_unshare_with_flags(flags: i32) -> PrimitiveStatus {
     // CLONE_NEWUSER must come first on most modern kernels so the
     // unprivileged caller can map uid/gid; CLONE_NEWPID + CLONE_NEWNS
-    // then succeed because the new user namespace owns them.
-    let flags = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS;
+    // then succeed because the new user namespace owns them.  Phase 20
+    // ablation drops individual flags via `AblationMask::no_userns` /
+    // `no_pidns` so the escape-fixture matrix can prove the namespace
+    // primitive carries its weight.
     let ret = unsafe { unshare(flags) };
     if ret == 0 {
         PrimitiveStatus::Applied
     } else {
         PrimitiveStatus::Failed(last_errno())
     }
+}
+
+/// Compose the `unshare(2)` flag set for a given ablation mask.  The
+/// production path passes `None` and gets the full
+/// `CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS` set.  Tests pass `Some`
+/// to drop individual namespaces and assert the escape fixture flips.
+fn unshare_flags_for_ablation(mask: Option<AblationMask>) -> i32 {
+    let m = mask.unwrap_or_default();
+    let mut flags = CLONE_NEWNS;
+    if !m.no_userns {
+        flags |= CLONE_NEWUSER;
+    }
+    if !m.no_pidns {
+        flags |= CLONE_NEWPID;
+    }
+    flags
 }
 
 fn apply_chroot(workdir: &[u8]) -> PrimitiveStatus {
@@ -411,9 +433,20 @@ struct PreExecPlan {
     profile: ProcessHardeningProfileTag,
     /// Read-only bind-mounts the child applies after `unshare(CLONE_NEWNS)`
     /// and before `chroot(2)`.  Empty when
-    /// [`SandboxOptions::bind_mount_host_libs`] is false or the active
-    /// profile is `Standard` (no namespace to bind into).
+    /// [`SandboxOptions::bind_mount_host_libs`] is false, the active
+    /// profile is `Standard` (no namespace to bind into), or the active
+    /// ablation mask sets `no_chroot` (no `chroot(2)` means the bind
+    /// mounts would just orphan-mount inside the workdir).
     bind_mounts: Vec<BindMount>,
+    /// `unshare(2)` flag bits the child requests.  Computed from
+    /// [`unshare_flags_for_ablation`] so the Phase 20 ablation harness
+    /// can drop `CLONE_NEWUSER` / `CLONE_NEWPID` individually without
+    /// the test re-implementing the bit math.
+    unshare_flags: i32,
+    /// `Some` when the active mask is non-default; consulted in
+    /// [`run_pre_exec_in_child`] to skip individual primitives.  `None`
+    /// in production so the hot path is unaffected.
+    ablation: Option<AblationMask>,
 }
 
 /// Returned by [`install_pre_exec`].  The caller MUST invoke either
@@ -519,9 +552,14 @@ pub fn install_pre_exec(
 fn run_pre_exec_in_child(plan: &PreExecPlan) -> HardeningOutcome {
     let mut outcome = HardeningOutcome::default();
     outcome.profile = plan.profile;
+    let ablation = plan.ablation.unwrap_or_default();
 
     // ── Always-on: PR_SET_NO_NEW_PRIVS + RLIMIT_AS ───────────────────────
-    outcome.no_new_privs = apply_no_new_privs();
+    outcome.no_new_privs = if ablation.no_no_new_privs {
+        PrimitiveStatus::Skipped
+    } else {
+        apply_no_new_privs()
+    };
     outcome.rlimit_as = apply_rlimit(RLIMIT_AS, plan.rlimit_as_bytes);
 
     if matches!(plan.profile, ProcessHardeningProfileTag::Standard) {
@@ -531,13 +569,20 @@ fn run_pre_exec_in_child(plan: &PreExecPlan) -> HardeningOutcome {
     // ── Strict profile: rlimits, unshare, chroot, seccomp ────────────────
     outcome.rlimit_cpu = apply_rlimit(RLIMIT_CPU, plan.rlimit_cpu_seconds);
     outcome.rlimit_nofile = apply_rlimit(RLIMIT_NOFILE, plan.rlimit_nofile);
-    outcome.unshare = apply_unshare();
+    // `unshare(2)` always runs even under ablation because the BindMount
+    // step needs `CLONE_NEWNS` to land in a private mount namespace;
+    // userns/pidns are dropped via the flag mask in `build_plan`.
+    outcome.unshare = apply_unshare_with_flags(plan.unshare_flags);
     // Bind-mount host library paths into the workdir after unshare (so
     // the new mount namespace catches them) and before chroot (so the
     // bind sources are still reachable at their absolute host paths).
     // No-op when `bind_mounts` is empty.
     apply_bind_mounts(&plan.bind_mounts);
-    outcome.chroot = apply_chroot(&plan.workdir_nul);
+    outcome.chroot = if ablation.no_chroot {
+        PrimitiveStatus::Skipped
+    } else {
+        apply_chroot(&plan.workdir_nul)
+    };
     // seccomp is applied last so the filter does not block any of the
     // earlier syscalls (setrlimit, prctl, unshare, chroot, chdir, mount).
     outcome.seccomp = apply_seccomp(plan.seccomp_program.as_slice());
@@ -557,8 +602,15 @@ fn build_plan(opts: &SandboxOptions, workdir: &Path) -> PreExecPlan {
 
     // Pre-compile the BPF program in the parent so the pre_exec
     // callback (which must not allocate) can hand it straight to
-    // `prctl(PR_SET_SECCOMP)`.
-    let nrs = seccomp::allowed_syscall_numbers(opts.seccomp_caps);
+    // `prctl(PR_SET_SECCOMP)`.  Ablation extras add the socket / setuid
+    // syscall families back to the allowlist so escape fixtures can
+    // prove that the corresponding seccomp slice carries its weight.
+    let ablation = opts.ablation;
+    let extras: Vec<&'static str> = ablation_extras(ablation);
+    let nrs = seccomp::allowed_syscall_numbers_with_extras(
+        opts.seccomp_caps,
+        extras.iter().copied(),
+    );
     let program = seccomp::bpf::compile(&nrs, seccomp::syscalls::AUDIT_ARCH);
 
     let profile = match opts.process_hardening {
@@ -566,11 +618,16 @@ fn build_plan(opts: &SandboxOptions, workdir: &Path) -> PreExecPlan {
         ProcessHardeningProfile::Strict => ProcessHardeningProfileTag::Strict,
     };
 
+    let mask = ablation.unwrap_or_default();
     // Bind-mounts are only useful when the child will chroot, i.e. under
     // the Strict profile.  Computing them under Standard would create
-    // empty dest dirs in the workdir for no reason.
+    // empty dest dirs in the workdir for no reason.  Skipping the
+    // chroot via ablation drops the bind-mounts too — leaving them on
+    // would mount over the host directly inside the unshared mount
+    // namespace, which is not what the ablation harness wants.
     let bind_mounts = if opts.bind_mount_host_libs
         && matches!(profile, ProcessHardeningProfileTag::Strict)
+        && !mask.no_chroot
     {
         compute_host_lib_bind_mounts(workdir)
     } else {
@@ -585,7 +642,28 @@ fn build_plan(opts: &SandboxOptions, workdir: &Path) -> PreExecPlan {
         seccomp_program: Arc::new(program),
         profile,
         bind_mounts,
+        unshare_flags: unshare_flags_for_ablation(ablation),
+        ablation,
     }
+}
+
+/// Collect the syscall-name extras a Phase 20 ablation mask requires.
+/// Returns an empty Vec when the mask is `None` or default; otherwise
+/// folds `ABLATION_SOCKET_FAMILY` / `ABLATION_SETUID_FAMILY` from
+/// [`crate::dynamic::sandbox::seccomp`] into the allowlist seed.
+fn ablation_extras(mask: Option<AblationMask>) -> Vec<&'static str> {
+    let m = match mask {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    let mut out: Vec<&'static str> = Vec::new();
+    if m.no_seccomp_socket {
+        out.extend_from_slice(seccomp::ABLATION_SOCKET_FAMILY);
+    }
+    if m.no_seccomp_setuid {
+        out.extend_from_slice(seccomp::ABLATION_SETUID_FAMILY);
+    }
+    out
 }
 
 /// Build the bind-mount list for the dynamic-loader paths an interpreted
@@ -814,6 +892,261 @@ mod tests {
         // Idempotency property does NOT hold — caller must not double-terminate.
         let twice = nul_terminate(b"/lib\0");
         assert_eq!(twice, b"/lib\0\0");
+    }
+
+    // ── Phase 20 ablation harness ────────────────────────────────────────────
+
+    #[test]
+    fn ablation_default_mask_matches_full_strict_flags() {
+        // The production path (`opts.ablation == None`) must request the
+        // full namespace set so non-ablation runs do not regress.
+        assert_eq!(
+            unshare_flags_for_ablation(None),
+            CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS,
+        );
+        // A non-None but default-valued mask must behave identically:
+        // the integration test layer can construct an empty mask as a
+        // sentinel without losing any production primitive.
+        assert_eq!(
+            unshare_flags_for_ablation(Some(AblationMask::default())),
+            CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS,
+        );
+    }
+
+    #[test]
+    fn ablation_no_userns_drops_clone_newuser_flag() {
+        let flags = unshare_flags_for_ablation(Some(AblationMask {
+            no_userns: true,
+            ..AblationMask::default()
+        }));
+        assert_eq!(flags & CLONE_NEWUSER, 0, "CLONE_NEWUSER must be dropped");
+        assert_eq!(flags & CLONE_NEWPID, CLONE_NEWPID, "CLONE_NEWPID must persist");
+        assert_eq!(flags & CLONE_NEWNS, CLONE_NEWNS, "CLONE_NEWNS must persist (bind-mount target)");
+    }
+
+    #[test]
+    fn ablation_no_pidns_drops_clone_newpid_flag() {
+        let flags = unshare_flags_for_ablation(Some(AblationMask {
+            no_pidns: true,
+            ..AblationMask::default()
+        }));
+        assert_eq!(flags & CLONE_NEWPID, 0, "CLONE_NEWPID must be dropped");
+        assert_eq!(flags & CLONE_NEWUSER, CLONE_NEWUSER, "CLONE_NEWUSER must persist");
+    }
+
+    #[test]
+    fn ablation_no_userns_and_no_pidns_keeps_only_newns() {
+        // Even with both namespace ablations set, CLONE_NEWNS must
+        // remain so the bind-mount step has a private mount namespace
+        // to land in.  Dropping NEWNS too would mount host libs into
+        // the live host namespace — a serious test-side foot-gun.
+        let flags = unshare_flags_for_ablation(Some(AblationMask {
+            no_userns: true,
+            no_pidns: true,
+            ..AblationMask::default()
+        }));
+        assert_eq!(flags, CLONE_NEWNS);
+    }
+
+    #[test]
+    fn ablation_no_chroot_drops_bind_mounts_from_plan() {
+        // bind_mount_host_libs requested, Strict profile selected — yet
+        // the ablated chroot means we should not pre-create bind dirs in
+        // the workdir.  Doing so would leak mount points to the host.
+        let workdir = tempfile::TempDir::new().expect("tempdir");
+        let opts = SandboxOptions {
+            bind_mount_host_libs: true,
+            process_hardening: ProcessHardeningProfile::Strict,
+            ablation: Some(AblationMask {
+                no_chroot: true,
+                ..AblationMask::default()
+            }),
+            ..SandboxOptions::default()
+        };
+        let plan = build_plan(&opts, workdir.path());
+        assert!(
+            plan.bind_mounts.is_empty(),
+            "no_chroot ablation must zero out bind_mounts; got {} entries",
+            plan.bind_mounts.len(),
+        );
+    }
+
+    #[test]
+    fn ablation_no_chroot_plan_carries_mask_through_to_pre_exec() {
+        // Verify the mask survives `build_plan` so the pre_exec callback
+        // can inspect it.  The pre_exec sequence itself is hard to drive
+        // without an actual fork; the wire-level "Skipped" outcome
+        // assertion lives in `run_pre_exec_outcome_with_no_chroot_mask`.
+        let opts = SandboxOptions {
+            process_hardening: ProcessHardeningProfile::Strict,
+            ablation: Some(AblationMask {
+                no_chroot: true,
+                no_no_new_privs: true,
+                ..AblationMask::default()
+            }),
+            ..SandboxOptions::default()
+        };
+        let plan = build_plan(&opts, std::path::Path::new("/tmp"));
+        let mask = plan.ablation.expect("plan must carry the mask");
+        assert!(mask.no_chroot);
+        assert!(mask.no_no_new_privs);
+    }
+
+    #[test]
+    fn ablation_extras_default_is_empty() {
+        assert!(ablation_extras(None).is_empty());
+        assert!(ablation_extras(Some(AblationMask::default())).is_empty());
+    }
+
+    #[test]
+    fn ablation_no_seccomp_socket_extends_allowlist_with_socket_family() {
+        let extras = ablation_extras(Some(AblationMask {
+            no_seccomp_socket: true,
+            ..AblationMask::default()
+        }));
+        for needle in ["socket", "bind", "connect", "accept"] {
+            assert!(
+                extras.contains(&needle),
+                "no_seccomp_socket extras must include {needle}, got {extras:?}",
+            );
+        }
+        for forbidden in ["setuid", "setgid"] {
+            assert!(
+                !extras.contains(&forbidden),
+                "no_seccomp_socket extras must not leak setuid family",
+            );
+        }
+    }
+
+    #[test]
+    fn ablation_no_seccomp_setuid_extends_allowlist_with_setuid_family() {
+        let extras = ablation_extras(Some(AblationMask {
+            no_seccomp_setuid: true,
+            ..AblationMask::default()
+        }));
+        for needle in ["setuid", "setgid", "setreuid", "setresuid"] {
+            assert!(
+                extras.contains(&needle),
+                "no_seccomp_setuid extras must include {needle}, got {extras:?}",
+            );
+        }
+        for forbidden in ["socket", "bind"] {
+            assert!(
+                !extras.contains(&forbidden),
+                "no_seccomp_setuid extras must not leak socket family",
+            );
+        }
+    }
+
+    #[test]
+    fn ablation_no_seccomp_socket_bpf_includes_socket_syscall() {
+        // Verify the extension reaches the compiled BPF program, not
+        // just the name list.  socket() lives in the SSRF cap allowlist
+        // today; without that cap bit set, the production path filters
+        // it.  Ablation must add it back via the extras seed.
+        let opts = SandboxOptions {
+            seccomp_caps: 0,
+            process_hardening: ProcessHardeningProfile::Strict,
+            ablation: Some(AblationMask {
+                no_seccomp_socket: true,
+                ..AblationMask::default()
+            }),
+            ..SandboxOptions::default()
+        };
+        let plan = build_plan(&opts, std::path::Path::new("/tmp"));
+        let socket_nr = seccomp::syscalls::syscall_number("socket")
+            .expect("socket in per-arch syscall map");
+        // BPF compile emits one JEQ per allowed syscall (+ a fixed arch
+        // prelude + a default-deny tail), so encoding socket as a JEQ
+        // instruction's k-field is the load-bearing signal.
+        let program = plan.seccomp_program.as_slice();
+        let landed = program.iter().any(|insn| insn.k == socket_nr);
+        assert!(
+            landed,
+            "BPF program must include socket={} after no_seccomp_socket ablation",
+            socket_nr,
+        );
+    }
+
+    #[test]
+    fn ablation_no_seccomp_setuid_bpf_includes_setuid_syscall() {
+        let opts = SandboxOptions {
+            seccomp_caps: 0,
+            process_hardening: ProcessHardeningProfile::Strict,
+            ablation: Some(AblationMask {
+                no_seccomp_setuid: true,
+                ..AblationMask::default()
+            }),
+            ..SandboxOptions::default()
+        };
+        let plan = build_plan(&opts, std::path::Path::new("/tmp"));
+        let setuid_nr = seccomp::syscalls::syscall_number("setuid")
+            .expect("setuid in per-arch syscall map");
+        let program = plan.seccomp_program.as_slice();
+        let landed = program.iter().any(|insn| insn.k == setuid_nr);
+        assert!(
+            landed,
+            "BPF program must include setuid={} after no_seccomp_setuid ablation",
+            setuid_nr,
+        );
+    }
+
+    #[test]
+    fn ablation_off_keeps_socket_filtered_when_cap_unset() {
+        // Sanity: without the no_seccomp_socket toggle, socket() must
+        // NOT land in the program when no cap requests it.  This is the
+        // tripwire for an accidental "ablation extras always added"
+        // regression.
+        let opts = SandboxOptions {
+            seccomp_caps: 0,
+            process_hardening: ProcessHardeningProfile::Strict,
+            ablation: None,
+            ..SandboxOptions::default()
+        };
+        let plan = build_plan(&opts, std::path::Path::new("/tmp"));
+        let socket_nr = seccomp::syscalls::syscall_number("socket")
+            .expect("socket in per-arch syscall map");
+        let landed = plan.seccomp_program.iter().any(|insn| insn.k == socket_nr);
+        assert!(
+            !landed,
+            "production path must filter socket() when no cap requests it",
+        );
+    }
+
+    #[test]
+    fn run_pre_exec_outcome_with_no_chroot_mask_skips_chroot_status() {
+        // Drive `run_pre_exec_in_child` directly so we exercise the
+        // ablation-aware status assignment without actually fork+exec.
+        // The pre_exec sequence is allocator-free but ordinary Rust on
+        // the parent thread — its only side effect under test is the
+        // returned HardeningOutcome record, which is what tabulators
+        // and ablation assertions consume.
+        let plan = PreExecPlan {
+            rlimit_cpu_seconds: 1,
+            rlimit_nofile: 256,
+            rlimit_as_bytes: 4096_u64 * 1024 * 1024,
+            workdir_nul: b"/tmp\0".to_vec(),
+            seccomp_program: Arc::new(Vec::new()),
+            profile: ProcessHardeningProfileTag::Strict,
+            bind_mounts: Vec::new(),
+            unshare_flags: 0,
+            ablation: Some(AblationMask {
+                no_chroot: true,
+                no_no_new_privs: true,
+                ..AblationMask::default()
+            }),
+        };
+        let outcome = run_pre_exec_in_child(&plan);
+        assert!(
+            matches!(outcome.chroot, PrimitiveStatus::Skipped),
+            "no_chroot mask must yield Skipped, got {:?}",
+            outcome.chroot,
+        );
+        assert!(
+            matches!(outcome.no_new_privs, PrimitiveStatus::Skipped),
+            "no_no_new_privs mask must yield Skipped, got {:?}",
+            outcome.no_new_privs,
+        );
     }
 
 }
