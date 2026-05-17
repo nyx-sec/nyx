@@ -79,6 +79,7 @@ mod tests {
             spec_hash: "ts000000000001ab".into(),
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 

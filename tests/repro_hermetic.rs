@@ -54,6 +54,7 @@ mod repro_hermetic_tests {
             spec_hash: "hermetic00000001".into(),
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 

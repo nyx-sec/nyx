@@ -20,6 +20,7 @@
 use crate::callgraph::{CallGraph, CallGraphAnalysis};
 use crate::commands::scan::Diag;
 use crate::dynamic::corpus::CORPUS_VERSION;
+use crate::dynamic::framework::FrameworkBinding;
 use crate::dynamic::stubs::StubKind;
 use crate::evidence::{Confidence, FlowStepKind, UnsupportedReason};
 use crate::labels::Cap;
@@ -124,6 +125,25 @@ pub struct HarnessSpec {
     /// the cache deserialise as an empty list.
     #[serde(default)]
     pub stubs_required: Vec<StubKind>,
+    /// Track L.0 — framework binding recovered for the entry function
+    /// (route shape, request slots, response writer, middleware chain).
+    ///
+    /// Populated by [`crate::dynamic::framework::detect_binding`] when
+    /// a registered [`crate::dynamic::framework::FrameworkAdapter`]
+    /// matches the resolved entry; `None` when no adapter matches or
+    /// when the spec-derivation path lacks the AST context required
+    /// to dispatch.  Phase 01 ships with an empty adapter registry so
+    /// this field is `None` for every spec; subsequent Track-L phases
+    /// register adapters and back-fill the binding.
+    ///
+    /// Excluded from [`compute_spec_hash`]: the binding is descriptive
+    /// metadata derived from the entry function and does not change
+    /// the harness boundary topology that the spec hash protects.
+    /// `#[serde(default, skip_serializing_if = "Option::is_none")]` so
+    /// pre-Phase-01 serialised specs deserialise unchanged and an
+    /// absent binding does not bloat repro-bundle JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub framework: Option<FrameworkBinding>,
 }
 
 fn default_derivation_strategy() -> SpecDerivationStrategy {
@@ -1054,9 +1074,49 @@ fn finalize_spec(
         spec_hash: String::new(),
         derivation,
         stubs_required,
+        // Phase 01 (Track L.0): the framework adapter registry is
+        // empty, so leave the binding unpopulated.  Subsequent phases
+        // back-fill via `attach_framework_binding` once the spec's
+        // entry has been resolved and an AST is available.
+        framework: None,
     };
+    attach_framework_binding(&mut spec);
     spec.spec_hash = compute_spec_hash(&spec);
     spec
+}
+
+/// Dispatch the resolved entry function through
+/// [`crate::dynamic::framework::detect_binding`] and stash the result
+/// on [`HarnessSpec::framework`].
+///
+/// Invoked unconditionally at the tail of [`finalize_spec`] so every
+/// strategy ([`SpecDerivationStrategy::FromFlowSteps`] …
+/// [`SpecDerivationStrategy::FromCallgraphEntry`]) benefits without
+/// per-strategy plumbing.
+///
+/// # Phase 01 contract
+///
+/// The framework adapter registry is empty in Phase 01, so this
+/// function fast-paths to a no-op when
+/// [`crate::dynamic::framework::registry::adapters_for`] returns an
+/// empty slice.  That avoids parsing the entry file from disk in the
+/// common (empty) case and keeps the spec-derivation path side-effect
+/// free.  Subsequent Track-L phases that register concrete adapters
+/// also extend this function to parse `spec.entry_file` and call
+/// [`crate::dynamic::framework::detect_binding`] with the resulting
+/// tree-sitter root.
+fn attach_framework_binding(spec: &mut HarnessSpec) {
+    if crate::dynamic::framework::registry::adapters_for(spec.lang).is_empty() {
+        return;
+    }
+    // Phase-01 stub.  When Track L.1+ registers its first adapter,
+    // this branch will (a) read `spec.entry_file` via
+    // `std::fs::read`, (b) parse with the language's tree-sitter
+    // grammar, (c) construct a `FuncSummary` from `spec` + the
+    // matching summary index, and (d) call
+    // `crate::dynamic::framework::detect_binding`.  Left empty here
+    // because Phase 01 ships zero adapters and the verifier's
+    // acceptance test demands byte-identical verdicts.
 }
 
 /// Walk `flow_steps` and return the entry point: the enclosing function of
@@ -1331,6 +1391,7 @@ mod tests {
             spec_hash: String::new(),
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         };
         spec.spec_hash = compute_spec_hash(&spec);
         spec

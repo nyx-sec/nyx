@@ -364,6 +364,7 @@ mod e2e_phase_08 {
             spec_hash: spec_hash.clone(),
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         };
 
         (spec, tmp)

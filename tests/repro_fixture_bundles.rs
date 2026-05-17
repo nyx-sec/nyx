@@ -97,6 +97,7 @@ fn flask_eval_spec() -> HarnessSpec {
         spec_hash: FLASK_EVAL_SPEC_HASH.into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     }
 }
 

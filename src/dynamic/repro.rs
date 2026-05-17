@@ -680,6 +680,7 @@ mod tests {
             spec_hash: "cafecafecafe0001".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 

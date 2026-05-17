@@ -572,6 +572,25 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             spec.spec_hash, spec.lang, spec.entry_kind
         )),
     );
+    // Track L.0: surface framework-adapter dispatch outcome to the
+    // trace so operators (and the Phase 30 determinism audit) can see
+    // whether an adapter claimed the entry function.  Phase 01 always
+    // emits the `None` variant because the adapter registry is empty;
+    // subsequent Track-L phases register adapters and switch the
+    // event to `Detected` with the adapter name in `detail`.
+    match &spec.framework {
+        Some(binding) => trace.record(
+            crate::dynamic::trace::TraceStage::FrameworkAdapterDetected,
+            Some(format!(
+                "adapter={} kind={:?}",
+                binding.adapter, binding.kind
+            )),
+        ),
+        None => trace.record(
+            crate::dynamic::trace::TraceStage::FrameworkAdapterNone,
+            Some(format!("lang={:?} entry={}", spec.lang, spec.entry_name)),
+        ),
+    }
 
     // Pre-flight gate: surface a structured `Inconclusive(EntryKindUnsupported)`
     // up-front when the spec's [`EntryKind`] is not in the lang emitter's

@@ -1642,6 +1642,7 @@ mod tests {
                 spec_hash: "0000000000000000".to_owned(),
                 derivation: SpecDerivationStrategy::FromFlowSteps,
                 stubs_required: vec![],
+                framework: None,
             }
         }
 

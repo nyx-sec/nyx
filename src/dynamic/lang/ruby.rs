@@ -685,6 +685,7 @@ mod tests {
             spec_hash: "rb000000000001".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 

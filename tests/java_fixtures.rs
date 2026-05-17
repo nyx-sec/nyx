@@ -744,6 +744,7 @@ public class App {
             spec_hash: "phase14staging00".into(),
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         };
 
         let captured = capture_project_dependencies(project_root.path(), &spec);

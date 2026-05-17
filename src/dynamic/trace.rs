@@ -40,6 +40,15 @@ use std::sync::Mutex;
 pub enum TraceStage {
     SpecStarted,
     SpecDone,
+    /// Track L.0 — a [`crate::dynamic::framework::FrameworkAdapter`]
+    /// claimed the spec's entry function.  `detail` carries the
+    /// adapter name verbatim (e.g. `"flask"`, `"spring-mvc"`).
+    FrameworkAdapterDetected,
+    /// Track L.0 — no registered adapter matched the spec's entry
+    /// function.  Emitted alongside [`Self::SpecDone`] for every spec
+    /// so a trace consumer can audit framework-detection coverage by
+    /// counting `framework_adapter_*` events.
+    FrameworkAdapterNone,
     BuildStarted,
     BuildDone,
     SandboxStarted,
@@ -56,6 +65,8 @@ impl TraceStage {
         match self {
             Self::SpecStarted => "spec_started",
             Self::SpecDone => "spec_done",
+            Self::FrameworkAdapterDetected => "framework_adapter_detected",
+            Self::FrameworkAdapterNone => "framework_adapter_none",
             Self::BuildStarted => "build_started",
             Self::BuildDone => "build_done",
             Self::SandboxStarted => "sandbox_started",

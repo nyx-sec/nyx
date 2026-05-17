@@ -69,6 +69,7 @@ pub mod build_sandbox;
 pub mod corpus;
 pub mod differential;
 pub mod environment;
+pub mod framework;
 pub mod harness;
 pub mod lang;
 pub mod mount_filter;

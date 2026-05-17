@@ -1213,6 +1213,7 @@ mod tests {
             spec_hash: "00000000deadbeef".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 

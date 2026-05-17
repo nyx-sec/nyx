@@ -35,6 +35,7 @@ mod repro_determinism_tests {
             spec_hash: spec_hash.to_owned(),
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 
@@ -172,6 +173,7 @@ mod repro_determinism_tests {
             spec_hash: spec_hash.to_owned(),
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 
@@ -304,6 +306,7 @@ fn main() {
             spec_hash: spec_hash.to_owned(),
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 
@@ -359,6 +362,7 @@ fn main() {
             spec_hash: spec_hash.to_owned(),
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 
@@ -414,6 +418,7 @@ fn main() {
             spec_hash: spec_hash.to_owned(),
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 
@@ -469,6 +474,7 @@ fn main() {
             spec_hash: spec_hash.to_owned(),
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 

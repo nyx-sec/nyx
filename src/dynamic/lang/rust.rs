@@ -797,6 +797,7 @@ mod tests {
             spec_hash: "rusttest00000001".into(),
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 

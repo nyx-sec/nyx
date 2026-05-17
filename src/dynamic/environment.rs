@@ -1176,6 +1176,7 @@ mod tests {
             spec_hash: "test0000abcd1234".into(),
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
+            framework: None,
         }
     }
 

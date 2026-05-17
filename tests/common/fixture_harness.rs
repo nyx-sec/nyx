@@ -491,6 +491,7 @@ pub fn run_shape_fixture_lang(
         spec_hash: spec_hash.clone(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     };
 
     // Phase 14: Java shape fixtures bundle annotation / type stubs as
@@ -785,6 +786,7 @@ pub fn run_harness_snapshot_lang(
         spec_hash: "snapshotsnapshot".into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     };
 
     let harness = lang_emit::emit(&spec).expect("emitter must produce a harness");

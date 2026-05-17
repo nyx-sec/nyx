@@ -41,6 +41,7 @@ fn make_spec(hash: &str) -> HarnessSpec {
         spec_hash: hash.into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     }
 }
 
