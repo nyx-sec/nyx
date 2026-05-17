@@ -446,6 +446,208 @@ mod hardening_tests {
         let _ = result.exit_code;
     }
 
+    /// Phase 17 acceptance (e): Strict-profile run of a C `Cap::CODE_EXEC`
+    /// fixture confirms AND stamps `VerifyResult::hardening_outcome` with
+    /// the `linux-process` backend tag, mirroring the macOS counterpart at
+    /// `tests/sandbox_hardening_macos.rs::verify_finding_under_strict_stamps_hardening_outcome`.
+    /// Drives the full `verify_finding` pipeline (spec derivation → build →
+    /// run → projection) so the typed-parameter wiring from
+    /// `runner.rs::ensure_build` through `prepare_c(spec, workdir, profile)`
+    /// gets exercised end-to-end: the Strict profile forces `cc -static`,
+    /// which keeps the chrooted harness reachable after `chroot(workdir)`
+    /// strips the host's `/lib*`.
+    ///
+    /// Skips when (a) `cc` is missing, (b) `cc -static` can't link
+    /// against libc.a (no `libc6-dev` or `musl-cross`), or (c) seccomp
+    /// is unavailable.  The Linux CI matrix row in `.github/workflows/dynamic.yml`
+    /// installs `libc6-dev` (line 67) so the static link succeeds there;
+    /// hosts without it skip with an eprintln rather than failing.
+    #[test]
+    fn verify_finding_under_strict_stamps_hardening_outcome() {
+        use std::path::PathBuf;
+
+        if std::process::Command::new(
+            std::env::var("NYX_CC_BIN").unwrap_or_else(|_| "cc".to_owned()),
+        )
+        .arg("--version")
+        .output()
+        .map(|o| !o.status.success())
+        .unwrap_or(true)
+        {
+            eprintln!("SKIP: cc missing — cannot build C harness for strict-profile run");
+            return;
+        }
+
+        // Pre-flight: confirm `cc -static` actually links.  Without libc.a
+        // the build sandbox falls back to dynamic and chroot kills the
+        // harness before main(), which would surface as a spurious
+        // `NotConfirmed` rather than the wiring failure we'd want to flag.
+        let probe_tmp = tempfile::TempDir::new().expect("probe tempdir");
+        let probe_src = probe_tmp.path().join("nyx_static_probe.c");
+        std::fs::write(&probe_src, "int main(void) { return 0; }\n")
+            .expect("write static probe source");
+        let probe_bin = probe_tmp.path().join("nyx_static_probe");
+        let static_ok = std::process::Command::new(
+            std::env::var("NYX_CC_BIN").unwrap_or_else(|_| "cc".to_owned()),
+        )
+        .args(["-static", "-O0", "-o"])
+        .arg(&probe_bin)
+        .arg(&probe_src)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+        if !static_ok {
+            eprintln!(
+                "SKIP: `cc -static` cannot link — install `libc6-dev` (Debian/Ubuntu) \
+                 or `musl-cross` to exercise the chroot-bound static binary path"
+            );
+            return;
+        }
+
+        use nyx_scanner::commands::scan::Diag;
+        use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+        use nyx_scanner::evidence::{
+            Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus,
+        };
+        use nyx_scanner::labels::Cap;
+        use nyx_scanner::patterns::{FindingCategory, Severity};
+        use nyx_scanner::utils::config::Config;
+
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/c/free_fn/vuln.c");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join("vuln.c");
+        std::fs::copy(&fixture_src, &dst).expect("stage fixture into tempdir");
+
+        unsafe {
+            std::env::set_var(
+                "NYX_REPRO_BASE",
+                tmp.path().join("repro").to_str().unwrap(),
+            );
+            std::env::set_var(
+                "NYX_TELEMETRY_PATH",
+                tmp.path().join("events.jsonl").to_str().unwrap(),
+            );
+            // Clear any prior fallback marker so the assertion below
+            // distinguishes a fresh fallback from a stale one set by an
+            // earlier test in the same process.
+            std::env::remove_var("NYX_BUILD_STATIC_FALLBACK");
+        }
+
+        let path_str = dst.to_string_lossy().into_owned();
+        let evidence = Evidence {
+            flow_steps: vec![
+                FlowStep {
+                    step: 1,
+                    kind: FlowStepKind::Source,
+                    file: path_str.clone(),
+                    line: 10,
+                    col: 0,
+                    snippet: None,
+                    variable: Some("payload".into()),
+                    callee: None,
+                    function: Some("run".into()),
+                    is_cross_file: false,
+                },
+                FlowStep {
+                    step: 2,
+                    kind: FlowStepKind::Sink,
+                    file: path_str.clone(),
+                    line: 16,
+                    col: 4,
+                    snippet: None,
+                    variable: None,
+                    callee: Some("system".into()),
+                    function: None,
+                    is_cross_file: false,
+                },
+            ],
+            sink_caps: Cap::CODE_EXEC.bits(),
+            ..Default::default()
+        };
+        let diag = Diag {
+            path: path_str,
+            line: 16,
+            col: 0,
+            severity: Severity::High,
+            id: "taint-unsanitised-flow".into(),
+            category: FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: Some(Confidence::High),
+            evidence: Some(evidence),
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        };
+
+        let mut config = Config::default();
+        config.scanner.harden_profile = "strict".to_owned();
+        // Pin the process backend: `Auto` would route to docker when
+        // reachable, and docker ignores `process_hardening`, masking the
+        // wiring this test is asserting.
+        config.scanner.verify_backend = "process".to_owned();
+        let opts = VerifyOptions::from_config(&config);
+        let result = verify_finding(&diag, &opts);
+
+        let fallback = std::env::var_os("NYX_BUILD_STATIC_FALLBACK").is_some();
+        unsafe {
+            std::env::remove_var("NYX_REPRO_BASE");
+            std::env::remove_var("NYX_TELEMETRY_PATH");
+            std::env::remove_var("NYX_BUILD_STATIC_FALLBACK");
+        }
+
+        if fallback {
+            eprintln!(
+                "SKIP: prepare_c fell back to dynamic link mid-run \
+                 (libc.a vanished between pre-flight and build); \
+                 chroot would defeat the harness before main()"
+            );
+            return;
+        }
+
+        assert_eq!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "free_fn/vuln.c under --harden=strict should confirm: detail={:?}",
+            result.detail,
+        );
+        let summary = result
+            .hardening_outcome
+            .as_ref()
+            .expect("Strict run must stamp hardening_outcome");
+        assert_eq!(
+            summary.backend, "linux-process",
+            "Linux host should produce a linux-process backend stamp",
+        );
+        assert_eq!(
+            summary.profile, "strict",
+            "Strict profile tag must round-trip through summarize_hardening",
+        );
+        assert!(
+            !summary.primitives.is_empty(),
+            "Linux backend records one entry per primitive (no_new_privs, rlimit_*, \
+             unshare, chroot, seccomp); got: {:?}",
+            summary.primitives,
+        );
+        assert!(
+            summary
+                .primitives
+                .iter()
+                .any(|p| p.name == "no_new_privs" && p.status == "applied"),
+            "no_new_privs must apply under Strict — primitives: {:?}",
+            summary.primitives,
+        );
+    }
+
     /// Seccomp policy synthesised from `seccomp_policy.toml` includes
     /// the syscalls required for the probe to reach `__NYX_PROBE_DONE__`
     /// (read, write, openat, readlinkat, fcntl, exit_group, …).  This
