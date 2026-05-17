@@ -17,3 +17,4 @@
 node_modules
 __pycache__/
 *.pyc
+tools/sb-trace/*.trace.raw

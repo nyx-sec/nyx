@@ -302,6 +302,18 @@ pub fn splice_deny_default(source: &str, seed: &str) -> String {
     rewritten
 }
 
+/// Drop the in-process [`PROFILE_PATHS`] cache.  Intended for
+/// integration tests that flip `NYX_SB_DENY_DEFAULT` mid-process and
+/// need the next [`profile_path`] call to re-run the splice path
+/// instead of returning a previously materialised entry.  Hidden from
+/// the rendered API surface; production code does not touch the cache.
+#[doc(hidden)]
+pub fn clear_profile_path_cache_for_tests() {
+    if let Ok(mut cache) = profile_paths().lock() {
+        cache.clear();
+    }
+}
+
 // ── Command wrapping ─────────────────────────────────────────────────────────
 
 /// Inputs to [`wrap_plan`] — the original harness command split into

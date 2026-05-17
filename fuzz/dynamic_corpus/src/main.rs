@@ -23,10 +23,10 @@ use nyx_scanner::dynamic::corpus::{
     audit_marker_collisions, materialise_bytes, payloads_for, CuratedPayload, Oracle,
     PayloadProvenance, CORPUS_VERSION,
 };
+use nyx_scanner::dynamic::rand::SpecRng;
 use nyx_scanner::labels::Cap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -138,14 +138,16 @@ fn cmd_run(args: &[String]) {
     }
 
     let mut corpus: Vec<Vec<u8>> = seed_bytes.clone();
-    let mut rng_state: u64 = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(12345);
+    // Deterministic RNG keyed on the spec hash so two runs against the
+    // same fixture produce identical candidate streams.  The Phase 27
+    // events.jsonl replay invariant + Phase 28 repro bundle hermeticity
+    // contract both require the verifier (and any fuzzer feeding it) to
+    // be reproducible from inputs alone — no host entropy mixed in.
+    let mut rng = SpecRng::seeded(&spec_hash);
 
     for iter in 0..iterations {
-        let seed = &corpus[lcg_next(&mut rng_state) as usize % corpus.len()];
-        let candidate = mutate_bytes(seed, &mut rng_state);
+        let seed = &corpus[rng.gen_range(corpus.len())];
+        let candidate = mutate_bytes(seed, &mut rng);
 
         if seen.contains(&candidate) {
             continue;
@@ -162,7 +164,7 @@ fn cmd_run(args: &[String]) {
 
         if interesting {
             discovered += 1;
-            let filename = format!("candidate-{:016x}", lcg_next(&mut rng_state));
+            let filename = format!("candidate-{:016x}", rng.next_u64());
             let candidate_path = out_path.join(&filename);
             std::fs::write(&candidate_path, &candidate).unwrap_or_else(|e| {
                 eprintln!("Failed to write candidate: {e}");
@@ -206,31 +208,26 @@ fn parse_cap(name: &str) -> Option<Cap> {
     }
 }
 
-fn lcg_next(state: &mut u64) -> u64 {
-    *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-    *state
-}
-
-fn mutate_bytes(input: &[u8], rng: &mut u64) -> Vec<u8> {
+fn mutate_bytes(input: &[u8], rng: &mut SpecRng) -> Vec<u8> {
     let mut out = input.to_vec();
     if out.is_empty() {
         return out;
     }
-    match lcg_next(rng) % 5 {
+    match rng.next_u64() % 5 {
         0 => {
             // Flip a random byte.
-            let idx = (lcg_next(rng) as usize) % out.len();
-            out[idx] ^= (lcg_next(rng) as u8) | 1;
+            let idx = rng.gen_range(out.len());
+            out[idx] ^= (rng.next_u64() as u8) | 1;
         }
         1 => {
             // Insert a byte.
-            let idx = (lcg_next(rng) as usize) % (out.len() + 1);
-            out.insert(idx, lcg_next(rng) as u8);
+            let idx = rng.gen_range(out.len() + 1);
+            out.insert(idx, rng.next_u64() as u8);
         }
         2 => {
             // Delete a byte.
             if out.len() > 1 {
-                let idx = (lcg_next(rng) as usize) % out.len();
+                let idx = rng.gen_range(out.len());
                 out.remove(idx);
             }
         }
@@ -240,15 +237,15 @@ fn mutate_bytes(input: &[u8], rng: &mut u64) -> Vec<u8> {
                 b"'", b"\"", b";", b"--", b" OR 1=1", b"<script>", b"../",
                 b"\x00", b"{{", b"|", b"`",
             ];
-            let s = suffixes[(lcg_next(rng) as usize) % suffixes.len()];
+            let s = suffixes[rng.gen_range(suffixes.len())];
             out.extend_from_slice(s);
         }
         _ => {
             // Replace a slice with an interesting pattern.
             let interesting: &[&[u8]] = &[b"'", b"\"", b"<", b">", b"%00", b"../", b"//"];
             if !out.is_empty() {
-                let idx = (lcg_next(rng) as usize) % out.len();
-                let pat = interesting[(lcg_next(rng) as usize) % interesting.len()];
+                let idx = rng.gen_range(out.len());
+                let pat = interesting[rng.gen_range(interesting.len())];
                 let end = (idx + pat.len()).min(out.len());
                 out[idx..end].copy_from_slice(&pat[..end - idx]);
             }

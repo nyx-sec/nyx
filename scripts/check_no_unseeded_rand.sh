@@ -15,10 +15,20 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DYN_DIR="$ROOT/src/dynamic"
+FUZZ_DIR="$ROOT/fuzz/dynamic_corpus/src"
 
 if [[ ! -d "$DYN_DIR" ]]; then
   echo "audit: src/dynamic/ missing at $DYN_DIR" >&2
   exit 2
+fi
+
+# The dynamic-corpus mutation fuzzer is also audited: it routes every
+# randomness draw through `SpecRng::seeded(&spec.spec_hash)` so two
+# runs against the same fixture produce identical candidate streams,
+# matching the determinism contract of the verifier it feeds.
+if [[ ! -d "$FUZZ_DIR" ]]; then
+  # Soft warn — the fuzzer is optional during early bootstrap.
+  echo "audit: fuzz/dynamic_corpus/src/ missing at $FUZZ_DIR (skipping)" >&2
 fi
 
 # Banned patterns: any real call site of a non-deterministic RNG API.
@@ -53,9 +63,13 @@ EXCLUDE_PATHS=(
 # applied via a post-filter so the audit catches new files even
 # before they are tracked.
 if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  HITS="$(git -C "$ROOT" grep -nE "$(IFS='|'; echo "${PATTERNS[*]}")" -- 'src/dynamic/**/*.rs' 'src/dynamic/*.rs' || true)"
+  HITS="$(git -C "$ROOT" grep -nE "$(IFS='|'; echo "${PATTERNS[*]}")" \
+            -- 'src/dynamic/**/*.rs' 'src/dynamic/*.rs' \
+               'fuzz/dynamic_corpus/src/**/*.rs' 'fuzz/dynamic_corpus/src/*.rs' \
+         || true)"
 else
-  HITS="$(grep -rnE "$(IFS='|'; echo "${PATTERNS[*]}")" --include='*.rs' "$DYN_DIR" || true)"
+  HITS="$(grep -rnE "$(IFS='|'; echo "${PATTERNS[*]}")" --include='*.rs' \
+            "$DYN_DIR" ${FUZZ_DIR:+"$FUZZ_DIR"} || true)"
 fi
 
 if [[ -z "$HITS" ]]; then
