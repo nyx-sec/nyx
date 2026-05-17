@@ -232,6 +232,17 @@ pub struct SandboxOptions {
     /// process backend.  See [`ProcessHardeningProfile`] for the per-
     /// variant primitive matrix.
     pub process_hardening: ProcessHardeningProfile,
+    /// Phase 17 follow-up: when true and the active profile is
+    /// [`ProcessHardeningProfile::Strict`], the Linux process backend
+    /// bind-mounts the host's `/lib`, `/lib64`, `/usr/lib`, and `/usr/bin`
+    /// read-only into the harness workdir before `chroot(2)` so dynamic
+    /// loaders (python3, node, java) can resolve shared libraries from
+    /// inside the chroot.  No-op on macOS — the `sandbox-exec` wrap
+    /// handles this via its allow-list grammar.  Default `false` so
+    /// statically-linked C/Go harnesses (Phase 17 fixture path) keep
+    /// today's behaviour; opt-in callers (interpreted-language harness
+    /// builders) set the field when an interpreter is on the run path.
+    pub bind_mount_host_libs: bool,
     /// Phase 30 (Track C observability): optional [`VerifyTrace`] handle
     /// the runner appends pipeline stages to (`build_started`,
     /// `build_done`, `sandbox_started`, `oracle_wait`, `oracle_observed`).
@@ -292,6 +303,7 @@ impl Default for SandboxOptions {
             stub_harness: None,
             seccomp_caps: 0,
             process_hardening: ProcessHardeningProfile::Standard,
+            bind_mount_host_libs: false,
             trace: None,
         }
     }

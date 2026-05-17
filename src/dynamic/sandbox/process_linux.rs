@@ -254,6 +254,13 @@ const CLONE_NEWNS: i32 = 0x0002_0000;
 const CLONE_NEWUSER: i32 = 0x1000_0000;
 const CLONE_NEWPID: i32 = 0x2000_0000;
 
+// `mount(2)` flag bits used by the bind-mount path.  Constants match
+// `<sys/mount.h>` on glibc / musl; kept inline so pre_exec does not need
+// a libc-bindings crate.
+const MS_RDONLY: u64 = 0x0000_0001;
+const MS_REMOUNT: u64 = 0x0000_0020;
+const MS_BIND: u64 = 0x0000_1000;
+
 #[repr(C)]
 struct Rlimit {
     cur: u64,
@@ -266,6 +273,13 @@ unsafe extern "C" {
     fn unshare(flags: i32) -> i32;
     fn chroot(path: *const i8) -> i32;
     fn chdir(path: *const i8) -> i32;
+    fn mount(
+        source: *const i8,
+        target: *const i8,
+        fstype: *const i8,
+        flags: u64,
+        data: *const i8,
+    ) -> i32;
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn __errno_location() -> *mut i32;
 }
@@ -322,6 +336,54 @@ fn apply_chroot(workdir: &[u8]) -> PrimitiveStatus {
     PrimitiveStatus::Applied
 }
 
+/// One read-only bind-mount the child applies after `unshare(CLONE_NEWNS)`
+/// and before `chroot(2)`.  Both fields are NUL-terminated by
+/// [`canonicalize_bind_mount`] so the pre_exec callback can hand the
+/// bytes straight to `mount(2)` without allocating.
+#[derive(Clone, Debug)]
+struct BindMount {
+    source_nul: Vec<u8>,
+    dest_nul: Vec<u8>,
+}
+
+/// Apply each bind-mount in `mounts`: first `mount(... MS_BIND ...)` to
+/// graft the host path into the workdir, then a second `mount(... MS_REMOUNT
+/// | MS_BIND | MS_RDONLY ...)` to flip the new mount read-only.  Both
+/// calls are best-effort — a failure surfaces only via the post-chroot
+/// behaviour (the interpreter cannot resolve its `ld.so`) rather than
+/// the [`HardeningOutcome`] wire record, so callers that care about the
+/// bind-mount succeeding gate on whether the harness produced output.
+///
+/// Called in pre_exec between [`apply_unshare`] and [`apply_chroot`] so
+/// the new mount namespace is private to the child + grandchildren and
+/// the workdir is still reachable at its host-side absolute path.
+fn apply_bind_mounts(mounts: &[BindMount]) {
+    let none = b"none\0";
+    for m in mounts {
+        let r = unsafe {
+            mount(
+                m.source_nul.as_ptr() as *const i8,
+                m.dest_nul.as_ptr() as *const i8,
+                none.as_ptr() as *const i8,
+                MS_BIND,
+                std::ptr::null(),
+            )
+        };
+        if r != 0 {
+            continue;
+        }
+        unsafe {
+            mount(
+                std::ptr::null(),
+                m.dest_nul.as_ptr() as *const i8,
+                std::ptr::null(),
+                MS_REMOUNT | MS_BIND | MS_RDONLY,
+                std::ptr::null(),
+            )
+        };
+    }
+}
+
 /// Install a pre-compiled seccomp BPF filter on the calling thread.
 ///
 /// `program` is a heap-allocated BPF instruction array compiled in the
@@ -347,6 +409,11 @@ struct PreExecPlan {
     /// allocator.
     seccomp_program: Arc<Vec<SockFilter>>,
     profile: ProcessHardeningProfileTag,
+    /// Read-only bind-mounts the child applies after `unshare(CLONE_NEWNS)`
+    /// and before `chroot(2)`.  Empty when
+    /// [`SandboxOptions::bind_mount_host_libs`] is false or the active
+    /// profile is `Standard` (no namespace to bind into).
+    bind_mounts: Vec<BindMount>,
 }
 
 /// Returned by [`install_pre_exec`].  The caller MUST invoke either
@@ -465,9 +532,14 @@ fn run_pre_exec_in_child(plan: &PreExecPlan) -> HardeningOutcome {
     outcome.rlimit_cpu = apply_rlimit(RLIMIT_CPU, plan.rlimit_cpu_seconds);
     outcome.rlimit_nofile = apply_rlimit(RLIMIT_NOFILE, plan.rlimit_nofile);
     outcome.unshare = apply_unshare();
+    // Bind-mount host library paths into the workdir after unshare (so
+    // the new mount namespace catches them) and before chroot (so the
+    // bind sources are still reachable at their absolute host paths).
+    // No-op when `bind_mounts` is empty.
+    apply_bind_mounts(&plan.bind_mounts);
     outcome.chroot = apply_chroot(&plan.workdir_nul);
     // seccomp is applied last so the filter does not block any of the
-    // earlier syscalls (setrlimit, prctl, unshare, chroot, chdir).
+    // earlier syscalls (setrlimit, prctl, unshare, chroot, chdir, mount).
     outcome.seccomp = apply_seccomp(plan.seccomp_program.as_slice());
 
     outcome
@@ -489,17 +561,82 @@ fn build_plan(opts: &SandboxOptions, workdir: &Path) -> PreExecPlan {
     let nrs = seccomp::allowed_syscall_numbers(opts.seccomp_caps);
     let program = seccomp::bpf::compile(&nrs, seccomp::syscalls::AUDIT_ARCH);
 
+    let profile = match opts.process_hardening {
+        ProcessHardeningProfile::Standard => ProcessHardeningProfileTag::Standard,
+        ProcessHardeningProfile::Strict => ProcessHardeningProfileTag::Strict,
+    };
+
+    // Bind-mounts are only useful when the child will chroot, i.e. under
+    // the Strict profile.  Computing them under Standard would create
+    // empty dest dirs in the workdir for no reason.
+    let bind_mounts = if opts.bind_mount_host_libs
+        && matches!(profile, ProcessHardeningProfileTag::Strict)
+    {
+        compute_host_lib_bind_mounts(workdir)
+    } else {
+        Vec::new()
+    };
+
     PreExecPlan {
         rlimit_cpu_seconds,
         rlimit_nofile: 256,
         rlimit_as_bytes,
         workdir_nul,
         seccomp_program: Arc::new(program),
-        profile: match opts.process_hardening {
-            ProcessHardeningProfile::Standard => ProcessHardeningProfileTag::Standard,
-            ProcessHardeningProfile::Strict => ProcessHardeningProfileTag::Strict,
-        },
+        profile,
+        bind_mounts,
     }
+}
+
+/// Build the bind-mount list for the dynamic-loader paths an interpreted
+/// harness needs to find shared libraries from inside the chroot.  Each
+/// entry is `(host_source, workdir_dest)` where `host_source` is a real
+/// host path that exists and `workdir_dest` is a freshly-created mount
+/// point inside the harness workdir.
+///
+/// Skips any candidate whose host source does not exist (e.g. `/lib64`
+/// on a multi-arch Debian box that puts everything under `/lib/x86_64-linux-gnu`).
+/// Also skips any candidate whose dest directory creation fails — the
+/// mount would not have a target to attach to anyway.
+fn compute_host_lib_bind_mounts(workdir: &Path) -> Vec<BindMount> {
+    // The candidate set covers the dynamic-loader resolution path on
+    // every mainstream glibc distro:
+    //   * /lib            — ld-linux.so on multilib-i386 systems, and the
+    //                       traditional location on musl-based distros.
+    //   * /lib64          — ld-linux-x86-64.so.2 on glibc x86_64 systems.
+    //   * /usr/lib        — the bulk of shared libraries on modern distros
+    //                       after the `/usr` merge.
+    //   * /usr/bin        — interpreter binaries (python3, node, java)
+    //                       resolved via PATH=/usr/bin after chroot.
+    const CANDIDATES: &[(&str, &str)] = &[
+        ("/lib", "lib"),
+        ("/lib64", "lib64"),
+        ("/usr/lib", "usr/lib"),
+        ("/usr/bin", "usr/bin"),
+    ];
+    let mut out = Vec::with_capacity(CANDIDATES.len());
+    for (host, rel) in CANDIDATES {
+        if !Path::new(host).exists() {
+            continue;
+        }
+        let dest = workdir.join(rel);
+        if std::fs::create_dir_all(&dest).is_err() {
+            continue;
+        }
+        let dest_canonical = std::fs::canonicalize(&dest).unwrap_or(dest);
+        out.push(BindMount {
+            source_nul: nul_terminate(host.as_bytes()),
+            dest_nul: nul_terminate(dest_canonical.to_string_lossy().as_bytes()),
+        });
+    }
+    out
+}
+
+fn nul_terminate(bytes: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(bytes.len() + 1);
+    v.extend_from_slice(bytes);
+    v.push(0);
+    v
 }
 
 fn canonicalize_workdir(workdir: &Path) -> Vec<u8> {
@@ -605,6 +742,78 @@ mod tests {
     fn truncated_buffer_decodes_to_none() {
         assert!(decode_outcome(&[]).is_none());
         assert!(decode_outcome(&[0_u8; OUTCOME_LEN - 1]).is_none());
+    }
+
+    #[test]
+    fn build_plan_without_bind_mount_flag_yields_empty_list() {
+        let opts = SandboxOptions {
+            process_hardening: ProcessHardeningProfile::Strict,
+            ..SandboxOptions::default()
+        };
+        let plan = build_plan(&opts, std::path::Path::new("/tmp"));
+        assert!(
+            plan.bind_mounts.is_empty(),
+            "bind_mounts should stay empty when bind_mount_host_libs=false",
+        );
+    }
+
+    #[test]
+    fn build_plan_standard_profile_skips_bind_mounts_even_when_flag_set() {
+        // Standard profile does not chroot, so bind-mounting host libs
+        // would just create dead dirs in the workdir for no reason.
+        let opts = SandboxOptions {
+            bind_mount_host_libs: true,
+            process_hardening: ProcessHardeningProfile::Standard,
+            ..SandboxOptions::default()
+        };
+        let plan = build_plan(&opts, std::path::Path::new("/tmp"));
+        assert!(plan.bind_mounts.is_empty());
+    }
+
+    #[test]
+    fn build_plan_strict_with_bind_mount_flag_pre_creates_dest_dirs() {
+        // /usr/lib exists on every mainstream Linux distro, so at least
+        // one bind-mount entry should land.  The dest must be a real
+        // directory by the time build_plan returns — pre_exec cannot
+        // mkdir during the no-allocate window.
+        let workdir = tempfile::TempDir::new().expect("tempdir");
+        let opts = SandboxOptions {
+            bind_mount_host_libs: true,
+            process_hardening: ProcessHardeningProfile::Strict,
+            ..SandboxOptions::default()
+        };
+        let plan = build_plan(&opts, workdir.path());
+
+        // Every entry's source must be NUL-terminated for the `mount(2)`
+        // call, and every dest must exist on disk.
+        for m in &plan.bind_mounts {
+            assert!(m.source_nul.ends_with(&[0]), "source path must be NUL-terminated");
+            assert!(m.dest_nul.ends_with(&[0]), "dest path must be NUL-terminated");
+            let dest_str = std::str::from_utf8(&m.dest_nul[..m.dest_nul.len() - 1])
+                .expect("dest path must be valid UTF-8");
+            assert!(
+                std::path::Path::new(dest_str).is_dir(),
+                "dest dir must be pre-created by build_plan: {dest_str}",
+            );
+        }
+        // The candidate set has four entries; on a working Linux host at
+        // least `/usr/lib` and `/usr/bin` exist, so we expect ≥ 2 entries.
+        // We do not assert the exact count to stay portable across multi-
+        // arch (`/lib64`-less) and musl distros.
+        assert!(
+            plan.bind_mounts.len() >= 2,
+            "expected ≥ 2 bind-mount entries on a Linux host; got {}",
+            plan.bind_mounts.len(),
+        );
+    }
+
+    #[test]
+    fn nul_terminate_appends_zero_byte_once() {
+        assert_eq!(nul_terminate(b""), b"\0");
+        assert_eq!(nul_terminate(b"/lib"), b"/lib\0");
+        // Idempotency property does NOT hold — caller must not double-terminate.
+        let twice = nul_terminate(b"/lib\0");
+        assert_eq!(twice, b"/lib\0\0");
     }
 
 }
