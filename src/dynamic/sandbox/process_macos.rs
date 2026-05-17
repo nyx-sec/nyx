@@ -213,10 +213,93 @@ pub fn profile_path(name: &str) -> Option<PathBuf> {
     // left a stale `.sb` file under `std::env::temp_dir()`.  The in-process
     // `PROFILE_PATHS` cache then short-circuits subsequent lookups so the
     // write happens at most once per profile per process lifetime.
-    std::fs::write(&path, source).ok()?;
+    let body: String = match deny_default_seed_for(key) {
+        Some(seed) => splice_deny_default(source, &seed),
+        None => source.to_string(),
+    };
+    std::fs::write(&path, &body).ok()?;
     let mut cache = profile_paths().lock().ok()?;
     cache.insert(*key, path.clone());
     Some(path)
+}
+
+// ── deny-default splice (Phase 18 follow-up) ─────────────────────────────────
+//
+// The default profile bodies ship with `(allow default)` because the
+// trace-driven enumeration of the per-cap allowlist seed has not been
+// authored yet.  This block carries the pure splice helper + the env-
+// var-gated seed lookup so the corpus-walking half (Phase 18 follow-up
+// path (a)) only has to drop a file under `tools/sb-trace/{cap}.allow`
+// and set `NYX_SB_DENY_DEFAULT=1` to flip the materialised profile to
+// `(deny default)` + the seeded allowlist.  The splice is pure (string
+// in, string out) so it is tested against synthetic seeds in this file
+// without needing macOS-host sandbox-exec access.
+
+/// Env var consulted by [`profile_path`] to enable the deny-default
+/// splice.  When set to `1` / `true`, [`deny_default_seed_for`] is
+/// invoked for every materialised profile; missing seeds fall back to
+/// the baked `(allow default)` body so misconfiguration cannot brick
+/// the sandbox-exec backend.
+pub const SB_DENY_DEFAULT_ENV: &str = "NYX_SB_DENY_DEFAULT";
+
+/// Env var consulted by [`deny_default_seed_for`] to locate the seed
+/// directory.  Defaults to `tools/sb-trace/` relative to the workspace
+/// root when unset; tests override this to point at a tempdir-backed
+/// fixture set.
+pub const SB_SEED_DIR_ENV: &str = "NYX_SB_SEED_DIR";
+
+/// Return the deny-default seed body for the named cap profile when
+/// the env-var opt-in is set and a seed file is on disk.  Returns
+/// `None` when the env var is unset, the seed dir is missing, or the
+/// specific cap's seed file does not exist.  The seed is a free-form
+/// `.sb` fragment (allow directives + comments) that gets appended
+/// verbatim after the `(deny default)` rewrite.
+fn deny_default_seed_for(cap: &str) -> Option<String> {
+    let flag = std::env::var(SB_DENY_DEFAULT_ENV).ok()?;
+    if !matches!(flag.as_str(), "1" | "true" | "TRUE" | "yes" | "YES") {
+        return None;
+    }
+    let seed_dir = std::env::var(SB_SEED_DIR_ENV)
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("tools/sb-trace"));
+    let seed_path = seed_dir.join(format!("{cap}.allow"));
+    std::fs::read_to_string(&seed_path).ok()
+}
+
+/// Rewrite a profile body from `(allow default)` to `(deny default)`,
+/// appending the seed contents as additional allow directives.  Pure
+/// function — easy to test without macOS-host sandbox-exec access.
+///
+/// The splice strategy is conservative:
+///
+/// 1. Replace the first occurrence of `(allow default)` with
+///    `(deny default)`.  If none is present, the body is appended to
+///    as-is (callers should not invoke the splice on a profile that
+///    already runs deny-default).
+/// 2. Append a banner line + the seed body so the deny-default
+///    rewrite is visually obvious in the materialised file.
+///
+/// `sandbox-exec` profile language resolves directives in textual
+/// order with later matches winning, so the appended seed allows
+/// stack cleanly on top of the `(deny default)` base.
+pub fn splice_deny_default(source: &str, seed: &str) -> String {
+    let needle = "(allow default)";
+    let mut rewritten = if source.contains(needle) {
+        source.replacen(needle, "(deny default)", 1)
+    } else {
+        source.to_string()
+    };
+    if !rewritten.ends_with('\n') {
+        rewritten.push('\n');
+    }
+    rewritten.push('\n');
+    rewritten.push_str(
+        ";; ── deny-default seed (spliced by NYX_SB_DENY_DEFAULT=1) ──────────\n",
+    );
+    rewritten.push_str(seed.trim_end());
+    rewritten.push('\n');
+    rewritten
 }
 
 // ── Command wrapping ─────────────────────────────────────────────────────────
@@ -446,6 +529,87 @@ mod tests {
         assert_eq!(sandbox_exec_bin(), PathBuf::from("/nonexistent/sandbox-exec"));
         assert!(!sandbox_exec_available());
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+    }
+
+    #[test]
+    fn splice_deny_default_replaces_allow_default_and_appends_seed() {
+        let source = "(version 1)\n(allow default)\n(deny file-read* (literal \"/etc/passwd\"))\n";
+        let seed = "(allow file-read* (literal \"/opt/homebrew/lib/python3.11/lib-dynload\"))\n";
+        let out = splice_deny_default(source, seed);
+        assert!(out.contains("(deny default)"));
+        assert!(!out.contains("(allow default)"));
+        // Original deny rule survives.
+        assert!(out.contains("(deny file-read* (literal \"/etc/passwd\"))"));
+        // Seed appended verbatim.
+        assert!(out.contains("/opt/homebrew/lib/python3.11/lib-dynload"));
+        // Banner emitted exactly once so the deny-default rewrite is visually obvious.
+        assert_eq!(out.matches(";; ── deny-default seed").count(), 1);
+        // Order: (deny default) must precede the seed allows so the appended
+        // allows can override the deny baseline (sandbox-exec resolves later
+        // matches over earlier ones).
+        let deny_pos = out.find("(deny default)").expect("deny default");
+        let seed_pos = out.find("/opt/homebrew").expect("seed");
+        assert!(deny_pos < seed_pos);
+    }
+
+    #[test]
+    fn splice_deny_default_only_replaces_first_allow_default() {
+        // A pathological profile with two `(allow default)` lines: only the
+        // first should be rewritten so the second one becomes the
+        // (effectively dead) override.  This shape never appears in tree
+        // today, but the assertion locks the contract.
+        let source = "(allow default)\n(deny file-write*)\n(allow default)\n";
+        let seed = "(allow network-outbound (remote tcp \"127.0.0.1:*\"))\n";
+        let out = splice_deny_default(source, seed);
+        assert_eq!(out.matches("(deny default)").count(), 1);
+        assert_eq!(out.matches("(allow default)").count(), 1);
+    }
+
+    #[test]
+    fn splice_deny_default_handles_source_missing_allow_default() {
+        // Profile already in deny-default form: splice just appends the
+        // seed without touching the body.
+        let source = "(version 1)\n(deny default)\n";
+        let seed = "(allow file-read* (literal \"/usr/lib/dyld\"))\n";
+        let out = splice_deny_default(source, seed);
+        assert_eq!(out.matches("(deny default)").count(), 1);
+        assert!(out.contains("/usr/lib/dyld"));
+    }
+
+    #[test]
+    fn deny_default_seed_for_returns_none_without_env_opt_in() {
+        // SAFETY: tests in this module mutate process-global env; the
+        // macOS hardening integration suite serialises around the same
+        // env vars so cargo nextest's per-test process isolation does not
+        // help here.  Explicit unset before + after each test to keep the
+        // body honest for sibling tests.
+        unsafe { std::env::remove_var(SB_DENY_DEFAULT_ENV) };
+        assert!(deny_default_seed_for("cmdi").is_none());
+    }
+
+    #[test]
+    fn deny_default_seed_for_returns_some_when_env_set_and_seed_present() {
+        let tmp = std::env::temp_dir().join("nyx-sb-seed-test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create seed tempdir");
+        std::fs::write(
+            tmp.join("cmdi.allow"),
+            ";; synthetic seed for unit test\n(allow process-fork)\n",
+        )
+        .expect("write seed");
+        unsafe {
+            std::env::set_var(SB_DENY_DEFAULT_ENV, "1");
+            std::env::set_var(SB_SEED_DIR_ENV, &tmp);
+        }
+        let seed = deny_default_seed_for("cmdi").expect("seed body");
+        assert!(seed.contains("(allow process-fork)"));
+        // Missing cap with the same env set still returns None.
+        assert!(deny_default_seed_for("does_not_exist").is_none());
+        unsafe {
+            std::env::remove_var(SB_DENY_DEFAULT_ENV);
+            std::env::remove_var(SB_SEED_DIR_ENV);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
