@@ -184,6 +184,20 @@ pub enum ProbePredicate {
         /// Substring to find in `StubEvent::summary`.
         needle: &'static str,
     },
+    /// Phase 03 (Track J.1): predicate that fires when at least one
+    /// drained probe carries [`ProbeKind::Deserialize`] with
+    /// `gadget_chain_invoked` matching `require_invoked`.  Cross-cutting
+    /// in the same sense as [`Self::StubEventMatches`] — evaluation
+    /// looks across every drained probe rather than asserting against a
+    /// single record.
+    DeserializeGadgetInvoked {
+        /// `true` requires at least one Deserialize probe with
+        /// `gadget_chain_invoked == true` (a benign control passing
+        /// well-formed serialized data should never satisfy this).
+        /// `false` lets a payload that intentionally exercises the
+        /// "caught at boundary" path still confirm.
+        require_invoked: bool,
+    },
 }
 
 /// How we decide a sandbox run confirmed the sink fired.
@@ -272,17 +286,28 @@ pub fn oracle_fired_with_stubs(
     match oracle {
         Oracle::SinkProbe { predicates } => {
             // Predicate set split: per-probe vs cross-cutting (stub
-            // events).  A predicate that targets stub events cannot be
-            // evaluated against a single probe — it satisfies once
-            // globally when the stub log contains a matching event.
-            // Per-probe predicates must still hold for at least one
-            // captured probe.
+            // events, deserialize gadget invocation).  Cross-cutting
+            // predicates cannot be evaluated against a single probe —
+            // they satisfy once globally when the matching log shape is
+            // present.  Per-probe predicates must still hold for at
+            // least one captured probe.
             let (cross, per_probe): (Vec<_>, Vec<_>) =
                 predicates.iter().partition(|p| is_cross_cutting(p));
-            let cross_ok = cross
+            // Stub-event cross-cutting predicates.
+            let stub_cross_ok = cross
                 .iter()
                 .all(|p| cross_cutting_satisfied(p, stub_events));
-            if !cross_ok {
+            if !stub_cross_ok {
+                return false;
+            }
+            // Deserialize cross-cutting predicates.
+            let deserialize_cross_ok = cross.iter().all(|p| match p {
+                ProbePredicate::DeserializeGadgetInvoked { require_invoked } => {
+                    probes_satisfy_deserialize(probes, *require_invoked)
+                }
+                _ => true,
+            });
+            if !deserialize_cross_ok {
                 return false;
             }
             match (cross.is_empty(), per_probe.is_empty()) {
@@ -300,7 +325,7 @@ pub fn oracle_fired_with_stubs(
         }
         Oracle::SinkCrash { signals } => probes.iter().any(|p| match p.kind {
             ProbeKind::Crash { signal } => signals.contains(signal),
-            ProbeKind::Normal => false,
+            ProbeKind::Normal | ProbeKind::Deserialize { .. } => false,
         }),
         Oracle::OutputContains(needle) => {
             let nb = needle.as_bytes();
@@ -320,7 +345,11 @@ pub fn oracle_fired_with_stubs(
 /// any single [`SinkProbe`].  Used to partition predicate slices in
 /// [`oracle_fired_with_stubs`].
 fn is_cross_cutting(pred: &ProbePredicate) -> bool {
-    matches!(pred, ProbePredicate::StubEventMatches { .. })
+    matches!(
+        pred,
+        ProbePredicate::StubEventMatches { .. }
+            | ProbePredicate::DeserializeGadgetInvoked { .. }
+    )
 }
 
 fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> bool {
@@ -328,8 +357,23 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         ProbePredicate::StubEventMatches { kind, needle } => stub_events
             .iter()
             .any(|e| e.kind == *kind && e.summary.contains(*needle)),
+        // DeserializeGadgetInvoked is cross-cutting against the *probe
+        // log* rather than stub events; evaluated separately in
+        // [`probes_satisfy_deserialize`] below.
+        ProbePredicate::DeserializeGadgetInvoked { .. } => true,
         _ => true,
     }
+}
+
+/// True when at least one drained probe is a
+/// [`ProbeKind::Deserialize`] record matching `require_invoked`.
+fn probes_satisfy_deserialize(probes: &[SinkProbe], require_invoked: bool) -> bool {
+    probes.iter().any(|p| match p.kind {
+        ProbeKind::Deserialize { gadget_chain_invoked } => {
+            gadget_chain_invoked == require_invoked
+        }
+        _ => false,
+    })
 }
 
 /// Returns true when `probe` satisfies *every* predicate in `preds`.
@@ -359,9 +403,10 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
             .any(|a| a.as_str().map(|s| s.contains(*needle)).unwrap_or(false)),
         ProbePredicate::CalleeEquals(value) => probe.sink_callee == *value,
         ProbePredicate::MinArgs(n) => probe.args.len() >= *n,
-        // Cross-cutting predicate; not evaluable against a single probe.
-        // [`oracle_fired_with_stubs`] handles it via the partition path.
-        ProbePredicate::StubEventMatches { .. } => true,
+        // Cross-cutting predicates; not evaluable against a single probe.
+        // [`oracle_fired_with_stubs`] handles them via the partition path.
+        ProbePredicate::StubEventMatches { .. }
+        | ProbePredicate::DeserializeGadgetInvoked { .. } => true,
     }
 }
 
@@ -383,7 +428,7 @@ fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
 pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
     match probe.kind {
         ProbeKind::Crash { signal } => Some(signal),
-        ProbeKind::Normal => None,
+        ProbeKind::Normal | ProbeKind::Deserialize { .. } => None,
     }
 }
 

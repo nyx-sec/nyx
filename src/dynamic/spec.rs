@@ -1109,14 +1109,72 @@ fn attach_framework_binding(spec: &mut HarnessSpec) {
     if crate::dynamic::framework::registry::adapters_for(spec.lang).is_empty() {
         return;
     }
-    // Phase-01 stub.  When Track L.1+ registers its first adapter,
-    // this branch will (a) read `spec.entry_file` via
-    // `std::fs::read`, (b) parse with the language's tree-sitter
-    // grammar, (c) construct a `FuncSummary` from `spec` + the
-    // matching summary index, and (d) call
-    // `crate::dynamic::framework::detect_binding`.  Left empty here
-    // because Phase 01 ships zero adapters and the verifier's
-    // acceptance test demands byte-identical verdicts.
+    // Phase 03 (Track J.1 / deferred-fix from Phase 01): read the
+    // entry file from disk, parse it with the language's tree-sitter
+    // grammar, synthesise a minimal `FuncSummary` from the spec, then
+    // dispatch through the framework registry.  Failures along the
+    // way leave `spec.framework = None` rather than aborting the
+    // run; the framework binding is descriptive metadata, not a
+    // load-bearing field on the verifier path.
+    let Some(bytes) = std::fs::read(&spec.entry_file).ok() else {
+        return;
+    };
+    let Some(ts_lang) = tree_sitter_lang_for(spec.lang) else {
+        return;
+    };
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return;
+    }
+    let Some(tree) = parser.parse(&bytes, None) else {
+        return;
+    };
+    let summary = FuncSummary {
+        name: spec.entry_name.clone(),
+        file_path: spec.entry_file.clone(),
+        lang: lang_slug(spec.lang).to_owned(),
+        ..Default::default()
+    };
+    if let Some(binding) =
+        crate::dynamic::framework::detect_binding(&summary, tree.root_node(), &bytes, spec.lang)
+    {
+        spec.framework = Some(binding);
+    }
+}
+
+/// Pick the tree-sitter `Language` for a given [`Lang`].  Returns
+/// `None` for languages whose grammar is not linked into the dynamic
+/// path (rare — every supported `Lang` carries a grammar).
+fn tree_sitter_lang_for(lang: Lang) -> Option<tree_sitter::Language> {
+    Some(match lang {
+        Lang::Rust => tree_sitter::Language::from(tree_sitter_rust::LANGUAGE),
+        Lang::C => tree_sitter::Language::from(tree_sitter_c::LANGUAGE),
+        Lang::Cpp => tree_sitter::Language::from(tree_sitter_cpp::LANGUAGE),
+        Lang::Java => tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
+        Lang::Go => tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+        Lang::Php => tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP),
+        Lang::Python => tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
+        Lang::Ruby => tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE),
+        Lang::JavaScript => tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
+        Lang::TypeScript => {
+            tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT)
+        }
+    })
+}
+
+fn lang_slug(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Rust => "rust",
+        Lang::C => "c",
+        Lang::Cpp => "cpp",
+        Lang::Java => "java",
+        Lang::Go => "go",
+        Lang::Php => "php",
+        Lang::Python => "python",
+        Lang::Ruby => "ruby",
+        Lang::JavaScript => "javascript",
+        Lang::TypeScript => "typescript",
+    }
 }
 
 /// Walk `flow_steps` and return the entry point: the enclosing function of

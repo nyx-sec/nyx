@@ -14,6 +14,7 @@
 //! phase that adds a new adapter cannot silently re-order an existing
 //! match.
 
+pub mod adapters;
 pub mod registry;
 
 use crate::evidence::EntryKind;
@@ -213,28 +214,32 @@ mod tests {
     }
 
     #[test]
-    fn registry_is_empty_for_every_lang_phase_01() {
-        // Regression guard: Phase 01 ships the trait + dispatch
-        // machinery but registers zero adapters.  Subsequent Track-L
-        // phases register concrete adapters per language; this test
-        // documents the starting baseline so accidental re-ordering
-        // is caught by `tests/determinism_audit.rs`.
+    fn registry_baseline_after_phase_03() {
+        // Phase 03 (Track J.1) registers one deserialize-sink adapter
+        // per supported language: Java, Python, PHP, Ruby.  The other
+        // languages still carry the Phase-01 empty baseline.
+        for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby] {
+            let registered = registry::adapters_for(lang);
+            assert_eq!(
+                registered.len(),
+                1,
+                "{:?} must have exactly the J.1 deserialize adapter registered",
+                lang,
+            );
+            assert_eq!(registered[0].lang(), lang);
+        }
         for lang in [
             Lang::Rust,
             Lang::C,
             Lang::Cpp,
-            Lang::Java,
             Lang::Go,
-            Lang::Php,
-            Lang::Python,
-            Lang::Ruby,
             Lang::TypeScript,
             Lang::JavaScript,
         ] {
             assert!(
                 registry::adapters_for(lang).is_empty(),
-                "{:?} starts with zero registered adapters",
-                lang
+                "{:?} should still have zero adapters before its Track-L phase",
+                lang,
             );
         }
     }

@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::{cmdi, fmt_string, path_trav, sqli, ssrf, xss};
+use super::{cmdi, deserialize, fmt_string, path_trav, sqli, ssrf, xss};
 use super::{CapCorpus, CuratedPayload, Oracle};
 use crate::dynamic::oracle::ProbePredicate;
 use crate::labels::Cap;
@@ -37,7 +37,6 @@ pub const CORPUS_UNSUPPORTED_LANG_NEUTRAL: u32 = Cap::ENV_VAR.bits()
     | Cap::SHELL_ESCAPE.bits()
     | Cap::URL_ENCODE.bits()
     | Cap::JSON_PARSE.bits()
-    | Cap::DESERIALIZE.bits()
     | Cap::CRYPTO.bits()
     | Cap::UNAUTHORIZED_ID.bits()
     | Cap::DATA_EXFIL.bits()
@@ -58,6 +57,10 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::SSRF, Lang::Rust, ssrf::rust::PAYLOADS),
     (Cap::HTML_ESCAPE, Lang::Rust, xss::rust::PAYLOADS),
     (Cap::FMT_STRING, Lang::C, fmt_string::c::PAYLOADS),
+    (Cap::DESERIALIZE, Lang::Java, deserialize::java::PAYLOADS),
+    (Cap::DESERIALIZE, Lang::Python, deserialize::python::PAYLOADS),
+    (Cap::DESERIALIZE, Lang::Php, deserialize::php::PAYLOADS),
+    (Cap::DESERIALIZE, Lang::Ruby, deserialize::ruby::PAYLOADS),
 ];
 
 /// Reserved for per-cap oracle defaults.  Empty in Phase 02; populated by
@@ -114,8 +117,21 @@ pub fn payloads_for(cap: Cap) -> &'static [CuratedPayload] {
 }
 
 /// Return the (first) benign control payload for a cap, if one exists.
+///
+/// Lang-agnostic union shim — searches every registered `(cap, lang)`
+/// slice in declaration order.  Prefer [`benign_payload_for_lang`] when
+/// the caller knows the harness's [`Lang`] so cross-language label
+/// collisions (e.g. an `ssrf-benign` label registered for both Rust and
+/// Python) cannot resolve to a wrong-language fixture.
 pub fn benign_payload_for(cap: Cap) -> Option<&'static CuratedPayload> {
     payloads_for(cap).iter().find(|p| p.is_benign)
+}
+
+/// Lang-aware [`benign_payload_for`].  Restricts the search to the
+/// requested `(cap, lang)` slice so a payload's benign control is
+/// always resolved inside the same language vertical.
+pub fn benign_payload_for_lang(cap: Cap, lang: Lang) -> Option<&'static CuratedPayload> {
+    payloads_for_lang(cap, lang).iter().find(|p| p.is_benign)
 }
 
 /// Resolve a [`CuratedPayload::benign_control`] reference to the matching
@@ -126,12 +142,35 @@ pub fn benign_payload_for(cap: Cap) -> Option<&'static CuratedPayload> {
 /// non-benign in the corpus.  The runner treats the `None` result as
 /// `NoControl` and downgrades the verdict to
 /// [`crate::evidence::InconclusiveReason::NoBenignControl`].
+///
+/// Lang-agnostic union shim — kept for the small set of pre-Phase-03
+/// callers that do not carry a [`Lang`] at the call site.  Prefer
+/// [`resolve_benign_control_lang`] in any new code: with multiple
+/// `(cap, lang)` slices registered for the same cap, the union shim
+/// can match a wrong-language fixture's label and silently confirm
+/// against a benign that never ran.
 pub fn resolve_benign_control(
     vuln_payload: &CuratedPayload,
     cap: Cap,
 ) -> Option<&'static CuratedPayload> {
     let r = vuln_payload.benign_control?;
     payloads_for(cap)
+        .iter()
+        .find(|p| p.is_benign && p.label == r.label)
+}
+
+/// Lang-aware [`resolve_benign_control`].  Restricts the search to the
+/// `(cap, lang)` slice that produced the vuln payload so the
+/// differential rule (§4.1) can never compare against a wrong-language
+/// benign even when two language slices share a label.  Phase 03 wires
+/// this through [`crate::dynamic::runner`].
+pub fn resolve_benign_control_lang(
+    vuln_payload: &CuratedPayload,
+    cap: Cap,
+    lang: Lang,
+) -> Option<&'static CuratedPayload> {
+    let r = vuln_payload.benign_control?;
+    payloads_for_lang(cap, lang)
         .iter()
         .find(|p| p.is_benign && p.label == r.label)
 }
@@ -237,7 +276,6 @@ mod tests {
             Cap::SHELL_ESCAPE,
             Cap::URL_ENCODE,
             Cap::JSON_PARSE,
-            Cap::DESERIALIZE,
             Cap::CRYPTO,
             Cap::UNAUTHORIZED_ID,
             Cap::DATA_EXFIL,
@@ -275,6 +313,7 @@ mod tests {
             Cap::FILE_IO,
             Cap::HTML_ESCAPE,
             Cap::FMT_STRING,
+            Cap::DESERIALIZE,
         ] {
             let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
             assert!(has_vuln, "{cap:?} must have at least one vuln payload");
@@ -321,6 +360,7 @@ mod tests {
             Cap::SSRF,
             Cap::HTML_ESCAPE,
             Cap::FMT_STRING,
+            Cap::DESERIALIZE,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -342,6 +382,7 @@ mod tests {
             Cap::SSRF,
             Cap::HTML_ESCAPE,
             Cap::FMT_STRING,
+            Cap::DESERIALIZE,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -450,6 +491,7 @@ mod tests {
             Cap::SSRF,
             Cap::HTML_ESCAPE,
             Cap::FMT_STRING,
+            Cap::DESERIALIZE,
         ];
         for cap in caps {
             for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
@@ -474,10 +516,23 @@ mod tests {
 
     #[test]
     fn back_compat_union_matches_registered_entry() {
-        // With one (cap, lang) entry per cap, the union must contain the
-        // same labels as the underlying slice (byte-identical verdict
-        // requirement, Phase 02 acceptance).
+        // For caps with one (cap, lang) entry only, the lang-agnostic
+        // union must contain the same labels as the underlying slice
+        // (byte-identical verdict requirement, Phase 02 acceptance).
+        // Phase 03 introduces multi-lang caps (DESERIALIZE), so single-
+        // entry caps are filtered separately from the union check.
+        use std::collections::HashMap;
+        let mut entries_by_cap: HashMap<u32, Vec<(Lang, &'static [CuratedPayload])>> =
+            HashMap::new();
         for &(cap, lang, slice) in CORPUS.entries {
+            entries_by_cap.entry(cap.bits()).or_default().push((lang, slice));
+        }
+        for (cap_bits, langs) in &entries_by_cap {
+            if langs.len() != 1 {
+                continue;
+            }
+            let (lang, slice) = langs[0];
+            let cap = Cap::from_bits_truncate(*cap_bits);
             let union = payloads_for(cap);
             assert_eq!(
                 union.len(),
@@ -488,6 +543,51 @@ mod tests {
                 assert_eq!(u.label, s.label);
                 assert_eq!(u.bytes, s.bytes);
             }
+        }
+    }
+
+    #[test]
+    fn deserialize_has_per_lang_slices_for_phase_03() {
+        // Phase 03 (Track J.1) acceptance: DESERIALIZE registers
+        // payloads in Java / Python / PHP / Ruby and the lang-aware
+        // lookup never returns empty for any of them.
+        for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby] {
+            assert!(
+                !payloads_for_lang(Cap::DESERIALIZE, lang).is_empty(),
+                "DESERIALIZE must have at least one payload for {lang:?}",
+            );
+        }
+        // Rust / C / Go / JS / TS / Cpp not yet covered — those slices
+        // remain empty.
+        for lang in [
+            Lang::Rust,
+            Lang::C,
+            Lang::Cpp,
+            Lang::Go,
+            Lang::JavaScript,
+            Lang::TypeScript,
+        ] {
+            assert!(
+                payloads_for_lang(Cap::DESERIALIZE, lang).is_empty(),
+                "DESERIALIZE has unexpected payloads for {lang:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn deserialize_payloads_pair_benign_controls_per_lang() {
+        // The lang-aware resolver must find the paired benign control
+        // inside its own slice — proves the Phase-03 deferred-fix
+        // wiring (see audit_benign_label_uniqueness_runtime).
+        for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby] {
+            let slice = payloads_for_lang(Cap::DESERIALIZE, lang);
+            let vuln = slice
+                .iter()
+                .find(|p| !p.is_benign)
+                .expect("each lang must have a vuln payload");
+            let resolved = super::resolve_benign_control_lang(vuln, Cap::DESERIALIZE, lang)
+                .expect("lang-aware benign control must resolve");
+            assert!(resolved.is_benign);
         }
     }
 }

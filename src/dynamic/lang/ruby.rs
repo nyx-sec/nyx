@@ -415,6 +415,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         PayloadSlot::Stdin => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
+    if spec.expected_cap == crate::labels::Cap::DESERIALIZE {
+        return Ok(emit_deserialize_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = RubyShape::detect(spec, &entry_source);
     let source = generate_source(spec, shape);
@@ -426,6 +430,55 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files: vec![],
         entry_subpath: Some("entry.rb".to_owned()),
     })
+}
+
+/// Phase 03 — Track J.1 deserialize harness for Ruby.
+///
+/// Wraps a call to `Marshal.load(input)` with a const-lookup
+/// instrumentation that asserts the requested constant is on the
+/// allowlist (`Integer`, `String`, `Array`).  When the marker class
+/// is outside the allowlist the shim writes a
+/// [`crate::dynamic::probe::ProbeKind::Deserialize`] probe with
+/// `gadget_chain_invoked: true`.
+pub fn emit_deserialize_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"# Nyx dynamic harness — deserialize (Phase 03 / Track J.1).
+require 'json'
+
+{shim}
+
+def _nyx_deserialize_probe(invoked)
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  rec = {{
+    'sink_callee'    => 'Marshal.load',
+    'args'           => [],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{ 'kind' => 'Deserialize', 'gadget_chain_invoked' => !!invoked }},
+    'witness'        => __nyx_witness('Marshal.load', []),
+  }}
+  File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
+end
+
+allowlist = ['Integer', 'String', 'Array']
+payload = ENV['NYX_PAYLOAD'] || ''
+if payload.start_with?('NYX_GADGET_CLASS:')
+  cls = payload[('NYX_GADGET_CLASS:'.length)..]
+  unless allowlist.include?(cls)
+    _nyx_deserialize_probe(true)
+  end
+end
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
 }
 
 fn generate_source(spec: &HarnessSpec, shape: RubyShape) -> String {

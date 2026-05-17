@@ -7,7 +7,8 @@
 
 use crate::dynamic::build_sandbox;
 use crate::dynamic::corpus::{
-    materialise_bytes, payloads_for, resolve_benign_control, Payload,
+    materialise_bytes, payloads_for, payloads_for_lang, resolve_benign_control,
+    resolve_benign_control_lang, Payload,
 };
 use crate::dynamic::differential;
 use crate::dynamic::harness::{self, HarnessError};
@@ -114,7 +115,21 @@ impl From<SandboxError> for RunError {
 /// If the oracle fires but the sink probe does not, sets `oracle_collision = true`
 /// and continues (no `triggered_by` is set).
 pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome, RunError> {
-    let payloads = payloads_for(spec.expected_cap);
+    // Track J.0 deferred fix: prefer the lang-specific slice when
+    // present so a payload registered for another language cannot leak
+    // into the run.  Falls back to the lang-agnostic union shim only
+    // when the per-language slice is empty, matching the pre-Phase-03
+    // behaviour for caps that have not yet been carved by lang.  When
+    // we use the union, benign-control resolution must also use the
+    // union (otherwise we'd flip pre-existing fixtures to
+    // `Inconclusive(NoBenignControl)`).
+    let lang_slice = payloads_for_lang(spec.expected_cap, spec.lang);
+    let used_lang_slice = !lang_slice.is_empty();
+    let payloads = if used_lang_slice {
+        lang_slice
+    } else {
+        payloads_for(spec.expected_cap)
+    };
     if payloads.is_empty() {
         return Err(RunError::NoPayloadsForCap);
     }
@@ -440,7 +455,18 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         // stays on the legacy `oracle_collision` path so the existing
         // `Inconclusive(OracleCollisionSuspected)` semantics survive.
         let triggered = if vuln_fired && sink_hit {
-            match resolve_benign_control(payload, spec.expected_cap) {
+            // Match the resolution scope to the payload-slice scope so a
+            // benign control declared in another language is still found
+            // when this run was driven off the lang-agnostic union (see
+            // `used_lang_slice` above).  When the run did use the
+            // per-language slice, the lang-aware resolver keeps a
+            // mismatched language from silently producing a Confirmed.
+            let resolved = if used_lang_slice {
+                resolve_benign_control_lang(payload, spec.expected_cap, spec.lang)
+            } else {
+                resolve_benign_control(payload, spec.expected_cap)
+            };
+            match resolved {
                 None => {
                     no_benign_control = true;
                     false

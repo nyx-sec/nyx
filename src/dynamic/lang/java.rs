@@ -552,6 +552,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         PayloadSlot::Stdin => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
+    if spec.expected_cap == crate::labels::Cap::DESERIALIZE {
+        return Ok(emit_deserialize_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JavaShape::detect(spec, &entry_source);
     let entry_class = derive_entry_class(&entry_source);
@@ -595,6 +599,84 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         // fixtures (where `public class Vuln` lives in `Vuln.java`).
         entry_subpath: Some(format!("{entry_class}.java")),
     })
+}
+
+/// Phase 03 — Track J.1 deserialize harness for Java.
+///
+/// Emits a `NyxHarness.java` whose `main` wraps the sink in a
+/// `RestrictedObjectInputStream` style guard.  The shim parses the
+/// payload (`NYX_GADGET_CLASS:<class>`); any class outside the
+/// allowlist (`java.lang.Integer`, `java.lang.String`) writes a
+/// [`crate::dynamic::probe::ProbeKind::Deserialize`] probe with
+/// `gadget_chain_invoked: true` to `NYX_PROBE_PATH` and aborts the
+/// chain — this is the resolveClass-driven boundary the brief calls
+/// out.
+pub fn emit_deserialize_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let source = format!(
+        r#"// Nyx dynamic harness — deserialize (Phase 03 / Track J.1).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+
+public class NyxHarness {{
+{shim}
+
+    static final Set<String> NYX_ALLOWLIST =
+        new HashSet<>(Arrays.asList("java.lang.Integer", "java.lang.String"));
+
+    static void nyxDeserializeProbe(boolean invoked) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"ObjectInputStream.resolveClass\",\"args\":[],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"Deserialize\",\"gadget_chain_invoked\":").append(invoked ? "true" : "false").append("}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("ObjectInputStream.resolveClass", new String[0]));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        String prefix = "NYX_GADGET_CLASS:";
+        if (payload.startsWith(prefix)) {{
+            String cls = payload.substring(prefix.length());
+            if (!NYX_ALLOWLIST.contains(cls)) {{
+                // RestrictedObjectInputStream.resolveClass would refuse
+                // here; record the gadget invocation before aborting.
+                nyxDeserializeProbe(true);
+            }}
+        }}
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
 }
 
 /// Public wrapper to detect the shape for a finalised `HarnessSpec`,

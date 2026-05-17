@@ -48,6 +48,7 @@ pub mod audit;
 pub mod registry;
 
 mod cmdi;
+mod deserialize;
 mod fmt_string;
 mod path_trav;
 mod sqli;
@@ -55,8 +56,9 @@ mod ssrf;
 mod xss;
 
 pub use registry::{
-    audit_marker_collisions, benign_payload_for, materialise_bytes, payloads_for,
-    payloads_for_lang, resolve_benign_control, CORPUS, CORPUS_UNSUPPORTED_LANG_NEUTRAL,
+    audit_marker_collisions, benign_payload_for, benign_payload_for_lang, materialise_bytes,
+    payloads_for, payloads_for_lang, resolve_benign_control, resolve_benign_control_lang,
+    CORPUS, CORPUS_UNSUPPORTED_LANG_NEUTRAL,
 };
 
 /// Re-exported canonical [`Oracle`] type.
@@ -81,7 +83,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 4       | 2026-05-14 | Phase 07: `benign_control` paired refs + benign payloads added to SQLI / CMDI / SSRF (file-scheme) |
 /// | 5       | 2026-05-16 | FMT_STRING SinkCrash payload + benign control (Phase 08 unrelated-crash acceptance fixture) |
 /// | 6       | 2026-05-17 | Phase 02 / Track J.0: `(Cap, Lang)` registry refactor; `no_benign_control_rationale` field; compile-time provenance audit |
-pub const CORPUS_VERSION: u32 = 6;
+/// | 7       | 2026-05-17 | Phase 03 / Track J.1: `DESERIALIZE` cap lit for Java / Python / PHP / Ruby; `ProbeKind::Deserialize` + `ProbePredicate::DeserializeGadgetInvoked` |
+pub const CORPUS_VERSION: u32 = 7;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

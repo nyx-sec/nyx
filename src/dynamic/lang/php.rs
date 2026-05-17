@@ -412,6 +412,11 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         | PayloadSlot::HttpBody => {}
     }
 
+    // Phase 03 (Track J.1): deserialize-sink short-circuit.
+    if spec.expected_cap == crate::labels::Cap::DESERIALIZE {
+        return Ok(emit_deserialize_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PhpShape::detect(spec, &entry_source);
     let source = generate_source(spec, shape);
@@ -423,6 +428,55 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files: vec![],
         entry_subpath: Some("entry.php".to_owned()),
     })
+}
+
+/// Phase 03 — Track J.1 deserialize harness for PHP.
+///
+/// Wraps a call to `unserialize($input, ['allowed_classes' => false])`.
+/// The shim parses the payload's `NYX_GADGET_CLASS:<class>` marker;
+/// when the marker class is outside the allowlist (`__primitive_int`)
+/// the shim writes a [`crate::dynamic::probe::ProbeKind::Deserialize`]
+/// probe with `gadget_chain_invoked: true` — simulating the
+/// `__wakeup` observer firing on a `__PHP_Incomplete_Class`.
+pub fn emit_deserialize_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — deserialize (Phase 03 / Track J.1).
+{shim}
+
+function _nyx_deserialize_probe(bool $invoked): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee' => 'unserialize',
+        'args' => [],
+        'captured_at_ns' => (int) (hrtime(true)),
+        'payload_id' => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind' => ['kind' => 'Deserialize', 'gadget_chain_invoked' => $invoked],
+        'witness' => __nyx_witness('unserialize', []),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+$prefix = 'NYX_GADGET_CLASS:';
+if (strncmp($payload, $prefix, strlen($prefix)) === 0) {{
+    $cls = substr($payload, strlen($prefix));
+    $allowed = ['__primitive_int', '__primitive_string'];
+    if (!in_array($cls, $allowed, true)) {{
+        _nyx_deserialize_probe(true);
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
 }
 
 fn generate_source(spec: &HarnessSpec, shape: PhpShape) -> String {

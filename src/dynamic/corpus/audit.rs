@@ -162,6 +162,41 @@ pub fn audit_cap_coverage_runtime() -> Result<(), String> {
     Ok(())
 }
 
+/// Track J.0 deferred audit: a non-benign payload's `benign_control.label`
+/// must be unique *within its own `(cap, lang)` slice* — and a benign
+/// payload's label may not collide with any other benign label inside the
+/// same cap across lang slices, otherwise the lang-agnostic union shim
+/// could resolve a vuln payload in language A against a benign payload
+/// declared in language B (the latent §4.1 bug captured in the deferred
+/// queue).
+pub fn audit_benign_label_uniqueness_runtime() -> Result<(), String> {
+    use std::collections::HashMap;
+
+    let mut by_cap: HashMap<u32, HashMap<&'static str, crate::symbol::Lang>> = HashMap::new();
+    for &(cap, lang, slice) in CORPUS.entries {
+        let bucket = by_cap.entry(cap.bits()).or_default();
+        for p in slice {
+            if !p.is_benign {
+                continue;
+            }
+            if let Some(prev_lang) = bucket.insert(p.label, lang) {
+                if prev_lang != lang {
+                    return Err(format!(
+                        "benign label {:?} for cap {:#x} is registered in both \
+                         {:?} and {:?} — lang-agnostic resolve_benign_control \
+                         could match the wrong language",
+                        p.label,
+                        cap.bits(),
+                        prev_lang,
+                        lang,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod corpus_registry {
     use super::*;
@@ -172,5 +207,7 @@ mod corpus_registry {
     fn audit() {
         audit_benign_controls_runtime().expect("benign_control audit failed");
         audit_cap_coverage_runtime().expect("cap coverage audit failed");
+        audit_benign_label_uniqueness_runtime()
+            .expect("benign label uniqueness audit failed");
     }
 }

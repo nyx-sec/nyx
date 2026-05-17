@@ -125,6 +125,20 @@ pub enum ProbeKind {
         /// Signal that interrupted the sink call.
         signal: Signal,
     },
+    /// Phase 03 (Track J.1) deserialization-sink observation.  Stamped
+    /// by the per-language harness shim when the instrumented
+    /// deserialiser (`ObjectInputStream.resolveClass`,
+    /// `pickle.Unpickler.find_class`, `unserialize` `__wakeup`,
+    /// `Marshal.load` const lookup) is asked to materialise a class
+    /// outside the harness's allowlist.  `gadget_chain_invoked` is
+    /// `true` when the disallowed class was actually constructed (i.e.
+    /// the gadget chain ran) and `false` when the shim caught it at
+    /// the resolution boundary before any sink effect.
+    Deserialize {
+        /// `true` iff the disallowed gadget class was instantiated /
+        /// executed before the shim aborted the chain.
+        gadget_chain_invoked: bool,
+    },
 }
 
 impl Default for ProbeKind {

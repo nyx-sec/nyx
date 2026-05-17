@@ -38,16 +38,19 @@ pub fn adapters_for(lang: Lang) -> &'static [&'static dyn FrameworkAdapter] {
     }
 }
 
-// All slices intentionally empty in Phase 01.  Later Track-L phases
-// register concrete adapters (Flask, Spring, axum, Express, …) into
-// the appropriate language slice.
+// Phase 03 (Track J.1) registers per-language deserialize-sink
+// adapters into the matching language slice.  Other Track-L verticals
+// add route / framework adapters as they land.
 static RUST: &[&dyn FrameworkAdapter] = &[];
 static C: &[&dyn FrameworkAdapter] = &[];
 static CPP: &[&dyn FrameworkAdapter] = &[];
-static JAVA: &[&dyn FrameworkAdapter] = &[];
+static JAVA: &[&dyn FrameworkAdapter] =
+    &[&super::adapters::JavaDeserializeAdapter];
 static GO: &[&dyn FrameworkAdapter] = &[];
-static PHP: &[&dyn FrameworkAdapter] = &[];
-static PYTHON: &[&dyn FrameworkAdapter] = &[];
-static RUBY: &[&dyn FrameworkAdapter] = &[];
+static PHP: &[&dyn FrameworkAdapter] = &[&super::adapters::PhpUnserializeAdapter];
+static PYTHON: &[&dyn FrameworkAdapter] =
+    &[&super::adapters::PythonPickleAdapter];
+static RUBY: &[&dyn FrameworkAdapter] =
+    &[&super::adapters::RubyMarshalAdapter];
 static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[];
 static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[];
