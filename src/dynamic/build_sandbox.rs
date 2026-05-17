@@ -548,7 +548,12 @@ fn compute_go_source_hash(workdir: &Path) -> String {
 /// A malicious annotation processor / compile-time plugin could run with host
 /// privileges. See deferred.md for planned `nyx-build-java:{toolchain_id}` container.
 pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
-    let source_hash = compute_java_source_hash(workdir);
+    // The source-hash includes the target release so the cache slot does
+    // not bleed compiled artefacts across release-version changes: a
+    // workdir compiled against `--release 17` is a different cache slot
+    // from the same sources targeted at `--release 21`.
+    let target_release = java_target_release(&spec.toolchain_id);
+    let source_hash = compute_java_source_hash(workdir, target_release);
     let cache_path = build_cache_path(&source_hash, "java", &spec.toolchain_id)?;
 
     let cached_classes = collect_class_files(&cache_path);
@@ -581,7 +586,7 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
         }
-        match try_compile_java(workdir, &cache_path) {
+        match try_compile_java(workdir, &cache_path, target_release) {
             Ok(()) => {
                 return Ok(BuildResult {
                     venv_path: cache_path,
@@ -612,7 +617,34 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
     Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
 }
 
-fn try_compile_java(workdir: &Path, cache_path: &Path) -> Result<(), String> {
+/// Parse the bytecode target release from a `java-NN` toolchain id.
+///
+/// The docker backend routes Java harnesses to `eclipse-temurin:<ver>-jre-jammy`
+/// (see `java_image_for_toolchain` in `sandbox/mod.rs`), so a host running a
+/// newer JDK (macOS dev box at Java 25) emits classfile major version 69
+/// that the container's older JRE (Java 21, supports up to major 65) refuses
+/// with `UnsupportedClassVersionError`.  Pinning `--release NN` makes the
+/// host javac emit a classfile version the container's JRE accepts.
+///
+/// Returns `None` when the toolchain id is not the expected `java-NN` shape
+/// or NN is outside the supported `javac --release` range (`javac` requires
+/// the target to be at least the current `--release --help` minimum, and
+/// modern JDKs accept 7..=current).  Falls back to no `--release` flag,
+/// preserving the legacy "trust the host javac default" behaviour for
+/// non-docker invocations.
+fn java_target_release(toolchain_id: &str) -> Option<u32> {
+    let ver = toolchain_id.strip_prefix("java-")?;
+    let parsed: u32 = ver.parse().ok()?;
+    // javac `--release` rejects out-of-range targets; constrain to a
+    // window we know the CI host(s) accept.
+    if (7..=64).contains(&parsed) {
+        Some(parsed)
+    } else {
+        None
+    }
+}
+
+fn try_compile_java(workdir: &Path, cache_path: &Path, target_release: Option<u32>) -> Result<(), String> {
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
 
     let sources = collect_java_sources(workdir);
@@ -622,6 +654,10 @@ fn try_compile_java(workdir: &Path, cache_path: &Path) -> Result<(), String> {
 
     // Compile sources — class files are written to workdir by default.
     let mut args = vec!["-d".to_owned(), workdir.to_string_lossy().into_owned()];
+    if let Some(rel) = target_release {
+        args.push("--release".to_owned());
+        args.push(rel.to_string());
+    }
     for src in &sources {
         args.push(src.to_string_lossy().into_owned());
     }
@@ -701,7 +737,7 @@ fn collect_class_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn compute_java_source_hash(workdir: &Path) -> String {
+fn compute_java_source_hash(workdir: &Path, target_release: Option<u32>) -> String {
     let mut h = Hasher::new();
     for path in collect_java_sources(workdir) {
         if let Ok(content) = std::fs::read(&path) {
@@ -709,6 +745,14 @@ fn compute_java_source_hash(workdir: &Path) -> String {
             h.update(rel.to_string_lossy().as_bytes());
             h.update(&content);
         }
+    }
+    // Fold the target release into the hash so a workdir compiled at
+    // `--release 17` cannot collide with the same workdir at `--release 21`.
+    if let Some(rel) = target_release {
+        h.update(b":release=");
+        h.update(rel.to_le_bytes().as_slice());
+    } else {
+        h.update(b":release=host");
     }
     let out = h.finalize();
     format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
@@ -1396,9 +1440,49 @@ mod tests {
     #[test]
     fn java_source_hash_stable() {
         let dir = tempfile::TempDir::new().unwrap();
-        let h1 = compute_java_source_hash(dir.path());
-        let h2 = compute_java_source_hash(dir.path());
+        let h1 = compute_java_source_hash(dir.path(), None);
+        let h2 = compute_java_source_hash(dir.path(), None);
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn java_source_hash_differs_across_target_release() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("Vuln.java"),
+            "public class Vuln {}\n",
+        )
+        .unwrap();
+        let h_none = compute_java_source_hash(dir.path(), None);
+        let h17 = compute_java_source_hash(dir.path(), Some(17));
+        let h21 = compute_java_source_hash(dir.path(), Some(21));
+        assert_ne!(h_none, h17);
+        assert_ne!(h17, h21);
+        assert_ne!(h_none, h21);
+    }
+
+    #[test]
+    fn java_target_release_parses_toolchain_id() {
+        assert_eq!(java_target_release("java-17"), Some(17));
+        assert_eq!(java_target_release("java-21"), Some(21));
+        assert_eq!(java_target_release("java-8"), Some(8));
+    }
+
+    #[test]
+    fn java_target_release_rejects_non_java_toolchain() {
+        assert_eq!(java_target_release("python-3.11"), None);
+        assert_eq!(java_target_release("node-20"), None);
+        assert_eq!(java_target_release(""), None);
+    }
+
+    #[test]
+    fn java_target_release_rejects_out_of_range() {
+        // javac --release supports [7, current] today; values outside the
+        // conservative window fall back to no flag rather than emit a
+        // broken javac invocation.
+        assert_eq!(java_target_release("java-6"), None);
+        assert_eq!(java_target_release("java-999"), None);
+        assert_eq!(java_target_release("java-abc"), None);
     }
 
     #[test]

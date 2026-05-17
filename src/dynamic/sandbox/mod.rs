@@ -1097,6 +1097,24 @@ fn exec_in_container(
         "--user".into(), "65534:65534".into(),
         "-e".into(), format!("NYX_PAYLOAD_B64={payload_b64}"),
     ];
+    // Mirror the process backend's `NYX_PAYLOAD` raw env var when the
+    // payload bytes are valid UTF-8 (most curated payloads are ASCII).
+    // Some harness shapes — notably Java's `JunitTest` (which invokes the
+    // @Test method via reflection rather than passing payload as a
+    // function argument) and PHP's top-level script fixture — read
+    // `getenv("NYX_PAYLOAD")` directly inside the entry source.  Without
+    // this forward, the docker backend silently empties their payload
+    // while the process backend reads the raw bytes successfully — the
+    // observable symptom is a `NotConfirmed` verdict under docker for a
+    // fixture the process backend confirms.  Falls through silently for
+    // non-UTF-8 payloads (a `docker -e` argument must be valid UTF-8),
+    // leaving consumers to decode `NYX_PAYLOAD_B64` themselves.
+    if let Ok(s) = std::str::from_utf8(payload_bytes) {
+        if !s.contains('\0') {
+            cmd_args.push("-e".into());
+            cmd_args.push(format!("NYX_PAYLOAD={s}"));
+        }
+    }
     // Forward harness-specific env vars.
     for (k, v) in &harness.env {
         cmd_args.push("-e".into());
