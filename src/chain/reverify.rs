@@ -51,6 +51,8 @@
 
 use crate::chain::finding::{ChainFinding, ChainSeverity};
 use crate::commands::scan::Diag;
+use crate::dynamic::build_sandbox::dispatch_prepare;
+use crate::dynamic::harness;
 use crate::dynamic::spec::HarnessSpec;
 use crate::dynamic::verify::VerifyOptions;
 use crate::evidence::{InconclusiveReason, UnsupportedReason, VerifyResult, VerifyStatus};
@@ -180,18 +182,29 @@ pub trait CompositeReverifier {
 /// Phase 26 default composite reverifier.
 ///
 /// The composite-harness composer walks `chain.members`, derives one
-/// [`HarnessSpec`] per member via [`chain_step_specs`], and (in a
-/// future session) will call
-/// [`crate::dynamic::lang::compose_chain_step`] per step to assemble a
-/// per-step harness with `NYX_PREV_OUTPUT` threading.
+/// [`HarnessSpec`] per member via [`chain_step_specs`], drives each
+/// derived spec through [`harness::build`] + [`dispatch_prepare`] so
+/// the per-language build cost is amortised against the on-disk caches
+/// before the live sandbox-run pass lands, and (in a future session)
+/// will call [`crate::dynamic::lang::compose_chain_step`] per step to
+/// assemble a per-step harness with `NYX_PREV_OUTPUT` threading.
 ///
 /// Today the default reverifier surfaces
 /// `Inconclusive(BackendInsufficient)` when invoked, but the `detail`
-/// field reports how many of `chain.members` produced a derivable
-/// [`HarnessSpec`] so operators (and the [`reverify_top_chains`]
-/// caller) can see the spec-derivation coverage before the live
-/// execution path lands.  Callers that need a deterministic outcome
-/// (tests, CI) use [`reverify_chain_with`] with a stubbed reverifier.
+/// field reports both the spec-derivation coverage AND the per-step
+/// build coverage (`derived N/M`, `built B/N`, `cache_hit=H`,
+/// `build_ms=T`, `build_errors=E`) so operators (and the
+/// [`reverify_top_chains`] caller) can see the build-cost coverage
+/// before the live execution path lands.  Callers that need a
+/// deterministic outcome (tests, CI) use [`reverify_chain_with`] with
+/// a stubbed reverifier.
+///
+/// Workdir lifetime: every per-step build is content-addressed by
+/// [`HarnessSpec::spec_hash`] under `/tmp/nyx-harness/{spec_hash}`,
+/// and the per-language `prepare_*` caches under the host's
+/// `ProjectDirs` cache root are keyed on `(lockfile_hash,
+/// toolchain_id, language)`.  Repeated calls with the same specs are
+/// idempotent — no per-call growth on disk.
 pub struct DefaultCompositeReverifier;
 
 impl CompositeReverifier for DefaultCompositeReverifier {
@@ -205,9 +218,46 @@ impl CompositeReverifier for DefaultCompositeReverifier {
         let finding_id = format!("chain-{:016x}", chain.stable_hash);
         let specs = chain_step_specs(chain, member_diags, opts);
         let total = specs.len();
-        let derived = specs.iter().filter(|s| s.result.is_ok()).count();
+        let derived_specs: Vec<&HarnessSpec> = specs
+            .iter()
+            .filter_map(|s| s.result.as_ref().ok())
+            .collect();
+        let derived = derived_specs.len();
+
+        // Sub-task (b) main of the Phase 26 live-execution split:
+        // drive each derived spec through the per-language build
+        // pipeline so the per-step cache state is visible before
+        // sub-task (c) lands the live sandbox::run chain.  Failures
+        // are counted, not propagated — the outer verdict stays
+        // `Inconclusive(BackendInsufficient)` until (c) lands.
+        let profile = opts.sandbox.process_hardening;
+        let mut built = 0usize;
+        let mut cache_hits = 0usize;
+        let mut total_build_ms: u128 = 0;
+        let mut build_errors = 0usize;
+        for spec in &derived_specs {
+            match harness::build(spec) {
+                Ok(built_harness) => {
+                    match dispatch_prepare(spec, &built_harness.workdir, profile) {
+                        Ok(result) => {
+                            built += 1;
+                            if result.cache_hit {
+                                cache_hits += 1;
+                            }
+                            total_build_ms = total_build_ms
+                                .saturating_add(result.duration.as_millis());
+                        }
+                        Err(_) => build_errors += 1,
+                    }
+                }
+                Err(_) => build_errors += 1,
+            }
+        }
+
         let detail = format!(
-            "composite chain re-verification not yet wired for live runs; derived {derived}/{total} harness specs"
+            "composite chain re-verification not yet wired for live runs; \
+             derived {derived}/{total} harness specs; \
+             built {built}/{derived} (cache_hit={cache_hits}, build_ms={total_build_ms}, build_errors={build_errors})"
         );
         VerifyResult {
             finding_id,
@@ -514,6 +564,34 @@ mod tests {
         assert!(
             detail.contains("0/1"),
             "detail must report 0/1 specs derived for a single-member chain with no diags; got {detail:?}"
+        );
+    }
+
+    #[test]
+    fn default_reverifier_detail_reports_build_coverage_with_no_derived_specs() {
+        // No diags → 0/N derived → 0/0 built.  Verifies the build
+        // segment of the detail string is well-formed even when the
+        // build pipeline is never invoked.
+        let mut chain = mk_chain(0xBD, ChainSeverity::Medium, ImpactCategory::InfoDisclosure);
+        let surface = SurfaceMap::new();
+        let opts = VerifyOptions::default();
+        let result = reverify_chain(&mut chain, &[], &surface, &opts);
+        let detail = result.verdict.detail.as_deref().expect("detail populated");
+        assert!(
+            detail.contains("built 0/0"),
+            "detail must report 0/0 built when no specs derived; got {detail:?}"
+        );
+        assert!(
+            detail.contains("cache_hit=0"),
+            "detail must zero cache_hit when no builds attempted; got {detail:?}"
+        );
+        assert!(
+            detail.contains("build_ms=0"),
+            "detail must zero build_ms when no builds attempted; got {detail:?}"
+        );
+        assert!(
+            detail.contains("build_errors=0"),
+            "detail must zero build_errors when no builds attempted; got {detail:?}"
         );
     }
 
