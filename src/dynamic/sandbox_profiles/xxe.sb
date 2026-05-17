@@ -30,6 +30,11 @@
 ;; Standard filesystem-escape denylist — shared shape with the other
 ;; per-cap profiles.  `file://`-scheme entity reads of these paths
 ;; will fault out before the parser hands the contents back.
+;; The `/Users` denylist uses regex matches on specific secret-bearing
+;; subpaths instead of a blanket `(subpath "/Users")` deny.  See the
+;; matching comment in `cmdi.sb` for the cold-start rationale.  XXE
+;; payloads that resolve `file:///Users/<user>/.ssh/id_rsa` still hit
+;; EPERM at parser fetch time.
 (deny file-read*
     (literal "/etc/passwd")
     (literal "/etc/master.passwd")
@@ -39,5 +44,16 @@
     (literal "/private/etc/master.passwd")
     (literal "/private/etc/shadow")
     (literal "/private/etc/sudoers")
-    (subpath "/Users")
+    (regex #"^/Users/[^/]+/\.ssh(/|$)")
+    (regex #"^/Users/[^/]+/\.aws(/|$)")
+    (regex #"^/Users/[^/]+/\.gnupg(/|$)")
+    (regex #"^/Users/[^/]+/\.netrc$")
+    (regex #"^/Users/[^/]+/\.docker(/|$)")
+    (regex #"^/Users/[^/]+/\.kube(/|$)")
+    (regex #"^/Users/[^/]+/\.config/gh(/|$)")
+    (regex #"^/Users/[^/]+/Library/Keychains(/|$)")
+    (regex #"^/Users/[^/]+/Library/Cookies(/|$)")
+    (regex #"^/Users/[^/]+/Library/Mail(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/com\.apple\.TCC(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/Slack(/|$)")
     (subpath "/Library/Keychains"))

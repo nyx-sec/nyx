@@ -208,9 +208,12 @@ pub fn profile_path(name: &str) -> Option<PathBuf> {
     }
     let dir = profile_dir()?;
     let path = dir.join(format!("{key}.sb"));
-    if !path.exists() {
-        std::fs::write(&path, source).ok()?;
-    }
+    // Always overwrite on first miss in this process so an upgraded nyx
+    // binary picks up new profile content even when a previous version
+    // left a stale `.sb` file under `std::env::temp_dir()`.  The in-process
+    // `PROFILE_PATHS` cache then short-circuits subsequent lookups so the
+    // write happens at most once per profile per process lifetime.
+    std::fs::write(&path, source).ok()?;
     let mut cache = profile_paths().lock().ok()?;
     cache.insert(*key, path.clone());
     Some(path)

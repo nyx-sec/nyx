@@ -115,8 +115,9 @@ except Exception as exc:
     /// the probe exits 0 with the `network-attempted` marker.
     ///
     /// The probe source is read in at compile time and written into
-    /// the harness workdir at run time so the sandbox-exec
-    /// `(subpath "/Users")` deny does not block the script load.
+    /// the harness workdir at run time so the sandbox-exec narrow
+    /// `/Users/<user>/Library/...` denies cannot accidentally shadow a
+    /// home-relative script-load path.
     const XXE_PROBE_SOURCE: &str =
         include_str!("dynamic_fixtures/hardening/xxe_probe.py");
 
@@ -525,6 +526,163 @@ except Exception as exc:
              process backend never engaged sandbox-exec, so claiming the run \
              was sandboxed would be a false witness; got: {:?}",
             result.hardening_outcome,
+        );
+    }
+
+    /// Phase 18 acceptance (d): Strict-profile run of the cmdi positive
+    /// fixture confirms AND stamps `VerifyResult::hardening_outcome`.
+    /// Mirrors `verify_finding_under_standard_leaves_hardening_outcome_unset`
+    /// with `harden_profile = "strict"` so the macOS process backend
+    /// engages `sandbox-exec -f cmdi.sb -D WORKDIR=...` end-to-end.
+    /// The cmdi.sb profile's narrowed `/Users` deny (regex-matched
+    /// secret subpaths only, not a blanket `(subpath "/Users")` deny)
+    /// keeps `_path_importer_cache` reachable so the python harness
+    /// cold-starts; the `subprocess.run("echo NYX_PWN_CMDI", shell=True)`
+    /// invocation in the auto-emitted harness is the sink probe and
+    /// fires under the cmdi profile (process-exec is allowed; filesystem
+    /// reads of host secrets are denied via the inherited denylist).
+    #[test]
+    fn verify_finding_under_strict_stamps_hardening_outcome() {
+        use std::path::PathBuf;
+        unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
+        if !sandbox_exec_available() {
+            eprintln!("SKIP: /usr/bin/sandbox-exec missing — cannot exercise wrap");
+            return;
+        }
+        let python3_available = std::process::Command::new("/usr/bin/python3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !python3_available {
+            eprintln!("SKIP: /usr/bin/python3 missing — cannot run python harness");
+            return;
+        }
+
+        use nyx_scanner::commands::scan::Diag;
+        use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+        use nyx_scanner::evidence::{
+            Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus,
+        };
+        use nyx_scanner::labels::Cap;
+        use nyx_scanner::patterns::{FindingCategory, Severity};
+        use nyx_scanner::utils::config::Config;
+
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/python/cmdi_positive.py");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join("cmdi_positive.py");
+        std::fs::copy(&fixture_src, &dst).expect("stage fixture into tempdir");
+
+        unsafe {
+            std::env::set_var(
+                "NYX_REPRO_BASE",
+                tmp.path().join("repro").to_str().unwrap(),
+            );
+            std::env::set_var(
+                "NYX_TELEMETRY_PATH",
+                tmp.path().join("events.jsonl").to_str().unwrap(),
+            );
+        }
+
+        let path_str = dst.to_string_lossy().into_owned();
+        let evidence = Evidence {
+            flow_steps: vec![
+                FlowStep {
+                    step: 1,
+                    kind: FlowStepKind::Source,
+                    file: path_str.clone(),
+                    line: 1,
+                    col: 0,
+                    snippet: None,
+                    variable: Some("host".into()),
+                    callee: None,
+                    function: Some("run_ping".into()),
+                    is_cross_file: false,
+                },
+                FlowStep {
+                    step: 2,
+                    kind: FlowStepKind::Sink,
+                    file: path_str.clone(),
+                    line: 13,
+                    col: 4,
+                    snippet: None,
+                    variable: None,
+                    callee: None,
+                    function: None,
+                    is_cross_file: false,
+                },
+            ],
+            sink_caps: Cap::CODE_EXEC.bits(),
+            ..Default::default()
+        };
+        let diag = Diag {
+            path: path_str,
+            line: 13,
+            col: 0,
+            severity: Severity::High,
+            id: "taint-unsanitised-flow".into(),
+            category: FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: Some(Confidence::High),
+            evidence: Some(evidence),
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        };
+
+        let mut config = Config::default();
+        config.scanner.harden_profile = "strict".to_owned();
+        // Force the process backend: the macOS sandbox-exec wrap is gated
+        // on `SandboxBackend::Process`, and `SandboxBackend::Auto` would
+        // route the python harness to docker when docker is reachable
+        // (the common CI shape).  Docker ignores `process_hardening`, so
+        // running under `Auto` would leave `hardening_outcome` unset
+        // regardless of `--harden=strict`, masking the wiring this test
+        // is asserting.
+        config.scanner.verify_backend = "process".to_owned();
+        let opts = VerifyOptions::from_config(&config);
+        let result = verify_finding(&diag, &opts);
+
+        unsafe {
+            std::env::remove_var("NYX_REPRO_BASE");
+            std::env::remove_var("NYX_TELEMETRY_PATH");
+        }
+
+        assert_eq!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "cmdi_positive.py under --harden=strict should confirm: detail={:?}",
+            result.detail,
+        );
+        let summary = result
+            .hardening_outcome
+            .as_ref()
+            .expect("Strict run must stamp hardening_outcome");
+        assert_eq!(
+            summary.backend, "macos-process",
+            "macOS host should produce a macos-process backend stamp",
+        );
+        assert_eq!(
+            summary.level, "sandboxed",
+            "Strict-engaged sandbox-exec wrap should record level=sandboxed",
+        );
+        assert_eq!(
+            summary.profile, "cmdi",
+            "CODE_EXEC-cap finding should land the cmdi profile",
+        );
+        assert!(
+            summary.primitives.is_empty(),
+            "macOS backend records no per-primitive entries",
         );
     }
 

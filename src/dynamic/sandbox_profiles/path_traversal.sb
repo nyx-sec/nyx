@@ -21,6 +21,13 @@
 (version 1)
 (allow default)
 
+;; The `/Users` denylist uses regex matches on specific secret-bearing
+;; subpaths instead of a blanket `(subpath "/Users")` deny.  See the
+;; matching comment in `cmdi.sb` for the cold-start rationale.  The
+;; FILE_IO profile is the strictest of the cap profiles so the regex
+;; set is wider than the CMDI / SSRF profiles: every credential file
+;; under `~` plus per-app secret stores (Slack tokens, VS Code user
+;; settings, Mail database) are denied.
 (deny file-read*
     (literal "/etc/passwd")
     (literal "/etc/master.passwd")
@@ -30,7 +37,21 @@
     (literal "/private/etc/master.passwd")
     (literal "/private/etc/shadow")
     (literal "/private/etc/sudoers")
-    (subpath "/Users")
+    (regex #"^/Users/[^/]+/\.ssh(/|$)")
+    (regex #"^/Users/[^/]+/\.aws(/|$)")
+    (regex #"^/Users/[^/]+/\.gnupg(/|$)")
+    (regex #"^/Users/[^/]+/\.netrc$")
+    (regex #"^/Users/[^/]+/\.docker(/|$)")
+    (regex #"^/Users/[^/]+/\.kube(/|$)")
+    (regex #"^/Users/[^/]+/\.config/gh(/|$)")
+    (regex #"^/Users/[^/]+/\.zsh_history$")
+    (regex #"^/Users/[^/]+/\.bash_history$")
+    (regex #"^/Users/[^/]+/Library/Keychains(/|$)")
+    (regex #"^/Users/[^/]+/Library/Cookies(/|$)")
+    (regex #"^/Users/[^/]+/Library/Mail(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/com\.apple\.TCC(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/Slack(/|$)")
+    (regex #"^/Users/[^/]+/Library/Application Support/Code/User(/|$)")
     (subpath "/var/db")
     (subpath "/private/var/db")
     (subpath "/var/log")
