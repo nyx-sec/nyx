@@ -16,7 +16,15 @@
 //! map first; if none exists (no `nyx scan` ever ran, or the index was
 //! cleaned) it falls back to building a fresh entry-point-only map by
 //! running the framework probes against the on-disk source.
+//!
+//! Pass `--build` to force a full inline build that runs pass-1
+//! summary extraction + call-graph construction.  That populates the
+//! same DataStore / ExternalService / DangerousLocal nodes and Reaches
+//! edges that an indexed scan would have persisted, at the cost of
+//! parsing the project tree once (same wall-clock as `nyx index
+//! build`).
 
+use crate::ast::extract_all_summaries_from_bytes;
 use crate::callgraph;
 use crate::cli::SurfaceFormat;
 use crate::database::index::Indexer;
@@ -30,6 +38,7 @@ use crate::utils::Config;
 use crate::utils::project::get_project_info;
 use crate::walk::spawn_file_walker;
 use crossbeam_channel::TryRecvError;
+use rayon::prelude::*;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -37,14 +46,25 @@ use std::process::{Command, Stdio};
 
 /// Top-level CLI handler.  Resolves the scan root, loads or builds a
 /// [`SurfaceMap`], renders it in `format`, and writes to stdout.
+///
+/// When `build_inline` is `true`, the persisted SurfaceMap (if any) is
+/// ignored and the full map is built by running pass-1 summary
+/// extraction + call-graph construction against the on-disk source.
+/// This populates DataStore / ExternalService / DangerousLocal nodes
+/// and Reaches edges that the entry-points-only fallback omits.
 pub fn handle(
     path: &str,
     format: SurfaceFormat,
+    build_inline: bool,
     database_dir: &Path,
     config: &Config,
 ) -> NyxResult<()> {
     let scan_root = Path::new(path).canonicalize()?;
-    let map = load_or_build(&scan_root, database_dir, config)?;
+    let map = if build_inline {
+        build_full_from_filesystem(&scan_root, config)?
+    } else {
+        load_or_build(&scan_root, database_dir, config)?
+    };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     match format {
@@ -106,6 +126,76 @@ fn build_from_filesystem(scan_root: &Path, config: &Config) -> NyxResult<Surface
         config,
     };
     Ok(build_surface_map(&inputs))
+}
+
+/// Build a full SurfaceMap from source by running pass-1 summary
+/// extraction inline + call-graph construction, then handing the
+/// resulting [`GlobalSummaries`] + [`CallGraph`] to
+/// [`build_surface_map`].  Same cost as `nyx index build` pass 1 but
+/// holds nothing in SQLite.
+fn build_full_from_filesystem(scan_root: &Path, config: &Config) -> NyxResult<SurfaceMap> {
+    let files = collect_files(scan_root, config)?;
+    let mut summaries = build_summaries_inline(&files, scan_root, config);
+    summaries.install_hierarchy();
+    let call_graph = callgraph::build_call_graph(&summaries, &[]);
+    let inputs = SurfaceBuildInputs {
+        files: &files,
+        scan_root: Some(scan_root),
+        global_summaries: &summaries,
+        call_graph: &call_graph,
+        config,
+    };
+    Ok(build_surface_map(&inputs))
+}
+
+/// Run pass-1 summary extraction across `files` in parallel and merge
+/// the per-thread results into a single [`GlobalSummaries`].  Mirrors
+/// the `scan_filesystem_with_observer` pass-1 fold/reduce shape but
+/// strips out the progress / metrics / logs threading the surface
+/// command does not need.
+///
+/// Per-file errors are swallowed so a single bad file does not kill
+/// the whole map.
+fn build_summaries_inline(
+    files: &[PathBuf],
+    scan_root: &Path,
+    config: &Config,
+) -> GlobalSummaries {
+    let root_str = scan_root.to_string_lossy().into_owned();
+    let mg = config.module_graph.as_deref();
+    files
+        .par_iter()
+        .fold(GlobalSummaries::new, |mut local_gs, path| {
+            let Ok(bytes) = std::fs::read(path) else {
+                return local_gs;
+            };
+            let Ok((func_summaries, ssa_summaries, ssa_bodies, auth_summaries, cross_pkg)) =
+                extract_all_summaries_from_bytes(&bytes, path, config, Some(scan_root))
+            else {
+                return local_gs;
+            };
+            for s in func_summaries {
+                let key = s.func_key_with_resolver(Some(&root_str), mg);
+                local_gs.insert(key, s);
+            }
+            for (key, ssa_sum) in ssa_summaries {
+                local_gs.insert_ssa(key, ssa_sum);
+            }
+            for (key, body) in ssa_bodies {
+                local_gs.insert_body(key, body);
+            }
+            for (key, auth_sum) in auth_summaries {
+                local_gs.insert_auth(key, auth_sum);
+            }
+            if let Some((ns, map)) = cross_pkg {
+                local_gs.insert_cross_package_imports(ns, map);
+            }
+            local_gs
+        })
+        .reduce(GlobalSummaries::new, |mut a, b| {
+            a.merge(b);
+            a
+        })
 }
 
 fn collect_files(root: &Path, config: &Config) -> NyxResult<Vec<PathBuf>> {
@@ -540,5 +630,128 @@ mod tests {
         let text = render_text(&m, None);
         assert!(text.contains("reaches:"));
         assert!(text.contains("dangerous: eval"));
+    }
+
+    #[test]
+    fn build_summaries_inline_extracts_function_summaries() {
+        // Establishes that the inline pass-1 path produces the same
+        // `GlobalSummaries` shape that an indexed scan would have
+        // persisted — at minimum, one FuncSummary per top-level
+        // function in the fixture.  Without this guarantee the surface
+        // build downstream falls back to entry-points-only because
+        // `detect_data_stores` / `detect_external_services` /
+        // `detect_dangerous_locals` walk the summaries map.
+        let td = tempfile::tempdir().unwrap();
+        let project_dir = td.path();
+        std::fs::write(
+            project_dir.join("app.py"),
+            "from flask import Flask, request\n\
+             app = Flask(__name__)\n\
+             \n\
+             @app.route('/run')\n\
+             def run():\n\
+                 cmd = request.args.get('cmd')\n\
+                 return str(eval(cmd))\n\
+             \n\
+             def helper(x):\n\
+                 return eval(x)\n",
+        )
+        .unwrap();
+
+        let cfg = Config::default();
+        let canon = project_dir.canonicalize().unwrap();
+        let files = collect_files(&canon, &cfg).unwrap();
+        let summaries = build_summaries_inline(&files, &canon, &cfg);
+        let names: Vec<String> = summaries
+            .iter()
+            .map(|(k, _)| k.qualified_name())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("run")),
+            "summaries should contain `run`, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with("helper")),
+            "summaries should contain `helper`, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn build_full_from_filesystem_walks_pass1_pipeline() {
+        // End-to-end smoke for `surface::handle(..., build=true)`: the
+        // inline-build path must produce a non-empty SurfaceMap on a
+        // project with a recognisable framework route.  Equivalent to
+        // running `nyx surface --build .` on a single-file Flask app.
+        let td = tempfile::tempdir().unwrap();
+        let project_dir = td.path();
+        std::fs::write(
+            project_dir.join("app.py"),
+            "from flask import Flask, request\n\
+             app = Flask(__name__)\n\
+             \n\
+             @app.route('/run')\n\
+             def run():\n\
+                 cmd = request.args.get('cmd')\n\
+                 return str(eval(cmd))\n",
+        )
+        .unwrap();
+
+        let cfg = Config::default();
+        let canon = project_dir.canonicalize().unwrap();
+        let map = build_full_from_filesystem(&canon, &cfg).expect("inline build succeeds");
+
+        let has_entry = map
+            .nodes
+            .iter()
+            .any(|n| matches!(n, SurfaceNode::EntryPoint(_)));
+        assert!(has_entry, "Flask /run route should be detected");
+    }
+
+    #[test]
+    fn build_from_filesystem_entry_points_only_runs_with_empty_summaries() {
+        // Locks in the fallback contract: `build_from_filesystem` runs
+        // framework probes against an empty `GlobalSummaries` and
+        // produces only entry-point nodes.  Any future change that
+        // accidentally widens the fallback to populate sinks should
+        // either ship through `--build` or update this test.
+        let td = tempfile::tempdir().unwrap();
+        let project_dir = td.path();
+        std::fs::write(
+            project_dir.join("app.py"),
+            "from flask import Flask\n\
+             app = Flask(__name__)\n\
+             \n\
+             @app.route('/run')\n\
+             def run():\n\
+                 return 'ok'\n",
+        )
+        .unwrap();
+
+        let cfg = Config::default();
+        let canon = project_dir.canonicalize().unwrap();
+        let map = build_from_filesystem(&canon, &cfg).expect("fallback build succeeds");
+
+        // Entry point should still appear (framework probes run in the
+        // fallback path too).
+        assert!(
+            map.nodes
+                .iter()
+                .any(|n| matches!(n, SurfaceNode::EntryPoint(_))),
+            "Flask route should land via framework probe"
+        );
+        // No DataStore / ExternalService / DangerousLocal because the
+        // fallback path feeds an empty GlobalSummaries to the detectors.
+        let non_entry = map.nodes.iter().any(|n| {
+            matches!(
+                n,
+                SurfaceNode::DataStore(_)
+                    | SurfaceNode::ExternalService(_)
+                    | SurfaceNode::DangerousLocal(_)
+            )
+        });
+        assert!(
+            !non_entry,
+            "entry-points-only fallback should not produce non-entry nodes"
+        );
     }
 }

@@ -625,9 +625,13 @@ pub enum Commands {
     /// Loads the SurfaceMap persisted by the most recent indexed scan
     /// when available, otherwise builds an entry-point-only map by
     /// running the per-language framework probes against the on-disk
-    /// source.  Use `--format dot` and pipe through `dot -Tsvg` to
-    /// produce a renderable graph; `--format svg` does the same in one
-    /// step when graphviz is installed locally.
+    /// source.  Pass `--build` to force a full inline build (pass-1
+    /// summary extraction + call-graph construction) when no indexed
+    /// scan exists; that populates DataStore / ExternalService /
+    /// DangerousLocal nodes the entry-points-only fallback omits.
+    /// Use `--format dot` and pipe through `dot -Tsvg` to produce a
+    /// renderable graph; `--format svg` does the same in one step when
+    /// graphviz is installed locally.
     Surface {
         /// Path to inspect (defaults to current directory)
         #[arg(default_value = ".")]
@@ -636,6 +640,15 @@ pub enum Commands {
         /// Output format: text (default), json, dot, svg
         #[arg(long, value_enum, default_value_t = SurfaceFormat::Text)]
         format: SurfaceFormat,
+
+        /// Build the full SurfaceMap from source even when no indexed
+        /// scan exists.  Runs pass-1 summary extraction + call-graph
+        /// build inline (same cost as `nyx index build`), then renders
+        /// data-store / external-service / dangerous-local nodes plus
+        /// reach edges.  Without this flag, an unscanned project
+        /// produces an entry-points-only map.
+        #[arg(long)]
+        build: bool,
     },
 
     /// Start the local web UI for browsing scan results

@@ -427,9 +427,13 @@ pub fn handle_command(
         Commands::Rules { action } => {
             self::rules::handle(action, config)?;
         }
-        Commands::Surface { path, format } => {
+        Commands::Surface {
+            path,
+            format,
+            build,
+        } => {
             install_from_config(config);
-            surface::handle(&path, format, database_dir, config)?;
+            surface::handle(&path, format, build, database_dir, config)?;
         }
         Commands::Serve {
             path,
