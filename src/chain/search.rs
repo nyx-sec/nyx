@@ -369,7 +369,7 @@ fn composite_dynamic_verdict(
     None
 }
 
-fn canonicalise(chains: &mut [ChainFinding]) {
+fn canonicalise(chains: &mut Vec<ChainFinding>) {
     chains.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
@@ -377,6 +377,17 @@ fn canonicalise(chains: &mut [ChainFinding]) {
             .then(b.stable_hash.cmp(&a.stable_hash))
             .then(b.implied_impact.cmp(&a.implied_impact))
     });
+    // Drop duplicates: two chains with the same stable_hash and the
+    // same terminal sink serialise byte-identically (stable_hash is a
+    // function of members + implied_impact, and the wire format
+    // exposes only members, sink, impact, severity, score). They arise
+    // when multiple entry-points share a (route, method) but are
+    // otherwise unrelated (e.g. monorepos, or a scan covering multiple
+    // small apps), each claiming the same finding via the route-only
+    // candidate filter in `find_chains_with_reach`. Keep the first
+    // occurrence after the sort above; the sort is total enough that
+    // the survivor is deterministic.
+    chains.dedup_by(|a, b| a.stable_hash == b.stable_hash && a.sink == b.sink);
 }
 
 // Manual Ord/PartialOrd for ImpactCategory so the canonicalise
@@ -739,5 +750,70 @@ mod tests {
             "reach map should widen scope to include helper.py sink"
         );
         assert_eq!(chains[0].implied_impact, ImpactCategory::Rce);
+    }
+
+    #[test]
+    fn duplicate_chains_from_shared_route_method_are_deduped() {
+        // Three unrelated handler files each declare POST /run.  Each
+        // file holds one finding + one dangerous-local sink.  Without
+        // the dedup pass, the per-entry candidate filter (route +
+        // method only) lets every entry claim every finding, and the
+        // sink-file scope filter then emits one chain per (entry,
+        // sink) pair — 3 chains per file × 3 files = 9 chains where
+        // each finding appears 3×.  The wire format does not surface
+        // the entry, so the duplicates serialise byte-identically.
+        // `canonicalise` must drop them.
+        let mut surface = SurfaceMap::new();
+        surface.nodes.push(entry("a.js", "/run", false));
+        surface.nodes.push(entry("b.js", "/run", false));
+        surface.nodes.push(entry("c.py", "/run", false));
+        surface
+            .nodes
+            .push(sink("a.js", 7, "eval", Cap::CODE_EXEC));
+        surface
+            .nodes
+            .push(sink("b.js", 7, "eval", Cap::CODE_EXEC));
+        surface
+            .nodes
+            .push(sink("c.py", 7, "eval", Cap::CODE_EXEC));
+        let edges = vec![
+            edge_with(
+                "a.js",
+                7,
+                "taint-codeexec",
+                Cap::CODE_EXEC,
+                "/run",
+                HttpMethod::POST,
+                Feasibility::Unverified,
+            ),
+            edge_with(
+                "b.js",
+                7,
+                "taint-codeexec",
+                Cap::CODE_EXEC,
+                "/run",
+                HttpMethod::POST,
+                Feasibility::Unverified,
+            ),
+            edge_with(
+                "c.py",
+                7,
+                "taint-codeexec",
+                Cap::CODE_EXEC,
+                "/run",
+                HttpMethod::POST,
+                Feasibility::Unverified,
+            ),
+        ];
+        let chains = find_chains(&edges, &surface, ChainSearchConfig::default());
+        assert_eq!(
+            chains.len(),
+            3,
+            "expected one chain per finding, not entries × findings",
+        );
+        let mut hashes: Vec<u64> = chains.iter().map(|c| c.stable_hash).collect();
+        hashes.sort();
+        hashes.dedup();
+        assert_eq!(hashes.len(), 3, "surviving chains must have distinct hashes");
     }
 }
