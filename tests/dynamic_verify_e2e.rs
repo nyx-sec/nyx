@@ -158,6 +158,61 @@ mod verify_e2e {
         assert_eq!(result.reason, Some(UnsupportedReason::ConfidenceTooLow));
     }
 
+    /// Phase 01 / Track L.0 acceptance: every spec the verifier
+    /// finalises must emit either `framework_adapter_detected` or
+    /// `framework_adapter_none` into the [`VerifyTrace`].  The Phase 01
+    /// adapter registry is empty, so the baseline contract is that
+    /// every successfully-derived spec records a `framework_adapter_none`
+    /// event whose `detail` carries `lang=<Lang> entry=<entry_name>`.
+    ///
+    /// We drive `verify_finding` through the `NoPayloadsForCap` short-circuit
+    /// (CRYPTO has no curated payload corpus) so the trace is recorded
+    /// without needing a working toolchain or sandbox backend.
+    #[test]
+    fn verify_finding_emits_framework_adapter_none_for_empty_registry() {
+        use nyx_scanner::dynamic::trace::{TraceStage, VerifyTrace};
+        use std::sync::Arc;
+
+        let diag = taint_diag_with_cap(Cap::CRYPTO);
+        let trace = Arc::new(VerifyTrace::new());
+        let mut opts = VerifyOptions::default();
+        opts.trace_sink = Some(Arc::clone(&trace));
+
+        let _result = verify_finding(&diag, &opts);
+
+        let events = trace.events();
+        let adapter_event = events
+            .iter()
+            .find(|e| e.stage == TraceStage::FrameworkAdapterNone)
+            .expect(
+                "Phase 01 / Track L.0 contract: every finalised spec must emit \
+                 a `framework_adapter_none` event when the adapter registry is empty",
+            );
+        let detail = adapter_event
+            .detail
+            .as_deref()
+            .expect("framework_adapter_none must carry a detail string");
+        assert!(
+            detail.contains("lang="),
+            "framework_adapter_none detail must include `lang=…`, got: {detail:?}"
+        );
+        assert!(
+            detail.contains("entry="),
+            "framework_adapter_none detail must include `entry=…`, got: {detail:?}"
+        );
+        assert!(
+            detail.contains("entry=handle_request"),
+            "framework_adapter_none detail must name the spec's entry function, got: {detail:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.stage == TraceStage::FrameworkAdapterDetected),
+            "Phase 01 ships zero adapters, so no `framework_adapter_detected` event \
+             can fire on the baseline path"
+        );
+    }
+
     /// The JSON shape of `VerifyResult` for an evidence-less finding
     /// matches the documented contract: `status` present; transient
     /// fields like `triggered_payload`, `detail`, `attempts` absent

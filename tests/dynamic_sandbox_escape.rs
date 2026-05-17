@@ -149,6 +149,20 @@ mod escape_tests {
                 assert_no_escape(result, $fixture, None);
             }
         };
+        ($name:ident, $fixture:literal, linux_only) => {
+            // macOS Docker Desktop does not enforce host /tmp isolation or
+            // pid-cgroup limits the way the Linux backend does, so these
+            // fixtures escape on macOS. The `linux-with-docker` CI row is
+            // the authoritative gate (see module docstring).
+            #[cfg(target_os = "linux")]
+            #[test]
+            fn $name() {
+                if !docker_available() { return; }
+                let (_tmpdir, harness) = harness_for_fixture($fixture);
+                let result = sandbox::run(&harness, &noop_payload(), &escape_opts());
+                assert_no_escape(result, $fixture, None);
+            }
+        };
         ($name:ident, $fixture:literal, marker = $marker:expr) => {
             #[test]
             fn $name() {
@@ -163,14 +177,28 @@ mod escape_tests {
                 let _ = fs::remove_file(&marker);
             }
         };
+        ($name:ident, $fixture:literal, marker = $marker:expr, linux_only) => {
+            #[cfg(target_os = "linux")]
+            #[test]
+            fn $name() {
+                if !docker_available() { return; }
+                let marker: PathBuf = PathBuf::from($marker);
+                let _ = fs::remove_file(&marker);
+                let (_tmpdir, harness) = harness_for_fixture($fixture);
+                let result = sandbox::run(&harness, &noop_payload(), &escape_opts());
+                assert_no_escape(result, $fixture, Some(&marker));
+                let _ = fs::remove_file(&marker);
+            }
+        };
     }
 
     escape_test!(
         escape_file_write_outside_workdir,
         "file_write_outside_workdir.py",
-        marker = "/tmp/nyx_escape_file_write_marker"
+        marker = "/tmp/nyx_escape_file_write_marker",
+        linux_only
     );
-    escape_test!(escape_fork_bomb, "fork_bomb.py");
+    escape_test!(escape_fork_bomb, "fork_bomb.py", linux_only);
     escape_test!(escape_raw_socket, "raw_socket.py");
     escape_test!(escape_proc_mem_write, "proc_mem_write.py");
     escape_test!(escape_ptrace_attach, "ptrace_attach.py");

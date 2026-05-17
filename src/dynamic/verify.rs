@@ -98,6 +98,13 @@ pub struct VerifyOptions {
     /// `NYX_VERIFY_REPLAY_DOCKER` environment variable (`1` / `true`).
     /// The flag is inert when `replay_stable_check == false`.
     pub replay_use_docker: bool,
+    /// Test/observability hook: when `Some`, [`verify_finding`] records
+    /// every [`crate::dynamic::trace::TraceEvent`] into this trace handle
+    /// instead of constructing a fresh internal one. Lets integration
+    /// tests inspect the verifier's stage timeline (e.g. the Track L.0
+    /// `framework_adapter_*` events) without scraping stderr or writing
+    /// a repro bundle. `None` in production paths.
+    pub trace_sink: Option<Arc<crate::dynamic::trace::VerifyTrace>>,
 }
 
 impl VerifyOptions {
@@ -175,6 +182,7 @@ impl VerifyOptions {
             trace_verbose: false,
             replay_stable_check,
             replay_use_docker,
+            trace_sink: None,
         }
     }
 }
@@ -483,7 +491,14 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     // Phase 30 (Track C observability): one trace per finding, threaded
     // into [`SandboxOptions`] so the runner can append `build_*` /
     // `sandbox_started` / `oracle_*` stages from inside `run_spec`.
-    let trace = Arc::new(crate::dynamic::trace::VerifyTrace::new());
+    //
+    // Tests may pre-seed `opts.trace_sink` with their own `Arc<VerifyTrace>`
+    // handle; when present we reuse it instead of allocating a fresh one
+    // so assertions can inspect the recorded stages after the call returns.
+    let trace = opts
+        .trace_sink
+        .clone()
+        .unwrap_or_else(|| Arc::new(crate::dynamic::trace::VerifyTrace::new()));
     trace.record(
         crate::dynamic::trace::TraceStage::SpecStarted,
         Some(format!("rule={} path={}", diag.id, diag.path)),

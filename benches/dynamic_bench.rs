@@ -67,6 +67,7 @@ fn make_rust_sqli_spec() -> HarnessSpec {
         spec_hash: "benchrustsqli0001".into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     }
 }
 
@@ -87,6 +88,7 @@ fn make_sqli_spec() -> HarnessSpec {
         spec_hash: "benchsqli000001".into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     }
 }
 
@@ -285,6 +287,7 @@ fn make_js_sqli_spec() -> HarnessSpec {
         spec_hash: "benchjssqli000001".into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     }
 }
 
@@ -305,6 +308,7 @@ fn make_go_sqli_spec() -> HarnessSpec {
         spec_hash: "benchgosqli000001".into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     }
 }
 
@@ -325,6 +329,7 @@ fn make_java_sqli_spec() -> HarnessSpec {
         spec_hash: "benchjavasqli00001".into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     }
 }
 
@@ -345,6 +350,7 @@ fn make_php_sqli_spec() -> HarnessSpec {
         spec_hash: "benchphpsqli000001".into(),
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
+        framework: None,
     }
 }
 
