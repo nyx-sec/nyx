@@ -85,6 +85,19 @@ pub struct VerifyOptions {
     /// Default `false`. [`Self::from_config`] honours the
     /// `NYX_VERIFY_REPLAY_STABLE` environment variable (`1` / `true`).
     pub replay_stable_check: bool,
+    /// Phase 31 follow-up: when `true` and `replay_stable_check` is also
+    /// `true`, the verifier passes `--docker` to `reproduce.sh` instead of
+    /// running it through the host's process backend.  Lets the eval-corpus
+    /// driver mark `replay_stable` based on the bare-image replay path so
+    /// the M7 ship-gate's Gate 5 reflects the docker bundle's green/red
+    /// signal — required when the corpus walks a host that has stripped
+    /// the language toolchains (the bare-image CI matrix at
+    /// `.github/workflows/repro-bare.yml`).
+    ///
+    /// Default `false`.  [`Self::from_config`] honours the
+    /// `NYX_VERIFY_REPLAY_DOCKER` environment variable (`1` / `true`).
+    /// The flag is inert when `replay_stable_check == false`.
+    pub replay_use_docker: bool,
 }
 
 impl VerifyOptions {
@@ -141,6 +154,9 @@ impl VerifyOptions {
         let replay_stable_check = std::env::var("NYX_VERIFY_REPLAY_STABLE")
             .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
             .unwrap_or(false);
+        let replay_use_docker = std::env::var("NYX_VERIFY_REPLAY_DOCKER")
+            .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE"))
+            .unwrap_or(false);
 
         Self {
             sandbox: SandboxOptions {
@@ -158,6 +174,7 @@ impl VerifyOptions {
             telemetry_policy: SamplingPolicy::from_config(&config.telemetry),
             trace_verbose: false,
             replay_stable_check,
+            replay_use_docker,
         }
     }
 }
@@ -760,7 +777,8 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         && let Some(bundle) = crate::dynamic::repro::bundle_root_for(&spec.spec_hash)
         && bundle.join("reproduce.sh").exists()
     {
-        let replay = crate::dynamic::repro::replay_bundle(&bundle, &[]);
+        let replay_args: &[&str] = if opts.replay_use_docker { &["--docker"] } else { &[] };
+        let replay = crate::dynamic::repro::replay_bundle(&bundle, replay_args);
         verdict.replay_stable = crate::dynamic::repro::replay_stability(&replay);
     }
 
@@ -1271,6 +1289,33 @@ mod tests {
         let opts = VerifyOptions::from_config(&Config::default());
         assert!(!opts.replay_stable_check);
         unsafe { std::env::remove_var("NYX_VERIFY_REPLAY_STABLE") };
+    }
+
+    #[test]
+    fn from_config_defaults_replay_use_docker_off() {
+        // Same hermeticity concern as `replay_stable_check`: clear any
+        // stale process-wide setting so the default is observable.
+        unsafe { std::env::remove_var("NYX_VERIFY_REPLAY_DOCKER") };
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(
+            !opts.replay_use_docker,
+            "NYX_VERIFY_REPLAY_DOCKER absent must leave the opt-in off so \
+             interactive `nyx scan` does not require docker for the replay step"
+        );
+    }
+
+    #[test]
+    fn from_config_picks_up_replay_docker_env_flag() {
+        unsafe { std::env::set_var("NYX_VERIFY_REPLAY_DOCKER", "1") };
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(opts.replay_use_docker);
+        unsafe { std::env::set_var("NYX_VERIFY_REPLAY_DOCKER", "true") };
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(opts.replay_use_docker);
+        unsafe { std::env::set_var("NYX_VERIFY_REPLAY_DOCKER", "0") };
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(!opts.replay_use_docker);
+        unsafe { std::env::remove_var("NYX_VERIFY_REPLAY_DOCKER") };
     }
 
     #[test]

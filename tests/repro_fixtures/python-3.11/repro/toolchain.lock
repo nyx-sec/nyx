@@ -1,7 +1,7 @@
 {
   "files": {
     "entry/extracted_source.py": "d18631435ec059c8cabafe7854f18d45e06a5c62da6274710712cf862cf9afa8",
-    "harness/Dockerfile.harness": "88bfe406a6305222207469e68777e09e68c558e66b4b15ca7f31670cb74f91b5",
+    "harness/Dockerfile.harness": "9ae78bdafc9cf11e9530f8c88deebc62b4c754c7ffa4759a40c80049c5a84586",
     "harness/harness.py": "15cc817251cf0c8915be782996b4af9b5b456f0b8fd75c360dcda153e071961c",
     "payload/payload.bin": "f3dc1d1a3d5a282cb6f171544ad5c8a5e78a6065a6decf6955c20763302bd574"
   },

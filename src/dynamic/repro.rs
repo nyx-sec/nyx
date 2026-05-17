@@ -307,14 +307,43 @@ fn source_ext_for_lang(lang: &crate::symbol::Lang) -> &'static str {
     }
 }
 
-fn dockerfile_for_spec(spec: &HarnessSpec) -> String {
+/// Resolve the `FROM` reference for `toolchain_id`.
+///
+/// Prefers the pinned digest from
+/// [`crate::dynamic::toolchain::pinned_image_ref`] so the emitted
+/// Dockerfile is hermetic across hosts.  Falls back to a tag-only
+/// reference derived from `toolchain_id` when the catalogue has no
+/// digest for the toolchain.
+fn resolve_dockerfile_from(spec: &HarnessSpec) -> String {
     use crate::symbol::Lang;
+
+    if let Some(pinned) = crate::dynamic::toolchain::pinned_image_ref(&spec.toolchain_id) {
+        return pinned.to_owned();
+    }
+
     match spec.lang {
         Lang::Rust => {
             let toolchain = spec.toolchain_id.strip_prefix("rust-").unwrap_or("stable");
+            format!("rust:{toolchain}-slim")
+        }
+        Lang::Python => {
+            format!("python:{}", spec.toolchain_id.strip_prefix("python-").unwrap_or("3"))
+        }
+        _ => "ubuntu:latest".to_owned(),
+    }
+}
+
+fn dockerfile_for_spec(spec: &HarnessSpec) -> String {
+    use crate::symbol::Lang;
+    let image = resolve_dockerfile_from(spec);
+    match spec.lang {
+        Lang::Rust => {
             // Multi-stage: build with Rust, run the binary directly.
+            // The builder stage uses the resolved (pinned-or-tag) image;
+            // the runtime stage stays on debian:bookworm-slim because the
+            // resulting nyx_harness binary is self-contained.
             format!(
-                "FROM rust:{toolchain}-slim AS builder\n\
+                "FROM {image} AS builder\n\
                  WORKDIR /harness\n\
                  COPY Cargo.toml Cargo.lock* ./\n\
                  COPY src/ src/\n\
@@ -326,13 +355,12 @@ fn dockerfile_for_spec(spec: &HarnessSpec) -> String {
             )
         }
         Lang::Python => {
-            let image = format!("python:{}", spec.toolchain_id.strip_prefix("python-").unwrap_or("3"));
             format!(
                 "FROM {image}\nWORKDIR /harness\nCOPY harness.py .\nCMD [\"python3\", \"harness.py\"]\n"
             )
         }
         _ => {
-            format!("# Unsupported language: {:?}\nFROM ubuntu:latest\n", spec.lang)
+            format!("# Unsupported language: {:?}\nFROM {image}\n", spec.lang)
         }
     }
 }
@@ -757,6 +785,47 @@ mod tests {
             assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
         }
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
+    }
+
+    #[test]
+    fn dockerfile_for_pinned_toolchain_uses_pinned_digest() {
+        // python-3.11 is in the image catalogue with a pinned digest, so the
+        // emitted Dockerfile must `FROM <base>@sha256:…` for hermeticity.
+        let spec = make_spec();
+        let pinned = crate::dynamic::toolchain::pinned_image_ref(&spec.toolchain_id)
+            .expect("python-3.11 should resolve to a pinned digest in images.toml");
+        assert!(
+            pinned.contains("@sha256:"),
+            "pinned_image_ref returned a non-pinned value: {pinned}",
+        );
+        let dockerfile = dockerfile_for_spec(&spec);
+        let expected_from = format!("FROM {pinned}");
+        assert!(
+            dockerfile.contains(&expected_from),
+            "dockerfile did not embed pinned digest;\n  expected substring: {expected_from}\n  got:\n{dockerfile}",
+        );
+    }
+
+    #[test]
+    fn dockerfile_falls_back_to_tag_when_toolchain_absent_from_catalogue() {
+        // Unpinned toolchain id: no entry in IMAGE_DIGESTS, so the emitter
+        // must fall back to a tag-only `FROM` so an operator can still build
+        // the bundle (with a docker_pull.sh that is not emitted in this case).
+        let mut spec = make_spec();
+        spec.toolchain_id = "python-2.7".into();
+        assert!(
+            crate::dynamic::toolchain::pinned_image_ref(&spec.toolchain_id).is_none(),
+            "test precondition: python-2.7 must NOT be in the catalogue",
+        );
+        let dockerfile = dockerfile_for_spec(&spec);
+        assert!(
+            dockerfile.contains("FROM python:2.7"),
+            "fallback dockerfile missing tag-only FROM line:\n{dockerfile}",
+        );
+        assert!(
+            !dockerfile.contains("@sha256:"),
+            "fallback dockerfile must not invent a digest:\n{dockerfile}",
+        );
     }
 
     #[test]

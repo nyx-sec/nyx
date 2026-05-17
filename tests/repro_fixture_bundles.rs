@@ -258,8 +258,9 @@ fn python_3_11_flask_eval_bundle_structural_invariants() {
 
     let dockerfile = std::fs::read_to_string(root.join("harness/Dockerfile.harness")).unwrap();
     assert!(
-        dockerfile.contains("FROM python:3.11"),
-        "dockerfile missing pinned FROM line",
+        dockerfile.contains("FROM python:3.11-slim@sha256:"),
+        "dockerfile missing pinned FROM line (expected `FROM python:3.11-slim@sha256:…` so the \
+         bundle is hermetic across hosts); got:\n{dockerfile}",
     );
 
     let payload = std::fs::read(root.join("payload/payload.bin")).unwrap();
