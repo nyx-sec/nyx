@@ -37,7 +37,7 @@
 //! Build container: `nyx-build-go:{toolchain_id}` (deferred; §19.1).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -76,28 +76,44 @@ impl LangEmitter for GoEmitter {
         materialize_go(env)
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        chain_step(prev_output)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        chain_step(prev_output, terminal)
     }
 }
 
 /// Phase 26 — Go chain-step harness.
 ///
 /// Splices the Go probe shim ([`probe_shim`]) ahead of a minimal driver
-/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  The composite
-/// re-verifier swaps the trailing forward for the next member's
-/// payload-injection prologue when running a multi-step chain; the shim
-/// has to be in the same compilation unit so a chain step that terminates
-/// at a sink can drive the `__nyx_probe` channel directly.
+/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  When the
+/// step is the chain's terminal step the driver also calls
+/// `__nyx_probe(callee, prev)` and prints the
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] so the runner flips
+/// `sink_hit` for the chain.
 ///
 /// Imports are the union of the driver imports (`fmt`, `os`) and the
 /// shim's [`SHIM_IMPORTS`], deduped + sorted so `go run step.go`
 /// compiles in a single command.
-fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+fn chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let imports = chain_step_imports();
     let shim = probe_shim();
-    let driver =
-        "func main() {\n    prev := os.Getenv(\"NYX_PREV_OUTPUT\")\n    fmt.Print(prev)\n}\n";
+    let mut driver = String::from(
+        "func main() {\n    prev := os.Getenv(\"NYX_PREV_OUTPUT\")\n    fmt.Print(prev)\n",
+    );
+    if let Some(t) = terminal {
+        let callee = go_string_literal(&t.sink_callee);
+        let sentinel = go_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
+        driver.push_str(&format!(
+            "    __nyx_probe({callee}, prev)\n    fmt.Println({sentinel})\n",
+        ));
+    }
+    driver.push_str("}\n");
     let source = format!("package main\n\nimport (\n{imports})\n{shim}\n{driver}");
     ChainStepHarness {
         source,
@@ -113,6 +129,12 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             .unwrap_or_default(),
         extra_files: Vec::new(),
     }
+}
+
+/// Escape a string for safe Go double-quoted literal embedding.
+fn go_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 /// Sorted, deduped tab-prefixed import lines covering the driver's
@@ -968,7 +990,7 @@ mod tests {
 
     #[test]
     fn chain_step_splices_probe_shim_for_composite_reverify() {
-        let step = chain_step(Some(b"<prev>"));
+        let step = chain_step(Some(b"<prev>"), None);
         assert!(
             step.source.contains("__nyx_probe"),
             "Go chain step must splice the probe shim"

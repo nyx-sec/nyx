@@ -15,7 +15,7 @@
 //! Build step: `prepare_cpp()` in `build_sandbox.rs` runs
 //! `g++ -O0 -std=c++17 -o nyx_harness main.cpp` in the workdir.
 
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -325,24 +325,42 @@ impl LangEmitter for CppEmitter {
         )
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        chain_step(prev_output)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        chain_step(prev_output, terminal)
     }
 }
 
 /// Phase 26 — C++ chain-step harness.
 ///
 /// Splices the C++ probe shim ([`probe_shim`]) ahead of a minimal driver
-/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  Same
-/// rationale as the C sibling: the inline shim helpers become callable
-/// from a future sink-rewrite pass without a separate translation unit;
-/// unreferenced inline functions stay quiet under default `c++` flags.
+/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  When the
+/// step is the chain's terminal step (`terminal == Some(_)`) the driver
+/// also calls `__nyx_probe(callee, std::string(prev))` and emits the
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] so the runner flips
+/// `sink_hit` for the chain.
 ///
 /// Shell-wraps `c++` + run so the compiled binary actually executes
 /// after the build completes (see C-side commentary for the rationale).
-fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+fn chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let shim = probe_shim();
-    let driver = "\nint main() {\n    const char *prev = std::getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) std::fputs(prev, stdout);\n    return 0;\n}\n";
+    let mut driver = String::from(
+        "\nint main() {\n    const char *prev = std::getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) std::fputs(prev, stdout);\n",
+    );
+    if let Some(t) = terminal {
+        let callee = cpp_string_literal(&t.sink_callee);
+        let sentinel = cpp_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
+        driver.push_str(&format!(
+            "    __nyx_probe({callee}, std::string(prev ? prev : \"\"));\n    std::puts({sentinel});\n    std::fflush(stdout);\n",
+        ));
+    }
+    driver.push_str("    return 0;\n}\n");
     let source = format!("{shim}{driver}");
     ChainStepHarness {
         source,
@@ -362,6 +380,12 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             .unwrap_or_default(),
         extra_files: Vec::new(),
     }
+}
+
+/// Escape a string for safe C++ double-quoted literal embedding.
+fn cpp_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 /// Emit a C++ harness for `spec`.
@@ -742,7 +766,7 @@ mod tests {
         // shim banner is present and lands before `int main`, that
         // `__nyx_install_crash_guard` is reachable, prev_output rides
         // through `extra_env`, and build-then-run stays one `sh -c`.
-        let step = chain_step(Some(b"prev-output"));
+        let step = chain_step(Some(b"prev-output"), None);
         assert!(
             step.source.contains("__nyx_probe shim (Phase 06"),
             "probe_shim banner missing from chain step source",

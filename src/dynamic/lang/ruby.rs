@@ -27,7 +27,7 @@
 //! Build: no compilation step. Command is `ruby harness.rb`.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -65,8 +65,12 @@ impl LangEmitter for RubyEmitter {
         materialize_ruby(env)
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        chain_step(prev_output)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        chain_step(prev_output, terminal)
     }
 }
 
@@ -74,12 +78,25 @@ impl LangEmitter for RubyEmitter {
 ///
 /// Splices the Ruby probe shim ([`probe_shim`]) in front of a minimal
 /// driver that reads `NYX_PREV_OUTPUT` from `ENV` and forwards it on
-/// stdout.  Mirrors the Python / Node steps: a step that terminates at
-/// a sink needs the shim in the same file so it can drive the
-/// `__nyx_probe` channel.
-fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+/// stdout.  When the step is the chain's terminal step the driver also
+/// calls `__nyx_probe(callee, prev)` and emits the
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] so the runner flips
+/// `sink_hit` for the chain.
+fn chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let shim = probe_shim();
-    let driver = "prev = ENV[\"NYX_PREV_OUTPUT\"] || \"\"\n$stdout.write(prev)\n";
+    let mut driver = String::from(
+        "prev = ENV[\"NYX_PREV_OUTPUT\"] || \"\"\n$stdout.write(prev)\n",
+    );
+    if let Some(t) = terminal {
+        let callee = ruby_string_literal(&t.sink_callee);
+        let sentinel = ruby_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
+        driver.push_str(&format!(
+            "__nyx_probe({callee}, prev)\nputs {sentinel}\n$stdout.flush\n",
+        ));
+    }
     let source = format!("{shim}\n{driver}");
     ChainStepHarness {
         source,
@@ -95,6 +112,12 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             .unwrap_or_default(),
         extra_files: Vec::new(),
     }
+}
+
+/// Escape a string for safe Ruby double-quoted literal embedding.
+fn ruby_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 // ── Phase 15: shape detector ─────────────────────────────────────────────────
@@ -867,7 +890,7 @@ mod tests {
 
     #[test]
     fn chain_step_splices_probe_shim_for_composite_reverify() {
-        let step = chain_step(Some(b"<prev>"));
+        let step = chain_step(Some(b"<prev>"), None);
         assert!(
             step.source.contains("__nyx_probe"),
             "Ruby chain step must splice the probe shim"

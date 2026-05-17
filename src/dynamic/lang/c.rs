@@ -27,7 +27,7 @@
 //! - `PayloadSlot::EnvVar(name)` — set env var before invoking entry.
 //! - `PayloadSlot::Argv(n)` — `main(argc, argv)` shape: appended to argv.
 
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -372,28 +372,43 @@ impl LangEmitter for CEmitter {
         )
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        chain_step(prev_output)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        chain_step(prev_output, terminal)
     }
 }
 
 /// Phase 26 — C chain-step harness.
 ///
 /// Splices the C probe shim ([`probe_shim`]) ahead of a minimal driver
-/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  The shim's
-/// static functions (`__nyx_probe`, `__nyx_install_crash_guard`,
-/// `__nyx_stub_sql_record`, `__nyx_stub_http_record`) become callable
-/// from a future sink-rewrite pass without bringing in another
-/// translation unit.  Unreferenced shim helpers stay quiet under
-/// default `cc` flags — `-Wunused-function` is not on the warning
-/// baseline so dead helpers do not fail the build.
+/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  When the
+/// step is the chain's terminal step (`terminal == Some(_)`) the driver
+/// also calls `__nyx_probe(callee, 1, prev)` and emits the
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] on stdout so the runner
+/// flips `sink_hit` for the chain.
 ///
 /// Shell-wraps `cc` + run so the compiled binary actually executes after
 /// the build completes — `ChainStepHarness.command` models a single
 /// process, so the build-then-run sequence must collapse to one `sh -c`.
-fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+fn chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let shim = probe_shim();
-    let driver = "\nint main(void) {\n    const char *prev = getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) fputs(prev, stdout);\n    return 0;\n}\n";
+    let mut driver = String::from(
+        "\nint main(void) {\n    const char *prev = getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) fputs(prev, stdout);\n",
+    );
+    if let Some(t) = terminal {
+        let callee = c_string_literal(&t.sink_callee);
+        let sentinel = c_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
+        driver.push_str(&format!(
+            "    __nyx_probe({callee}, 1, prev ? prev : \"\");\n    puts({sentinel});\n    fflush(stdout);\n",
+        ));
+    }
+    driver.push_str("    return 0;\n}\n");
     let source = format!("{shim}{driver}");
     ChainStepHarness {
         source,
@@ -413,6 +428,12 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             .unwrap_or_default(),
         extra_files: Vec::new(),
     }
+}
+
+/// Escape a string for safe C double-quoted literal embedding.
+fn c_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 /// Emit a C harness for `spec`.
@@ -875,7 +896,7 @@ mod tests {
         // source, that `prev_output` rides through `extra_env`, and
         // that the build-then-run command stays in one `sh -c` so the
         // sandbox sees a single process.
-        let step = chain_step(Some(b"prev-output"));
+        let step = chain_step(Some(b"prev-output"), None);
         assert!(
             step.source.contains("__nyx_probe shim (Phase 06"),
             "probe_shim banner missing from chain step source",

@@ -53,7 +53,7 @@ use crate::chain::finding::{ChainFinding, ChainSeverity};
 use crate::commands::scan::Diag;
 use crate::dynamic::build_sandbox::dispatch_prepare;
 use crate::dynamic::harness::{self, BuiltHarness};
-use crate::dynamic::lang;
+use crate::dynamic::lang::{self, ChainStepTerminal};
 use crate::dynamic::sandbox;
 use crate::dynamic::spec::HarnessSpec;
 use crate::dynamic::verify::VerifyOptions;
@@ -278,12 +278,18 @@ impl CompositeReverifier for DefaultCompositeReverifier {
         // Sub-task (c) of the Phase 26 live-execution split:
         // sequentially run each built chain-step harness through
         // `sandbox::run`, threading the previous step's stdout into
-        // the next step via `NYX_PREV_OUTPUT`.  The final step's
-        // `sink_hit` is captured for the detail field; today it stays
-        // false because `compose_chain_step` does not yet rewrite the
-        // chain's terminal sink.
+        // the next step via `NYX_PREV_OUTPUT`.  The final step is
+        // composed with a `ChainStepTerminal` carrying the chain's
+        // sink callee, so the per-language emitter splices in a
+        // `__nyx_probe(callee, prev)` call plus the
+        // `SINK_HIT_SENTINEL` banner that `sandbox::run` detects via
+        // `SandboxOutcome::sink_hit`.
+        let terminal = ChainStepTerminal {
+            sink_callee: chain.sink.function_name.clone(),
+            sink_cap_bits: chain.sink.cap_bits,
+        };
         let (steps_run, sandbox_errors, steps_timeout, nonzero_exits, final_sink_hit) =
-            run_chain_steps(&built_steps, &opts.sandbox);
+            run_chain_steps(&built_steps, &opts.sandbox, &terminal);
 
         let detail = format!(
             "composite chain re-verification: live runs collect step coverage; \
@@ -291,22 +297,49 @@ impl CompositeReverifier for DefaultCompositeReverifier {
              built {built}/{derived} (cache_hit={cache_hits}, build_ms={total_build_ms}, build_errors={build_errors}); \
              ran {steps_run}/{built} (sandbox_errors={sandbox_errors}, timeouts={steps_timeout}, nonzero_exits={nonzero_exits}, final_sink_hit={final_sink_hit})"
         );
-        VerifyResult {
-            finding_id,
-            status: VerifyStatus::Inconclusive,
-            triggered_payload: None,
-            reason: None,
-            inconclusive_reason: Some(InconclusiveReason::BackendInsufficient {
-                backend: "composite-chain".to_owned(),
-                oracle_kind: "chain-step-harness".to_owned(),
-            }),
-            detail: Some(detail),
-            attempts: vec![],
-            toolchain_match: None,
-            differential: None,
-            replay_stable: None,
-            wrong: None,
-            hardening_outcome: None,
+
+        // Verdict resolution: a composite chain is `Confirmed` when
+        // (a) every derived step built, (b) every built step ran
+        // without a sandbox error, (c) the final step's terminal
+        // compose fired the sink sentinel (`final_sink_hit=true`).
+        // Anything short of all three keeps the verdict
+        // `Inconclusive(BackendInsufficient)` so the chain's severity
+        // takes the existing downgrade rule.
+        let all_built = derived > 0 && built == derived;
+        let all_ran = built > 0 && steps_run == built && sandbox_errors == 0;
+        if all_built && all_ran && final_sink_hit {
+            VerifyResult {
+                finding_id,
+                status: VerifyStatus::Confirmed,
+                triggered_payload: None,
+                reason: None,
+                inconclusive_reason: None,
+                detail: Some(detail),
+                attempts: vec![],
+                toolchain_match: None,
+                differential: None,
+                replay_stable: None,
+                wrong: None,
+                hardening_outcome: None,
+            }
+        } else {
+            VerifyResult {
+                finding_id,
+                status: VerifyStatus::Inconclusive,
+                triggered_payload: None,
+                reason: None,
+                inconclusive_reason: Some(InconclusiveReason::BackendInsufficient {
+                    backend: "composite-chain".to_owned(),
+                    oracle_kind: "chain-step-harness".to_owned(),
+                }),
+                detail: Some(detail),
+                attempts: vec![],
+                toolchain_match: None,
+                differential: None,
+                replay_stable: None,
+                wrong: None,
+                hardening_outcome: None,
+            }
         }
     }
 }
@@ -337,6 +370,7 @@ impl CompositeReverifier for DefaultCompositeReverifier {
 fn run_chain_steps(
     built_steps: &[(PathBuf, &HarnessSpec)],
     base_opts: &sandbox::SandboxOptions,
+    terminal: &ChainStepTerminal,
 ) -> (usize, usize, usize, usize, bool) {
     let mut steps_run = 0usize;
     let mut sandbox_errors = 0usize;
@@ -346,7 +380,8 @@ fn run_chain_steps(
     let mut prev_output: Option<Vec<u8>> = None;
     let last_idx = built_steps.len().saturating_sub(1);
     for (idx, (workdir, spec)) in built_steps.iter().enumerate() {
-        let step = lang::compose_chain_step(spec.lang, prev_output.as_deref());
+        let step_terminal = if idx == last_idx { Some(terminal) } else { None };
+        let step = lang::compose_chain_step(spec.lang, prev_output.as_deref(), step_terminal);
 
         let step_path = workdir.join(&step.filename);
         if let Some(parent) = step_path.parent() {
@@ -762,7 +797,11 @@ mod tests {
         // function of the (steps_run, sandbox_errors, timeouts,
         // nonzero_exits, final_sink_hit) tuple this helper returns.
         let opts = sandbox::SandboxOptions::default();
-        let result = run_chain_steps(&[], &opts);
+        let terminal = ChainStepTerminal {
+            sink_callee: "noop".into(),
+            sink_cap_bits: 0,
+        };
+        let result = run_chain_steps(&[], &opts, &terminal);
         assert_eq!(result, (0, 0, 0, 0, false));
     }
 

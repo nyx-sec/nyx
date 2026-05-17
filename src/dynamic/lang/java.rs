@@ -36,7 +36,7 @@
 //! Build container: `nyx-build-java:{toolchain_id}` (deferred; §19.1).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -75,16 +75,23 @@ impl LangEmitter for JavaEmitter {
         materialize_java(env)
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        chain_step(prev_output)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        chain_step(prev_output, terminal)
     }
 }
 
 /// Phase 26 — Java chain-step harness.
 ///
 /// Emits a `Step.java` class whose `main` reads `NYX_PREV_OUTPUT` and
-/// forwards it on stdout.  The command shell-wraps `javac` + `java` so
-/// the step actually runs after the build step completes (the
+/// forwards it on stdout.  When the step is the chain's terminal step
+/// the `main` body also calls `__nyx_probe(callee, prev)` and prints
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] so the runner flips
+/// `sink_hit` for the chain.  The command shell-wraps `javac` + `java`
+/// so the step actually runs after the build step completes (the
 /// `ChainStepHarness.command` slot models a single process).
 ///
 /// The Java probe shim (`__nyx_probe`, `__nyx_install_crash_guard`,
@@ -95,10 +102,23 @@ impl LangEmitter for JavaEmitter {
 /// fully-qualified `java.util.TreeMap` / `java.io.FileWriter` /
 /// `java.nio.charset.StandardCharsets`, so no extra `import` lines
 /// are needed beyond what stock Java implicitly imports.
-fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+fn chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let shim = probe_shim();
+    let mut body = String::from(
+        "        String prev = System.getenv(\"NYX_PREV_OUTPUT\");\n        if (prev == null) prev = \"\";\n        System.out.print(prev);\n",
+    );
+    if let Some(t) = terminal {
+        let callee = java_string_literal(&t.sink_callee);
+        let sentinel = java_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
+        body.push_str(&format!(
+            "        __nyx_probe({callee}, prev);\n        System.out.println({sentinel});\n        System.out.flush();\n",
+        ));
+    }
     let source = format!(
-        "public class Step {{\n{shim}\n    public static void main(String[] args) {{\n        String prev = System.getenv(\"NYX_PREV_OUTPUT\");\n        if (prev == null) prev = \"\";\n        System.out.print(prev);\n    }}\n}}\n"
+        "public class Step {{\n{shim}\n    public static void main(String[] args) {{\n{body}    }}\n}}\n"
     );
     ChainStepHarness {
         source,
@@ -118,6 +138,12 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             .unwrap_or_default(),
         extra_files: Vec::new(),
     }
+}
+
+/// Escape a string for safe Java double-quoted literal embedding.
+fn java_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 // ── Phase 14: shape detector ─────────────────────────────────────────────────
@@ -1142,7 +1168,7 @@ mod tests {
 
     #[test]
     fn chain_step_splices_probe_shim_for_composite_reverify() {
-        let step = chain_step(Some(b"<prev>"));
+        let step = chain_step(Some(b"<prev>"), None);
         assert!(
             step.source.contains("__nyx_probe"),
             "Java chain step must splice the probe shim"

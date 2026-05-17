@@ -24,7 +24,7 @@ use nyx_scanner::chain::reverify::{
     CompositeReverifier, chain_step_specs, reverify_chain_with, reverify_top_chains_with,
 };
 use nyx_scanner::commands::scan::Diag;
-use nyx_scanner::dynamic::lang::{ChainStepHarness, compose_chain_step};
+use nyx_scanner::dynamic::lang::{ChainStepHarness, ChainStepTerminal, compose_chain_step};
 use nyx_scanner::dynamic::verify::VerifyOptions;
 use nyx_scanner::evidence::{InconclusiveReason, UnsupportedReason, VerifyResult, VerifyStatus};
 use nyx_scanner::surface::{SourceLocation, SurfaceMap};
@@ -185,7 +185,7 @@ fn compose_chain_step_threads_prev_output_for_every_emitter() {
         Lang::C,
         Lang::Cpp,
     ] {
-        let step = compose_chain_step(lang, Some(prev));
+        let step = compose_chain_step(lang, Some(prev), None);
         assert!(
             step.extra_env
                 .iter()
@@ -195,13 +195,57 @@ fn compose_chain_step_threads_prev_output_for_every_emitter() {
         );
         assert!(!step.source.is_empty(), "{lang:?} step source must be non-empty");
         assert!(!step.command.is_empty(), "{lang:?} step command must be non-empty");
+        assert!(
+            !step.source.contains(ChainStepHarness::SINK_HIT_SENTINEL),
+            "{lang:?} non-terminal step must NOT carry the sink-hit sentinel; got source:\n{}",
+            step.source,
+        );
     }
 }
 
 #[test]
 fn compose_chain_step_with_no_prev_output_has_empty_extra_env() {
-    let step = compose_chain_step(Lang::Python, None);
+    let step = compose_chain_step(Lang::Python, None, None);
     assert!(step.extra_env.is_empty());
+}
+
+#[test]
+fn compose_chain_step_terminal_splices_sink_hit_sentinel_for_every_emitter() {
+    // Phase 26 deliverable: when `terminal` is `Some`, every emitter
+    // must splice the `SINK_HIT_SENTINEL` into the step's source so a
+    // successful end-to-end compose flips
+    // `SandboxOutcome::sink_hit` and the composite reverifier can
+    // promote its verdict from `Inconclusive` to `Confirmed`.
+    let prev = b"terminal-witness".as_slice();
+    let terminal = ChainStepTerminal {
+        sink_callee: "eval".into(),
+        sink_cap_bits: 0x400,
+    };
+    for lang in [
+        Lang::Python,
+        Lang::Rust,
+        Lang::JavaScript,
+        Lang::TypeScript,
+        Lang::Go,
+        Lang::Java,
+        Lang::Php,
+        Lang::Ruby,
+        Lang::C,
+        Lang::Cpp,
+    ] {
+        let step = compose_chain_step(lang, Some(prev), Some(&terminal));
+        assert!(
+            step.source.contains(ChainStepHarness::SINK_HIT_SENTINEL),
+            "{lang:?} terminal step must splice {} into source; got source:\n{}",
+            ChainStepHarness::SINK_HIT_SENTINEL,
+            step.source,
+        );
+        assert!(
+            step.source.contains("eval"),
+            "{lang:?} terminal step must reference the sink callee `eval`; got source:\n{}",
+            step.source,
+        );
+    }
 }
 
 #[test]

@@ -23,7 +23,7 @@
 //! - Other slots produce [`UnsupportedReason::PayloadSlotUnsupported`].
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::utils::project::DetectedFramework;
@@ -66,20 +66,38 @@ impl LangEmitter for PythonEmitter {
         materialize_python(env)
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        chain_step(prev_output)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        chain_step(prev_output, terminal)
     }
 }
 
 /// Phase 26 — Python chain-step harness.
 ///
 /// Splices the Python probe shim ([`probe_shim`]) in front of a minimal
-/// driver that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  The
-/// composite re-verifier swaps the trailing forward for the next member's
-/// payload-injection prologue when running a multi-step chain.
-fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+/// driver that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  When
+/// `terminal` is `Some`, the driver also calls `__nyx_probe(callee,
+/// prev)` so the spliced shim records a witness, then prints the
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] so the runner flips
+/// `sink_hit` on the terminal step.
+fn chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let probe = probe_shim();
-    let driver = "\nimport os, sys\nprev = os.environ.get('NYX_PREV_OUTPUT', '')\nsys.stdout.write(prev)\nsys.stdout.flush()\n";
+    let mut driver = String::from(
+        "\nimport os, sys\nprev = os.environ.get('NYX_PREV_OUTPUT', '')\nsys.stdout.write(prev)\nsys.stdout.flush()\n",
+    );
+    if let Some(t) = terminal {
+        let callee = python_string_literal(&t.sink_callee);
+        driver.push_str(&format!(
+            "__nyx_probe({callee}, prev)\nprint({sentinel}, flush=True)\n",
+            sentinel = python_string_literal(ChainStepHarness::SINK_HIT_SENTINEL),
+        ));
+    }
     ChainStepHarness {
         source: format!("{probe}{driver}"),
         filename: "step.py".to_owned(),
@@ -94,6 +112,14 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             .unwrap_or_default(),
         extra_files: Vec::new(),
     }
+}
+
+/// Escape a string for safe Python single-quoted literal embedding.
+/// Conservative: backslash + single-quote escape only; bytes outside
+/// printable ASCII are left to Python's UTF-8 source decoder.
+fn python_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}'")
 }
 
 // ── Phase 12: shape detector ─────────────────────────────────────────────────

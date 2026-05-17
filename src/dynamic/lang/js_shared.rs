@@ -24,7 +24,7 @@
 //! which preserves the pre-Phase-13 behaviour.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::utils::project::DetectedFramework;
@@ -454,12 +454,27 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
 /// Phase 26 — Node chain-step harness (shared between JS + TS emitters).
 ///
 /// Splices the Node probe shim ([`probe_shim`]) in front of a minimal
-/// driver that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  The
-/// composite re-verifier swaps the trailing forward for the next member's
-/// payload-injection prologue when running a multi-step chain.
-pub fn chain_step(prev_output: Option<&[u8]>, is_typescript: bool) -> ChainStepHarness {
+/// driver that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  When
+/// the step is the chain's terminal step the driver also calls
+/// `__nyx_probe(callee, prev)` and prints the
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] so the runner flips
+/// `sink_hit` for the chain.
+pub fn chain_step(
+    prev_output: Option<&[u8]>,
+    is_typescript: bool,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let probe = probe_shim();
-    let driver = "\nprocess.stdout.write(process.env.NYX_PREV_OUTPUT || '');\n";
+    let mut driver = String::from(
+        "\nconst __nyx_prev = process.env.NYX_PREV_OUTPUT || '';\nprocess.stdout.write(__nyx_prev);\n",
+    );
+    if let Some(t) = terminal {
+        let callee = js_string_literal(&t.sink_callee);
+        let sentinel = js_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
+        driver.push_str(&format!(
+            "__nyx_probe({callee}, __nyx_prev);\nconsole.log({sentinel});\n",
+        ));
+    }
     // The chain-step source is pure JS even under the TypeScript emitter
     // — the probe shim uses no TS-specific syntax — so we keep the `.ts`
     // filename intent (so the workdir reflects which emitter produced
@@ -496,6 +511,12 @@ pub fn chain_step(prev_output: Option<&[u8]>, is_typescript: bool) -> ChainStepH
             .unwrap_or_default(),
         extra_files: Vec::new(),
     }
+}
+
+/// Escape a string for safe JS double-quoted literal embedding.
+fn js_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 /// Public wrapper to detect the shape for a finalised [`HarnessSpec`].

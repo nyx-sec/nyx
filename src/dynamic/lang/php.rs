@@ -29,7 +29,7 @@
 //! Build container: `nyx-build-php:{toolchain_id}` (deferred; §19.1).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
@@ -68,8 +68,12 @@ impl LangEmitter for PhpEmitter {
         materialize_php(env)
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        chain_step(prev_output)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        chain_step(prev_output, terminal)
     }
 }
 
@@ -77,14 +81,25 @@ impl LangEmitter for PhpEmitter {
 ///
 /// Splices the PHP probe shim ([`probe_shim`]) in front of a minimal
 /// driver that reads `NYX_PREV_OUTPUT` via `getenv()` and forwards it
-/// on stdout.  The composite re-verifier swaps the trailing forward for
-/// the next member's payload-injection prologue when running a
-/// multi-step chain; the shim has to be in the same file so a chain
-/// step that terminates at a sink can also drive the `__nyx_probe`
-/// channel.
-fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+/// on stdout.  When the step is the chain's terminal step the driver
+/// also calls `__nyx_probe(callee, [prev])` and emits the
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] so the runner flips
+/// `sink_hit` for the chain.
+fn chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let shim = probe_shim();
-    let driver = "$prev = getenv(\"NYX_PREV_OUTPUT\");\nif ($prev === false) { $prev = \"\"; }\necho $prev;\n";
+    let mut driver = String::from(
+        "$prev = getenv(\"NYX_PREV_OUTPUT\");\nif ($prev === false) { $prev = \"\"; }\necho $prev;\n",
+    );
+    if let Some(t) = terminal {
+        let callee = php_string_literal(&t.sink_callee);
+        let sentinel = php_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
+        driver.push_str(&format!(
+            "__nyx_probe({callee}, [$prev]);\necho \"\\n\" . {sentinel} . \"\\n\";\n",
+        ));
+    }
     let source = format!("<?php\n{shim}\n{driver}");
     ChainStepHarness {
         source,
@@ -100,6 +115,14 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             .unwrap_or_default(),
         extra_files: Vec::new(),
     }
+}
+
+/// Escape a string for safe PHP double-quoted literal embedding.
+/// Backslash and double-quote escape only; bytes outside printable
+/// ASCII are left to PHP's source decoder.
+fn php_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 // ── Phase 15: shape detector ─────────────────────────────────────────────────
@@ -789,7 +812,7 @@ mod tests {
 
     #[test]
     fn chain_step_splices_probe_shim_for_composite_reverify() {
-        let step = chain_step(Some(b"<prev>"));
+        let step = chain_step(Some(b"<prev>"), None);
         assert!(
             step.source.contains("__nyx_probe"),
             "PHP chain step must splice the probe shim"

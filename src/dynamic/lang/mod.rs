@@ -81,6 +81,41 @@ impl ChainStepHarness {
     /// step's environment.  Stable surface — kept distinct from
     /// `NYX_PAYLOAD` so a chain step can read both at once.
     pub const PREV_OUTPUT_ENV: &'static str = "NYX_PREV_OUTPUT";
+
+    /// Sentinel printed to stdout by the terminal chain step so the
+    /// runner's [`crate::dynamic::sandbox::SandboxOutcome::sink_hit`]
+    /// fold can flip to `true` on a successful end-to-end compose.
+    /// Mirrors the per-language tracer sentinel used by the regular
+    /// harness emitters; the runner detects the byte sequence in
+    /// stdout/stderr.
+    pub const SINK_HIT_SENTINEL: &'static str = "__NYX_SINK_HIT__";
+}
+
+/// Phase 26 — terminal-step descriptor for [`LangEmitter::compose_chain_step`].
+///
+/// Carries the chain's terminal sink callee so the emitter can rewrite
+/// the final step's source to invoke the probe shim with the threaded
+/// payload and emit the [`ChainStepHarness::SINK_HIT_SENTINEL`]; the
+/// composite reverifier then promotes its verdict from `Inconclusive`
+/// to `Confirmed` when the runner observes the sentinel on the chain's
+/// last step.
+///
+/// Non-terminal steps pass `None` so they retain the prev-output echo
+/// behaviour.
+#[derive(Debug, Clone)]
+pub struct ChainStepTerminal {
+    /// Callee name for the chain's terminal sink (e.g. `"eval"`,
+    /// `"os.system"`, `"setattr"`).  Used as the first argument to
+    /// `__nyx_probe(callee, prev)` so the per-language probe shim
+    /// records the witness.  Kept as `String` rather than `&str` so the
+    /// reverifier can hand-roll a `ChainStepTerminal` from a
+    /// [`crate::chain::finding::ChainSink`] without lifetime gymnastics.
+    pub sink_callee: String,
+    /// Capability bits associated with the sink.  Today the emitters do
+    /// not read this — recorded so a future per-cap sink-fire shape
+    /// dispatcher can pick the right invocation idiom without re-walking
+    /// the chain.
+    pub sink_cap_bits: u32,
 }
 
 /// Per-language harness emitter contract.
@@ -135,25 +170,39 @@ pub trait LangEmitter {
     /// Phase 26 — Track G.3: build one step of a chain-composite harness.
     ///
     /// `prev_output` carries the previous step's stdout (or `None` for
-    /// the chain's entry step).  The returned [`ChainStepHarness`]
-    /// reads `NYX_PREV_OUTPUT` from its env to fold the chained input
-    /// into the step's behaviour and (when the step terminates at a
-    /// sink) invokes the Phase 06 `__nyx_probe` shim so the runner's
-    /// probe channel observes the sink fire.
+    /// the chain's entry step).  `terminal` is `Some` only on the
+    /// chain's last step and carries the sink callee so the emitter
+    /// can splice in a `__nyx_probe(callee, prev)` call plus the
+    /// [`ChainStepHarness::SINK_HIT_SENTINEL`] stdout banner that the
+    /// runner detects via [`crate::dynamic::sandbox::SandboxOutcome::sink_hit`].
     ///
     /// Default impl produces a portable POSIX-shell stub that echoes
-    /// the previous step's output verbatim.  Concrete emitters override
-    /// to splice in the language-native probe shim.
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        default_chain_step(prev_output)
+    /// the previous step's output verbatim, and (when `terminal` is
+    /// set) appends a `printf '__NYX_SINK_HIT__\n'` line.  Concrete
+    /// emitters override to splice in the language-native probe shim.
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        default_chain_step(prev_output, terminal)
     }
 }
 
 /// Default chain-step harness.  Emitted by [`LangEmitter::compose_chain_step`]
 /// when an emitter does not override the trait method.
-pub fn default_chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+pub fn default_chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
+    let mut script = String::from("#!/bin/sh\nprintf '%s' \"${NYX_PREV_OUTPUT:-}\"\n");
+    if terminal.is_some() {
+        script.push_str("printf '\\n");
+        script.push_str(ChainStepHarness::SINK_HIT_SENTINEL);
+        script.push_str("\\n'\n");
+    }
     ChainStepHarness {
-        source: "#!/bin/sh\nprintf '%s' \"${NYX_PREV_OUTPUT:-}\"\n".to_owned(),
+        source: script,
         filename: "step.sh".to_owned(),
         command: vec!["sh".to_owned(), "step.sh".to_owned()],
         extra_env: prev_output
@@ -172,9 +221,13 @@ pub fn default_chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
 ///
 /// Returns the lang-agnostic shell stub when `lang` has no registered
 /// emitter so callers do not need to special-case that path.
-pub fn compose_chain_step(lang: Lang, prev_output: Option<&[u8]>) -> ChainStepHarness {
-    dispatch(lang, |e| e.compose_chain_step(prev_output))
-        .unwrap_or_else(|| default_chain_step(prev_output))
+pub fn compose_chain_step(
+    lang: Lang,
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
+    dispatch(lang, |e| e.compose_chain_step(prev_output, terminal))
+        .unwrap_or_else(|| default_chain_step(prev_output, terminal))
 }
 
 /// Public free-fn dispatcher for [`LangEmitter::materialize_runtime`].

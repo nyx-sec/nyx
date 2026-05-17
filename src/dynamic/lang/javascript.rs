@@ -15,7 +15,7 @@
 //! - [`PayloadSlot::Argv`] — coerced to positional `Param(0)` by build_call.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{js_shared, ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{js_shared, ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec};
 use crate::evidence::UnsupportedReason;
 
@@ -44,8 +44,12 @@ impl LangEmitter for JavaScriptEmitter {
         materialize_node(env)
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        js_shared::chain_step(prev_output, /* typescript = */ false)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        js_shared::chain_step(prev_output, /* typescript = */ false, terminal)
     }
 }
 

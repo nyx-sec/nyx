@@ -22,7 +22,7 @@
 //! HTML_ESCAPE is n/a for Rust (§15.4).
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{ChainStepHarness, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
 use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::labels::Cap;
@@ -64,8 +64,12 @@ impl LangEmitter for RustEmitter {
         materialize_rust(env)
     }
 
-    fn compose_chain_step(&self, prev_output: Option<&[u8]>) -> ChainStepHarness {
-        chain_step(prev_output)
+    fn compose_chain_step(
+        &self,
+        prev_output: Option<&[u8]>,
+        terminal: Option<&ChainStepTerminal>,
+    ) -> ChainStepHarness {
+        chain_step(prev_output, terminal)
     }
 }
 
@@ -78,9 +82,27 @@ impl LangEmitter for RustEmitter {
 /// the symbols.  Instead the step ships a companion `Cargo.toml`
 /// pinning `libc = "0.2"` via [`ChainStepHarness::extra_files`] and
 /// drives the build through `cargo run --quiet`.
-fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
+///
+/// When `terminal` is set, the driver also calls
+/// `__nyx_probe(callee, &[&prev])` and prints
+/// [`ChainStepHarness::SINK_HIT_SENTINEL`] so the runner flips
+/// `sink_hit` on the chain's last step.
+fn chain_step(
+    prev_output: Option<&[u8]>,
+    terminal: Option<&ChainStepTerminal>,
+) -> ChainStepHarness {
     let shim = probe_shim();
-    let driver = "use std::env;\nuse std::io::{self, Write};\n\nfn main() {\n    let prev = env::var(\"NYX_PREV_OUTPUT\").unwrap_or_default();\n    let _ = io::stdout().write_all(prev.as_bytes());\n}\n";
+    let mut driver = String::from(
+        "use std::env;\nuse std::io::{self, Write};\n\nfn main() {\n    let prev = env::var(\"NYX_PREV_OUTPUT\").unwrap_or_default();\n    let _ = io::stdout().write_all(prev.as_bytes());\n",
+    );
+    if let Some(t) = terminal {
+        let callee = rust_string_literal(&t.sink_callee);
+        let sentinel = rust_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
+        driver.push_str(&format!(
+            "    __nyx_probe({callee}, &[prev.as_str()]);\n    println!({sentinel});\n",
+        ));
+    }
+    driver.push_str("}\n");
     let source = format!("{shim}\n{driver}");
     let cargo_toml = "[package]\n\
                       name = \"nyx-chain-step\"\n\
@@ -106,6 +128,12 @@ fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
             .unwrap_or_default(),
         extra_files: vec![("Cargo.toml".to_owned(), cargo_toml)],
     }
+}
+
+/// Escape a string for safe Rust double-quoted literal embedding.
+fn rust_string_literal(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 /// Phase 09 — Track D.2: synthesise a `Cargo.toml` that pins every
@@ -986,7 +1014,7 @@ mod tests {
         // shim references `libc::*` so the step also ships a companion
         // `Cargo.toml` via `extra_files` and drives the build through
         // `cargo run --quiet` rather than single-file `rustc`.
-        let step = chain_step(Some(b"prev-output"));
+        let step = chain_step(Some(b"prev-output"), None);
         assert!(
             step.source.contains("__nyx_probe shim (Phase 06"),
             "probe_shim banner missing from chain step source",
@@ -1048,7 +1076,7 @@ mod tests {
 
     #[test]
     fn chain_step_emits_cargo_toml_with_libc_dep() {
-        let step = chain_step(None);
+        let step = chain_step(None, None);
         let cargo = step
             .extra_files
             .iter()
