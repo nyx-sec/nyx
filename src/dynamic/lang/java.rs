@@ -556,6 +556,17 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     let shape = JavaShape::detect(spec, &entry_source);
     let entry_class = derive_entry_class(&entry_source);
     let source = generate_harness_java(spec, shape, &entry_class);
+    let extra_files = match shape {
+        // Real-world servlet sources import `javax.servlet.*` or
+        // `jakarta.servlet.*`; without those symbols on the classpath
+        // `javac` reports `package javax.servlet does not exist` and the
+        // verifier flips to `BuildFailed`.  Stage minimal stubs alongside
+        // the harness so the build step links.
+        JavaShape::ServletDoGet | JavaShape::ServletDoPost => {
+            crate::dynamic::lang::java_servlet_stubs::servlet_stub_files()
+        }
+        _ => vec![],
+    };
 
     Ok(HarnessSource {
         source,
@@ -566,7 +577,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
             ".".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: vec![],
+        extra_files,
         // Stage the entry file under the public-class-derived filename
         // so javac's filename-vs-public-class invariant holds for both
         // the legacy `public class Entry` fixtures (which keep being
@@ -1106,6 +1117,100 @@ mod tests {
         let spec = make_spec_with(EntryKind::Function, "testRun", "Vuln.java");
         let src = generate_harness_java(&spec, JavaShape::JunitTest, "Vuln");
         assert!(src.contains("invokeJunitTest(Vuln.class"));
+    }
+
+    // ── Servlet stub bundle (path (a) of Phase 31 budget gate) ──────────────
+
+    fn stage_entry(dir: &std::path::Path, name: &str, body: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("stage java entry source");
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn emit_servlet_doget_carries_servlet_stub_bundle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entry_file = stage_entry(
+            tmp.path(),
+            "Vuln.java",
+            "import javax.servlet.http.HttpServletRequest;\nimport javax.servlet.http.HttpServletResponse;\npublic class Vuln {\n  public void doGet(HttpServletRequest r, HttpServletResponse w) {}\n}\n",
+        );
+        let mut spec = make_spec_with(EntryKind::HttpRoute, "doGet", &entry_file);
+        spec.payload_slot = PayloadSlot::QueryParam("payload".into());
+        let harness = emit(&spec).unwrap();
+        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(
+            paths.contains(&"javax/servlet/http/HttpServletRequest.java"),
+            "doGet bundle missing javax HttpServletRequest stub; got {paths:?}"
+        );
+        assert!(
+            paths.contains(&"jakarta/servlet/http/HttpServletRequest.java"),
+            "doGet bundle missing jakarta HttpServletRequest stub; got {paths:?}"
+        );
+        assert!(paths.contains(&"javax/servlet/annotation/WebServlet.java"));
+        assert!(paths.contains(&"javax/servlet/ServletException.java"));
+    }
+
+    #[test]
+    fn emit_servlet_dopost_carries_servlet_stub_bundle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entry_file = stage_entry(
+            tmp.path(),
+            "Vuln.java",
+            "import jakarta.servlet.http.HttpServletRequest;\nimport jakarta.servlet.http.HttpServletResponse;\npublic class Vuln {\n  public void doPost(HttpServletRequest r, HttpServletResponse w) {}\n}\n",
+        );
+        let mut spec = make_spec_with(EntryKind::HttpRoute, "doPost", &entry_file);
+        spec.payload_slot = PayloadSlot::HttpBody;
+        let harness = emit(&spec).unwrap();
+        assert!(!harness.extra_files.is_empty(), "doPost bundle is empty");
+        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"javax/servlet/http/HttpServlet.java"));
+        assert!(paths.contains(&"jakarta/servlet/http/HttpServlet.java"));
+    }
+
+    #[test]
+    fn emit_static_method_carries_no_extra_files() {
+        // Regression guard: non-servlet shapes must not pay the servlet
+        // stub cost.  Adding stubs would balloon the workdir + compile
+        // time for every Rust / Python / etc. harness too.
+        let spec = make_spec(PayloadSlot::Param(0));
+        let harness = emit(&spec).unwrap();
+        assert!(
+            harness.extra_files.is_empty(),
+            "non-servlet shape unexpectedly ships extra files: {:?}",
+            harness.extra_files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn emit_static_main_carries_no_extra_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entry_file = stage_entry(
+            tmp.path(),
+            "Vuln.java",
+            "public class Vuln { public static void main(String[] args) {} }\n",
+        );
+        let spec = make_spec_with(EntryKind::CliSubcommand, "main", &entry_file);
+        let harness = emit(&spec).unwrap();
+        assert!(harness.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_spring_controller_carries_no_servlet_stubs() {
+        // Spring controllers do not import `javax.servlet.*`; shipping
+        // the bundle would still compile fine but adds dead `.class`
+        // files to the workdir.  Keep the bundle scoped to actual
+        // servlet shapes.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entry_file = stage_entry(
+            tmp.path(),
+            "Vuln.java",
+            "@RestController\npublic class Vuln {\n  @GetMapping(\"/x\") public String run(String p) { return p; }\n}\n",
+        );
+        let mut spec = make_spec_with(EntryKind::HttpRoute, "run", &entry_file);
+        spec.payload_slot = PayloadSlot::Param(0);
+        let harness = emit(&spec).unwrap();
+        assert!(harness.extra_files.is_empty());
     }
 
     #[test]
