@@ -101,7 +101,7 @@ impl VerifyOptions {
     /// (`src/dynamic/runner.rs` `oob_nonce_slot` branch) while non-OOB
     /// payloads continue to run against their existing oracle.
     pub fn from_config(config: &Config) -> Self {
-        use crate::dynamic::sandbox::{NetworkPolicy, SandboxBackend};
+        use crate::dynamic::sandbox::{NetworkPolicy, ProcessHardeningProfile, SandboxBackend};
         let backend = match config.scanner.verify_backend.as_str() {
             "docker" => SandboxBackend::Docker,
             "process" => SandboxBackend::Process,
@@ -115,6 +115,17 @@ impl VerifyOptions {
         let network_policy = match OobListener::bind().ok().map(Arc::new) {
             Some(listener) => NetworkPolicy::OobOutbound { listener },
             None => NetworkPolicy::None,
+        };
+        // Phase 17/18 (Track E.1/E.2): `--harden=strict` (or
+        // `harden_profile = "strict"` in nyx.toml) opts the verifier into
+        // the full process-backend lockdown.  Linux engages namespace
+        // unshare + chroot + default-deny seccomp on top of the baseline;
+        // macOS wraps the harness with `sandbox-exec -f <cap>.sb` keyed
+        // off the per-finding expected cap (set later in `verify_finding`
+        // because the cap is only known once spec derivation runs).
+        let process_hardening = match config.scanner.harden_profile.as_str() {
+            "strict" => ProcessHardeningProfile::Strict,
+            _ => ProcessHardeningProfile::Standard,
         };
         // Phase 18 (Track E.2): the macOS process backend depends on
         // `/usr/bin/sandbox-exec` to confine filesystem reach.  When the
@@ -135,6 +146,7 @@ impl VerifyOptions {
             sandbox: SandboxOptions {
                 backend,
                 network_policy,
+                process_hardening,
                 ..SandboxOptions::default()
             },
             project_root: None,
@@ -660,6 +672,18 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     sandbox_opts.extra_env = sandbox_extra_env;
     if !stub_harness.is_empty() {
         sandbox_opts.stub_harness = Some(Arc::clone(&stub_harness));
+    }
+    // Phase 17/18: when the operator opted into Strict hardening, seed
+    // `seccomp_caps` from the spec's expected cap so the Linux process
+    // backend installs the cap-minimal syscall allowlist and the macOS
+    // backend picks the matching `.sb` profile (`FILE_IO →
+    // path_traversal`, `CODE_EXEC → cmdi`, …).  Standard runs leave the
+    // field at 0 (base allowlist / no wrap) for back-compat.
+    if matches!(
+        sandbox_opts.process_hardening,
+        crate::dynamic::sandbox::ProcessHardeningProfile::Strict,
+    ) {
+        sandbox_opts.seccomp_caps = spec.expected_cap.bits();
     }
     // Phase 30: hand the runner an `Arc` clone so it can append
     // `build_*` / `sandbox_started` / `oracle_*` stages from inside
@@ -1209,6 +1233,46 @@ mod tests {
         let opts = VerifyOptions::from_config(&Config::default());
         assert!(!opts.replay_stable_check);
         unsafe { std::env::remove_var("NYX_VERIFY_REPLAY_STABLE") };
+    }
+
+    #[test]
+    fn from_config_defaults_process_hardening_to_standard() {
+        use crate::dynamic::sandbox::ProcessHardeningProfile;
+        let opts = VerifyOptions::from_config(&Config::default());
+        assert!(
+            matches!(opts.sandbox.process_hardening, ProcessHardeningProfile::Standard),
+            "back-compat: missing harden_profile must keep the Standard baseline so \
+             existing call sites (process backend without `--harden=strict`) keep \
+             their pre-Phase-17 hardening matrix"
+        );
+    }
+
+    #[test]
+    fn from_config_picks_up_strict_harden_profile() {
+        use crate::dynamic::sandbox::ProcessHardeningProfile;
+        let mut config = Config::default();
+        config.scanner.harden_profile = "strict".to_owned();
+        let opts = VerifyOptions::from_config(&config);
+        assert!(
+            matches!(opts.sandbox.process_hardening, ProcessHardeningProfile::Strict),
+            "harden_profile=strict must engage the full Phase-17/18 lockdown so \
+             `--harden=strict` actually wraps the harness with sandbox-exec on macOS \
+             and layers chroot + seccomp on Linux"
+        );
+    }
+
+    #[test]
+    fn from_config_unknown_harden_profile_falls_back_to_standard() {
+        use crate::dynamic::sandbox::ProcessHardeningProfile;
+        let mut config = Config::default();
+        config.scanner.harden_profile = "lockdown".to_owned();
+        let opts = VerifyOptions::from_config(&config);
+        assert!(
+            matches!(opts.sandbox.process_hardening, ProcessHardeningProfile::Standard),
+            "unknown harden_profile values must degrade to Standard so a typo in \
+             nyx.toml does not silently leave the operator without the baseline \
+             hardening they were already paying for"
+        );
     }
 
     #[test]

@@ -403,6 +403,131 @@ except Exception as exc:
         );
     }
 
+    /// Companion to the test below: the same fixture under the default
+    /// `harden_profile = "standard"` produces a `Confirmed` verdict
+    /// (path-of-least-resistance) but does *not* stamp a
+    /// `hardening_outcome`.  Guards against a future regression where
+    /// `from_config` unconditionally engages Strict — the macOS process
+    /// backend's wrap is opt-in and the operator's verdict shape must
+    /// reflect that.
+    #[test]
+    fn verify_finding_under_standard_leaves_hardening_outcome_unset() {
+        use std::path::PathBuf;
+        let python3_available = std::process::Command::new("/usr/bin/python3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !python3_available {
+            eprintln!("SKIP: /usr/bin/python3 missing — cannot run python harness");
+            return;
+        }
+
+        use nyx_scanner::commands::scan::Diag;
+        use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+        use nyx_scanner::evidence::{
+            Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus,
+        };
+        use nyx_scanner::labels::Cap;
+        use nyx_scanner::patterns::{FindingCategory, Severity};
+        use nyx_scanner::utils::config::Config;
+
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/python/cmdi_positive.py");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join("cmdi_positive.py");
+        std::fs::copy(&fixture_src, &dst).expect("stage fixture into tempdir");
+
+        unsafe {
+            std::env::set_var(
+                "NYX_REPRO_BASE",
+                tmp.path().join("repro").to_str().unwrap(),
+            );
+            std::env::set_var(
+                "NYX_TELEMETRY_PATH",
+                tmp.path().join("events.jsonl").to_str().unwrap(),
+            );
+        }
+
+        let path_str = dst.to_string_lossy().into_owned();
+        let evidence = Evidence {
+            flow_steps: vec![
+                FlowStep {
+                    step: 1,
+                    kind: FlowStepKind::Source,
+                    file: path_str.clone(),
+                    line: 1,
+                    col: 0,
+                    snippet: None,
+                    variable: Some("host".into()),
+                    callee: None,
+                    function: Some("run_ping".into()),
+                    is_cross_file: false,
+                },
+                FlowStep {
+                    step: 2,
+                    kind: FlowStepKind::Sink,
+                    file: path_str.clone(),
+                    line: 13,
+                    col: 4,
+                    snippet: None,
+                    variable: None,
+                    callee: None,
+                    function: None,
+                    is_cross_file: false,
+                },
+            ],
+            sink_caps: Cap::CODE_EXEC.bits(),
+            ..Default::default()
+        };
+        let diag = Diag {
+            path: path_str,
+            line: 13,
+            col: 0,
+            severity: Severity::High,
+            id: "taint-unsanitised-flow".into(),
+            category: FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: Some(Confidence::High),
+            evidence: Some(evidence),
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        };
+
+        let config = Config::default();
+        let opts = VerifyOptions::from_config(&config);
+        let result = verify_finding(&diag, &opts);
+
+        unsafe {
+            std::env::remove_var("NYX_REPRO_BASE");
+            std::env::remove_var("NYX_TELEMETRY_PATH");
+        }
+
+        assert_eq!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "cmdi_positive.py under the default profile should still confirm: detail={:?}",
+            result.detail,
+        );
+        assert!(
+            result.hardening_outcome.is_none(),
+            "standard profile must not stamp hardening_outcome — the macOS \
+             process backend never engaged sandbox-exec, so claiming the run \
+             was sandboxed would be a false witness; got: {:?}",
+            result.hardening_outcome,
+        );
+    }
+
     /// Round-trip the portable summary through JSON to lock in the
     /// repro-bundle wire shape: `VerifyResult::hardening_outcome` lands
     /// on `expected/verdict.json` so the eval-corpus tabulator and any

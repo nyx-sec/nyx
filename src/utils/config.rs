@@ -281,12 +281,33 @@ pub struct ScannerConfig {
     /// `"process"`: in-process runner (same as `--unsafe-sandbox`).
     #[serde(default = "default_verify_backend")]
     pub verify_backend: String,
+
+    /// Process-backend hardening profile applied during dynamic verification.
+    ///
+    /// `"standard"` (default): the historical baseline. On Linux this
+    /// engages `prctl(PR_SET_NO_NEW_PRIVS)` plus `setrlimit(RLIMIT_AS)`;
+    /// on macOS the harness runs without a `sandbox-exec` wrap.
+    /// `"strict"`: opts into the full Phase 17/18 lockdown. On Linux the
+    /// process backend layers the namespace unshare, chroot to workdir,
+    /// and default-deny seccomp filter on top of the baseline. On macOS
+    /// the harness is wrapped with `sandbox-exec -f <profile>.sb` keyed
+    /// off the finding's expected cap (FILE_IO → `path_traversal.sb`,
+    /// CODE_EXEC → `cmdi.sb`, SSRF → `ssrf.sb`, …).
+    ///
+    /// Opt-in. Interpreted Linux harnesses (python3, node, java) may
+    /// SIGSYS under strict seccomp until the per-language allowlists are
+    /// expanded; static native harnesses run unaffected.
+    #[serde(default = "default_harden_profile")]
+    pub harden_profile: String,
 }
 fn default_verify() -> bool {
     true
 }
 fn default_verify_backend() -> String {
     "auto".to_owned()
+}
+fn default_harden_profile() -> String {
+    "standard".to_owned()
 }
 impl Default for ScannerConfig {
     fn default() -> Self {
@@ -327,6 +348,7 @@ impl Default for ScannerConfig {
             verify: true,
             verify_all_confidence: false,
             verify_backend: "auto".to_owned(),
+            harden_profile: "standard".to_owned(),
         }
     }
 }

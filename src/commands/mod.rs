@@ -104,6 +104,7 @@ pub fn handle_command(
             verify_all_confidence,
             unsafe_sandbox,
             backend,
+            harden,
             baseline,
             baseline_write,
             gate,
@@ -346,9 +347,13 @@ pub fn handle_command(
                     config.scanner.verify_all_confidence = true;
                 }
                 config.scanner.verify_backend = resolved_backend.to_owned();
+                // --harden=<standard|strict> overrides the config default.
+                if let Some(ref profile) = harden {
+                    config.scanner.harden_profile = profile.to_owned();
+                }
             }
             // Without the dynamic feature, --verify / --no-verify / --unsafe-sandbox /
-            // --backend are silently accepted (no-op).
+            // --backend / --harden are silently accepted (no-op).
             #[cfg(not(feature = "dynamic"))]
             {
                 let _ = verify;
@@ -356,6 +361,7 @@ pub fn handle_command(
                 let _ = verify_all_confidence;
                 let _ = unsafe_sandbox;
                 let _ = backend;
+                let _ = harden;
             }
 
             // ── --explain-engine: print resolved config and exit ────────

@@ -513,6 +513,24 @@ pub enum Commands {
         #[arg(long, help_heading = "Dynamic", value_name = "BACKEND")]
         backend: Option<String>,
 
+        /// Process-backend hardening profile applied to every verified finding.
+        ///
+        /// `standard` (default): baseline only. Linux runs no-new-privs +
+        /// memory rlimit; macOS skips the sandbox-exec wrap.
+        /// `strict`: full lockdown. Linux layers namespaces, chroot to
+        /// workdir, and a default-deny seccomp filter; macOS wraps the
+        /// harness with `sandbox-exec -f <cap>.sb`. Opt-in because
+        /// interpreted Linux harnesses may SIGSYS until the per-language
+        /// seccomp allowlists are expanded.
+        #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
+        #[arg(
+            long,
+            help_heading = "Dynamic",
+            value_name = "PROFILE",
+            value_parser = ["standard", "strict"],
+        )]
+        harden: Option<String>,
+
         // ── Baseline / patch-validation (§M6.5) ────────────────────────
         /// Read a previous scan's JSON output (or a stripped .nyx/baseline.json)
         /// and diff it against the current scan on stable_hash.
