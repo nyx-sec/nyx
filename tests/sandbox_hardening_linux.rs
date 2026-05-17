@@ -648,6 +648,198 @@ mod hardening_tests {
         );
     }
 
+    /// Phase 17 follow-up: interpreter-language harnesses survive the
+    /// Strict chroot because `VerifyOptions::from_config` flips
+    /// `bind_mount_host_libs = true` for any interpreted-lang spec
+    /// (Python / JS / TS / Java / Ruby / PHP).  Drives the full
+    /// `verify_finding` pipeline against
+    /// `tests/dynamic_fixtures/python/cmdi_positive.py` under
+    /// `harden_profile = "strict"` + `verify_backend = "process"` and
+    /// asserts the python3 harness produced non-empty stdout — proof
+    /// that `ld.so` + `libpython` resolved from the bind-mounted host
+    /// directories inside the workdir-chroot.
+    ///
+    /// Skips when (a) `/usr/bin/python3` is missing on the host or
+    /// (b) the per-cap macOS `.sb` path is reached (this test is
+    /// `target_os = "linux"`-gated at the module level so case (b) is
+    /// a compile-time skip on macOS, but the python3 pre-flight still
+    /// covers Linux hosts without a system python).
+    ///
+    /// Mirrors the macOS counterpart at
+    /// `tests/determinism_audit.rs::confirmed_run_is_byte_identical_across_runs`
+    /// (same fixture, same Cap::CODE_EXEC payload, same flow_steps
+    /// shape) so the only behavioural delta between hosts is the
+    /// chroot + bind-mount layer this test gates.
+    #[test]
+    fn interpreter_strict_run_chroot_bind_mounts_work() {
+        use std::path::PathBuf;
+
+        if std::process::Command::new("/usr/bin/python3")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!(
+                "SKIP: /usr/bin/python3 missing — cannot drive the python harness through \
+                 the Strict chroot.  Install python3 (Debian/Ubuntu: `apt install python3`)."
+            );
+            return;
+        }
+
+        use nyx_scanner::commands::scan::Diag;
+        use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+        use nyx_scanner::evidence::{
+            Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus,
+        };
+        use nyx_scanner::labels::Cap;
+        use nyx_scanner::patterns::{FindingCategory, Severity};
+        use nyx_scanner::utils::config::Config;
+
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/python/cmdi_positive.py");
+
+        let tmp = tempfile::TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join("cmdi_positive.py");
+        std::fs::copy(&fixture_src, &dst).expect("stage fixture into tempdir");
+
+        unsafe {
+            std::env::set_var(
+                "NYX_REPRO_BASE",
+                tmp.path().join("repro").to_str().unwrap(),
+            );
+            std::env::set_var(
+                "NYX_TELEMETRY_PATH",
+                tmp.path().join("events.jsonl").to_str().unwrap(),
+            );
+        }
+
+        let path_str = dst.to_string_lossy().into_owned();
+        let evidence = Evidence {
+            flow_steps: vec![
+                FlowStep {
+                    step: 1,
+                    kind: FlowStepKind::Source,
+                    file: path_str.clone(),
+                    line: 9,
+                    col: 0,
+                    snippet: None,
+                    variable: Some("host".into()),
+                    callee: None,
+                    function: Some("run_ping".into()),
+                    is_cross_file: false,
+                },
+                FlowStep {
+                    step: 2,
+                    kind: FlowStepKind::Sink,
+                    file: path_str.clone(),
+                    line: 11,
+                    col: 4,
+                    snippet: None,
+                    variable: None,
+                    callee: Some("subprocess.run".into()),
+                    function: None,
+                    is_cross_file: false,
+                },
+            ],
+            sink_caps: Cap::CODE_EXEC.bits(),
+            ..Default::default()
+        };
+        let diag = Diag {
+            path: path_str,
+            line: 11,
+            col: 0,
+            severity: Severity::High,
+            id: "taint-unsanitised-flow".into(),
+            category: FindingCategory::Security,
+            path_validated: false,
+            guard_kind: None,
+            message: None,
+            labels: vec![],
+            confidence: Some(Confidence::High),
+            evidence: Some(evidence),
+            rank_score: None,
+            rank_reason: None,
+            suppressed: false,
+            suppression: None,
+            rollup: None,
+            finding_id: String::new(),
+            alternative_finding_ids: vec![],
+            stable_hash: 0,
+        };
+
+        let mut config = Config::default();
+        config.scanner.harden_profile = "strict".to_owned();
+        config.scanner.verify_backend = "process".to_owned();
+        let opts = VerifyOptions::from_config(&config);
+
+        // Sanity-check the wiring before driving the verifier: the
+        // `from_config` predicate must have flipped on the
+        // bind-mount opt-in for this Python diag because Strict +
+        // Python is the exact case `lang_needs_host_libs` was added
+        // for.  Note: `from_config` itself does not see the diag,
+        // so the flag is actually set inside `verify_finding`'s
+        // per-finding clone — what we assert here is only that
+        // Strict survived the from_config round-trip.  If this
+        // assertion ever flips, the verifier's per-finding wiring
+        // has regressed.
+        assert!(
+            matches!(
+                opts.sandbox.process_hardening,
+                ProcessHardeningProfile::Strict,
+            ),
+            "harden_profile=strict must engage ProcessHardeningProfile::Strict so \
+             the per-finding clone in `verify_finding` can layer bind-mounts on top",
+        );
+
+        let result = verify_finding(&diag, &opts);
+
+        unsafe {
+            std::env::remove_var("NYX_REPRO_BASE");
+            std::env::remove_var("NYX_TELEMETRY_PATH");
+        }
+
+        // The Strict chroot only survives if `mount(2)` actually
+        // bind-mounted the host's libpython + ld.so inside the
+        // workdir.  A failed bind-mount surfaces as a python3 cold-
+        // start crash before `subprocess.run` ever fires, which the
+        // oracle reports as `NotConfirmed`.
+        assert_eq!(
+            result.status,
+            VerifyStatus::Confirmed,
+            "cmdi_positive.py under --harden=strict must Confirm: \
+             interpreter cold-start should succeed via bind-mounted /lib + /usr/lib + \
+             /usr/bin (detail={:?})",
+            result.detail,
+        );
+        let summary = result
+            .hardening_outcome
+            .as_ref()
+            .expect("Strict run must stamp hardening_outcome");
+        assert_eq!(
+            summary.backend, "linux-process",
+            "Linux host should produce a linux-process backend stamp",
+        );
+        assert_eq!(
+            summary.profile, "strict",
+            "Strict profile tag must round-trip through summarize_hardening",
+        );
+        assert!(
+            !summary.primitives.is_empty(),
+            "Linux backend records one entry per primitive; got: {:?}",
+            summary.primitives,
+        );
+        assert!(
+            summary
+                .primitives
+                .iter()
+                .any(|p| p.name == "chroot" && p.status == "applied"),
+            "chroot primitive must apply under Strict — bind-mounts only matter \
+             when chroot is active.  primitives: {:?}",
+            summary.primitives,
+        );
+    }
+
     /// Seccomp policy synthesised from `seccomp_policy.toml` includes
     /// the syscalls required for the probe to reach `__NYX_PROBE_DONE__`
     /// (read, write, openat, readlinkat, fcntl, exit_group, …).  This

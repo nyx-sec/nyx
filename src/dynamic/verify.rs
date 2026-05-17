@@ -162,6 +162,36 @@ impl VerifyOptions {
     }
 }
 
+/// Phase 17 follow-up: predicate driving the
+/// [`SandboxOptions::bind_mount_host_libs`] opt-in for the Linux
+/// process backend under [`ProcessHardeningProfile::Strict`].
+///
+/// Returns `true` for languages whose harness runtime ships as an
+/// external interpreter (`python3`, `node`, `java`, `ruby`, `php`).
+/// Those interpreters dlopen shared libraries from the host filesystem
+/// at cold-start, so the `chroot(2)` step in
+/// [`crate::dynamic::sandbox::process_linux`] needs the host's
+/// `/lib`, `/lib64`, `/usr/lib`, and `/usr/bin` reachable inside the
+/// workdir.
+///
+/// Returns `false` for natively-compiled languages (`rust`, `c`,
+/// `cpp`, `go`).  Their harnesses are linked statically under Strict
+/// via [`crate::dynamic::build_sandbox::static_link_for_profile`], so
+/// the chroot survives without bind-mounts and we skip the
+/// `mount(2)` syscall sequence to avoid the host-mount side-channel
+/// the bind-mounts open up.
+///
+/// Standard-profile runs ignore this entirely — the engine only
+/// consults the predicate inside the Strict branch in
+/// [`verify_finding`].
+fn lang_needs_host_libs(lang: crate::symbol::Lang) -> bool {
+    use crate::symbol::Lang::*;
+    matches!(
+        lang,
+        Python | JavaScript | TypeScript | Java | Ruby | Php
+    )
+}
+
 // ── Dynamic verdict cache helpers (§12 Q5) ───────────────────────────────────
 
 /// Hash the content of `entry_file` with BLAKE3 and return a 16-char hex string.
@@ -684,6 +714,14 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         crate::dynamic::sandbox::ProcessHardeningProfile::Strict,
     ) {
         sandbox_opts.seccomp_caps = spec.expected_cap.bits();
+        // Phase 17 follow-up: interpreted-language harnesses cannot
+        // resolve their interpreter + shared libraries from inside the
+        // chroot unless the host's `/lib`, `/lib64`, `/usr/lib`, and
+        // `/usr/bin` are bind-mounted into the workdir.  Native-compile
+        // langs (Rust / C / C++ / Go) are statically linked under
+        // Strict by `static_link_for_profile` so we keep the chroot
+        // tight by skipping the bind-mounts for them.
+        sandbox_opts.bind_mount_host_libs = lang_needs_host_libs(spec.lang);
     }
     // Phase 30: hand the runner an `Arc` clone so it can append
     // `build_*` / `sandbox_started` / `oracle_*` stages from inside
@@ -1259,6 +1297,44 @@ mod tests {
              `--harden=strict` actually wraps the harness with sandbox-exec on macOS \
              and layers chroot + seccomp on Linux"
         );
+    }
+
+    #[test]
+    fn lang_needs_host_libs_returns_true_for_interpreted_langs() {
+        use crate::symbol::Lang;
+        // Every lang that ships its harness as an external interpreter
+        // (python3 / node / java / ruby / php) must opt in so the
+        // Strict chroot still finds the runtime's shared libraries.
+        for lang in [
+            Lang::Python,
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Java,
+            Lang::Ruby,
+            Lang::Php,
+        ] {
+            assert!(
+                lang_needs_host_libs(lang),
+                "{lang:?} runs through an external interpreter that dlopens \
+                 host libs at cold-start, so the verifier must request \
+                 bind-mounts when Strict hardening engages"
+            );
+        }
+    }
+
+    #[test]
+    fn lang_needs_host_libs_returns_false_for_native_langs() {
+        use crate::symbol::Lang;
+        // Native-compile langs are statically linked under Strict via
+        // `static_link_for_profile`, so the chroot survives without
+        // exposing the host filesystem through bind-mounts.
+        for lang in [Lang::Rust, Lang::C, Lang::Cpp, Lang::Go] {
+            assert!(
+                !lang_needs_host_libs(lang),
+                "{lang:?} is statically linked under Strict; bind-mounting \
+                 host libs would widen the chroot surface for zero gain"
+            );
+        }
     }
 
     #[test]
