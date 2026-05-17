@@ -155,3 +155,95 @@ fn every_chain_composer_scenario_emits_at_least_one_chain() {
         }
     }
 }
+
+/// Locks the scan-pipeline wiring contract: when dynamic verification is
+/// enabled (default), the composite chain re-verifier runs after the
+/// chain-composition pass and stamps each top-N chain's
+/// `dynamic_verdict` so downstream consumers (`build_findings_json`,
+/// `build_sarif_with_chains`, console renderer) see a populated field.
+///
+/// The verdict's *status* depends on the host's Python toolchain: when
+/// `python3 -m venv` succeeds and the per-language chain-step harness
+/// runs, the verdict resolves to `Confirmed`; when the toolchain is
+/// missing it falls through to `Inconclusive(BackendInsufficient)`.
+/// This test asserts only the wiring contract — that the field is
+/// populated and the detail string reports coverage — so it stays green
+/// on any host with a working `nyx` binary.
+///
+/// Gated on `feature = "dynamic"` because the reverifier lives behind
+/// that flag.
+#[cfg(feature = "dynamic")]
+#[test]
+fn flask_eval_chain_reverify_populates_dynamic_verdict() {
+    let root = fixture_root("python/flask_eval");
+    let value = run_scan_json(&root);
+
+    let chains = value
+        .get("chains")
+        .and_then(Value::as_array)
+        .expect("`chains` array missing from scan output");
+    assert!(!chains.is_empty(), "expected at least one composed chain");
+
+    let top = &chains[0];
+    let dv = top
+        .get("dynamic_verdict")
+        .expect("`dynamic_verdict` key missing from top chain");
+    assert!(
+        !dv.is_null(),
+        "top chain `dynamic_verdict` was null; wiring did not fire. Chain:\n{}",
+        serde_json::to_string_pretty(top).unwrap_or_default()
+    );
+
+    let status = dv
+        .get("status")
+        .and_then(Value::as_str)
+        .expect("verdict missing `status`");
+    assert!(
+        matches!(status, "Confirmed" | "Inconclusive" | "Unsupported"),
+        "unexpected verdict status: {status:?}"
+    );
+
+    let detail = dv
+        .get("detail")
+        .and_then(Value::as_str)
+        .expect("verdict missing `detail`");
+    for segment in ["derived", "built", "ran"] {
+        assert!(
+            detail.contains(segment),
+            "verdict detail missing `{segment}` coverage segment: {detail:?}"
+        );
+    }
+}
+
+/// Mirror of the above: with `--no-verify` the chain-reverify pass is
+/// skipped and `dynamic_verdict` stays `null`.  Locks the cost-control
+/// contract: users who opt out of dynamic verification do not pay the
+/// per-chain build / sandbox cost.
+#[cfg(feature = "dynamic")]
+#[test]
+fn flask_eval_chain_dynamic_verdict_is_null_when_verify_disabled() {
+    let root = fixture_root("python/flask_eval");
+    let assert = Command::cargo_bin("nyx")
+        .expect("nyx binary")
+        .args(["scan", "--no-verify", "--format", "json"])
+        .arg(&root)
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone())
+        .expect("nyx scan stdout is valid UTF-8");
+    let value: Value = serde_json::from_str(&stdout)
+        .expect("nyx scan --format json produced invalid JSON");
+
+    let chains = value
+        .get("chains")
+        .and_then(Value::as_array)
+        .expect("`chains` array missing");
+    assert!(!chains.is_empty());
+
+    let top = &chains[0];
+    let dv = top.get("dynamic_verdict");
+    assert!(
+        matches!(dv, None | Some(Value::Null)),
+        "top chain `dynamic_verdict` should be absent or null under --no-verify; got {dv:?}"
+    );
+}

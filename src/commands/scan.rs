@@ -555,8 +555,12 @@ pub fn handle(
     }
 
     // ── Dynamic verification (feature-gated) ─────────────────────────────
+    // The constructed `VerifyOptions` is held in an `Option` scoped past
+    // the per-finding loop so the composite-chain re-verification pass
+    // below can reuse the same preloaded summaries / callgraph without
+    // a second SQLite round-trip.
     #[cfg(feature = "dynamic")]
-    if config.scanner.verify {
+    let verify_opts: Option<crate::dynamic::verify::VerifyOptions> = if config.scanner.verify {
         let mut opts = crate::dynamic::verify::VerifyOptions::from_config(config);
         // Phase 30 (Track C observability): surface the per-finding
         // [`crate::dynamic::trace::VerifyTrace`] on stderr when the
@@ -599,7 +603,10 @@ pub fn handle(
                 ev.dynamic_verdict = Some(result);
             }
         }
-    }
+        Some(opts)
+    } else {
+        None
+    };
 
     // ── Baseline write (§M6.5): persist current findings as stripped baseline
     if let Some(bw_path) = baseline_write {
@@ -645,12 +652,39 @@ pub fn handle(
         max_depth: config.chain.max_depth,
         min_score: config.chain.min_score,
     };
-    let chains = crate::chain::find_chains_with_reach(
+    // `mut` is unused when the `dynamic` feature is off: composite
+    // chain re-verification is the only mutator and is cfg-gated below.
+    #[allow(unused_mut)]
+    let mut chains = crate::chain::find_chains_with_reach(
         &chain_edges,
         &surface_map,
         chain_search_cfg,
         chain_reach,
     );
+
+    // Track G.3: composite chain re-verification. Only the top-N chains
+    // by score reach the live composite run (cost control via
+    // `[chain] reverify_top_n` — default 5, `0` to skip). Gated on the
+    // master dynamic-verification switch (`scanner.verify`) so users who
+    // skip per-finding verification do not pay the per-chain build /
+    // sandbox cost. Mutates `chains` in place: each top-N chain's
+    // `dynamic_verdict` / `severity` / `reverify_reason` flow through to
+    // every downstream consumer (`filter_constituents`,
+    // `build_findings_json`, `build_sarif_with_chains`, console
+    // renderer).
+    #[cfg(feature = "dynamic")]
+    if let Some(ref opts) = verify_opts {
+        if config.chain.reverify_top_n > 0 && !chains.is_empty() {
+            let _ = crate::chain::reverify::reverify_top_chains(
+                &mut chains,
+                &diags,
+                &surface_map,
+                opts,
+                config.chain.reverify_top_n,
+            );
+        }
+    }
+
     let diags_for_output = crate::output::filter_constituents(
         diags.clone(),
         &chains,
