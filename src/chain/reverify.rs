@@ -308,6 +308,26 @@ impl CompositeReverifier for DefaultCompositeReverifier {
         let all_built = derived > 0 && built == derived;
         let all_ran = built > 0 && steps_run == built && sandbox_errors == 0;
         if all_built && all_ran && final_sink_hit {
+            // Phase 31 telemetry stability stamping.  When the caller
+            // opts in via `NYX_VERIFY_REPLAY_STABLE=1` (mirrored by
+            // [`VerifyOptions::replay_stable_check`]) we re-run the
+            // chain step sequence one more time on the same built
+            // workdirs and stamp `replay_stable` based on whether the
+            // second pass also fires the sink sentinel.  `Some(true)`
+            // means the chain reproduces; `Some(false)` means the chain
+            // is flaky (rare but a real eval-corpus signal); the field
+            // stays `None` when the opt-in is off.
+            let replay_stable = if opts.replay_stable_check {
+                let (_, replay_sandbox_errors, _, _, replay_final_sink_hit) =
+                    run_chain_steps(&built_steps, &opts.sandbox, &terminal);
+                if replay_sandbox_errors == 0 {
+                    Some(replay_final_sink_hit)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             VerifyResult {
                 finding_id,
                 status: VerifyStatus::Confirmed,
@@ -318,7 +338,7 @@ impl CompositeReverifier for DefaultCompositeReverifier {
                 attempts: vec![],
                 toolchain_match: None,
                 differential: None,
-                replay_stable: None,
+                replay_stable,
                 wrong: None,
                 hardening_outcome: None,
             }

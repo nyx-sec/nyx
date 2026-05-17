@@ -215,6 +215,86 @@ fn flask_eval_chain_reverify_populates_dynamic_verdict() {
     }
 }
 
+/// Locks the Phase 31 telemetry stability stamping contract: when
+/// `NYX_VERIFY_REPLAY_STABLE=1` is set and the chain reverifier resolves
+/// to `Confirmed`, the verdict's `replay_stable` field is populated.
+/// Without the env var, `replay_stable` stays `null`.
+///
+/// Status-agnostic: when the host's Python toolchain is missing the
+/// reverifier never reaches its `Confirmed` branch and `replay_stable`
+/// stays `null` in both arms — the test then asserts only the absence-
+/// path contract under both env-var settings so it stays green on
+/// toolchain-free hosts.  When `Confirmed` *does* fire, the env-var-set
+/// arm must carry `Some(true|false)`.
+#[cfg(feature = "dynamic")]
+#[test]
+fn flask_eval_chain_replay_stable_honours_opt_in() {
+    let root = fixture_root("python/flask_eval");
+
+    // Arm 1: env var unset → replay_stable must be null on the top chain
+    // regardless of verdict status.
+    let assert_off = Command::cargo_bin("nyx")
+        .expect("nyx binary")
+        .args(["scan", "--format", "json"])
+        .arg(&root)
+        .env_remove("NYX_VERIFY_REPLAY_STABLE")
+        .assert()
+        .success();
+    let value_off: Value = serde_json::from_slice(&assert_off.get_output().stdout)
+        .expect("nyx scan --format json produced invalid JSON (arm off)");
+    let top_off = value_off
+        .get("chains")
+        .and_then(Value::as_array)
+        .and_then(|c| c.first())
+        .expect("expected at least one composed chain (arm off)");
+    let dv_off = top_off
+        .get("dynamic_verdict")
+        .expect("dynamic_verdict missing (arm off)");
+    let replay_off = dv_off.get("replay_stable");
+    assert!(
+        matches!(replay_off, None | Some(Value::Null)),
+        "replay_stable should be absent or null when opt-in is off; got {replay_off:?}"
+    );
+
+    // Arm 2: env var set → replay_stable must be populated when the
+    // verdict is Confirmed.  When the toolchain is missing the verdict
+    // stays Inconclusive and replay_stable stays null; both branches
+    // are valid wiring outcomes.
+    let assert_on = Command::cargo_bin("nyx")
+        .expect("nyx binary")
+        .args(["scan", "--format", "json"])
+        .arg(&root)
+        .env("NYX_VERIFY_REPLAY_STABLE", "1")
+        .assert()
+        .success();
+    let value_on: Value = serde_json::from_slice(&assert_on.get_output().stdout)
+        .expect("nyx scan --format json produced invalid JSON (arm on)");
+    let top_on = value_on
+        .get("chains")
+        .and_then(Value::as_array)
+        .and_then(|c| c.first())
+        .expect("expected at least one composed chain (arm on)");
+    let dv_on = top_on
+        .get("dynamic_verdict")
+        .expect("dynamic_verdict missing (arm on)");
+    let status_on = dv_on
+        .get("status")
+        .and_then(Value::as_str)
+        .expect("verdict missing status (arm on)");
+    let replay_on = dv_on.get("replay_stable");
+    if status_on == "Confirmed" {
+        assert!(
+            matches!(replay_on, Some(Value::Bool(_))),
+            "replay_stable must be populated when opt-in is on and verdict is Confirmed; got {replay_on:?}"
+        );
+    } else {
+        assert!(
+            matches!(replay_on, None | Some(Value::Null) | Some(Value::Bool(_))),
+            "replay_stable should be absent, null, or a bool; got {replay_on:?}"
+        );
+    }
+}
+
 /// Mirror of the above: with `--no-verify` the chain-reverify pass is
 /// skipped and `dynamic_verdict` stays `null`.  Locks the cost-control
 /// contract: users who opt out of dynamic verification do not pay the
