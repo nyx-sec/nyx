@@ -379,11 +379,22 @@ impl LangEmitter for CEmitter {
 
 /// Phase 26 — C chain-step harness.
 ///
+/// Splices the C probe shim ([`probe_shim`]) ahead of a minimal driver
+/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  The shim's
+/// static functions (`__nyx_probe`, `__nyx_install_crash_guard`,
+/// `__nyx_stub_sql_record`, `__nyx_stub_http_record`) become callable
+/// from a future sink-rewrite pass without bringing in another
+/// translation unit.  Unreferenced shim helpers stay quiet under
+/// default `cc` flags — `-Wunused-function` is not on the warning
+/// baseline so dead helpers do not fail the build.
+///
 /// Shell-wraps `cc` + run so the compiled binary actually executes after
 /// the build completes — `ChainStepHarness.command` models a single
 /// process, so the build-then-run sequence must collapse to one `sh -c`.
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
-    let source = "#include <stdio.h>\n#include <stdlib.h>\n\nint main(void) {\n    const char *prev = getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) fputs(prev, stdout);\n    return 0;\n}\n".to_owned();
+    let shim = probe_shim();
+    let driver = "\nint main(void) {\n    const char *prev = getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) fputs(prev, stdout);\n    return 0;\n}\n";
+    let source = format!("{shim}{driver}");
     ChainStepHarness {
         source,
         filename: "step.c".to_owned(),
@@ -852,5 +863,55 @@ mod tests {
         let h = emit(&spec).unwrap();
         let mk = h.extra_files.iter().find(|(n, _)| n == "Makefile").expect("Makefile must be staged");
         assert!(mk.1.contains("nyx_harness: main.c entry.c"));
+    }
+
+    #[test]
+    fn chain_step_splices_probe_shim_for_composite_reverify() {
+        // Phase 26 follow-up: C chain_step now splices the probe shim
+        // ahead of the driver so a chain step that terminates at a sink
+        // can drive the `__nyx_probe` channel directly.  Asserts the
+        // shim banner is present and lands before `int main`, that
+        // `__nyx_install_crash_guard` is reachable from the spliced
+        // source, that `prev_output` rides through `extra_env`, and
+        // that the build-then-run command stays in one `sh -c` so the
+        // sandbox sees a single process.
+        let step = chain_step(Some(b"prev-output"));
+        assert!(
+            step.source.contains("__nyx_probe shim (Phase 06"),
+            "probe_shim banner missing from chain step source",
+        );
+        assert!(
+            step.source.contains("static void __nyx_install_crash_guard("),
+            "install_crash_guard missing from chain step source",
+        );
+        let shim_pos = step
+            .source
+            .find("__nyx_probe shim (Phase 06")
+            .expect("shim banner");
+        let main_pos = step.source.find("int main(void)").expect("main fn");
+        assert!(
+            shim_pos < main_pos,
+            "shim must be spliced before int main: shim={shim_pos} main={main_pos}",
+        );
+        assert_eq!(step.filename, "step.c");
+        assert_eq!(
+            step.command,
+            vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "cc step.c -o step && ./step".to_owned(),
+            ],
+        );
+        assert!(
+            step.extra_env
+                .iter()
+                .any(|(k, v)| k == ChainStepHarness::PREV_OUTPUT_ENV && v == "prev-output"),
+            "prev_output must be threaded through extra_env, got {:?}",
+            step.extra_env,
+        );
+        assert!(
+            step.extra_files.is_empty(),
+            "C chain step needs no companion build manifest; `cc` is self-sufficient",
+        );
     }
 }

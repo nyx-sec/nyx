@@ -332,10 +332,18 @@ impl LangEmitter for CppEmitter {
 
 /// Phase 26 — C++ chain-step harness.
 ///
+/// Splices the C++ probe shim ([`probe_shim`]) ahead of a minimal driver
+/// that reads `NYX_PREV_OUTPUT` and forwards it on stdout.  Same
+/// rationale as the C sibling: the inline shim helpers become callable
+/// from a future sink-rewrite pass without a separate translation unit;
+/// unreferenced inline functions stay quiet under default `c++` flags.
+///
 /// Shell-wraps `c++` + run so the compiled binary actually executes
 /// after the build completes (see C-side commentary for the rationale).
 fn chain_step(prev_output: Option<&[u8]>) -> ChainStepHarness {
-    let source = "#include <cstdio>\n#include <cstdlib>\n\nint main() {\n    const char *prev = std::getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) std::fputs(prev, stdout);\n    return 0;\n}\n".to_owned();
+    let shim = probe_shim();
+    let driver = "\nint main() {\n    const char *prev = std::getenv(\"NYX_PREV_OUTPUT\");\n    if (prev) std::fputs(prev, stdout);\n    return 0;\n}\n";
+    let source = format!("{shim}{driver}");
     ChainStepHarness {
         source,
         filename: "step.cpp".to_owned(),
@@ -724,5 +732,53 @@ mod tests {
         let h = emit(&spec).unwrap();
         let mk = h.extra_files.iter().find(|(n, _)| n == "CMakeLists.txt").expect("CMakeLists.txt must be staged");
         assert!(mk.1.contains("add_executable(nyx_harness main.cpp)"));
+    }
+
+    #[test]
+    fn chain_step_splices_probe_shim_for_composite_reverify() {
+        // Phase 26 follow-up: C++ chain_step now splices the probe shim
+        // ahead of the driver so a chain step that terminates at a sink
+        // can drive the `__nyx_probe` channel directly.  Asserts the
+        // shim banner is present and lands before `int main`, that
+        // `__nyx_install_crash_guard` is reachable, prev_output rides
+        // through `extra_env`, and build-then-run stays one `sh -c`.
+        let step = chain_step(Some(b"prev-output"));
+        assert!(
+            step.source.contains("__nyx_probe shim (Phase 06"),
+            "probe_shim banner missing from chain step source",
+        );
+        assert!(
+            step.source.contains("inline void __nyx_install_crash_guard("),
+            "install_crash_guard missing from chain step source",
+        );
+        let shim_pos = step
+            .source
+            .find("__nyx_probe shim (Phase 06")
+            .expect("shim banner");
+        let main_pos = step.source.find("int main()").expect("main fn");
+        assert!(
+            shim_pos < main_pos,
+            "shim must be spliced before int main: shim={shim_pos} main={main_pos}",
+        );
+        assert_eq!(step.filename, "step.cpp");
+        assert_eq!(
+            step.command,
+            vec![
+                "sh".to_owned(),
+                "-c".to_owned(),
+                "c++ step.cpp -o step && ./step".to_owned(),
+            ],
+        );
+        assert!(
+            step.extra_env
+                .iter()
+                .any(|(k, v)| k == ChainStepHarness::PREV_OUTPUT_ENV && v == "prev-output"),
+            "prev_output must be threaded through extra_env, got {:?}",
+            step.extra_env,
+        );
+        assert!(
+            step.extra_files.is_empty(),
+            "C++ chain step needs no companion build manifest; `c++` is self-sufficient",
+        );
     }
 }

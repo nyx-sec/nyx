@@ -318,6 +318,19 @@ def main() -> int:
     p.add_argument("--inhouse", action="store_true")
     p.add_argument("--append", required=True, help="results accumulator JSON")
     p.add_argument(
+        "--manual-triage",
+        default="",
+        help=(
+            "path to a manual-triage JSON file (list of "
+            "{path, line, cap, vuln: bool}).  Confirmed findings matching a "
+            "`vuln: false` entry are stamped with `wrong: true` before "
+            "tabulation so the per-cell False-Confirmed budget becomes "
+            "non-vacuous without depending on the host's `nyx verify-feedback` "
+            "log.  Matching uses LINE_TOLERANCE (=5) — line == 0 in the triage "
+            "entry matches any line."
+        ),
+    )
+    p.add_argument(
         "--budget",
         default="",
         help="path to budget.toml (per-(cap,lang) thresholds)",
@@ -331,6 +344,47 @@ def main() -> int:
 
     scan_data = load_json(args.scan)
     findings = scan_data if isinstance(scan_data, list) else scan_data.get("findings", [])
+
+    # ── Manual-triage stamping (Phase 31 follow-up) ───────────────────────
+    # Cross-reference Confirmed rows against a manual-triage file before
+    # tabulation.  Each `vuln: false` entry whose `(path, cap)` matches a
+    # Confirmed finding (with LINE_TOLERANCE, or any line when triage
+    # entry's `line == 0`) stamps `wrong: true` on the finding's
+    # `dynamic_verdict`, which the existing wrong_confirmed counter picks
+    # up below.  Decouples the False-Confirmed budget from the host-local
+    # `nyx verify-feedback` log so CI on a fresh eval corpus can still
+    # gate the headline target.
+    if args.manual_triage and Path(args.manual_triage).exists():
+        triage = load_json(args.manual_triage)
+        not_vuln: list[dict] = []
+        for entry in triage if isinstance(triage, list) else []:
+            if entry.get("vuln") is False:
+                not_vuln.append({
+                    "path": entry.get("path", ""),
+                    "line": entry.get("line", 0),
+                    "cap": entry.get("cap", ""),
+                })
+        used: set[int] = set()
+        for f in findings:
+            ev = f.get("evidence") or {}
+            dv = ev.get("dynamic_verdict") or {}
+            if dv.get("status") != "Confirmed":
+                continue
+            f_path = f.get("path", "")
+            f_line = f.get("line", 0)
+            f_cap = cap_of(f)
+            for idx, entry in enumerate(not_vuln):
+                if idx in used:
+                    continue
+                if (entry["path"] == f_path
+                        and entry["cap"] == f_cap
+                        and (entry["line"] == 0
+                             or abs(entry["line"] - f_line) <= LINE_TOLERANCE)):
+                    used.add(idx)
+                    dv["wrong"] = True
+                    ev["dynamic_verdict"] = dv
+                    f["evidence"] = ev
+                    break
 
     # Per-cell tallies: {(cap, lang): {tp, fp, fn, unsupported, confirmed,
     # wrong_confirmed, stable_replays, total}}

@@ -199,6 +199,95 @@ def test_diff_passes_on_improvement(tmp: Path) -> None:
     assert "no regressions" in proc.stdout, proc.stdout
 
 
+def test_manual_triage_stamps_wrong_confirmed(tmp: Path) -> None:
+    # Phase 31 follow-up: --manual-triage should cross-reference Confirmed
+    # findings against a list of {path, line, cap, vuln: false} entries
+    # and stamp `wrong: true` so the per-cell wrong_confirmed counter
+    # becomes non-vacuous without the host's verify-feedback log.
+    #
+    # Confirmed at line 10 matches the triage's vuln:false at line 12
+    # (within LINE_TOLERANCE=5).  Confirmed at line 100 does not match
+    # any triage entry, so wrong_confirmed stays at 1 / 2 Confirmed.
+    scan = tmp / "scan.json"
+    write_json(
+        scan,
+        {
+            "findings": [
+                python_finding(SINK_BIT_SQL, "app.py", 10, "Confirmed"),
+                python_finding(SINK_BIT_SQL, "app.py", 100, "Confirmed"),
+            ]
+        },
+    )
+    triage = tmp / "triage.json"
+    write_json(
+        triage,
+        [
+            {"path": "app.py", "line": 12, "cap": "sqli", "vuln": False},
+        ],
+    )
+    append = tmp / "results.json"
+    write_json(append, [])
+    proc = run_tabulate(
+        "--label", "triage-test",
+        "--scan", str(scan),
+        "--inhouse",
+        "--append", str(append),
+        "--manual-triage", str(triage),
+    )
+    assert proc.returncode == 0, (
+        f"manual-triage run must succeed without budget, got {proc.returncode}\n"
+        f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
+    )
+    results = json.loads(append.read_text())
+    cells = {(c["cap"], c["lang"]): c for c in results[-1]["cells"]}
+    sqli_py = cells.get(("sqli", "python"))
+    assert sqli_py is not None, f"expected sqli/python cell, got {list(cells)}"
+    assert sqli_py["confirmed"] == 2, sqli_py
+    assert sqli_py["wrong_confirmed"] == 1, (
+        "exactly one Confirmed finding must be stamped wrong via the triage match; "
+        f"got {sqli_py}"
+    )
+
+
+def test_manual_triage_ignores_vuln_true_entries(tmp: Path) -> None:
+    # Triage entries with `vuln: true` are ground-truth-positive markers,
+    # not False-Confirmed evidence.  --manual-triage must leave them alone
+    # so a real Confirmed-on-vuln-true row does not get downgraded.
+    scan = tmp / "scan.json"
+    write_json(
+        scan,
+        {
+            "findings": [
+                python_finding(SINK_BIT_SQL, "app.py", 10, "Confirmed"),
+            ]
+        },
+    )
+    triage = tmp / "triage.json"
+    write_json(
+        triage,
+        [
+            {"path": "app.py", "line": 10, "cap": "sqli", "vuln": True},
+        ],
+    )
+    append = tmp / "results.json"
+    write_json(append, [])
+    proc = run_tabulate(
+        "--label", "triage-true-test",
+        "--scan", str(scan),
+        "--inhouse",
+        "--append", str(append),
+        "--manual-triage", str(triage),
+    )
+    assert proc.returncode == 0
+    results = json.loads(append.read_text())
+    cells = {(c["cap"], c["lang"]): c for c in results[-1]["cells"]}
+    sqli_py = cells[("sqli", "python")]
+    assert sqli_py["confirmed"] == 1
+    assert sqli_py["wrong_confirmed"] == 0, (
+        f"vuln:true triage rows must not stamp wrong; got {sqli_py}"
+    )
+
+
 def test_budget_malformed_exits_3(tmp: Path) -> None:
     bad = tmp / "bad.toml"
     bad.write_text("[default]\nunsupported_rate = not_a_number\n")
@@ -226,6 +315,8 @@ def main() -> int:
             test_budget_fails_when_unsupported_exceeds,
             test_diff_fails_on_regression,
             test_diff_passes_on_improvement,
+            test_manual_triage_stamps_wrong_confirmed,
+            test_manual_triage_ignores_vuln_true_entries,
             test_budget_malformed_exits_3,
         ):
             sub = tmp / fn.__name__
