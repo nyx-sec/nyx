@@ -19,6 +19,13 @@
 /// 9. `composite_chain_reverify_top_n_slice` — 5-chain slice with `top_n=3`.
 ///    Measures the slice traversal cost so a regression that walks the full
 ///    slice instead of the prefix is visible.
+/// 10. `composite_chain_reverify_replay_stable` — same chain shape as
+///     `stub_confirmed`, but with `VerifyOptions::replay_stable_check=true`
+///     and a stub that stamps `replay_stable=Some(true)`. Anchors the
+///     apply-verdict allocation cost when the telemetry stability field
+///     is populated; a regression that adds per-chain work behind the
+///     replay opt-in (e.g. an extra run_chain_steps call leaking out of
+///     the live path into the stub layer) shows up here.
 ///
 /// Wall-clock budget anchors for the composite reverify path (per the
 /// Phase 26 acceptance literal): the live process backend stays under
@@ -450,8 +457,20 @@ impl nyx_scanner::chain::CompositeReverifier for BenchConfirmedReverifier {
         _chain: &nyx_scanner::chain::ChainFinding,
         _member_diags: &[nyx_scanner::commands::scan::Diag],
         _surface: &nyx_scanner::surface::SurfaceMap,
-        _opts: &nyx_scanner::dynamic::verify::VerifyOptions,
+        opts: &nyx_scanner::dynamic::verify::VerifyOptions,
     ) -> nyx_scanner::evidence::VerifyResult {
+        // Mirror `DefaultCompositeReverifier::reverify`'s replay-stable
+        // stamping shape so the apply-verdict allocation cost matches
+        // the live path when the opt-in is on.  The stub does not
+        // re-run any work (it has none to re-run) but the resulting
+        // `VerifyResult` populates `replay_stable=Some(true)` so
+        // downstream sites that branch on the field exercise the same
+        // path they would for a real Confirmed-with-stable run.
+        let replay_stable = if opts.replay_stable_check {
+            Some(true)
+        } else {
+            None
+        };
         nyx_scanner::evidence::VerifyResult {
             finding_id: "bench".into(),
             status: nyx_scanner::evidence::VerifyStatus::Confirmed,
@@ -462,7 +481,7 @@ impl nyx_scanner::chain::CompositeReverifier for BenchConfirmedReverifier {
             attempts: vec![],
             toolchain_match: None,
             differential: None,
-            replay_stable: None,
+            replay_stable,
             wrong: None,
             hardening_outcome: None,
         }
@@ -563,6 +582,46 @@ fn bench_composite_chain_reverify_top_n_slice(c: &mut Criterion) {
     });
 }
 
+/// Phase 26 replay-stable anchor: same 3-member synthetic chain as
+/// `stub_confirmed`, driven through `reverify_top_chains_with` with
+/// `VerifyOptions::replay_stable_check=true`.  The `BenchConfirmedReverifier`
+/// stub honours the opt-in by stamping `replay_stable=Some(true)` on
+/// the returned `VerifyResult`, exercising the apply-verdict path with
+/// the telemetry stability field populated.
+///
+/// Purpose: anchor the cost of the replay-stable apply path so a
+/// regression that leaks a real `run_chain_steps` invocation into the
+/// stubbed verifier layer (or that allocates extra state behind the
+/// `replay_stable_check` toggle in `chain::reverify::apply_one`) shows
+/// up immediately against the `stub_confirmed` baseline.
+#[cfg(feature = "dynamic")]
+fn bench_composite_chain_reverify_replay_stable(c: &mut Criterion) {
+    use nyx_scanner::chain::reverify;
+    use nyx_scanner::dynamic::verify::VerifyOptions;
+    use nyx_scanner::surface::SurfaceMap;
+
+    let surface = SurfaceMap::new();
+    let opts = VerifyOptions {
+        replay_stable_check: true,
+        ..VerifyOptions::default()
+    };
+    let reverifier = BenchConfirmedReverifier;
+
+    c.bench_function("composite_chain_reverify_replay_stable", |b| {
+        b.iter(|| {
+            let mut chains = [mk_synthetic_chain(0xC4A3, 3)];
+            let _ = reverify::reverify_top_chains_with(
+                &mut chains,
+                &[],
+                &surface,
+                &opts,
+                1,
+                &reverifier,
+            );
+        });
+    });
+}
+
 #[cfg(feature = "dynamic")]
 fn bench_noop(_c: &mut Criterion) {}
 
@@ -589,6 +648,7 @@ criterion_group!(
     bench_composite_chain_reverify_dispatch,
     bench_composite_chain_reverify_stub_confirmed,
     bench_composite_chain_reverify_top_n_slice,
+    bench_composite_chain_reverify_replay_stable,
 );
 
 #[cfg(not(feature = "dynamic"))]
