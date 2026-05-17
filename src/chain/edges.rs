@@ -340,7 +340,7 @@ mod tests {
         let d = diag_with_cap("helper.py", 10, Cap::CODE_EXEC);
 
         // Without reach: file-local lookup leaves the finding Unreachable.
-        let edges = findings_to_edges(&[d.clone()], &surface);
+        let edges = findings_to_edges(std::slice::from_ref(&d), &surface);
         assert!(matches!(edges[0].reach, Reach::Unreachable));
 
         // With reach: transitive caller in `routes.py` lifts to Reachable.

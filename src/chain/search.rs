@@ -625,10 +625,10 @@ mod tests {
             Feasibility::Confirmed,
         );
         let cfg = ChainSearchConfig::default();
-        let first = find_chains(&[e.clone()], &surface, cfg);
+        let first = find_chains(std::slice::from_ref(&e), &surface, cfg);
         let first_hashes: Vec<u64> = first.iter().map(|c| c.stable_hash).collect();
         for _ in 0..9 {
-            let again = find_chains(&[e.clone()], &surface, cfg);
+            let again = find_chains(std::slice::from_ref(&e), &surface, cfg);
             let again_hashes: Vec<u64> = again.iter().map(|c| c.stable_hash).collect();
             assert_eq!(again_hashes, first_hashes);
         }

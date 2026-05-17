@@ -580,7 +580,7 @@ mod tests {
     fn write_and_load_roundtrip() {
         let d = with_verdict(make_diag("src/a.py", 1, "py.sqli"), VerifyStatus::Confirmed);
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        write_baseline(tmp.path(), &[d.clone()]).unwrap();
+        write_baseline(tmp.path(), std::slice::from_ref(&d)).unwrap();
         let loaded = load_baseline(tmp.path()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].stable_hash, d.stable_hash);
