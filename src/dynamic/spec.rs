@@ -269,7 +269,7 @@ impl HarnessSpec {
         }
 
         // Try each strategy in priority order; first non-None wins.
-        if let Some(spec) = derive_from_flow_steps(diag, evidence) {
+        if let Some(spec) = derive_from_flow_steps(diag, evidence, summaries) {
             return Ok(spec);
         }
         if let Some(spec) = derive_from_rule_namespace_with(diag, evidence, summaries) {
@@ -340,7 +340,11 @@ impl HarnessSpec {
 
 // ── Strategy 1: from flow_steps (original path) ──────────────────────────────
 
-fn derive_from_flow_steps(diag: &Diag, evidence: &crate::evidence::Evidence) -> Option<HarnessSpec> {
+fn derive_from_flow_steps(
+    diag: &Diag,
+    evidence: &crate::evidence::Evidence,
+    summaries: Option<&GlobalSummaries>,
+) -> Option<HarnessSpec> {
     if evidence.flow_steps.is_empty() {
         return None;
     }
@@ -369,6 +373,7 @@ fn derive_from_flow_steps(diag: &Diag, evidence: &crate::evidence::Evidence) -> 
         sink_file,
         sink_line,
         SpecDerivationStrategy::FromFlowSteps,
+        summaries,
     ))
 }
 
@@ -436,6 +441,7 @@ pub fn derive_from_rule_namespace_with(
             diag.path.clone(),
             diag.line as u32,
             SpecDerivationStrategy::FromRuleNamespace,
+            summaries,
         ));
     }
 
@@ -482,6 +488,7 @@ pub fn derive_from_rule_namespace_with(
         diag.path.clone(),
         diag.line as u32,
         SpecDerivationStrategy::FromRuleNamespace,
+        summaries,
     ))
 }
 
@@ -546,6 +553,7 @@ pub fn derive_from_func_summary(
         diag.path.clone(),
         diag.line as u32,
         SpecDerivationStrategy::FromFuncSummaryWalk,
+        None,
     );
     spec.payload_slot = PayloadSlot::Param(param_idx);
     spec.spec_hash = compute_spec_hash(&spec);
@@ -569,7 +577,12 @@ fn derive_from_func_summary_auto(
     let lang = lang_from_path(&diag.path)?;
     let name = enclosing_function_from_flow_steps(evidence)?;
     let summary = find_summary_by_path(summaries, lang, &name, &diag.path)?;
-    derive_from_func_summary(diag, evidence, Some(summary))
+    let mut spec = derive_from_func_summary(diag, evidence, Some(summary))?;
+    // Re-run the framework attach with `summaries` so adapters can see
+    // the real callees on the enclosing function; framework binding is
+    // excluded from `compute_spec_hash`, so no rehash needed.
+    attach_framework_binding(&mut spec, Some(summaries));
+    Some(spec)
 }
 
 // ── Strategy 4: callgraph entry-kind ─────────────────────────────────────────
@@ -655,6 +668,7 @@ pub fn derive_from_callgraph_walk_only(
         diag.path.clone(),
         diag.line as u32,
         SpecDerivationStrategy::FromCallgraphEntry,
+        Some(summaries),
     );
     spec.entry_kind = entry_kind;
     spec.spec_hash = compute_spec_hash(&spec);
@@ -708,6 +722,7 @@ pub fn derive_from_callgraph_entry_full(
                 diag.path.clone(),
                 diag.line as u32,
                 SpecDerivationStrategy::FromCallgraphEntry,
+                Some(s),
             );
             spec.entry_kind = entry_kind;
             spec.spec_hash = compute_spec_hash(&spec);
@@ -744,6 +759,7 @@ pub fn derive_from_callgraph_entry_full(
         diag.path.clone(),
         diag.line as u32,
         SpecDerivationStrategy::FromCallgraphEntry,
+        summaries,
     );
     spec.entry_kind = entry_kind;
     spec.spec_hash = compute_spec_hash(&spec);
@@ -1056,6 +1072,7 @@ fn finalize_spec(
     sink_file: String,
     sink_line: u32,
     derivation: SpecDerivationStrategy,
+    summaries: Option<&GlobalSummaries>,
 ) -> HarnessSpec {
     let toolchain_id = default_toolchain_id(lang).to_owned();
     let stubs_required = StubKind::for_cap(expected_cap);
@@ -1080,7 +1097,7 @@ fn finalize_spec(
         // entry has been resolved and an AST is available.
         framework: None,
     };
-    attach_framework_binding(&mut spec);
+    attach_framework_binding(&mut spec, summaries);
     spec.spec_hash = compute_spec_hash(&spec);
     spec
 }
@@ -1105,17 +1122,30 @@ fn finalize_spec(
 /// also extend this function to parse `spec.entry_file` and call
 /// [`crate::dynamic::framework::detect_binding`] with the resulting
 /// tree-sitter root.
-fn attach_framework_binding(spec: &mut HarnessSpec) {
+///
+/// # GlobalSummaries lookup (Phase 01 follow-up)
+///
+/// When `summaries` is `Some`, the function resolves the real
+/// [`FuncSummary`] for the spec's entry via
+/// [`find_summary_by_path`] so the dispatched adapter sees the
+/// function's actual `callees` (the field every
+/// `any_callee_matches` check reads).  When `summaries` is `None`
+/// or the lookup misses, the function falls back to a synthetic
+/// [`FuncSummary`] carrying only `name` / `file_path` / `lang` — at
+/// which point detection rides on the per-adapter `matches_source`
+/// byte-grep fallback.
+fn attach_framework_binding(spec: &mut HarnessSpec, summaries: Option<&GlobalSummaries>) {
     if crate::dynamic::framework::registry::adapters_for(spec.lang).is_empty() {
         return;
     }
     // Phase 03 (Track J.1 / deferred-fix from Phase 01): read the
     // entry file from disk, parse it with the language's tree-sitter
-    // grammar, synthesise a minimal `FuncSummary` from the spec, then
-    // dispatch through the framework registry.  Failures along the
-    // way leave `spec.framework = None` rather than aborting the
-    // run; the framework binding is descriptive metadata, not a
-    // load-bearing field on the verifier path.
+    // grammar, look up the matching `FuncSummary` from `summaries` so
+    // adapters see the real `callees`, then dispatch through the
+    // framework registry.  Failures along the way leave
+    // `spec.framework = None` rather than aborting the run; the
+    // framework binding is descriptive metadata, not a load-bearing
+    // field on the verifier path.
     let Some(bytes) = std::fs::read(&spec.entry_file).ok() else {
         return;
     };
@@ -1129,14 +1159,17 @@ fn attach_framework_binding(spec: &mut HarnessSpec) {
     let Some(tree) = parser.parse(&bytes, None) else {
         return;
     };
-    let summary = FuncSummary {
+    let synthetic = FuncSummary {
         name: spec.entry_name.clone(),
         file_path: spec.entry_file.clone(),
         lang: lang_slug(spec.lang).to_owned(),
         ..Default::default()
     };
+    let resolved = summaries
+        .and_then(|gs| find_summary_by_path(gs, spec.lang, &spec.entry_name, &spec.entry_file));
+    let summary_ref = resolved.unwrap_or(&synthetic);
     if let Some(binding) =
-        crate::dynamic::framework::detect_binding(&summary, tree.root_node(), &bytes, spec.lang)
+        crate::dynamic::framework::detect_binding(summary_ref, tree.root_node(), &bytes, spec.lang)
     {
         spec.framework = Some(binding);
     }
@@ -1948,5 +1981,84 @@ mod tests {
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromCallgraphEntry);
         assert!(matches!(spec.entry_kind, EntryKind::HttpRoute));
         assert_eq!(spec.entry_name, "index");
+    }
+
+    #[test]
+    fn attach_framework_binding_uses_real_callees_from_global_summaries() {
+        // Phase 03 deferred-fix: `attach_framework_binding` resolves the
+        // entry's real `FuncSummary` from `GlobalSummaries` so the
+        // adapter's `any_callee_matches` predicate sees populated
+        // `callees`.  The fixture's source text deliberately omits any
+        // `Marshal.load` / `YAML.load` keyword so the
+        // `matches_source` byte-grep fallback in
+        // `RubyMarshalAdapter::detect` cannot fire — only the
+        // callee-driven path can produce a binding.
+        use crate::labels::Cap;
+        use crate::summary::CalleeSite;
+        use crate::symbol::FuncKey;
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fixture = dir.path().join("handler.rb");
+        // No `Marshal.load` or `YAML.load` substring; the adapter must
+        // rely on `summary.callees` to bind.
+        let src = b"def run(blob)\n  helper(blob)\nend\n";
+        std::fs::File::create(&fixture)
+            .expect("fixture create")
+            .write_all(src)
+            .expect("fixture write");
+        let entry_file = fixture.to_string_lossy().into_owned();
+
+        let ev = Evidence {
+            flow_steps: vec![sink_only_step_with_function(&entry_file, "run")],
+            sink_caps: Cap::DESERIALIZE.bits(),
+            ..Default::default()
+        };
+        let diag = crate::commands::scan::Diag {
+            id: "rb.deser.marshal_load".into(),
+            path: entry_file.clone(),
+            line: 2,
+            confidence: Some(Confidence::High),
+            evidence: Some(ev.clone()),
+            ..Default::default()
+        };
+
+        // 1. Without summaries: synthetic FuncSummary, callees empty,
+        //    source byte-grep misses → spec.framework = None.
+        let spec_no_summaries = derive_from_rule_namespace_with(&diag, &ev, None)
+            .expect("rule-namespace derivation must succeed");
+        assert!(
+            spec_no_summaries.framework.is_none(),
+            "synthetic FuncSummary path must not produce a binding when source bytes lack the sink keyword",
+        );
+
+        // 2. With summaries: real FuncSummary lookup picks up the
+        //    populated `callees` and the adapter binds.
+        let mut gs = GlobalSummaries::new();
+        let mut summary = build_summary(
+            "run",
+            &entry_file,
+            "ruby",
+            Cap::DESERIALIZE.bits(),
+            vec![0],
+            None,
+        );
+        summary.callees = vec![CalleeSite::bare("Marshal.load")];
+        let key = FuncKey::new_function(Lang::Ruby, &entry_file, "run", Some(1));
+        gs.insert(key, summary);
+
+        let spec_with_summaries = derive_from_rule_namespace_with(&diag, &ev, Some(&gs))
+            .expect("rule-namespace derivation must succeed");
+        let binding = spec_with_summaries
+            .framework
+            .as_ref()
+            .expect("real FuncSummary lookup must populate the framework binding");
+        assert_eq!(binding.adapter, "ruby-marshal");
+        assert_eq!(binding.kind, EntryKind::Function);
+
+        // 3. `compute_spec_hash` excludes the binding, so the two specs
+        //    hash identically.  Phase 01 contract: framework is purely
+        //    descriptive metadata.
+        assert_eq!(spec_no_summaries.spec_hash, spec_with_summaries.spec_hash);
     }
 }
