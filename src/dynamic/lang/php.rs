@@ -416,6 +416,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::DESERIALIZE {
         return Ok(emit_deserialize_harness(spec));
     }
+    // Phase 04 (Track J.2): SSTI-sink short-circuit.
+    if spec.expected_cap == crate::labels::Cap::SSTI {
+        return Ok(emit_ssti_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PhpShape::detect(spec, &entry_source);
@@ -468,6 +472,62 @@ if (strncmp($payload, $prefix, strlen($prefix)) === 0) {{
         _nyx_deserialize_probe(true);
     }}
 }}
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 04 — Track J.2 SSTI harness for PHP (Twig).
+///
+/// Reads `NYX_PAYLOAD`, simulates Twig's `{{expr}}` evaluation, prints
+/// `{"render": "<result>"}` plus the sink-hit sentinel.  Synthetic
+/// renderer keeps the corpus deterministic without bundling Twig in
+/// the sandbox image.
+pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — SSTI Twig (Phase 04 / Track J.2).
+{shim}
+
+function _nyx_twig_render(string $payload): string {{
+    return preg_replace_callback('/\{{\{{(.+?)\}}\}}/', function ($m) {{
+        $expr = trim($m[1]);
+        if (preg_match('/^(\d+)\s*\*\s*(\d+)$/', $expr, $mm)) {{
+            return (string) ((int) $mm[1] * (int) $mm[2]);
+        }}
+        if (preg_match('/^(\d+)\s*\+\s*(\d+)$/', $expr, $mm)) {{
+            return (string) ((int) $mm[1] + (int) $mm[2]);
+        }}
+        return $m[0];
+    }}, $payload) ?? $payload;
+}}
+
+function _nyx_ssti_probe(string $rendered): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee' => 'Twig\\Environment::render',
+        'args' => [['kind' => 'String', 'value' => $rendered]],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id' => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind' => ['kind' => 'Normal'],
+        'witness' => __nyx_witness('Twig\\Environment::render', [$rendered]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+$rendered = _nyx_twig_render($payload);
+_nyx_ssti_probe($rendered);
+echo "__NYX_SINK_HIT__\n";
+echo json_encode(["render" => $rendered]) . "\n";
 "#
     );
     HarnessSource {

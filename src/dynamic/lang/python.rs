@@ -600,6 +600,14 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_deserialize_harness(spec));
     }
 
+    // Phase 04 (Track J.2): short-circuit to the SSTI harness when the
+    // spec's expected cap is SSTI.  The harness reads `NYX_PAYLOAD`,
+    // simulates Jinja2's `{{...}}` evaluation, and writes a `render`
+    // JSON body the [`ProbePredicate::TemplateEvalEqual`] oracle reads.
+    if spec.expected_cap == crate::labels::Cap::SSTI {
+        return Ok(emit_ssti_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PythonShape::detect(spec, &entry_source);
     let body = generate_for_shape(spec, shape);
@@ -655,6 +663,78 @@ def _nyx_run():
     # Non-allowlisted class — the RestrictedUnpickler.find_class
     # equivalent records the gadget invocation before aborting.
     _nyx_deserialize_probe(invoked=True)
+
+if __name__ == "__main__":
+    _nyx_run()
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 04 — Track J.2 SSTI harness for Python (Jinja2).
+///
+/// Reads `NYX_PAYLOAD`, simulates Jinja2's `{{expr}}` evaluation by
+/// scanning for the canonical SSTI payload `{{7*7}}` and substituting
+/// `49`, then prints `{"render": "<result>"}` followed by the
+/// sink-hit sentinel.  The synthetic render keeps the corpus
+/// deterministic without requiring a real Jinja2 install inside the
+/// sandbox; the harness still exercises the probe-channel, oracle and
+/// differential plumbing end-to-end.
+pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let probe = probe_shim();
+    let body = format!(
+        r#"#!/usr/bin/env python3
+"""Nyx dynamic harness — SSTI Jinja2 (Phase 04 / Track J.2)."""
+import os, json, re, sys
+
+{probe}
+
+def _nyx_jinja2_render(payload):
+    # Concretised Jinja2 evaluator for the corpus payloads: substitutes
+    # arithmetic inside `{{` / `}}` markers and echoes everything else.
+    def _eval(match):
+        expr = match.group(1).strip()
+        m = re.match(r"^(\d+)\s*\*\s*(\d+)$", expr)
+        if m:
+            return str(int(m.group(1)) * int(m.group(2)))
+        m = re.match(r"^(\d+)\s*\+\s*(\d+)$", expr)
+        if m:
+            return str(int(m.group(1)) + int(m.group(2)))
+        return match.group(0)
+    return re.sub(r"\{{\{{(.+?)\}}\}}", _eval, payload)
+
+def _nyx_ssti_probe(rendered):
+    rec = {{
+        "sink_callee": "jinja2.Template.render",
+        "args": [{{"kind": "String", "value": rendered}}],
+        "captured_at_ns": __nyx_now_ns(),
+        "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
+        "kind": {{"kind": "Normal"}},
+        "witness": __nyx_witness("jinja2.Template.render", [rendered]),
+    }}
+    __nyx_emit(rec)
+
+def __nyx_now_ns():
+    import time
+    return time.time_ns()
+
+def _nyx_run():
+    payload = os.environ.get("NYX_PAYLOAD", "")
+    rendered = _nyx_jinja2_render(payload)
+    _nyx_ssti_probe(rendered)
+    # Sink-hit sentinel — flips SandboxOutcome.sink_hit so the runner's
+    # `vuln_fired && sink_hit` gate clears.
+    print("__NYX_SINK_HIT__", flush=True)
+    # Render JSON body — the TemplateEvalEqual predicate compares the
+    # `render` field's integer value against the corpus `expected`.
+    sys.stdout.write(json.dumps({{"render": rendered}}) + "\n")
+    sys.stdout.flush()
 
 if __name__ == "__main__":
     _nyx_run()

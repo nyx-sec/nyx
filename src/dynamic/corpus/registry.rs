@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::{cmdi, deserialize, fmt_string, path_trav, sqli, ssrf, xss};
+use super::{cmdi, deserialize, fmt_string, path_trav, sqli, ssrf, ssti, xss};
 use super::{CapCorpus, CuratedPayload, Oracle};
 use crate::dynamic::oracle::ProbePredicate;
 use crate::labels::Cap;
@@ -44,7 +44,6 @@ pub const CORPUS_UNSUPPORTED_LANG_NEUTRAL: u32 = Cap::ENV_VAR.bits()
     | Cap::XPATH_INJECTION.bits()
     | Cap::HEADER_INJECTION.bits()
     | Cap::OPEN_REDIRECT.bits()
-    | Cap::SSTI.bits()
     | Cap::XXE.bits()
     | Cap::PROTOTYPE_POLLUTION.bits();
 
@@ -61,6 +60,11 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::DESERIALIZE, Lang::Python, deserialize::python::PAYLOADS),
     (Cap::DESERIALIZE, Lang::Php, deserialize::php::PAYLOADS),
     (Cap::DESERIALIZE, Lang::Ruby, deserialize::ruby::PAYLOADS),
+    (Cap::SSTI, Lang::Python, ssti::python_jinja2::PAYLOADS),
+    (Cap::SSTI, Lang::Ruby, ssti::ruby_erb::PAYLOADS),
+    (Cap::SSTI, Lang::Php, ssti::php_twig::PAYLOADS),
+    (Cap::SSTI, Lang::Java, ssti::java_thymeleaf::PAYLOADS),
+    (Cap::SSTI, Lang::JavaScript, ssti::js_handlebars::PAYLOADS),
 ];
 
 /// Reserved for per-cap oracle defaults.  Empty in Phase 02; populated by
@@ -267,6 +271,8 @@ mod tests {
         assert!(!payloads_for(Cap::SSRF).is_empty());
         assert!(!payloads_for(Cap::HTML_ESCAPE).is_empty());
         assert!(!payloads_for(Cap::FMT_STRING).is_empty());
+        assert!(!payloads_for(Cap::DESERIALIZE).is_empty());
+        assert!(!payloads_for(Cap::SSTI).is_empty());
     }
 
     #[test]
@@ -283,7 +289,6 @@ mod tests {
             Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
-            Cap::SSTI,
             Cap::XXE,
             Cap::PROTOTYPE_POLLUTION,
         ];
@@ -314,6 +319,7 @@ mod tests {
             Cap::HTML_ESCAPE,
             Cap::FMT_STRING,
             Cap::DESERIALIZE,
+            Cap::SSTI,
         ] {
             let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
             assert!(has_vuln, "{cap:?} must have at least one vuln payload");
@@ -361,6 +367,7 @@ mod tests {
             Cap::HTML_ESCAPE,
             Cap::FMT_STRING,
             Cap::DESERIALIZE,
+            Cap::SSTI,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -383,6 +390,7 @@ mod tests {
             Cap::HTML_ESCAPE,
             Cap::FMT_STRING,
             Cap::DESERIALIZE,
+            Cap::SSTI,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -492,6 +500,7 @@ mod tests {
             Cap::HTML_ESCAPE,
             Cap::FMT_STRING,
             Cap::DESERIALIZE,
+            Cap::SSTI,
         ];
         for cap in caps {
             for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
@@ -571,6 +580,52 @@ mod tests {
                 payloads_for_lang(Cap::DESERIALIZE, lang).is_empty(),
                 "DESERIALIZE has unexpected payloads for {lang:?}",
             );
+        }
+    }
+
+    #[test]
+    fn ssti_has_per_lang_slices_for_phase_04() {
+        // Phase 04 (Track J.2) acceptance: SSTI registers payloads in
+        // Python / Ruby / PHP / Java / JavaScript and the lang-aware
+        // lookup never returns empty for any of them.
+        for lang in [
+            Lang::Python,
+            Lang::Ruby,
+            Lang::Php,
+            Lang::Java,
+            Lang::JavaScript,
+        ] {
+            assert!(
+                !payloads_for_lang(Cap::SSTI, lang).is_empty(),
+                "SSTI must have at least one payload for {lang:?}",
+            );
+        }
+        // Rust / C / Cpp / Go / TypeScript not yet covered.
+        for lang in [Lang::Rust, Lang::C, Lang::Cpp, Lang::Go, Lang::TypeScript] {
+            assert!(
+                payloads_for_lang(Cap::SSTI, lang).is_empty(),
+                "SSTI has unexpected payloads for {lang:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ssti_payloads_pair_benign_controls_per_lang() {
+        for lang in [
+            Lang::Python,
+            Lang::Ruby,
+            Lang::Php,
+            Lang::Java,
+            Lang::JavaScript,
+        ] {
+            let slice = payloads_for_lang(Cap::SSTI, lang);
+            let vuln = slice
+                .iter()
+                .find(|p| !p.is_benign)
+                .expect("each lang must have an SSTI vuln payload");
+            let resolved = super::resolve_benign_control_lang(vuln, Cap::SSTI, lang)
+                .expect("lang-aware benign control must resolve");
+            assert!(resolved.is_benign);
         }
     }
 

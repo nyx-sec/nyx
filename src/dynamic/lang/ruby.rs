@@ -418,6 +418,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::DESERIALIZE {
         return Ok(emit_deserialize_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::SSTI {
+        return Ok(emit_ssti_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = RubyShape::detect(spec, &entry_source);
@@ -470,6 +473,66 @@ if payload.start_with?('NYX_GADGET_CLASS:')
     _nyx_deserialize_probe(true)
   end
 end
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 04 — Track J.2 SSTI harness for Ruby (ERB).
+///
+/// Reads `NYX_PAYLOAD`, simulates ERB's `<%= expr %>` evaluation by
+/// scanning for arithmetic inside the inline-output marker, prints
+/// `{"render": "<result>"}` plus the sink-hit sentinel.  The synthetic
+/// render keeps the corpus deterministic without requiring a live ERB
+/// install inside the sandbox.
+pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"# Nyx dynamic harness — SSTI ERB (Phase 04 / Track J.2).
+require 'json'
+
+{shim}
+
+def _nyx_erb_render(payload)
+  payload.gsub(/<%=\s*([^%]+?)\s*%>/) do
+    expr = Regexp.last_match(1).strip
+    if (m = expr.match(/\A(\d+)\s*\*\s*(\d+)\z/))
+      (m[1].to_i * m[2].to_i).to_s
+    elsif (m = expr.match(/\A(\d+)\s*\+\s*(\d+)\z/))
+      (m[1].to_i + m[2].to_i).to_s
+    else
+      Regexp.last_match(0)
+    end
+  end
+end
+
+def _nyx_ssti_probe(rendered)
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  rec = {{
+    'sink_callee'    => 'ERB#result',
+    'args'           => [{{ 'kind' => 'String', 'value' => rendered }}],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{ 'kind' => 'Normal' }},
+    'witness'        => __nyx_witness('ERB#result', [rendered]),
+  }}
+  File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
+end
+
+payload = ENV['NYX_PAYLOAD'] || ''
+rendered = _nyx_erb_render(payload)
+_nyx_ssti_probe(rendered)
+# Sink-hit sentinel and render JSON body.
+STDOUT.puts '__NYX_SINK_HIT__'
+STDOUT.puts JSON.generate({{"render" => rendered}})
+STDOUT.flush
 "#
     );
     HarnessSource {

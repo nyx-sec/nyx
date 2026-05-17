@@ -39,18 +39,30 @@ pub fn adapters_for(lang: Lang) -> &'static [&'static dyn FrameworkAdapter] {
 }
 
 // Phase 03 (Track J.1) registers per-language deserialize-sink
-// adapters into the matching language slice.  Other Track-L verticals
-// add route / framework adapters as they land.
+// adapters into the matching language slice.  Phase 04 (Track J.2)
+// adds the SSTI-sink adapters.  Within each slice adapters are
+// listed in alphabetical order of [`FrameworkAdapter::name`] so a
+// later phase that appends a new adapter cannot silently re-order
+// the existing first-match.
 static RUST: &[&dyn FrameworkAdapter] = &[];
 static C: &[&dyn FrameworkAdapter] = &[];
 static CPP: &[&dyn FrameworkAdapter] = &[];
-static JAVA: &[&dyn FrameworkAdapter] =
-    &[&super::adapters::JavaDeserializeAdapter];
+static JAVA: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::JavaDeserializeAdapter,
+    &super::adapters::JavaThymeleafAdapter,
+];
 static GO: &[&dyn FrameworkAdapter] = &[];
-static PHP: &[&dyn FrameworkAdapter] = &[&super::adapters::PhpUnserializeAdapter];
-static PYTHON: &[&dyn FrameworkAdapter] =
-    &[&super::adapters::PythonPickleAdapter];
-static RUBY: &[&dyn FrameworkAdapter] =
-    &[&super::adapters::RubyMarshalAdapter];
+static PHP: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::PhpTwigAdapter,
+    &super::adapters::PhpUnserializeAdapter,
+];
+static PYTHON: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::PythonJinja2Adapter,
+    &super::adapters::PythonPickleAdapter,
+];
+static RUBY: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::RubyErbAdapter,
+    &super::adapters::RubyMarshalAdapter,
+];
 static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[];
-static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[];
+static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[&super::adapters::JsHandlebarsAdapter];

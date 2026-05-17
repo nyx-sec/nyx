@@ -214,27 +214,36 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_03() {
-        // Phase 03 (Track J.1) registers one deserialize-sink adapter
-        // per supported language: Java, Python, PHP, Ruby.  The other
+    fn registry_baseline_after_phase_04() {
+        // Phase 04 (Track J.2) adds the SSTI-sink adapter alongside the
+        // Phase-03 deserialize adapter for Java / Python / PHP / Ruby and
+        // introduces the first JavaScript adapter (Handlebars).  Other
         // languages still carry the Phase-01 empty baseline.
         for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby] {
             let registered = registry::adapters_for(lang);
             assert_eq!(
                 registered.len(),
-                1,
-                "{:?} must have exactly the J.1 deserialize adapter registered",
+                2,
+                "{:?} must have the J.1 deserialize + J.2 ssti adapters",
                 lang,
             );
-            assert_eq!(registered[0].lang(), lang);
+            for adapter in registered {
+                assert_eq!(adapter.lang(), lang);
+            }
         }
+        let js_registered = registry::adapters_for(Lang::JavaScript);
+        assert_eq!(
+            js_registered.len(),
+            1,
+            "JavaScript must have exactly the J.2 Handlebars adapter",
+        );
+        assert_eq!(js_registered[0].lang(), Lang::JavaScript);
         for lang in [
             Lang::Rust,
             Lang::C,
             Lang::Cpp,
             Lang::Go,
             Lang::TypeScript,
-            Lang::JavaScript,
         ] {
             assert!(
                 registry::adapters_for(lang).is_empty(),

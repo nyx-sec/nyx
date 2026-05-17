@@ -198,6 +198,25 @@ pub enum ProbePredicate {
         /// "caught at boundary" path still confirm.
         require_invoked: bool,
     },
+    /// Phase 04 (Track J.2): SSTI render-equality predicate.
+    ///
+    /// Fires when the harness's captured stdout body parses as JSON
+    /// `{"render": "<integer>"}` and the integer equals `expected`.  The
+    /// payload sends a template expression that resolves to a fixed
+    /// constant only when the engine actually evaluates it (e.g.
+    /// `{{7*7}}` → `49`); a benign control sends literal text that the
+    /// engine echoes, producing a non-matching render value.
+    ///
+    /// Cross-cutting: evaluated against [`SandboxOutcome::stdout`]
+    /// rather than any single [`SinkProbe`], so the predicate satisfies
+    /// globally once per run.
+    TemplateEvalEqual {
+        /// Integer the rendered template body must equal for the
+        /// oracle to fire.  Stored as `u64` so the corpus can pin
+        /// engine-portable constants ranging up to `2^64 − 1` without
+        /// signed-overflow concerns.
+        expected: u64,
+    },
 }
 
 /// How we decide a sandbox run confirmed the sink fired.
@@ -310,6 +329,18 @@ pub fn oracle_fired_with_stubs(
             if !deserialize_cross_ok {
                 return false;
             }
+            // Phase 04 (Track J.2): SSTI render-equality cross-cutting
+            // predicates.  Each `TemplateEvalEqual { expected }` consults
+            // the captured stdout body — see [`stdout_template_equals`].
+            let template_eval_ok = cross.iter().all(|p| match p {
+                ProbePredicate::TemplateEvalEqual { expected } => {
+                    stdout_template_equals(&outcome.stdout, *expected)
+                }
+                _ => true,
+            });
+            if !template_eval_ok {
+                return false;
+            }
             match (cross.is_empty(), per_probe.is_empty()) {
                 // Empty predicate slice — legacy semantics: fire when
                 // at least one probe exists.
@@ -349,6 +380,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
         pred,
         ProbePredicate::StubEventMatches { .. }
             | ProbePredicate::DeserializeGadgetInvoked { .. }
+            | ProbePredicate::TemplateEvalEqual { .. }
     )
 }
 
@@ -361,8 +393,52 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         // log* rather than stub events; evaluated separately in
         // [`probes_satisfy_deserialize`] below.
         ProbePredicate::DeserializeGadgetInvoked { .. } => true,
+        // TemplateEvalEqual is cross-cutting against the *sandbox
+        // outcome stdout* rather than stub events; evaluated separately
+        // via [`stdout_template_equals`] in [`oracle_fired_with_stubs`].
+        ProbePredicate::TemplateEvalEqual { .. } => true,
         _ => true,
     }
+}
+
+/// Phase 04 (Track J.2): extract the `render` field from a JSON body
+/// printed on the harness's stdout and compare it against `expected`.
+///
+/// The harness writes one JSON object per run shaped like
+/// `{"render": "<integer>"}`.  The integer is encoded as a string so
+/// engines that render integers as `"49"` (every supported engine does)
+/// match the same wire format.  A run satisfies the predicate when:
+///
+/// 1. `stdout` contains at least one JSON object whose top-level
+///    `render` field is a string, AND
+/// 2. that string parses to a `u64` byte-for-byte equal to `expected`.
+///
+/// Stdout may contain other lines (warnings, debug prints) — the
+/// matcher scans line-by-line and accepts the first parseable record.
+/// A malformed body or missing field returns `false` rather than
+/// surfacing an error so a benign control that never emitted any JSON
+/// at all (the engine echoed plain text) does not accidentally fire.
+fn stdout_template_equals(stdout: &[u8], expected: u64) -> bool {
+    let text = match std::str::from_utf8(stdout) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.starts_with('{') {
+            continue;
+        }
+        let parsed: serde_json::Result<serde_json::Value> = serde_json::from_str(trimmed);
+        let Ok(v) = parsed else { continue };
+        let Some(render) = v.get("render") else { continue };
+        let Some(s) = render.as_str() else { continue };
+        if let Ok(n) = s.trim().parse::<u64>() {
+            if n == expected {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// True when at least one drained probe is a
@@ -406,7 +482,8 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         // Cross-cutting predicates; not evaluable against a single probe.
         // [`oracle_fired_with_stubs`] handles them via the partition path.
         ProbePredicate::StubEventMatches { .. }
-        | ProbePredicate::DeserializeGadgetInvoked { .. } => true,
+        | ProbePredicate::DeserializeGadgetInvoked { .. }
+        | ProbePredicate::TemplateEvalEqual { .. } => true,
     }
 }
 
@@ -624,6 +701,44 @@ mod tests {
         };
         let probes = vec![crash_probe("victim", Signal::Sigabrt)];
         assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn template_eval_equal_fires_on_matching_render_json() {
+        let mut o = outcome();
+        o.stdout = br#"{"render":"49"}"#.to_vec();
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::TemplateEvalEqual { expected: 49 }],
+        };
+        assert!(oracle_fired(&oracle, &o, &[]));
+    }
+
+    #[test]
+    fn template_eval_equal_ignores_non_matching_render() {
+        let mut o = outcome();
+        o.stdout = br#"{"render":"7*7"}"#.to_vec();
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::TemplateEvalEqual { expected: 49 }],
+        };
+        assert!(!oracle_fired(&oracle, &o, &[]));
+    }
+
+    #[test]
+    fn template_eval_equal_returns_false_when_stdout_empty() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::TemplateEvalEqual { expected: 49 }],
+        };
+        assert!(!oracle_fired(&oracle, &outcome(), &[]));
+    }
+
+    #[test]
+    fn template_eval_equal_skips_non_json_lines() {
+        let mut o = outcome();
+        o.stdout = b"warning: hello\n{\"render\":\"49\"}\n".to_vec();
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::TemplateEvalEqual { expected: 49 }],
+        };
+        assert!(oracle_fired(&oracle, &o, &[]));
     }
 
     #[test]

@@ -555,6 +555,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::DESERIALIZE {
         return Ok(emit_deserialize_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::SSTI {
+        return Ok(emit_ssti_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JavaShape::detect(spec, &entry_source);
@@ -661,6 +664,103 @@ public class NyxHarness {{
                 nyxDeserializeProbe(true);
             }}
         }}
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 04 — Track J.2 SSTI harness for Java (Thymeleaf).
+///
+/// Reads `NYX_PAYLOAD`, simulates Thymeleaf's `[[${expr}]]` inlined-
+/// output evaluation, and writes `{"render":"<result>"}` plus the
+/// sink-hit sentinel.  Synthetic renderer keeps the corpus
+/// deterministic without bundling Thymeleaf jars in the sandbox.
+pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let source = format!(
+        r#"// Nyx dynamic harness — SSTI Thymeleaf (Phase 04 / Track J.2).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class NyxHarness {{
+{shim}
+
+    static String nyxThymeleafRender(String payload) {{
+        Pattern p = Pattern.compile("\\[\\[\\$\\{{(.+?)\\}}\\]\\]");
+        Matcher m = p.matcher(payload);
+        StringBuffer out = new StringBuffer(payload.length());
+        while (m.find()) {{
+            String expr = m.group(1).trim();
+            Matcher mul = Pattern.compile("^(\\d+)\\s*\\*\\s*(\\d+)$").matcher(expr);
+            Matcher add = Pattern.compile("^(\\d+)\\s*\\+\\s*(\\d+)$").matcher(expr);
+            String repl;
+            if (mul.matches()) {{
+                long a = Long.parseLong(mul.group(1));
+                long b = Long.parseLong(mul.group(2));
+                repl = Long.toString(a * b);
+            }} else if (add.matches()) {{
+                long a = Long.parseLong(add.group(1));
+                long b = Long.parseLong(add.group(2));
+                repl = Long.toString(a + b);
+            }} else {{
+                repl = Matcher.quoteReplacement(m.group(0));
+            }}
+            m.appendReplacement(out, Matcher.quoteReplacement(repl));
+        }}
+        m.appendTail(out);
+        return out.toString();
+    }}
+
+    static void nyxSstiProbe(String rendered) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"TemplateEngine.process\",\"args\":[{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(rendered, line);
+        line.append("\"}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"Normal\"}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("TemplateEngine.process", new String[]{{rendered}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        String rendered = nyxThymeleafRender(payload);
+        nyxSstiProbe(rendered);
+        System.out.println("__NYX_SINK_HIT__");
+        StringBuilder body = new StringBuilder(64);
+        body.append("{{\"render\":\"");
+        nyxJsonEscape(rendered, body);
+        body.append("\"}}");
+        System.out.println(body.toString());
     }}
 }}
 "#

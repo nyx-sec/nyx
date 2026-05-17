@@ -1,21 +1,34 @@
 //! Concrete [`super::FrameworkAdapter`] implementations.
 //!
-//! Phase 03 (Track J.1) lands the first four adapters — one per
-//! language carrying the new `Cap::DESERIALIZE` corpus.  Each adapter
-//! detects the language's canonical deserialization sink inside a
-//! function body and stamps a [`super::FrameworkBinding`] with
+//! Phase 03 (Track J.1) landed the first four adapters — one per
+//! language carrying the `Cap::DESERIALIZE` corpus.  Phase 04 (Track
+//! J.2) adds five more, one per template engine carrying the
+//! `Cap::SSTI` corpus: Jinja2 (Python), ERB (Ruby), Twig (PHP),
+//! Thymeleaf (Java), Handlebars (JavaScript).  Each adapter detects
+//! the language's canonical sink inside a function body and stamps a
+//! [`super::FrameworkBinding`] with
 //! [`crate::evidence::EntryKind::Function`].  Track L.1+ will register
-//! the route / framework adapters; the per-cap sink adapters live here
-//! so the per-language verticals can ship independently.
+//! the route / framework adapters; the per-cap sink adapters live
+//! here so the per-language verticals can ship independently.
 
 pub mod java_deserialize;
+pub mod java_thymeleaf;
+pub mod js_handlebars;
+pub mod php_twig;
 pub mod php_unserialize;
+pub mod python_jinja2;
 pub mod python_pickle;
+pub mod ruby_erb;
 pub mod ruby_marshal;
 
 pub use java_deserialize::JavaDeserializeAdapter;
+pub use java_thymeleaf::JavaThymeleafAdapter;
+pub use js_handlebars::JsHandlebarsAdapter;
+pub use php_twig::PhpTwigAdapter;
 pub use php_unserialize::PhpUnserializeAdapter;
+pub use python_jinja2::PythonJinja2Adapter;
 pub use python_pickle::PythonPickleAdapter;
+pub use ruby_erb::RubyErbAdapter;
 pub use ruby_marshal::RubyMarshalAdapter;
 
 /// True when any callee in `summary.callees` matches `predicate`.

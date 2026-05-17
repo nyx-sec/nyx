@@ -437,6 +437,11 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         | PayloadSlot::Argv(_) => {}
     }
 
+    // Phase 04 (Track J.2): SSTI-sink short-circuit for Handlebars.
+    if spec.expected_cap == crate::labels::Cap::SSTI {
+        return Ok(emit_ssti_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JsShape::detect(spec, &entry_source);
     let entry_subpath = entry_subpath_for_shape(shape, is_typescript);
@@ -449,6 +454,67 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         extra_files: extra_files_for_shape(shape),
         entry_subpath: Some(entry_subpath),
     })
+}
+
+/// Phase 04 — Track J.2 SSTI harness for Node (Handlebars).
+///
+/// Reads `NYX_PAYLOAD`, simulates Handlebars's `{{helper a b}}`
+/// evaluation against a tiny `multiply` / `add` helper table, prints
+/// `{"render":"<result>"}` plus the sink-hit sentinel.  Synthetic
+/// renderer keeps the corpus deterministic without bundling
+/// Handlebars in the sandbox image.
+pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"// Nyx dynamic harness — SSTI Handlebars (Phase 04 / Track J.2).
+{shim}
+
+function nyxHandlebarsRender(payload) {{
+  return payload.replace(/\{{\{{(.+?)\}}\}}/g, function (_, raw) {{
+    const expr = raw.trim();
+    const helperMatch = expr.match(/^(\w+)\s+(\d+)\s+(\d+)$/);
+    if (helperMatch) {{
+      const a = parseInt(helperMatch[2], 10);
+      const b = parseInt(helperMatch[3], 10);
+      if (helperMatch[1] === 'multiply') return String(a * b);
+      if (helperMatch[1] === 'add') return String(a + b);
+    }}
+    return _;
+  }});
+}}
+
+function nyxSstiProbe(rendered) {{
+  const p = process.env.NYX_PROBE_PATH;
+  if (!p) return;
+  const rec = {{
+    sink_callee: 'Handlebars.compile',
+    args: [{{ kind: 'String', value: rendered }}],
+    captured_at_ns: Date.now() * 1_000_000,
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{ kind: 'Normal' }},
+    witness: __nyx_witness('Handlebars.compile', [rendered]),
+  }};
+  try {{
+    require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
+  }} catch (e) {{
+    // best-effort
+  }}
+}}
+
+const payload = process.env.NYX_PAYLOAD || '';
+const rendered = nyxHandlebarsRender(payload);
+nyxSstiProbe(rendered);
+console.log('__NYX_SINK_HIT__');
+console.log(JSON.stringify({{ render: rendered }}));
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
 }
 
 /// Phase 26 — Node chain-step harness (shared between JS + TS emitters).
