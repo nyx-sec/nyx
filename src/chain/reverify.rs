@@ -52,12 +52,15 @@
 use crate::chain::finding::{ChainFinding, ChainSeverity};
 use crate::commands::scan::Diag;
 use crate::dynamic::build_sandbox::dispatch_prepare;
-use crate::dynamic::harness;
+use crate::dynamic::harness::{self, BuiltHarness};
+use crate::dynamic::lang;
+use crate::dynamic::sandbox;
 use crate::dynamic::spec::HarnessSpec;
 use crate::dynamic::verify::VerifyOptions;
 use crate::evidence::{InconclusiveReason, UnsupportedReason, VerifyResult, VerifyStatus};
 use crate::surface::SurfaceMap;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Outcome of composite re-verification for a single chain.
 ///
@@ -184,27 +187,42 @@ pub trait CompositeReverifier {
 /// The composite-harness composer walks `chain.members`, derives one
 /// [`HarnessSpec`] per member via [`chain_step_specs`], drives each
 /// derived spec through [`harness::build`] + [`dispatch_prepare`] so
-/// the per-language build cost is amortised against the on-disk caches
-/// before the live sandbox-run pass lands, and (in a future session)
-/// will call [`crate::dynamic::lang::compose_chain_step`] per step to
-/// assemble a per-step harness with `NYX_PREV_OUTPUT` threading.
+/// the per-language build cost is amortised against the on-disk caches,
+/// then runs each step sequentially through [`sandbox::run`] with the
+/// previous step's stdout threaded into the next step via
+/// [`crate::dynamic::lang::ChainStepHarness::PREV_OUTPUT_ENV`].
 ///
 /// Today the default reverifier surfaces
-/// `Inconclusive(BackendInsufficient)` when invoked, but the `detail`
-/// field reports both the spec-derivation coverage AND the per-step
-/// build coverage (`derived N/M`, `built B/N`, `cache_hit=H`,
-/// `build_ms=T`, `build_errors=E`) so operators (and the
-/// [`reverify_top_chains`] caller) can see the build-cost coverage
-/// before the live execution path lands.  Callers that need a
+/// `Inconclusive(BackendInsufficient)` when invoked.  The `detail`
+/// field reports spec-derivation, per-step build coverage, AND per-
+/// step run coverage so operators (and the [`reverify_top_chains`]
+/// caller) can see how far down the live execution path the chain
+/// got: `derived N/M`, `built B/N (cache_hit=H, build_ms=T,
+/// build_errors=E)`, `ran S/B (sandbox_errors=SE, timeouts=TO,
+/// nonzero_exits=NE, final_sink_hit=F)`.  Callers that need a
 /// deterministic outcome (tests, CI) use [`reverify_chain_with`] with
 /// a stubbed reverifier.
+///
+/// The verdict stays `Inconclusive` even on a fully-successful run
+/// pass because today's per-language [`lang::compose_chain_step`]
+/// shims echo `NYX_PREV_OUTPUT` to stdout but do not yet invoke the
+/// chain's terminal sink — the sink-rewrite pass that wires the final
+/// step's probe call lands separately.  Once that pass arrives, the
+/// `final_sink_hit=true` branch will flip the verdict to `Confirmed`.
+///
+/// Languages whose [`dispatch_prepare`] returns `Unsupported`
+/// (Ruby today) are counted under `build_errors` and skipped from the
+/// run loop; their `compose_chain_step` source is never staged.
 ///
 /// Workdir lifetime: every per-step build is content-addressed by
 /// [`HarnessSpec::spec_hash`] under `/tmp/nyx-harness/{spec_hash}`,
 /// and the per-language `prepare_*` caches under the host's
 /// `ProjectDirs` cache root are keyed on `(lockfile_hash,
 /// toolchain_id, language)`.  Repeated calls with the same specs are
-/// idempotent — no per-call growth on disk.
+/// idempotent — no per-call growth on disk.  The chain-step source
+/// (`step.py`, `step.sh`, etc.) is written into the same workdir
+/// alongside the harness source; filenames are distinct so they do
+/// not collide with [`harness::build`] output for the same spec_hash.
 pub struct DefaultCompositeReverifier;
 
 impl CompositeReverifier for DefaultCompositeReverifier {
@@ -226,15 +244,17 @@ impl CompositeReverifier for DefaultCompositeReverifier {
 
         // Sub-task (b) main of the Phase 26 live-execution split:
         // drive each derived spec through the per-language build
-        // pipeline so the per-step cache state is visible before
-        // sub-task (c) lands the live sandbox::run chain.  Failures
-        // are counted, not propagated — the outer verdict stays
-        // `Inconclusive(BackendInsufficient)` until (c) lands.
+        // pipeline so each step's interpreter / compile artefact is
+        // staged in its content-addressed workdir before the run
+        // pass.  Failures are counted, not propagated — the outer
+        // verdict stays `Inconclusive(BackendInsufficient)` until
+        // the sink-rewrite pass lands.
         let profile = opts.sandbox.process_hardening;
         let mut built = 0usize;
         let mut cache_hits = 0usize;
         let mut total_build_ms: u128 = 0;
         let mut build_errors = 0usize;
+        let mut built_steps: Vec<(PathBuf, &HarnessSpec)> = Vec::with_capacity(derived);
         for spec in &derived_specs {
             match harness::build(spec) {
                 Ok(built_harness) => {
@@ -246,6 +266,7 @@ impl CompositeReverifier for DefaultCompositeReverifier {
                             }
                             total_build_ms = total_build_ms
                                 .saturating_add(result.duration.as_millis());
+                            built_steps.push((built_harness.workdir, spec));
                         }
                         Err(_) => build_errors += 1,
                     }
@@ -254,10 +275,21 @@ impl CompositeReverifier for DefaultCompositeReverifier {
             }
         }
 
+        // Sub-task (c) of the Phase 26 live-execution split:
+        // sequentially run each built chain-step harness through
+        // `sandbox::run`, threading the previous step's stdout into
+        // the next step via `NYX_PREV_OUTPUT`.  The final step's
+        // `sink_hit` is captured for the detail field; today it stays
+        // false because `compose_chain_step` does not yet rewrite the
+        // chain's terminal sink.
+        let (steps_run, sandbox_errors, steps_timeout, nonzero_exits, final_sink_hit) =
+            run_chain_steps(&built_steps, &opts.sandbox);
+
         let detail = format!(
-            "composite chain re-verification not yet wired for live runs; \
+            "composite chain re-verification: live runs collect step coverage; \
              derived {derived}/{total} harness specs; \
-             built {built}/{derived} (cache_hit={cache_hits}, build_ms={total_build_ms}, build_errors={build_errors})"
+             built {built}/{derived} (cache_hit={cache_hits}, build_ms={total_build_ms}, build_errors={build_errors}); \
+             ran {steps_run}/{built} (sandbox_errors={sandbox_errors}, timeouts={steps_timeout}, nonzero_exits={nonzero_exits}, final_sink_hit={final_sink_hit})"
         );
         VerifyResult {
             finding_id,
@@ -277,6 +309,102 @@ impl CompositeReverifier for DefaultCompositeReverifier {
             hardening_outcome: None,
         }
     }
+}
+
+/// Phase 26 sub-task (c): sequentially run each built chain step
+/// through [`sandbox::run`] with `NYX_PREV_OUTPUT` threading.
+///
+/// Returns `(steps_run, sandbox_errors, timeouts, nonzero_exits,
+/// final_sink_hit)`.  The final step's [`sandbox::SandboxOutcome::sink_hit`]
+/// is captured for the verdict's `detail` field (sub-task (d)); today
+/// the per-language [`lang::compose_chain_step`] sources echo
+/// `NYX_PREV_OUTPUT` to stdout without invoking the chain's terminal
+/// sink, so `final_sink_hit` stays `false` until the sink-rewrite
+/// pass lands.
+///
+/// `sandbox_errors` aborts the rest of the chain — a step that can
+/// neither spawn nor stage its source file has no useful `stdout` to
+/// thread into the next step.  Non-zero exits and timeouts are
+/// recorded but do not stop the chain: the previous step's stdout is
+/// still threaded forward so partial-success chains keep collecting
+/// coverage.
+///
+/// `base_opts` is cloned per step; the per-step clone overlays the
+/// chain-step's `extra_env` (typically the single `NYX_PREV_OUTPUT`
+/// binding) on top of any caller-provided extras and drops the
+/// per-finding `stub_harness` because chain-step harnesses do not
+/// drive boundary stubs.
+fn run_chain_steps(
+    built_steps: &[(PathBuf, &HarnessSpec)],
+    base_opts: &sandbox::SandboxOptions,
+) -> (usize, usize, usize, usize, bool) {
+    let mut steps_run = 0usize;
+    let mut sandbox_errors = 0usize;
+    let mut steps_timeout = 0usize;
+    let mut nonzero_exits = 0usize;
+    let mut final_sink_hit = false;
+    let mut prev_output: Option<Vec<u8>> = None;
+    let last_idx = built_steps.len().saturating_sub(1);
+    for (idx, (workdir, spec)) in built_steps.iter().enumerate() {
+        let step = lang::compose_chain_step(spec.lang, prev_output.as_deref());
+
+        let step_path = workdir.join(&step.filename);
+        if let Some(parent) = step_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::write(&step_path, step.source.as_bytes()).is_err() {
+            sandbox_errors += 1;
+            break;
+        }
+        let mut extra_files_failed = false;
+        for (rel, content) in &step.extra_files {
+            let dest = workdir.join(rel);
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::write(&dest, content.as_bytes()).is_err() {
+                extra_files_failed = true;
+                break;
+            }
+        }
+        if extra_files_failed {
+            sandbox_errors += 1;
+            break;
+        }
+
+        let mut step_opts = base_opts.clone();
+        step_opts.extra_env.extend(step.extra_env.iter().cloned());
+        step_opts.stub_harness = None;
+
+        let step_built = BuiltHarness {
+            workdir: workdir.clone(),
+            command: step.command.clone(),
+            env: vec![],
+            source: step.source.clone(),
+            entry_source: String::new(),
+        };
+
+        match sandbox::run(&step_built, b"", &step_opts) {
+            Ok(outcome) => {
+                steps_run += 1;
+                if outcome.timed_out {
+                    steps_timeout += 1;
+                }
+                if outcome.exit_code.unwrap_or(-1) != 0 {
+                    nonzero_exits += 1;
+                }
+                if idx == last_idx {
+                    final_sink_hit = outcome.sink_hit;
+                }
+                prev_output = Some(outcome.stdout);
+            }
+            Err(_) => {
+                sandbox_errors += 1;
+                break;
+            }
+        }
+    }
+    (steps_run, sandbox_errors, steps_timeout, nonzero_exits, final_sink_hit)
 }
 
 /// Phase 26 — Track G.3: drive composite dynamic re-verification for
@@ -593,6 +721,49 @@ mod tests {
             detail.contains("build_errors=0"),
             "detail must zero build_errors when no builds attempted; got {detail:?}"
         );
+    }
+
+    #[test]
+    fn default_reverifier_detail_reports_run_coverage_with_no_built_steps() {
+        // No diags → 0/N derived → 0/0 built → 0/0 ran.  Verifies the
+        // run-coverage segment of the detail string is well-formed
+        // even when the chain-step run loop is never entered.
+        let mut chain = mk_chain(0xCD, ChainSeverity::Medium, ImpactCategory::InfoDisclosure);
+        let surface = SurfaceMap::new();
+        let opts = VerifyOptions::default();
+        let result = reverify_chain(&mut chain, &[], &surface, &opts);
+        let detail = result.verdict.detail.as_deref().expect("detail populated");
+        assert!(
+            detail.contains("ran 0/0"),
+            "detail must report 0/0 ran when no specs built; got {detail:?}"
+        );
+        assert!(
+            detail.contains("sandbox_errors=0"),
+            "detail must zero sandbox_errors when no runs attempted; got {detail:?}"
+        );
+        assert!(
+            detail.contains("timeouts=0"),
+            "detail must zero timeouts when no runs attempted; got {detail:?}"
+        );
+        assert!(
+            detail.contains("nonzero_exits=0"),
+            "detail must zero nonzero_exits when no runs attempted; got {detail:?}"
+        );
+        assert!(
+            detail.contains("final_sink_hit=false"),
+            "detail must stamp final_sink_hit=false when no runs attempted; got {detail:?}"
+        );
+    }
+
+    #[test]
+    fn run_chain_steps_with_empty_input_is_a_no_op() {
+        // Locks the contract that the run loop is a no-op when no
+        // steps built — the run-coverage detail segment is wholly a
+        // function of the (steps_run, sandbox_errors, timeouts,
+        // nonzero_exits, final_sink_hit) tuple this helper returns.
+        let opts = sandbox::SandboxOptions::default();
+        let result = run_chain_steps(&[], &opts);
+        assert_eq!(result, (0, 0, 0, 0, false));
     }
 
     #[test]
