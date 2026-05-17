@@ -14,6 +14,7 @@
 
 use crate::dynamic::sandbox::ProcessHardeningProfile;
 use crate::dynamic::spec::HarnessSpec;
+use crate::symbol::Lang;
 use blake3::Hasher;
 use directories::ProjectDirs;
 use std::path::{Path, PathBuf};
@@ -1032,6 +1033,74 @@ fn compute_cpp_source_hash(workdir: &Path) -> String {
     format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
 }
 
+// ── Uniform per-language build dispatch (Phase 26 — composite chains) ────────
+
+/// Per-step build outcome surfaced by [`dispatch_prepare`].
+///
+/// Collapses the per-language [`BuildResult`] into a uniform shape the
+/// composite-chain reverifier can fold across steps regardless of the
+/// underlying toolchain: a hit/miss bit, wall-clock duration, the cache
+/// root, and the source language so callers can report mixed-toolchain
+/// cost coverage.
+#[derive(Debug, Clone)]
+pub struct ChainStepBuildResult {
+    /// Source language of the step that was built.
+    pub lang: Lang,
+    /// True when the prepare step short-circuited via the per-language
+    /// cache (zero wall-clock build cost).
+    pub cache_hit: bool,
+    /// Wall-clock time spent in the build tool.  Zero on cache hit.
+    pub duration: Duration,
+    /// Cache root the build emitted into.  Maps to `BuildResult::venv_path`
+    /// for every per-language `prepare_*` — for compiled languages this
+    /// is the directory holding `nyx_harness`; for Python it is the venv
+    /// root; for Node/PHP it carries `node_modules`/`vendor`.
+    pub build_root: PathBuf,
+}
+
+/// Dispatch one chain step's build to the matching per-language
+/// `prepare_*` function and return a uniform [`ChainStepBuildResult`].
+///
+/// Used by composite-chain re-verification ([`crate::chain::reverify`])
+/// so a `Vec<HarnessSpec>` can be driven through the build pipeline
+/// without per-language match arms scattered across each caller.  The
+/// production single-finding runner stays on the per-language match in
+/// [`crate::dynamic::runner::execute`] because it folds the build result
+/// into command-vector rewrites that vary per language and have no
+/// uniform shape — the chain reverifier does not need those rewrites
+/// because the sandbox-run sub-task ((c) of Phase 26 follow-up) will
+/// build its own per-step command vector.
+///
+/// `profile` is consulted only on [`Lang::C`] (drives `-static`); the
+/// other per-language preparers ignore it.  [`Lang::Ruby`] returns
+/// [`BuildError::Unsupported`] because there is no `prepare_ruby` —
+/// the runner's match arm falls through to a `_ => {}` no-op for Ruby
+/// today, so the reverifier mirrors that contract.
+pub fn dispatch_prepare(
+    spec: &HarnessSpec,
+    workdir: &Path,
+    profile: ProcessHardeningProfile,
+) -> Result<ChainStepBuildResult, BuildError> {
+    let lang = spec.lang;
+    let build = match lang {
+        Lang::Rust => prepare_rust(spec, workdir)?,
+        Lang::Python => prepare_python(spec, workdir)?,
+        Lang::JavaScript | Lang::TypeScript => prepare_node(spec, workdir)?,
+        Lang::Go => prepare_go(spec, workdir)?,
+        Lang::Java => prepare_java(spec, workdir)?,
+        Lang::Php => prepare_php(spec, workdir)?,
+        Lang::C => prepare_c(spec, workdir, profile)?,
+        Lang::Cpp => prepare_cpp(spec, workdir)?,
+        Lang::Ruby => return Err(BuildError::Unsupported),
+    };
+    Ok(ChainStepBuildResult {
+        lang,
+        cache_hit: build.cache_hit,
+        duration: build.duration,
+        build_root: build.venv_path,
+    })
+}
+
 // ── Docker-isolated build step functions ─────────────────────────────────────
 //
 // Each function runs the language's build tool inside a Docker container with
@@ -1457,6 +1526,125 @@ mod tests {
             assert_ne!(
                 dyn_hash, static_hash,
                 "static and dynamic builds must key into different cache slots",
+            );
+        }
+
+        // ── Phase 26 sub-task (b): dispatch_prepare helper ─────────────────
+
+        fn mk_spec(lang: Lang, toolchain_suffix: &str) -> HarnessSpec {
+            use crate::dynamic::spec::{EntryKind, PayloadSlot, SpecDerivationStrategy};
+            use crate::labels::Cap;
+            HarnessSpec {
+                finding_id: "test".to_owned(),
+                entry_file: "entry".to_owned(),
+                entry_name: "main".to_owned(),
+                entry_kind: EntryKind::Function,
+                lang,
+                // Unique per test so the per-language `prepare_*` cache root
+                // (keyed on `toolchain_id`) does not bleed state between
+                // tests in this submodule — `prepare_node` writes a
+                // `.node_cache_done` marker that turns subsequent calls into
+                // cache hits, which a test asserting "first call is a miss"
+                // would fail on.  The user-level cache at
+                // `~/Library/Caches/nyx/dynamic/build-cache/{hash}-node-{tid}`
+                // persists across cargo runs, so each test needs its own
+                // suffix to stay deterministic.
+                toolchain_id: format!("dispatch-prepare-test-{toolchain_suffix}"),
+                payload_slot: PayloadSlot::Param(0),
+                expected_cap: Cap::CODE_EXEC,
+                constraint_hints: vec![],
+                sink_file: "sink".to_owned(),
+                sink_line: 1,
+                spec_hash: "0000000000000000".to_owned(),
+                derivation: SpecDerivationStrategy::FromFlowSteps,
+                stubs_required: vec![],
+            }
+        }
+
+        /// Scrub the cache directory `prepare_node` would land in so a
+        /// fresh-cache assertion stays deterministic across reruns.  The
+        /// per-test `toolchain_id` already isolates this submodule from
+        /// every other test, but `cargo test --workspace` reruns reuse
+        /// the same `$HOME/Library/Caches/...` slot, so we have to wipe
+        /// it ourselves before asserting on the cache-miss branch.
+        fn purge_node_cache_for(spec: &HarnessSpec, workdir: &Path) {
+            let lockfile_hash = compute_node_lockfile_hash(workdir);
+            if let Ok(cache_path) = build_cache_path(&lockfile_hash, "node", &spec.toolchain_id) {
+                let _ = std::fs::remove_dir_all(&cache_path);
+            }
+        }
+
+        #[test]
+        fn dispatch_prepare_ruby_returns_unsupported() {
+            // Ruby has no prepare_ruby — the runner falls through to a `_`
+            // no-op for it.  The dispatcher mirrors that contract so the
+            // composite-chain reverifier can distinguish "build skipped"
+            // from "build failed" instead of silently producing a result.
+            let dir = tempfile::TempDir::new().unwrap();
+            let spec = mk_spec(Lang::Ruby, "ruby-unsupported");
+            let result = dispatch_prepare(&spec, dir.path(), ProcessHardeningProfile::Standard);
+            assert!(
+                matches!(result, Err(BuildError::Unsupported)),
+                "Ruby must route to BuildError::Unsupported; got {result:?}",
+            );
+        }
+
+        #[test]
+        fn dispatch_prepare_typescript_routes_to_node_no_package_json_path() {
+            // JavaScript / TypeScript both dispatch to prepare_node.  The
+            // cheap path (no package.json) short-circuits without invoking
+            // `npm install`, so the helper produces a ChainStepBuildResult
+            // with cache_hit=false + duration=0 + lang=TypeScript on first
+            // call.  Use TypeScript to also lock in that the JS/TS arm
+            // shares one dispatch leg.
+            let dir = tempfile::TempDir::new().unwrap();
+            let spec = mk_spec(Lang::TypeScript, "ts-no-package-json");
+            purge_node_cache_for(&spec, dir.path());
+
+            let result = dispatch_prepare(&spec, dir.path(), ProcessHardeningProfile::Standard)
+                .expect("TypeScript dispatch must succeed on a workdir with no package.json");
+            assert_eq!(result.lang, Lang::TypeScript, "lang field must echo the spec's");
+            assert!(
+                !result.cache_hit,
+                "first dispatch on a fresh cache must be a cache miss; got {result:?}",
+            );
+            assert_eq!(
+                result.duration,
+                Duration::ZERO,
+                "no-package-json path skips npm install so duration must be zero",
+            );
+            assert!(
+                result.build_root.exists(),
+                "build_root {:?} must exist (the cache dir prepare_node creates)",
+                result.build_root,
+            );
+        }
+
+        #[test]
+        fn dispatch_prepare_javascript_and_typescript_share_dispatch_leg() {
+            // Both JS and TS route to prepare_node so a back-to-back call
+            // with the same toolchain_id + workdir contents must hit the
+            // same cache.
+            let dir = tempfile::TempDir::new().unwrap();
+            // Both specs share one toolchain suffix so they collide in
+            // the same cache slot — the contract under test is that JS
+            // and TS dispatch through the same leg.
+            let js = mk_spec(Lang::JavaScript, "jsts-shared-leg");
+            let ts = mk_spec(Lang::TypeScript, "jsts-shared-leg");
+            purge_node_cache_for(&js, dir.path());
+
+            let js_result = dispatch_prepare(&js, dir.path(), ProcessHardeningProfile::Standard)
+                .expect("JavaScript dispatch ok");
+            let ts_result = dispatch_prepare(&ts, dir.path(), ProcessHardeningProfile::Standard)
+                .expect("TypeScript dispatch ok");
+            assert_eq!(
+                js_result.build_root, ts_result.build_root,
+                "JS and TS must share the same cache root because both \
+                 dispatch through prepare_node with the same toolchain_id",
+            );
+            assert!(
+                ts_result.cache_hit,
+                "second dispatch with identical workdir must hit the cache; got {ts_result:?}",
             );
         }
 
