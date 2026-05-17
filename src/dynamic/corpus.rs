@@ -4,26 +4,60 @@
 // signal to migrate inside this module.
 #![allow(deprecated)]
 
-//! Per-capability payload corpus.
+//! Per-capability payload corpus, keyed by `(Cap, Lang)`.
 //!
-//! Each [`Cap`] maps to a small set of canonical payloads plus a matching
-//! detection oracle. Payloads are static data — adding a new one is a code
-//! review, not a runtime config knob, so they cannot drift between versions.
+//! Each `(Cap, Lang)` pair maps to a small set of canonical payloads plus a
+//! matching detection oracle.  Payloads are static data — adding a new one
+//! is a code review, not a runtime config knob, so they cannot drift
+//! between versions.
 //!
-//! Differential confirmation (§4.1): for `HTML_ESCAPE` and `FILE_IO`, a
-//! mandatory benign payload is included. `Confirmed` requires the vuln oracle
-//! to fire AND the benign oracle NOT to fire. This prevents false-positives
-//! from coincidental output matches.
+//! Differential confirmation (§4.1): every non-benign payload either
+//! references a paired benign control (resolved inside the same
+//! `(cap, lang)` slice) or carries a written
+//! [`CuratedPayload::no_benign_control_rationale`] explaining why no
+//! control is meaningful.  The [`audit`] module enforces this both at
+//! compile time and via the runtime `corpus_registry::audit` test.
+//!
+//! # Module layout
+//!
+//! ```text
+//! corpus.rs                    — types, public re-exports, module root
+//! corpus/registry.rs           — CapCorpus, CORPUS, payloads_for{,_lang}
+//! corpus/audit.rs              — compile-time + runtime audits
+//! corpus/<cap>/<lang>.rs       — per-(cap, lang) `pub const PAYLOADS`
+//! ```
+//!
+//! Adding a new language for a cap means: drop a new file under
+//! `corpus/<cap>/<lang>.rs`, register `pub mod <lang>;` in the cap's
+//! `mod.rs`, and wire `(Cap::<CAP>, Lang::<Lang>, <cap>::<lang>::PAYLOADS)`
+//! into [`registry::ENTRIES`].  No other file needs to change.
 //!
 //! # Corpus governance (§16.1)
 //!
 //! Every payload carries [`PayloadProvenance`], a [`since_corpus_version`],
 //! and at least one [`fixture_paths`] entry.  The [`CORPUS_VERSION`] const
-//! tracks the history of incompatible corpus changes; bumping it invalidates
-//! all `dynamic_verdict_cache` entries whose spec touched the changed cap.
+//! tracks the history of incompatible corpus changes; bumping it
+//! invalidates all `dynamic_verdict_cache` entries whose spec touched the
+//! changed cap.
 
-use crate::dynamic::oracle::{ProbePredicate, SignalSet};
+use crate::dynamic::oracle::ProbePredicate;
 use crate::labels::Cap;
+use crate::symbol::Lang;
+
+pub mod audit;
+pub mod registry;
+
+mod cmdi;
+mod fmt_string;
+mod path_trav;
+mod sqli;
+mod ssrf;
+mod xss;
+
+pub use registry::{
+    audit_marker_collisions, benign_payload_for, materialise_bytes, payloads_for,
+    payloads_for_lang, resolve_benign_control, CORPUS, CORPUS_UNSUPPORTED_LANG_NEUTRAL,
+};
 
 /// Re-exported canonical [`Oracle`] type.
 ///
@@ -46,7 +80,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 3       | 2026-05-12 | Migrated to `CuratedPayload`; provenance + fixture_paths enforced; SSRF OOB-nonce slot added |
 /// | 4       | 2026-05-14 | Phase 07: `benign_control` paired refs + benign payloads added to SQLI / CMDI / SSRF (file-scheme) |
 /// | 5       | 2026-05-16 | FMT_STRING SinkCrash payload + benign control (Phase 08 unrelated-crash acceptance fixture) |
-pub const CORPUS_VERSION: u32 = 5;
+/// | 6       | 2026-05-17 | Phase 02 / Track J.0: `(Cap, Lang)` registry refactor; `no_benign_control_rationale` field; compile-time provenance audit |
+pub const CORPUS_VERSION: u32 = 6;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,8 +116,9 @@ pub struct PayloadRef {
 pub struct CuratedPayload {
     /// Bytes injected into the [`crate::dynamic::spec::PayloadSlot`].
     ///
-    /// When [`oob_nonce_slot`] is `true` this field is ignored; the runner
-    /// materialises the actual bytes from the OOB listener URL at call time.
+    /// When [`Self::oob_nonce_slot`] is `true` this field is ignored; the
+    /// runner materialises the actual bytes from the OOB listener URL at
+    /// call time.
     pub bytes: &'static [u8],
     /// Human label for logs and reports.
     pub label: &'static str,
@@ -122,632 +158,31 @@ pub struct CuratedPayload {
     /// [`crate::evidence::InconclusiveReason::NoBenignControl`].
     /// Always `None` on benign entries themselves.
     pub benign_control: Option<PayloadRef>,
+    /// Written rationale required when a non-benign payload has
+    /// `benign_control = None`.  Compile-time audit
+    /// ([`audit::audit_benign_controls_runtime`]) rejects any entry that
+    /// elides the paired control without a non-empty explanation here.
+    /// Always `None` on entries that DO carry a `benign_control` and on
+    /// benign entries themselves.
+    pub no_benign_control_rationale: Option<&'static str>,
 }
 
 /// Backward-compatible type alias.
 pub type Payload = CuratedPayload;
 
-/// Pick the payload set for a given cap. Empty slice = unsupported cap.
+/// Read-only registry of `(Cap, Lang)` payload slices.
 ///
-/// # Cap coverage (update when adding/removing Cap bits)
-///
-/// | Cap                | Supported | Notes                              |
-/// |--------------------|-----------|-----------------------------------|
-/// | SQL_QUERY          | yes       | SQLI payloads (echo-query style)   |
-/// | CODE_EXEC          | yes       | command injection echo marker      |
-/// | FILE_IO            | yes       | path traversal + benign control    |
-/// | SSRF               | yes       | file:// scheme + OOB nonce slot    |
-/// | HTML_ESCAPE        | yes       | XSS script marker + benign control |
-/// | FMT_STRING         | yes       | SinkCrash + benign control (Phase 08) |
-/// | ENV_VAR            | no        | source-only cap; no sink oracle    |
-/// | SHELL_ESCAPE       | no        | sanitizer cap; no sink oracle      |
-/// | URL_ENCODE         | no        | sanitizer cap; no sink oracle      |
-/// | JSON_PARSE         | no        | no reliable oracle                 |
-/// | DESERIALIZE        | no        | no reliable oracle                 |
-/// | CRYPTO             | no        | no reliable oracle                 |
-/// | UNAUTHORIZED_ID    | no        | auth bypass; no oracle             |
-/// | DATA_EXFIL         | no        | exfil; no oracle                   |
-/// | LDAP_INJECTION     | no        | no oracle                          |
-/// | XPATH_INJECTION    | no        | no oracle                          |
-/// | HEADER_INJECTION   | no        | no oracle                          |
-/// | OPEN_REDIRECT      | no        | no oracle                          |
-/// | SSTI               | no        | no oracle                          |
-/// | XXE                | no        | no oracle                          |
-/// | PROTOTYPE_POLLUTION| no        | JS-runtime; no oracle              |
-///
-/// Compile-time exhaustiveness guard: `CORPUS_SUPPORTED | CORPUS_UNSUPPORTED`
-/// must equal `Cap::all()`.
-const CORPUS_SUPPORTED: u32 = Cap::SQL_QUERY.bits()
-    | Cap::CODE_EXEC.bits()
-    | Cap::FILE_IO.bits()
-    | Cap::SSRF.bits()
-    | Cap::HTML_ESCAPE.bits()
-    | Cap::FMT_STRING.bits();
-
-const CORPUS_UNSUPPORTED: u32 = Cap::ENV_VAR.bits()
-    | Cap::SHELL_ESCAPE.bits()
-    | Cap::URL_ENCODE.bits()
-    | Cap::JSON_PARSE.bits()
-    | Cap::DESERIALIZE.bits()
-    | Cap::CRYPTO.bits()
-    | Cap::UNAUTHORIZED_ID.bits()
-    | Cap::DATA_EXFIL.bits()
-    | Cap::LDAP_INJECTION.bits()
-    | Cap::XPATH_INJECTION.bits()
-    | Cap::HEADER_INJECTION.bits()
-    | Cap::OPEN_REDIRECT.bits()
-    | Cap::SSTI.bits()
-    | Cap::XXE.bits()
-    | Cap::PROTOTYPE_POLLUTION.bits();
-
-const _: () = assert!(
-    CORPUS_SUPPORTED | CORPUS_UNSUPPORTED == Cap::all().bits(),
-    "Cap bit missing from corpus coverage table; \
-     add to CORPUS_SUPPORTED or CORPUS_UNSUPPORTED and update payloads_for",
-);
-
-pub fn payloads_for(cap: Cap) -> &'static [CuratedPayload] {
-    if cap.contains(Cap::SQL_QUERY) {
-        return SQLI;
-    }
-    if cap.contains(Cap::CODE_EXEC) {
-        return CMDI;
-    }
-    if cap.contains(Cap::FILE_IO) {
-        return PATH_TRAV;
-    }
-    if cap.contains(Cap::SSRF) {
-        return SSRF_PAYLOADS;
-    }
-    if cap.contains(Cap::HTML_ESCAPE) {
-        return XSS;
-    }
-    if cap.contains(Cap::FMT_STRING) {
-        return FMT_STRING;
-    }
-    &[]
+/// Constructed once as the [`registry::CORPUS`] const.  Layered as
+/// `&'static` slices so the entire registry can live in read-only memory
+/// and so [`audit`] can walk it in const eval.
+#[derive(Debug, Clone, Copy)]
+pub struct CapCorpus {
+    /// `(Cap, Lang, payloads)` triples.  A single cap may appear once per
+    /// supported language.  See [`registry::payloads_for_lang`] for the
+    /// per-language lookup and [`registry::payloads_for`] for the
+    /// back-compatible union shim.
+    pub entries: &'static [(Cap, Lang, &'static [CuratedPayload])],
+    /// Per-cap probe predicates lifted off individual payloads.  Reserved
+    /// for later Track J phases; empty in Phase 02.
+    pub oracles: &'static [(Cap, &'static [ProbePredicate])],
 }
-
-/// Return the benign control payload for a cap, if one exists.
-pub fn benign_payload_for(cap: Cap) -> Option<&'static CuratedPayload> {
-    payloads_for(cap).iter().find(|p| p.is_benign)
-}
-
-/// Resolve a [`CuratedPayload::benign_control`] reference to the matching
-/// benign entry inside the same cap's payload slice.
-///
-/// Returns `None` when the vulnerable payload has no paired control
-/// (`benign_control == None`) or when the named label is missing /
-/// non-benign in the corpus.  The runner treats the `None` result as
-/// `NoControl` and downgrades the verdict to
-/// [`crate::evidence::InconclusiveReason::NoBenignControl`].
-pub fn resolve_benign_control(
-    vuln_payload: &CuratedPayload,
-    cap: Cap,
-) -> Option<&'static CuratedPayload> {
-    let r = vuln_payload.benign_control?;
-    payloads_for(cap)
-        .iter()
-        .find(|p| p.is_benign && p.label == r.label)
-}
-
-/// Materialise the effective bytes for a payload.
-///
-/// For static payloads (`oob_nonce_slot == false`) returns the `bytes` slice
-/// directly.  For OOB-nonce payloads, constructs the callback URL from the
-/// listener and nonce; returns `None` when no listener is configured.
-pub fn materialise_bytes<'a>(
-    payload: &'a CuratedPayload,
-    oob_url: Option<&str>,
-) -> Option<std::borrow::Cow<'a, [u8]>> {
-    if payload.oob_nonce_slot {
-        oob_url.map(|u| std::borrow::Cow::Owned(u.as_bytes().to_vec()))
-    } else {
-        Some(std::borrow::Cow::Borrowed(payload.bytes))
-    }
-}
-
-/// Run a marker-collision audit on all corpus payloads.
-///
-/// Returns a list of `(cap_name, label, conflicting_cap_name)` triples where
-/// a payload's oracle marker string also appears in a different cap's payload
-/// bytes.  An empty result is the expected (passing) state.
-pub fn audit_marker_collisions() -> Vec<(&'static str, &'static str, &'static str)> {
-    // Build (cap_name, label, marker_bytes) triples for OutputContains oracles.
-    let entries: &[(&str, &[CuratedPayload])] = &[
-        ("SQL_QUERY", SQLI),
-        ("CODE_EXEC", CMDI),
-        ("FILE_IO", PATH_TRAV),
-        ("SSRF", SSRF_PAYLOADS),
-        ("HTML_ESCAPE", XSS),
-    ];
-
-    let mut collisions = Vec::new();
-    for &(cap_name, payloads) in entries {
-        for p in payloads {
-            if p.is_benign {
-                continue;
-            }
-            let Oracle::OutputContains(marker) = &p.oracle else {
-                continue;
-            };
-            let marker_bytes = marker.as_bytes();
-            // Check if this marker appears in ANY other cap's payload bytes.
-            for &(other_cap, other_payloads) in entries {
-                if other_cap == cap_name {
-                    continue;
-                }
-                for op in other_payloads {
-                    if op.is_benign {
-                        continue;
-                    }
-                    if op.bytes.windows(marker_bytes.len()).any(|w| w == marker_bytes) {
-                        collisions.push((cap_name, p.label, other_cap));
-                    }
-                }
-            }
-        }
-    }
-    collisions
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn supported_caps_have_payloads() {
-        assert!(!payloads_for(Cap::SQL_QUERY).is_empty());
-        assert!(!payloads_for(Cap::CODE_EXEC).is_empty());
-        assert!(!payloads_for(Cap::FILE_IO).is_empty());
-        assert!(!payloads_for(Cap::SSRF).is_empty());
-        assert!(!payloads_for(Cap::HTML_ESCAPE).is_empty());
-        assert!(!payloads_for(Cap::FMT_STRING).is_empty());
-    }
-
-    #[test]
-    fn unsupported_caps_return_empty() {
-        let unsupported = [
-            Cap::ENV_VAR, Cap::SHELL_ESCAPE, Cap::URL_ENCODE, Cap::JSON_PARSE,
-            Cap::DESERIALIZE, Cap::CRYPTO, Cap::UNAUTHORIZED_ID,
-            Cap::DATA_EXFIL, Cap::LDAP_INJECTION, Cap::XPATH_INJECTION,
-            Cap::HEADER_INJECTION, Cap::OPEN_REDIRECT, Cap::SSTI, Cap::XXE,
-            Cap::PROTOTYPE_POLLUTION,
-        ];
-        for cap in unsupported {
-            assert!(
-                payloads_for(cap).is_empty(),
-                "expected {cap:?} to return empty payloads",
-            );
-        }
-    }
-
-    #[test]
-    fn fileio_has_benign_payload() {
-        assert!(benign_payload_for(Cap::FILE_IO).is_some());
-    }
-
-    #[test]
-    fn html_escape_has_benign_payload() {
-        assert!(benign_payload_for(Cap::HTML_ESCAPE).is_some());
-    }
-
-    #[test]
-    fn vuln_payloads_not_benign() {
-        for cap in [
-            Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::HTML_ESCAPE,
-            Cap::FMT_STRING,
-        ] {
-            let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
-            assert!(has_vuln, "{cap:?} must have at least one vuln (non-benign) payload");
-        }
-    }
-
-    #[test]
-    fn fmt_string_has_sink_crash_oracle_and_benign_control() {
-        let payloads = payloads_for(Cap::FMT_STRING);
-        let vuln = payloads
-            .iter()
-            .find(|p| !p.is_benign)
-            .expect("FMT_STRING must have a vuln payload");
-        assert!(
-            matches!(vuln.oracle, Oracle::SinkCrash { .. }),
-            "FMT_STRING vuln payload oracle must be SinkCrash (Phase 08)"
-        );
-        let bref = vuln
-            .benign_control
-            .expect("FMT_STRING vuln must reference a benign control");
-        assert!(
-            resolve_benign_control(vuln, Cap::FMT_STRING).is_some(),
-            "FMT_STRING benign-control label '{}' must resolve",
-            bref.label,
-        );
-    }
-
-    #[test]
-    fn marker_uniqueness_sqli() {
-        for p in SQLI {
-            assert!(!p.bytes.windows(7).any(|w| w == b"NYX_PWN"),
-                "NYX_PWN (CODE_EXEC marker) must not appear in SQLI payloads");
-        }
-    }
-
-    #[test]
-    fn all_payloads_have_fixture_paths() {
-        let caps = [
-            Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF,
-            Cap::HTML_ESCAPE, Cap::FMT_STRING,
-        ];
-        for cap in caps {
-            for p in payloads_for(cap) {
-                assert!(
-                    !p.fixture_paths.is_empty(),
-                    "payload '{}' for {cap:?} must have at least one fixture_path (§16.1)",
-                    p.label,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn all_payloads_have_valid_since_corpus_version() {
-        let caps = [
-            Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF,
-            Cap::HTML_ESCAPE, Cap::FMT_STRING,
-        ];
-        for cap in caps {
-            for p in payloads_for(cap) {
-                assert!(
-                    p.since_corpus_version >= 1 && p.since_corpus_version <= CORPUS_VERSION,
-                    "payload '{}': since_corpus_version {} out of range [1, {}]",
-                    p.label, p.since_corpus_version, CORPUS_VERSION,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn no_marker_collisions() {
-        let collisions = audit_marker_collisions();
-        assert!(
-            collisions.is_empty(),
-            "marker collisions detected (§16.3): {collisions:?}",
-        );
-    }
-
-    #[test]
-    fn ssrf_has_oob_nonce_slot() {
-        let has_oob = payloads_for(Cap::SSRF).iter().any(|p| p.oob_nonce_slot);
-        assert!(has_oob, "SSRF corpus must include an OOB-nonce-slot payload");
-    }
-
-    #[test]
-    fn materialise_static_payload() {
-        let p = &SQLI[0];
-        assert!(!p.oob_nonce_slot);
-        let bytes = materialise_bytes(p, None).expect("static payload must materialise without OOB");
-        assert_eq!(&*bytes, p.bytes);
-    }
-
-    #[test]
-    fn materialise_oob_payload_with_url() {
-        let p = SSRF_PAYLOADS.iter().find(|p| p.oob_nonce_slot).expect("must have OOB payload");
-        let url = "http://127.0.0.1:54321/mynonce";
-        let bytes = materialise_bytes(p, Some(url)).expect("OOB payload materialises with URL");
-        assert_eq!(&*bytes, url.as_bytes());
-    }
-
-    #[test]
-    fn materialise_oob_payload_without_listener_returns_none() {
-        let p = SSRF_PAYLOADS.iter().find(|p| p.oob_nonce_slot).expect("must have OOB payload");
-        assert!(materialise_bytes(p, None).is_none(), "no OOB URL → None");
-    }
-
-    #[test]
-    fn benign_control_refs_resolve_for_paired_caps() {
-        let cases: &[(Cap, &str, &str)] = &[
-            (Cap::SQL_QUERY, "sqli-tautology", "sqli-benign"),
-            (Cap::SQL_QUERY, "sqli-union-nyx", "sqli-benign"),
-            (Cap::CODE_EXEC, "cmdi-echo-marker", "cmdi-benign"),
-            (Cap::FILE_IO, "path-traversal-passwd", "path-traversal-benign"),
-            (Cap::SSRF, "ssrf-file-scheme", "ssrf-benign"),
-            (Cap::HTML_ESCAPE, "xss-script-marker", "xss-benign-text"),
-        ];
-        for (cap, vuln_label, benign_label) in cases {
-            let vuln = payloads_for(*cap)
-                .iter()
-                .find(|p| p.label == *vuln_label)
-                .unwrap_or_else(|| panic!("missing vuln payload {vuln_label} for {cap:?}"));
-            let resolved = resolve_benign_control(vuln, *cap)
-                .unwrap_or_else(|| panic!("missing benign control for {vuln_label}"));
-            assert_eq!(resolved.label, *benign_label);
-            assert!(resolved.is_benign, "resolved control must be marked benign");
-        }
-    }
-
-    #[test]
-    fn oob_payload_has_no_benign_control() {
-        let p = SSRF_PAYLOADS
-            .iter()
-            .find(|p| p.oob_nonce_slot)
-            .expect("OOB payload");
-        assert!(p.benign_control.is_none(), "OOB-nonce payload is intentionally NoControl");
-        assert!(resolve_benign_control(p, Cap::SSRF).is_none());
-    }
-
-    #[test]
-    fn benign_entries_are_terminal() {
-        let caps = [
-            Cap::SQL_QUERY, Cap::CODE_EXEC, Cap::FILE_IO, Cap::SSRF,
-            Cap::HTML_ESCAPE, Cap::FMT_STRING,
-        ];
-        for cap in caps {
-            for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
-                assert!(
-                    p.benign_control.is_none(),
-                    "benign payload {} must not chain to another control",
-                    p.label,
-                );
-            }
-        }
-    }
-}
-
-// ── SQLi ─────────────────────────────────────────────────────────────────────
-// Payloads designed to cause the target code to echo a query containing "NYX".
-// Fixtures should print the raw query or error message to stdout/stderr.
-const SQLI: &[CuratedPayload] = &[
-    CuratedPayload {
-        bytes: b"' OR '1'='1",
-        label: "sqli-tautology",
-        oracle: Oracle::OutputContains("NYX_SQL_CONFIRMED"),
-        is_benign: false,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 1,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "sqli-benign" }),
-    },
-    CuratedPayload {
-        bytes: b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
-        label: "sqli-union-nyx",
-        oracle: Oracle::OutputContains("NYX_SQL_CONFIRMED"),
-        is_benign: false,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 1,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "sqli-benign" }),
-    },
-    // Benign control: ordinary value that should never produce the SQL marker.
-    CuratedPayload {
-        bytes: b"benign_safe_sqli_NYX_BENIGN",
-        label: "sqli-benign",
-        oracle: Oracle::OutputContains("NYX_SQL_CONFIRMED"),
-        is_benign: true,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 4,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: None,
-    },
-];
-
-// ── Command injection ─────────────────────────────────────────────────────────
-const CMDI: &[CuratedPayload] = &[
-    CuratedPayload {
-        bytes: b"; echo NYX_PWN_CMDI",
-        label: "cmdi-echo-marker",
-        oracle: Oracle::OutputContains("NYX_PWN_CMDI"),
-        is_benign: false,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 1,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/benchmark/corpus/rust/cmdi/cmdi_command.rs",
-            "tests/benchmark/corpus/rust/cmdi/cmdi_args.rs",
-        ],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "cmdi-benign" }),
-    },
-    // Benign control: plain text that should never produce the cmdi marker.
-    CuratedPayload {
-        bytes: b"benign_safe_cmdi_NYX_BENIGN",
-        label: "cmdi-benign",
-        oracle: Oracle::OutputContains("NYX_PWN_CMDI"),
-        is_benign: true,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 4,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/benchmark/corpus/rust/cmdi/cmdi_command.rs",
-            "tests/benchmark/corpus/rust/cmdi/cmdi_args.rs",
-        ],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: None,
-    },
-];
-
-// ── Path traversal ────────────────────────────────────────────────────────────
-// Benign payload reads a known-safe file (Python's os module source path).
-// Differential confirmation: vuln fires on /etc/passwd; benign fires on a
-// non-sensitive file and must NOT fire the same oracle (different file content).
-const PATH_TRAV: &[CuratedPayload] = &[
-    CuratedPayload {
-        bytes: b"../../../../etc/passwd",
-        label: "path-traversal-passwd",
-        oracle: Oracle::OutputContains("root:"),
-        is_benign: false,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 1,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/benchmark/corpus/rust/path_traversal/path_file_open.rs",
-            "tests/benchmark/corpus/rust/path_traversal/path_read.rs",
-        ],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "path-traversal-benign" }),
-    },
-    CuratedPayload {
-        bytes: b"benign_safe_file_that_does_not_exist_NYX_BENIGN",
-        label: "path-traversal-benign",
-        oracle: Oracle::OutputContains("root:"),
-        is_benign: true,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 1,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/path_traversal/path_file_open.rs"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: None,
-    },
-];
-
-// ── SSRF ─────────────────────────────────────────────────────────────────────
-// Two SSRF variants:
-//   1. file:// scheme — static payload, OutputContains oracle. Works in
-//      the process backend without OOB infrastructure.
-//   2. OOB nonce slot — URL generated at runtime from the OOB listener.
-//      Confirms SSRF by recording the callback nonce.
-//
-// Oracle notes:
-//   OutputContains("daemon:") matches both Linux (`daemon:x:1:1:`) and
-//   macOS (`daemon:*:1:1:`) /etc/passwd formats and must NOT collide with
-//   FILE_IO's "root:" marker (see marker_uniqueness test).
-const SSRF_PAYLOADS: &[CuratedPayload] = &[
-    CuratedPayload {
-        bytes: b"file:///etc/passwd",
-        label: "ssrf-file-scheme",
-        oracle: Oracle::OutputContains("daemon:"),
-        is_benign: false,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 1,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "ssrf-benign" }),
-    },
-    CuratedPayload {
-        // `bytes` is unused when `oob_nonce_slot = true`; the runner
-        // materialises the URL from the OOB listener at call time.
-        bytes: b"",
-        label: "ssrf-oob-nonce",
-        oracle: Oracle::OobCallback { host: "127.0.0.1" },
-        is_benign: false,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 2,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
-        oob_nonce_slot: true,
-        probe_predicates: &[],
-        // OOB-nonce payloads are self-confirming via the listener; no
-        // benign counterpart is meaningful (a benign URL can never hit
-        // the nonce listener), so this entry sits at `NoControl`.
-        benign_control: None,
-    },
-    // Benign control for the file-scheme SSRF variant.  Fetched the same
-    // way as the vuln payload but cannot resolve to a body containing the
-    // `daemon:` marker.
-    CuratedPayload {
-        bytes: b"benign_safe_ssrf_NYX_BENIGN",
-        label: "ssrf-benign",
-        oracle: Oracle::OutputContains("daemon:"),
-        is_benign: true,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 4,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: None,
-    },
-];
-
-// ── XSS ──────────────────────────────────────────────────────────────────────
-// Vuln: raw script tag echoed to output.
-// Benign: harmless text that should NOT produce the XSS marker.
-const XSS: &[CuratedPayload] = &[
-    CuratedPayload {
-        bytes: b"<script>NYX_XSS_CONFIRMED</script>",
-        label: "xss-script-marker",
-        oracle: Oracle::OutputContains("<script>NYX_XSS_CONFIRMED</script>"),
-        is_benign: false,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 1,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/xss/axum_html/main.rs"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "xss-benign-text" }),
-    },
-    CuratedPayload {
-        bytes: b"Hello World",
-        label: "xss-benign-text",
-        oracle: Oracle::OutputContains("<script>NYX_XSS_CONFIRMED</script>"),
-        is_benign: true,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 1,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/benchmark/corpus/rust/xss/axum_html/main.rs"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: None,
-    },
-];
-
-// ── Format string (Phase 08 SinkCrash variant) ────────────────────────────────
-// The vuln payload confirms via a sink-site Crash probe rather than an
-// output marker.  The bytes themselves are not load-bearing — the
-// detection contract is "process aborts inside the entry call AFTER the
-// crash-guard installs".  Fixtures choose how to crash on the payload;
-// the canonical example is a printf-family sink that interprets `%n`
-// against a controlled destination pointer on a guard-compiled binary.
-//
-// The benign control must reach the same entry without crashing; its
-// bytes carry `NYX_BENIGN` so fixture code can short-circuit before
-// the fault path.
-const FMT_STRING: &[CuratedPayload] = &[
-    CuratedPayload {
-        bytes: b"%n%n%n%n%n%n%n%n%n%n",
-        label: "fmt-string-percent-n-crash",
-        oracle: Oracle::SinkCrash {
-            signals: SignalSet::all(),
-        },
-        is_benign: false,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 5,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/c/free_fn/sink_fault.c",
-            "tests/dynamic_fixtures/c/free_fn/setup_fault.c",
-        ],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "fmt-string-benign" }),
-    },
-    CuratedPayload {
-        bytes: b"benign_safe_fmt_NYX_BENIGN",
-        label: "fmt-string-benign",
-        oracle: Oracle::SinkCrash {
-            signals: SignalSet::all(),
-        },
-        is_benign: true,
-        provenance: PayloadProvenance::Curated,
-        since_corpus_version: 5,
-        deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/dynamic_fixtures/c/free_fn/sink_fault.c"],
-        oob_nonce_slot: false,
-        probe_predicates: &[],
-        benign_control: None,
-    },
-];

@@ -24,7 +24,7 @@ from typing import Optional
 # ── Payload table (mirrors src/dynamic/corpus.rs) ────────────────────────────
 # Manually synced; CI should flag drift via cargo test no_marker_collisions.
 
-CORPUS_VERSION = 3
+CORPUS_VERSION = 6
 
 @dataclass
 class PayloadEntry:
