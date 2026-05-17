@@ -1,0 +1,12 @@
+{
+  "corpus_version": 5,
+  "entry_file": "app.py",
+  "entry_name": "run",
+  "finding_id": "flask_eval_python_311",
+  "lang": "python",
+  "sink_file": "app.py",
+  "sink_line": 27,
+  "spec_format_version": 2,
+  "spec_hash": "repro",
+  "toolchain_id": "python-3.11"
+}

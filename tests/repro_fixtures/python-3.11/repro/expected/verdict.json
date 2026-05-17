@@ -1,0 +1,17 @@
+{
+  "finding_id": "flask_eval_python_311",
+  "status": "Confirmed",
+  "triggered_payload": "eval-rce-arith",
+  "detail": "flask_eval chain composer fixture: eval(NYX_PAYLOAD) under python-3.11",
+  "attempts": [
+    {
+      "payload_label": "eval-rce-arith",
+      "exit_code": 0,
+      "timed_out": false,
+      "triggered": true,
+      "sink_hit": true
+    }
+  ],
+  "toolchain_match": "exact",
+  "replay_stable": true
+}
