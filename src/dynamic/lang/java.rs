@@ -555,8 +555,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JavaShape::detect(spec, &entry_source);
     let entry_class = derive_entry_class(&entry_source);
-    let source = generate_harness_java(spec, shape, &entry_class);
-    let extra_files = match shape {
+    let entry_qualifier = derive_entry_qualifier(&entry_source, &entry_class);
+    let source = generate_harness_java(spec, shape, &entry_qualifier);
+    let mut extra_files = match shape {
         // Real-world servlet sources import `javax.servlet.*` or
         // `jakarta.servlet.*`; without those symbols on the classpath
         // `javac` reports `package javax.servlet does not exist` and the
@@ -567,6 +568,15 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         }
         _ => vec![],
     };
+    // OWASP Benchmark v1.2 fixtures and other Spring-flavoured Java
+    // entry sources reach for `org.owasp.benchmark.helpers.*`,
+    // `org.owasp.esapi.*`, and a small Spring surface (RowMapper,
+    // SqlRowSet, DataAccessException, HtmlUtils).  Stage the matching
+    // stub bundle when the entry source signals one of those imports;
+    // non-OWASP harnesses pay zero workdir cost.
+    if crate::dynamic::lang::java_owasp_stubs::entry_needs_owasp_stubs(&entry_source) {
+        extra_files.extend(crate::dynamic::lang::java_owasp_stubs::owasp_stub_files());
+    }
 
     Ok(HarnessSource {
         source,
@@ -621,6 +631,46 @@ fn read_entry_source(entry_file: &str) -> String {
 /// (or `public class Benign`).
 fn derive_entry_class(source: &str) -> String {
     parse_public_class_name(source).unwrap_or_else(|| "Entry".to_owned())
+}
+
+/// Resolve the entry class as a fully-qualified Java name when the
+/// entry source declares a `package`.  Falls back to the bare simple
+/// name when the source has no package declaration (the legacy
+/// default-package fixture path).
+///
+/// OWASP Benchmark testcases ship with `package
+/// org.owasp.benchmark.testcode;` headers; javac compiles their
+/// sources into `org/owasp/benchmark/testcode/<Class>.class` under
+/// the workdir, so `NyxHarness` (which itself lives in the default
+/// package) cannot resolve them via the simple name alone.  Using
+/// the FQN in the harness's `Class.forName` / `.class` references
+/// keeps both default-package and packaged entries linkable.
+fn derive_entry_qualifier(source: &str, simple_name: &str) -> String {
+    match parse_package_name(source) {
+        Some(pkg) => format!("{pkg}.{simple_name}"),
+        None => simple_name.to_owned(),
+    }
+}
+
+fn parse_package_name(source: &str) -> Option<String> {
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        let rest = match trimmed.strip_prefix("package ") {
+            Some(r) => r,
+            None => continue,
+        };
+        let end = rest.find(';')?;
+        let name = rest[..end].trim();
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        {
+            return Some(name.to_owned());
+        }
+        return None;
+    }
+    None
 }
 
 fn parse_public_class_name(source: &str) -> Option<String> {
@@ -1193,6 +1243,133 @@ mod tests {
         let spec = make_spec_with(EntryKind::CliSubcommand, "main", &entry_file);
         let harness = emit(&spec).unwrap();
         assert!(harness.extra_files.is_empty());
+    }
+
+    #[test]
+    fn emit_servlet_doget_bundles_owasp_stubs_when_source_imports_owasp() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entry_file = stage_entry(
+            tmp.path(),
+            "BenchmarkTest00001.java",
+            "package org.owasp.benchmark.testcode;\nimport javax.servlet.http.HttpServletRequest;\nimport javax.servlet.http.HttpServletResponse;\nimport javax.servlet.http.HttpServlet;\nimport org.owasp.benchmark.helpers.Utils;\nimport org.owasp.esapi.ESAPI;\npublic class BenchmarkTest00001 extends HttpServlet {\n  public void doGet(HttpServletRequest r, HttpServletResponse w) {}\n}\n",
+        );
+        let spec = make_spec_with(EntryKind::HttpRoute, "doGet", &entry_file);
+        let harness = emit(&spec).unwrap();
+        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        // Servlet stubs are present (same as the non-OWASP servlet case).
+        assert!(paths.contains(&"javax/servlet/http/HttpServletRequest.java"));
+        // OWASP helpers + esapi + spring stubs are appended.
+        assert!(paths.contains(&"org/owasp/benchmark/helpers/Utils.java"));
+        assert!(paths.contains(&"org/owasp/esapi/ESAPI.java"));
+        assert!(paths.contains(&"org/owasp/benchmark/helpers/DatabaseHelper.java"));
+        assert!(paths.contains(&"org/springframework/jdbc/core/RowMapper.java"));
+    }
+
+    #[test]
+    fn emit_servlet_doget_skips_owasp_stubs_when_source_is_plain() {
+        // Servlet entry without OWASP / Spring imports must only carry
+        // the servlet stub bundle, not the OWASP add-on.  Keeps workdir
+        // small for the existing servlet_doget fixture path.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entry_file = stage_entry(
+            tmp.path(),
+            "Vuln.java",
+            "import javax.servlet.http.HttpServletRequest;\nimport javax.servlet.http.HttpServletResponse;\npublic class Vuln {\n  public void doGet(HttpServletRequest r, HttpServletResponse w) {}\n}\n",
+        );
+        let spec = make_spec_with(EntryKind::HttpRoute, "doGet", &entry_file);
+        let harness = emit(&spec).unwrap();
+        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(
+            !paths.iter().any(|p| p.starts_with("org/owasp/")),
+            "plain servlet entry unexpectedly bundles OWASP stubs: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.starts_with("org/springframework/")),
+            "plain servlet entry unexpectedly bundles Spring stubs: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn emit_static_method_with_owasp_imports_bundles_helpers() {
+        // Non-servlet shapes still need the OWASP stub set when the
+        // entry source pulls in helpers (e.g. a plain @Test fixture
+        // calling `Utils.encodeForHTML`).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entry_file = stage_entry(
+            tmp.path(),
+            "Vuln.java",
+            "import org.owasp.benchmark.helpers.Utils;\npublic class Vuln {\n  public static void run(String p) { Utils.encodeForHTML(p); }\n}\n",
+        );
+        let spec = make_spec_with(EntryKind::Function, "run", &entry_file);
+        let harness = emit(&spec).unwrap();
+        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(paths.contains(&"org/owasp/benchmark/helpers/Utils.java"));
+        // No servlet stubs for a non-servlet shape.
+        assert!(!paths.iter().any(|p| p.starts_with("javax/servlet/")));
+    }
+
+    #[test]
+    fn parse_package_name_handles_packaged_source() {
+        assert_eq!(
+            parse_package_name("package org.owasp.benchmark.testcode;\nclass X {}\n"),
+            Some("org.owasp.benchmark.testcode".to_owned())
+        );
+        // Leading whitespace + extra spaces inside the line are tolerated.
+        assert_eq!(
+            parse_package_name("   package a.b.c ;\n"),
+            Some("a.b.c".to_owned())
+        );
+        // Leading comments / blank lines must not cause an early miss.
+        assert_eq!(
+            parse_package_name("// header comment\n/* block */\npackage com.example;\n"),
+            Some("com.example".to_owned())
+        );
+    }
+
+    #[test]
+    fn parse_package_name_returns_none_when_absent() {
+        assert_eq!(parse_package_name(""), None);
+        assert_eq!(parse_package_name("public class X {}\n"), None);
+    }
+
+    #[test]
+    fn derive_entry_qualifier_uses_package_when_present() {
+        let src = "package org.owasp.benchmark.testcode;\npublic class BenchmarkTest00001 {}\n";
+        assert_eq!(
+            derive_entry_qualifier(src, "BenchmarkTest00001"),
+            "org.owasp.benchmark.testcode.BenchmarkTest00001"
+        );
+    }
+
+    #[test]
+    fn derive_entry_qualifier_falls_back_to_simple_name() {
+        assert_eq!(derive_entry_qualifier("", "Vuln"), "Vuln");
+        assert_eq!(
+            derive_entry_qualifier("public class Vuln {}", "Vuln"),
+            "Vuln"
+        );
+    }
+
+    #[test]
+    fn emit_static_method_with_packaged_source_uses_fqn_in_harness() {
+        // Packaged entry sources must be addressed by FQN in the
+        // generated NyxHarness, otherwise javac fails with
+        // `cannot find symbol: class <simple_name>` because the
+        // packaged .class lives under `org/owasp/.../<simple>.class`
+        // and NyxHarness itself sits in the default package.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let entry_file = stage_entry(
+            tmp.path(),
+            "Vuln.java",
+            "package org.example;\npublic class Vuln { public static void run(String p) {} }\n",
+        );
+        let spec = make_spec_with(EntryKind::Function, "run", &entry_file);
+        let harness = emit(&spec).unwrap();
+        assert!(
+            harness.source.contains("org.example.Vuln.run(payload)"),
+            "harness must address packaged entry via FQN; got source:\n{}",
+            harness.source
+        );
     }
 
     #[test]

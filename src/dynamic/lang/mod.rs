@@ -16,6 +16,7 @@ pub mod c;
 pub mod cpp;
 pub mod go;
 pub mod java;
+pub mod java_owasp_stubs;
 pub mod java_servlet_stubs;
 pub mod javascript;
 pub mod js_shared;
