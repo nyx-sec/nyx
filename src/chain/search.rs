@@ -42,6 +42,15 @@
 //! deferred (see deferred.md): the DFS still treats two findings as
 //! adjacent when they share a source file, mirroring Phase 24's
 //! `findings_to_edges` reach resolver.
+//!
+//! Entry-to-finding affinity is enforced symmetrically: the
+//! per-entry candidate filter requires the finding's source file to
+//! overlap with the entry's `handler_location.file` (or a
+//! call-graph reach hit) on top of the route+method match.  Without
+//! this gate, two entries that happen to share a (route, method) in
+//! a monorepo would each claim every finding under that key,
+//! producing `O(entries × findings)` phantom chains that the dedup
+//! pass would then collapse.
 
 use crate::callgraph::FileReachMap;
 use crate::chain::edges::{ChainEdge, Reach};
@@ -108,7 +117,7 @@ pub fn find_chains_with_reach(
         // points at this entry, sorted deterministically.
         let mut candidates: Vec<&ChainEdge> = edges
             .iter()
-            .filter(|e| edge_reaches_entry(e, entry))
+            .filter(|e| edge_reaches_entry(e, entry, reach))
             .collect();
         candidates.sort_by(|a, b| {
             (a.finding.stable_hash, &a.finding.rule_id, &a.finding.location)
@@ -192,11 +201,33 @@ fn is_loopback_label(s: &str) -> bool {
         || lower.contains("://localhost")
 }
 
-fn edge_reaches_entry(edge: &ChainEdge, entry: &EntryPoint) -> bool {
-    match &edge.reach {
-        Reach::Reachable { route, method, .. } => *route == entry.route && *method == entry.method,
-        Reach::Unreachable => false,
+fn edge_reaches_entry(
+    edge: &ChainEdge,
+    entry: &EntryPoint,
+    reach: Option<&FileReachMap>,
+) -> bool {
+    let route_method_match = match &edge.reach {
+        Reach::Reachable { route, method, .. } => {
+            *route == entry.route && *method == entry.method
+        }
+        Reach::Unreachable => return false,
+    };
+    if !route_method_match {
+        return false;
     }
+    // File-affinity gate: the entry's handler must live in (or
+    // transitively call into) the same file as the finding.
+    // Without this, multiple entries that happen to declare the
+    // same (route, method) — common in monorepos that ship
+    // several small services side-by-side — would each claim
+    // every finding, producing O(entries × findings) phantom
+    // chains.  The same shape as the sink-scope filter below:
+    // literal file-suffix overlap first, fall back to the
+    // call-graph reach map.
+    let entry_file = &entry.handler_location.file;
+    let finding_file = &edge.finding.location.file;
+    paths_overlap(entry_file, finding_file)
+        || reach.is_some_and(|r| r.reaches(entry_file, finding_file))
 }
 
 fn paths_overlap(a: &str, b: &str) -> bool {
@@ -815,5 +846,106 @@ mod tests {
         hashes.sort();
         hashes.dedup();
         assert_eq!(hashes.len(), 3, "surviving chains must have distinct hashes");
+    }
+
+    /// File-affinity gate on `edge_reaches_entry`: an entry only
+    /// claims candidate findings that live in its own handler file
+    /// (or are reached from it via the call graph).  Two unrelated
+    /// entries declaring the same (route, method) on different
+    /// files do not cross-claim each other's findings.
+    #[test]
+    fn entry_file_affinity_rejects_cross_file_findings_without_reach() {
+        let mut surface = SurfaceMap::new();
+        surface.nodes.push(entry("a.js", "/run", false));
+        surface.nodes.push(entry("b.js", "/run", false));
+        surface
+            .nodes
+            .push(sink("a.js", 7, "eval", Cap::CODE_EXEC));
+        surface
+            .nodes
+            .push(sink("b.js", 7, "eval", Cap::CODE_EXEC));
+        // Single finding lives in a.js only.  Both entries match
+        // route+method but only entry@a.js shares the file.
+        let edges = vec![edge_with(
+            "a.js",
+            7,
+            "taint-codeexec",
+            Cap::CODE_EXEC,
+            "/run",
+            HttpMethod::POST,
+            Feasibility::Unverified,
+        )];
+        let chains = find_chains(&edges, &surface, ChainSearchConfig::default());
+        assert_eq!(
+            chains.len(),
+            1,
+            "entry@b.js must not claim a finding in a.js without reach map",
+        );
+        assert_eq!(chains[0].sink.file, "a.js");
+    }
+
+    /// File-affinity gate widens through the call-graph reach map:
+    /// an entry whose handler reaches the finding's file (via the
+    /// `FileReachMap`) still claims the finding even when the
+    /// literal file suffixes differ.
+    #[test]
+    fn entry_file_affinity_widens_with_reach_map() {
+        use crate::callgraph::{FileReachMap, build_call_graph};
+        use crate::summary::{FuncSummary, merge_summaries};
+
+        let mut surface = SurfaceMap::new();
+        // Entry handler lives in routes.py.  Finding lives in a
+        // helper file that routes.py transitively calls.
+        surface.nodes.push(entry("routes.py", "/run", false));
+        surface
+            .nodes
+            .push(sink("helper.py", 20, "os.system", Cap::CODE_EXEC));
+        let e = edge_with(
+            "helper.py",
+            10,
+            "taint-codeexec",
+            Cap::CODE_EXEC,
+            "/run",
+            HttpMethod::POST,
+            Feasibility::Unverified,
+        );
+        let cfg = ChainSearchConfig {
+            max_depth: 4,
+            min_score: 0.0,
+        };
+        // Without a reach map the file-affinity gate rejects the
+        // entry/finding pairing.
+        let baseline = find_chains(std::slice::from_ref(&e), &surface, cfg);
+        assert!(
+            baseline.is_empty(),
+            "without reach map, cross-file entry/finding pair must reject",
+        );
+        // Build a reach map where routes.py::handle calls
+        // helper.py::sink, so helper.py is reachable from routes.py.
+        let handle = FuncSummary {
+            name: "handle".into(),
+            file_path: "routes.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            callees: vec![crate::summary::CalleeSite::bare("sink")],
+            ..Default::default()
+        };
+        let sink_fn = FuncSummary {
+            name: "sink".into(),
+            file_path: "helper.py".into(),
+            lang: "python".into(),
+            param_count: 0,
+            ..Default::default()
+        };
+        let gs = merge_summaries(vec![handle, sink_fn], None);
+        let cg = build_call_graph(&gs, &[]);
+        let reach = FileReachMap::build(&cg);
+        let chains = find_chains_with_reach(&[e], &surface, cfg, Some(&reach));
+        assert_eq!(
+            chains.len(),
+            1,
+            "reach map should widen entry-affinity to helper.py",
+        );
+        assert_eq!(chains[0].sink.file, "helper.py");
     }
 }
