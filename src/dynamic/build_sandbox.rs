@@ -862,8 +862,43 @@ pub fn prepare_c(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Buil
 
 fn try_build_c_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
     let cc_bin = std::env::var("NYX_CC_BIN").unwrap_or_else(|_| "cc".to_owned());
-    let output = Command::new(&cc_bin)
-        .args(["-O0", "-g", "-o", binary_dest.to_str().unwrap_or("nyx_harness"), "main.c"])
+
+    // When `NYX_BUILD_STATIC=1` (typically set by the Linux Strict-profile
+    // path so the harness survives `chroot(workdir)`), try `cc -static`
+    // first.  Fall back to the dynamic link if static fails — the host may
+    // lack `libc.a` (musl-cross or `libc6-dev` are the usual sources) and
+    // a dynamic-linked binary still works for non-chroot runs.  The
+    // fallback is announced via `NYX_BUILD_STATIC_FALLBACK=1` so downstream
+    // chroot-acceptance tests can skip the leg they need static linking
+    // for instead of asserting against a broken harness.
+    if static_link_requested() {
+        match run_cc(&cc_bin, workdir, binary_dest, &["-static", "-O0", "-g"]) {
+            Ok(()) => return Ok(()),
+            Err(stderr) => {
+                unsafe { std::env::set_var("NYX_BUILD_STATIC_FALLBACK", "1") };
+                eprintln!("nyx: cc -static failed, retrying without -static: {stderr}");
+                let _ = std::fs::remove_file(binary_dest);
+            }
+        }
+    }
+
+    run_cc(&cc_bin, workdir, binary_dest, &["-O0", "-g"])
+}
+
+fn static_link_requested() -> bool {
+    matches!(
+        std::env::var("NYX_BUILD_STATIC").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+fn run_cc(cc_bin: &str, workdir: &Path, binary_dest: &Path, leading_flags: &[&str]) -> Result<(), String> {
+    let binary_str = binary_dest.to_str().unwrap_or("nyx_harness");
+    let mut args: Vec<&str> = leading_flags.to_vec();
+    args.extend(["-o", binary_str, "main.c"]);
+
+    let output = Command::new(cc_bin)
+        .args(&args)
         .current_dir(workdir)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -884,6 +919,12 @@ fn compute_c_source_hash(workdir: &Path) -> String {
             h.update(fname.as_bytes());
             h.update(&content);
         }
+    }
+    // Fold the static-link toggle into the cache key so a single workdir
+    // can produce both a static and a dynamic binary without one shadowing
+    // the other in the cache (`prepare_c` keys on this hash).
+    if static_link_requested() {
+        h.update(b"static");
     }
     let out = h.finalize();
     format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
@@ -1292,5 +1333,91 @@ mod tests {
         // dst does not yet exist — copy_dir_all must create it.
         copy_dir_all(src.path(), &dst).unwrap();
         assert_eq!(std::fs::read(dst.join("x.txt")).unwrap(), b"x");
+    }
+
+    // ── NYX_BUILD_STATIC opt-in (Phase 17 follow-up) ────────────────────────
+    //
+    // These tests live in a serialised submodule so env-var mutation does
+    // not race with other parallel tests that read `NYX_BUILD_STATIC`.
+
+    mod static_link {
+        use super::*;
+        use std::sync::Mutex;
+
+        // Coarse lock: every test in this submodule mutates the same env
+        // var, so they have to take turns.  `Mutex` is enough because the
+        // submodule is the only writer for `NYX_BUILD_STATIC`.
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+        struct EnvGuard {
+            prior: Option<String>,
+        }
+
+        impl EnvGuard {
+            fn set(value: Option<&str>) -> Self {
+                let prior = std::env::var("NYX_BUILD_STATIC").ok();
+                match value {
+                    Some(v) => unsafe { std::env::set_var("NYX_BUILD_STATIC", v) },
+                    None => unsafe { std::env::remove_var("NYX_BUILD_STATIC") },
+                }
+                Self { prior }
+            }
+        }
+
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.prior.take() {
+                    Some(v) => unsafe { std::env::set_var("NYX_BUILD_STATIC", v) },
+                    None => unsafe { std::env::remove_var("NYX_BUILD_STATIC") },
+                }
+            }
+        }
+
+        #[test]
+        fn unset_env_means_dynamic_link() {
+            let _lock = ENV_LOCK.lock().unwrap();
+            let _g = EnvGuard::set(None);
+            assert!(!static_link_requested());
+        }
+
+        #[test]
+        fn truthy_env_requests_static_link() {
+            let _lock = ENV_LOCK.lock().unwrap();
+            let _g = EnvGuard::set(Some("1"));
+            assert!(static_link_requested());
+
+            let _g2 = EnvGuard::set(Some("true"));
+            assert!(static_link_requested());
+        }
+
+        #[test]
+        fn other_values_do_not_request_static_link() {
+            let _lock = ENV_LOCK.lock().unwrap();
+            for value in &["0", "false", "yes", "static", ""] {
+                let _g = EnvGuard::set(Some(value));
+                assert!(
+                    !static_link_requested(),
+                    "value {value:?} must not request static link",
+                );
+            }
+        }
+
+        #[test]
+        fn source_hash_includes_static_marker() {
+            let _lock = ENV_LOCK.lock().unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            std::fs::write(dir.path().join("main.c"), "int main(){return 0;}").unwrap();
+
+            let _g = EnvGuard::set(None);
+            let dyn_hash = compute_c_source_hash(dir.path());
+
+            let _g2 = EnvGuard::set(Some("1"));
+            let static_hash = compute_c_source_hash(dir.path());
+
+            assert_ne!(
+                dyn_hash, static_hash,
+                "static and dynamic builds must key into different cache slots",
+            );
+        }
     }
 }
