@@ -22,7 +22,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::python_routes::{
-    bind_path_params, find_python_function, function_formal_names, source_imports_django,
+    bind_path_params, find_python_function, first_string_arg, function_formal_names,
+    source_imports_django,
 };
 
 pub struct PythonDjangoAdapter;
@@ -121,25 +122,6 @@ fn positional_args(args: Node<'_>) -> Vec<Node<'_>> {
     out
 }
 
-fn first_string_arg(args: Node<'_>, bytes: &[u8]) -> Option<String> {
-    let mut cur = args.walk();
-    for c in args.named_children(&mut cur) {
-        if c.kind() == "string" {
-            let raw = c.utf8_text(bytes).ok()?;
-            return Some(strip_quotes(raw).to_owned());
-        }
-    }
-    None
-}
-
-fn strip_quotes(raw: &str) -> &str {
-    let t = raw.trim();
-    let t = t.strip_prefix("b").unwrap_or(t);
-    let t = t.strip_prefix("r").unwrap_or(t);
-    let t = t.strip_prefix("u").unwrap_or(t);
-    t.trim_matches(['\'', '"'])
-}
-
 fn view_arg_references(
     node: Node<'_>,
     bytes: &[u8],
@@ -213,7 +195,6 @@ impl FrameworkAdapter for PythonDjangoAdapter {
         //   - urls.py registration referencing the function
         //   - urls.py `ClassName.as_view()` registration referencing the enclosing class
         //   - class-based view method name (path falls back to `/`)
-        //   - function-based view with `def name(request, ...):` signature
         let url_template = url_template_for(
             ast,
             file_bytes,
@@ -223,18 +204,10 @@ impl FrameworkAdapter for PythonDjangoAdapter {
 
         let (method, path) = if let Some(m) = cbv_method {
             (m, url_template.unwrap_or_else(|| "/".to_owned()))
-        } else if url_template.is_some() {
-            (HttpMethod::GET, url_template.unwrap())
+        } else if let Some(template) = url_template {
+            (HttpMethod::GET, template)
         } else {
-            // Last-resort: treat any function whose first formal is
-            // `request` as a function-based view.  This catches the
-            // common Django pattern in files without an inlined
-            // urls.py snippet.
-            let formals = function_formal_names(func_node, file_bytes);
-            if formals.first().map(String::as_str) != Some("request") {
-                return None;
-            }
-            (HttpMethod::GET, "/".to_owned())
+            return None;
         };
 
         let formals = function_formal_names(func_node, file_bytes);
@@ -330,6 +303,23 @@ mod tests {
         let tree = parse(src);
         assert!(PythonDjangoAdapter
             .detect(&summary("helper"), tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_request_first_formal_without_url_registration() {
+        // Regression guard: an earlier revision stamped any function
+        // whose first formal was `request` as `(GET, "/")`.  The
+        // brief never prescribed that fallback and it fires on
+        // utility helpers (`def authenticated(request, perm): ...`,
+        // decorator wrappers, middleware-shaped helpers) that are not
+        // routes.  Without a matching `urls.py` registration or a
+        // CBV-method shape, the adapter must return `None` so the
+        // pipeline surfaces `SpecDerivationFailed`.
+        let src: &[u8] = b"from django.http import HttpResponse\ndef authenticated(request, perm):\n    return HttpResponse(perm)\n";
+        let tree = parse(src);
+        assert!(PythonDjangoAdapter
+            .detect(&summary("authenticated"), tree.root_node(), src)
             .is_none());
     }
 }

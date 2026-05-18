@@ -17,7 +17,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::python_routes::{
-    bind_path_params, find_python_function, function_formal_names, source_imports_starlette,
+    bind_path_params, find_python_function, first_string_arg, function_formal_names, methods_kwarg,
+    source_imports_starlette,
 };
 
 pub struct PythonStarletteAdapter;
@@ -65,25 +66,6 @@ fn walk_routes(node: Node<'_>, bytes: &[u8], target: &str, out: &mut Option<(Htt
     }
 }
 
-fn first_string_arg(args: Node<'_>, bytes: &[u8]) -> Option<String> {
-    let mut cur = args.walk();
-    for c in args.named_children(&mut cur) {
-        if c.kind() == "string" {
-            let raw = c.utf8_text(bytes).ok()?;
-            return Some(strip_quotes(raw).to_owned());
-        }
-    }
-    None
-}
-
-fn strip_quotes(raw: &str) -> &str {
-    let t = raw.trim();
-    let t = t.strip_prefix("b").unwrap_or(t);
-    let t = t.strip_prefix("r").unwrap_or(t);
-    let t = t.strip_prefix("u").unwrap_or(t);
-    t.trim_matches(['\'', '"'])
-}
-
 fn endpoint_references(args: Node<'_>, bytes: &[u8], target: &str) -> bool {
     let mut cur = args.walk();
     let mut seen_positional = 0usize;
@@ -121,37 +103,6 @@ fn identifier_matches(node: Node<'_>, bytes: &[u8], target: &str) -> bool {
     let trimmed = text.trim().trim_end_matches("()");
     let last = trimmed.rsplit_once('.').map(|(_, s)| s).unwrap_or(trimmed);
     last == target || trimmed == target
-}
-
-fn methods_kwarg(args: Node<'_>, bytes: &[u8]) -> Option<HttpMethod> {
-    let mut cur = args.walk();
-    for arg in args.children(&mut cur) {
-        if arg.kind() != "keyword_argument" {
-            continue;
-        }
-        let Some(name) = arg
-            .child_by_field_name("name")
-            .and_then(|n| n.utf8_text(bytes).ok())
-        else {
-            continue;
-        };
-        if name != "methods" {
-            continue;
-        }
-        let Some(value) = arg.child_by_field_name("value") else {
-            continue;
-        };
-        let mut vc = value.walk();
-        for child in value.named_children(&mut vc) {
-            if child.kind() == "string"
-                && let Some(raw) = child.utf8_text(bytes).ok()
-                && let Some(m) = HttpMethod::from_ident(strip_quotes(raw))
-            {
-                return Some(m);
-            }
-        }
-    }
-    None
 }
 
 impl FrameworkAdapter for PythonStarletteAdapter {

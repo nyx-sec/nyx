@@ -9,7 +9,7 @@
 //! placeholder-binding semantics (so an unmatched formal becomes a
 //! `QueryParam(name)` everywhere, not just in one adapter).
 
-use crate::dynamic::framework::{ParamBinding, ParamSource};
+use crate::dynamic::framework::{HttpMethod, ParamBinding, ParamSource};
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known Flask import
@@ -249,6 +249,59 @@ pub fn extract_path_placeholders(path: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Find the first positional string literal in a Python `argument_list`.
+/// Used by every Python route adapter to pull the path template out of
+/// `path("/users", view)` / `@app.route("/x")` / `Route("/x", endpoint=…)`.
+pub fn first_string_arg(args: Node<'_>, bytes: &[u8]) -> Option<String> {
+    let mut cur = args.walk();
+    for c in args.named_children(&mut cur) {
+        if c.kind() == "string" {
+            return Some(strip_quotes(c.utf8_text(bytes).ok()?).to_owned());
+        }
+    }
+    None
+}
+
+/// Strip Python string-literal decoration: leading `b`/`r`/`u` prefix
+/// and the matched single- or double-quote pair.
+pub fn strip_quotes(raw: &str) -> &str {
+    let t = raw.trim();
+    let t = t.strip_prefix("b").unwrap_or(t);
+    let t = t.strip_prefix("r").unwrap_or(t);
+    let t = t.strip_prefix("u").unwrap_or(t);
+    t.trim_matches(['\'', '"'])
+}
+
+/// Extract the first HTTP method named in a `methods=[…]` keyword
+/// argument.  Returns `None` when no `methods=` kwarg is present or
+/// the list contains no recognised method.  Multi-method registrations
+/// (`methods=["GET", "POST"]`) bind to the first method seen — the
+/// [`super::super::RouteShape`] surface only carries a single method
+/// today.
+pub fn methods_kwarg(args: Node<'_>, bytes: &[u8]) -> Option<HttpMethod> {
+    let mut cur = args.walk();
+    for arg in args.children(&mut cur) {
+        if arg.kind() != "keyword_argument" {
+            continue;
+        }
+        let name = arg.child_by_field_name("name")?.utf8_text(bytes).ok()?;
+        if name != "methods" {
+            continue;
+        }
+        let value = arg.child_by_field_name("value")?;
+        let mut vc = value.walk();
+        for child in value.named_children(&mut vc) {
+            if child.kind() == "string" {
+                let raw = strip_quotes(child.utf8_text(bytes).ok()?);
+                if let Some(m) = HttpMethod::from_ident(raw) {
+                    return Some(m);
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

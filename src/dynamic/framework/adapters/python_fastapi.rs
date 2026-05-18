@@ -20,7 +20,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::python_routes::{
-    bind_path_params, find_python_function, function_formal_names, source_imports_fastapi,
+    bind_path_params, find_python_function, first_string_arg, function_formal_names,
+    source_imports_fastapi,
 };
 
 pub struct PythonFastApiAdapter;
@@ -69,25 +70,6 @@ fn decorator_route_shape(decorator: Node<'_>, bytes: &[u8]) -> Option<(HttpMetho
     let method = shortcut_method(attr)?;
     let path = first_string_arg(args, bytes)?;
     Some((method, path))
-}
-
-fn first_string_arg(args: Node<'_>, bytes: &[u8]) -> Option<String> {
-    let mut cur = args.walk();
-    for c in args.named_children(&mut cur) {
-        if c.kind() == "string" {
-            let raw = c.utf8_text(bytes).ok()?;
-            return Some(strip_quotes(raw).to_owned());
-        }
-    }
-    None
-}
-
-fn strip_quotes(raw: &str) -> &str {
-    let t = raw.trim();
-    let t = t.strip_prefix("b").unwrap_or(t);
-    let t = t.strip_prefix("r").unwrap_or(t);
-    let t = t.strip_prefix("u").unwrap_or(t);
-    t.trim_matches(['\'', '"'])
 }
 
 /// Refine per-formal bindings by inspecting the parameter list for
@@ -188,17 +170,23 @@ fn call_callee_text(node: Node<'_>, bytes: &[u8]) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Enumerate top-level class names so [`refine_for_fastapi`] can spot
-/// Pydantic body models.  Conservative: walks the file once and
-/// records every `class_definition`'s name.
+/// Enumerate class names whose superclass list contains a Pydantic
+/// model marker, so [`refine_for_fastapi`] only stamps a
+/// [`ParamSource::JsonBody`] when the annotation points at a class
+/// that actually looks like a request body model.  Walks the
+/// `superclasses` field on each `class_definition`; a class with no
+/// superclasses (or no Pydantic-flavoured base) is excluded — that
+/// avoids stamping `JsonBody` on a plain dataclass / enum / DTO
+/// declared in the same file.
 fn collect_class_names(root: Node<'_>, bytes: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
-    walk_classes(root, bytes, &mut out);
+    walk_pydantic_classes(root, bytes, &mut out);
     out
 }
 
-fn walk_classes(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+fn walk_pydantic_classes(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
     if node.kind() == "class_definition"
+        && class_has_pydantic_base(node, bytes)
         && let Some(name) = node
             .child_by_field_name("name")
             .and_then(|n| n.utf8_text(bytes).ok())
@@ -207,8 +195,33 @@ fn walk_classes(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
     }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
-        walk_classes(child, bytes, out);
+        walk_pydantic_classes(child, bytes, out);
     }
+}
+
+/// True when the class's superclass list mentions a Pydantic model
+/// marker — `BaseModel`, `pydantic.BaseModel`, `RootModel`,
+/// `GenericModel`, or one of the FastAPI body-style bases
+/// (`SQLModel`).
+fn class_has_pydantic_base(class_node: Node<'_>, bytes: &[u8]) -> bool {
+    let Some(supers) = class_node.child_by_field_name("superclasses") else {
+        return false;
+    };
+    let mut cur = supers.walk();
+    supers.named_children(&mut cur).any(|sup| {
+        sup.utf8_text(bytes)
+            .map(superclass_looks_pydantic)
+            .unwrap_or(false)
+    })
+}
+
+fn superclass_looks_pydantic(text: &str) -> bool {
+    let trimmed = text.trim();
+    let last = trimmed.rsplit_once('.').map(|(_, s)| s).unwrap_or(trimmed);
+    matches!(
+        last,
+        "BaseModel" | "RootModel" | "GenericModel" | "SQLModel"
+    )
 }
 
 impl FrameworkAdapter for PythonFastApiAdapter {
@@ -331,6 +344,45 @@ mod tests {
             .find(|p| p.name == "db")
             .unwrap();
         assert!(matches!(db_binding.source, ParamSource::Implicit));
+    }
+
+    #[test]
+    fn non_pydantic_annotation_stays_query_param() {
+        // Regression guard: an earlier revision stamped any formal
+        // whose annotation referenced a class declared in the same
+        // file as `JsonBody`, even when the class was a plain
+        // dataclass / enum / DTO with no Pydantic base.  A class
+        // without a Pydantic-flavoured superclass must not promote
+        // an annotated formal to `JsonBody`.
+        let src: &[u8] = b"from fastapi import FastAPI\nfrom dataclasses import dataclass\n@dataclass\nclass Item:\n    name: str\napp = FastAPI()\n@app.post(\"/items\")\ndef create_item(item: Item):\n    return item\n";
+        let tree = parse(src);
+        let binding = PythonFastApiAdapter
+            .detect(&summary("create_item"), tree.root_node(), src)
+            .unwrap();
+        let item_binding = binding
+            .request_params
+            .iter()
+            .find(|p| p.name == "item")
+            .unwrap();
+        assert!(matches!(item_binding.source, ParamSource::QueryParam(_)));
+    }
+
+    #[test]
+    fn qualified_pydantic_basemodel_recognised() {
+        // Regression guard: `class Foo(pydantic.BaseModel):` should
+        // still promote a formal annotated with `Foo` to JsonBody,
+        // matching the unqualified `class Foo(BaseModel):` case.
+        let src: &[u8] = b"from fastapi import FastAPI\nimport pydantic\nclass Item(pydantic.BaseModel):\n    name: str\napp = FastAPI()\n@app.post(\"/items\")\ndef create_item(item: Item):\n    return item\n";
+        let tree = parse(src);
+        let binding = PythonFastApiAdapter
+            .detect(&summary("create_item"), tree.root_node(), src)
+            .unwrap();
+        let item_binding = binding
+            .request_params
+            .iter()
+            .find(|p| p.name == "item")
+            .unwrap();
+        assert!(matches!(item_binding.source, ParamSource::JsonBody));
     }
 
     #[test]
