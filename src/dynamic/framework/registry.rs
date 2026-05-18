@@ -76,8 +76,12 @@ static PHP: &[&dyn FrameworkAdapter] = &[
 static PYTHON: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderPythonAdapter,
     &super::adapters::LdapPythonAdapter,
+    &super::adapters::PythonDjangoAdapter,
+    &super::adapters::PythonFastApiAdapter,
+    &super::adapters::PythonFlaskAdapter,
     &super::adapters::PythonJinja2Adapter,
     &super::adapters::PythonPickleAdapter,
+    &super::adapters::PythonStarletteAdapter,
     &super::adapters::RedirectPythonAdapter,
     &super::adapters::XpathPythonAdapter,
     &super::adapters::XxePythonAdapter,

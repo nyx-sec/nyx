@@ -136,6 +136,12 @@ pub enum PythonShape {
     /// FastAPI `@app.get` / `@router.post` / etc.  Harness uses
     /// `starlette.testclient.TestClient` to drive the route.
     FastApiRoute,
+    /// Pure Starlette application (`Starlette(routes=[Route(...)])`).
+    /// Harness uses `starlette.testclient.TestClient` to drive the
+    /// route.  Distinguished from [`Self::FastApiRoute`] because the
+    /// app resolver looks up `starlette.applications.Starlette`
+    /// instances rather than `fastapi.FastAPI` instances.
+    StarletteRoute,
     /// Django view (function or `View`/`APIView` method).  Harness
     /// instantiates a `django.test.RequestFactory` and calls the view.
     DjangoView,
@@ -180,6 +186,16 @@ impl PythonShape {
             source,
             &["from fastapi", "import fastapi", "FastAPI(", "APIRouter("],
         );
+        let has_starlette = source_has_marker(
+            source,
+            &[
+                "from starlette",
+                "import starlette",
+                "Starlette(",
+                "starlette.routing",
+                "starlette.applications",
+            ],
+        );
         let has_django = source_has_marker(
             source,
             &[
@@ -200,6 +216,9 @@ impl PythonShape {
         }
         if has_django {
             return Self::DjangoView;
+        }
+        if has_starlette {
+            return Self::StarletteRoute;
         }
         if has_flask {
             return Self::FlaskRoute;
@@ -1265,6 +1284,10 @@ fn extra_files_for_shape(shape: PythonShape) -> Vec<(String, String)> {
             "requirements.txt".to_owned(),
             "fastapi\nhttpx\n".to_owned(),
         )],
+        PythonShape::StarletteRoute => vec![(
+            "requirements.txt".to_owned(),
+            "starlette\nhttpx\n".to_owned(),
+        )],
         PythonShape::DjangoView => vec![("requirements.txt".to_owned(), "Django\n".to_owned())],
         PythonShape::CeleryTask => vec![("requirements.txt".to_owned(), "celery\n".to_owned())],
         // Generic / CLI / Pytest / Async use the stdlib only.
@@ -1282,6 +1305,7 @@ fn generate_for_shape(spec: &HarnessSpec, shape: PythonShape) -> String {
         PythonShape::CeleryTask => emit_celery(spec),
         PythonShape::FlaskRoute => emit_flask(spec),
         PythonShape::FastApiRoute => emit_fastapi(spec),
+        PythonShape::StarletteRoute => emit_starlette(spec),
         PythonShape::DjangoView => emit_django(spec),
     };
     let postamble = harness_postamble();
@@ -1645,6 +1669,81 @@ except Exception as _e:
     )
 }
 
+fn emit_starlette(spec: &HarnessSpec) -> String {
+    let entry_fn = &spec.entry_name;
+    let (method, query_name, body_kind) = resolve_http_payload(&spec.payload_slot);
+    format!(
+        r#"# Shape: Starlette route — dispatch via starlette.testclient.TestClient.
+def _nyx_resolve_starlette_app(mod):
+    try:
+        from starlette.applications import Starlette
+    except ImportError:
+        return None
+    for n in ("app", "application"):
+        v = getattr(mod, n, None)
+        if isinstance(v, Starlette):
+            return v
+    for attr in dir(mod):
+        val = getattr(mod, attr, None)
+        if isinstance(val, Starlette):
+            return val
+    return None
+
+_app = _nyx_resolve_starlette_app(_entry_mod)
+if _app is None:
+    print("NYX_STARLETTE_APP_NOT_FOUND", file=sys.stderr, flush=True)
+    sys.exit(78)
+
+try:
+    from starlette.testclient import TestClient
+except ImportError:
+    print("NYX_STARLETTE_TESTCLIENT_MISSING", file=sys.stderr, flush=True)
+    sys.exit(79)
+
+_path = None
+for _r in _app.routes:
+    _name = getattr(_r, "name", None)
+    _endpoint = getattr(_r, "endpoint", None)
+    _endpoint_name = getattr(_endpoint, "__name__", None)
+    if _name == {entry_fn:?} or _endpoint_name == {entry_fn:?}:
+        _path = getattr(_r, "path", None)
+        break
+if _path is None and _app.routes:
+    _path = getattr(_app.routes[0], "path", None)
+if _path is None:
+    print("NYX_STARLETTE_ROUTE_NOT_FOUND", file=sys.stderr, flush=True)
+    sys.exit(80)
+
+import re
+if {body_kind:?} == "path":
+    _path = re.sub(r"\{{[^}}]+\}}", payload, _path, count=1)
+else:
+    _path = re.sub(r"\{{[^}}]+\}}", "x", _path)
+
+_client = TestClient(_app, raise_server_exceptions=False)
+_method = {method:?}
+_query = {{}}
+_body = None
+if {body_kind:?} == "query":
+    _query[{query_name:?}] = payload
+elif {body_kind:?} == "body":
+    _body = payload
+elif {body_kind:?} == "env":
+    os.environ[{query_name:?}] = payload
+try:
+    _resp = _client.request(_method, _path, params=_query, content=_body)
+    try:
+        print(_resp.text, flush=True)
+    except Exception:
+        pass
+except SystemExit as _e:
+    sys.exit(_e.code)
+except Exception as _e:
+    print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+"#
+    )
+}
+
 fn emit_django(spec: &HarnessSpec) -> String {
     let entry_fn = &spec.entry_name;
     let (method, query_name, body_kind) = resolve_http_payload(&spec.payload_slot);
@@ -1946,6 +2045,13 @@ mod tests {
     }
 
     #[test]
+    fn shape_detect_starlette() {
+        let src = "from starlette.applications import Starlette\nfrom starlette.routing import Route\nasync def index(request): pass\napp = Starlette(routes=[Route('/', index)])\n";
+        let spec = make_spec_with(EntryKind::HttpRoute, "index");
+        assert_eq!(PythonShape::detect(&spec, src), PythonShape::StarletteRoute);
+    }
+
+    #[test]
     fn shape_detect_cli() {
         let src = "def main():\n    pass\nif __name__ == \"__main__\":\n    main()\n";
         let spec = make_spec_with(EntryKind::CliSubcommand, "main");
@@ -2057,6 +2163,23 @@ mod tests {
         assert!(extras
             .iter()
             .any(|(p, c)| p == "requirements.txt" && c.contains("fastapi") && c.contains("httpx")));
+    }
+
+    #[test]
+    fn starlette_shape_emits_test_client() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "homepage");
+        let src = generate_for_shape(&spec, PythonShape::StarletteRoute);
+        assert!(src.contains("starlette.testclient"));
+        assert!(src.contains("TestClient"));
+        assert!(src.contains("Starlette"));
+    }
+
+    #[test]
+    fn extra_files_starlette_pins_httpx() {
+        let extras = extra_files_for_shape(PythonShape::StarletteRoute);
+        assert!(extras.iter().any(
+            |(p, c)| p == "requirements.txt" && c.contains("starlette") && c.contains("httpx")
+        ));
     }
 
     fn make_spec_with(kind: EntryKind, name: &str) -> HarnessSpec {

@@ -214,15 +214,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_10() {
-        // Phase 10 (Track J.8) adds three prototype-pollution
-        // adapters (`pp-lodash-merge`, `pp-object-assign`,
-        // `pp-json-deep-assign`) to both the JavaScript and
-        // TypeScript slices.  Java / Python / PHP each still carry
-        // the J.1..J.7 adapters (7 entries); Ruby still has 5; Go
-        // still has 3; Rust still has 2.  JavaScript grows from 4 →
-        // 7; TypeScript grows from 0 → 3.  C / Cpp stay empty.
-        for lang in [Lang::Java, Lang::Python, Lang::Php] {
+    fn registry_baseline_after_phase_12() {
+        // Phase 12 (Track L.10) adds four Python framework adapters
+        // (`python-django`, `python-fastapi`, `python-flask`,
+        // `python-starlette`) to the Python slice, growing it from
+        // 7 → 11.  Java / PHP keep their 7-entry J.1..J.7 stacks;
+        // Ruby keeps 5; Go keeps 3; Rust keeps 2; JavaScript keeps 7;
+        // TypeScript keeps 3.  C / Cpp stay empty.
+        for lang in [Lang::Java, Lang::Php] {
             let registered = registry::adapters_for(lang);
             assert_eq!(
                 registered.len(),
@@ -233,6 +232,15 @@ mod tests {
             for adapter in registered {
                 assert_eq!(adapter.lang(), lang);
             }
+        }
+        let python_registered = registry::adapters_for(Lang::Python);
+        assert_eq!(
+            python_registered.len(),
+            11,
+            "Python must have J.1..J.7 (7) + L.10 Flask/Django/FastAPI/Starlette (4)",
+        );
+        for adapter in python_registered {
+            assert_eq!(adapter.lang(), Lang::Python);
         }
         let ruby_registered = registry::adapters_for(Lang::Ruby);
         assert_eq!(
