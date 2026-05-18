@@ -214,24 +214,34 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_05() {
-        // Phase 05 (Track J.3) adds the XXE-sink adapter alongside the
-        // Phase-03 deserialize + Phase-04 SSTI adapters for Java /
-        // Python / PHP / Ruby, and introduces the first Go adapter
-        // (xxe-go).  JavaScript still has only the Handlebars adapter;
-        // Rust / C / Cpp / TypeScript still carry the Phase-01 empty
-        // baseline.
-        for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby] {
+    fn registry_baseline_after_phase_06() {
+        // Phase 06 (Track J.4) adds the LDAP-sink adapter for Java /
+        // Python / PHP, layered on top of the Phase 03 deserialize +
+        // Phase 04 SSTI + Phase 05 XXE adapters.  Ruby still carries
+        // exactly the 03+04+05 trio (no Ruby LDAP adapter this
+        // phase); Go still has only the XXE adapter; JavaScript still
+        // has only the Handlebars adapter; Rust / C / Cpp /
+        // TypeScript still carry the Phase-01 empty baseline.
+        for lang in [Lang::Java, Lang::Python, Lang::Php] {
             let registered = registry::adapters_for(lang);
             assert_eq!(
                 registered.len(),
-                3,
-                "{:?} must have the J.1 deserialize + J.2 ssti + J.3 xxe adapters",
+                4,
+                "{:?} must have the J.1 deserialize + J.2 ssti + J.3 xxe + J.4 ldap adapters",
                 lang,
             );
             for adapter in registered {
                 assert_eq!(adapter.lang(), lang);
             }
+        }
+        let ruby_registered = registry::adapters_for(Lang::Ruby);
+        assert_eq!(
+            ruby_registered.len(),
+            3,
+            "Ruby must still carry the J.1 deserialize + J.2 ssti + J.3 xxe adapters",
+        );
+        for adapter in ruby_registered {
+            assert_eq!(adapter.lang(), Lang::Ruby);
         }
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(

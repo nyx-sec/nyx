@@ -561,6 +561,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::XXE {
         return Ok(emit_xxe_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::LDAP_INJECTION {
+        return Ok(emit_ldap_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JavaShape::detect(spec, &entry_source);
@@ -872,6 +875,192 @@ public class NyxHarness {{
         body.append("{{\"render\":\"");
         nyxJsonEscape(rendered, body);
         body.append("\",\"entity_expanded\":").append(nyxLastExpanded ? "true" : "false").append("}}");
+        System.out.println(body.toString());
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 06 — Track J.4 LDAP-injection harness for Java
+/// (`LdapTemplate.search` / `DirContext.search`).
+///
+/// Reads `NYX_PAYLOAD`, splices it into a `(uid=<payload>)` filter
+/// template, evaluates the resulting filter against the in-sandbox
+/// LDAP directory (three users: `alice`, `bob`, `carol`) using the
+/// same RFC-4515 subset the
+/// [`crate::dynamic::stubs::ldap_server`] stub implements, and writes
+/// a `ProbeKind::Ldap { entries_returned }` probe whose `n` is the
+/// count the directory returned.  Mirrors the synthetic-harness
+/// pattern used by Phase 03 / 04 / 05; a future structural fix will
+/// link real `LdapTemplate` / `DirContext` via the published
+/// `NYX_LDAP_ENDPOINT`.
+pub fn emit_ldap_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let source = format!(
+        r#"// Nyx dynamic harness — LDAP_INJECTION LdapTemplate.search (Phase 06 / Track J.4).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+public class NyxHarness {{
+{shim}
+
+    static final String[] NYX_LDAP_USERS = new String[] {{ "alice", "bob", "carol" }};
+
+    static boolean nyxAttrMatch(String pattern, String uid) {{
+        if (pattern.equals("*")) return true;
+        int star = pattern.indexOf('*');
+        if (star < 0) return pattern.equals(uid);
+        String prefix = pattern.substring(0, star);
+        String suffix = pattern.substring(star + 1);
+        return uid.startsWith(prefix) && uid.endsWith(suffix);
+    }}
+
+    static boolean nyxInnerHasBreak(String inner) {{
+        int depth = 0;
+        for (int i = 0; i < inner.length(); i++) {{
+            char c = inner.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')') {{
+                depth--;
+                if (depth < 0) return true;
+            }}
+        }}
+        return false;
+    }}
+
+    static int nyxLdapCount(String filter) {{
+        String f = filter == null ? "" : filter.trim();
+        if (f.isEmpty()) return 0;
+        if (!f.startsWith("(") || !f.endsWith(")")) return NYX_LDAP_USERS.length;
+        String inner = f.substring(1, f.length() - 1);
+        if (nyxInnerHasBreak(inner)) return NYX_LDAP_USERS.length;
+        if (inner.startsWith("&") || inner.startsWith("|")) {{
+            List<String> clauses = nyxSplitClauses(inner.substring(1));
+            int total = 0;
+            for (String u : NYX_LDAP_USERS) {{
+                boolean ok = inner.startsWith("&");
+                for (String c : clauses) {{
+                    boolean m = nyxLdapMatch(c, u);
+                    ok = inner.startsWith("&") ? (ok && m) : (ok || m);
+                }}
+                if (clauses.isEmpty()) ok = false;
+                if (ok) total++;
+            }}
+            return total;
+        }}
+        int eq = inner.indexOf('=');
+        if (eq < 0) return NYX_LDAP_USERS.length;
+        String attr = inner.substring(0, eq);
+        String pattern = inner.substring(eq + 1);
+        if (!attr.equalsIgnoreCase("uid") && !attr.equalsIgnoreCase("cn")) return NYX_LDAP_USERS.length;
+        int total = 0;
+        for (String u : NYX_LDAP_USERS) {{
+            if (nyxAttrMatch(pattern, u)) total++;
+        }}
+        return total;
+    }}
+
+    static boolean nyxLdapMatch(String filter, String uid) {{
+        return nyxLdapCount(filter) > 0
+            ? nyxLdapMatchOne(filter, uid)
+            : false;
+    }}
+
+    static boolean nyxLdapMatchOne(String filter, String uid) {{
+        String f = filter.trim();
+        if (!f.startsWith("(") || !f.endsWith(")")) return true;
+        String inner = f.substring(1, f.length() - 1);
+        if (nyxInnerHasBreak(inner)) return true;
+        if (inner.startsWith("&") || inner.startsWith("|")) {{
+            List<String> clauses = nyxSplitClauses(inner.substring(1));
+            if (clauses.isEmpty()) return false;
+            boolean ok = inner.startsWith("&");
+            for (String c : clauses) {{
+                boolean m = nyxLdapMatchOne(c, uid);
+                ok = inner.startsWith("&") ? (ok && m) : (ok || m);
+            }}
+            return ok;
+        }}
+        int eq = inner.indexOf('=');
+        if (eq < 0) return true;
+        String attr = inner.substring(0, eq);
+        String pattern = inner.substring(eq + 1);
+        if (!attr.equalsIgnoreCase("uid") && !attr.equalsIgnoreCase("cn")) return true;
+        return nyxAttrMatch(pattern, uid);
+    }}
+
+    static List<String> nyxSplitClauses(String src) {{
+        List<String> out = new ArrayList<>();
+        int i = 0;
+        while (i < src.length()) {{
+            if (src.charAt(i) != '(') {{ i++; continue; }}
+            int depth = 0;
+            int start = i;
+            while (i < src.length()) {{
+                char c = src.charAt(i);
+                if (c == '(') depth++;
+                else if (c == ')') {{
+                    depth--;
+                    if (depth == 0) {{ i++; break; }}
+                }}
+                i++;
+            }}
+            out.add(src.substring(start, i));
+        }}
+        return out;
+    }}
+
+    static void nyxLdapProbe(String filter, int entriesReturned) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"LdapTemplate.search\",\"args\":[{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(filter, line);
+        line.append("\"}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"Ldap\",\"entries_returned\":").append(entriesReturned).append("}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("LdapTemplate.search", new String[]{{filter}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        String filter = "(uid=" + payload + ")";
+        int count = nyxLdapCount(filter);
+        nyxLdapProbe(filter, count);
+        System.out.println("__NYX_SINK_HIT__");
+        StringBuilder body = new StringBuilder(64);
+        body.append("{{\"filter\":\"");
+        nyxJsonEscape(filter, body);
+        body.append("\",\"entries_returned\":").append(count).append("}}");
         System.out.println(body.toString());
     }}
 }}

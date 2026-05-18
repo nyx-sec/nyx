@@ -50,6 +50,7 @@ pub mod registry;
 mod cmdi;
 mod deserialize;
 mod fmt_string;
+mod ldap;
 mod path_trav;
 mod sqli;
 mod ssrf;
@@ -88,7 +89,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 7       | 2026-05-17 | Phase 03 / Track J.1: `DESERIALIZE` cap lit for Java / Python / PHP / Ruby; `ProbeKind::Deserialize` + `ProbePredicate::DeserializeGadgetInvoked` |
 /// | 8       | 2026-05-17 | Phase 04 / Track J.2: `SSTI` cap lit for Jinja2 / ERB / Twig / Thymeleaf / Handlebars; `ProbePredicate::TemplateEvalEqual` |
 /// | 9       | 2026-05-17 | Phase 05 / Track J.3: `XXE` cap lit for Java / Python / PHP / Ruby / Go; `ProbeKind::Xxe` + `ProbePredicate::XxeEntityExpanded` |
-pub const CORPUS_VERSION: u32 = 9;
+/// | 10      | 2026-05-17 | Phase 06 / Track J.4: `LDAP_INJECTION` cap lit for Java / Python / PHP; `ProbeKind::Ldap` + `ProbePredicate::LdapResultCountGreaterThan`; `StubKind::Ldap` + in-sandbox LDAP server stub |
+pub const CORPUS_VERSION: u32 = 10;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

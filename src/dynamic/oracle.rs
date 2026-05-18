@@ -239,6 +239,28 @@ pub enum ProbePredicate {
         /// the parser-refusal benign control still confirm.
         require_expanded: bool,
     },
+    /// Phase 06 (Track J.4): LDAP-filter-injection count predicate.
+    ///
+    /// Fires when at least one drained probe carries
+    /// [`ProbeKind::Ldap`] with `entries_returned > n`.  The malicious
+    /// payload (`*)(uid=*`) inflates the filter so the in-sandbox
+    /// [`crate::dynamic::stubs::ldap_server`] stub matches every
+    /// provisioned user (>1 entry).  The benign control quotes the
+    /// filter with `EscapeDN` / `ldap.dn.escape_filter_chars` /
+    /// `ldap_escape` so the stub returns exactly one entry, leaving
+    /// the predicate clear.
+    ///
+    /// Cross-cutting in the same sense as
+    /// [`Self::DeserializeGadgetInvoked`] /
+    /// [`Self::XxeEntityExpanded`] — evaluated across every drained
+    /// probe rather than against a single record.
+    LdapResultCountGreaterThan {
+        /// Threshold the captured `entries_returned` count must exceed
+        /// to fire the predicate.  Typically `1`: the originally-
+        /// intended user is one entry, any additional entries prove
+        /// the filter expanded into an over-broad match.
+        n: u32,
+    },
 }
 
 /// How we decide a sandbox run confirmed the sink fired.
@@ -365,6 +387,20 @@ pub fn oracle_fired_with_stubs(
             if !xxe_cross_ok {
                 return false;
             }
+            // Phase 06 (Track J.4): LDAP filter-injection cross-
+            // cutting predicates.  Each
+            // `LdapResultCountGreaterThan { n }` consults the captured
+            // probe channel for a [`ProbeKind::Ldap`] record whose
+            // `entries_returned` exceeds `n`.
+            let ldap_cross_ok = cross.iter().all(|p| match p {
+                ProbePredicate::LdapResultCountGreaterThan { n } => {
+                    probes_satisfy_ldap_gt(probes, *n)
+                }
+                _ => true,
+            });
+            if !ldap_cross_ok {
+                return false;
+            }
             // Phase 04 (Track J.2): SSTI render-equality cross-cutting
             // predicates.  Each `TemplateEvalEqual { expected }` consults
             // the captured stdout body — see [`stdout_template_equals`].
@@ -392,7 +428,10 @@ pub fn oracle_fired_with_stubs(
         }
         Oracle::SinkCrash { signals } => probes.iter().any(|p| match p.kind {
             ProbeKind::Crash { signal } => signals.contains(signal),
-            ProbeKind::Normal | ProbeKind::Deserialize { .. } | ProbeKind::Xxe { .. } => false,
+            ProbeKind::Normal
+            | ProbeKind::Deserialize { .. }
+            | ProbeKind::Xxe { .. }
+            | ProbeKind::Ldap { .. } => false,
         }),
         Oracle::OutputContains(needle) => {
             let nb = needle.as_bytes();
@@ -418,6 +457,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
             | ProbePredicate::DeserializeGadgetInvoked { .. }
             | ProbePredicate::TemplateEvalEqual { .. }
             | ProbePredicate::XxeEntityExpanded { .. }
+            | ProbePredicate::LdapResultCountGreaterThan { .. }
     )
 }
 
@@ -438,6 +478,10 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         // rather than stub events; evaluated separately in
         // [`probes_satisfy_xxe`] below.
         ProbePredicate::XxeEntityExpanded { .. } => true,
+        // LdapResultCountGreaterThan is cross-cutting against the
+        // *probe log* rather than stub events; evaluated separately
+        // in [`probes_satisfy_ldap_gt`] below.
+        ProbePredicate::LdapResultCountGreaterThan { .. } => true,
         _ => true,
     }
 }
@@ -502,6 +546,15 @@ fn probes_satisfy_xxe(probes: &[SinkProbe], require_expanded: bool) -> bool {
     })
 }
 
+/// True when at least one drained probe is a [`ProbeKind::Ldap`]
+/// record whose `entries_returned` exceeds `n`.
+fn probes_satisfy_ldap_gt(probes: &[SinkProbe], n: u32) -> bool {
+    probes.iter().any(|p| match p.kind {
+        ProbeKind::Ldap { entries_returned } => entries_returned > n,
+        _ => false,
+    })
+}
+
 /// Returns true when `probe` satisfies *every* predicate in `preds`.
 /// An empty predicate slice satisfies vacuously — a payload that wants
 /// "any probe at all" can ship an empty predicate set.
@@ -534,7 +587,8 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         ProbePredicate::StubEventMatches { .. }
         | ProbePredicate::DeserializeGadgetInvoked { .. }
         | ProbePredicate::TemplateEvalEqual { .. }
-        | ProbePredicate::XxeEntityExpanded { .. } => true,
+        | ProbePredicate::XxeEntityExpanded { .. }
+        | ProbePredicate::LdapResultCountGreaterThan { .. } => true,
     }
 }
 
@@ -556,7 +610,10 @@ fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
 pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
     match probe.kind {
         ProbeKind::Crash { signal } => Some(signal),
-        ProbeKind::Normal | ProbeKind::Deserialize { .. } | ProbeKind::Xxe { .. } => None,
+        ProbeKind::Normal
+        | ProbeKind::Deserialize { .. }
+        | ProbeKind::Xxe { .. }
+        | ProbeKind::Ldap { .. } => None,
     }
 }
 

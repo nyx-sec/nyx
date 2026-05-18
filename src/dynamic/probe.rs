@@ -156,6 +156,23 @@ pub enum ProbeKind {
         /// parsed XML output.
         entity_expanded: bool,
     },
+    /// Phase 06 (Track J.4) LDAP-sink observation.  Stamped by the
+    /// per-language LDAP harness shim when the instrumented client
+    /// (`LdapTemplate.search`, `ldap.search_s`, `ldap_search`) issues a
+    /// filter against the in-sandbox
+    /// [`ldap_server`](crate::dynamic::stubs::ldap_server) stub.  The
+    /// shim records the number of directory entries the stub returned
+    /// for the supplied filter — the differential oracle's
+    /// [`crate::dynamic::oracle::ProbePredicate::LdapResultCountGreaterThan`]
+    /// fires when `entries_returned > n`, catching a malicious filter
+    /// (e.g. `*)(uid=*`) that matched more than the originally-intended
+    /// user.  Benign filter-quoted controls produce
+    /// `entries_returned == 1`.
+    Ldap {
+        /// Count of directory entries the stub LDAP server returned
+        /// for the payload's filter.
+        entries_returned: u32,
+    },
 }
 
 impl Default for ProbeKind {

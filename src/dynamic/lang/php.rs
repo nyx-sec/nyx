@@ -424,6 +424,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::XXE {
         return Ok(emit_xxe_harness(spec));
     }
+    // Phase 06 (Track J.4): LDAP_INJECTION-sink short-circuit.
+    if spec.expected_cap == crate::labels::Cap::LDAP_INJECTION {
+        return Ok(emit_ldap_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PhpShape::detect(spec, &entry_source);
@@ -595,6 +599,137 @@ $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
 _nyx_xxe_probe($rendered, $expanded);
 echo "__NYX_SINK_HIT__\n";
 echo json_encode(["render" => $rendered, "entity_expanded" => $expanded]) . "\n";
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 06 — Track J.4 LDAP-injection harness for PHP (`ldap_search`).
+///
+/// Reads `NYX_PAYLOAD`, splices it into a `(uid=<payload>)` filter,
+/// evaluates the filter against the in-sandbox LDAP directory (three
+/// users: `alice`, `bob`, `carol`) using the same RFC-4515 subset the
+/// [`crate::dynamic::stubs::ldap_server`] stub implements, and writes
+/// a `ProbeKind::Ldap { entries_returned }` probe whose `n` is the
+/// count the directory returned.  Mirrors the synthetic-harness
+/// pattern used by Phase 03 / 04 / 05.
+pub fn emit_ldap_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — LDAP_INJECTION ldap_search (Phase 06 / Track J.4).
+{shim}
+
+$NYX_LDAP_USERS = ['alice', 'bob', 'carol'];
+
+function _nyx_attr_match(string $pattern, string $uid): bool {{
+    if ($pattern === '*') return true;
+    $star = strpos($pattern, '*');
+    if ($star === false) return $pattern === $uid;
+    $prefix = substr($pattern, 0, $star);
+    $suffix = substr($pattern, $star + 1);
+    return str_starts_with($uid, $prefix) && str_ends_with($uid, $suffix);
+}}
+
+function _nyx_split_clauses(string $src): array {{
+    $out = [];
+    $i = 0;
+    $n = strlen($src);
+    while ($i < $n) {{
+        if ($src[$i] !== '(') {{ $i++; continue; }}
+        $depth = 0;
+        $start = $i;
+        while ($i < $n) {{
+            $c = $src[$i];
+            if ($c === '(') $depth++;
+            elseif ($c === ')') {{
+                $depth--;
+                if ($depth === 0) {{ $i++; break; }}
+            }}
+            $i++;
+        }}
+        $out[] = substr($src, $start, $i - $start);
+    }}
+    return $out;
+}}
+
+function _nyx_inner_has_break(string $inner): bool {{
+    $depth = 0;
+    $n = strlen($inner);
+    for ($i = 0; $i < $n; $i++) {{
+        $c = $inner[$i];
+        if ($c === '(') $depth++;
+        elseif ($c === ')') {{
+            $depth--;
+            if ($depth < 0) return true;
+        }}
+    }}
+    return false;
+}}
+
+function _nyx_match_one(string $filt, string $uid): bool {{
+    $f = trim($filt);
+    if (!(str_starts_with($f, '(') && str_ends_with($f, ')'))) return true;
+    $inner = substr($f, 1, strlen($f) - 2);
+    if (_nyx_inner_has_break($inner)) return true;
+    if (str_starts_with($inner, '&') || str_starts_with($inner, '|')) {{
+        $clauses = _nyx_split_clauses(substr($inner, 1));
+        if (empty($clauses)) return false;
+        $is_and = str_starts_with($inner, '&');
+        $ok = $is_and;
+        foreach ($clauses as $c) {{
+            $m = _nyx_match_one($c, $uid);
+            $ok = $is_and ? ($ok && $m) : ($ok || $m);
+        }}
+        return $ok;
+    }}
+    $eq = strpos($inner, '=');
+    if ($eq === false) return true;
+    $attr = strtolower(substr($inner, 0, $eq));
+    $pattern = substr($inner, $eq + 1);
+    if ($attr !== 'uid' && $attr !== 'cn') return true;
+    return _nyx_attr_match($pattern, $uid);
+}}
+
+function _nyx_ldap_count(string $filt, array $users): int {{
+    $f = trim($filt);
+    if ($f === '') return 0;
+    if (!(str_starts_with($f, '(') && str_ends_with($f, ')'))) return count($users);
+    $inner = substr($f, 1, strlen($f) - 2);
+    if (_nyx_inner_has_break($inner)) return count($users);
+    $count = 0;
+    foreach ($users as $u) {{
+        if (_nyx_match_one($f, $u)) $count++;
+    }}
+    return $count;
+}}
+
+function _nyx_ldap_probe(string $filt, int $entries_returned): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => 'ldap_search',
+        'args'           => [['kind' => 'String', 'value' => $filt]],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'Ldap', 'entries_returned' => $entries_returned],
+        'witness'        => __nyx_witness('ldap_search', [$filt]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+$filt = '(uid=' . $payload . ')';
+$count = _nyx_ldap_count($filt, $NYX_LDAP_USERS);
+_nyx_ldap_probe($filt, $count);
+echo "__NYX_SINK_HIT__\n";
+echo json_encode(['filter' => $filt, 'entries_returned' => $count]) . "\n";
 "#
     );
     HarnessSource {

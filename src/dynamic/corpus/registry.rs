@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::{cmdi, deserialize, fmt_string, path_trav, sqli, ssrf, ssti, xss, xxe};
+use super::{cmdi, deserialize, fmt_string, ldap, path_trav, sqli, ssrf, ssti, xss, xxe};
 use super::{CapCorpus, CuratedPayload, Oracle};
 use crate::dynamic::oracle::ProbePredicate;
 use crate::labels::Cap;
@@ -40,7 +40,6 @@ pub const CORPUS_UNSUPPORTED_LANG_NEUTRAL: u32 = Cap::ENV_VAR.bits()
     | Cap::CRYPTO.bits()
     | Cap::UNAUTHORIZED_ID.bits()
     | Cap::DATA_EXFIL.bits()
-    | Cap::LDAP_INJECTION.bits()
     | Cap::XPATH_INJECTION.bits()
     | Cap::HEADER_INJECTION.bits()
     | Cap::OPEN_REDIRECT.bits()
@@ -69,6 +68,9 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::XXE, Lang::Php, xxe::php::PAYLOADS),
     (Cap::XXE, Lang::Ruby, xxe::ruby::PAYLOADS),
     (Cap::XXE, Lang::Go, xxe::go::PAYLOADS),
+    (Cap::LDAP_INJECTION, Lang::Java, ldap::java::PAYLOADS),
+    (Cap::LDAP_INJECTION, Lang::Python, ldap::python::PAYLOADS),
+    (Cap::LDAP_INJECTION, Lang::Php, ldap::php::PAYLOADS),
 ];
 
 /// Reserved for per-cap oracle defaults.  Empty in Phase 02; populated by
@@ -278,6 +280,7 @@ mod tests {
         assert!(!payloads_for(Cap::DESERIALIZE).is_empty());
         assert!(!payloads_for(Cap::SSTI).is_empty());
         assert!(!payloads_for(Cap::XXE).is_empty());
+        assert!(!payloads_for(Cap::LDAP_INJECTION).is_empty());
     }
 
     #[test]
@@ -290,7 +293,6 @@ mod tests {
             Cap::CRYPTO,
             Cap::UNAUTHORIZED_ID,
             Cap::DATA_EXFIL,
-            Cap::LDAP_INJECTION,
             Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
@@ -325,6 +327,7 @@ mod tests {
             Cap::DESERIALIZE,
             Cap::SSTI,
             Cap::XXE,
+            Cap::LDAP_INJECTION,
         ] {
             let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
             assert!(has_vuln, "{cap:?} must have at least one vuln payload");
@@ -374,6 +377,7 @@ mod tests {
             Cap::DESERIALIZE,
             Cap::SSTI,
             Cap::XXE,
+            Cap::LDAP_INJECTION,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -398,6 +402,7 @@ mod tests {
             Cap::DESERIALIZE,
             Cap::SSTI,
             Cap::XXE,
+            Cap::LDAP_INJECTION,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -509,6 +514,7 @@ mod tests {
             Cap::DESERIALIZE,
             Cap::SSTI,
             Cap::XXE,
+            Cap::LDAP_INJECTION,
         ];
         for cap in caps {
             for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
@@ -673,6 +679,49 @@ mod tests {
                 .expect("each lang must have an XXE vuln payload");
             let resolved = super::resolve_benign_control_lang(vuln, Cap::XXE, lang)
                 .expect("lang-aware benign control must resolve");
+            assert!(resolved.is_benign);
+        }
+    }
+
+    #[test]
+    fn ldap_has_per_lang_slices_for_phase_06() {
+        // Phase 06 (Track J.4) acceptance: LDAP_INJECTION registers
+        // payloads in Java / Python / PHP and the lang-aware lookup
+        // never returns empty for any of them.
+        for lang in [Lang::Java, Lang::Python, Lang::Php] {
+            assert!(
+                !payloads_for_lang(Cap::LDAP_INJECTION, lang).is_empty(),
+                "LDAP_INJECTION must have at least one payload for {lang:?}",
+            );
+        }
+        // Rust / C / Cpp / Ruby / Go / JS / TS not yet covered.
+        for lang in [
+            Lang::Rust,
+            Lang::C,
+            Lang::Cpp,
+            Lang::Ruby,
+            Lang::Go,
+            Lang::JavaScript,
+            Lang::TypeScript,
+        ] {
+            assert!(
+                payloads_for_lang(Cap::LDAP_INJECTION, lang).is_empty(),
+                "LDAP_INJECTION has unexpected payloads for {lang:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ldap_payloads_pair_benign_controls_per_lang() {
+        for lang in [Lang::Java, Lang::Python, Lang::Php] {
+            let slice = payloads_for_lang(Cap::LDAP_INJECTION, lang);
+            let vuln = slice
+                .iter()
+                .find(|p| !p.is_benign)
+                .expect("each lang must have an LDAP vuln payload");
+            let resolved =
+                super::resolve_benign_control_lang(vuln, Cap::LDAP_INJECTION, lang)
+                    .expect("lang-aware benign control must resolve");
             assert!(resolved.is_benign);
         }
     }

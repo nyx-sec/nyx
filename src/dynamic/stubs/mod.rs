@@ -53,11 +53,13 @@
 
 pub mod filesystem;
 pub mod http;
+pub mod ldap_server;
 pub mod redis;
 pub mod sql;
 
 pub use filesystem::FilesystemStub;
 pub use http::HttpStub;
+pub use ldap_server::LdapStub;
 pub use redis::RedisStub;
 pub use sql::SqlStub;
 
@@ -83,6 +85,11 @@ pub enum StubKind {
     /// Sandbox-local fake filesystem root. Endpoint is an absolute
     /// directory path that the harness is expected to use as its root.
     Filesystem,
+    /// Minimal in-sandbox LDAP server stub (Phase 06 — Track J.4).
+    /// Endpoint is `127.0.0.1:{port}`; the wire protocol is the text
+    /// one-liner documented in
+    /// [`crate::dynamic::stubs::ldap_server`].
+    Ldap,
 }
 
 impl StubKind {
@@ -96,6 +103,7 @@ impl StubKind {
             StubKind::Http => "NYX_HTTP_ENDPOINT",
             StubKind::Redis => "NYX_REDIS_ENDPOINT",
             StubKind::Filesystem => "NYX_FS_ROOT",
+            StubKind::Ldap => ldap_server::LDAP_ENDPOINT_ENV_VAR,
         }
     }
 
@@ -108,6 +116,7 @@ impl StubKind {
             StubKind::Http => "http",
             StubKind::Redis => "redis",
             StubKind::Filesystem => "filesystem",
+            StubKind::Ldap => "ldap",
         }
     }
 
@@ -127,6 +136,9 @@ impl StubKind {
         }
         if cap.contains(Cap::FILE_IO) {
             out.push(StubKind::Filesystem);
+        }
+        if cap.contains(Cap::LDAP_INJECTION) {
+            out.push(StubKind::Ldap);
         }
         out
     }
@@ -244,6 +256,7 @@ impl StubHarness {
                 StubKind::Http => Arc::new(HttpStub::start(workdir)?),
                 StubKind::Redis => Arc::new(RedisStub::start()?),
                 StubKind::Filesystem => Arc::new(FilesystemStub::start(workdir)?),
+                StubKind::Ldap => Arc::new(LdapStub::start()?),
             };
             stubs.push(stub);
         }
