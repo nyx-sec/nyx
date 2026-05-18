@@ -449,6 +449,14 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_xpath_harness(spec));
     }
 
+    // Phase 08 (Track J.6): HEADER_INJECTION-sink short-circuit.  The
+    // synthetic harness calls an instrumented `res.setHeader` shim
+    // that records the unmodified value bytes via a
+    // `ProbeKind::HeaderEmit` probe.
+    if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
+        return Ok(emit_header_injection_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JsShape::detect(spec, &entry_source);
     let entry_subpath = entry_subpath_for_shape(shape, is_typescript);
@@ -606,6 +614,58 @@ console.log(JSON.stringify({{ expr: expr, nodes_returned: nodes }}));
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
         extra_files,
+        entry_subpath: None,
+    }
+}
+
+/// Phase 08 — Track J.6 header-injection harness for Node
+/// (`http.ServerResponse#setHeader`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `res.setHeader('Set-Cookie', value)` shim that records the
+/// *unmodified* value bytes (including any embedded `\r\n`) via a
+/// `ProbeKind::HeaderEmit` probe.  Mirrors the synthetic-harness
+/// pattern used by Phase 03 / 04 / 05 / 06 / 07.
+pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"// Nyx dynamic harness — HEADER_INJECTION http.ServerResponse#setHeader (Phase 08 / Track J.6).
+{shim}
+
+function nyxHeaderProbe(name, value) {{
+  const p = process.env.NYX_PROBE_PATH;
+  if (!p) return;
+  const rec = {{
+    sink_callee: 'http.ServerResponse#setHeader',
+    args: [
+      {{ kind: 'String', value: name }},
+      {{ kind: 'String', value: value }},
+    ],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{ kind: 'HeaderEmit', name: name, value: value }},
+    witness: __nyx_witness('http.ServerResponse#setHeader', [name, value]),
+  }};
+  try {{
+    require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
+  }} catch (e) {{
+    // best-effort
+  }}
+}}
+
+const payload = process.env.NYX_PAYLOAD || '';
+const name = 'Set-Cookie';
+const value = payload;
+nyxHeaderProbe(name, value);
+console.log('__NYX_SINK_HIT__');
+console.log(JSON.stringify({{ name: name, value: value }}));
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
         entry_subpath: None,
     }
 }

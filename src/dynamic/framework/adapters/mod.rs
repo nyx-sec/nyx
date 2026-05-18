@@ -11,6 +11,13 @@
 //! the route / framework adapters; the per-cap sink adapters live
 //! here so the per-language verticals can ship independently.
 
+pub mod header_go;
+pub mod header_java;
+pub mod header_js;
+pub mod header_php;
+pub mod header_python;
+pub mod header_ruby;
+pub mod header_rust;
 pub mod java_deserialize;
 pub mod java_thymeleaf;
 pub mod js_handlebars;
@@ -33,6 +40,13 @@ pub mod xxe_php;
 pub mod xxe_python;
 pub mod xxe_ruby;
 
+pub use header_go::HeaderGoAdapter;
+pub use header_java::HeaderJavaAdapter;
+pub use header_js::HeaderJsAdapter;
+pub use header_php::HeaderPhpAdapter;
+pub use header_python::HeaderPythonAdapter;
+pub use header_ruby::HeaderRubyAdapter;
+pub use header_rust::HeaderRustAdapter;
 pub use java_deserialize::JavaDeserializeAdapter;
 pub use java_thymeleaf::JavaThymeleafAdapter;
 pub use js_handlebars::JsHandlebarsAdapter;

@@ -239,6 +239,32 @@ pub enum ProbePredicate {
         /// the parser-refusal benign control still confirm.
         require_expanded: bool,
     },
+    /// Phase 08 (Track J.6): HTTP response-header CRLF-injection
+    /// predicate.
+    ///
+    /// Fires when at least one drained probe carries
+    /// [`ProbeKind::HeaderEmit`] whose `name` equals `header_name` (or
+    /// `header_name` is the wildcard `"*"`) and whose `value` contains
+    /// a literal `\r\n` byte pair.  The vuln payload splices `\r\n`
+    /// followed by an injected header line into the response writer's
+    /// value argument; the per-language harness's instrumented
+    /// `setHeader` records the unmodified bytes the host process
+    /// passed in.  The benign control passes the same logical value
+    /// through `URLEncoder.encode` / `urllib.parse.quote`, so the
+    /// captured value carries `%0d%0a` (not the raw bytes) and the
+    /// predicate stays clear.
+    ///
+    /// Cross-cutting in the same sense as
+    /// [`Self::DeserializeGadgetInvoked`] /
+    /// [`Self::XxeEntityExpanded`] /
+    /// [`Self::QueryResultCountGreaterThan`] — evaluated across every
+    /// drained probe rather than against a single record.
+    HeaderInjected {
+        /// Header name the malicious payload targets (e.g.
+        /// `"Set-Cookie"`, `"Location"`).  Use `"*"` to satisfy on any
+        /// captured header whose value contains the CRLF pair.
+        header_name: &'static str,
+    },
     /// Phase 06 (Track J.4) / Phase 07 (Track J.5): result-count
     /// predicate shared by LDAP-filter and XPath-expression injection.
     ///
@@ -404,6 +430,20 @@ pub fn oracle_fired_with_stubs(
             if !query_count_cross_ok {
                 return false;
             }
+            // Phase 08 (Track J.6): header-injection cross-cutting
+            // predicates.  Each `HeaderInjected { header_name }`
+            // consults the captured probe channel for a
+            // [`ProbeKind::HeaderEmit`] record whose `name` matches
+            // and whose `value` contains a literal CRLF byte pair.
+            let header_injected_ok = cross.iter().all(|p| match p {
+                ProbePredicate::HeaderInjected { header_name } => {
+                    probes_satisfy_header_injected(probes, header_name)
+                }
+                _ => true,
+            });
+            if !header_injected_ok {
+                return false;
+            }
             // Phase 04 (Track J.2): SSTI render-equality cross-cutting
             // predicates.  Each `TemplateEvalEqual { expected }` consults
             // the captured stdout body — see [`stdout_template_equals`].
@@ -429,13 +469,14 @@ pub fn oracle_fired_with_stubs(
                     .any(|p| per_probe.iter().all(|pred| probe_satisfies_one(p, pred))),
             }
         }
-        Oracle::SinkCrash { signals } => probes.iter().any(|p| match p.kind {
-            ProbeKind::Crash { signal } => signals.contains(signal),
+        Oracle::SinkCrash { signals } => probes.iter().any(|p| match &p.kind {
+            ProbeKind::Crash { signal } => signals.contains(*signal),
             ProbeKind::Normal
             | ProbeKind::Deserialize { .. }
             | ProbeKind::Xxe { .. }
             | ProbeKind::Ldap { .. }
-            | ProbeKind::Xpath { .. } => false,
+            | ProbeKind::Xpath { .. }
+            | ProbeKind::HeaderEmit { .. } => false,
         }),
         Oracle::OutputContains(needle) => {
             let nb = needle.as_bytes();
@@ -462,6 +503,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
             | ProbePredicate::TemplateEvalEqual { .. }
             | ProbePredicate::XxeEntityExpanded { .. }
             | ProbePredicate::QueryResultCountGreaterThan { .. }
+            | ProbePredicate::HeaderInjected { .. }
     )
 }
 
@@ -486,6 +528,10 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         // *probe log* rather than stub events; evaluated separately
         // in [`probes_satisfy_count_gt`] below.
         ProbePredicate::QueryResultCountGreaterThan { .. } => true,
+        // HeaderInjected is cross-cutting against the *probe log*
+        // rather than stub events; evaluated separately in
+        // [`probes_satisfy_header_injected`] below.
+        ProbePredicate::HeaderInjected { .. } => true,
         _ => true,
     }
 }
@@ -533,9 +579,9 @@ fn stdout_template_equals(stdout: &[u8], expected: u64) -> bool {
 /// True when at least one drained probe is a
 /// [`ProbeKind::Deserialize`] record matching `require_invoked`.
 fn probes_satisfy_deserialize(probes: &[SinkProbe], require_invoked: bool) -> bool {
-    probes.iter().any(|p| match p.kind {
+    probes.iter().any(|p| match &p.kind {
         ProbeKind::Deserialize { gadget_chain_invoked } => {
-            gadget_chain_invoked == require_invoked
+            *gadget_chain_invoked == require_invoked
         }
         _ => false,
     })
@@ -544,8 +590,8 @@ fn probes_satisfy_deserialize(probes: &[SinkProbe], require_invoked: bool) -> bo
 /// True when at least one drained probe is a [`ProbeKind::Xxe`]
 /// record matching `require_expanded`.
 fn probes_satisfy_xxe(probes: &[SinkProbe], require_expanded: bool) -> bool {
-    probes.iter().any(|p| match p.kind {
-        ProbeKind::Xxe { entity_expanded } => entity_expanded == require_expanded,
+    probes.iter().any(|p| match &p.kind {
+        ProbeKind::Xxe { entity_expanded } => *entity_expanded == require_expanded,
         _ => false,
     })
 }
@@ -555,9 +601,24 @@ fn probes_satisfy_xxe(probes: &[SinkProbe], require_expanded: bool) -> bool {
 /// (`entries_returned > n`) and [`ProbeKind::Xpath`]
 /// (`nodes_returned > n`).
 fn probes_satisfy_count_gt(probes: &[SinkProbe], n: u32) -> bool {
-    probes.iter().any(|p| match p.kind {
-        ProbeKind::Ldap { entries_returned } => entries_returned > n,
-        ProbeKind::Xpath { nodes_returned } => nodes_returned > n,
+    probes.iter().any(|p| match &p.kind {
+        ProbeKind::Ldap { entries_returned } => *entries_returned > n,
+        ProbeKind::Xpath { nodes_returned } => *nodes_returned > n,
+        _ => false,
+    })
+}
+
+/// True when at least one drained probe is a
+/// [`ProbeKind::HeaderEmit`] record whose `name` matches `header_name`
+/// (or `header_name == "*"`) and whose `value` contains a literal
+/// `\r\n` byte pair.  Powers
+/// [`ProbePredicate::HeaderInjected`] (Phase 08 — Track J.6).
+fn probes_satisfy_header_injected(probes: &[SinkProbe], header_name: &str) -> bool {
+    probes.iter().any(|p| match &p.kind {
+        ProbeKind::HeaderEmit { name, value } => {
+            (header_name == "*" || name.eq_ignore_ascii_case(header_name))
+                && value.contains("\r\n")
+        }
         _ => false,
     })
 }
@@ -595,7 +656,8 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         | ProbePredicate::DeserializeGadgetInvoked { .. }
         | ProbePredicate::TemplateEvalEqual { .. }
         | ProbePredicate::XxeEntityExpanded { .. }
-        | ProbePredicate::QueryResultCountGreaterThan { .. } => true,
+        | ProbePredicate::QueryResultCountGreaterThan { .. }
+        | ProbePredicate::HeaderInjected { .. } => true,
     }
 }
 
@@ -615,13 +677,14 @@ fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
 /// `Inconclusive(UnrelatedCrash)`) from "process crashed and a sink-site
 /// probe matched" (→ `Confirmed` via `Oracle::SinkCrash`).
 pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
-    match probe.kind {
-        ProbeKind::Crash { signal } => Some(signal),
+    match &probe.kind {
+        ProbeKind::Crash { signal } => Some(*signal),
         ProbeKind::Normal
         | ProbeKind::Deserialize { .. }
         | ProbeKind::Xxe { .. }
         | ProbeKind::Ldap { .. }
-        | ProbeKind::Xpath { .. } => None,
+        | ProbeKind::Xpath { .. }
+        | ProbeKind::HeaderEmit { .. } => None,
     }
 }
 

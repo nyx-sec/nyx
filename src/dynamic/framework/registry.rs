@@ -44,18 +44,23 @@ pub fn adapters_for(lang: Lang) -> &'static [&'static dyn FrameworkAdapter] {
 // listed in alphabetical order of [`FrameworkAdapter::name`] so a
 // later phase that appends a new adapter cannot silently re-order
 // the existing first-match.
-static RUST: &[&dyn FrameworkAdapter] = &[];
+static RUST: &[&dyn FrameworkAdapter] = &[&super::adapters::HeaderRustAdapter];
 static C: &[&dyn FrameworkAdapter] = &[];
 static CPP: &[&dyn FrameworkAdapter] = &[];
 static JAVA: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::HeaderJavaAdapter,
     &super::adapters::JavaDeserializeAdapter,
     &super::adapters::JavaThymeleafAdapter,
     &super::adapters::LdapSpringAdapter,
     &super::adapters::XpathJavaAdapter,
     &super::adapters::XxeJavaAdapter,
 ];
-static GO: &[&dyn FrameworkAdapter] = &[&super::adapters::XxeGoAdapter];
+static GO: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::HeaderGoAdapter,
+    &super::adapters::XxeGoAdapter,
+];
 static PHP: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::HeaderPhpAdapter,
     &super::adapters::LdapPhpAdapter,
     &super::adapters::PhpTwigAdapter,
     &super::adapters::PhpUnserializeAdapter,
@@ -63,6 +68,7 @@ static PHP: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxePhpAdapter,
 ];
 static PYTHON: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::HeaderPythonAdapter,
     &super::adapters::LdapPythonAdapter,
     &super::adapters::PythonJinja2Adapter,
     &super::adapters::PythonPickleAdapter,
@@ -70,12 +76,14 @@ static PYTHON: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxePythonAdapter,
 ];
 static RUBY: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::HeaderRubyAdapter,
     &super::adapters::RubyErbAdapter,
     &super::adapters::RubyMarshalAdapter,
     &super::adapters::XxeRubyAdapter,
 ];
 static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[];
 static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::HeaderJsAdapter,
     &super::adapters::JsHandlebarsAdapter,
     &super::adapters::XpathJsAdapter,
 ];

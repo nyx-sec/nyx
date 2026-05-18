@@ -1,0 +1,429 @@
+//! Phase 08 (Track J.6) — HEADER_INJECTION corpus acceptance.
+//!
+//! Asserts the new cap end-to-end: corpus slices register per-language
+//! vuln/benign pairs for Java / Python / PHP / Ruby / JavaScript / Go /
+//! Rust, the lang-aware resolver pairs them inside the correct slice,
+//! the per-language harness emitters splice in the synthetic
+//! `setHeader` shim + `HeaderEmit` probe + sink-hit sentinel, the
+//! framework adapters fire on the canonical sink call, and the
+//! `HeaderInjected` predicate fires only on probes whose value
+//! carries a literal `\r\n` byte pair.
+//!
+//! `cargo nextest run --features dynamic --test header_injection_corpus`.
+
+#![cfg(feature = "dynamic")]
+
+mod common;
+
+use nyx_scanner::dynamic::corpus::{
+    audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
+    resolve_benign_control_lang, Oracle,
+};
+use nyx_scanner::dynamic::framework::registry::adapters_for;
+use nyx_scanner::dynamic::lang;
+use nyx_scanner::dynamic::oracle::{oracle_fired, ProbePredicate};
+use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
+use nyx_scanner::dynamic::sandbox::SandboxOutcome;
+use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+use nyx_scanner::labels::Cap;
+use nyx_scanner::summary::FuncSummary;
+use nyx_scanner::symbol::Lang;
+use std::time::Duration;
+
+const LANGS: &[Lang] = &[
+    Lang::Java,
+    Lang::Python,
+    Lang::Php,
+    Lang::Ruby,
+    Lang::JavaScript,
+    Lang::Go,
+    Lang::Rust,
+];
+
+fn make_spec(lang: Lang, entry_file: &str, entry_name: &str) -> HarnessSpec {
+    HarnessSpec {
+        finding_id: "phase08test0001".into(),
+        entry_file: entry_file.into(),
+        entry_name: entry_name.into(),
+        entry_kind: EntryKind::Function,
+        lang,
+        toolchain_id: "phase08".into(),
+        payload_slot: PayloadSlot::Param(0),
+        expected_cap: Cap::HEADER_INJECTION,
+        constraint_hints: vec![],
+        sink_file: entry_file.into(),
+        sink_line: 1,
+        spec_hash: "phase08test0001".into(),
+        derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
+        stubs_required: vec![],
+        framework: None,
+    }
+}
+
+#[test]
+fn corpus_registers_header_injection_for_every_supported_lang() {
+    for lang in LANGS {
+        let slice = payloads_for_lang(Cap::HEADER_INJECTION, *lang);
+        assert!(
+            !slice.is_empty(),
+            "HEADER_INJECTION has no payloads for {lang:?}"
+        );
+        let has_vuln = slice.iter().any(|p| !p.is_benign);
+        let has_benign = slice.iter().any(|p| p.is_benign);
+        assert!(has_vuln, "{lang:?} HEADER_INJECTION missing vuln payload");
+        assert!(
+            has_benign,
+            "{lang:?} HEADER_INJECTION missing benign control"
+        );
+    }
+}
+
+#[test]
+fn header_injection_unsupported_caps_unchanged_for_other_langs() {
+    for lang in [Lang::C, Lang::Cpp, Lang::TypeScript] {
+        assert!(
+            payloads_for_lang(Cap::HEADER_INJECTION, lang).is_empty(),
+            "unexpected HEADER_INJECTION payloads for {lang:?}",
+        );
+    }
+}
+
+#[test]
+fn benign_control_resolves_within_lang_slice() {
+    for lang in LANGS {
+        let slice = payloads_for_lang(Cap::HEADER_INJECTION, *lang);
+        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        let resolved = resolve_benign_control_lang(vuln, Cap::HEADER_INJECTION, *lang)
+            .expect("paired control");
+        assert!(resolved.is_benign);
+        let direct = benign_payload_for_lang(Cap::HEADER_INJECTION, *lang).unwrap();
+        assert_eq!(direct.label, resolved.label);
+    }
+}
+
+#[test]
+fn payload_oracle_carries_header_injected_predicate() {
+    for lang in LANGS {
+        let slice = payloads_for_lang(Cap::HEADER_INJECTION, *lang);
+        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        match &vuln.oracle {
+            Oracle::SinkProbe { predicates } => {
+                assert!(
+                    predicates.iter().any(|p| matches!(
+                        p,
+                        ProbePredicate::HeaderInjected {
+                            header_name: "Set-Cookie"
+                        }
+                    )),
+                    "{lang:?} vuln payload missing HeaderInjected predicate",
+                );
+            }
+            other => panic!("expected SinkProbe oracle for {lang:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn vuln_payload_bytes_carry_crlf_benign_bytes_do_not() {
+    // Vuln payload carries raw `\r\n`; benign control carries the
+    // URL-encoded `%0D%0A` form instead.
+    for lang in LANGS {
+        let slice = payloads_for_lang(Cap::HEADER_INJECTION, *lang);
+        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        let benign = slice.iter().find(|p| p.is_benign).unwrap();
+        assert!(
+            vuln.bytes.windows(2).any(|w| w == b"\r\n"),
+            "{lang:?} vuln payload must carry a raw CRLF pair",
+        );
+        assert!(
+            !benign.bytes.windows(2).any(|w| w == b"\r\n"),
+            "{lang:?} benign control must NOT carry a raw CRLF pair",
+        );
+        let benign_text = std::str::from_utf8(benign.bytes).unwrap();
+        assert!(
+            benign_text.contains("%0D%0A") || benign_text.contains("%0d%0a"),
+            "{lang:?} benign control must URL-encode the CRLF as %0D%0A",
+        );
+    }
+}
+
+#[test]
+fn marker_collisions_clean_with_phase_08_additions() {
+    assert!(audit_marker_collisions().is_empty());
+}
+
+#[test]
+fn probe_kind_header_emit_serdes() {
+    let original = ProbeKind::HeaderEmit {
+        name: "Set-Cookie".into(),
+        value: "nyx-session\r\nSet-Cookie: nyx-injected=pwn".into(),
+    };
+    let json = serde_json::to_string(&original).unwrap();
+    assert!(json.contains("HeaderEmit"));
+    assert!(json.contains("name"));
+    assert!(json.contains("value"));
+    let parsed: ProbeKind = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, original);
+}
+
+#[test]
+fn header_injected_predicate_fires_on_crlf_value() {
+    let oracle = Oracle::SinkProbe {
+        predicates: &[ProbePredicate::HeaderInjected {
+            header_name: "Set-Cookie",
+        }],
+    };
+    let probes = vec![SinkProbe {
+        sink_callee: "HttpServletResponse.setHeader".into(),
+        args: vec![],
+        captured_at_ns: 1,
+        payload_id: "phase08".into(),
+        kind: ProbeKind::HeaderEmit {
+            name: "Set-Cookie".into(),
+            value: "nyx-session\r\nSet-Cookie: nyx-injected=pwn".into(),
+        },
+        witness: ProbeWitness::empty(),
+    }];
+    let outcome = SandboxOutcome {
+        exit_code: Some(0),
+        stdout: vec![],
+        stderr: vec![],
+        timed_out: false,
+        oob_callback_seen: false,
+        sink_hit: true,
+        duration: Duration::from_millis(1),
+        hardening_outcome: None,
+    };
+    assert!(oracle_fired(&oracle, &outcome, &probes));
+}
+
+#[test]
+fn header_injected_predicate_clear_when_value_is_url_encoded() {
+    let oracle = Oracle::SinkProbe {
+        predicates: &[ProbePredicate::HeaderInjected {
+            header_name: "Set-Cookie",
+        }],
+    };
+    let probes = vec![SinkProbe {
+        sink_callee: "HttpServletResponse.setHeader".into(),
+        args: vec![],
+        captured_at_ns: 1,
+        payload_id: "phase08".into(),
+        kind: ProbeKind::HeaderEmit {
+            name: "Set-Cookie".into(),
+            value: "nyx-session%0D%0ASet-Cookie%3A%20nyx-injected%3Dpwn".into(),
+        },
+        witness: ProbeWitness::empty(),
+    }];
+    let outcome = SandboxOutcome {
+        exit_code: Some(0),
+        stdout: vec![],
+        stderr: vec![],
+        timed_out: false,
+        oob_callback_seen: false,
+        sink_hit: true,
+        duration: Duration::from_millis(1),
+        hardening_outcome: None,
+    };
+    assert!(!oracle_fired(&oracle, &outcome, &probes));
+}
+
+#[test]
+fn header_injected_predicate_clear_on_unrelated_header() {
+    // Predicate pins `Set-Cookie`; a CRLF-carrying value emitted on a
+    // different header name must not satisfy.
+    let oracle = Oracle::SinkProbe {
+        predicates: &[ProbePredicate::HeaderInjected {
+            header_name: "Set-Cookie",
+        }],
+    };
+    let probes = vec![SinkProbe {
+        sink_callee: "HttpServletResponse.setHeader".into(),
+        args: vec![],
+        captured_at_ns: 1,
+        payload_id: "phase08".into(),
+        kind: ProbeKind::HeaderEmit {
+            name: "X-Trace-Id".into(),
+            value: "trace\r\nX-Injected: 1".into(),
+        },
+        witness: ProbeWitness::empty(),
+    }];
+    let outcome = SandboxOutcome {
+        exit_code: Some(0),
+        stdout: vec![],
+        stderr: vec![],
+        timed_out: false,
+        oob_callback_seen: false,
+        sink_hit: true,
+        duration: Duration::from_millis(1),
+        hardening_outcome: None,
+    };
+    assert!(!oracle_fired(&oracle, &outcome, &probes));
+}
+
+#[test]
+fn lang_emitter_dispatches_to_header_injection_harness() {
+    // Per-lang `sink_callee_marker` pins which response writer the
+    // harness names in its probe record.
+    for (lang, entry_file, entry_name, sink_callee_marker) in [
+        (
+            Lang::Java,
+            "tests/dynamic_fixtures/header_injection/java/Vuln.java",
+            "run",
+            "HttpServletResponse.setHeader",
+        ),
+        (
+            Lang::Python,
+            "tests/dynamic_fixtures/header_injection/python/vuln.py",
+            "run",
+            "flask.Response.headers.__setitem__",
+        ),
+        (
+            Lang::Php,
+            "tests/dynamic_fixtures/header_injection/php/vuln.php",
+            "run",
+            "header()",
+        ),
+        (
+            Lang::Ruby,
+            "tests/dynamic_fixtures/header_injection/ruby/vuln.rb",
+            "run",
+            "Rack::Response#set_header",
+        ),
+        (
+            Lang::JavaScript,
+            "tests/dynamic_fixtures/header_injection/js/vuln.js",
+            "run",
+            "http.ServerResponse#setHeader",
+        ),
+        (
+            Lang::Go,
+            "tests/dynamic_fixtures/header_injection/go/vuln.go",
+            "Run",
+            "http.ResponseWriter.Header.Set",
+        ),
+        (
+            Lang::Rust,
+            "tests/dynamic_fixtures/header_injection/rust/vuln.rs",
+            "run",
+            "HeaderMap::insert",
+        ),
+    ] {
+        let spec = make_spec(lang, entry_file, entry_name);
+        let harness = lang::emit(&spec)
+            .unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
+        assert!(
+            harness.source.contains("HeaderEmit"),
+            "{lang:?} header harness must carry the HeaderEmit probe kind",
+        );
+        assert!(
+            harness.source.contains(sink_callee_marker),
+            "{lang:?} header harness must name {sink_callee_marker:?} as the sink callee",
+        );
+        assert!(
+            harness.source.contains("__NYX_SINK_HIT__"),
+            "{lang:?} header harness must emit the sink-hit sentinel",
+        );
+        assert!(
+            harness.source.contains("Set-Cookie"),
+            "{lang:?} header harness must set the Set-Cookie header",
+        );
+    }
+}
+
+#[test]
+fn framework_adapters_detect_header_sink() {
+    // Each lang registers its J.6 header adapter; detect_binding routes
+    // through the registry and stamps an EntryKind::Function binding
+    // when the fixture contains the canonical sink call.
+    for (lang, fixture, sink_callee) in [
+        (
+            Lang::Java,
+            "tests/dynamic_fixtures/header_injection/java/Vuln.java",
+            "setHeader",
+        ),
+        (
+            Lang::Python,
+            "tests/dynamic_fixtures/header_injection/python/vuln.py",
+            "__setitem__",
+        ),
+        (
+            Lang::Php,
+            "tests/dynamic_fixtures/header_injection/php/vuln.php",
+            "header",
+        ),
+        (
+            Lang::Ruby,
+            "tests/dynamic_fixtures/header_injection/ruby/vuln.rb",
+            "set_header",
+        ),
+        (
+            Lang::JavaScript,
+            "tests/dynamic_fixtures/header_injection/js/vuln.js",
+            "setHeader",
+        ),
+        (
+            Lang::Go,
+            "tests/dynamic_fixtures/header_injection/go/vuln.go",
+            "Set",
+        ),
+        (
+            Lang::Rust,
+            "tests/dynamic_fixtures/header_injection/rust/vuln.rs",
+            "insert",
+        ),
+    ] {
+        let bytes = std::fs::read(fixture).expect("fixture exists");
+        let ts_lang = ts_language_for(lang);
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang).unwrap();
+        let tree = parser.parse(&bytes, None).unwrap();
+        let mut summary = FuncSummary {
+            name: "run".into(),
+            file_path: fixture.to_owned(),
+            lang: slug(lang).into(),
+            ..Default::default()
+        };
+        summary
+            .callees
+            .push(nyx_scanner::summary::CalleeSite::bare(sink_callee));
+        let registry_slice = adapters_for(lang);
+        assert!(!registry_slice.is_empty(), "{lang:?} adapter slice empty");
+        let binding = nyx_scanner::dynamic::framework::detect_binding(
+            &summary,
+            tree.root_node(),
+            &bytes,
+            lang,
+        );
+        let b = binding
+            .unwrap_or_else(|| panic!("{lang:?} adapter must detect the header fixture"));
+        assert_eq!(b.kind, EntryKind::Function);
+        assert!(!b.adapter.is_empty());
+    }
+}
+
+fn ts_language_for(lang: Lang) -> tree_sitter::Language {
+    match lang {
+        Lang::Java => tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
+        Lang::Python => tree_sitter::Language::from(tree_sitter_python::LANGUAGE),
+        Lang::Php => tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP),
+        Lang::Ruby => tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE),
+        Lang::JavaScript => tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
+        Lang::Go => tree_sitter::Language::from(tree_sitter_go::LANGUAGE),
+        Lang::Rust => tree_sitter::Language::from(tree_sitter_rust::LANGUAGE),
+        other => panic!("unsupported test lang {other:?}"),
+    }
+}
+
+fn slug(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Java => "java",
+        Lang::Python => "python",
+        Lang::Php => "php",
+        Lang::Ruby => "ruby",
+        Lang::JavaScript => "javascript",
+        Lang::Go => "go",
+        Lang::Rust => "rust",
+        _ => "other",
+    }
+}

@@ -640,6 +640,16 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_xpath_harness(spec));
     }
 
+    // Phase 08 (Track J.6): short-circuit to the header-injection
+    // harness when the spec's expected cap is HEADER_INJECTION.  The
+    // harness splices the payload into a synthetic
+    // `flask.Response.headers["Set-Cookie"] = value` assignment and
+    // records the unescaped value via a `ProbeKind::HeaderEmit`
+    // probe consumed by the `HeaderInjected` oracle.
+    if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
+        return Ok(emit_header_injection_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PythonShape::detect(spec, &entry_source);
     let body = generate_for_shape(spec, shape);
@@ -1081,6 +1091,74 @@ if __name__ == "__main__":
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
         extra_files,
+        entry_subpath: None,
+    }
+}
+
+/// Phase 08 — Track J.6 header-injection harness for Python (Flask
+/// `Response.headers.__setitem__`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `flask.Response.headers["Set-Cookie"] = value` assignment that
+/// records the *unmodified* value bytes (including any embedded
+/// `\r\n`) via a `ProbeKind::HeaderEmit` probe.  A vuln payload
+/// carrying raw CRLF trips the
+/// [`crate::dynamic::oracle::ProbePredicate::HeaderInjected`]
+/// oracle; the paired benign control passes the same logical bytes
+/// pre-encoded via `urllib.parse.quote`, so the captured value
+/// carries `%0D%0A` (not the raw bytes) and the predicate stays
+/// clear.
+pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let probe = probe_shim();
+    let body = format!(
+        r#"#!/usr/bin/env python3
+"""Nyx dynamic harness — HEADER_INJECTION flask.Response.headers.__setitem__ (Phase 08 / Track J.6)."""
+import json
+import os
+import sys
+import time
+
+{probe}
+
+
+def _nyx_header_probe(name, value):
+    rec = {{
+        "sink_callee": "flask.Response.headers.__setitem__",
+        "args": [
+            {{"kind": "String", "value": name}},
+            {{"kind": "String", "value": value}},
+        ],
+        "captured_at_ns": time.time_ns(),
+        "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
+        "kind": {{"kind": "HeaderEmit", "name": name, "value": value}},
+        "witness": __nyx_witness("flask.Response.headers.__setitem__", [name, value]),
+    }}
+    __nyx_emit(rec)
+
+
+def _nyx_run():
+    payload = os.environ.get("NYX_PAYLOAD", "")
+    # Synthetic instrumented setter — mirrors
+    # `werkzeug.datastructures.Headers.__setitem__` semantics: the
+    # value bytes flow through unmodified, so a tainted payload that
+    # carries raw `\r\n` lands on the wire as a header split.
+    name = "Set-Cookie"
+    value = payload
+    _nyx_header_probe(name, value)
+    print("__NYX_SINK_HIT__", flush=True)
+    sys.stdout.write(json.dumps({{"name": name, "value": value}}) + "\n")
+    sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    _nyx_run()
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: Vec::new(),
         entry_subpath: None,
     }
 }

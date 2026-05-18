@@ -505,6 +505,14 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_xxe_harness(spec));
     }
 
+    // Phase 08 (Track J.6): HEADER_INJECTION-sink short-circuit.  The
+    // Go harness models `w.Header().Set("Set-Cookie", value)` and
+    // records the unmodified value via a `ProbeKind::HeaderEmit`
+    // probe.
+    if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
+        return Ok(emit_header_injection_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = GoShape::detect(spec, &entry_source);
     let main_go = generate_main_go(spec, shape);
@@ -597,6 +605,68 @@ func main() {{
 	nyxWriteXxeProbe(rendered, expanded)
 	fmt.Println("__NYX_SINK_HIT__")
 	body, _ := json.Marshal(map[string]interface{{}}{{"render": rendered, "entity_expanded": expanded}})
+	fmt.Println(string(body))
+}}
+"##
+    );
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files: vec![("go.mod".to_owned(), go_mod)],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 08 — Track J.6 header-injection harness for Go
+/// (`http.ResponseWriter.Header().Set`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented `Header.Set`
+/// shim that records the *unmodified* value bytes (including any
+/// embedded `\r\n`) via a `ProbeKind::HeaderEmit` probe.  Mirrors
+/// the synthetic-harness pattern used by Phase 05.
+pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let source = format!(
+        r##"// Nyx dynamic harness — HEADER_INJECTION http.ResponseWriter.Header().Set (Phase 08 / Track J.6).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+)
+
+{shim}
+
+func nyxHeaderProbe(name, value string) {{
+	__nyx_emit(map[string]interface{{}}{{
+		"sink_callee": "http.ResponseWriter.Header.Set",
+		"args": []map[string]interface{{}}{{
+			{{"kind": "String", "value": name}},
+			{{"kind": "String", "value": value}},
+		}},
+		"captured_at_ns": uint64(time.Now().UnixNano()),
+		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+		"kind":           map[string]interface{{}}{{"kind": "HeaderEmit", "name": name, "value": value}},
+		"witness":        __nyx_witness("http.ResponseWriter.Header.Set", []string{{name, value}}),
+	}})
+}}
+
+func main() {{
+	__nyx_install_crash_guard("http.ResponseWriter.Header.Set")
+	defer __nyx_recover_crash("http.ResponseWriter.Header.Set")()
+	payload := os.Getenv("NYX_PAYLOAD")
+	name := "Set-Cookie"
+	value := payload
+	nyxHeaderProbe(name, value)
+	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"name": name, "value": value}})
 	fmt.Println(string(body))
 }}
 "##

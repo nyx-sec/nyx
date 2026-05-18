@@ -432,6 +432,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::XPATH_INJECTION {
         return Ok(emit_xpath_harness(spec));
     }
+    // Phase 08 (Track J.6): HEADER_INJECTION-sink short-circuit.
+    if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
+        return Ok(emit_header_injection_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PhpShape::detect(spec, &entry_source);
@@ -865,6 +869,54 @@ echo json_encode(['expr' => $expr, 'nodes_returned' => $nodes]) . "\n";
         filename: "harness.php".to_owned(),
         command: vec!["php".to_owned(), "harness.php".to_owned()],
         extra_files,
+        entry_subpath: None,
+    }
+}
+
+/// Phase 08 — Track J.6 header-injection harness for PHP (`header()`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented `header()`
+/// shim that records the *unmodified* value bytes (including any
+/// embedded `\r\n`) via a `ProbeKind::HeaderEmit` probe.  Mirrors
+/// the synthetic-harness pattern used by Phase 03 / 04 / 05 / 06 /
+/// 07.
+pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — HEADER_INJECTION header() (Phase 08 / Track J.6).
+{shim}
+
+function _nyx_header_probe(string $name, string $value): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => 'header()',
+        'args'           => [
+            ['kind' => 'String', 'value' => $name],
+            ['kind' => 'String', 'value' => $value],
+        ],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'HeaderEmit', 'name' => $name, 'value' => $value],
+        'witness'        => __nyx_witness('header()', [$name, $value]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+$name = 'Set-Cookie';
+$value = $payload;
+_nyx_header_probe($name, $value);
+echo "__NYX_SINK_HIT__\n";
+echo json_encode(['name' => $name, 'value' => $value]) . "\n";
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: Vec::new(),
         entry_subpath: None,
     }
 }

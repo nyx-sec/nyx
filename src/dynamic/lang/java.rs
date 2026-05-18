@@ -567,6 +567,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::XPATH_INJECTION {
         return Ok(emit_xpath_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
+        return Ok(emit_header_injection_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JavaShape::detect(spec, &entry_source);
@@ -1205,6 +1208,87 @@ public class NyxHarness {{
             "NyxHarness".to_owned(),
         ],
         extra_files,
+        entry_subpath: None,
+    }
+}
+
+/// Phase 08 — Track J.6 header-injection harness for Java
+/// (`HttpServletResponse.setHeader`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `response.setHeader("Set-Cookie", value)` shim that records the
+/// *unmodified* value bytes (including any embedded `\r\n`) via a
+/// `ProbeKind::HeaderEmit` probe.  Mirrors the synthetic-harness
+/// pattern used by Phase 03 / 04 / 05 / 06 / 07.
+pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let source = format!(
+        r#"// Nyx dynamic harness — HEADER_INJECTION HttpServletResponse.setHeader (Phase 08 / Track J.6).
+import java.io.FileWriter;
+import java.io.IOException;
+
+public class NyxHarness {{
+{shim}
+
+    static void nyxHeaderProbe(String name, String value) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"HttpServletResponse.setHeader\",\"args\":[");
+        line.append("{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(name, line);
+        line.append("\"}},{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(value, line);
+        line.append("\"}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"HeaderEmit\",\"name\":\"");
+        nyxJsonEscape(name, line);
+        line.append("\",\"value\":\"");
+        nyxJsonEscape(value, line);
+        line.append("\"}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("HttpServletResponse.setHeader", new String[]{{name, value}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        String name = "Set-Cookie";
+        String value = payload;
+        nyxHeaderProbe(name, value);
+        System.out.println("__NYX_SINK_HIT__");
+        StringBuilder body = new StringBuilder(64);
+        body.append("{{\"name\":\"");
+        nyxJsonEscape(name, body);
+        body.append("\",\"value\":\"");
+        nyxJsonEscape(value, body);
+        body.append("\"}}");
+        System.out.println(body.toString());
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
         entry_subpath: None,
     }
 }

@@ -424,6 +424,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::XXE {
         return Ok(emit_xxe_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
+        return Ok(emit_header_injection_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = RubyShape::detect(spec, &entry_source);
@@ -604,6 +607,57 @@ rendered, expanded = _nyx_libxml_parse(payload)
 _nyx_xxe_probe(rendered, expanded)
 STDOUT.puts '__NYX_SINK_HIT__'
 STDOUT.puts JSON.generate({{"render" => rendered, "entity_expanded" => expanded}})
+STDOUT.flush
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 08 — Track J.6 header-injection harness for Ruby
+/// (`Rack::Response#set_header`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `response.set_header('Set-Cookie', value)` shim that records the
+/// *unmodified* value bytes (including any embedded `\r\n`) via a
+/// `ProbeKind::HeaderEmit` probe.  Mirrors the synthetic-harness
+/// pattern used by Phase 03 / 04 / 05.
+pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"# Nyx dynamic harness — HEADER_INJECTION Rack::Response#set_header (Phase 08 / Track J.6).
+require 'json'
+
+{shim}
+
+def _nyx_header_probe(name, value)
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  rec = {{
+    'sink_callee'    => 'Rack::Response#set_header',
+    'args'           => [
+      {{ 'kind' => 'String', 'value' => name }},
+      {{ 'kind' => 'String', 'value' => value }},
+    ],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{ 'kind' => 'HeaderEmit', 'name' => name, 'value' => value }},
+    'witness'        => __nyx_witness('Rack::Response#set_header', [name, value]),
+  }}
+  File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
+end
+
+payload = ENV['NYX_PAYLOAD'] || ''
+name = 'Set-Cookie'
+value = payload
+_nyx_header_probe(name, value)
+STDOUT.puts '__NYX_SINK_HIT__'
+STDOUT.puts JSON.generate({{ 'name' => name, 'value' => value }})
 STDOUT.flush
 "#
     );

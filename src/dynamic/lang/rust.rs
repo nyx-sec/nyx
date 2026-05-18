@@ -557,6 +557,96 @@ pub fn detect_shape(spec: &HarnessSpec) -> RustShape {
     RustShape::detect(spec, &src)
 }
 
+/// Phase 08 — Track J.6 header-injection harness for Rust
+/// (`axum`-style `HeaderMap::insert`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `headers_mut().insert("Set-Cookie", value)` shim that records the
+/// *unmodified* value bytes (including any embedded `\r\n`) via a
+/// `ProbeKind::HeaderEmit` probe.  Std-only — no `Cargo.toml`
+/// dependencies beyond the always-pinned `libc` (used by the probe
+/// shim's crash guard).
+pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let cargo_toml = generate_cargo_toml(Cap::HEADER_INJECTION);
+    let main_rs = format!(
+        r##"//! Nyx dynamic harness — HEADER_INJECTION HeaderMap::insert (Phase 08 / Track J.6).
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::time::{{SystemTime, UNIX_EPOCH}};
+
+{shim}
+
+fn nyx_json_escape(s: &str) -> String {{
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {{
+        match c {{
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {{
+                out.push_str(&format!("\\u{{:04x}}", c as u32));
+            }}
+            c => out.push(c),
+        }}
+    }}
+    out
+}}
+
+fn nyx_header_probe(name: &str, value: &str) {{
+    let p = match env::var("NYX_PROBE_PATH") {{ Ok(s) => s, Err(_) => return }};
+    if p.is_empty() {{ return; }}
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let pid = env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let mut line = String::new();
+    line.push_str("{{\"sink_callee\":\"HeaderMap::insert\",\"args\":[");
+    line.push_str("{{\"kind\":\"String\",\"value\":\"");
+    line.push_str(&nyx_json_escape(name));
+    line.push_str("\"}},{{\"kind\":\"String\",\"value\":\"");
+    line.push_str(&nyx_json_escape(value));
+    line.push_str("\"}}],");
+    line.push_str("\"captured_at_ns\":");
+    line.push_str(&now.to_string());
+    line.push_str(",\"payload_id\":\"");
+    line.push_str(&nyx_json_escape(&pid));
+    line.push_str("\",\"kind\":{{\"kind\":\"HeaderEmit\",\"name\":\"");
+    line.push_str(&nyx_json_escape(name));
+    line.push_str("\",\"value\":\"");
+    line.push_str(&nyx_json_escape(value));
+    line.push_str("\"}},\"witness\":{{}}}}\n");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
+        let _ = f.write_all(line.as_bytes());
+    }}
+}}
+
+fn main() {{
+    let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
+    let name = "Set-Cookie";
+    let value = &payload;
+    nyx_header_probe(name, value);
+    println!("__NYX_SINK_HIT__");
+    let mut body = String::new();
+    body.push_str("{{\"name\":\"");
+    body.push_str(&nyx_json_escape(name));
+    body.push_str("\",\"value\":\"");
+    body.push_str(&nyx_json_escape(value));
+    body.push_str("\"}}");
+    println!("{{body}}", body = body);
+}}
+"##
+    );
+    HarnessSource {
+        source: main_rs,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files: vec![("Cargo.toml".into(), cargo_toml)],
+        entry_subpath: Some("src/entry.rs".into()),
+    }
+}
+
 fn read_entry_source(entry_file: &str) -> String {
     let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
     for path in &candidates {
@@ -569,6 +659,14 @@ fn read_entry_source(entry_file: &str) -> String {
 
 /// Emit a Rust harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+    // Phase 08 (Track J.6): HEADER_INJECTION-sink short-circuit.  The
+    // Rust harness models an `axum`-style `HeaderMap::insert` shim
+    // that records the *unmodified* value bytes via a
+    // `ProbeKind::HeaderEmit` probe.
+    if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
+        return Ok(emit_header_injection_harness(spec));
+    }
+
     let shape = detect_shape(spec);
 
     // Generic + LibfuzzerTarget accept Param(0)/EnvVar; richer shapes

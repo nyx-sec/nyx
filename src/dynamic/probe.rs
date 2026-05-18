@@ -111,7 +111,7 @@ impl ProbeArg {
 /// [`crate::dynamic::oracle::Oracle::SinkCrash`] variant ignores anything
 /// other than `Crash { signal }`, so a process-level abort outside the
 /// sink no longer satisfies the oracle.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum ProbeKind {
     /// Standard sink observation: arguments were captured before the sink
@@ -189,6 +189,28 @@ pub enum ProbeKind {
         /// Count of XML nodes the staged document returned for the
         /// payload's XPath expression.
         nodes_returned: u32,
+    },
+    /// Phase 08 (Track J.6) HTTP-response-header-write observation.
+    /// Stamped by the per-language harness shim's instrumented header
+    /// setter (`HttpServletResponse.setHeader`,
+    /// `flask.Response.headers.__setitem__`, `header(...)`,
+    /// `Rack::Response#set_header`, `res.setHeader`, `w.Header().Set`,
+    /// `HeaderMap::insert`).  The shim records exactly one probe per
+    /// `setHeader(name, value)` call carrying the raw bytes the host
+    /// process emitted — the
+    /// [`crate::dynamic::oracle::ProbePredicate::HeaderInjected`]
+    /// predicate scans `value` for an embedded `\r\n` byte pair, which
+    /// is the signal that the attacker payload split one header into
+    /// two on the wire.
+    HeaderEmit {
+        /// Header name the host attempted to set (e.g. `"Set-Cookie"`,
+        /// `"Location"`).  Echoed verbatim so the predicate can pin
+        /// per-header expectations without name normalisation.
+        name: String,
+        /// Raw header value the host attempted to set.  A vulnerable
+        /// host concatenates attacker bytes into this string without
+        /// CRLF stripping; a benign host URL-encodes them (`%0d%0a`).
+        value: String,
     },
 }
 
