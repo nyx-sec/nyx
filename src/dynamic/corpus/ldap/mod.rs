@@ -15,7 +15,7 @@
 //! intended single user.
 //!
 //! The oracle's
-//! [`crate::dynamic::oracle::ProbePredicate::LdapResultCountGreaterThan`]
+//! [`crate::dynamic::oracle::ProbePredicate::QueryResultCountGreaterThan`]
 //! checks the per-payload `ProbeKind::Ldap.entries_returned` against
 //! `n = 1` — vuln passes (3 entries), benign clears (1 entry),
 //! fulfilling the §4.1 differential rule.

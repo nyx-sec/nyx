@@ -442,6 +442,13 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_ssti_harness(spec));
     }
 
+    // Phase 07 (Track J.5): XPATH_INJECTION-sink short-circuit.  The
+    // synthetic harness inlines a tiny XPath evaluator and counts
+    // matching nodes against the canonical staged document.
+    if spec.expected_cap == crate::labels::Cap::XPATH_INJECTION {
+        return Ok(emit_xpath_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JsShape::detect(spec, &entry_source);
     let entry_subpath = entry_subpath_for_shape(shape, is_typescript);
@@ -513,6 +520,92 @@ console.log(JSON.stringify({{ render: rendered }}));
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
         extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 07 — Track J.5 XPath-injection harness for Node
+/// (`xpath` npm package's `select`).
+///
+/// Reads `NYX_PAYLOAD`, splices it into a `//user[@name='<payload>']`
+/// expression, counts matching `<user>` nodes against the canonical
+/// staged document, and writes a `ProbeKind::Xpath { nodes_returned }`
+/// probe whose `n` is the count returned.  Mirrors the synthetic-
+/// harness pattern used by Phase 03 / 04 / 05 / 06.
+pub fn emit_xpath_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let corpus_filename = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_FILENAME;
+    let corpus_xml = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_XML;
+    let body = format!(
+        r#"// Nyx dynamic harness — XPATH_INJECTION xpath.select (Phase 07 / Track J.5).
+{shim}
+
+const NYX_XPATH_USERS = ['alice', 'bob', 'carol'];
+
+function nyxXpathSelect(expr) {{
+  const needle = "//user[@name=";
+  if (!expr.startsWith(needle)) return 0;
+  const rest = expr.slice(needle.length);
+  if (!rest.endsWith("]")) return 0;
+  const predicate = rest.slice(0, -1);
+
+  let m = predicate.match(/^'([^']*)'(.*)$/);
+  if (m) {{
+    const literal = m[1];
+    const tail = m[2].trim();
+    if (tail === '' || tail === ']') {{
+      return NYX_XPATH_USERS.filter((u) => u === literal).length;
+    }}
+    if (/^or\s+/i.test(tail)) {{
+      return NYX_XPATH_USERS.length;
+    }}
+  }}
+  m = predicate.match(/^"([^"]*)"\s*$/);
+  if (m) {{
+    const literal = m[1];
+    return NYX_XPATH_USERS.filter((u) => u === literal).length;
+  }}
+  if (/^concat\(/i.test(predicate)) {{
+    const parts = [...predicate.matchAll(/'([^']*)'/g)].map((x) => x[1]);
+    let joined = parts.filter((p) => p !== ',"').join('');
+    joined = joined.split(",\"'\",").join("'");
+    return NYX_XPATH_USERS.filter((u) => u === joined).length;
+  }}
+  return NYX_XPATH_USERS.length;
+}}
+
+function nyxXpathProbe(expr, nodesReturned) {{
+  const p = process.env.NYX_PROBE_PATH;
+  if (!p) return;
+  const rec = {{
+    sink_callee: 'xpath.select',
+    args: [{{ kind: 'String', value: expr }}],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{ kind: 'Xpath', nodes_returned: nodesReturned }},
+    witness: __nyx_witness('xpath.select', [expr]),
+  }};
+  try {{
+    require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
+  }} catch (e) {{
+    // best-effort
+  }}
+}}
+
+const payload = process.env.NYX_PAYLOAD || '';
+const expr = "//user[@name='" + payload + "']";
+const nodes = nyxXpathSelect(expr);
+nyxXpathProbe(expr, nodes);
+console.log('__NYX_SINK_HIT__');
+console.log(JSON.stringify({{ expr: expr, nodes_returned: nodes }}));
+"#
+    );
+    let extra_files = vec![(corpus_filename.to_owned(), corpus_xml.to_owned())];
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files,
         entry_subpath: None,
     }
 }

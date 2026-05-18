@@ -31,7 +31,7 @@
 //!
 //! Every served search appends a [`StubEvent`] keyed on `summary =
 //! "SEARCH <filter>"` and `detail["entries_returned"]` so the oracle's
-//! [`crate::dynamic::oracle::ProbePredicate::LdapResultCountGreaterThan`]
+//! [`crate::dynamic::oracle::ProbePredicate::QueryResultCountGreaterThan`]
 //! can satisfy without depending on a `ProbeKind::Ldap` write — the
 //! probe path is the primary signal, the stub-event log is the
 //! belt-and-braces side channel.
@@ -56,7 +56,7 @@ pub const LDAP_ENDPOINT_ENV_VAR: &str = "NYX_LDAP_ENDPOINT";
 
 /// Three canonical users the stub provisions on start.  Tests pin the
 /// count so a corpus change cannot silently shift the differential
-/// threshold below `LdapResultCountGreaterThan { n: 1 }`.
+/// threshold below `QueryResultCountGreaterThan { n: 1 }`.
 pub const STUB_USERS: &[&str] = &["alice", "bob", "carol"];
 
 /// LDAP-cap stub.  Endpoint is `127.0.0.1:{port}`.

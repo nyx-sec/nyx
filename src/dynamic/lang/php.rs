@@ -428,6 +428,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::LDAP_INJECTION {
         return Ok(emit_ldap_harness(spec));
     }
+    // Phase 07 (Track J.5): XPATH_INJECTION-sink short-circuit.
+    if spec.expected_cap == crate::labels::Cap::XPATH_INJECTION {
+        return Ok(emit_xpath_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PhpShape::detect(spec, &entry_source);
@@ -737,6 +741,130 @@ echo json_encode(['filter' => $filt, 'entries_returned' => $count]) . "\n";
         filename: "harness.php".to_owned(),
         command: vec!["php".to_owned(), "harness.php".to_owned()],
         extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 07 — Track J.5 XPath-injection harness for PHP
+/// (`DOMXPath::query`).
+///
+/// Reads `NYX_PAYLOAD`, splices it into a `//user[@name='<payload>']`
+/// expression, evaluates the resulting expression against the
+/// canonical XML staged in the workdir via
+/// [`crate::dynamic::stubs::xpath_document`] (three `<user>`
+/// records), and writes a `ProbeKind::Xpath { nodes_returned }`
+/// probe whose `n` is the count the evaluator returned.  Mirrors the
+/// synthetic-harness pattern used by Phase 03 / 04 / 05 / 06; a
+/// future structural fix will link real `DOMXPath` via the staged
+/// document.
+pub fn emit_xpath_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let corpus_filename = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_FILENAME;
+    let corpus_xml = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_XML;
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — XPATH_INJECTION DOMXPath::query (Phase 07 / Track J.5).
+{shim}
+
+// Synthetic in-process XPath evaluator over the canonical staged
+// document — counts <user> nodes that satisfy the `[@name='…']`
+// predicate the host code synthesised from the payload.  Real
+// `DOMXPath::query` is not invoked (the harness ignores `_spec` and
+// inlines the evaluator); the differential rule still holds because
+// the vuln payload's `' or '1'='1` tail rewraps the selector into a
+// match-everything shape.
+$NYX_XPATH_USERS = ['alice', 'bob', 'carol'];
+
+function _nyx_xpath_select($expr, array $users): int {{
+    // Recognise the canonical `//user[@name='<payload>']` shape the
+    // synthetic harness emits.  Anything else falls through to "no
+    // match" so a malformed expression cannot accidentally confirm.
+    $needle = "//user[@name=";
+    if (strncmp($expr, $needle, strlen($needle)) !== 0) {{
+        return 0;
+    }}
+    $rest = substr($expr, strlen($needle));
+    if (!str_ends_with($rest, ']')) {{
+        return 0;
+    }}
+    $predicate = substr($rest, 0, strlen($rest) - 1);
+    if (preg_match("/^'([^']*)'(.*)\$/", $predicate, $m)) {{
+        // `name='alice'`  → exact-match against the literal
+        // `name='alice' or '1'='1'` → OR-tail breakouts; presence of
+        //   ` or ` after the closing quote means the selector is now
+        //   tautological → every user matches.
+        $literal = $m[1];
+        $tail = trim($m[2]);
+        if ($tail === '' || $tail === ']') {{
+            $count = 0;
+            foreach ($users as $u) {{
+                if ($u === $literal) $count++;
+            }}
+            return $count;
+        }}
+        if (preg_match("/^or\\s+/i", $tail)) {{
+            return count($users);
+        }}
+    }}
+    if (preg_match('/^"([^"]*)"\\s*$/', $predicate, $m)) {{
+        $literal = $m[1];
+        $count = 0;
+        foreach ($users as $u) {{
+            if ($u === $literal) $count++;
+        }}
+        return $count;
+    }}
+    if (preg_match("/^concat\\(/i", $predicate)) {{
+        // `concat('a',\"'\",'b')` benign-escape path: extract the
+        // joined literal and match exactly once.
+        if (preg_match_all("/'([^']*)'/", $predicate, $parts)) {{
+            $joined = '';
+            foreach ($parts[1] as $p) {{
+                if ($p === ',"') continue;
+                $joined .= $p;
+            }}
+            // Normalise embedded single-quote literals back to the
+            // raw character so a `concat`-quoted username collapses
+            // to the same literal the user typed.
+            $joined = str_replace(",\"'\",", "'", $joined);
+            $count = 0;
+            foreach ($users as $u) {{
+                if ($u === $joined) $count++;
+            }}
+            return $count;
+        }}
+    }}
+    return count($users);
+}}
+
+function _nyx_xpath_probe(string $expr, int $nodes_returned): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => 'DOMXPath::query',
+        'args'           => [['kind' => 'String', 'value' => $expr]],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'Xpath', 'nodes_returned' => $nodes_returned],
+        'witness'        => __nyx_witness('DOMXPath::query', [$expr]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+$expr = "//user[@name='" . $payload . "']";
+$nodes = _nyx_xpath_select($expr, $NYX_XPATH_USERS);
+_nyx_xpath_probe($expr, $nodes);
+echo "__NYX_SINK_HIT__\n";
+echo json_encode(['expr' => $expr, 'nodes_returned' => $nodes]) . "\n";
+"#
+    );
+    let extra_files = vec![(corpus_filename.to_owned(), corpus_xml.to_owned())];
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files,
         entry_subpath: None,
     }
 }

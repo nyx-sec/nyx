@@ -214,20 +214,21 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_06() {
-        // Phase 06 (Track J.4) adds the LDAP-sink adapter for Java /
-        // Python / PHP, layered on top of the Phase 03 deserialize +
-        // Phase 04 SSTI + Phase 05 XXE adapters.  Ruby still carries
-        // exactly the 03+04+05 trio (no Ruby LDAP adapter this
-        // phase); Go still has only the XXE adapter; JavaScript still
-        // has only the Handlebars adapter; Rust / C / Cpp /
-        // TypeScript still carry the Phase-01 empty baseline.
+    fn registry_baseline_after_phase_07() {
+        // Phase 07 (Track J.5) adds the XPath-sink adapter for Java /
+        // Python / PHP / JavaScript, layered on top of the Phase 03
+        // deserialize + Phase 04 SSTI + Phase 05 XXE + Phase 06 LDAP
+        // adapters.  Java / Python / PHP each grow from 4 → 5; the
+        // JavaScript slice grows from 1 (Handlebars only) → 2.  Ruby
+        // still carries the 03+04+05 trio (no Ruby LDAP adapter); Go
+        // still has only the XXE adapter; Rust / C / Cpp / TypeScript
+        // still carry the Phase-01 empty baseline.
         for lang in [Lang::Java, Lang::Python, Lang::Php] {
             let registered = registry::adapters_for(lang);
             assert_eq!(
                 registered.len(),
-                4,
-                "{:?} must have the J.1 deserialize + J.2 ssti + J.3 xxe + J.4 ldap adapters",
+                5,
+                "{:?} must have the J.1 deserialize + J.2 ssti + J.3 xxe + J.4 ldap + J.5 xpath adapters",
                 lang,
             );
             for adapter in registered {
@@ -246,10 +247,12 @@ mod tests {
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(
             js_registered.len(),
-            1,
-            "JavaScript must have exactly the J.2 Handlebars adapter",
+            2,
+            "JavaScript must have the J.2 Handlebars + J.5 xpath-js adapters",
         );
-        assert_eq!(js_registered[0].lang(), Lang::JavaScript);
+        for adapter in js_registered {
+            assert_eq!(adapter.lang(), Lang::JavaScript);
+        }
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
             go_registered.len(),

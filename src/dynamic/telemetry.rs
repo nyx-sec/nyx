@@ -60,7 +60,7 @@ pub const NYX_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// [`crate::dynamic::corpus::CORPUS_VERSION`]; the compile-time assertion
 /// below + the [`corpus_version_const_matches_corpus_module`] runtime test
 /// jointly guard drift.
-pub const CORPUS_VERSION: &str = "10";
+pub const CORPUS_VERSION: &str = "11";
 
 /// Compile-time guard that pins [`CORPUS_VERSION`] (this module) to the
 /// textual form of [`crate::dynamic::corpus::CORPUS_VERSION`].  Bumping the

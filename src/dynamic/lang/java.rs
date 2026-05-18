@@ -564,6 +564,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::LDAP_INJECTION {
         return Ok(emit_ldap_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::XPATH_INJECTION {
+        return Ok(emit_xpath_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JavaShape::detect(spec, &entry_source);
@@ -1076,6 +1079,132 @@ public class NyxHarness {{
             "NyxHarness".to_owned(),
         ],
         extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 07 — Track J.5 XPath-injection harness for Java
+/// (`javax.xml.xpath.XPath.evaluate`).
+///
+/// Reads `NYX_PAYLOAD`, splices it into a `//user[@name='<payload>']`
+/// expression, counts matching `<user>` nodes against the canonical
+/// staged document, and writes a `ProbeKind::Xpath { nodes_returned }`
+/// probe whose `n` is the count returned.  Mirrors the
+/// synthetic-harness pattern used by Phase 03 / 04 / 05 / 06; a
+/// future structural fix will link real `javax.xml.xpath` via the
+/// staged document.
+pub fn emit_xpath_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let corpus_filename = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_FILENAME;
+    let corpus_xml = crate::dynamic::stubs::xpath_document::XPATH_CORPUS_XML;
+    let source = format!(
+        r#"// Nyx dynamic harness — XPATH_INJECTION javax.xml.xpath.XPath.evaluate (Phase 07 / Track J.5).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class NyxHarness {{
+{shim}
+
+    static final String[] NYX_XPATH_USERS = new String[] {{ "alice", "bob", "carol" }};
+
+    static int nyxXpathSelect(String expr) {{
+        String needle = "//user[@name=";
+        if (!expr.startsWith(needle)) return 0;
+        String rest = expr.substring(needle.length());
+        if (!rest.endsWith("]")) return 0;
+        String predicate = rest.substring(0, rest.length() - 1);
+
+        Matcher single = Pattern.compile("^'([^']*)'(.*)$").matcher(predicate);
+        if (single.find()) {{
+            String literal = single.group(1);
+            String tail = single.group(2).trim();
+            if (tail.isEmpty() || tail.equals("]")) {{
+                int count = 0;
+                for (String u : NYX_XPATH_USERS) if (u.equals(literal)) count++;
+                return count;
+            }}
+            if (Pattern.compile("^or\\s+", Pattern.CASE_INSENSITIVE).matcher(tail).find()) {{
+                return NYX_XPATH_USERS.length;
+            }}
+        }}
+        Matcher dbl = Pattern.compile("^\"([^\"]*)\"\\s*$").matcher(predicate);
+        if (dbl.find()) {{
+            String literal = dbl.group(1);
+            int count = 0;
+            for (String u : NYX_XPATH_USERS) if (u.equals(literal)) count++;
+            return count;
+        }}
+        if (Pattern.compile("^concat\\(", Pattern.CASE_INSENSITIVE).matcher(predicate).find()) {{
+            Matcher parts = Pattern.compile("'([^']*)'").matcher(predicate);
+            StringBuilder joined = new StringBuilder();
+            while (parts.find()) {{
+                String p = parts.group(1);
+                if (p.equals(",\"")) continue;
+                joined.append(p);
+            }}
+            String result = joined.toString().replace(",\"'\",", "'");
+            int count = 0;
+            for (String u : NYX_XPATH_USERS) if (u.equals(result)) count++;
+            return count;
+        }}
+        return NYX_XPATH_USERS.length;
+    }}
+
+    static void nyxXpathProbe(String expr, int nodesReturned) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"javax.xml.xpath.XPath.evaluate\",\"args\":[{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(expr, line);
+        line.append("\"}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"Xpath\",\"nodes_returned\":").append(nodesReturned).append("}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("javax.xml.xpath.XPath.evaluate", new String[]{{expr}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        String expr = "//user[@name='" + payload + "']";
+        int count = nyxXpathSelect(expr);
+        nyxXpathProbe(expr, count);
+        System.out.println("__NYX_SINK_HIT__");
+        StringBuilder body = new StringBuilder(64);
+        body.append("{{\"expr\":\"");
+        nyxJsonEscape(expr, body);
+        body.append("\",\"nodes_returned\":").append(count).append("}}");
+        System.out.println(body.toString());
+    }}
+}}
+"#
+    );
+    let extra_files = vec![(corpus_filename.to_owned(), corpus_xml.to_owned())];
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files,
         entry_subpath: None,
     }
 }

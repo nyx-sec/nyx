@@ -239,26 +239,28 @@ pub enum ProbePredicate {
         /// the parser-refusal benign control still confirm.
         require_expanded: bool,
     },
-    /// Phase 06 (Track J.4): LDAP-filter-injection count predicate.
+    /// Phase 06 (Track J.4) / Phase 07 (Track J.5): result-count
+    /// predicate shared by LDAP-filter and XPath-expression injection.
     ///
-    /// Fires when at least one drained probe carries
-    /// [`ProbeKind::Ldap`] with `entries_returned > n`.  The malicious
-    /// payload (`*)(uid=*`) inflates the filter so the in-sandbox
-    /// [`crate::dynamic::stubs::ldap_server`] stub matches every
-    /// provisioned user (>1 entry).  The benign control quotes the
-    /// filter with `EscapeDN` / `ldap.dn.escape_filter_chars` /
-    /// `ldap_escape` so the stub returns exactly one entry, leaving
-    /// the predicate clear.
+    /// Fires when at least one drained probe carries a count-bearing
+    /// kind — [`ProbeKind::Ldap`] with `entries_returned > n` or
+    /// [`ProbeKind::Xpath`] with `nodes_returned > n`.  The malicious
+    /// payload inflates the host expression (`*)(uid=*` for LDAP, `'
+    /// or '1'='1` for XPath) so the in-sandbox directory / staged XML
+    /// document matches every provisioned record (> 1 entry / node).
+    /// The benign control quotes the filter / expression so the sink
+    /// returns exactly one record, leaving the predicate clear.
     ///
     /// Cross-cutting in the same sense as
     /// [`Self::DeserializeGadgetInvoked`] /
     /// [`Self::XxeEntityExpanded`] — evaluated across every drained
     /// probe rather than against a single record.
-    LdapResultCountGreaterThan {
-        /// Threshold the captured `entries_returned` count must exceed
-        /// to fire the predicate.  Typically `1`: the originally-
-        /// intended user is one entry, any additional entries prove
-        /// the filter expanded into an over-broad match.
+    QueryResultCountGreaterThan {
+        /// Threshold the captured `entries_returned` /
+        /// `nodes_returned` count must exceed to fire the predicate.
+        /// Typically `1`: the originally-intended record is one
+        /// match, any additional matches prove the filter /
+        /// expression expanded into an over-broad selector.
         n: u32,
     },
 }
@@ -387,18 +389,19 @@ pub fn oracle_fired_with_stubs(
             if !xxe_cross_ok {
                 return false;
             }
-            // Phase 06 (Track J.4): LDAP filter-injection cross-
-            // cutting predicates.  Each
-            // `LdapResultCountGreaterThan { n }` consults the captured
+            // Phase 06 (Track J.4) + Phase 07 (Track J.5): result-
+            // count cross-cutting predicates.  Each
+            // `QueryResultCountGreaterThan { n }` consults the captured
             // probe channel for a [`ProbeKind::Ldap`] record whose
-            // `entries_returned` exceeds `n`.
-            let ldap_cross_ok = cross.iter().all(|p| match p {
-                ProbePredicate::LdapResultCountGreaterThan { n } => {
-                    probes_satisfy_ldap_gt(probes, *n)
+            // `entries_returned` exceeds `n` *or* a [`ProbeKind::Xpath`]
+            // record whose `nodes_returned` exceeds `n`.
+            let query_count_cross_ok = cross.iter().all(|p| match p {
+                ProbePredicate::QueryResultCountGreaterThan { n } => {
+                    probes_satisfy_count_gt(probes, *n)
                 }
                 _ => true,
             });
-            if !ldap_cross_ok {
+            if !query_count_cross_ok {
                 return false;
             }
             // Phase 04 (Track J.2): SSTI render-equality cross-cutting
@@ -431,7 +434,8 @@ pub fn oracle_fired_with_stubs(
             ProbeKind::Normal
             | ProbeKind::Deserialize { .. }
             | ProbeKind::Xxe { .. }
-            | ProbeKind::Ldap { .. } => false,
+            | ProbeKind::Ldap { .. }
+            | ProbeKind::Xpath { .. } => false,
         }),
         Oracle::OutputContains(needle) => {
             let nb = needle.as_bytes();
@@ -457,7 +461,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
             | ProbePredicate::DeserializeGadgetInvoked { .. }
             | ProbePredicate::TemplateEvalEqual { .. }
             | ProbePredicate::XxeEntityExpanded { .. }
-            | ProbePredicate::LdapResultCountGreaterThan { .. }
+            | ProbePredicate::QueryResultCountGreaterThan { .. }
     )
 }
 
@@ -478,10 +482,10 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         // rather than stub events; evaluated separately in
         // [`probes_satisfy_xxe`] below.
         ProbePredicate::XxeEntityExpanded { .. } => true,
-        // LdapResultCountGreaterThan is cross-cutting against the
+        // QueryResultCountGreaterThan is cross-cutting against the
         // *probe log* rather than stub events; evaluated separately
-        // in [`probes_satisfy_ldap_gt`] below.
-        ProbePredicate::LdapResultCountGreaterThan { .. } => true,
+        // in [`probes_satisfy_count_gt`] below.
+        ProbePredicate::QueryResultCountGreaterThan { .. } => true,
         _ => true,
     }
 }
@@ -546,11 +550,14 @@ fn probes_satisfy_xxe(probes: &[SinkProbe], require_expanded: bool) -> bool {
     })
 }
 
-/// True when at least one drained probe is a [`ProbeKind::Ldap`]
-/// record whose `entries_returned` exceeds `n`.
-fn probes_satisfy_ldap_gt(probes: &[SinkProbe], n: u32) -> bool {
+/// True when at least one drained probe carries a query-count kind
+/// whose count exceeds `n`.  Matches both [`ProbeKind::Ldap`]
+/// (`entries_returned > n`) and [`ProbeKind::Xpath`]
+/// (`nodes_returned > n`).
+fn probes_satisfy_count_gt(probes: &[SinkProbe], n: u32) -> bool {
     probes.iter().any(|p| match p.kind {
         ProbeKind::Ldap { entries_returned } => entries_returned > n,
+        ProbeKind::Xpath { nodes_returned } => nodes_returned > n,
         _ => false,
     })
 }
@@ -588,7 +595,7 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         | ProbePredicate::DeserializeGadgetInvoked { .. }
         | ProbePredicate::TemplateEvalEqual { .. }
         | ProbePredicate::XxeEntityExpanded { .. }
-        | ProbePredicate::LdapResultCountGreaterThan { .. } => true,
+        | ProbePredicate::QueryResultCountGreaterThan { .. } => true,
     }
 }
 
@@ -613,7 +620,8 @@ pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
         ProbeKind::Normal
         | ProbeKind::Deserialize { .. }
         | ProbeKind::Xxe { .. }
-        | ProbeKind::Ldap { .. } => None,
+        | ProbeKind::Ldap { .. }
+        | ProbeKind::Xpath { .. } => None,
     }
 }
 

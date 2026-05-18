@@ -1,48 +1,50 @@
-//! PHP `Cap::LDAP_INJECTION` payloads — `ldap_search` filter injection.
+//! JavaScript `Cap::XPATH_INJECTION` payloads — `xpath` npm package's
+//! `select` expression injection.
 //!
-//! Vuln payload: a filter fragment whose `*)(uid=*` tail breaks out of
-//! the host template's `(uid=…)` clause; the synthesized filter
-//! becomes `(|(uid=…)(uid=*))` and matches every directory entry.
-//! The harness's instrumented `ldap_search` records
-//! `ProbeKind::Ldap { entries_returned: 3 }`.
+//! Vuln payload: an XPath fragment whose `' or '1'='1` tail breaks
+//! out of the host template's `[@name='…']` predicate; the
+//! synthesized expression becomes `//user[@name='' or '1'='1']` and
+//! matches every node in the staged document.  The harness's
+//! instrumented `xpath.select` records
+//! `ProbeKind::Xpath { nodes_returned: 3 }`.
 //!
-//! Benign control: the same intended username quoted via
-//! `ldap_escape($value, "", LDAP_ESCAPE_FILTER)` — `entries_returned:
-//! 1`, oracle clear.
+//! Benign control: the same intended username quoted via the
+//! harness's XPath-escape helper, leaving the expression pinned to a
+//! single node — `nodes_returned: 1`, oracle clear.
 
 use super::super::{CuratedPayload, Oracle, PayloadProvenance, PayloadRef};
 use crate::dynamic::oracle::ProbePredicate;
 
 pub const PAYLOADS: &[CuratedPayload] = &[
     CuratedPayload {
-        bytes: b"alice*)(uid=*",
-        label: "ldap-php-filter-wildcard",
+        bytes: b"alice' or '1'='1",
+        label: "xpath-js-expression-wildcard",
         oracle: Oracle::SinkProbe {
             predicates: &[ProbePredicate::QueryResultCountGreaterThan { n: 1 }],
         },
         is_benign: false,
         provenance: PayloadProvenance::Curated,
-        since_corpus_version: 10,
+        since_corpus_version: 11,
         deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/dynamic_fixtures/ldap_injection/php/vuln.php"],
+        fixture_paths: &["tests/dynamic_fixtures/xpath_injection/js/vuln.js"],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::QueryResultCountGreaterThan { n: 1 }],
         benign_control: Some(PayloadRef {
-            label: "ldap-php-benign",
+            label: "xpath-js-benign",
         }),
         no_benign_control_rationale: None,
     },
     CuratedPayload {
         bytes: b"alice",
-        label: "ldap-php-benign",
+        label: "xpath-js-benign",
         oracle: Oracle::SinkProbe {
             predicates: &[ProbePredicate::QueryResultCountGreaterThan { n: 1 }],
         },
         is_benign: true,
         provenance: PayloadProvenance::Curated,
-        since_corpus_version: 10,
+        since_corpus_version: 11,
         deprecated_at_corpus_version: None,
-        fixture_paths: &["tests/dynamic_fixtures/ldap_injection/php/benign.php"],
+        fixture_paths: &["tests/dynamic_fixtures/xpath_injection/js/benign.js"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

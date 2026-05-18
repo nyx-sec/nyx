@@ -163,7 +163,7 @@ pub enum ProbeKind {
     /// [`ldap_server`](crate::dynamic::stubs::ldap_server) stub.  The
     /// shim records the number of directory entries the stub returned
     /// for the supplied filter — the differential oracle's
-    /// [`crate::dynamic::oracle::ProbePredicate::LdapResultCountGreaterThan`]
+    /// [`crate::dynamic::oracle::ProbePredicate::QueryResultCountGreaterThan`]
     /// fires when `entries_returned > n`, catching a malicious filter
     /// (e.g. `*)(uid=*`) that matched more than the originally-intended
     /// user.  Benign filter-quoted controls produce
@@ -172,6 +172,23 @@ pub enum ProbeKind {
         /// Count of directory entries the stub LDAP server returned
         /// for the payload's filter.
         entries_returned: u32,
+    },
+    /// Phase 07 (Track J.5) XPath-sink observation.  Stamped by the
+    /// per-language XPath harness shim when the instrumented evaluator
+    /// (`javax.xml.xpath.XPath.evaluate`, `lxml.etree.xpath`,
+    /// `DOMXPath::query`, the npm `xpath` package's `select`) issues
+    /// an XPath expression against the canonical XML document staged
+    /// in the workdir (`xpath_corpus.xml`).  The shim records the
+    /// number of nodes the evaluator returned — the differential
+    /// oracle's
+    /// [`crate::dynamic::oracle::ProbePredicate::QueryResultCountGreaterThan`]
+    /// fires when `nodes_returned > n`, catching a malicious
+    /// expression (e.g. `' or '1'='1`) that selected every node.
+    /// Benign quoted controls produce `nodes_returned == 1`.
+    Xpath {
+        /// Count of XML nodes the staged document returned for the
+        /// payload's XPath expression.
+        nodes_returned: u32,
     },
 }
 

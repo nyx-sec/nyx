@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::{cmdi, deserialize, fmt_string, ldap, path_trav, sqli, ssrf, ssti, xss, xxe};
+use super::{cmdi, deserialize, fmt_string, ldap, path_trav, sqli, ssrf, ssti, xpath, xss, xxe};
 use super::{CapCorpus, CuratedPayload, Oracle};
 use crate::dynamic::oracle::ProbePredicate;
 use crate::labels::Cap;
@@ -40,7 +40,6 @@ pub const CORPUS_UNSUPPORTED_LANG_NEUTRAL: u32 = Cap::ENV_VAR.bits()
     | Cap::CRYPTO.bits()
     | Cap::UNAUTHORIZED_ID.bits()
     | Cap::DATA_EXFIL.bits()
-    | Cap::XPATH_INJECTION.bits()
     | Cap::HEADER_INJECTION.bits()
     | Cap::OPEN_REDIRECT.bits()
     | Cap::PROTOTYPE_POLLUTION.bits();
@@ -71,6 +70,10 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::LDAP_INJECTION, Lang::Java, ldap::java::PAYLOADS),
     (Cap::LDAP_INJECTION, Lang::Python, ldap::python::PAYLOADS),
     (Cap::LDAP_INJECTION, Lang::Php, ldap::php::PAYLOADS),
+    (Cap::XPATH_INJECTION, Lang::Java, xpath::java::PAYLOADS),
+    (Cap::XPATH_INJECTION, Lang::Python, xpath::python::PAYLOADS),
+    (Cap::XPATH_INJECTION, Lang::Php, xpath::php::PAYLOADS),
+    (Cap::XPATH_INJECTION, Lang::JavaScript, xpath::js::PAYLOADS),
 ];
 
 /// Reserved for per-cap oracle defaults.  Empty in Phase 02; populated by
@@ -281,6 +284,7 @@ mod tests {
         assert!(!payloads_for(Cap::SSTI).is_empty());
         assert!(!payloads_for(Cap::XXE).is_empty());
         assert!(!payloads_for(Cap::LDAP_INJECTION).is_empty());
+        assert!(!payloads_for(Cap::XPATH_INJECTION).is_empty());
     }
 
     #[test]
@@ -293,7 +297,6 @@ mod tests {
             Cap::CRYPTO,
             Cap::UNAUTHORIZED_ID,
             Cap::DATA_EXFIL,
-            Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
             Cap::PROTOTYPE_POLLUTION,
@@ -328,6 +331,7 @@ mod tests {
             Cap::SSTI,
             Cap::XXE,
             Cap::LDAP_INJECTION,
+            Cap::XPATH_INJECTION,
         ] {
             let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
             assert!(has_vuln, "{cap:?} must have at least one vuln payload");
@@ -378,6 +382,7 @@ mod tests {
             Cap::SSTI,
             Cap::XXE,
             Cap::LDAP_INJECTION,
+            Cap::XPATH_INJECTION,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -403,6 +408,7 @@ mod tests {
             Cap::SSTI,
             Cap::XXE,
             Cap::LDAP_INJECTION,
+            Cap::XPATH_INJECTION,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -515,6 +521,7 @@ mod tests {
             Cap::SSTI,
             Cap::XXE,
             Cap::LDAP_INJECTION,
+            Cap::XPATH_INJECTION,
         ];
         for cap in caps {
             for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
@@ -721,6 +728,48 @@ mod tests {
                 .expect("each lang must have an LDAP vuln payload");
             let resolved =
                 super::resolve_benign_control_lang(vuln, Cap::LDAP_INJECTION, lang)
+                    .expect("lang-aware benign control must resolve");
+            assert!(resolved.is_benign);
+        }
+    }
+
+    #[test]
+    fn xpath_has_per_lang_slices_for_phase_07() {
+        // Phase 07 (Track J.5) acceptance: XPATH_INJECTION registers
+        // payloads in Java / Python / PHP / JavaScript and the
+        // lang-aware lookup never returns empty for any of them.
+        for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::JavaScript] {
+            assert!(
+                !payloads_for_lang(Cap::XPATH_INJECTION, lang).is_empty(),
+                "XPATH_INJECTION must have at least one payload for {lang:?}",
+            );
+        }
+        // Rust / C / Cpp / Ruby / Go / TS not yet covered.
+        for lang in [
+            Lang::Rust,
+            Lang::C,
+            Lang::Cpp,
+            Lang::Ruby,
+            Lang::Go,
+            Lang::TypeScript,
+        ] {
+            assert!(
+                payloads_for_lang(Cap::XPATH_INJECTION, lang).is_empty(),
+                "XPATH_INJECTION has unexpected payloads for {lang:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn xpath_payloads_pair_benign_controls_per_lang() {
+        for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::JavaScript] {
+            let slice = payloads_for_lang(Cap::XPATH_INJECTION, lang);
+            let vuln = slice
+                .iter()
+                .find(|p| !p.is_benign)
+                .expect("each lang must have an XPath vuln payload");
+            let resolved =
+                super::resolve_benign_control_lang(vuln, Cap::XPATH_INJECTION, lang)
                     .expect("lang-aware benign control must resolve");
             assert!(resolved.is_benign);
         }

@@ -56,6 +56,7 @@ pub mod http;
 pub mod ldap_server;
 pub mod redis;
 pub mod sql;
+pub mod xpath_document;
 
 pub use filesystem::FilesystemStub;
 pub use http::HttpStub;

@@ -55,6 +55,7 @@ mod path_trav;
 mod sqli;
 mod ssrf;
 mod ssti;
+mod xpath;
 mod xss;
 mod xxe;
 
@@ -90,7 +91,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 8       | 2026-05-17 | Phase 04 / Track J.2: `SSTI` cap lit for Jinja2 / ERB / Twig / Thymeleaf / Handlebars; `ProbePredicate::TemplateEvalEqual` |
 /// | 9       | 2026-05-17 | Phase 05 / Track J.3: `XXE` cap lit for Java / Python / PHP / Ruby / Go; `ProbeKind::Xxe` + `ProbePredicate::XxeEntityExpanded` |
 /// | 10      | 2026-05-17 | Phase 06 / Track J.4: `LDAP_INJECTION` cap lit for Java / Python / PHP; `ProbeKind::Ldap` + `ProbePredicate::LdapResultCountGreaterThan`; `StubKind::Ldap` + in-sandbox LDAP server stub |
-pub const CORPUS_VERSION: u32 = 10;
+/// | 11      | 2026-05-17 | Phase 07 / Track J.5: `XPATH_INJECTION` cap lit for Java / Python / PHP / JS; `ProbeKind::Xpath`; `LdapResultCountGreaterThan` renamed to `QueryResultCountGreaterThan` (shared by LDAP + XPath); `xpath_corpus.xml` staged in workdir |
+pub const CORPUS_VERSION: u32 = 11;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

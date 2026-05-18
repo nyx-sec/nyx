@@ -19,7 +19,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         bytes: b"alice*)(uid=*",
         label: "ldap-python-filter-wildcard",
         oracle: Oracle::SinkProbe {
-            predicates: &[ProbePredicate::LdapResultCountGreaterThan { n: 1 }],
+            predicates: &[ProbePredicate::QueryResultCountGreaterThan { n: 1 }],
         },
         is_benign: false,
         provenance: PayloadProvenance::Curated,
@@ -27,7 +27,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/dynamic_fixtures/ldap_injection/python/vuln.py"],
         oob_nonce_slot: false,
-        probe_predicates: &[ProbePredicate::LdapResultCountGreaterThan { n: 1 }],
+        probe_predicates: &[ProbePredicate::QueryResultCountGreaterThan { n: 1 }],
         benign_control: Some(PayloadRef {
             label: "ldap-python-benign",
         }),
@@ -37,7 +37,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         bytes: b"alice",
         label: "ldap-python-benign",
         oracle: Oracle::SinkProbe {
-            predicates: &[ProbePredicate::LdapResultCountGreaterThan { n: 1 }],
+            predicates: &[ProbePredicate::QueryResultCountGreaterThan { n: 1 }],
         },
         is_benign: true,
         provenance: PayloadProvenance::Curated,
