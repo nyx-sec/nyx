@@ -131,18 +131,27 @@ mod verify_e2e {
         assert!(result.attempts.is_empty());
     }
 
-    /// A finding with an unsupported cap (CRYPTO has no payload corpus) reaches
-    /// `run_spec`, which returns `RunError::NoPayloadsForCap`, producing
-    /// `VerifyStatus::Unsupported` with `reason = NoPayloadsForCap`.
-    /// This is distinct from `BackendUnavailable` and tests the two code paths.
+    /// A finding whose cap has no sound oracle (Phase 11 / Track J.9
+    /// routes `ENV_VAR` / `SHELL_ESCAPE` / `URL_ENCODE` through this
+    /// path) reaches `run_spec`, which returns
+    /// `RunError::SoundOracleUnavailable`, producing
+    /// `VerifyStatus::Unsupported` with
+    /// `reason = SoundOracleUnavailable { cap, lang, hint }`.  Distinct
+    /// from `BackendUnavailable` and `NoPayloadsForCap`.
     #[test]
-    fn verify_finding_with_unsupported_cap_returns_no_payloads() {
-        let diag = taint_diag_with_cap(Cap::CRYPTO);
+    fn verify_finding_with_unsupported_cap_returns_sound_oracle_unavailable() {
+        let diag = taint_diag_with_cap(Cap::ENV_VAR);
         let opts = VerifyOptions::default();
         let result = verify_finding(&diag, &opts);
 
         assert_eq!(result.status, VerifyStatus::Unsupported);
-        assert_eq!(result.reason, Some(UnsupportedReason::NoPayloadsForCap));
+        match result.reason {
+            Some(UnsupportedReason::SoundOracleUnavailable { cap, hint, .. }) => {
+                assert_eq!(cap, Cap::ENV_VAR);
+                assert!(!hint.is_empty());
+            }
+            other => panic!("expected SoundOracleUnavailable, got {other:?}"),
+        }
     }
 
     /// A low-confidence finding is rejected before spec derivation with

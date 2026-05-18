@@ -97,6 +97,15 @@ pub struct Attempt {
 #[derive(Debug)]
 pub enum RunError {
     NoPayloadsForCap,
+    /// Phase 11 (Track J.9): the requested cap is in the structural
+    /// "no sound oracle" set
+    /// ([`crate::dynamic::corpus::registry::CORPUS_SOUND_ORACLE_UNAVAILABLE`]).
+    /// Surfaces as
+    /// [`crate::evidence::UnsupportedReason::SoundOracleUnavailable`]
+    /// at the verify boundary so unsupported-budget accounting
+    /// distinguishes "no oracle exists" from "no payloads carved
+    /// yet".
+    SoundOracleUnavailable { cap: crate::labels::Cap, lang: Lang, hint: String },
     Harness(HarnessError),
     Sandbox(SandboxError),
     BuildFailed { stderr: String, attempts: u32 },
@@ -131,6 +140,22 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         payloads_for(spec.expected_cap)
     };
     if payloads.is_empty() {
+        // Phase 11 (Track J.9): route caps with no sound oracle to a
+        // distinct error so the unsupported budget reflects
+        // structural impossibility rather than a missing payload.
+        if (spec.expected_cap.bits()
+            & crate::dynamic::corpus::registry::CORPUS_SOUND_ORACLE_UNAVAILABLE)
+            != 0
+        {
+            return Err(RunError::SoundOracleUnavailable {
+                cap: spec.expected_cap,
+                lang: spec.lang,
+                hint: crate::dynamic::corpus::registry::sound_oracle_unavailable_hint(
+                    spec.expected_cap,
+                )
+                .to_owned(),
+            });
+        }
         return Err(RunError::NoPayloadsForCap);
     }
 

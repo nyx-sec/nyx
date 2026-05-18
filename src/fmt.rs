@@ -579,6 +579,13 @@ fn format_unsupported_reason(r: &crate::evidence::UnsupportedReason) -> String {
             "file redacted for secrets".to_string()
         }
         UnsupportedReason::LangUnsupported => "language not supported".to_string(),
+        UnsupportedReason::SoundOracleUnavailable { cap, lang, hint } => {
+            if hint.is_empty() {
+                format!("sound oracle unavailable ({cap:?}, {lang:?})")
+            } else {
+                format!("sound oracle unavailable ({cap:?}, {lang:?}): {hint}")
+            }
+        }
     }
 }
 

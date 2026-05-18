@@ -1182,6 +1182,20 @@ fn build_verdict(
             wrong: None,
             hardening_outcome: None,
         },
+        Err(RunError::SoundOracleUnavailable { cap, lang, hint }) => VerifyResult {
+            finding_id: finding_id.to_owned(),
+            status: VerifyStatus::Unsupported,
+            triggered_payload: None,
+            reason: Some(UnsupportedReason::SoundOracleUnavailable { cap, lang, hint }),
+            inconclusive_reason: None,
+            detail: None,
+            attempts: vec![],
+            toolchain_match: None,
+            differential: None,
+            replay_stable: None,
+            wrong: None,
+            hardening_outcome: None,
+        },
         Err(RunError::Harness(e)) => {
             // Defence-in-depth residual for `EntryKindUnsupported` from the
             // lang dispatcher. Promote to `Inconclusive(EntryKindUnsupported)`

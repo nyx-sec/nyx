@@ -7,6 +7,7 @@
 #![allow(clippy::collapsible_if)]
 
 use crate::commands::scan::Diag;
+use crate::labels::Cap;
 use crate::patterns::Severity;
 use crate::symbol::Lang;
 use serde::{Deserialize, Serialize};
@@ -192,6 +193,27 @@ pub enum UnsupportedReason {
     RequiredFileRedactedForSecrets(String),
     /// The language is not yet supported by the dynamic harness emitter.
     LangUnsupported,
+    /// Phase 11 (Track J.9): the requested `(cap, lang)` pair has no
+    /// payloads in the corpus because no sound oracle exists for it
+    /// (e.g. `Cap::CRYPTO` "weak random" has no externally-observable
+    /// test vector, `Cap::SHELL_ESCAPE` / `Cap::URL_ENCODE` /
+    /// `Cap::ENV_VAR` are pure sanitizers / sources and cannot fire a
+    /// sink).  Distinct from
+    /// [`UnsupportedReason::NoPayloadsForCap`]: that variant means a
+    /// payload *could* exist but the corpus has not yet carved one,
+    /// while `SoundOracleUnavailable` is a structural impossibility.
+    /// Carries the cap, the language the runner was asked to drive,
+    /// and a human-actionable hint pointing at why no oracle is
+    /// achievable.
+    SoundOracleUnavailable {
+        /// The capability whose sink we cannot soundly observe.
+        cap: Cap,
+        /// The language the run targeted (kept for telemetry parity
+        /// with the other typed reasons that carry a `Lang`).
+        lang: Lang,
+        /// One-line explanation of why no oracle exists for this cap.
+        hint: String,
+    },
 }
 
 /// What kind of entry point a harness should call.

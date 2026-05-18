@@ -48,9 +48,12 @@ pub mod audit;
 pub mod registry;
 
 mod cmdi;
+mod crypto;
+mod data_exfil;
 mod deserialize;
 mod fmt_string;
 mod header_injection;
+mod json_parse;
 mod ldap;
 mod open_redirect;
 mod path_trav;
@@ -58,6 +61,7 @@ mod prototype_pollution;
 mod sqli;
 mod ssrf;
 mod ssti;
+mod unauthorized_id;
 mod xpath;
 mod xss;
 mod xxe;
@@ -98,7 +102,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 12      | 2026-05-18 | Phase 08 / Track J.6: `HEADER_INJECTION` cap lit for Java / Python / PHP / Ruby / JS / Go / Rust; `ProbeKind::HeaderEmit` + `ProbePredicate::HeaderInjected`; per-lang `setHeader` shims |
 /// | 13      | 2026-05-18 | Phase 09 / Track J.7: `OPEN_REDIRECT` cap lit for Java / Python / PHP / Ruby / JS / Go / Rust; `ProbeKind::Redirect` + `ProbePredicate::RedirectHostNotIn`; per-lang `sendRedirect` / `redirect()` shims |
 /// | 14      | 2026-05-18 | Phase 10 / Track J.8: `PROTOTYPE_POLLUTION` cap lit for JS / TS; `ProbeKind::PrototypePollution` + `ProbePredicate::PrototypeCanaryTouched`; Node harness installs `Proxy`-style canary trap on `Object.prototype.__nyx_canary` |
-pub const CORPUS_VERSION: u32 = 14;
+/// | 15      | 2026-05-18 | Phase 11 / Track J.9: `CRYPTO` (Java/Python/PHP/Go/Rust) + `JSON_PARSE` (JS/Python/Ruby) + `UNAUTHORIZED_ID` (7 langs) + `DATA_EXFIL` (7 langs); `ProbeKind::{WeakKey,IdorAccess,OutboundNetwork}` + `ProbePredicate::{WeakKeyEntropy,IdorBoundaryCrossed,OutboundHostNotIn}`; `UnsupportedReason::SoundOracleUnavailable` for caps with no sound oracle |
+pub const CORPUS_VERSION: u32 = 15;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

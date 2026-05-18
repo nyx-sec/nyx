@@ -260,6 +260,49 @@ pub enum ProbeKind {
         /// that traversed the chain.
         value: String,
     },
+    /// Phase 11 (Track J.9) weak-key entropy observation.  Stamped by
+    /// the per-language CRYPTO harness shim when the instrumented
+    /// key-generation path produces a key whose effective entropy
+    /// fits inside the search space the oracle pins.  `key_int` is
+    /// the integer-decoded view of the produced key bytes (truncated
+    /// to a `u64`); the
+    /// [`crate::dynamic::oracle::ProbePredicate::WeakKeyEntropy`]
+    /// predicate fires when `key_int < 2^max_bits`.
+    WeakKey {
+        /// Truncated integer view of the produced key bytes.  Big
+        /// keys (e.g. an honest 2048-bit RSA modulus) hash down via
+        /// `from_be_bytes` so a benign control with a strong key
+        /// trivially exceeds any plausible `max_bits` budget.
+        key_int: u64,
+    },
+    /// Phase 11 (Track J.9) IDOR / authorization-bypass observation.
+    /// Stamped by the per-language UNAUTHORIZED_ID harness shim when
+    /// the instrumented mock data store materialises a record whose
+    /// `owner_id` differs from the harness's `caller_id`.  The
+    /// [`crate::dynamic::oracle::ProbePredicate::IdorBoundaryCrossed`]
+    /// predicate fires whenever `caller_id != owner_id`.
+    IdorAccess {
+        /// Authenticated principal the harness modelled the request
+        /// as arriving from.  Compared case-sensitively against
+        /// `owner_id`.
+        caller_id: String,
+        /// Owner of the record the host produced for the caller.
+        owner_id: String,
+    },
+    /// Phase 11 (Track J.9) DATA_EXFIL outbound-network observation.
+    /// Stamped by the per-language harness shim's mock HTTP client
+    /// when the instrumented egress entry point (`http.post`,
+    /// `requests.post`, `HttpURLConnection`, `Net::HTTP`, `fetch`,
+    /// `http.NewRequest`, `reqwest::Client`) attempts to route the
+    /// captured request body to a non-loopback host.  The
+    /// [`crate::dynamic::oracle::ProbePredicate::OutboundHostNotIn`]
+    /// predicate fires when the captured host falls outside the
+    /// configured allowlist (typically `127.0.0.1` / `localhost`).
+    OutboundNetwork {
+        /// Host the harness's mock HTTP client recorded.  Compared
+        /// case-insensitively against the allowlist entries.
+        host: String,
+    },
 }
 
 impl Default for ProbeKind {

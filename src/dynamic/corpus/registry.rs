@@ -24,8 +24,9 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::{
-    cmdi, deserialize, fmt_string, header_injection, ldap, open_redirect, path_trav,
-    prototype_pollution, sqli, ssrf, ssti, xpath, xss, xxe,
+    cmdi, crypto, data_exfil, deserialize, fmt_string, header_injection, json_parse, ldap,
+    open_redirect, path_trav, prototype_pollution, sqli, ssrf, ssti, unauthorized_id, xpath, xss,
+    xxe,
 };
 use super::{CapCorpus, CuratedPayload, Oracle};
 use crate::dynamic::oracle::ProbePredicate;
@@ -36,13 +37,42 @@ use crate::symbol::Lang;
 /// and sinks we cannot yet model with a reliable oracle.  The
 /// [`super::audit`] module asserts that the union of caps covered by
 /// [`CORPUS::entries`] and this constant equals [`Cap::all`].
-pub const CORPUS_UNSUPPORTED_LANG_NEUTRAL: u32 = Cap::ENV_VAR.bits()
-    | Cap::SHELL_ESCAPE.bits()
-    | Cap::URL_ENCODE.bits()
-    | Cap::JSON_PARSE.bits()
-    | Cap::CRYPTO.bits()
-    | Cap::UNAUTHORIZED_ID.bits()
-    | Cap::DATA_EXFIL.bits();
+///
+/// Phase 11 (Track J.9) carved `CRYPTO`, `JSON_PARSE`,
+/// `UNAUTHORIZED_ID`, and `DATA_EXFIL` corpora; the remaining caps
+/// here (`ENV_VAR`, `SHELL_ESCAPE`, `URL_ENCODE`) are pure
+/// sources / sanitizers with no sink behaviour and route through
+/// [`crate::evidence::UnsupportedReason::SoundOracleUnavailable`]
+/// at run time.
+pub const CORPUS_UNSUPPORTED_LANG_NEUTRAL: u32 =
+    Cap::ENV_VAR.bits() | Cap::SHELL_ESCAPE.bits() | Cap::URL_ENCODE.bits();
+
+/// Caps for which no sound oracle exists — emitted as
+/// [`crate::evidence::UnsupportedReason::SoundOracleUnavailable`]
+/// instead of [`crate::evidence::UnsupportedReason::NoPayloadsForCap`]
+/// so the unsupported budget accounting reflects the structural
+/// impossibility rather than a missing-payload gap.  Currently the
+/// same set as [`CORPUS_UNSUPPORTED_LANG_NEUTRAL`]; kept as a
+/// distinct constant so future caps that legitimately cannot be
+/// oracled (e.g. side-channel timing) can land here without
+/// expanding the lang-neutral unsupported set.
+pub const CORPUS_SOUND_ORACLE_UNAVAILABLE: u32 =
+    Cap::ENV_VAR.bits() | Cap::SHELL_ESCAPE.bits() | Cap::URL_ENCODE.bits();
+
+/// Human-actionable hint for [`CORPUS_SOUND_ORACLE_UNAVAILABLE`]
+/// caps, surfaced via
+/// [`crate::evidence::UnsupportedReason::SoundOracleUnavailable::hint`].
+pub fn sound_oracle_unavailable_hint(cap: Cap) -> &'static str {
+    if cap == Cap::ENV_VAR {
+        "ENV_VAR is a source cap with no externally-observable sink behaviour"
+    } else if cap == Cap::SHELL_ESCAPE {
+        "SHELL_ESCAPE is a sanitizer cap whose effect is observed at the wrapping sink"
+    } else if cap == Cap::URL_ENCODE {
+        "URL_ENCODE is a sanitizer cap whose effect is observed at the wrapping sink"
+    } else {
+        "no sound oracle is currently available for this cap"
+    }
+}
 
 /// Flat `(Cap, Lang, slice)` table.  A single cap can carry per-language
 /// variants — that's the whole reason this layer exists.
@@ -98,6 +128,28 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
         Lang::TypeScript,
         prototype_pollution::typescript::PAYLOADS,
     ),
+    (Cap::CRYPTO, Lang::Java, crypto::java::PAYLOADS),
+    (Cap::CRYPTO, Lang::Python, crypto::python::PAYLOADS),
+    (Cap::CRYPTO, Lang::Php, crypto::php::PAYLOADS),
+    (Cap::CRYPTO, Lang::Go, crypto::go::PAYLOADS),
+    (Cap::CRYPTO, Lang::Rust, crypto::rust::PAYLOADS),
+    (Cap::JSON_PARSE, Lang::JavaScript, json_parse::javascript::PAYLOADS),
+    (Cap::JSON_PARSE, Lang::Python, json_parse::python::PAYLOADS),
+    (Cap::JSON_PARSE, Lang::Ruby, json_parse::ruby::PAYLOADS),
+    (Cap::UNAUTHORIZED_ID, Lang::Python, unauthorized_id::python::PAYLOADS),
+    (Cap::UNAUTHORIZED_ID, Lang::Ruby, unauthorized_id::ruby::PAYLOADS),
+    (Cap::UNAUTHORIZED_ID, Lang::Java, unauthorized_id::java::PAYLOADS),
+    (Cap::UNAUTHORIZED_ID, Lang::Php, unauthorized_id::php::PAYLOADS),
+    (Cap::UNAUTHORIZED_ID, Lang::JavaScript, unauthorized_id::js::PAYLOADS),
+    (Cap::UNAUTHORIZED_ID, Lang::Go, unauthorized_id::go::PAYLOADS),
+    (Cap::UNAUTHORIZED_ID, Lang::Rust, unauthorized_id::rust::PAYLOADS),
+    (Cap::DATA_EXFIL, Lang::Python, data_exfil::python::PAYLOADS),
+    (Cap::DATA_EXFIL, Lang::Ruby, data_exfil::ruby::PAYLOADS),
+    (Cap::DATA_EXFIL, Lang::Java, data_exfil::java::PAYLOADS),
+    (Cap::DATA_EXFIL, Lang::Php, data_exfil::php::PAYLOADS),
+    (Cap::DATA_EXFIL, Lang::JavaScript, data_exfil::js::PAYLOADS),
+    (Cap::DATA_EXFIL, Lang::Go, data_exfil::go::PAYLOADS),
+    (Cap::DATA_EXFIL, Lang::Rust, data_exfil::rust::PAYLOADS),
 ];
 
 /// Reserved for per-cap oracle defaults.  Empty in Phase 02; populated by
@@ -312,24 +364,79 @@ mod tests {
         assert!(!payloads_for(Cap::HEADER_INJECTION).is_empty());
         assert!(!payloads_for(Cap::OPEN_REDIRECT).is_empty());
         assert!(!payloads_for(Cap::PROTOTYPE_POLLUTION).is_empty());
+        assert!(!payloads_for(Cap::CRYPTO).is_empty());
+        assert!(!payloads_for(Cap::JSON_PARSE).is_empty());
+        assert!(!payloads_for(Cap::UNAUTHORIZED_ID).is_empty());
+        assert!(!payloads_for(Cap::DATA_EXFIL).is_empty());
     }
 
     #[test]
     fn unsupported_caps_return_empty() {
-        let unsupported = [
-            Cap::ENV_VAR,
-            Cap::SHELL_ESCAPE,
-            Cap::URL_ENCODE,
-            Cap::JSON_PARSE,
-            Cap::CRYPTO,
-            Cap::UNAUTHORIZED_ID,
-            Cap::DATA_EXFIL,
-        ];
+        // Phase 11 (Track J.9): only pure-source / pure-sanitizer
+        // caps remain unsupported.  CRYPTO / JSON_PARSE /
+        // UNAUTHORIZED_ID / DATA_EXFIL now carry payloads.
+        let unsupported = [Cap::ENV_VAR, Cap::SHELL_ESCAPE, Cap::URL_ENCODE];
         for cap in unsupported {
             assert!(
                 payloads_for(cap).is_empty(),
                 "expected {cap:?} to return empty payloads",
             );
+        }
+    }
+
+    #[test]
+    fn phase_11_caps_have_payloads() {
+        assert!(!payloads_for(Cap::CRYPTO).is_empty());
+        assert!(!payloads_for(Cap::JSON_PARSE).is_empty());
+        assert!(!payloads_for(Cap::UNAUTHORIZED_ID).is_empty());
+        assert!(!payloads_for(Cap::DATA_EXFIL).is_empty());
+    }
+
+    #[test]
+    fn phase_11_caps_pair_benign_controls_per_lang() {
+        let cases: &[(Cap, &[Lang])] = &[
+            (Cap::CRYPTO, &[Lang::Java, Lang::Python, Lang::Php, Lang::Go, Lang::Rust]),
+            (Cap::JSON_PARSE, &[Lang::JavaScript, Lang::Python, Lang::Ruby]),
+            (
+                Cap::UNAUTHORIZED_ID,
+                &[
+                    Lang::Python,
+                    Lang::Ruby,
+                    Lang::Java,
+                    Lang::Php,
+                    Lang::JavaScript,
+                    Lang::Go,
+                    Lang::Rust,
+                ],
+            ),
+            (
+                Cap::DATA_EXFIL,
+                &[
+                    Lang::Python,
+                    Lang::Ruby,
+                    Lang::Java,
+                    Lang::Php,
+                    Lang::JavaScript,
+                    Lang::Go,
+                    Lang::Rust,
+                ],
+            ),
+        ];
+        for (cap, langs) in cases {
+            for lang in *langs {
+                let slice = payloads_for_lang(*cap, *lang);
+                assert!(
+                    !slice.is_empty(),
+                    "({cap:?}, {lang:?}) must have payloads",
+                );
+                let vuln = slice
+                    .iter()
+                    .find(|p| !p.is_benign)
+                    .unwrap_or_else(|| panic!("missing vuln for ({cap:?}, {lang:?})"));
+                let resolved = resolve_benign_control_lang(vuln, *cap, *lang)
+                    .unwrap_or_else(|| panic!("missing benign for ({cap:?}, {lang:?})"));
+                assert!(resolved.is_benign);
+            }
         }
     }
 
@@ -359,6 +466,10 @@ mod tests {
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
             Cap::PROTOTYPE_POLLUTION,
+            Cap::CRYPTO,
+            Cap::JSON_PARSE,
+            Cap::UNAUTHORIZED_ID,
+            Cap::DATA_EXFIL,
         ] {
             let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
             assert!(has_vuln, "{cap:?} must have at least one vuln payload");
@@ -413,6 +524,10 @@ mod tests {
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
             Cap::PROTOTYPE_POLLUTION,
+            Cap::CRYPTO,
+            Cap::JSON_PARSE,
+            Cap::UNAUTHORIZED_ID,
+            Cap::DATA_EXFIL,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -442,6 +557,10 @@ mod tests {
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
             Cap::PROTOTYPE_POLLUTION,
+            Cap::CRYPTO,
+            Cap::JSON_PARSE,
+            Cap::UNAUTHORIZED_ID,
+            Cap::DATA_EXFIL,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -558,6 +677,10 @@ mod tests {
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
             Cap::PROTOTYPE_POLLUTION,
+            Cap::CRYPTO,
+            Cap::JSON_PARSE,
+            Cap::UNAUTHORIZED_ID,
+            Cap::DATA_EXFIL,
         ];
         for cap in caps {
             for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
