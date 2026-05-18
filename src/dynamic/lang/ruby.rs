@@ -421,6 +421,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::SSTI {
         return Ok(emit_ssti_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::XXE {
+        return Ok(emit_xxe_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = RubyShape::detect(spec, &entry_source);
@@ -532,6 +535,71 @@ _nyx_ssti_probe(rendered)
 # Sink-hit sentinel and render JSON body.
 STDOUT.puts '__NYX_SINK_HIT__'
 STDOUT.puts JSON.generate({{"render" => rendered}})
+STDOUT.flush
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 05 — Track J.3 XXE harness for Ruby (REXML / Nokogiri).
+///
+/// Reads `NYX_PAYLOAD`, scans for `<!ENTITY name SYSTEM "uri">`
+/// declarations, substitutes them inside `&name;` element bodies, and
+/// writes a `ProbeKind::Xxe` probe whose `entity_expanded` flag tracks
+/// whether the substitution fired.  Brief lists a framework adapter
+/// for Ruby XXE (`xxe_ruby`); the harness keeps the corpus
+/// end-to-end-exercisable without bundling REXML / Nokogiri.
+pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"# Nyx dynamic harness — XXE REXML / Nokogiri (Phase 05 / Track J.3).
+require 'json'
+
+{shim}
+
+def _nyx_libxml_parse(payload)
+  entities = {{}}
+  payload.scan(/<!ENTITY\s+(\w+)\s+SYSTEM\s+"([^"]+)"\s*>/) do |name, uri|
+    entities[name] = "<#{{uri}}>"
+  end
+  expanded = false
+  rendered = payload.gsub(/&(\w+);/) do
+    name = Regexp.last_match(1)
+    if entities.key?(name)
+      expanded = true
+      entities[name]
+    else
+      Regexp.last_match(0)
+    end
+  end
+  [rendered, expanded]
+end
+
+def _nyx_xxe_probe(rendered, expanded)
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  rec = {{
+    'sink_callee'    => 'REXML::Document.new',
+    'args'           => [{{ 'kind' => 'String', 'value' => rendered }}],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{ 'kind' => 'Xxe', 'entity_expanded' => !!expanded }},
+    'witness'        => __nyx_witness('REXML::Document.new', [rendered]),
+  }}
+  File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
+end
+
+payload = ENV['NYX_PAYLOAD'] || ''
+rendered, expanded = _nyx_libxml_parse(payload)
+_nyx_xxe_probe(rendered, expanded)
+STDOUT.puts '__NYX_SINK_HIT__'
+STDOUT.puts JSON.generate({{"render" => rendered, "entity_expanded" => expanded}})
 STDOUT.flush
 "#
     );

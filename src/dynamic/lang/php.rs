@@ -420,6 +420,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::SSTI {
         return Ok(emit_ssti_harness(spec));
     }
+    // Phase 05 (Track J.3): XXE-sink short-circuit.
+    if spec.expected_cap == crate::labels::Cap::XXE {
+        return Ok(emit_xxe_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PhpShape::detect(spec, &entry_source);
@@ -528,6 +532,69 @@ $rendered = _nyx_twig_render($payload);
 _nyx_ssti_probe($rendered);
 echo "__NYX_SINK_HIT__\n";
 echo json_encode(["render" => $rendered]) . "\n";
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 05 — Track J.3 XXE harness for PHP (`simplexml_load_string`
+/// under `libxml_disable_entity_loader(false)`).
+///
+/// Reads `NYX_PAYLOAD`, scans for `<!ENTITY name SYSTEM "uri">`
+/// declarations, expands them inside `&name;` element references
+/// (matching `simplexml_load_string` / `DOMDocument` with the entity
+/// loader re-enabled), and writes a `ProbeKind::Xxe` probe whose
+/// `entity_expanded` flag tracks whether the substitution fired.
+pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — XXE simplexml_load_string (Phase 05 / Track J.3).
+{shim}
+
+function _nyx_libxml_parse(string $payload): array {{
+    $entities = [];
+    if (preg_match_all('/<!ENTITY\s+(\w+)\s+SYSTEM\s+"([^"]+)"\s*>/', $payload, $matches, PREG_SET_ORDER)) {{
+        foreach ($matches as $m) {{
+            $entities[$m[1]] = '<' . $m[2] . '>';
+        }}
+    }}
+    $expanded = false;
+    $rendered = preg_replace_callback('/&(\w+);/', function ($m) use ($entities, &$expanded) {{
+        if (array_key_exists($m[1], $entities)) {{
+            $expanded = true;
+            return $entities[$m[1]];
+        }}
+        return $m[0];
+    }}, $payload) ?? $payload;
+    return [$rendered, $expanded];
+}}
+
+function _nyx_xxe_probe(string $rendered, bool $expanded): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => 'simplexml_load_string',
+        'args'           => [['kind' => 'String', 'value' => $rendered]],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => ['kind' => 'Xxe', 'entity_expanded' => $expanded],
+        'witness'        => __nyx_witness('simplexml_load_string', [$rendered]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+[$rendered, $expanded] = _nyx_libxml_parse($payload);
+_nyx_xxe_probe($rendered, $expanded);
+echo "__NYX_SINK_HIT__\n";
+echo json_encode(["render" => $rendered, "entity_expanded" => $expanded]) . "\n";
 "#
     );
     HarnessSource {

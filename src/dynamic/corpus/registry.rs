@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::{cmdi, deserialize, fmt_string, path_trav, sqli, ssrf, ssti, xss};
+use super::{cmdi, deserialize, fmt_string, path_trav, sqli, ssrf, ssti, xss, xxe};
 use super::{CapCorpus, CuratedPayload, Oracle};
 use crate::dynamic::oracle::ProbePredicate;
 use crate::labels::Cap;
@@ -44,7 +44,6 @@ pub const CORPUS_UNSUPPORTED_LANG_NEUTRAL: u32 = Cap::ENV_VAR.bits()
     | Cap::XPATH_INJECTION.bits()
     | Cap::HEADER_INJECTION.bits()
     | Cap::OPEN_REDIRECT.bits()
-    | Cap::XXE.bits()
     | Cap::PROTOTYPE_POLLUTION.bits();
 
 /// Flat `(Cap, Lang, slice)` table.  A single cap can carry per-language
@@ -65,6 +64,11 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::SSTI, Lang::Php, ssti::php_twig::PAYLOADS),
     (Cap::SSTI, Lang::Java, ssti::java_thymeleaf::PAYLOADS),
     (Cap::SSTI, Lang::JavaScript, ssti::js_handlebars::PAYLOADS),
+    (Cap::XXE, Lang::Java, xxe::java::PAYLOADS),
+    (Cap::XXE, Lang::Python, xxe::python::PAYLOADS),
+    (Cap::XXE, Lang::Php, xxe::php::PAYLOADS),
+    (Cap::XXE, Lang::Ruby, xxe::ruby::PAYLOADS),
+    (Cap::XXE, Lang::Go, xxe::go::PAYLOADS),
 ];
 
 /// Reserved for per-cap oracle defaults.  Empty in Phase 02; populated by
@@ -273,6 +277,7 @@ mod tests {
         assert!(!payloads_for(Cap::FMT_STRING).is_empty());
         assert!(!payloads_for(Cap::DESERIALIZE).is_empty());
         assert!(!payloads_for(Cap::SSTI).is_empty());
+        assert!(!payloads_for(Cap::XXE).is_empty());
     }
 
     #[test]
@@ -289,7 +294,6 @@ mod tests {
             Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
-            Cap::XXE,
             Cap::PROTOTYPE_POLLUTION,
         ];
         for cap in unsupported {
@@ -320,6 +324,7 @@ mod tests {
             Cap::FMT_STRING,
             Cap::DESERIALIZE,
             Cap::SSTI,
+            Cap::XXE,
         ] {
             let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
             assert!(has_vuln, "{cap:?} must have at least one vuln payload");
@@ -368,6 +373,7 @@ mod tests {
             Cap::FMT_STRING,
             Cap::DESERIALIZE,
             Cap::SSTI,
+            Cap::XXE,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -391,6 +397,7 @@ mod tests {
             Cap::FMT_STRING,
             Cap::DESERIALIZE,
             Cap::SSTI,
+            Cap::XXE,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -501,6 +508,7 @@ mod tests {
             Cap::FMT_STRING,
             Cap::DESERIALIZE,
             Cap::SSTI,
+            Cap::XXE,
         ];
         for cap in caps {
             for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
@@ -624,6 +632,46 @@ mod tests {
                 .find(|p| !p.is_benign)
                 .expect("each lang must have an SSTI vuln payload");
             let resolved = super::resolve_benign_control_lang(vuln, Cap::SSTI, lang)
+                .expect("lang-aware benign control must resolve");
+            assert!(resolved.is_benign);
+        }
+    }
+
+    #[test]
+    fn xxe_has_per_lang_slices_for_phase_05() {
+        // Phase 05 (Track J.3) acceptance: XXE registers payloads in
+        // Java / Python / PHP / Ruby / Go and the lang-aware lookup
+        // never returns empty for any of them.
+        for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby, Lang::Go] {
+            assert!(
+                !payloads_for_lang(Cap::XXE, lang).is_empty(),
+                "XXE must have at least one payload for {lang:?}",
+            );
+        }
+        // Rust / C / Cpp / JS / TS not yet covered.
+        for lang in [
+            Lang::Rust,
+            Lang::C,
+            Lang::Cpp,
+            Lang::JavaScript,
+            Lang::TypeScript,
+        ] {
+            assert!(
+                payloads_for_lang(Cap::XXE, lang).is_empty(),
+                "XXE has unexpected payloads for {lang:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn xxe_payloads_pair_benign_controls_per_lang() {
+        for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby, Lang::Go] {
+            let slice = payloads_for_lang(Cap::XXE, lang);
+            let vuln = slice
+                .iter()
+                .find(|p| !p.is_benign)
+                .expect("each lang must have an XXE vuln payload");
+            let resolved = super::resolve_benign_control_lang(vuln, Cap::XXE, lang)
                 .expect("lang-aware benign control must resolve");
             assert!(resolved.is_benign);
         }

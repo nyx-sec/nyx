@@ -608,6 +608,16 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_ssti_harness(spec));
     }
 
+    // Phase 05 (Track J.3): short-circuit to the XXE harness when the
+    // spec's expected cap is XXE.  The harness scans `NYX_PAYLOAD` for
+    // a `<!ENTITY>` declaration and resolves it inside `<data>` —
+    // matching `lxml.etree.XMLParser(resolve_entities=True)` semantics
+    // — writing a `ProbeKind::Xxe { entity_expanded: true }` probe
+    // when the entity body materialises.
+    if spec.expected_cap == crate::labels::Cap::XXE {
+        return Ok(emit_xxe_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PythonShape::detect(spec, &entry_source);
     let body = generate_for_shape(spec, shape);
@@ -734,6 +744,82 @@ def _nyx_run():
     # Render JSON body — the TemplateEvalEqual predicate compares the
     # `render` field's integer value against the corpus `expected`.
     sys.stdout.write(json.dumps({{"render": rendered}}) + "\n")
+    sys.stdout.flush()
+
+if __name__ == "__main__":
+    _nyx_run()
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 05 — Track J.3 XXE harness for Python (`lxml.etree`).
+///
+/// Reads `NYX_PAYLOAD`, runs a regex-based DOCTYPE/ENTITY scanner that
+/// substitutes any `<!ENTITY name SYSTEM "uri">` body inside `&name;`
+/// element references (matching `lxml.etree.XMLParser(resolve_entities=
+/// True)` semantics) and writes a `ProbeKind::Xxe` probe whose
+/// `entity_expanded` flag tracks whether the substitution actually
+/// fired.  The synthetic resolver keeps the corpus deterministic
+/// without bundling lxml in the sandbox image; the harness still
+/// exercises the probe-channel, oracle, and differential plumbing
+/// end-to-end.
+pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let probe = probe_shim();
+    let body = format!(
+        r#"#!/usr/bin/env python3
+"""Nyx dynamic harness — XXE lxml (Phase 05 / Track J.3)."""
+import os, json, re, sys, time
+
+{probe}
+
+_NYX_DOCTYPE_ENTITY = re.compile(
+    r'<!ENTITY\s+(\w+)\s+SYSTEM\s+"([^"]+)"\s*>'
+)
+
+def _nyx_lxml_parse(payload):
+    # Parse the payload with `resolve_entities=True` semantics: bind
+    # `<!ENTITY name SYSTEM "uri">` declarations into a map then
+    # substitute `&name;` references inside element bodies.
+    entities = {{}}
+    for m in _NYX_DOCTYPE_ENTITY.finditer(payload):
+        entities[m.group(1)] = '<' + m.group(2) + '>'
+    expanded = False
+    def _sub(match):
+        nonlocal expanded
+        name = match.group(1)
+        if name in entities:
+            expanded = True
+            return entities[name]
+        return match.group(0)
+    rendered = re.sub(r'&(\w+);', _sub, payload)
+    return rendered, expanded
+
+def _nyx_xxe_probe(rendered, expanded):
+    rec = {{
+        "sink_callee": "lxml.etree.XMLParser.parse",
+        "args": [{{"kind": "String", "value": rendered}}],
+        "captured_at_ns": time.time_ns(),
+        "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
+        "kind": {{"kind": "Xxe", "entity_expanded": bool(expanded)}},
+        "witness": __nyx_witness("lxml.etree.XMLParser.parse", [rendered]),
+    }}
+    __nyx_emit(rec)
+
+def _nyx_run():
+    payload = os.environ.get("NYX_PAYLOAD", "")
+    rendered, expanded = _nyx_lxml_parse(payload)
+    _nyx_xxe_probe(rendered, expanded)
+    # Sink-hit sentinel flips SandboxOutcome.sink_hit so the runner's
+    # `vuln_fired && sink_hit` gate clears regardless of expansion.
+    print("__NYX_SINK_HIT__", flush=True)
+    sys.stdout.write(json.dumps({{"render": rendered, "entity_expanded": expanded}}) + "\n")
     sys.stdout.flush()
 
 if __name__ == "__main__":

@@ -214,17 +214,19 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_04() {
-        // Phase 04 (Track J.2) adds the SSTI-sink adapter alongside the
-        // Phase-03 deserialize adapter for Java / Python / PHP / Ruby and
-        // introduces the first JavaScript adapter (Handlebars).  Other
-        // languages still carry the Phase-01 empty baseline.
+    fn registry_baseline_after_phase_05() {
+        // Phase 05 (Track J.3) adds the XXE-sink adapter alongside the
+        // Phase-03 deserialize + Phase-04 SSTI adapters for Java /
+        // Python / PHP / Ruby, and introduces the first Go adapter
+        // (xxe-go).  JavaScript still has only the Handlebars adapter;
+        // Rust / C / Cpp / TypeScript still carry the Phase-01 empty
+        // baseline.
         for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby] {
             let registered = registry::adapters_for(lang);
             assert_eq!(
                 registered.len(),
-                2,
-                "{:?} must have the J.1 deserialize + J.2 ssti adapters",
+                3,
+                "{:?} must have the J.1 deserialize + J.2 ssti + J.3 xxe adapters",
                 lang,
             );
             for adapter in registered {
@@ -238,13 +240,14 @@ mod tests {
             "JavaScript must have exactly the J.2 Handlebars adapter",
         );
         assert_eq!(js_registered[0].lang(), Lang::JavaScript);
-        for lang in [
-            Lang::Rust,
-            Lang::C,
-            Lang::Cpp,
-            Lang::Go,
-            Lang::TypeScript,
-        ] {
+        let go_registered = registry::adapters_for(Lang::Go);
+        assert_eq!(
+            go_registered.len(),
+            1,
+            "Go must have exactly the J.3 xxe-go adapter",
+        );
+        assert_eq!(go_registered[0].lang(), Lang::Go);
+        for lang in [Lang::Rust, Lang::C, Lang::Cpp, Lang::TypeScript] {
             assert!(
                 registry::adapters_for(lang).is_empty(),
                 "{:?} should still have zero adapters before its Track-L phase",

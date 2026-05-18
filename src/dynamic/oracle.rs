@@ -217,6 +217,28 @@ pub enum ProbePredicate {
         /// signed-overflow concerns.
         expected: u64,
     },
+    /// Phase 05 (Track J.3): XXE entity-expansion predicate.
+    ///
+    /// Fires when at least one drained probe carries
+    /// [`ProbeKind::Xxe`] with `entity_expanded` matching
+    /// `require_expanded`.  The vuln payload ships an XML document
+    /// with a `<!ENTITY xxe SYSTEM "file:///…">` declaration; the
+    /// per-language harness's instrumented parser writes
+    /// `entity_expanded: true` once the entity body materialises
+    /// inside the parsed tree.  The benign control disables
+    /// doctype / external-entity resolution so the parser refuses the
+    /// expansion and writes `entity_expanded: false`.
+    ///
+    /// Cross-cutting in the same sense as
+    /// [`Self::DeserializeGadgetInvoked`] — evaluated across every
+    /// drained probe rather than against a single record.
+    XxeEntityExpanded {
+        /// `true` requires at least one [`ProbeKind::Xxe`] probe with
+        /// `entity_expanded == true` (the differential confirmation
+        /// path); `false` lets a payload that intentionally exercises
+        /// the parser-refusal benign control still confirm.
+        require_expanded: bool,
+    },
 }
 
 /// How we decide a sandbox run confirmed the sink fired.
@@ -329,6 +351,20 @@ pub fn oracle_fired_with_stubs(
             if !deserialize_cross_ok {
                 return false;
             }
+            // Phase 05 (Track J.3): XXE entity-expansion cross-cutting
+            // predicates.  Each `XxeEntityExpanded { require_expanded }`
+            // consults the captured probe channel for a
+            // [`ProbeKind::Xxe`] record whose `entity_expanded` flag
+            // matches.
+            let xxe_cross_ok = cross.iter().all(|p| match p {
+                ProbePredicate::XxeEntityExpanded { require_expanded } => {
+                    probes_satisfy_xxe(probes, *require_expanded)
+                }
+                _ => true,
+            });
+            if !xxe_cross_ok {
+                return false;
+            }
             // Phase 04 (Track J.2): SSTI render-equality cross-cutting
             // predicates.  Each `TemplateEvalEqual { expected }` consults
             // the captured stdout body — see [`stdout_template_equals`].
@@ -356,7 +392,7 @@ pub fn oracle_fired_with_stubs(
         }
         Oracle::SinkCrash { signals } => probes.iter().any(|p| match p.kind {
             ProbeKind::Crash { signal } => signals.contains(signal),
-            ProbeKind::Normal | ProbeKind::Deserialize { .. } => false,
+            ProbeKind::Normal | ProbeKind::Deserialize { .. } | ProbeKind::Xxe { .. } => false,
         }),
         Oracle::OutputContains(needle) => {
             let nb = needle.as_bytes();
@@ -381,6 +417,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
         ProbePredicate::StubEventMatches { .. }
             | ProbePredicate::DeserializeGadgetInvoked { .. }
             | ProbePredicate::TemplateEvalEqual { .. }
+            | ProbePredicate::XxeEntityExpanded { .. }
     )
 }
 
@@ -397,6 +434,10 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         // outcome stdout* rather than stub events; evaluated separately
         // via [`stdout_template_equals`] in [`oracle_fired_with_stubs`].
         ProbePredicate::TemplateEvalEqual { .. } => true,
+        // XxeEntityExpanded is cross-cutting against the *probe log*
+        // rather than stub events; evaluated separately in
+        // [`probes_satisfy_xxe`] below.
+        ProbePredicate::XxeEntityExpanded { .. } => true,
         _ => true,
     }
 }
@@ -452,6 +493,15 @@ fn probes_satisfy_deserialize(probes: &[SinkProbe], require_invoked: bool) -> bo
     })
 }
 
+/// True when at least one drained probe is a [`ProbeKind::Xxe`]
+/// record matching `require_expanded`.
+fn probes_satisfy_xxe(probes: &[SinkProbe], require_expanded: bool) -> bool {
+    probes.iter().any(|p| match p.kind {
+        ProbeKind::Xxe { entity_expanded } => entity_expanded == require_expanded,
+        _ => false,
+    })
+}
+
 /// Returns true when `probe` satisfies *every* predicate in `preds`.
 /// An empty predicate slice satisfies vacuously — a payload that wants
 /// "any probe at all" can ship an empty predicate set.
@@ -483,7 +533,8 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         // [`oracle_fired_with_stubs`] handles them via the partition path.
         ProbePredicate::StubEventMatches { .. }
         | ProbePredicate::DeserializeGadgetInvoked { .. }
-        | ProbePredicate::TemplateEvalEqual { .. } => true,
+        | ProbePredicate::TemplateEvalEqual { .. }
+        | ProbePredicate::XxeEntityExpanded { .. } => true,
     }
 }
 
@@ -505,7 +556,7 @@ fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
 pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
     match probe.kind {
         ProbeKind::Crash { signal } => Some(signal),
-        ProbeKind::Normal | ProbeKind::Deserialize { .. } => None,
+        ProbeKind::Normal | ProbeKind::Deserialize { .. } | ProbeKind::Xxe { .. } => None,
     }
 }
 

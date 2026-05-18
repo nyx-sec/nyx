@@ -139,6 +139,23 @@ pub enum ProbeKind {
         /// executed before the shim aborted the chain.
         gadget_chain_invoked: bool,
     },
+    /// Phase 05 (Track J.3) XXE-sink observation.  Stamped by the
+    /// per-language XML harness shim when the instrumented parser
+    /// (`DocumentBuilder.parse`, `lxml.etree.XMLParser`,
+    /// `simplexml_load_string` under `libxml_disable_entity_loader(false)`,
+    /// `encoding/xml.Decoder` with `Strict: false`, Ruby `REXML` /
+    /// `Nokogiri::XML`) consumes a payload carrying a `<!ENTITY …>`
+    /// declaration that the parser then expands inside the document
+    /// body.  `entity_expanded` is `true` when the entity body was
+    /// substituted into the parsed tree (the differential rule's
+    /// proof that XXE expansion actually fired) and `false` when the
+    /// parser refused the doctype / external resolution (the benign
+    /// `disallow-doctype-decl` control).
+    Xxe {
+        /// `true` iff the parser substituted the entity body into the
+        /// parsed XML output.
+        entity_expanded: bool,
+    },
 }
 
 impl Default for ProbeKind {

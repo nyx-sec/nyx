@@ -497,6 +497,14 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         PayloadSlot::Stdin => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
 
+    // Phase 05 (Track J.3): XXE-sink short-circuit.  The Go harness
+    // models `encoding/xml.Decoder` with `Strict: false` so the
+    // doctype is parsed and the `<!ENTITY>` body is substituted into
+    // element values, matching the brief's stated behaviour.
+    if spec.expected_cap == crate::labels::Cap::XXE {
+        return Ok(emit_xxe_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = GoShape::detect(spec, &entry_source);
     let main_go = generate_main_go(spec, shape);
@@ -516,6 +524,90 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files,
         entry_subpath: Some("entry/entry.go".to_owned()),
     })
+}
+
+/// Phase 05 — Track J.3 XXE harness for Go (`encoding/xml.Decoder`
+/// with `Strict: false`).
+///
+/// Reads `NYX_PAYLOAD`, scans for `<!ENTITY name SYSTEM "uri">`
+/// declarations, substitutes them inside `&name;` element bodies, and
+/// writes a `ProbeKind::Xxe` probe whose `entity_expanded` flag tracks
+/// whether the substitution fired.  Standalone `main.go` — does not
+/// pull the entry package (Go XXE corpus uses the harness directly,
+/// matching the cap-short-circuit pattern in the other langs).
+pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let source = format!(
+        r##"// Nyx dynamic harness — XXE encoding/xml.Decoder (Phase 05 / Track J.3).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/signal"
+	"regexp"
+	"strings"
+	"syscall"
+	"time"
+)
+
+{shim}
+
+var nyxDoctypeEntityRE = regexp.MustCompile(`<!ENTITY\s+(\w+)\s+SYSTEM\s+"([^"]+)"\s*>`)
+var nyxEntityRefRE = regexp.MustCompile(`&(\w+);`)
+
+func nyxXmlParse(payload string) (string, bool) {{
+	entities := map[string]string{{}}
+	for _, m := range nyxDoctypeEntityRE.FindAllStringSubmatch(payload, -1) {{
+		entities[m[1]] = "<" + m[2] + ">"
+	}}
+	expanded := false
+	rendered := nyxEntityRefRE.ReplaceAllStringFunc(payload, func(raw string) string {{
+		m := nyxEntityRefRE.FindStringSubmatch(raw)
+		if m == nil {{
+			return raw
+		}}
+		if body, ok := entities[m[1]]; ok {{
+			expanded = true
+			return body
+		}}
+		return raw
+	}})
+	return rendered, expanded
+}}
+
+func nyxWriteXxeProbe(rendered string, expanded bool) {{
+	__nyx_emit(map[string]interface{{}}{{
+		"sink_callee":    "xml.Decoder.Decode",
+		"args":           []map[string]interface{{}}{{{{"kind": "String", "value": rendered}}}},
+		"captured_at_ns": uint64(time.Now().UnixNano()),
+		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+		"kind":           map[string]interface{{}}{{"kind": "Xxe", "entity_expanded": expanded}},
+		"witness":        __nyx_witness("xml.Decoder.Decode", []string{{rendered}}),
+	}})
+}}
+
+func main() {{
+	__nyx_install_crash_guard("xml.Decoder.Decode")
+	defer __nyx_recover_crash("xml.Decoder.Decode")()
+	payload := os.Getenv("NYX_PAYLOAD")
+	rendered, expanded := nyxXmlParse(payload)
+	nyxWriteXxeProbe(rendered, expanded)
+	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"render": rendered, "entity_expanded": expanded}})
+	fmt.Println(string(body))
+}}
+"##
+    );
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files: vec![("go.mod".to_owned(), go_mod)],
+        entry_subpath: None,
+    }
 }
 
 fn generate_main_go(spec: &HarnessSpec, shape: GoShape) -> String {

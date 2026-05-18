@@ -50,19 +50,23 @@ static CPP: &[&dyn FrameworkAdapter] = &[];
 static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::JavaDeserializeAdapter,
     &super::adapters::JavaThymeleafAdapter,
+    &super::adapters::XxeJavaAdapter,
 ];
-static GO: &[&dyn FrameworkAdapter] = &[];
+static GO: &[&dyn FrameworkAdapter] = &[&super::adapters::XxeGoAdapter];
 static PHP: &[&dyn FrameworkAdapter] = &[
     &super::adapters::PhpTwigAdapter,
     &super::adapters::PhpUnserializeAdapter,
+    &super::adapters::XxePhpAdapter,
 ];
 static PYTHON: &[&dyn FrameworkAdapter] = &[
     &super::adapters::PythonJinja2Adapter,
     &super::adapters::PythonPickleAdapter,
+    &super::adapters::XxePythonAdapter,
 ];
 static RUBY: &[&dyn FrameworkAdapter] = &[
     &super::adapters::RubyErbAdapter,
     &super::adapters::RubyMarshalAdapter,
+    &super::adapters::XxeRubyAdapter,
 ];
 static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[];
 static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[&super::adapters::JsHandlebarsAdapter];

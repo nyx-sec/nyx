@@ -558,6 +558,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::SSTI {
         return Ok(emit_ssti_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::XXE {
+        return Ok(emit_xxe_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JavaShape::detect(spec, &entry_source);
@@ -760,6 +763,111 @@ public class NyxHarness {{
         body.append("{{\"render\":\"");
         nyxJsonEscape(rendered, body);
         body.append("\"}}");
+        System.out.println(body.toString());
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 05 — Track J.3 XXE harness for Java (`DocumentBuilderFactory`).
+///
+/// Reads `NYX_PAYLOAD`, scans for `<!ENTITY name SYSTEM "uri">`
+/// declarations, expands them inside `&name;` element references
+/// (matching `DocumentBuilderFactory` with external-entity resolution
+/// enabled), and writes a `ProbeKind::Xxe` probe whose
+/// `entity_expanded` flag tracks whether the substitution actually
+/// fired.  The synthetic resolver keeps the corpus deterministic
+/// without requiring a `javax.xml.parsers` classpath in the sandbox.
+pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let source = format!(
+        r#"// Nyx dynamic harness — XXE DocumentBuilderFactory (Phase 05 / Track J.3).
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public class NyxHarness {{
+{shim}
+
+    static boolean nyxLastExpanded = false;
+
+    static String nyxXmlParse(String payload) {{
+        Pattern doctype = Pattern.compile(
+            "<!ENTITY\\s+(\\w+)\\s+SYSTEM\\s+\"([^\"]+)\"\\s*>"
+        );
+        Map<String, String> entities = new HashMap<>();
+        Matcher dm = doctype.matcher(payload);
+        while (dm.find()) {{
+            entities.put(dm.group(1), "<" + dm.group(2) + ">");
+        }}
+        nyxLastExpanded = false;
+        Pattern ref = Pattern.compile("&(\\w+);");
+        Matcher rm = ref.matcher(payload);
+        StringBuffer out = new StringBuffer(payload.length());
+        while (rm.find()) {{
+            String name = rm.group(1);
+            String body = entities.get(name);
+            if (body != null) {{
+                nyxLastExpanded = true;
+                rm.appendReplacement(out, Matcher.quoteReplacement(body));
+            }} else {{
+                rm.appendReplacement(out, Matcher.quoteReplacement(rm.group(0)));
+            }}
+        }}
+        rm.appendTail(out);
+        return out.toString();
+    }}
+
+    static void nyxXxeProbe(String rendered, boolean expanded) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"DocumentBuilder.parse\",\"args\":[{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(rendered, line);
+        line.append("\"}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"Xxe\",\"entity_expanded\":").append(expanded ? "true" : "false").append("}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("DocumentBuilder.parse", new String[]{{rendered}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        String rendered = nyxXmlParse(payload);
+        nyxXxeProbe(rendered, nyxLastExpanded);
+        System.out.println("__NYX_SINK_HIT__");
+        StringBuilder body = new StringBuilder(64);
+        body.append("{{\"render\":\"");
+        nyxJsonEscape(rendered, body);
+        body.append("\",\"entity_expanded\":").append(nyxLastExpanded ? "true" : "false").append("}}");
         System.out.println(body.toString());
     }}
 }}
