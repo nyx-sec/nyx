@@ -2,10 +2,10 @@
 //!
 //! Mirrors `tests/js_frameworks_corpus.rs` against the TS fixtures.
 //! The Express / Koa / Fastify adapters are registered under
-//! [`Lang::JavaScript`] only (TypeScript code paths share the JS
-//! adapter via the Lang dispatch); the Nest adapter is registered
-//! under both [`Lang::JavaScript`] and [`Lang::TypeScript`] because
-//! Nest is TypeScript-first.
+//! [`Lang::JavaScript`] only and do not currently dispatch for
+//! [`Lang::TypeScript`], so only the Nest adapter — which is
+//! registered under both [`Lang::JavaScript`] and [`Lang::TypeScript`]
+//! because Nest is TypeScript-first — has TS coverage here.
 
 #![cfg(feature = "dynamic")]
 
