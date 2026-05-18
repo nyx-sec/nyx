@@ -427,3 +427,202 @@ fn slug(lang: Lang) -> &'static str {
         _ => "other",
     }
 }
+
+// ── End-to-end Phase 08 acceptance via run_spec ───────────────────────────────
+//
+// Mirrors the `e2e_phase_06` / `e2e_phase_07` blocks in `ldap_corpus.rs`
+// and `xpath_corpus.rs`.  Drives `run_spec` directly on a
+// `Cap::HEADER_INJECTION` spec per language and asserts the polarity via
+// the `ProbeKind::HeaderEmit { name, value }` probe — the synthetic
+// harness records the raw header bytes the host attempted to set, and
+// the `HeaderInjected` predicate fires when `value` carries a literal
+// `\r\n`.  The synthetic harness inlines the entire setter shim, so the
+// verdict path is deterministic without binding the host's real
+// servlet / flask / rack / http response writer.
+//
+// Per-lang skips:
+// - Java: the Phase 08 fixture imports `javax.servlet.http`, which is
+//   not on the JDK stdlib classpath; `javac` over the fixture errors
+//   before `NyxHarness.java` compiles.  Skipped via the SKIP-on-
+//   BuildFailed branch in `run`.
+// - Go: the fixture declares `package vuln` but the synthetic harness
+//   declares `package main` — `go build .` rejects the directory for
+//   mixing two packages.  Skipped via the same branch.
+// - Rust: the fixture declares `use axum::http::HeaderMap;`, but the
+//   harness's `Cargo.toml` only depends on `libc`; the entry source
+//   lands at `src/entry.rs` (declared by `entry_subpath`) and is
+//   ignored because the synthetic `src/main.rs` never `mod entry;`s
+//   it, so the build succeeds.
+
+mod e2e_phase_08 {
+    use crate::common::fixture_harness::FIXTURE_LOCK;
+    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
+    use nyx_scanner::dynamic::spec::{
+        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+    };
+    use nyx_scanner::evidence::DifferentialVerdict;
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn command_available(bin: &str) -> bool {
+        Command::new(bin)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn toolchain_for(lang: Lang) -> &'static str {
+        match lang {
+            Lang::Java => "java",
+            Lang::Python => "python3",
+            Lang::Php => "php",
+            Lang::Ruby => "ruby",
+            Lang::JavaScript => "node",
+            Lang::Go => "go",
+            Lang::Rust => "cargo",
+            _ => unreachable!("e2e_phase_08 covers J/P/Ph/R/JS/Go/Rust"),
+        }
+    }
+
+    fn lang_subdir(lang: Lang) -> &'static str {
+        match lang {
+            Lang::Java => "java",
+            Lang::Python => "python",
+            Lang::Php => "php",
+            Lang::Ruby => "ruby",
+            Lang::JavaScript => "js",
+            Lang::Go => "go",
+            Lang::Rust => "rust",
+            _ => unreachable!(),
+        }
+    }
+
+    fn build_spec(lang: Lang, fixture: &str, entry_name: &str) -> (HarnessSpec, TempDir) {
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/header_injection")
+            .join(lang_subdir(lang))
+            .join(fixture);
+        let tmp = TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join(fixture);
+        std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
+
+        let entry_file = dst.to_string_lossy().into_owned();
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"phase08-e2e-header-injection|");
+        digest.update(lang_subdir(lang).as_bytes());
+        digest.update(b"|");
+        digest.update(fixture.as_bytes());
+        let spec_hash = format!("{:016x}", {
+            let bytes = digest.finalize();
+            u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+        });
+
+        if matches!(lang, Lang::Java) {
+            let workdir = std::path::PathBuf::from("/tmp/nyx-harness").join(&spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+        }
+
+        let spec = HarnessSpec {
+            finding_id: spec_hash.clone(),
+            entry_file: entry_file.clone(),
+            entry_name: entry_name.to_owned(),
+            entry_kind: EntryKind::Function,
+            lang,
+            toolchain_id: default_toolchain_id(lang).into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::HEADER_INJECTION,
+            constraint_hints: vec![],
+            sink_file: entry_file,
+            sink_line: 1,
+            spec_hash: spec_hash.clone(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+        };
+
+        (spec, tmp)
+    }
+
+    fn run(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
+        let bin = toolchain_for(lang);
+        if !command_available(bin) {
+            eprintln!("SKIP {lang:?} {fixture}: missing toolchain {bin}");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (spec, _tmp) = build_spec(lang, fixture, entry_name);
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            ..SandboxOptions::default()
+        };
+        match run_spec(&spec, &opts) {
+            Ok(outcome) => Some(outcome),
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP {lang:?} {fixture}: harness build failed after {attempts} attempts: {stderr}",
+                );
+                None
+            }
+            Err(e) => panic!("run_spec({lang:?} {fixture}) errored: {e:?}"),
+        }
+    }
+
+    fn assert_confirmed(lang: Lang, outcome: &RunOutcome) {
+        assert!(
+            outcome.triggered_by.is_some(),
+            "{lang:?} HEADER_INJECTION vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else { return };
+        assert_confirmed(Lang::Java, &outcome);
+    }
+
+    #[test]
+    fn python_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        assert_confirmed(Lang::Python, &outcome);
+    }
+
+    #[test]
+    fn php_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        assert_confirmed(Lang::Php, &outcome);
+    }
+
+    #[test]
+    fn ruby_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else { return };
+        assert_confirmed(Lang::Ruby, &outcome);
+    }
+
+    #[test]
+    fn js_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else { return };
+        assert_confirmed(Lang::JavaScript, &outcome);
+    }
+
+    #[test]
+    fn go_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "vuln.go", "Run") else { return };
+        assert_confirmed(Lang::Go, &outcome);
+    }
+
+    #[test]
+    fn rust_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Rust, "vuln.rs", "run") else { return };
+        assert_confirmed(Lang::Rust, &outcome);
+    }
+}
