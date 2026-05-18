@@ -1946,6 +1946,7 @@ mod tests {
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: crate::dynamic::spec::JavaToolchain::default(),
         }
     }
 

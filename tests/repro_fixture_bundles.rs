@@ -98,6 +98,7 @@ fn flask_eval_spec() -> HarnessSpec {
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
     }
 }
 

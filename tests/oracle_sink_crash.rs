@@ -365,6 +365,7 @@ mod e2e_phase_08 {
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         };
 
         (spec, tmp)

@@ -55,6 +55,7 @@ mod repro_hermetic_tests {
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         }
     }
 

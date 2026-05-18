@@ -53,6 +53,10 @@ static CPP: &[&dyn FrameworkAdapter] = &[];
 static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderJavaAdapter,
     &super::adapters::JavaDeserializeAdapter,
+    &super::adapters::JavaMicronautAdapter,
+    &super::adapters::JavaQuarkusAdapter,
+    &super::adapters::JavaServletAdapter,
+    &super::adapters::JavaSpringAdapter,
     &super::adapters::JavaThymeleafAdapter,
     &super::adapters::LdapSpringAdapter,
     &super::adapters::RedirectJavaAdapter,

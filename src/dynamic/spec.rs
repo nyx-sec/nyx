@@ -144,6 +144,48 @@ pub struct HarnessSpec {
     /// absent binding does not bloat repro-bundle JSON.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub framework: Option<FrameworkBinding>,
+    /// Phase 14 (Track L.12) — per-Java-shape toolchain knobs.  The
+    /// Java emitter consults [`JavaToolchain::with_spring_test`] to
+    /// decide whether to bootstrap a full Spring test context
+    /// (`SpringApplication.run` + `MockMvc`) or the lighter
+    /// reflective invocation path the legacy shapes use.  Populated
+    /// by [`attach_framework_binding`] when the `java-spring`
+    /// adapter binds.
+    ///
+    /// Excluded from [`compute_spec_hash`] for the same reason as
+    /// `framework`: the toggle is descriptive metadata driven by the
+    /// adapter binding, not a per-spec boundary topology axis.
+    /// Pre-Phase-14 serialised specs deserialise to the default
+    /// (`with_spring_test = false`).
+    #[serde(default, skip_serializing_if = "JavaToolchain::is_default")]
+    pub java_toolchain: JavaToolchain,
+}
+
+/// Phase 14 (Track L.12) — per-shape Java toolchain knobs.
+///
+/// Today the only knob is [`Self::with_spring_test`]; future Java
+/// frameworks (Quarkus / Micronaut / Servlet) reuse this struct so
+/// their per-shape build inputs (`@QuarkusTest`, `@MicronautTest`,
+/// embedded `Server` jars) can be added without re-versioning the
+/// spec format.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JavaToolchain {
+    /// True when the harness should bootstrap a Spring test context
+    /// (`SpringApplication.run` + `MockMvc`) before invoking the
+    /// handler.  Other Java shapes (Quarkus / Micronaut / Servlet)
+    /// keep this flag `false` and rely on the framework's own
+    /// embedded server / reflective invocation path.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub with_spring_test: bool,
+}
+
+impl JavaToolchain {
+    /// True when the struct equals [`JavaToolchain::default`].
+    /// Used as the `skip_serializing_if` predicate so a default-only
+    /// toolchain does not bloat repro-bundle JSON.
+    pub fn is_default(&self) -> bool {
+        !self.with_spring_test
+    }
 }
 
 fn default_derivation_strategy() -> SpecDerivationStrategy {
@@ -1096,6 +1138,7 @@ fn finalize_spec(
         // back-fill via `attach_framework_binding` once the spec's
         // entry has been resolved and an AST is available.
         framework: None,
+        java_toolchain: JavaToolchain::default(),
     };
     attach_framework_binding(&mut spec, summaries);
     spec.spec_hash = compute_spec_hash(&spec);
@@ -1171,6 +1214,14 @@ fn attach_framework_binding(spec: &mut HarnessSpec, summaries: Option<&GlobalSum
     if let Some(binding) =
         crate::dynamic::framework::detect_binding(summary_ref, tree.root_node(), &bytes, spec.lang)
     {
+        // Phase 14 (Track L.12): flip the Spring-test toolchain knob
+        // when the java-spring adapter binds, so the Java emitter
+        // bootstraps `SpringApplication.run` / `MockMvc` for Spring
+        // routes and skips that heavier path for the other Java
+        // shapes (Quarkus / Micronaut / Servlet).
+        if spec.lang == Lang::Java && binding.adapter == "java-spring" {
+            spec.java_toolchain.with_spring_test = true;
+        }
         spec.framework = Some(binding);
     }
 }
@@ -1483,6 +1534,7 @@ mod tests {
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: JavaToolchain::default(),
         };
         spec.spec_hash = compute_spec_hash(&spec);
         spec

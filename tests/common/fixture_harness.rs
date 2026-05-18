@@ -492,6 +492,7 @@ pub fn run_shape_fixture_lang(
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
     };
 
     // Phase 14: Java shape fixtures bundle annotation / type stubs as
@@ -787,6 +788,7 @@ pub fn run_harness_snapshot_lang(
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
     };
 
     let harness = lang_emit::emit(&spec).expect("emitter must produce a harness");

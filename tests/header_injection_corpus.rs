@@ -57,6 +57,7 @@ fn make_spec(lang: Lang, entry_file: &str, entry_name: &str) -> HarnessSpec {
         derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
     }
 }
 
@@ -543,6 +544,7 @@ mod e2e_phase_08 {
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         };
 
         (spec, tmp)

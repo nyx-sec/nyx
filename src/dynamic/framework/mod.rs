@@ -214,25 +214,30 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_13() {
-        // Phase 13 (Track L.11) adds four JS framework adapters
-        // (`js-express`, `js-fastify`, `js-koa`, `js-nest`) to the
-        // JavaScript slice, growing it from 7 → 11; the TypeScript
-        // slice gains `ts-nest`, growing it from 3 → 4.  Phase 12
-        // (Track L.10) baseline for Python / Java / Php / Ruby / Go /
-        // Rust remains unchanged: Python 11, Java 7, Php 7, Ruby 5,
+    fn registry_baseline_after_phase_14() {
+        // Phase 14 (Track L.12) adds four Java framework adapters
+        // (`java-micronaut`, `java-quarkus`, `java-servlet`,
+        // `java-spring`) to the Java slice, growing it from 7 → 11.
+        // The Phase 13 baseline for the other languages stays put:
+        // Python 11, Php 7, Ruby 5, JavaScript 11, TypeScript 4,
         // Go 3, Rust 2.  C / Cpp stay empty.
-        for lang in [Lang::Java, Lang::Php] {
-            let registered = registry::adapters_for(lang);
-            assert_eq!(
-                registered.len(),
-                7,
-                "{:?} must have the J.1+J.2+J.3+J.4+J.5+J.6+J.7 adapters",
-                lang,
-            );
-            for adapter in registered {
-                assert_eq!(adapter.lang(), lang);
-            }
+        let java_registered = registry::adapters_for(Lang::Java);
+        assert_eq!(
+            java_registered.len(),
+            11,
+            "Java must have J.1+J.2+J.3+J.4+J.5+J.6+J.7 (7) + L.12 Spring/Quarkus/Micronaut/Servlet (4)",
+        );
+        for adapter in java_registered {
+            assert_eq!(adapter.lang(), Lang::Java);
+        }
+        let php_registered = registry::adapters_for(Lang::Php);
+        assert_eq!(
+            php_registered.len(),
+            7,
+            "Php must have the J.1+J.2+J.3+J.4+J.5+J.6+J.7 adapters",
+        );
+        for adapter in php_registered {
+            assert_eq!(adapter.lang(), Lang::Php);
         }
         let python_registered = registry::adapters_for(Lang::Python);
         assert_eq!(

@@ -59,6 +59,7 @@ fn flask_spec(entry_rel: &str) -> HarnessSpec {
         derivation: SpecDerivationStrategy::FromCallgraphEntry,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
     }
 }
 

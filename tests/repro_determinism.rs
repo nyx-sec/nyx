@@ -36,6 +36,7 @@ mod repro_determinism_tests {
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         }
     }
 
@@ -174,6 +175,7 @@ mod repro_determinism_tests {
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         }
     }
 
@@ -307,6 +309,7 @@ fn main() {
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         }
     }
 
@@ -363,6 +366,7 @@ fn main() {
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         }
     }
 
@@ -419,6 +423,7 @@ fn main() {
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         }
     }
 
@@ -475,6 +480,7 @@ fn main() {
             derivation: nyx_scanner::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         }
     }
 

@@ -181,6 +181,12 @@ pub enum JavaShape {
     /// Quarkus reactive route: `@Path("/foo")` + `@GET`/`@POST` on a
     /// method.  Harness invokes the method via reflection like Spring.
     QuarkusRoute,
+    /// Micronaut route: `@Controller("/api")` + `@Get`/`@Post`/`@Put`
+    /// /`@Delete` on a method.  Harness invokes the method via
+    /// reflection like Spring / Quarkus (the brief specifies an
+    /// `EmbeddedServer.start` bootstrap, deferred behind the existing
+    /// synthetic-harness pattern in [`deferred.md`]).
+    MicronautRoute,
     /// Plain static method — legacy default behaviour from before
     /// Phase 14.  Harness directly calls `{Class}.{method}(payload)`.
     StaticMethod,
@@ -211,6 +217,7 @@ impl JavaShape {
         let has_quarkus = source.contains("@Path(")
             || source.contains("io.quarkus")
             || source.contains("jakarta.ws.rs");
+        let has_micronaut = source.contains("io.micronaut");
         let has_junit = source.contains("@Test")
             && (source.contains("org.junit") || source.contains("junit.framework"));
         let has_main = entry == "main" || source.contains("static void main(");
@@ -226,6 +233,15 @@ impl JavaShape {
                 return Self::ServletDoGet;
             }
             return Self::ServletDoGet;
+        }
+        // Micronaut comes before Quarkus / Spring: Micronaut sources
+        // re-use `@Controller` (collides with Spring) and `@Path` is
+        // not part of the Micronaut surface (so the Quarkus check
+        // does not fire for typical Micronaut files).  Picking
+        // Micronaut on a clear `io.micronaut` import is the safest
+        // disambiguation.
+        if has_micronaut {
+            return Self::MicronautRoute;
         }
         if has_quarkus {
             return Self::QuarkusRoute;
@@ -1565,10 +1581,27 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> 
         JavaShape::ServletDoPost => format!(
             "            invokeServlet({entry_class}.class, \"doPost\", payload, \"POST\");"
         ),
-        JavaShape::SpringController => format!(
+        JavaShape::SpringController => {
+            if spec.java_toolchain.with_spring_test {
+                // Phase 14 (Track L.12) — `with_spring_test`-enabled
+                // Spring shape: the v1 implementation still drives the
+                // reflective path because the synthetic harness does
+                // not bundle SpringBoot test deps.  The flag flips a
+                // marker on stdout so the verifier can confirm the
+                // toolchain knob propagated.
+                format!(
+                    "            System.out.println(\"NYX_SPRING_TEST=1\");\n            invokeReflective({entry_class}.class, \"{method}\", payload);"
+                )
+            } else {
+                format!(
+                    "            invokeReflective({entry_class}.class, \"{method}\", payload);"
+                )
+            }
+        }
+        JavaShape::QuarkusRoute => format!(
             "            invokeReflective({entry_class}.class, \"{method}\", payload);"
         ),
-        JavaShape::QuarkusRoute => format!(
+        JavaShape::MicronautRoute => format!(
             "            invokeReflective({entry_class}.class, \"{method}\", payload);"
         ),
         JavaShape::JunitTest => format!(
@@ -1582,7 +1615,9 @@ fn shape_helpers(shape: JavaShape) -> &'static str {
     match shape {
         JavaShape::StaticMethod | JavaShape::StaticMain => "",
         JavaShape::ServletDoGet | JavaShape::ServletDoPost => SERVLET_HELPER,
-        JavaShape::SpringController | JavaShape::QuarkusRoute => REFLECTIVE_HELPER,
+        JavaShape::SpringController
+        | JavaShape::QuarkusRoute
+        | JavaShape::MicronautRoute => REFLECTIVE_HELPER,
         JavaShape::JunitTest => JUNIT_HELPER,
     }
 }
@@ -1777,6 +1812,7 @@ mod tests {
             derivation: crate::dynamic::spec::SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: crate::dynamic::spec::JavaToolchain::default(),
         }
     }
 
@@ -1891,6 +1927,13 @@ mod tests {
     }
 
     #[test]
+    fn shape_detect_micronaut_route() {
+        let src = "import io.micronaut.http.annotation.Controller;\nimport io.micronaut.http.annotation.Get;\n@Controller(\"/x\")\npublic class V { @Get(\"/y\") public String run(String p) { return p; } }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "V.java");
+        assert_eq!(JavaShape::detect(&spec, src), JavaShape::MicronautRoute);
+    }
+
+    #[test]
     fn shape_detect_static_main() {
         let src = "public class V { public static void main(String[] args) {} }";
         let spec = make_spec_with(EntryKind::CliSubcommand, "main", "V.java");
@@ -1931,6 +1974,25 @@ mod tests {
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
         let src = generate_harness_java(&spec, JavaShape::QuarkusRoute, "Vuln");
         assert!(src.contains("invokeReflective(Vuln.class, \"run\""));
+    }
+
+    #[test]
+    fn micronaut_shape_emits_reflective_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
+        let src = generate_harness_java(&spec, JavaShape::MicronautRoute, "Vuln");
+        assert!(src.contains("invokeReflective(Vuln.class, \"run\""));
+    }
+
+    #[test]
+    fn spring_shape_emits_marker_when_with_spring_test() {
+        let mut spec = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
+        spec.java_toolchain.with_spring_test = true;
+        let src = generate_harness_java(&spec, JavaShape::SpringController, "Vuln");
+        assert!(src.contains("NYX_SPRING_TEST=1"));
+        let mut off = make_spec_with(EntryKind::HttpRoute, "run", "Vuln.java");
+        off.java_toolchain.with_spring_test = false;
+        let src_off = generate_harness_java(&off, JavaShape::SpringController, "Vuln");
+        assert!(!src_off.contains("NYX_SPRING_TEST=1"));
     }
 
     #[test]

@@ -80,6 +80,7 @@ mod tests {
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: crate::dynamic::spec::JavaToolchain::default(),
         }
     }
 

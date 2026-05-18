@@ -745,6 +745,7 @@ public class App {
             derivation: SpecDerivationStrategy::FromFlowSteps,
             stubs_required: vec![],
             framework: None,
+            java_toolchain: nyx_scanner::dynamic::spec::JavaToolchain::default(),
         };
 
         let captured = capture_project_dependencies(project_root.path(), &spec);
