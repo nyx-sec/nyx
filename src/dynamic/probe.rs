@@ -236,6 +236,30 @@ pub enum ProbeKind {
         /// would otherwise resolve off-origin.
         request_host: String,
     },
+    /// Phase 10 (Track J.8) prototype-pollution observation.  Stamped
+    /// by the Node.js harness shim's canary-trap accessor installed on
+    /// `Object.prototype.__nyx_canary` (a `Proxy`-style setter trap):
+    /// when a deep-merge / `Object.assign` / `JSON.parse`-then-assign
+    /// sink walks an attacker-controlled `__proto__` key into
+    /// `Object.prototype`, the setter records the polluted value via
+    /// this probe kind.  The
+    /// [`crate::dynamic::oracle::ProbePredicate::PrototypeCanaryTouched`]
+    /// predicate fires when any such probe lands on the channel.  A
+    /// benign payload whose object literal has no `__proto__` key, or
+    /// whose target is constructed via `Object.create(null)`, leaves
+    /// the prototype chain untouched and emits no
+    /// `PrototypePollution` probe.
+    PrototypePollution {
+        /// Property name the host attempted to set on
+        /// `Object.prototype` — always `"__nyx_canary"` for Phase 10
+        /// but parametrised so future per-sink canaries reuse the
+        /// kind without proliferating variants.
+        property: String,
+        /// Stringified value the host attempted to bind.  Echoed
+        /// verbatim so repro tooling can pin the exact payload bytes
+        /// that traversed the chain.
+        value: String,
+    },
 }
 
 impl Default for ProbeKind {

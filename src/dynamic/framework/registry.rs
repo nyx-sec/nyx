@@ -89,10 +89,17 @@ static RUBY: &[&dyn FrameworkAdapter] = &[
     &super::adapters::RubyMarshalAdapter,
     &super::adapters::XxeRubyAdapter,
 ];
-static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[];
+static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::PpJsonDeepAssignTsAdapter,
+    &super::adapters::PpLodashMergeTsAdapter,
+    &super::adapters::PpObjectAssignTsAdapter,
+];
 static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderJsAdapter,
     &super::adapters::JsHandlebarsAdapter,
+    &super::adapters::PpJsonDeepAssignJsAdapter,
+    &super::adapters::PpLodashMergeJsAdapter,
+    &super::adapters::PpObjectAssignJsAdapter,
     &super::adapters::RedirectJsAdapter,
     &super::adapters::XpathJsAdapter,
 ];

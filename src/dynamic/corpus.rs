@@ -54,6 +54,7 @@ mod header_injection;
 mod ldap;
 mod open_redirect;
 mod path_trav;
+mod prototype_pollution;
 mod sqli;
 mod ssrf;
 mod ssti;
@@ -96,7 +97,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 11      | 2026-05-17 | Phase 07 / Track J.5: `XPATH_INJECTION` cap lit for Java / Python / PHP / JS; `ProbeKind::Xpath`; `LdapResultCountGreaterThan` renamed to `QueryResultCountGreaterThan` (shared by LDAP + XPath); `xpath_corpus.xml` staged in workdir |
 /// | 12      | 2026-05-18 | Phase 08 / Track J.6: `HEADER_INJECTION` cap lit for Java / Python / PHP / Ruby / JS / Go / Rust; `ProbeKind::HeaderEmit` + `ProbePredicate::HeaderInjected`; per-lang `setHeader` shims |
 /// | 13      | 2026-05-18 | Phase 09 / Track J.7: `OPEN_REDIRECT` cap lit for Java / Python / PHP / Ruby / JS / Go / Rust; `ProbeKind::Redirect` + `ProbePredicate::RedirectHostNotIn`; per-lang `sendRedirect` / `redirect()` shims |
-pub const CORPUS_VERSION: u32 = 13;
+/// | 14      | 2026-05-18 | Phase 10 / Track J.8: `PROTOTYPE_POLLUTION` cap lit for JS / TS; `ProbeKind::PrototypePollution` + `ProbePredicate::PrototypeCanaryTouched`; Node harness installs `Proxy`-style canary trap on `Object.prototype.__nyx_canary` |
+pub const CORPUS_VERSION: u32 = 14;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

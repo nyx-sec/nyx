@@ -214,14 +214,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_09() {
-        // Phase 09 (Track J.7) adds the open-redirect adapter for
-        // every language carrying the OPEN_REDIRECT corpus: Java /
-        // Python / PHP / Ruby / JavaScript / Go / Rust.  Java /
-        // Python / PHP each grow from 6 → 7; Ruby from 4 → 5;
-        // JavaScript from 3 → 4; Go from 2 → 3; Rust from 1 → 2.
-        // C / Cpp / TypeScript still carry the Phase-01 empty
-        // baseline.
+    fn registry_baseline_after_phase_10() {
+        // Phase 10 (Track J.8) adds three prototype-pollution
+        // adapters (`pp-lodash-merge`, `pp-object-assign`,
+        // `pp-json-deep-assign`) to both the JavaScript and
+        // TypeScript slices.  Java / Python / PHP each still carry
+        // the J.1..J.7 adapters (7 entries); Ruby still has 5; Go
+        // still has 3; Rust still has 2.  JavaScript grows from 4 →
+        // 7; TypeScript grows from 0 → 3.  C / Cpp stay empty.
         for lang in [Lang::Java, Lang::Python, Lang::Php] {
             let registered = registry::adapters_for(lang);
             assert_eq!(
@@ -246,11 +246,20 @@ mod tests {
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(
             js_registered.len(),
-            4,
-            "JavaScript must have J.2 + J.5 + J.6 + J.7 adapters",
+            7,
+            "JavaScript must have J.2 + J.5 + J.6 + J.7 + J.8(×3) adapters",
         );
         for adapter in js_registered {
             assert_eq!(adapter.lang(), Lang::JavaScript);
+        }
+        let ts_registered = registry::adapters_for(Lang::TypeScript);
+        assert_eq!(
+            ts_registered.len(),
+            3,
+            "TypeScript must have the J.8(×3) prototype-pollution adapters",
+        );
+        for adapter in ts_registered {
+            assert_eq!(adapter.lang(), Lang::TypeScript);
         }
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
@@ -270,7 +279,7 @@ mod tests {
         for adapter in rust_registered {
             assert_eq!(adapter.lang(), Lang::Rust);
         }
-        for lang in [Lang::C, Lang::Cpp, Lang::TypeScript] {
+        for lang in [Lang::C, Lang::Cpp] {
             assert!(
                 registry::adapters_for(lang).is_empty(),
                 "{:?} should still have zero adapters before its Track-L phase",

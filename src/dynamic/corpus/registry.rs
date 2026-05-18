@@ -24,8 +24,8 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use super::{
-    cmdi, deserialize, fmt_string, header_injection, ldap, open_redirect, path_trav, sqli, ssrf,
-    ssti, xpath, xss, xxe,
+    cmdi, deserialize, fmt_string, header_injection, ldap, open_redirect, path_trav,
+    prototype_pollution, sqli, ssrf, ssti, xpath, xss, xxe,
 };
 use super::{CapCorpus, CuratedPayload, Oracle};
 use crate::dynamic::oracle::ProbePredicate;
@@ -42,8 +42,7 @@ pub const CORPUS_UNSUPPORTED_LANG_NEUTRAL: u32 = Cap::ENV_VAR.bits()
     | Cap::JSON_PARSE.bits()
     | Cap::CRYPTO.bits()
     | Cap::UNAUTHORIZED_ID.bits()
-    | Cap::DATA_EXFIL.bits()
-    | Cap::PROTOTYPE_POLLUTION.bits();
+    | Cap::DATA_EXFIL.bits();
 
 /// Flat `(Cap, Lang, slice)` table.  A single cap can carry per-language
 /// variants — that's the whole reason this layer exists.
@@ -89,6 +88,16 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::OPEN_REDIRECT, Lang::JavaScript, open_redirect::js::PAYLOADS),
     (Cap::OPEN_REDIRECT, Lang::Go, open_redirect::go::PAYLOADS),
     (Cap::OPEN_REDIRECT, Lang::Rust, open_redirect::rust::PAYLOADS),
+    (
+        Cap::PROTOTYPE_POLLUTION,
+        Lang::JavaScript,
+        prototype_pollution::javascript::PAYLOADS,
+    ),
+    (
+        Cap::PROTOTYPE_POLLUTION,
+        Lang::TypeScript,
+        prototype_pollution::typescript::PAYLOADS,
+    ),
 ];
 
 /// Reserved for per-cap oracle defaults.  Empty in Phase 02; populated by
@@ -302,6 +311,7 @@ mod tests {
         assert!(!payloads_for(Cap::XPATH_INJECTION).is_empty());
         assert!(!payloads_for(Cap::HEADER_INJECTION).is_empty());
         assert!(!payloads_for(Cap::OPEN_REDIRECT).is_empty());
+        assert!(!payloads_for(Cap::PROTOTYPE_POLLUTION).is_empty());
     }
 
     #[test]
@@ -314,7 +324,6 @@ mod tests {
             Cap::CRYPTO,
             Cap::UNAUTHORIZED_ID,
             Cap::DATA_EXFIL,
-            Cap::PROTOTYPE_POLLUTION,
         ];
         for cap in unsupported {
             assert!(
@@ -349,6 +358,7 @@ mod tests {
             Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
+            Cap::PROTOTYPE_POLLUTION,
         ] {
             let has_vuln = payloads_for(cap).iter().any(|p| !p.is_benign);
             assert!(has_vuln, "{cap:?} must have at least one vuln payload");
@@ -402,6 +412,7 @@ mod tests {
             Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
+            Cap::PROTOTYPE_POLLUTION,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -430,6 +441,7 @@ mod tests {
             Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
+            Cap::PROTOTYPE_POLLUTION,
         ];
         for cap in caps {
             for p in payloads_for(cap) {
@@ -545,6 +557,7 @@ mod tests {
             Cap::XPATH_INJECTION,
             Cap::HEADER_INJECTION,
             Cap::OPEN_REDIRECT,
+            Cap::PROTOTYPE_POLLUTION,
         ];
         for cap in caps {
             for p in payloads_for(cap).iter().filter(|p| p.is_benign) {
@@ -844,6 +857,50 @@ mod tests {
                 .expect("each lang must have a HEADER_INJECTION vuln payload");
             let resolved =
                 super::resolve_benign_control_lang(vuln, Cap::HEADER_INJECTION, lang)
+                    .expect("lang-aware benign control must resolve");
+            assert!(resolved.is_benign);
+        }
+    }
+
+    #[test]
+    fn prototype_pollution_has_per_lang_slices_for_phase_10() {
+        // Phase 10 (Track J.8) acceptance: PROTOTYPE_POLLUTION
+        // registers payloads in JavaScript / TypeScript and the
+        // lang-aware lookup never returns empty for either.
+        for lang in [Lang::JavaScript, Lang::TypeScript] {
+            assert!(
+                !payloads_for_lang(Cap::PROTOTYPE_POLLUTION, lang).is_empty(),
+                "PROTOTYPE_POLLUTION must have at least one payload for {lang:?}",
+            );
+        }
+        // Other langs not covered.
+        for lang in [
+            Lang::Rust,
+            Lang::C,
+            Lang::Cpp,
+            Lang::Go,
+            Lang::Java,
+            Lang::Php,
+            Lang::Python,
+            Lang::Ruby,
+        ] {
+            assert!(
+                payloads_for_lang(Cap::PROTOTYPE_POLLUTION, lang).is_empty(),
+                "PROTOTYPE_POLLUTION has unexpected payloads for {lang:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn prototype_pollution_payloads_pair_benign_controls_per_lang() {
+        for lang in [Lang::JavaScript, Lang::TypeScript] {
+            let slice = payloads_for_lang(Cap::PROTOTYPE_POLLUTION, lang);
+            let vuln = slice
+                .iter()
+                .find(|p| !p.is_benign)
+                .expect("each lang must have a PROTOTYPE_POLLUTION vuln payload");
+            let resolved =
+                super::resolve_benign_control_lang(vuln, Cap::PROTOTYPE_POLLUTION, lang)
                     .expect("lang-aware benign control must resolve");
             assert!(resolved.is_benign);
         }

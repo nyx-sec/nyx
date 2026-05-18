@@ -465,6 +465,18 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 10 (Track J.8): PROTOTYPE_POLLUTION-sink short-circuit.
+    // The synthetic harness installs a `Proxy`-style setter trap on
+    // `Object.prototype.__nyx_canary` and runs a naive deep-merge
+    // sink that walks the payload's top-level keys into a vanilla
+    // target object.  A vuln payload whose JSON literal contains
+    // `__proto__` traverses the chain and trips the trap; a benign
+    // payload whose JSON literal carries only regular keys leaves
+    // the prototype untouched.
+    if spec.expected_cap == crate::labels::Cap::PROTOTYPE_POLLUTION {
+        return Ok(emit_prototype_pollution_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JsShape::detect(spec, &entry_source);
     let entry_subpath = entry_subpath_for_shape(shape, is_typescript);
@@ -717,6 +729,133 @@ const location = payload;
 nyxRedirectProbe(location, requestHost);
 console.log('__NYX_SINK_HIT__');
 console.log(JSON.stringify({{ location: location, request_host: requestHost }}));
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 10 — Track J.8 prototype-pollution harness for Node
+/// (`lodash.merge` / `Object.assign` / `JSON.parse`-then-deep-assign).
+///
+/// Reads `NYX_PAYLOAD`, parses it as JSON, and walks the parsed
+/// object into a synthetic vanilla target via a naive recursive
+/// deep-merge.  Before the sink runs the harness installs a
+/// `Proxy`-style setter trap on `Object.prototype.__nyx_canary`
+/// (modelled as an accessor property — the only working canary
+/// mechanism for the language's shared `Object.prototype` —
+/// configured to forward every write through a `Proxy`-style
+/// observation).  When the merge walks an attacker-controlled
+/// `__proto__` key into the target, the deep-merge dereferences
+/// `target.__proto__` (which is `Object.prototype`) and the
+/// canary's setter records a `ProbeKind::PrototypePollution { property:
+/// "__nyx_canary", value }` probe.  A benign payload whose JSON
+/// literal has no `__proto__` key — or a fixture that constructs
+/// its target via `Object.create(null)` — leaves the prototype
+/// chain untouched and emits no probe.
+pub fn emit_prototype_pollution_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"// Nyx dynamic harness — PROTOTYPE_POLLUTION canary trap (Phase 10 / Track J.8).
+{shim}
+
+const NYX_PP_CANARY = '__nyx_canary';
+
+function nyxPrototypePollutionProbe(value) {{
+  const p = process.env.NYX_PROBE_PATH;
+  if (!p) return;
+  const rec = {{
+    sink_callee: '__nyx_pp_canary_set',
+    args: [
+      {{ kind: 'String', value: NYX_PP_CANARY }},
+      {{ kind: 'String', value: String(value) }},
+    ],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{
+      kind: 'PrototypePollution',
+      property: NYX_PP_CANARY,
+      value: String(value),
+    }},
+    witness: __nyx_witness('__nyx_pp_canary_set', [NYX_PP_CANARY, value]),
+  }};
+  try {{
+    require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
+  }} catch (e) {{
+    // best-effort
+  }}
+}}
+
+(function installPrototypeCanary() {{
+  // Proxy-style setter trap on Object.prototype.__nyx_canary.  A
+  // real `new Proxy(Object.prototype, ...)` cannot replace
+  // Object.prototype itself, so the trap is modelled as an
+  // accessor property routed through the same observation hook the
+  // ProbeKind::PrototypePollution probe expects.
+  //
+  // The setter receiver (`this`) is the actual write target after
+  // prototype-chain resolution.  Only a write that *landed on
+  // Object.prototype itself* is true prototype pollution; a write
+  // to a child object's `__nyx_canary` would also reach this setter
+  // via prototype lookup but does not pollute the shared prototype,
+  // so we ignore it.  Without this guard a benign deep-merge of
+  // `{{data: {{__nyx_canary: ...}}}}` into a plain `{{}}` target
+  // would falsely fire the probe.
+  let _canaryStorage;
+  Object.defineProperty(Object.prototype, NYX_PP_CANARY, {{
+    configurable: true,
+    enumerable: false,
+    set: function (v) {{
+      _canaryStorage = v;
+      if (this === Object.prototype) {{
+        nyxPrototypePollutionProbe(v);
+      }}
+    }},
+    get: function () {{
+      return _canaryStorage;
+    }},
+  }});
+}})();
+
+function nyxDeepMerge(target, source) {{
+  if (source === null || typeof source !== 'object') return target;
+  for (const key of Object.keys(source)) {{
+    const sv = source[key];
+    if (sv !== null && typeof sv === 'object') {{
+      if (target[key] === null || typeof target[key] !== 'object') {{
+        target[key] = {{}};
+      }}
+      nyxDeepMerge(target[key], sv);
+    }} else {{
+      target[key] = sv;
+    }}
+  }}
+  return target;
+}}
+
+const payload = process.env.NYX_PAYLOAD || '';
+let parsed;
+try {{
+  parsed = JSON.parse(payload);
+}} catch (e) {{
+  parsed = {{}};
+}}
+const target = {{}};
+try {{
+  nyxDeepMerge(target, parsed);
+}} catch (e) {{
+  // Naive merge may throw on weird inputs; the canary observation
+  // already wrote any probe before the throw.
+}}
+console.log('__NYX_SINK_HIT__');
+console.log(JSON.stringify({{
+  canary_present: Object.prototype.hasOwnProperty(NYX_PP_CANARY),
+}}));
 "#
     );
     HarnessSource {

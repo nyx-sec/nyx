@@ -288,6 +288,33 @@ pub enum ProbePredicate {
         /// from this slice.
         allowlist: &'static [&'static str],
     },
+    /// Phase 10 (Track J.8): prototype-pollution canary predicate.
+    ///
+    /// Fires when at least one drained probe carries
+    /// [`ProbeKind::PrototypePollution`] whose `property` matches
+    /// `canary` (defaults to `"__nyx_canary"`).  The Node harness
+    /// installs a `Proxy`-style setter trap on
+    /// `Object.prototype.__nyx_canary`; any deep-merge / `Object.assign`
+    /// / `JSON.parse`-then-deep-assign sink that walks an
+    /// attacker-controlled `__proto__` key into the prototype chain
+    /// trips the trap and writes a `PrototypePollution` probe.  A
+    /// benign payload whose object literal has no `__proto__` key, or
+    /// whose target is constructed via `Object.create(null)`, never
+    /// reaches the canary so the predicate stays clear.
+    ///
+    /// Cross-cutting in the same sense as
+    /// [`Self::DeserializeGadgetInvoked`] /
+    /// [`Self::XxeEntityExpanded`] /
+    /// [`Self::HeaderInjected`] /
+    /// [`Self::RedirectHostNotIn`] — evaluated across every drained
+    /// probe rather than against a single record.
+    PrototypeCanaryTouched {
+        /// Canary property name the harness installed on
+        /// `Object.prototype` (typically `"__nyx_canary"`).  Compared
+        /// case-sensitively against
+        /// [`ProbeKind::PrototypePollution::property`].
+        canary: &'static str,
+    },
     /// Phase 06 (Track J.4) / Phase 07 (Track J.5): result-count
     /// predicate shared by LDAP-filter and XPath-expression injection.
     ///
@@ -482,6 +509,21 @@ pub fn oracle_fired_with_stubs(
             if !redirect_ok {
                 return false;
             }
+            // Phase 10 (Track J.8): prototype-pollution canary
+            // cross-cutting predicates.  Each
+            // `PrototypeCanaryTouched { canary }` consults the
+            // captured probe channel for a
+            // [`ProbeKind::PrototypePollution`] record whose
+            // `property` matches the canary name.
+            let canary_ok = cross.iter().all(|p| match p {
+                ProbePredicate::PrototypeCanaryTouched { canary } => {
+                    probes_satisfy_prototype_canary(probes, canary)
+                }
+                _ => true,
+            });
+            if !canary_ok {
+                return false;
+            }
             // Phase 04 (Track J.2): SSTI render-equality cross-cutting
             // predicates.  Each `TemplateEvalEqual { expected }` consults
             // the captured stdout body — see [`stdout_template_equals`].
@@ -515,7 +557,8 @@ pub fn oracle_fired_with_stubs(
             | ProbeKind::Ldap { .. }
             | ProbeKind::Xpath { .. }
             | ProbeKind::HeaderEmit { .. }
-            | ProbeKind::Redirect { .. } => false,
+            | ProbeKind::Redirect { .. }
+            | ProbeKind::PrototypePollution { .. } => false,
         }),
         Oracle::OutputContains(needle) => {
             let nb = needle.as_bytes();
@@ -544,6 +587,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
             | ProbePredicate::QueryResultCountGreaterThan { .. }
             | ProbePredicate::HeaderInjected { .. }
             | ProbePredicate::RedirectHostNotIn { .. }
+            | ProbePredicate::PrototypeCanaryTouched { .. }
     )
 }
 
@@ -576,6 +620,10 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         // rather than stub events; evaluated separately in
         // [`probes_satisfy_redirect_off_origin`] below.
         ProbePredicate::RedirectHostNotIn { .. } => true,
+        // PrototypeCanaryTouched is cross-cutting against the *probe
+        // log* rather than stub events; evaluated separately in
+        // [`probes_satisfy_prototype_canary`] below.
+        ProbePredicate::PrototypeCanaryTouched { .. } => true,
         _ => true,
     }
 }
@@ -681,6 +729,17 @@ fn probes_satisfy_redirect_off_origin(probes: &[SinkProbe], allowlist: &[&str]) 
         ProbeKind::Redirect { location, request_host } => {
             redirect_is_off_origin(location, request_host, allowlist)
         }
+        _ => false,
+    })
+}
+
+/// True when at least one drained probe is a
+/// [`ProbeKind::PrototypePollution`] record whose `property` matches
+/// `canary`.  Powers
+/// [`ProbePredicate::PrototypeCanaryTouched`] (Phase 10 — Track J.8).
+fn probes_satisfy_prototype_canary(probes: &[SinkProbe], canary: &str) -> bool {
+    probes.iter().any(|p| match &p.kind {
+        ProbeKind::PrototypePollution { property, .. } => property == canary,
         _ => false,
     })
 }
@@ -791,7 +850,8 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         | ProbePredicate::XxeEntityExpanded { .. }
         | ProbePredicate::QueryResultCountGreaterThan { .. }
         | ProbePredicate::HeaderInjected { .. }
-        | ProbePredicate::RedirectHostNotIn { .. } => true,
+        | ProbePredicate::RedirectHostNotIn { .. }
+        | ProbePredicate::PrototypeCanaryTouched { .. } => true,
     }
 }
 
@@ -819,7 +879,8 @@ pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
         | ProbeKind::Ldap { .. }
         | ProbeKind::Xpath { .. }
         | ProbeKind::HeaderEmit { .. }
-        | ProbeKind::Redirect { .. } => None,
+        | ProbeKind::Redirect { .. }
+        | ProbeKind::PrototypePollution { .. } => None,
     }
 }
 
@@ -1179,6 +1240,53 @@ mod tests {
             "example.com",
             &["[::1]"],
         ));
+    }
+
+    fn prototype_pollution_probe(property: &str, value: &str) -> SinkProbe {
+        SinkProbe {
+            sink_callee: "__nyx_pp_canary_set".into(),
+            args: vec![],
+            captured_at_ns: 1,
+            payload_id: "phase10".into(),
+            kind: ProbeKind::PrototypePollution {
+                property: property.into(),
+                value: value.into(),
+            },
+            witness: ProbeWitness::empty(),
+        }
+    }
+
+    #[test]
+    fn prototype_canary_touched_fires_on_matching_property() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::PrototypeCanaryTouched {
+                canary: "__nyx_canary",
+            }],
+        };
+        let probes = vec![prototype_pollution_probe("__nyx_canary", "pwned")];
+        assert!(oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn prototype_canary_touched_ignores_mismatched_property() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::PrototypeCanaryTouched {
+                canary: "__nyx_canary",
+            }],
+        };
+        let probes = vec![prototype_pollution_probe("__other__", "x")];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn prototype_canary_touched_clears_when_no_pp_probe() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::PrototypeCanaryTouched {
+                canary: "__nyx_canary",
+            }],
+        };
+        let probes = vec![probe("noop", vec![])];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
     }
 
     #[test]
