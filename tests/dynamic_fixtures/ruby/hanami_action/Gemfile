@@ -1,0 +1,8 @@
+source 'https://rubygems.org'
+
+# Phase 15 fixture — Hanami Action shape.  The adapter only inspects
+# the class superclass / include list; the harness never actually
+# boots `Hanami::Application`, so the gem is informational for
+# cargo-side fixture pickup.
+gem 'hanami'
+gem 'hanami-controller'

@@ -214,13 +214,13 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_14() {
-        // Phase 14 (Track L.12) adds four Java framework adapters
-        // (`java-micronaut`, `java-quarkus`, `java-servlet`,
-        // `java-spring`) to the Java slice, growing it from 7 → 11.
-        // The Phase 13 baseline for the other languages stays put:
-        // Python 11, Php 7, Ruby 5, JavaScript 11, TypeScript 4,
-        // Go 3, Rust 2.  C / Cpp stay empty.
+    fn registry_baseline_after_phase_15() {
+        // Phase 15 (Track L.13) adds three Ruby framework adapters
+        // (`ruby-hanami`, `ruby-rails`, `ruby-sinatra`) to the Ruby
+        // slice, growing it from 5 → 8.  The Phase 14 baseline for
+        // the other languages stays put: Java 11, Python 11, Php 7,
+        // JavaScript 11, TypeScript 4, Go 3, Rust 2.  C / Cpp stay
+        // empty.
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
@@ -251,8 +251,8 @@ mod tests {
         let ruby_registered = registry::adapters_for(Lang::Ruby);
         assert_eq!(
             ruby_registered.len(),
-            5,
-            "Ruby must have the J.1 + J.2 + J.3 + J.6 + J.7 adapters",
+            8,
+            "Ruby must have the J.1 + J.2 + J.3 + J.6 + J.7 (5) + L.13 Rails/Sinatra/Hanami (3) adapters",
         );
         for adapter in ruby_registered {
             assert_eq!(adapter.lang(), Lang::Ruby);

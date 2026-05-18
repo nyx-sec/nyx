@@ -94,7 +94,10 @@ static RUBY: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderRubyAdapter,
     &super::adapters::RedirectRubyAdapter,
     &super::adapters::RubyErbAdapter,
+    &super::adapters::RubyHanamiAdapter,
     &super::adapters::RubyMarshalAdapter,
+    &super::adapters::RubyRailsAdapter,
+    &super::adapters::RubySinatraAdapter,
     &super::adapters::XxeRubyAdapter,
 ];
 static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[
