@@ -54,6 +54,19 @@ pub enum JsShape {
     /// DOM event handler executed inside a `jsdom` window.  Harness sets
     /// up `globalThis.window` / `document` and dispatches an event.
     BrowserEvent,
+    /// Fastify route plugin.  Harness loads the entry's `app` export
+    /// (which must be a configured Fastify instance) and replays the
+    /// spec's request through Fastify's built-in
+    /// [`light-my-request`](https://github.com/fastify/light-my-request)
+    /// equivalent — `app.inject({ method, url, query, payload, headers })`.
+    /// No external `supertest` dep is required because `inject` ships in
+    /// Fastify core.  Phase 13 — Track L.11.
+    Fastify,
+    /// NestJS controller class.  Harness loads the entry's exported
+    /// controller class, mounts it via `Test.createTestingModule`, and
+    /// replays the spec's request through `supertest(app.getHttpServer())`.
+    /// Phase 13 — Track L.11.
+    Nest,
 }
 
 impl JsShape {
@@ -71,6 +84,28 @@ impl JsShape {
         let has_koa = source_has_marker(
             source,
             &["require('koa')", "require(\"koa\")", "from 'koa'", "from \"koa\""],
+        );
+        let has_fastify = source_has_marker(
+            source,
+            &[
+                "require('fastify')",
+                "require(\"fastify\")",
+                "from 'fastify'",
+                "from \"fastify\"",
+                "// nyx-shape: fastify",
+            ],
+        );
+        let has_nest = source_has_marker(
+            source,
+            &[
+                "@nestjs/common",
+                "@nestjs/core",
+                "@nestjs/platform-express",
+                "@nestjs/platform-fastify",
+                "NestFactory",
+                "@Controller",
+                "// nyx-shape: nest",
+            ],
         );
         let has_next = source_has_marker(
             source,
@@ -97,6 +132,16 @@ impl JsShape {
             &["export default ", "// nyx-shape: esm-default"],
         );
 
+        // Nest wins over Express / Fastify because Nest projects also
+        // import `@nestjs/platform-express` / `@nestjs/platform-fastify`
+        // transitively — the controller-class shape needs its own
+        // testing module bootstrap.
+        if has_nest {
+            return Self::Nest;
+        }
+        if has_fastify {
+            return Self::Fastify;
+        }
         if has_express {
             return Self::Express;
         }
@@ -402,6 +447,31 @@ fn extra_files_for_shape(shape: JsShape) -> Vec<(String, String)> {
             ("package.json".to_owned(), package_json_for("jsdom", "^24.1.1")),
             ("package-lock.json".to_owned(), package_lock_skeleton("nyx-harness-jsdom")),
         ],
+        JsShape::Fastify => vec![
+            ("package.json".to_owned(), package_json_for("fastify", "^4.28.1")),
+            ("package-lock.json".to_owned(), package_lock_skeleton("nyx-harness-fastify")),
+        ],
+        JsShape::Nest => vec![
+            (
+                "package.json".to_owned(),
+                package_json_multi(
+                    "nyx-harness-nest",
+                    &[
+                        ("@nestjs/common", "^10.0.0"),
+                        ("@nestjs/core", "^10.0.0"),
+                        ("@nestjs/platform-express", "^10.0.0"),
+                        ("@nestjs/testing", "^10.0.0"),
+                        ("supertest", "^7.0.0"),
+                        ("reflect-metadata", "^0.2.0"),
+                        ("rxjs", "^7.8.0"),
+                    ],
+                ),
+            ),
+            (
+                "package-lock.json".to_owned(),
+                package_lock_skeleton("nyx-harness-nest"),
+            ),
+        ],
         // Plain async / CJS / ESM use stdlib only.
         _ => vec![],
     }
@@ -411,6 +481,26 @@ fn package_json_for(dep: &str, version: &str) -> String {
     format!(
         "{{\n  \"name\": \"nyx-harness-{dep}\",\n  \"version\": \"0.0.0\",\n  \"private\": true,\n  \"dependencies\": {{\n    \"{dep}\": \"{version}\"\n  }}\n}}\n",
     )
+}
+
+fn package_json_multi(pkg_name: &str, deps: &[(&str, &str)]) -> String {
+    let mut body = String::with_capacity(128);
+    body.push_str("{\n  \"name\": \"");
+    body.push_str(pkg_name);
+    body.push_str("\",\n  \"version\": \"0.0.0\",\n  \"private\": true,\n  \"dependencies\": {\n");
+    for (i, (name, ver)) in deps.iter().enumerate() {
+        body.push_str("    \"");
+        body.push_str(name);
+        body.push_str("\": \"");
+        body.push_str(ver);
+        body.push('"');
+        if i + 1 != deps.len() {
+            body.push(',');
+        }
+        body.push('\n');
+    }
+    body.push_str("  }\n}\n");
+    body
 }
 
 fn package_lock_skeleton(name: &str) -> String {
@@ -980,6 +1070,8 @@ fn generate_for_shape(spec: &HarnessSpec, shape: JsShape, entry_subpath: &str) -
         JsShape::Koa => emit_koa(spec),
         JsShape::NextRoute => emit_next(spec),
         JsShape::BrowserEvent => emit_browser_event(spec),
+        JsShape::Fastify => emit_fastify(spec),
+        JsShape::Nest => emit_nest(spec),
     };
     format!("{preamble}\n{body}\n")
 }
@@ -1252,6 +1344,140 @@ const _res = {{
         const _result = _handler(_req, _res);
         if (_result && typeof _result.then === 'function') await _result;
         process.stdout.write(_captured + '\n');
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}})();
+"#
+    )
+}
+
+/// Phase 13 — Track L.11 Fastify harness.
+///
+/// Loads the entry's `app` export (the configured Fastify instance)
+/// and replays the spec's request through Fastify's built-in
+/// [`light-my-request`](https://github.com/fastify/light-my-request)
+/// equivalent — `app.inject({ method, url, query, payload, headers })`.
+/// No external `supertest` dep is required because `inject` ships in
+/// Fastify core.
+fn emit_fastify(spec: &HarnessSpec) -> String {
+    let (method, payload_key, body_kind) = resolve_http_payload(&spec.payload_slot);
+    format!(
+        r#"// Shape: Fastify route — boot via app.inject() (light-my-request equivalent).
+const _app = _entry.app || _entry.default || _entry;
+if (!_app || typeof _app.inject !== 'function') {{
+    process.stderr.write('NYX_FASTIFY_APP_NOT_FOUND\n');
+    process.exit(78);
+}}
+const _kind = {body_kind:?};
+const _payload_key = {payload_key:?};
+const _method = {method:?};
+let _path = '/';
+let _query;
+let _bodyArg = undefined;
+let _headers = {{}};
+if (_kind === 'query') {{
+    _query = {{}};
+    _query[_payload_key] = payload;
+}} else if (_kind === 'body') {{
+    _bodyArg = payload;
+    _headers['content-type'] = 'application/json';
+}} else if (_kind === 'env') {{
+    process.env[_payload_key] = payload;
+}} else if (_kind === 'param') {{
+    _path = '/' + encodeURIComponent(payload);
+}}
+(async () => {{
+    try {{
+        if (typeof _app.ready === 'function') await _app.ready();
+        const _injectOpts = {{ method: _method, url: _path, headers: _headers }};
+        if (_query) _injectOpts.query = _query;
+        if (_bodyArg !== undefined) _injectOpts.payload = _bodyArg;
+        const _res = await _app.inject(_injectOpts);
+        process.stdout.write(String(_res.body == null ? '' : _res.body) + '\n');
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}})();
+"#
+    )
+}
+
+/// Phase 13 — Track L.11 NestJS harness.
+///
+/// Loads the entry's exported controller class (`_entry.Controller`
+/// / `_entry.default`), mounts it via
+/// `Test.createTestingModule({controllers:[Controller]}).compile()`,
+/// boots the Nest application, and replays the spec's request through
+/// `supertest(app.getHttpServer())`.  Falls back to `_entry.app`
+/// (already-built Nest app instance) when the fixture pre-mounts
+/// itself.  The `supertest` dep is bundled by `extra_files_for_shape`.
+fn emit_nest(spec: &HarnessSpec) -> String {
+    let entry_fn = &spec.entry_name;
+    let (method, payload_key, body_kind) = resolve_http_payload(&spec.payload_slot);
+    let method_lower = method.to_ascii_lowercase();
+    format!(
+        r#"// Shape: NestJS controller — boot via Test.createTestingModule + supertest.
+require('reflect-metadata');
+let _supertest;
+try {{
+    _supertest = require('supertest');
+}} catch (e) {{
+    process.stderr.write('NYX_SUPERTEST_MISSING: ' + e.message + '\n');
+    process.exit(79);
+}}
+let _NestTesting;
+try {{
+    _NestTesting = require('@nestjs/testing');
+}} catch (e) {{
+    process.stderr.write('NYX_NESTJS_TESTING_MISSING: ' + e.message + '\n');
+    process.exit(79);
+}}
+const _kind = {body_kind:?};
+const _payload_key = {payload_key:?};
+const _method_lc = {method_lower:?};
+const _entry_name = {entry_fn:?};
+let _path = '/';
+if (_kind === 'env') {{
+    process.env[_payload_key] = payload;
+}} else if (_kind === 'param') {{
+    _path = '/' + encodeURIComponent(payload);
+}}
+(async () => {{
+    try {{
+        let _app = _entry.app || (_entry.default && _entry.default.app);
+        if (!_app) {{
+            // Locate a controller class — first @Controller / class export.
+            const _candidate = _entry[_entry_name]
+                || _entry.default
+                || _entry.AppController
+                || _entry.Controller
+                || Object.values(_entry).find((v) => typeof v === 'function');
+            if (typeof _candidate !== 'function') {{
+                process.stderr.write('NYX_NEST_CONTROLLER_NOT_FOUND\n');
+                process.exit(78);
+            }}
+            const _module = await _NestTesting.Test
+                .createTestingModule({{ controllers: [_candidate] }})
+                .compile();
+            _app = _module.createNestApplication();
+            await _app.init();
+        }}
+        const _server = (typeof _app.getHttpServer === 'function')
+            ? _app.getHttpServer()
+            : _app;
+        const _agent = _supertest(_server);
+        let _req = _agent[_method_lc](_path);
+        if (_kind === 'query') {{
+            const _q = {{}};
+            _q[_payload_key] = payload;
+            _req = _req.query(_q);
+        }} else if (_kind === 'body') {{
+            _req = _req.set('content-type', 'application/json').send(payload);
+        }}
+        const _res = await _req;
+        process.stdout.write(String(_res.text == null ? '' : _res.text) + '\n');
+        if (typeof _app.close === 'function') await _app.close();
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
     }}

@@ -214,13 +214,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_12() {
-        // Phase 12 (Track L.10) adds four Python framework adapters
-        // (`python-django`, `python-fastapi`, `python-flask`,
-        // `python-starlette`) to the Python slice, growing it from
-        // 7 → 11.  Java / PHP keep their 7-entry J.1..J.7 stacks;
-        // Ruby keeps 5; Go keeps 3; Rust keeps 2; JavaScript keeps 7;
-        // TypeScript keeps 3.  C / Cpp stay empty.
+    fn registry_baseline_after_phase_13() {
+        // Phase 13 (Track L.11) adds four JS framework adapters
+        // (`js-express`, `js-fastify`, `js-koa`, `js-nest`) to the
+        // JavaScript slice, growing it from 7 → 11; the TypeScript
+        // slice gains `ts-nest`, growing it from 3 → 4.  Phase 12
+        // (Track L.10) baseline for Python / Java / Php / Ruby / Go /
+        // Rust remains unchanged: Python 11, Java 7, Php 7, Ruby 5,
+        // Go 3, Rust 2.  C / Cpp stay empty.
         for lang in [Lang::Java, Lang::Php] {
             let registered = registry::adapters_for(lang);
             assert_eq!(
@@ -254,8 +255,8 @@ mod tests {
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(
             js_registered.len(),
-            7,
-            "JavaScript must have J.2 + J.5 + J.6 + J.7 + J.8(×3) adapters",
+            11,
+            "JavaScript must have J.2 + J.5 + J.6 + J.7 + J.8(×3) + L.11(×4) adapters",
         );
         for adapter in js_registered {
             assert_eq!(adapter.lang(), Lang::JavaScript);
@@ -263,8 +264,8 @@ mod tests {
         let ts_registered = registry::adapters_for(Lang::TypeScript);
         assert_eq!(
             ts_registered.len(),
-            3,
-            "TypeScript must have the J.8(×3) prototype-pollution adapters",
+            4,
+            "TypeScript must have the J.8(×3) prototype-pollution adapters + L.11 ts-nest",
         );
         for adapter in ts_registered {
             assert_eq!(adapter.lang(), Lang::TypeScript);

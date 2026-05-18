@@ -97,10 +97,15 @@ static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[
     &super::adapters::PpJsonDeepAssignTsAdapter,
     &super::adapters::PpLodashMergeTsAdapter,
     &super::adapters::PpObjectAssignTsAdapter,
+    &super::adapters::TsNestAdapter,
 ];
 static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderJsAdapter,
+    &super::adapters::JsExpressAdapter,
+    &super::adapters::JsFastifyAdapter,
     &super::adapters::JsHandlebarsAdapter,
+    &super::adapters::JsKoaAdapter,
+    &super::adapters::JsNestAdapter,
     &super::adapters::PpJsonDeepAssignJsAdapter,
     &super::adapters::PpLodashMergeJsAdapter,
     &super::adapters::PpObjectAssignJsAdapter,
