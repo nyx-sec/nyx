@@ -1364,11 +1364,7 @@ fn emit_fastify(spec: &HarnessSpec) -> String {
     let (method, payload_key, body_kind) = resolve_http_payload(&spec.payload_slot);
     format!(
         r#"// Shape: Fastify route — boot via app.inject() (light-my-request equivalent).
-const _app = _entry.app || _entry.default || _entry;
-if (!_app || typeof _app.inject !== 'function') {{
-    process.stderr.write('NYX_FASTIFY_APP_NOT_FOUND\n');
-    process.exit(78);
-}}
+let _app = _entry.app || _entry.default || _entry;
 const _kind = {body_kind:?};
 const _payload_key = {payload_key:?};
 const _method = {method:?};
@@ -1389,6 +1385,20 @@ if (_kind === 'query') {{
 }}
 (async () => {{
     try {{
+        // Fastify plugin route table: entry exports `async (instance, opts) => ...`
+        // rather than an already-built instance.  Wrap the plugin in a fresh
+        // Fastify instance via `.register()` so `.inject()` is available.
+        if (typeof _app === 'function' && typeof _app.inject !== 'function') {{
+            const _fastifyModule = require('fastify');
+            const _fastifyFactory = _fastifyModule.default || _fastifyModule;
+            const _wrapped = _fastifyFactory();
+            await _wrapped.register(_app);
+            _app = _wrapped;
+        }}
+        if (!_app || typeof _app.inject !== 'function') {{
+            process.stderr.write('NYX_FASTIFY_APP_NOT_FOUND\n');
+            process.exit(78);
+        }}
         if (typeof _app.ready === 'function') await _app.ready();
         const _injectOpts = {{ method: _method, url: _path, headers: _headers }};
         if (_query) _injectOpts.query = _query;
@@ -1447,21 +1457,38 @@ if (_kind === 'env') {{
     try {{
         let _app = _entry.app || (_entry.default && _entry.default.app);
         if (!_app) {{
-            // Locate a controller class — first @Controller / class export.
-            const _candidate = _entry[_entry_name]
-                || _entry.default
-                || _entry.AppController
-                || _entry.Controller
-                || Object.values(_entry).find((v) => typeof v === 'function');
-            if (typeof _candidate !== 'function') {{
-                process.stderr.write('NYX_NEST_CONTROLLER_NOT_FOUND\n');
-                process.exit(78);
+            // Prefer an exported @Module class — real Nest projects
+            // mount controllers via their enclosing module's
+            // `imports:[...]`, not by passing the controller class
+            // directly.  Match any export whose name ends in `Module`
+            // (the canonical Nest convention).
+            const _moduleEntry = Object.entries(_entry).find(([k, v]) =>
+                typeof v === 'function' && /Module$/.test(k)
+            );
+            if (_moduleEntry) {{
+                const _moduleClass = _moduleEntry[1];
+                const _module = await _NestTesting.Test
+                    .createTestingModule({{ imports: [_moduleClass] }})
+                    .compile();
+                _app = _module.createNestApplication();
+                await _app.init();
+            }} else {{
+                // Locate a controller class — first @Controller / class export.
+                const _candidate = _entry[_entry_name]
+                    || _entry.default
+                    || _entry.AppController
+                    || _entry.Controller
+                    || Object.values(_entry).find((v) => typeof v === 'function');
+                if (typeof _candidate !== 'function') {{
+                    process.stderr.write('NYX_NEST_CONTROLLER_NOT_FOUND\n');
+                    process.exit(78);
+                }}
+                const _module = await _NestTesting.Test
+                    .createTestingModule({{ controllers: [_candidate] }})
+                    .compile();
+                _app = _module.createNestApplication();
+                await _app.init();
             }}
-            const _module = await _NestTesting.Test
-                .createTestingModule({{ controllers: [_candidate] }})
-                .compile();
-            _app = _module.createNestApplication();
-            await _app.init();
         }}
         const _server = (typeof _app.getHttpServer === 'function')
             ? _app.getHttpServer()
