@@ -174,9 +174,14 @@ mod verify_e2e {
     /// every successfully-derived spec records a `framework_adapter_none`
     /// event whose `detail` carries `lang=<Lang> entry=<entry_name>`.
     ///
-    /// We drive `verify_finding` through the `NoPayloadsForCap` short-circuit
-    /// (CRYPTO has no curated payload corpus) so the trace is recorded
-    /// without needing a working toolchain or sandbox backend.
+    /// We drive `verify_finding` with a `Cap::CRYPTO` diagnostic so the
+    /// trace records the `framework_adapter_none` event during spec
+    /// derivation. The assertion holds regardless of how `run_spec`
+    /// resolves downstream (Phase 11 / Track J.9 added a `CRYPTO` payload
+    /// corpus, so the verifier no longer short-circuits via
+    /// `NoPayloadsForCap`; it now reaches `BuildFailed` while no
+    /// real-engine `Cap::CRYPTO` harness emitter exists, but the
+    /// adapter-none event fires before either branch returns).
     #[test]
     fn verify_finding_emits_framework_adapter_none_for_empty_registry() {
         use nyx_scanner::dynamic::trace::{TraceStage, VerifyTrace};
