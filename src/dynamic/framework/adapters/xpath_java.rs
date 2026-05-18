@@ -53,30 +53,17 @@ impl FrameworkAdapter for XpathJavaAdapter {
         let matches_call = super::any_callee_matches(summary, callee_is_xpath_eval);
         let matches_source = source_imports_xpath(file_bytes);
         if matches_call && matches_source {
-            return Some(FrameworkBinding {
+            Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::Function,
                 route: None,
                 request_params: Vec::new(),
                 response_writer: None,
                 middleware: Vec::new(),
-            });
+            })
+        } else {
+            None
         }
-        if matches_source
-            && file_bytes
-                .windows(b".evaluate(".len())
-                .any(|w| w == b".evaluate(")
-        {
-            return Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::Function,
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            });
-        }
-        None
     }
 }
 
