@@ -457,6 +457,14 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_header_injection_harness(spec));
     }
 
+    // Phase 09 (Track J.7): OPEN_REDIRECT-sink short-circuit.  The
+    // synthetic harness calls an instrumented `res.redirect` shim
+    // that records the bound `Location:` value via a
+    // `ProbeKind::Redirect` probe.
+    if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
+        return Ok(emit_open_redirect_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JsShape::detect(spec, &entry_source);
     let entry_subpath = entry_subpath_for_shape(shape, is_typescript);
@@ -659,6 +667,56 @@ const value = payload;
 nyxHeaderProbe(name, value);
 console.log('__NYX_SINK_HIT__');
 console.log(JSON.stringify({{ name: name, value: value }}));
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 09 — Track J.7 open-redirect harness for Node (Express
+/// `res.redirect`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `res.redirect(value)` shim that records the bound `Location:`
+/// value plus the request's origin host via a `ProbeKind::Redirect`
+/// probe.
+pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"// Nyx dynamic harness — OPEN_REDIRECT res.redirect (Phase 09 / Track J.7).
+{shim}
+
+function nyxRedirectProbe(location, requestHost) {{
+  const p = process.env.NYX_PROBE_PATH;
+  if (!p) return;
+  const rec = {{
+    sink_callee: 'res.redirect',
+    args: [
+      {{ kind: 'String', value: location }},
+    ],
+    captured_at_ns: Number(process.hrtime.bigint()),
+    payload_id: process.env.NYX_PAYLOAD_ID || '',
+    kind: {{ kind: 'Redirect', location: location, request_host: requestHost }},
+    witness: __nyx_witness('res.redirect', [location]),
+  }};
+  try {{
+    require('fs').appendFileSync(p, JSON.stringify(rec) + '\n');
+  }} catch (e) {{
+    // best-effort
+  }}
+}}
+
+const payload = process.env.NYX_PAYLOAD || '';
+const requestHost = 'example.com';
+const location = payload;
+nyxRedirectProbe(location, requestHost);
+console.log('__NYX_SINK_HIT__');
+console.log(JSON.stringify({{ location: location, request_host: requestHost }}));
 "#
     );
     HarnessSource {

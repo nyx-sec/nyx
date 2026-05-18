@@ -650,6 +650,16 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_header_injection_harness(spec));
     }
 
+    // Phase 09 (Track J.7): short-circuit to the open-redirect harness
+    // when the spec's expected cap is OPEN_REDIRECT.  The harness
+    // splices the payload into a synthetic `flask.redirect(value)`
+    // call and records the bound `Location:` value via a
+    // `ProbeKind::Redirect` probe consumed by the
+    // `RedirectHostNotIn` oracle.
+    if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
+        return Ok(emit_open_redirect_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PythonShape::detect(spec, &entry_source);
     let body = generate_for_shape(spec, shape);
@@ -1147,6 +1157,70 @@ def _nyx_run():
     _nyx_header_probe(name, value)
     print("__NYX_SINK_HIT__", flush=True)
     sys.stdout.write(json.dumps({{"name": name, "value": value}}) + "\n")
+    sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    _nyx_run()
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 09 — Track J.7 open-redirect harness for Python
+/// (`flask.redirect`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `flask.redirect(value)` shim that records the bound `Location:`
+/// value plus the request's origin host via a `ProbeKind::Redirect`
+/// probe.  A vuln payload binding `https://attacker.test/` trips the
+/// [`crate::dynamic::oracle::ProbePredicate::RedirectHostNotIn`]
+/// oracle; the paired benign control redirects to a same-origin
+/// path and leaves the predicate clear.
+pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let probe = probe_shim();
+    let body = format!(
+        r#"#!/usr/bin/env python3
+"""Nyx dynamic harness — OPEN_REDIRECT flask.redirect (Phase 09 / Track J.7)."""
+import json
+import os
+import sys
+import time
+
+{probe}
+
+
+def _nyx_redirect_probe(location, request_host):
+    rec = {{
+        "sink_callee": "flask.redirect",
+        "args": [
+            {{"kind": "String", "value": location}},
+        ],
+        "captured_at_ns": time.time_ns(),
+        "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
+        "kind": {{
+            "kind": "Redirect",
+            "location": location,
+            "request_host": request_host,
+        }},
+        "witness": __nyx_witness("flask.redirect", [location]),
+    }}
+    __nyx_emit(rec)
+
+
+def _nyx_run():
+    payload = os.environ.get("NYX_PAYLOAD", "")
+    request_host = "example.com"
+    location = payload
+    _nyx_redirect_probe(location, request_host)
+    print("__NYX_SINK_HIT__", flush=True)
+    sys.stdout.write(json.dumps({{"location": location, "request_host": request_host}}) + "\n")
     sys.stdout.flush()
 
 

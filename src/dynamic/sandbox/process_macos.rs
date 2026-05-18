@@ -126,6 +126,10 @@ const PROFILE_SOURCES: &[(&str, &str)] = &[
     ("ssrf", include_str!("../sandbox_profiles/ssrf.sb")),
     ("deserialize", include_str!("../sandbox_profiles/deserialize.sb")),
     ("xxe", include_str!("../sandbox_profiles/xxe.sb")),
+    (
+        "open_redirect",
+        include_str!("../sandbox_profiles/open_redirect.sb"),
+    ),
 ];
 
 /// Cap → profile-name dispatch.  The most restrictive matching profile
@@ -156,10 +160,17 @@ pub fn profile_for_caps(caps: u32) -> &'static str {
 
     const FS_SHAPED: u32 = FILE_IO | SQL_QUERY;
     const NET_SHAPED: u32 =
-        SSRF | LDAP_INJECTION | XPATH_INJECTION | HEADER_INJECTION | OPEN_REDIRECT | UNVALIDATED_REDIRECT;
+        SSRF | LDAP_INJECTION | XPATH_INJECTION | HEADER_INJECTION | UNVALIDATED_REDIRECT;
+    const REDIRECT_SHAPED: u32 = OPEN_REDIRECT;
 
     if caps & FS_SHAPED != 0 {
         "path_traversal"
+    } else if caps & REDIRECT_SHAPED != 0 {
+        // Phase 09 (Track J.7): OPEN_REDIRECT maps to its own profile
+        // so the loopback-DNS-for-attacker.test addendum is visible
+        // at the cap → profile dispatch site instead of riding the
+        // SSRF profile's coat-tails.
+        "open_redirect"
     } else if caps & NET_SHAPED != 0 {
         "ssrf"
     } else if caps & CODE_EXEC != 0 {
@@ -470,20 +481,30 @@ mod tests {
 
     #[test]
     fn profile_for_caps_routes_outbound_network_caps_to_ssrf() {
-        // Outbound HTTP request sinks (HEADER_INJECTION / OPEN_REDIRECT /
-        // UNVALIDATED_REDIRECT) and other network-traffic injection caps
-        // (LDAP_INJECTION / XPATH_INJECTION) all share the SSRF shape:
+        // Outbound HTTP request sinks (HEADER_INJECTION /
+        // UNVALIDATED_REDIRECT) and other network-traffic injection
+        // caps (LDAP_INJECTION / XPATH_INJECTION) share the SSRF shape:
         // outbound allowed, host-secret reads denied.
+        // Phase 09 (Track J.7) routes OPEN_REDIRECT to its own profile
+        // so the loopback-DNS-for-attacker.test addendum is visible at
+        // the cap → profile dispatch site.
         const LDAP_INJECTION: u32 = 1 << 14;
         const XPATH_INJECTION: u32 = 1 << 15;
         const HEADER_INJECTION: u32 = 1 << 16;
-        const OPEN_REDIRECT: u32 = 1 << 17;
         const UNVALIDATED_REDIRECT: u32 = 1 << 18;
         assert_eq!(profile_for_caps(LDAP_INJECTION), "ssrf");
         assert_eq!(profile_for_caps(XPATH_INJECTION), "ssrf");
         assert_eq!(profile_for_caps(HEADER_INJECTION), "ssrf");
-        assert_eq!(profile_for_caps(OPEN_REDIRECT), "ssrf");
         assert_eq!(profile_for_caps(UNVALIDATED_REDIRECT), "ssrf");
+    }
+
+    #[test]
+    fn profile_for_caps_routes_open_redirect_to_open_redirect_profile() {
+        // Phase 09 (Track J.7): OPEN_REDIRECT carves out of the SSRF
+        // bucket and into a dedicated `open_redirect.sb` profile that
+        // documents the loopback-DNS-for-attacker.test addendum.
+        const OPEN_REDIRECT: u32 = 1 << 17;
+        assert_eq!(profile_for_caps(OPEN_REDIRECT), "open_redirect");
     }
 
     #[test]

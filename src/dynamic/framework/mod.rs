@@ -214,20 +214,20 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_08() {
-        // Phase 08 (Track J.6) adds the header-injection adapter for
-        // every language carrying the HEADER_INJECTION corpus: Java /
+    fn registry_baseline_after_phase_09() {
+        // Phase 09 (Track J.7) adds the open-redirect adapter for
+        // every language carrying the OPEN_REDIRECT corpus: Java /
         // Python / PHP / Ruby / JavaScript / Go / Rust.  Java /
-        // Python / PHP each grow from 5 → 6; Ruby from 3 → 4;
-        // JavaScript from 2 → 3; Go from 1 → 2; Rust from 0 → 1.
+        // Python / PHP each grow from 6 → 7; Ruby from 4 → 5;
+        // JavaScript from 3 → 4; Go from 2 → 3; Rust from 1 → 2.
         // C / Cpp / TypeScript still carry the Phase-01 empty
         // baseline.
         for lang in [Lang::Java, Lang::Python, Lang::Php] {
             let registered = registry::adapters_for(lang);
             assert_eq!(
                 registered.len(),
-                6,
-                "{:?} must have the J.1+J.2+J.3+J.4+J.5+J.6 adapters",
+                7,
+                "{:?} must have the J.1+J.2+J.3+J.4+J.5+J.6+J.7 adapters",
                 lang,
             );
             for adapter in registered {
@@ -237,8 +237,8 @@ mod tests {
         let ruby_registered = registry::adapters_for(Lang::Ruby);
         assert_eq!(
             ruby_registered.len(),
-            4,
-            "Ruby must have the J.1 + J.2 + J.3 + J.6 header adapters",
+            5,
+            "Ruby must have the J.1 + J.2 + J.3 + J.6 + J.7 adapters",
         );
         for adapter in ruby_registered {
             assert_eq!(adapter.lang(), Lang::Ruby);
@@ -246,8 +246,8 @@ mod tests {
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(
             js_registered.len(),
-            3,
-            "JavaScript must have J.2 Handlebars + J.5 xpath-js + J.6 header-js",
+            4,
+            "JavaScript must have J.2 + J.5 + J.6 + J.7 adapters",
         );
         for adapter in js_registered {
             assert_eq!(adapter.lang(), Lang::JavaScript);
@@ -255,8 +255,8 @@ mod tests {
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
             go_registered.len(),
-            2,
-            "Go must have J.3 xxe-go + J.6 header-go",
+            3,
+            "Go must have J.3 + J.6 + J.7 adapters",
         );
         for adapter in go_registered {
             assert_eq!(adapter.lang(), Lang::Go);
@@ -264,10 +264,12 @@ mod tests {
         let rust_registered = registry::adapters_for(Lang::Rust);
         assert_eq!(
             rust_registered.len(),
-            1,
-            "Rust must have exactly the J.6 header-rust adapter",
+            2,
+            "Rust must have the J.6 + J.7 adapters",
         );
-        assert_eq!(rust_registered[0].lang(), Lang::Rust);
+        for adapter in rust_registered {
+            assert_eq!(adapter.lang(), Lang::Rust);
+        }
         for lang in [Lang::C, Lang::Cpp, Lang::TypeScript] {
             assert!(
                 registry::adapters_for(lang).is_empty(),

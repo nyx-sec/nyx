@@ -513,6 +513,14 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_header_injection_harness(spec));
     }
 
+    // Phase 09 (Track J.7): OPEN_REDIRECT-sink short-circuit.  The Go
+    // harness models `c.Redirect(http.StatusFound, value)` (and
+    // `http.Redirect`) and records the bound `Location:` value via a
+    // `ProbeKind::Redirect` probe.
+    if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
+        return Ok(emit_open_redirect_harness(spec));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = GoShape::detect(spec, &entry_source);
     let main_go = generate_main_go(spec, shape);
@@ -667,6 +675,66 @@ func main() {{
 	nyxHeaderProbe(name, value)
 	fmt.Println("__NYX_SINK_HIT__")
 	body, _ := json.Marshal(map[string]interface{{}}{{"name": name, "value": value}})
+	fmt.Println(string(body))
+}}
+"##
+    );
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files: vec![("go.mod".to_owned(), go_mod)],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 09 — Track J.7 open-redirect harness for Go (`gin.Context.Redirect`
+/// / `http.Redirect`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented redirect shim
+/// that records the bound `Location:` value plus the request's
+/// origin host via a `ProbeKind::Redirect` probe.
+pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let source = format!(
+        r##"// Nyx dynamic harness — OPEN_REDIRECT c.Redirect (Phase 09 / Track J.7).
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+)
+
+{shim}
+
+func nyxRedirectProbe(location, requestHost string) {{
+	__nyx_emit(map[string]interface{{}}{{
+		"sink_callee": "gin.Context.Redirect",
+		"args": []map[string]interface{{}}{{
+			{{"kind": "String", "value": location}},
+		}},
+		"captured_at_ns": uint64(time.Now().UnixNano()),
+		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
+		"kind":           map[string]interface{{}}{{"kind": "Redirect", "location": location, "request_host": requestHost}},
+		"witness":        __nyx_witness("gin.Context.Redirect", []string{{location}}),
+	}})
+}}
+
+func main() {{
+	__nyx_install_crash_guard("gin.Context.Redirect")
+	defer __nyx_recover_crash("gin.Context.Redirect")()
+	payload := os.Getenv("NYX_PAYLOAD")
+	requestHost := "example.com"
+	location := payload
+	nyxRedirectProbe(location, requestHost)
+	fmt.Println("__NYX_SINK_HIT__")
+	body, _ := json.Marshal(map[string]interface{{}}{{"location": location, "request_host": requestHost}})
 	fmt.Println(string(body))
 }}
 "##

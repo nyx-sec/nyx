@@ -44,7 +44,10 @@ pub fn adapters_for(lang: Lang) -> &'static [&'static dyn FrameworkAdapter] {
 // listed in alphabetical order of [`FrameworkAdapter::name`] so a
 // later phase that appends a new adapter cannot silently re-order
 // the existing first-match.
-static RUST: &[&dyn FrameworkAdapter] = &[&super::adapters::HeaderRustAdapter];
+static RUST: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::HeaderRustAdapter,
+    &super::adapters::RedirectRustAdapter,
+];
 static C: &[&dyn FrameworkAdapter] = &[];
 static CPP: &[&dyn FrameworkAdapter] = &[];
 static JAVA: &[&dyn FrameworkAdapter] = &[
@@ -52,11 +55,13 @@ static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::JavaDeserializeAdapter,
     &super::adapters::JavaThymeleafAdapter,
     &super::adapters::LdapSpringAdapter,
+    &super::adapters::RedirectJavaAdapter,
     &super::adapters::XpathJavaAdapter,
     &super::adapters::XxeJavaAdapter,
 ];
 static GO: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderGoAdapter,
+    &super::adapters::RedirectGoAdapter,
     &super::adapters::XxeGoAdapter,
 ];
 static PHP: &[&dyn FrameworkAdapter] = &[
@@ -64,6 +69,7 @@ static PHP: &[&dyn FrameworkAdapter] = &[
     &super::adapters::LdapPhpAdapter,
     &super::adapters::PhpTwigAdapter,
     &super::adapters::PhpUnserializeAdapter,
+    &super::adapters::RedirectPhpAdapter,
     &super::adapters::XpathPhpAdapter,
     &super::adapters::XxePhpAdapter,
 ];
@@ -72,11 +78,13 @@ static PYTHON: &[&dyn FrameworkAdapter] = &[
     &super::adapters::LdapPythonAdapter,
     &super::adapters::PythonJinja2Adapter,
     &super::adapters::PythonPickleAdapter,
+    &super::adapters::RedirectPythonAdapter,
     &super::adapters::XpathPythonAdapter,
     &super::adapters::XxePythonAdapter,
 ];
 static RUBY: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderRubyAdapter,
+    &super::adapters::RedirectRubyAdapter,
     &super::adapters::RubyErbAdapter,
     &super::adapters::RubyMarshalAdapter,
     &super::adapters::XxeRubyAdapter,
@@ -85,5 +93,6 @@ static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[];
 static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderJsAdapter,
     &super::adapters::JsHandlebarsAdapter,
+    &super::adapters::RedirectJsAdapter,
     &super::adapters::XpathJsAdapter,
 ];

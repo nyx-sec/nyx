@@ -570,6 +570,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
         return Ok(emit_header_injection_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
+        return Ok(emit_open_redirect_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JavaShape::detect(spec, &entry_source);
@@ -1273,6 +1276,85 @@ public class NyxHarness {{
         nyxJsonEscape(name, body);
         body.append("\",\"value\":\"");
         nyxJsonEscape(value, body);
+        body.append("\"}}");
+        System.out.println(body.toString());
+    }}
+}}
+"#
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 09 — Track J.7 open-redirect harness for Java
+/// (`HttpServletResponse.sendRedirect`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `response.sendRedirect(value)` shim that records the *unmodified*
+/// `Location:` value plus the request's origin host via a
+/// `ProbeKind::Redirect` probe.  Mirrors the synthetic-harness
+/// pattern used by Phase 03 / 04 / 05 / 06 / 07 / 08.
+pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let source = format!(
+        r#"// Nyx dynamic harness — OPEN_REDIRECT HttpServletResponse.sendRedirect (Phase 09 / Track J.7).
+import java.io.FileWriter;
+import java.io.IOException;
+
+public class NyxHarness {{
+{shim}
+
+    static void nyxRedirectProbe(String location, String requestHost) {{
+        String p = System.getenv("NYX_PROBE_PATH");
+        if (p == null || p.isEmpty()) return;
+        long now = System.nanoTime();
+        String pid = System.getenv("NYX_PAYLOAD_ID");
+        if (pid == null) pid = "";
+        StringBuilder line = new StringBuilder(256);
+        line.append("{{\"sink_callee\":\"HttpServletResponse.sendRedirect\",\"args\":[");
+        line.append("{{\"kind\":\"String\",\"value\":\"");
+        nyxJsonEscape(location, line);
+        line.append("\"}}],");
+        line.append("\"captured_at_ns\":").append(now).append(',');
+        line.append("\"payload_id\":\"");
+        nyxJsonEscape(pid, line);
+        line.append("\",\"kind\":{{\"kind\":\"Redirect\",\"location\":\"");
+        nyxJsonEscape(location, line);
+        line.append("\",\"request_host\":\"");
+        nyxJsonEscape(requestHost, line);
+        line.append("\"}},");
+        line.append("\"witness\":");
+        line.append(nyxWitnessJson("HttpServletResponse.sendRedirect", new String[]{{location}}));
+        line.append("}}\n");
+        try (FileWriter fw = new FileWriter(p, true)) {{
+            fw.write(line.toString());
+        }} catch (IOException e) {{
+            // best-effort
+        }}
+    }}
+
+    public static void main(String[] args) {{
+        String payload = System.getenv("NYX_PAYLOAD");
+        if (payload == null) payload = "";
+        String requestHost = "example.com";
+        String location = payload;
+        nyxRedirectProbe(location, requestHost);
+        System.out.println("__NYX_SINK_HIT__");
+        StringBuilder body = new StringBuilder(64);
+        body.append("{{\"location\":\"");
+        nyxJsonEscape(location, body);
+        body.append("\",\"request_host\":\"");
+        nyxJsonEscape(requestHost, body);
         body.append("\"}}");
         System.out.println(body.toString());
     }}

@@ -212,6 +212,30 @@ pub enum ProbeKind {
         /// CRLF stripping; a benign host URL-encodes them (`%0d%0a`).
         value: String,
     },
+    /// Phase 09 (Track J.7) HTTP-redirect observation.  Stamped by
+    /// the per-language harness shim's instrumented redirect entry
+    /// point (`HttpServletResponse.sendRedirect`, `flask.redirect`,
+    /// `Response::redirect`, `res.redirect`, `c.Redirect`,
+    /// `Redirect::to`).  The shim records the raw `Location:` value
+    /// the host attempted to bind plus the original request host so
+    /// the [`crate::dynamic::oracle::ProbePredicate::RedirectHostNotIn`]
+    /// predicate can decide whether the redirect target falls outside
+    /// the configured allowlist.  A vulnerable host concatenates the
+    /// attacker-controlled URL straight into the redirect; a benign
+    /// host either validates the host against an allowlist or scopes
+    /// the redirect to a same-origin path.
+    Redirect {
+        /// Raw `Location:` value the host attempted to set.  May be a
+        /// fully-qualified URL (`https://attacker.test/`), a
+        /// schemeless reference (`//attacker.test/`), or a relative
+        /// path (`/dashboard`).
+        location: String,
+        /// Origin host the harness modelled the request as arriving
+        /// at.  Used by the predicate to recognise schemeless or
+        /// same-origin redirects as benign even when the bare value
+        /// would otherwise resolve off-origin.
+        request_host: String,
+    },
 }
 
 impl Default for ProbeKind {

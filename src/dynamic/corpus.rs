@@ -52,6 +52,7 @@ mod deserialize;
 mod fmt_string;
 mod header_injection;
 mod ldap;
+mod open_redirect;
 mod path_trav;
 mod sqli;
 mod ssrf;
@@ -94,7 +95,8 @@ pub use crate::dynamic::oracle::Oracle;
 /// | 10      | 2026-05-17 | Phase 06 / Track J.4: `LDAP_INJECTION` cap lit for Java / Python / PHP; `ProbeKind::Ldap` + `ProbePredicate::LdapResultCountGreaterThan`; `StubKind::Ldap` + in-sandbox LDAP server stub |
 /// | 11      | 2026-05-17 | Phase 07 / Track J.5: `XPATH_INJECTION` cap lit for Java / Python / PHP / JS; `ProbeKind::Xpath`; `LdapResultCountGreaterThan` renamed to `QueryResultCountGreaterThan` (shared by LDAP + XPath); `xpath_corpus.xml` staged in workdir |
 /// | 12      | 2026-05-18 | Phase 08 / Track J.6: `HEADER_INJECTION` cap lit for Java / Python / PHP / Ruby / JS / Go / Rust; `ProbeKind::HeaderEmit` + `ProbePredicate::HeaderInjected`; per-lang `setHeader` shims |
-pub const CORPUS_VERSION: u32 = 12;
+/// | 13      | 2026-05-18 | Phase 09 / Track J.7: `OPEN_REDIRECT` cap lit for Java / Python / PHP / Ruby / JS / Go / Rust; `ProbeKind::Redirect` + `ProbePredicate::RedirectHostNotIn`; per-lang `sendRedirect` / `redirect()` shims |
+pub const CORPUS_VERSION: u32 = 13;
 
 /// Where a payload originated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

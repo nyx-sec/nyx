@@ -436,6 +436,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
         return Ok(emit_header_injection_harness(spec));
     }
+    // Phase 09 (Track J.7): OPEN_REDIRECT-sink short-circuit.
+    if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
+        return Ok(emit_open_redirect_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PhpShape::detect(spec, &entry_source);
@@ -910,6 +914,57 @@ $value = $payload;
 _nyx_header_probe($name, $value);
 echo "__NYX_SINK_HIT__\n";
 echo json_encode(['name' => $name, 'value' => $value]) . "\n";
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: None,
+    }
+}
+
+/// Phase 09 — Track J.7 open-redirect harness for PHP (`header("Location: …")` /
+/// `Response::redirect`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented redirect shim
+/// that records the bound `Location:` value plus the request's origin
+/// host via a `ProbeKind::Redirect` probe.  Mirrors the
+/// synthetic-harness pattern used by Phase 03 / 04 / 05 / 06 / 07 / 08.
+pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — OPEN_REDIRECT Response::redirect (Phase 09 / Track J.7).
+{shim}
+
+function _nyx_redirect_probe(string $location, string $requestHost): void {{
+    $p = getenv('NYX_PROBE_PATH');
+    if ($p === false || $p === '') return;
+    $rec = [
+        'sink_callee'    => 'Response::redirect',
+        'args'           => [
+            ['kind' => 'String', 'value' => $location],
+        ],
+        'captured_at_ns' => (int) hrtime(true),
+        'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
+        'kind'           => [
+            'kind' => 'Redirect',
+            'location' => $location,
+            'request_host' => $requestHost,
+        ],
+        'witness'        => __nyx_witness('Response::redirect', [$location]),
+    ];
+    @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
+}}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+$requestHost = 'example.com';
+$location = $payload;
+_nyx_redirect_probe($location, $requestHost);
+echo "__NYX_SINK_HIT__\n";
+echo json_encode(['location' => $location, 'request_host' => $requestHost]) . "\n";
 "#
     );
     HarnessSource {

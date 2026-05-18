@@ -265,6 +265,29 @@ pub enum ProbePredicate {
         /// captured header whose value contains the CRLF pair.
         header_name: &'static str,
     },
+    /// Phase 09 (Track J.7): open-redirect predicate.
+    ///
+    /// Fires when at least one drained probe carries
+    /// [`ProbeKind::Redirect`] whose extracted `location` host falls
+    /// outside `allowlist`.  Same-origin redirects (the `location`
+    /// host equals `request_host`, or the location is a relative
+    /// path) never fire — they cannot leave the application origin
+    /// regardless of allowlist contents.  Hosts are compared
+    /// case-insensitively against the allowlist entries; schemeless
+    /// `//host/...` references are parsed as off-origin.
+    ///
+    /// Cross-cutting in the same sense as
+    /// [`Self::DeserializeGadgetInvoked`] /
+    /// [`Self::XxeEntityExpanded`] /
+    /// [`Self::HeaderInjected`] — evaluated across every drained
+    /// probe rather than against a single record.
+    RedirectHostNotIn {
+        /// Allowlist of origin hosts the application is willing to
+        /// redirect into (e.g. `&["example.com", "www.example.com"]`).
+        /// `request_host` is implicitly allowed even when absent
+        /// from this slice.
+        allowlist: &'static [&'static str],
+    },
     /// Phase 06 (Track J.4) / Phase 07 (Track J.5): result-count
     /// predicate shared by LDAP-filter and XPath-expression injection.
     ///
@@ -444,6 +467,21 @@ pub fn oracle_fired_with_stubs(
             if !header_injected_ok {
                 return false;
             }
+            // Phase 09 (Track J.7): open-redirect cross-cutting
+            // predicates.  Each `RedirectHostNotIn { allowlist }`
+            // consults the captured probe channel for a
+            // [`ProbeKind::Redirect`] record whose `location` host
+            // resolves off-origin relative to `allowlist ∪
+            // {request_host}`.
+            let redirect_ok = cross.iter().all(|p| match p {
+                ProbePredicate::RedirectHostNotIn { allowlist } => {
+                    probes_satisfy_redirect_off_origin(probes, allowlist)
+                }
+                _ => true,
+            });
+            if !redirect_ok {
+                return false;
+            }
             // Phase 04 (Track J.2): SSTI render-equality cross-cutting
             // predicates.  Each `TemplateEvalEqual { expected }` consults
             // the captured stdout body — see [`stdout_template_equals`].
@@ -476,7 +514,8 @@ pub fn oracle_fired_with_stubs(
             | ProbeKind::Xxe { .. }
             | ProbeKind::Ldap { .. }
             | ProbeKind::Xpath { .. }
-            | ProbeKind::HeaderEmit { .. } => false,
+            | ProbeKind::HeaderEmit { .. }
+            | ProbeKind::Redirect { .. } => false,
         }),
         Oracle::OutputContains(needle) => {
             let nb = needle.as_bytes();
@@ -504,6 +543,7 @@ fn is_cross_cutting(pred: &ProbePredicate) -> bool {
             | ProbePredicate::XxeEntityExpanded { .. }
             | ProbePredicate::QueryResultCountGreaterThan { .. }
             | ProbePredicate::HeaderInjected { .. }
+            | ProbePredicate::RedirectHostNotIn { .. }
     )
 }
 
@@ -532,6 +572,10 @@ fn cross_cutting_satisfied(pred: &ProbePredicate, stub_events: &[StubEvent]) -> 
         // rather than stub events; evaluated separately in
         // [`probes_satisfy_header_injected`] below.
         ProbePredicate::HeaderInjected { .. } => true,
+        // RedirectHostNotIn is cross-cutting against the *probe log*
+        // rather than stub events; evaluated separately in
+        // [`probes_satisfy_redirect_off_origin`] below.
+        ProbePredicate::RedirectHostNotIn { .. } => true,
         _ => true,
     }
 }
@@ -623,6 +667,86 @@ fn probes_satisfy_header_injected(probes: &[SinkProbe], header_name: &str) -> bo
     })
 }
 
+/// True when at least one drained probe is a [`ProbeKind::Redirect`]
+/// record whose extracted `location` host falls outside the
+/// `allowlist ∪ {request_host}` set.  Powers
+/// [`ProbePredicate::RedirectHostNotIn`] (Phase 09 — Track J.7).
+///
+/// Same-origin redirects (relative path, or absolute URL whose host
+/// equals `request_host`) never fire — they cannot leave the
+/// application origin regardless of allowlist contents.  Schemeless
+/// `//host/...` references are parsed as off-origin.
+fn probes_satisfy_redirect_off_origin(probes: &[SinkProbe], allowlist: &[&str]) -> bool {
+    probes.iter().any(|p| match &p.kind {
+        ProbeKind::Redirect { location, request_host } => {
+            redirect_is_off_origin(location, request_host, allowlist)
+        }
+        _ => false,
+    })
+}
+
+/// Returns `true` when `location` redirects to a host that is neither
+/// `request_host` nor any entry of `allowlist`.  Public for the
+/// per-language harness shim's mirror tests; the predicate above is
+/// the only production caller.
+pub fn redirect_is_off_origin(
+    location: &str,
+    request_host: &str,
+    allowlist: &[&str],
+) -> bool {
+    let Some(host) = extract_redirect_host(location) else {
+        // No host component (relative path) → same-origin → safe.
+        return false;
+    };
+    let host_lower = host.to_ascii_lowercase();
+    if !request_host.is_empty()
+        && host_lower == request_host.trim().to_ascii_lowercase()
+    {
+        return false;
+    }
+    !allowlist
+        .iter()
+        .any(|h| host_lower == h.trim().to_ascii_lowercase())
+}
+
+/// Extract the host component from a `Location:` value.  Returns
+/// `None` for a relative path (no scheme, no leading `//`).
+///
+/// Recognises three shapes:
+/// 1. `scheme://host/path` — yields `host`.
+/// 2. `//host/path` (schemeless / protocol-relative) — yields `host`.
+/// 3. `/path` or `path` — yields `None` (same-origin).
+fn extract_redirect_host(location: &str) -> Option<String> {
+    let trimmed = location.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let rest = if let Some(after_scheme) = trimmed.find("://") {
+        &trimmed[after_scheme + 3..]
+    } else if let Some(stripped) = trimmed.strip_prefix("//") {
+        stripped
+    } else {
+        return None;
+    };
+    // Strip path / query / fragment from the host segment.
+    let end = rest
+        .find(|c: char| matches!(c, '/' | '?' | '#'))
+        .unwrap_or(rest.len());
+    let authority = &rest[..end];
+    // Strip userinfo + port.
+    let after_userinfo = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let host_only = after_userinfo
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(after_userinfo);
+    let h = host_only.trim();
+    if h.is_empty() {
+        None
+    } else {
+        Some(h.to_owned())
+    }
+}
+
 /// Returns true when `probe` satisfies *every* predicate in `preds`.
 /// An empty predicate slice satisfies vacuously — a payload that wants
 /// "any probe at all" can ship an empty predicate set.
@@ -657,7 +781,8 @@ fn probe_satisfies_one(probe: &SinkProbe, pred: &ProbePredicate) -> bool {
         | ProbePredicate::TemplateEvalEqual { .. }
         | ProbePredicate::XxeEntityExpanded { .. }
         | ProbePredicate::QueryResultCountGreaterThan { .. }
-        | ProbePredicate::HeaderInjected { .. } => true,
+        | ProbePredicate::HeaderInjected { .. }
+        | ProbePredicate::RedirectHostNotIn { .. } => true,
     }
 }
 
@@ -684,7 +809,8 @@ pub fn probe_crash_signal(probe: &SinkProbe) -> Option<Signal> {
         | ProbeKind::Xxe { .. }
         | ProbeKind::Ldap { .. }
         | ProbeKind::Xpath { .. }
-        | ProbeKind::HeaderEmit { .. } => None,
+        | ProbeKind::HeaderEmit { .. }
+        | ProbeKind::Redirect { .. } => None,
     }
 }
 
@@ -918,6 +1044,102 @@ mod tests {
             predicates: &[ProbePredicate::TemplateEvalEqual { expected: 49 }],
         };
         assert!(oracle_fired(&oracle, &o, &[]));
+    }
+
+    fn redirect_probe(location: &str, request_host: &str) -> SinkProbe {
+        SinkProbe {
+            sink_callee: "HttpServletResponse.sendRedirect".into(),
+            args: vec![],
+            captured_at_ns: 1,
+            payload_id: "phase09".into(),
+            kind: ProbeKind::Redirect {
+                location: location.into(),
+                request_host: request_host.into(),
+            },
+            witness: ProbeWitness::empty(),
+        }
+    }
+
+    #[test]
+    fn redirect_off_origin_fires_when_host_outside_allowlist() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::RedirectHostNotIn {
+                allowlist: &["example.com", "www.example.com"],
+            }],
+        };
+        let probes = vec![redirect_probe("https://attacker.test/", "example.com")];
+        assert!(oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn redirect_off_origin_clears_on_same_origin_path() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::RedirectHostNotIn {
+                allowlist: &["example.com"],
+            }],
+        };
+        let probes = vec![redirect_probe("/dashboard", "example.com")];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn redirect_off_origin_clears_on_allowlisted_host() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::RedirectHostNotIn {
+                allowlist: &["example.com", "cdn.example.com"],
+            }],
+        };
+        let probes = vec![redirect_probe("https://cdn.example.com/asset", "example.com")];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn redirect_off_origin_clears_when_host_matches_request_host() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::RedirectHostNotIn { allowlist: &[] }],
+        };
+        let probes = vec![redirect_probe("https://example.com/dashboard", "example.com")];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn redirect_off_origin_fires_on_schemeless_authority() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::RedirectHostNotIn {
+                allowlist: &["example.com"],
+            }],
+        };
+        let probes = vec![redirect_probe("//attacker.test/path", "example.com")];
+        assert!(oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn redirect_off_origin_ignores_unrelated_probes() {
+        let oracle = Oracle::SinkProbe {
+            predicates: &[ProbePredicate::RedirectHostNotIn {
+                allowlist: &["example.com"],
+            }],
+        };
+        let probes = vec![probe("noop", vec![])];
+        assert!(!oracle_fired(&oracle, &outcome(), &probes));
+    }
+
+    #[test]
+    fn extract_redirect_host_handles_authority_variants() {
+        assert_eq!(
+            extract_redirect_host("https://attacker.test/path"),
+            Some("attacker.test".to_owned()),
+        );
+        assert_eq!(
+            extract_redirect_host("//attacker.test:8080/path"),
+            Some("attacker.test".to_owned()),
+        );
+        assert_eq!(
+            extract_redirect_host("https://user:pass@evil.example/?q=1"),
+            Some("evil.example".to_owned()),
+        );
+        assert_eq!(extract_redirect_host("/dashboard"), None);
+        assert_eq!(extract_redirect_host(""), None);
     }
 
     #[test]

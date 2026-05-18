@@ -647,6 +647,93 @@ fn main() {{
     }
 }
 
+/// Phase 09 — Track J.7 open-redirect harness for Rust
+/// (`axum::response::Redirect::to`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `Redirect::to(value)` shim that records the bound `Location:`
+/// value plus the request's origin host via a `ProbeKind::Redirect`
+/// probe.  Std-only — no `Cargo.toml` dependencies beyond the
+/// always-pinned `libc`.
+pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let cargo_toml = generate_cargo_toml(Cap::OPEN_REDIRECT);
+    let main_rs = format!(
+        r##"//! Nyx dynamic harness — OPEN_REDIRECT Redirect::to (Phase 09 / Track J.7).
+use std::env;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::time::{{SystemTime, UNIX_EPOCH}};
+
+{shim}
+
+fn nyx_json_escape(s: &str) -> String {{
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {{
+        match c {{
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {{
+                out.push_str(&format!("\\u{{:04x}}", c as u32));
+            }}
+            c => out.push(c),
+        }}
+    }}
+    out
+}}
+
+fn nyx_redirect_probe(location: &str, request_host: &str) {{
+    let p = match env::var("NYX_PROBE_PATH") {{ Ok(s) => s, Err(_) => return }};
+    if p.is_empty() {{ return; }}
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let pid = env::var("NYX_PAYLOAD_ID").unwrap_or_default();
+    let mut line = String::new();
+    line.push_str("{{\"sink_callee\":\"Redirect::to\",\"args\":[");
+    line.push_str("{{\"kind\":\"String\",\"value\":\"");
+    line.push_str(&nyx_json_escape(location));
+    line.push_str("\"}}],");
+    line.push_str("\"captured_at_ns\":");
+    line.push_str(&now.to_string());
+    line.push_str(",\"payload_id\":\"");
+    line.push_str(&nyx_json_escape(&pid));
+    line.push_str("\",\"kind\":{{\"kind\":\"Redirect\",\"location\":\"");
+    line.push_str(&nyx_json_escape(location));
+    line.push_str("\",\"request_host\":\"");
+    line.push_str(&nyx_json_escape(request_host));
+    line.push_str("\"}},\"witness\":{{}}}}\n");
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {{
+        let _ = f.write_all(line.as_bytes());
+    }}
+}}
+
+fn main() {{
+    let payload = env::var("NYX_PAYLOAD").unwrap_or_default();
+    let request_host = "example.com";
+    let location = &payload;
+    nyx_redirect_probe(location, request_host);
+    println!("__NYX_SINK_HIT__");
+    let mut body = String::new();
+    body.push_str("{{\"location\":\"");
+    body.push_str(&nyx_json_escape(location));
+    body.push_str("\",\"request_host\":\"");
+    body.push_str(&nyx_json_escape(request_host));
+    body.push_str("\"}}");
+    println!("{{body}}", body = body);
+}}
+"##
+    );
+    HarnessSource {
+        source: main_rs,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files: vec![("Cargo.toml".into(), cargo_toml)],
+        entry_subpath: Some("src/entry.rs".into()),
+    }
+}
+
 fn read_entry_source(entry_file: &str) -> String {
     let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
     for path in &candidates {
@@ -665,6 +752,14 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // `ProbeKind::HeaderEmit` probe.
     if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
         return Ok(emit_header_injection_harness(spec));
+    }
+
+    // Phase 09 (Track J.7): OPEN_REDIRECT-sink short-circuit.  The
+    // Rust harness models an `axum`-style `Redirect::to(value)` shim
+    // that records the bound `Location:` value via a
+    // `ProbeKind::Redirect` probe.
+    if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
+        return Ok(emit_open_redirect_harness(spec));
     }
 
     let shape = detect_shape(spec);

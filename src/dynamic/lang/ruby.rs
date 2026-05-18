@@ -427,6 +427,9 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if spec.expected_cap == crate::labels::Cap::HEADER_INJECTION {
         return Ok(emit_header_injection_harness(spec));
     }
+    if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
+        return Ok(emit_open_redirect_harness(spec));
+    }
 
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = RubyShape::detect(spec, &entry_source);
@@ -658,6 +661,55 @@ value = payload
 _nyx_header_probe(name, value)
 STDOUT.puts '__NYX_SINK_HIT__'
 STDOUT.puts JSON.generate({{ 'name' => name, 'value' => value }})
+STDOUT.flush
+"#
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 09 — Track J.7 open-redirect harness for Ruby
+/// (`Rack::Response#redirect`).
+///
+/// Reads `NYX_PAYLOAD`, calls a synthetic instrumented
+/// `response.redirect(value)` shim that records the bound
+/// `Location:` value plus the request's origin host via a
+/// `ProbeKind::Redirect` probe.
+pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"# Nyx dynamic harness — OPEN_REDIRECT Rack::Response#redirect (Phase 09 / Track J.7).
+require 'json'
+
+{shim}
+
+def _nyx_redirect_probe(location, request_host)
+  p = ENV['NYX_PROBE_PATH']
+  return if p.nil? || p.empty?
+  rec = {{
+    'sink_callee'    => 'Rack::Response#redirect',
+    'args'           => [
+      {{ 'kind' => 'String', 'value' => location }},
+    ],
+    'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
+    'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
+    'kind'           => {{ 'kind' => 'Redirect', 'location' => location, 'request_host' => request_host }},
+    'witness'        => __nyx_witness('Rack::Response#redirect', [location]),
+  }}
+  File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
+end
+
+payload = ENV['NYX_PAYLOAD'] || ''
+request_host = 'example.com'
+location = payload
+_nyx_redirect_probe(location, request_host)
+STDOUT.puts '__NYX_SINK_HIT__'
+STDOUT.puts JSON.generate({{ 'location' => location, 'request_host' => request_host }})
 STDOUT.flush
 "#
     );
