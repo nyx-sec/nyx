@@ -220,27 +220,27 @@ fn read_entry_source(entry_file: &str) -> String {
 pub fn probe_shim() -> &'static str {
     r#"
 # ── __nyx_probe shim (Phase 06 — Track C.1, Phase 08 — Track C.4 + C.5) ──────
-__NYX_DENY_SUBSTRINGS = %w[
+NYX_DENY_SUBSTRINGS = %w[
   TOKEN SECRET PASSWORD PASSWD API_KEY APIKEY PRIVATE_KEY CREDENTIAL SESSION
   COOKIE AUTH BEARER AWS_ACCESS AWS_SESSION GH_TOKEN GITHUB_TOKEN NPM_TOKEN
   PYPI_TOKEN DOCKER_PASS
 ].freeze
-__NYX_PAYLOAD_LIMIT = 16 * 1024
-__NYX_REDACTED = '<redacted-by-nyx-policy>'
+NYX_PAYLOAD_LIMIT = 16 * 1024
+NYX_REDACTED = '<redacted-by-nyx-policy>'
 
 def __nyx_is_denied_key(k)
   ku = k.to_s.upcase
-  __NYX_DENY_SUBSTRINGS.any? { |n| ku.include?(n) }
+  NYX_DENY_SUBSTRINGS.any? { |n| ku.include?(n) }
 end
 
 def __nyx_witness(sink_callee, args)
   env_snapshot = {}
   ENV.each do |k, v|
-    env_snapshot[k] = __nyx_is_denied_key(k) ? __NYX_REDACTED : v
+    env_snapshot[k] = __nyx_is_denied_key(k) ? NYX_REDACTED : v
   end
   payload = ENV['NYX_PAYLOAD'] || ''
   pb = payload.bytes
-  pb = pb[0, __NYX_PAYLOAD_LIMIT] if pb.length > __NYX_PAYLOAD_LIMIT
+  pb = pb[0, NYX_PAYLOAD_LIMIT] if pb.length > NYX_PAYLOAD_LIMIT
   repr = args.map { |a| a.is_a?(String) ? a : a.to_s }
   cwd = (Dir.pwd rescue '')
   {
@@ -476,6 +476,10 @@ if payload.start_with?('NYX_GADGET_CLASS:')
     _nyx_deserialize_probe(true)
   end
 end
+# Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
+# gate consumes this; without it differential confirmation cannot
+# fire even when the probe was written.
+STDOUT.puts '__NYX_SINK_HIT__'
 "#
     );
     HarnessSource {

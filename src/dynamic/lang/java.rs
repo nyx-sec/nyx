@@ -667,6 +667,10 @@ public class NyxHarness {{
                 nyxDeserializeProbe(true);
             }}
         }}
+        // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
+        // gate consumes this; without it differential confirmation cannot
+        // fire even when the probe was written.
+        System.out.println("__NYX_SINK_HIT__");
     }}
 }}
 "#

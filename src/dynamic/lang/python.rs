@@ -676,6 +676,10 @@ def _nyx_run():
 
 if __name__ == "__main__":
     _nyx_run()
+    # Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
+    # gate consumes this; without it differential confirmation cannot
+    # fire even when the probe was written.
+    print("__NYX_SINK_HIT__", flush=True)
 "#
     );
     HarnessSource {

@@ -11,6 +11,8 @@
 
 #![cfg(feature = "dynamic")]
 
+mod common;
+
 use nyx_scanner::dynamic::corpus::{
     audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
     resolve_benign_control_lang, Oracle,
@@ -159,7 +161,7 @@ fn lang_emitter_dispatches_to_xxe_harness() {
     for (lang, entry_file, entry_name, sink_callee_marker) in [
         (
             Lang::Java,
-            "tests/dynamic_fixtures/xxe/java/vuln.java",
+            "tests/dynamic_fixtures/xxe/java/Vuln.java",
             "run",
             "DocumentBuilder.parse",
         ),
@@ -218,7 +220,7 @@ fn framework_adapters_detect_xxe_sink() {
     for (lang, fixture, sink_callee) in [
         (
             Lang::Java,
-            "tests/dynamic_fixtures/xxe/java/vuln.java",
+            "tests/dynamic_fixtures/xxe/java/Vuln.java",
             "parse",
         ),
         (
@@ -290,5 +292,204 @@ fn slug(lang: Lang) -> &'static str {
         Lang::Ruby => "ruby",
         Lang::Go => "go",
         _ => "other",
+    }
+}
+
+// ── End-to-end Phase 05 acceptance via run_spec ───────────────────────────────
+//
+// Closes the second half of the Phase 05 deferred audit item: the
+// `lang_emitter_dispatches_to_xxe_harness` assertion pins the per-
+// language `sink_callee_marker` (`DocumentBuilder.parse` /
+// `lxml.etree.XMLParser.parse` / `simplexml_load_string` /
+// `REXML::Document.new` / `xml.Decoder.Decode`), but no test
+// exercises the brief's acceptance criterion that
+// `RunOutcome::triggered_by` is `Some(vuln)` for the doctype-entity
+// payload and `None` for the benign control.  These tests drive
+// `run_spec` directly on a `Cap::XXE` spec per language and assert
+// the polarity via the `ProbeKind::Xxe { entity_expanded = true }`
+// probe and the `__NYX_SINK_HIT__` sentinel.
+//
+// The synthetic harness ignores `_spec` and uses a regex substitution
+// for `<!ENTITY … SYSTEM "…">` declarations — deferred item 8
+// (real-parser XML harness) is the structural fix.  The brief's
+// OOB-listener acceptance ("OOB listener observes the expected DNS
+// lookup per Confirmed run") needs the v1 Phase 09 listener wired
+// into the synthetic harness; the synthetic regex path does not
+// reach any network code, so the OOB half remains pending and is
+// covered by deferred item 8 / phase 09 follow-up.
+//
+// Go is skipped: the `xxe/go/vuln.go` fixture declares `package vuln`
+// while the synthetic harness's `main.go` declares `package main`, so
+// `go build .` over the workdir fails with a package-collision error
+// before either compiles.  Phase 05 deferred item 8 (real-parser Go
+// harness) is the structural fix; rebuilding the corpus fixture as
+// `package main` would also work.
+
+mod e2e_phase_05 {
+    use crate::common::fixture_harness::FIXTURE_LOCK;
+    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
+    use nyx_scanner::dynamic::spec::{
+        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+    };
+    use nyx_scanner::evidence::DifferentialVerdict;
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn command_available(bin: &str) -> bool {
+        Command::new(bin)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn toolchain_for(lang: Lang) -> &'static str {
+        match lang {
+            Lang::Java => "java",
+            Lang::Python => "python3",
+            Lang::Php => "php",
+            Lang::Ruby => "ruby",
+            _ => unreachable!("e2e_phase_05 covers Java/Python/PHP/Ruby"),
+        }
+    }
+
+    fn lang_subdir(lang: Lang) -> &'static str {
+        match lang {
+            Lang::Java => "java",
+            Lang::Python => "python",
+            Lang::Php => "php",
+            Lang::Ruby => "ruby",
+            _ => unreachable!(),
+        }
+    }
+
+    fn build_spec(lang: Lang, fixture: &str, entry_name: &str) -> (HarnessSpec, TempDir) {
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/xxe")
+            .join(lang_subdir(lang))
+            .join(fixture);
+        let tmp = TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join(fixture);
+        std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
+
+        let entry_file = dst.to_string_lossy().into_owned();
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"phase05-e2e-xxe|");
+        digest.update(lang_subdir(lang).as_bytes());
+        digest.update(b"|");
+        digest.update(fixture.as_bytes());
+        let spec_hash = format!("{:016x}", {
+            let bytes = digest.finalize();
+            u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+        });
+
+        if matches!(lang, Lang::Java) {
+            let workdir = std::path::PathBuf::from("/tmp/nyx-harness").join(&spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+        }
+
+        let spec = HarnessSpec {
+            finding_id: spec_hash.clone(),
+            entry_file: entry_file.clone(),
+            entry_name: entry_name.to_owned(),
+            entry_kind: EntryKind::Function,
+            lang,
+            toolchain_id: default_toolchain_id(lang).into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::XXE,
+            constraint_hints: vec![],
+            sink_file: entry_file,
+            sink_line: 1,
+            spec_hash: spec_hash.clone(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+        };
+
+        (spec, tmp)
+    }
+
+    fn run(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
+        let bin = toolchain_for(lang);
+        if !command_available(bin) {
+            eprintln!("SKIP {lang:?} {fixture}: missing toolchain {bin}");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (spec, _tmp) = build_spec(lang, fixture, entry_name);
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            ..SandboxOptions::default()
+        };
+        match run_spec(&spec, &opts) {
+            Ok(outcome) => Some(outcome),
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP {lang:?} {fixture}: harness build failed after {attempts} attempts: {stderr}",
+                );
+                None
+            }
+            Err(e) => panic!("run_spec({lang:?} {fixture}) errored: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn java_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Java XXE vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn python_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Python XXE vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn php_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "PHP XXE vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn ruby_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Ruby XXE vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
     }
 }

@@ -30,7 +30,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         since_corpus_version: 7,
         deprecated_at_corpus_version: None,
         fixture_paths: &[
-            "tests/dynamic_fixtures/deserialize/java/vuln.java",
+            "tests/dynamic_fixtures/deserialize/java/Vuln.java",
         ],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::DeserializeGadgetInvoked {
@@ -56,7 +56,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         since_corpus_version: 7,
         deprecated_at_corpus_version: None,
         fixture_paths: &[
-            "tests/dynamic_fixtures/deserialize/java/benign.java",
+            "tests/dynamic_fixtures/deserialize/java/Benign.java",
         ],
         oob_nonce_slot: false,
         probe_predicates: &[],

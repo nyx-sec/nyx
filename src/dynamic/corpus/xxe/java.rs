@@ -32,7 +32,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         since_corpus_version: 9,
         deprecated_at_corpus_version: None,
         fixture_paths: &[
-            "tests/dynamic_fixtures/xxe/java/vuln.java",
+            "tests/dynamic_fixtures/xxe/java/Vuln.java",
         ],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::XxeEntityExpanded {
@@ -57,7 +57,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         since_corpus_version: 9,
         deprecated_at_corpus_version: None,
         fixture_paths: &[
-            "tests/dynamic_fixtures/xxe/java/benign.java",
+            "tests/dynamic_fixtures/xxe/java/Benign.java",
         ],
         oob_nonce_slot: false,
         probe_predicates: &[],

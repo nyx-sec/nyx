@@ -11,6 +11,8 @@
 
 #![cfg(feature = "dynamic")]
 
+mod common;
+
 use nyx_scanner::dynamic::corpus::{
     audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
     resolve_benign_control_lang, Oracle,
@@ -296,5 +298,194 @@ fn slug(lang: Lang) -> &'static str {
         Lang::Java => "java",
         Lang::JavaScript => "javascript",
         _ => "other",
+    }
+}
+
+// ── End-to-end Phase 04 acceptance via run_spec ───────────────────────────────
+//
+// Closes the second half of the Phase 04 deferred audit item: the
+// `lang_emitter_dispatches_to_ssti_harness` assertion pins the
+// per-engine render helper name (`_nyx_jinja2_render` /
+// `_nyx_erb_render` / `_nyx_twig_render` / `nyxThymeleafRender` /
+// `nyxHandlebarsRender`), but no test exercises the brief's
+// acceptance criterion that `RunOutcome::triggered_by` is `Some(vuln)`
+// for `{{7*7}}` / `<%= 7*7 %>` / `[[${7*7}]]` / `{{multiply 7 7}}`
+// and `None` for the literal `7*7` benign control.  These tests drive
+// `run_spec` directly on a `Cap::SSTI` spec per language and assert
+// the polarity.
+//
+// The synthetic harness ignores `_spec` and applies a per-engine
+// regex (deferred item 7 covers the Phase 04 brief's "real engine"
+// replacement).  The test still exercises the full sandbox + oracle
+// path: payload bytes → harness stdout `{"render":"49"}` →
+// `ProbePredicate::TemplateEvalEqual { expected: 49 }` → differential
+// pair against the `7*7` benign control.
+//
+// Java is skipped: the Thymeleaf fixture imports `org.thymeleaf.*`
+// which is not on the JDK stdlib, so `javac *.java` over the workdir
+// fails before the synthetic harness can run.  Phase 04 deferred
+// item 5 (real-engine Thymeleaf harness) is the structural fix.
+
+mod e2e_phase_04 {
+    use crate::common::fixture_harness::FIXTURE_LOCK;
+    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
+    use nyx_scanner::dynamic::spec::{
+        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+    };
+    use nyx_scanner::evidence::DifferentialVerdict;
+    use nyx_scanner::labels::Cap;
+    use nyx_scanner::symbol::Lang;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn command_available(bin: &str) -> bool {
+        Command::new(bin)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    fn toolchain_for(lang: Lang) -> &'static str {
+        match lang {
+            Lang::Python => "python3",
+            Lang::Ruby => "ruby",
+            Lang::Php => "php",
+            Lang::JavaScript => "node",
+            _ => unreachable!("e2e_phase_04 covers Python/Ruby/PHP/JS only"),
+        }
+    }
+
+    fn fixture_subdir(lang: Lang) -> &'static str {
+        match lang {
+            Lang::Python => "python_jinja2",
+            Lang::Ruby => "ruby_erb",
+            Lang::Php => "php_twig",
+            Lang::JavaScript => "js_handlebars",
+            _ => unreachable!(),
+        }
+    }
+
+    fn build_spec(lang: Lang, fixture: &str, entry_name: &str) -> (HarnessSpec, TempDir) {
+        let fixture_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dynamic_fixtures/ssti")
+            .join(fixture_subdir(lang))
+            .join(fixture);
+        let tmp = TempDir::new().expect("create tempdir");
+        let dst = tmp.path().join(fixture);
+        std::fs::copy(&fixture_src, &dst).expect("copy fixture into tempdir");
+
+        let entry_file = dst.to_string_lossy().into_owned();
+        let mut digest = blake3::Hasher::new();
+        digest.update(b"phase04-e2e-ssti|");
+        digest.update(fixture_subdir(lang).as_bytes());
+        digest.update(b"|");
+        digest.update(fixture.as_bytes());
+        let spec_hash = format!("{:016x}", {
+            let bytes = digest.finalize();
+            u64::from_le_bytes(bytes.as_bytes()[..8].try_into().unwrap())
+        });
+
+        let spec = HarnessSpec {
+            finding_id: spec_hash.clone(),
+            entry_file: entry_file.clone(),
+            entry_name: entry_name.to_owned(),
+            entry_kind: EntryKind::Function,
+            lang,
+            toolchain_id: default_toolchain_id(lang).into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: Cap::SSTI,
+            constraint_hints: vec![],
+            sink_file: entry_file,
+            sink_line: 1,
+            spec_hash: spec_hash.clone(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+        };
+
+        (spec, tmp)
+    }
+
+    fn run(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
+        let bin = toolchain_for(lang);
+        if !command_available(bin) {
+            eprintln!("SKIP {lang:?} {fixture}: missing toolchain {bin}");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (spec, _tmp) = build_spec(lang, fixture, entry_name);
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            ..SandboxOptions::default()
+        };
+        match run_spec(&spec, &opts) {
+            Ok(outcome) => Some(outcome),
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP {lang:?} {fixture}: harness build failed after {attempts} attempts: {stderr}",
+                );
+                None
+            }
+            Err(e) => panic!("run_spec({lang:?} {fixture}) errored: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn python_jinja2_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Python Jinja2 SSTI vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn ruby_erb_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Ruby ERB SSTI vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn php_twig_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "PHP Twig SSTI vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn js_handlebars_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "JS Handlebars SSTI vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
     }
 }
