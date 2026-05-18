@@ -134,11 +134,28 @@ fn php_string_literal(s: &str) -> String {
 /// preserving the pre-Phase-15 behaviour (direct function call).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhpShape {
-    /// Slim / Laravel / Symfony route closure.  Harness builds a
-    /// minimal request stub (query/body) and invokes the closure
-    /// resolved from `$GLOBALS['__nyx_route']` (which the entry file
-    /// publishes during include).
+    /// Slim / generic route closure published via
+    /// `$GLOBALS['__nyx_route']`.  Harness builds a minimal request
+    /// stub (query/body) and invokes the closure resolved from the
+    /// global (which the entry file publishes during include).
     RouteClosure,
+    /// Laravel route — `Route::get('/x', 'Controller@method')` or
+    /// closure callable.  Phase 16 v1 dispatches through the same
+    /// `$GLOBALS['__nyx_route']` channel as `RouteClosure` but
+    /// publishes a `NYX_LARAVEL_TEST=1` stdout marker so the
+    /// verifier can confirm the framework toolchain knob propagated.
+    LaravelRoute,
+    /// Symfony route — `#[Route('/x')]` PHP attribute on a
+    /// controller method or top-level function.  Phase 16 v1
+    /// dispatches via reflective invocation (the entry file's
+    /// `entry.php` instantiates the controller class and the harness
+    /// calls the method) plus an `NYX_SYMFONY_TEST=1` stdout marker.
+    SymfonyRoute,
+    /// CodeIgniter route — `$routes->get('users/(:num)', ...)`
+    /// published from `app/Config/Routes.php`.  Phase 16 v1
+    /// dispatches via the `$GLOBALS['__nyx_route']` channel plus a
+    /// `NYX_CODEIGNITER_TEST=1` stdout marker.
+    CodeIgniterRoute,
     /// CLI script driven by `$argv`.  Harness mutates `$argv` then
     /// includes the entry file (whose top-level body reads `$argv`),
     /// or — when the spec names a function — calls the function after
@@ -159,15 +176,37 @@ impl PhpShape {
         let entry = spec.entry_name.as_str();
         let kind = spec.entry_kind;
 
+        let has_symfony_marker = source.contains("#[Route(")
+            || source.contains("Symfony\\Component\\Routing")
+            || source.contains("Symfony\\Component\\HttpKernel")
+            || source.contains("// nyx-shape: symfony");
+        let has_laravel_marker = source.contains("Illuminate\\Support\\Facades\\Route")
+            || source.contains("Illuminate\\Routing")
+            || source.contains("Route::get(")
+            || source.contains("Route::post(")
+            || source.contains("Route::put(")
+            || source.contains("Route::patch(")
+            || source.contains("Route::delete(")
+            || source.contains("Route::any(")
+            || source.contains("Route::match(")
+            || source.contains("App\\Http\\Controllers")
+            || source.contains("// nyx-shape: laravel");
+        let has_codeigniter_marker = source.contains("CodeIgniter\\Router")
+            || source.contains("CodeIgniter\\HTTP")
+            || source.contains("$routes->get(")
+            || source.contains("$routes->post(")
+            || source.contains("$routes->put(")
+            || source.contains("$routes->patch(")
+            || source.contains("$routes->delete(")
+            || source.contains("$routes->add(")
+            || source.contains("extends BaseController")
+            || source.contains("// nyx-shape: codeigniter");
         let has_route_marker = source.contains("$app->get(")
             || source.contains("$app->post(")
             || source.contains("$app->any(")
             || source.contains("$app->map(")
             || source.contains("$router->get(")
             || source.contains("$router->post(")
-            || source.contains("Route::get(")
-            || source.contains("Route::post(")
-            || source.contains("Route::any(")
             || source.contains("// nyx-shape: route");
         let has_argv = source.contains("$argv") || source.contains("// nyx-shape: cli");
         let has_function_decl = source.contains("function ")
@@ -177,6 +216,15 @@ impl PhpShape {
             && !entry.is_empty()
             && source.contains(&format!("function {entry}"));
 
+        if has_symfony_marker {
+            return Self::SymfonyRoute;
+        }
+        if has_laravel_marker {
+            return Self::LaravelRoute;
+        }
+        if has_codeigniter_marker {
+            return Self::CodeIgniterRoute;
+        }
         if has_route_marker {
             return Self::RouteClosure;
         }
@@ -982,11 +1030,12 @@ fn generate_source(spec: &HarnessSpec, shape: PhpShape) -> String {
     let entry_block = build_entry_block(shape);
     let call_expr = build_call_expr(spec, shape, entry_fn);
     let shim = probe_shim();
+    let toolchain_marker = build_toolchain_marker(shape);
     let crash_callee = if entry_fn.is_empty() { "main" } else { entry_fn.as_str() };
 
     format!(
         r#"<?php
-// Nyx dynamic harness — auto-generated, do not edit (Phase 15 — PhpShape::{shape:?}).
+// Nyx dynamic harness — auto-generated, do not edit (Phase 16 — PhpShape::{shape:?}).
 {shim}
 // ── Payload loading ────────────────────────────────────────────────────────────
 function nyx_payload(): string {{
@@ -1013,7 +1062,8 @@ __nyx_install_crash_guard('{crash_callee}');
 {pre_call}
 // ── Entry include ─────────────────────────────────────────────────────────────
 {entry_block}
-// ── Call entry point ──────────────────────────────────────────────────────────
+// ── Framework toolchain marker (Phase 16 — Track L.14) ────────────────────────
+{toolchain_marker}// ── Call entry point ──────────────────────────────────────────────────────────
 try {{
     $result = {call_expr};
     if ($result !== null) {{
@@ -1028,6 +1078,7 @@ try {{
         entry_block = entry_block,
         call_expr = call_expr,
         shim = shim,
+        toolchain_marker = toolchain_marker,
         crash_callee = crash_callee,
     )
 }
@@ -1100,7 +1151,9 @@ fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {
                 "null".to_owned()
             }
         }
-        PhpShape::RouteClosure => {
+        PhpShape::RouteClosure
+        | PhpShape::LaravelRoute
+        | PhpShape::CodeIgniterRoute => {
             // Entry script publishes the route closure via
             // `$GLOBALS['__nyx_route']`.  When the global is missing,
             // fall back to calling the named function directly.
@@ -1108,7 +1161,32 @@ fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {
                 "(isset($GLOBALS['__nyx_route']) && is_callable($GLOBALS['__nyx_route'])) ? call_user_func($GLOBALS['__nyx_route'], $payload) : (function_exists({func:?}) ? {func}($payload) : null)"
             )
         }
+        PhpShape::SymfonyRoute => {
+            // Symfony controllers are normally reached through
+            // `HttpKernel::handle`.  The Phase 16 v1 harness drives
+            // the action directly: the entry file publishes a
+            // controller instance via `$GLOBALS['__nyx_controller']`
+            // and the harness reflectively invokes the action method.
+            // Falls back to calling a bare function when no
+            // controller class was published.
+            format!(
+                "(isset($GLOBALS['__nyx_controller']) && is_object($GLOBALS['__nyx_controller'])) ? $GLOBALS['__nyx_controller']->{func}($payload) : (function_exists({func:?}) ? {func}($payload) : null)"
+            )
+        }
         PhpShape::Generic => build_generic_call(spec, func),
+    }
+}
+
+/// Per-shape stdout toolchain markers.  Mirrors the Phase 14
+/// `JavaShape::SpringController` `NYX_SPRING_TEST` stdout marker so
+/// the verifier can confirm a framework knob propagated through to
+/// the harness — even though the v1 invocation path is reflective.
+fn build_toolchain_marker(shape: PhpShape) -> &'static str {
+    match shape {
+        PhpShape::LaravelRoute => "echo \"NYX_LARAVEL_TEST=1\\n\";\n",
+        PhpShape::SymfonyRoute => "echo \"NYX_SYMFONY_TEST=1\\n\";\n",
+        PhpShape::CodeIgniterRoute => "echo \"NYX_CODEIGNITER_TEST=1\\n\";\n",
+        _ => "",
     }
 }
 
@@ -1259,9 +1337,52 @@ mod tests {
 
     #[test]
     fn shape_detect_laravel_route_closure() {
+        // Phase 16 reroutes Laravel-marker sources to the dedicated
+        // LaravelRoute shape so the harness can emit the
+        // `NYX_LARAVEL_TEST=1` toolchain stdout marker (mirroring the
+        // Phase 14 Spring `NYX_SPRING_TEST=1` channel).
         let src = "<?php\nRoute::get('/run', function ($payload) { return $payload; });\n";
         let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
-        assert_eq!(PhpShape::detect(&spec, src), PhpShape::RouteClosure);
+        assert_eq!(PhpShape::detect(&spec, src), PhpShape::LaravelRoute);
+    }
+
+    #[test]
+    fn shape_detect_symfony_route_attribute() {
+        let src = "<?php\nuse Symfony\\Component\\Routing\\Annotation\\Route;\nclass C {\n  #[Route('/run')]\n  public function run($p) { return $p; }\n}\n";
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
+        assert_eq!(PhpShape::detect(&spec, src), PhpShape::SymfonyRoute);
+    }
+
+    #[test]
+    fn shape_detect_codeigniter_route() {
+        let src = "<?php\nuse CodeIgniter\\Router\\RouteCollection;\n$routes->get('run', 'UserController::run');\n";
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
+        assert_eq!(PhpShape::detect(&spec, src), PhpShape::CodeIgniterRoute);
+    }
+
+    #[test]
+    fn laravel_shape_emits_toolchain_marker() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
+        let src = generate_source(&spec, PhpShape::LaravelRoute);
+        assert!(src.contains("NYX_LARAVEL_TEST=1"));
+        assert!(src.contains("$GLOBALS['__nyx_route']"));
+    }
+
+    #[test]
+    fn symfony_shape_emits_toolchain_marker_and_controller_dispatch() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
+        let src = generate_source(&spec, PhpShape::SymfonyRoute);
+        assert!(src.contains("NYX_SYMFONY_TEST=1"));
+        assert!(src.contains("$GLOBALS['__nyx_controller']"));
+        assert!(src.contains("->run($payload)"));
+    }
+
+    #[test]
+    fn codeigniter_shape_emits_toolchain_marker() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "entry.php");
+        let src = generate_source(&spec, PhpShape::CodeIgniterRoute);
+        assert!(src.contains("NYX_CODEIGNITER_TEST=1"));
+        assert!(src.contains("$GLOBALS['__nyx_route']"));
     }
 
     #[test]

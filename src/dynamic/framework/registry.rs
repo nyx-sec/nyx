@@ -71,6 +71,9 @@ static GO: &[&dyn FrameworkAdapter] = &[
 static PHP: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderPhpAdapter,
     &super::adapters::LdapPhpAdapter,
+    &super::adapters::PhpCodeIgniterAdapter,
+    &super::adapters::PhpLaravelAdapter,
+    &super::adapters::PhpSymfonyAdapter,
     &super::adapters::PhpTwigAdapter,
     &super::adapters::PhpUnserializeAdapter,
     &super::adapters::RedirectPhpAdapter,

@@ -214,13 +214,13 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_15() {
-        // Phase 15 (Track L.13) adds three Ruby framework adapters
-        // (`ruby-hanami`, `ruby-rails`, `ruby-sinatra`) to the Ruby
-        // slice, growing it from 5 → 8.  The Phase 14 baseline for
-        // the other languages stays put: Java 11, Python 11, Php 7,
-        // JavaScript 11, TypeScript 4, Go 3, Rust 2.  C / Cpp stay
-        // empty.
+    fn registry_baseline_after_phase_16() {
+        // Phase 16 (Track L.14) adds three PHP framework adapters
+        // (`php-codeigniter`, `php-laravel`, `php-symfony`) to the
+        // PHP slice, growing it from 7 → 10.  The Phase 15 baseline
+        // for the other languages stays put: Java 11, Python 11,
+        // Ruby 8, JavaScript 11, TypeScript 4, Go 3, Rust 2.  C / Cpp
+        // stay empty.
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
@@ -233,8 +233,8 @@ mod tests {
         let php_registered = registry::adapters_for(Lang::Php);
         assert_eq!(
             php_registered.len(),
-            7,
-            "Php must have the J.1+J.2+J.3+J.4+J.5+J.6+J.7 adapters",
+            10,
+            "Php must have J.1..J.7 (7) + L.14 Laravel/Symfony/CodeIgniter (3) adapters",
         );
         for adapter in php_registered {
             assert_eq!(adapter.lang(), Lang::Php);
