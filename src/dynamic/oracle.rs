@@ -686,10 +686,10 @@ fn probes_satisfy_redirect_off_origin(probes: &[SinkProbe], allowlist: &[&str]) 
 }
 
 /// Returns `true` when `location` redirects to a host that is neither
-/// `request_host` nor any entry of `allowlist`.  Public for the
-/// per-language harness shim's mirror tests; the predicate above is
-/// the only production caller.
-pub fn redirect_is_off_origin(
+/// `request_host` nor any entry of `allowlist`.  Crate-visible so the
+/// in-crate predicate above and the colocated tests can share one
+/// canonical off-origin check.
+pub(crate) fn redirect_is_off_origin(
     location: &str,
     request_host: &str,
     allowlist: &[&str],
@@ -733,12 +733,21 @@ fn extract_redirect_host(location: &str) -> Option<String> {
         .find(|c: char| matches!(c, '/' | '?' | '#'))
         .unwrap_or(rest.len());
     let authority = &rest[..end];
-    // Strip userinfo + port.
+    // Strip userinfo + port.  Bracketed IPv6 authorities (`[::1]` or
+    // `[::1]:8080`) must keep the brackets together — splitting on the
+    // last `:` inside the literal would slice the address apart.
     let after_userinfo = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
-    let host_only = after_userinfo
-        .rsplit_once(':')
-        .map(|(h, _)| h)
-        .unwrap_or(after_userinfo);
+    let host_only = if let Some(rest) = after_userinfo.strip_prefix('[') {
+        match rest.find(']') {
+            Some(end) => &after_userinfo[..end + 2],
+            None => after_userinfo,
+        }
+    } else {
+        after_userinfo
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(after_userinfo)
+    };
     let h = host_only.trim();
     if h.is_empty() {
         None
@@ -1140,6 +1149,36 @@ mod tests {
         );
         assert_eq!(extract_redirect_host("/dashboard"), None);
         assert_eq!(extract_redirect_host(""), None);
+        // IPv6 bracketed authorities — host literal must keep brackets
+        // and not be split on the colons inside the address.
+        assert_eq!(
+            extract_redirect_host("https://[::1]/path"),
+            Some("[::1]".to_owned()),
+        );
+        assert_eq!(
+            extract_redirect_host("https://[::1]:8080/path"),
+            Some("[::1]".to_owned()),
+        );
+        assert_eq!(
+            extract_redirect_host("https://[2001:db8::1]/x"),
+            Some("[2001:db8::1]".to_owned()),
+        );
+        assert_eq!(
+            extract_redirect_host("//[fe80::1]:443/y"),
+            Some("[fe80::1]".to_owned()),
+        );
+        // IPv6 literal in allowlist round-trips through the off-origin
+        // check now that the host fragment is well-formed.
+        assert!(!redirect_is_off_origin(
+            "https://[::1]/admin",
+            "example.com",
+            &["[::1]"],
+        ));
+        assert!(redirect_is_off_origin(
+            "https://[2001:db8::dead]/x",
+            "example.com",
+            &["[::1]"],
+        ));
     }
 
     #[test]
