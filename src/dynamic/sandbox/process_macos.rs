@@ -431,6 +431,19 @@ pub fn wrap_plan(input: &WrapInput<'_>) -> WrapResult {
 mod tests {
     use super::*;
 
+    /// Process-global env vars (`NYX_SANDBOX_EXEC_BIN`,
+    /// `NYX_SB_DENY_DEFAULT`, `NYX_SB_SEED_DIR`) are mutated by several
+    /// tests in this module; without serialisation a parallel
+    /// `cargo test` invocation races on the global state and produces
+    /// flakes that vanish under `--test-threads=1`.  Every env-mutating
+    /// test acquires this guard for the duration of its body.
+    /// `unwrap_or_else(into_inner)` recovers from poisoning so a
+    /// failing test does not cascade-fail every later test.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn profile_for_caps_prefers_file_io() {
         const FILE_IO: u32 = 1 << 5;
@@ -534,6 +547,7 @@ mod tests {
 
     #[test]
     fn sandbox_exec_bin_honours_env_override() {
+        let _env_guard = env_lock();
         // SAFETY: tests are run serially with the macOS hardening suite;
         // resetting the env var below restores the default for subsequent
         // tests in the same process.
@@ -590,6 +604,7 @@ mod tests {
 
     #[test]
     fn deny_default_seed_for_returns_none_without_env_opt_in() {
+        let _env_guard = env_lock();
         // SAFETY: tests in this module mutate process-global env; the
         // macOS hardening integration suite serialises around the same
         // env vars so cargo nextest's per-test process isolation does not
@@ -601,6 +616,7 @@ mod tests {
 
     #[test]
     fn deny_default_seed_for_returns_some_when_env_set_and_seed_present() {
+        let _env_guard = env_lock();
         let tmp = std::env::temp_dir().join("nyx-sb-seed-test");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).expect("create seed tempdir");
@@ -626,6 +642,7 @@ mod tests {
 
     #[test]
     fn wrap_plan_returns_none_when_sandbox_exec_missing() {
+        let _env_guard = env_lock();
         unsafe { std::env::set_var(SANDBOX_EXEC_BIN_ENV, "/nonexistent/sandbox-exec") };
         let input = WrapInput {
             cmd_path: Path::new("/usr/bin/true"),
@@ -643,6 +660,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn wrap_plan_returns_sandboxed_when_sandbox_exec_present() {
+        let _env_guard = env_lock();
         // Skip when the host doesn't actually have /usr/bin/sandbox-exec
         // (e.g. someone reading SANDBOX_EXEC_BIN_ENV from a parent shell).
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };

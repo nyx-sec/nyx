@@ -131,15 +131,36 @@ fn probe_kind_deserialize_serdes() {
 
 #[test]
 fn lang_emitter_dispatches_to_deserialize_harness() {
-    for (lang, entry_file, entry_name, marker) in [
-        (Lang::Java, "tests/dynamic_fixtures/deserialize/java/vuln.java",
-            "run", "RestrictedObjectInputStream"),
-        (Lang::Python, "tests/dynamic_fixtures/deserialize/python/vuln.py",
-            "run", "RestrictedUnpickler"),
-        (Lang::Php, "tests/dynamic_fixtures/deserialize/php/vuln.php",
-            "run", "allowed_classes"),
-        (Lang::Ruby, "tests/dynamic_fixtures/deserialize/ruby/vuln.rb",
-            "run", "Marshal.load"),
+    // `sink_callee_marker` is the per-language deserialize sink call
+    // string the harness writes into the JSON probe record — the
+    // resolveClass / find_class / unserialize / Marshal.load boundary
+    // the brief calls out.  Pinning the marker here keeps the test
+    // honest about which guard each lang's harness names.
+    for (lang, entry_file, entry_name, sink_callee_marker) in [
+        (
+            Lang::Java,
+            "tests/dynamic_fixtures/deserialize/java/vuln.java",
+            "run",
+            "ObjectInputStream.resolveClass",
+        ),
+        (
+            Lang::Python,
+            "tests/dynamic_fixtures/deserialize/python/vuln.py",
+            "run",
+            "pickle.Unpickler.find_class",
+        ),
+        (
+            Lang::Php,
+            "tests/dynamic_fixtures/deserialize/php/vuln.php",
+            "run",
+            "unserialize",
+        ),
+        (
+            Lang::Ruby,
+            "tests/dynamic_fixtures/deserialize/ruby/vuln.rb",
+            "run",
+            "Marshal.load",
+        ),
     ] {
         let spec = make_spec(lang, entry_file, entry_name);
         let harness = lang::emit(&spec)
@@ -148,12 +169,11 @@ fn lang_emitter_dispatches_to_deserialize_harness() {
             harness.source.contains("NYX_GADGET_CLASS:"),
             "{lang:?} deserialize harness must parse NYX_GADGET_CLASS marker",
         );
-        // Each lang's harness either splices the relevant guard
-        // construct directly or names the equivalent constant.  The
-        // assertions below pin only the parts the harness emitter
-        // generates (not the fixture), so the test stays green even
-        // when the fixture moves.
-        let _ = marker; // marker validated by inspecting the fixture, not the harness.
+        assert!(
+            harness.source.contains(sink_callee_marker),
+            "{lang:?} deserialize harness must name {sink_callee_marker:?} as the \
+             resolveClass / find_class equivalent sink callee",
+        );
     }
 }
 

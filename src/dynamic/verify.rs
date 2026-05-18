@@ -1264,6 +1264,19 @@ fn build_verdict(
 mod tests {
     use super::*;
 
+    /// Process-global env vars (`NYX_VERIFY_REPLAY_STABLE`,
+    /// `NYX_VERIFY_REPLAY_DOCKER`) are mutated by several tests in this
+    /// module; without serialisation a parallel `cargo test` invocation
+    /// races on the global state and produces flakes that vanish under
+    /// `--test-threads=1`.  Every env-mutating test acquires this guard
+    /// for the duration of its body.  `unwrap_or_else(into_inner)`
+    /// recovers from poisoning so a failing test does not cascade-fail
+    /// every later test in the suite.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn compute_entry_content_hash_stable_for_same_file() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1300,6 +1313,7 @@ mod tests {
 
     #[test]
     fn from_config_defaults_replay_stable_check_off() {
+        let _env_guard = env_lock();
         // Make sure the test is hermetic — `from_config` reads the env
         // var, so a stale process-wide setting could mask the default.
         unsafe { std::env::remove_var("NYX_VERIFY_REPLAY_STABLE") };
@@ -1313,6 +1327,7 @@ mod tests {
 
     #[test]
     fn from_config_picks_up_replay_stable_env_flag() {
+        let _env_guard = env_lock();
         unsafe { std::env::set_var("NYX_VERIFY_REPLAY_STABLE", "1") };
         let opts = VerifyOptions::from_config(&Config::default());
         assert!(opts.replay_stable_check);
@@ -1327,6 +1342,7 @@ mod tests {
 
     #[test]
     fn from_config_defaults_replay_use_docker_off() {
+        let _env_guard = env_lock();
         // Same hermeticity concern as `replay_stable_check`: clear any
         // stale process-wide setting so the default is observable.
         unsafe { std::env::remove_var("NYX_VERIFY_REPLAY_DOCKER") };
@@ -1340,6 +1356,7 @@ mod tests {
 
     #[test]
     fn from_config_picks_up_replay_docker_env_flag() {
+        let _env_guard = env_lock();
         unsafe { std::env::set_var("NYX_VERIFY_REPLAY_DOCKER", "1") };
         let opts = VerifyOptions::from_config(&Config::default());
         assert!(opts.replay_use_docker);

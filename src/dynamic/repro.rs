@@ -655,6 +655,18 @@ fn create_symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Process-global `NYX_REPRO_BASE` is mutated by several tests in
+    /// this module; without serialisation a parallel `cargo test`
+    /// invocation races on the global state and produces flakes that
+    /// vanish under `--test-threads=1`.  Every env-mutating test
+    /// acquires this guard for the duration of its body.
+    /// `unwrap_or_else(into_inner)` recovers from poisoning so a
+    /// failing test does not cascade-fail every later test.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     use super::*;
     use crate::dynamic::sandbox::SandboxBackend;
     use crate::dynamic::spec::{EntryKind, PayloadSlot};
@@ -722,6 +734,7 @@ mod tests {
 
     #[test]
     fn write_creates_expected_layout() {
+        let _env_guard = env_lock();
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
 
@@ -759,6 +772,7 @@ mod tests {
 
     #[test]
     fn toolchain_lock_records_expected_toolchain_and_hashes() {
+        let _env_guard = env_lock();
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
         let spec = make_spec();
@@ -831,6 +845,7 @@ mod tests {
 
     #[test]
     fn reproduce_sh_contains_toolchain_check_and_exit_codes() {
+        let _env_guard = env_lock();
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
         let artifact = write(
@@ -925,6 +940,7 @@ mod tests {
 
     #[test]
     fn bundle_root_for_honours_test_override() {
+        let _env_guard = env_lock();
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
         let root = bundle_root_for("cafe0001").unwrap();
@@ -934,6 +950,7 @@ mod tests {
 
     #[test]
     fn bundle_root_for_matches_write_output_under_override() {
+        let _env_guard = env_lock();
         // The path returned by `bundle_root_for` must equal the bundle path
         // that `write` produces — replay callers locate the bundle without
         // re-creating directories, so a drift between the two helpers would
@@ -955,6 +972,7 @@ mod tests {
 
     #[test]
     fn outcome_json_redacts_secrets() {
+        let _env_guard = env_lock();
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
 
