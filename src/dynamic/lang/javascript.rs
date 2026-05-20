@@ -16,7 +16,7 @@
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{js_shared, ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
-use crate::dynamic::spec::{EntryKind, HarnessSpec};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec};
 use crate::evidence::UnsupportedReason;
 
 pub use js_shared::{detect_shape, materialize_node, probe_shim, JsShape};
@@ -29,13 +29,13 @@ impl LangEmitter for JavaScriptEmitter {
         emit(spec)
     }
 
-    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+    fn entry_kinds_supported(&self) -> &'static [EntryKindTag] {
         js_shared::SUPPORTED
     }
 
-    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+    fn entry_kind_hint(&self, attempted: EntryKindTag) -> String {
         format!(
-            "javascript emitter supports {supported:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 13 shape dispatch in `js_shared`",
+            "javascript emitter supports {supported:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 13 / 19 / 20 / 21 shape dispatch in `js_shared`",
             supported = js_shared::SUPPORTED,
         )
     }
@@ -61,7 +61,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use crate::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
     use crate::labels::Cap;
     use crate::symbol::Lang;
 
@@ -144,14 +144,14 @@ mod tests {
     #[test]
     fn entry_kinds_supported_includes_http_and_cli_after_phase_13() {
         let kinds = JavaScriptEmitter.entry_kinds_supported();
-        assert!(kinds.contains(&EntryKind::Function));
-        assert!(kinds.contains(&EntryKind::HttpRoute));
-        assert!(kinds.contains(&EntryKind::CliSubcommand));
+        assert!(kinds.contains(&EntryKindTag::Function));
+        assert!(kinds.contains(&EntryKindTag::HttpRoute));
+        assert!(kinds.contains(&EntryKindTag::CliSubcommand));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = JavaScriptEmitter.entry_kind_hint(EntryKind::HttpRoute);
+        let hint = JavaScriptEmitter.entry_kind_hint(EntryKindTag::HttpRoute);
         assert!(hint.contains("HttpRoute"));
         assert!(hint.contains("Phase 13"));
     }

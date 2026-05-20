@@ -25,7 +25,7 @@
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource};
-use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::utils::project::DetectedFramework;
 use std::path::PathBuf;
@@ -73,7 +73,7 @@ impl JsShape {
     /// Detect the shape from `(spec, source)`.  Framework / runtime
     /// markers in the source win over `spec.entry_kind`.
     pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
-        let kind = spec.entry_kind;
+        let kind = spec.entry_kind.tag();
         let entry = spec.entry_name.as_str();
 
         // ── Framework / runtime markers ─────────────────────────────
@@ -155,7 +155,7 @@ impl JsShape {
             return Self::BrowserEvent;
         }
 
-        if kind == EntryKind::HttpRoute {
+        if kind == EntryKindTag::HttpRoute {
             return Self::Express;
         }
 
@@ -1629,11 +1629,11 @@ fn resolve_http_payload(slot: &PayloadSlot) -> (&'static str, String, &'static s
 }
 
 /// Supported entry kinds for both JS + TS after Phase 13.
-pub const SUPPORTED: &[EntryKind] = &[
-    EntryKind::Function,
-    EntryKind::HttpRoute,
-    EntryKind::CliSubcommand,
-    EntryKind::LibraryApi,
+pub const SUPPORTED: &[EntryKindTag] = &[
+    EntryKindTag::Function,
+    EntryKindTag::HttpRoute,
+    EntryKindTag::CliSubcommand,
+    EntryKindTag::LibraryApi,
 ];
 
 #[cfg(test)]

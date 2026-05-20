@@ -37,7 +37,7 @@
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
-use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
 
@@ -50,10 +50,10 @@ pub struct JavaEmitter;
 /// `HttpRoute` covers servlet / Spring / Quarkus shapes.  `CliSubcommand`
 /// covers `public static void main(String[])`.  `Function` covers JUnit
 /// tests and plain static methods.
-const SUPPORTED: &[EntryKind] = &[
-    EntryKind::Function,
-    EntryKind::HttpRoute,
-    EntryKind::CliSubcommand,
+const SUPPORTED: &[EntryKindTag] = &[
+    EntryKindTag::Function,
+    EntryKindTag::HttpRoute,
+    EntryKindTag::CliSubcommand,
 ];
 
 impl LangEmitter for JavaEmitter {
@@ -61,13 +61,13 @@ impl LangEmitter for JavaEmitter {
         emit(spec)
     }
 
-    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+    fn entry_kinds_supported(&self) -> &'static [EntryKindTag] {
         SUPPORTED
     }
 
-    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+    fn entry_kind_hint(&self, attempted: EntryKindTag) -> String {
         format!(
-            "java emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 14 shape dispatch"
+            "java emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 14 / 19 / 20 / 21 shape dispatch"
         )
     }
 
@@ -204,7 +204,7 @@ impl JavaShape {
     /// pipeline tagged the entry kind as [`EntryKind::Function`].
     pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
         let entry = spec.entry_name.as_str();
-        let kind = spec.entry_kind;
+        let kind = spec.entry_kind.tag();
 
         let has_servlet = source.contains("HttpServlet")
             || source.contains("javax.servlet")
@@ -256,10 +256,10 @@ impl JavaShape {
             return Self::JunitTest;
         }
 
-        if kind == EntryKind::CliSubcommand {
+        if kind == EntryKindTag::CliSubcommand {
             return Self::StaticMain;
         }
-        if kind == EntryKind::HttpRoute {
+        if kind == EntryKindTag::HttpRoute {
             return Self::SpringController;
         }
         Self::StaticMethod
@@ -1810,7 +1810,7 @@ const JUNIT_HELPER: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use crate::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
     use crate::labels::Cap;
     use crate::symbol::Lang;
 
@@ -1883,18 +1883,18 @@ mod tests {
         assert!(!JavaEmitter.entry_kinds_supported().is_empty());
         assert!(JavaEmitter
             .entry_kinds_supported()
-            .contains(&EntryKind::Function));
+            .contains(&EntryKindTag::Function));
         assert!(JavaEmitter
             .entry_kinds_supported()
-            .contains(&EntryKind::HttpRoute));
+            .contains(&EntryKindTag::HttpRoute));
         assert!(JavaEmitter
             .entry_kinds_supported()
-            .contains(&EntryKind::CliSubcommand));
+            .contains(&EntryKindTag::CliSubcommand));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = JavaEmitter.entry_kind_hint(EntryKind::LibraryApi);
+        let hint = JavaEmitter.entry_kind_hint(EntryKindTag::LibraryApi);
         assert!(hint.contains("LibraryApi"));
         assert!(hint.contains("Phase 14"));
     }
@@ -2380,7 +2380,7 @@ mod tests {
         for (name, body, entry_name, kind, expected) in cases {
             let path = dir.join(name);
             std::fs::write(&path, body).expect("write fixture");
-            let spec = make_spec_with(*kind, entry_name, path.to_str().unwrap());
+            let spec = make_spec_with(kind.clone(), entry_name, path.to_str().unwrap());
             assert_eq!(detect_shape(&spec), *expected, "case {name}");
         }
         let _ = std::fs::remove_dir_all(&dir);

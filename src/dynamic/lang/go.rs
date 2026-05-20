@@ -38,7 +38,7 @@
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
-use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
 
@@ -51,10 +51,10 @@ pub struct GoEmitter;
 /// `HttpRoute` covers `net/http` and gin handlers.  `CliSubcommand`
 /// covers `flag.Parse` CLIs.  `Function` covers plain functions and
 /// fuzz harnesses.
-const SUPPORTED: &[EntryKind] = &[
-    EntryKind::Function,
-    EntryKind::HttpRoute,
-    EntryKind::CliSubcommand,
+const SUPPORTED: &[EntryKindTag] = &[
+    EntryKindTag::Function,
+    EntryKindTag::HttpRoute,
+    EntryKindTag::CliSubcommand,
 ];
 
 impl LangEmitter for GoEmitter {
@@ -62,13 +62,13 @@ impl LangEmitter for GoEmitter {
         emit(spec)
     }
 
-    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+    fn entry_kinds_supported(&self) -> &'static [EntryKindTag] {
         SUPPORTED
     }
 
-    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+    fn entry_kind_hint(&self, attempted: EntryKindTag) -> String {
         format!(
-            "go emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 15 shape dispatch"
+            "go emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 15 / 19 / 20 / 21 shape dispatch"
         )
     }
 
@@ -215,7 +215,7 @@ impl GoShape {
     /// to [`Self::Generic`]).
     pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
         let entry = spec.entry_name.as_str();
-        let kind = spec.entry_kind;
+        let kind = spec.entry_kind.tag();
 
         let has_http_handler = source.contains("http.ResponseWriter")
             && source.contains("*http.Request");
@@ -265,10 +265,10 @@ impl GoShape {
         if has_fuzz_signature {
             return Self::FuzzVariadic;
         }
-        if kind == EntryKind::HttpRoute {
+        if kind == EntryKindTag::HttpRoute {
             return Self::HttpHandlerFunc;
         }
-        if kind == EntryKind::CliSubcommand {
+        if kind == EntryKindTag::CliSubcommand {
             return Self::FlagParseCli;
         }
         Self::Generic
@@ -1098,7 +1098,7 @@ pub fn capitalize_first(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use crate::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
     use crate::labels::Cap;
     use crate::symbol::Lang;
 
@@ -1168,14 +1168,14 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!GoEmitter.entry_kinds_supported().is_empty());
-        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKind::Function));
-        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKind::HttpRoute));
-        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKind::CliSubcommand));
+        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKindTag::Function));
+        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKindTag::HttpRoute));
+        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKindTag::CliSubcommand));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = GoEmitter.entry_kind_hint(EntryKind::LibraryApi);
+        let hint = GoEmitter.entry_kind_hint(EntryKindTag::LibraryApi);
         assert!(hint.contains("LibraryApi"));
         assert!(hint.contains("Phase 15"));
     }

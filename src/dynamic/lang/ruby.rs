@@ -28,7 +28,7 @@
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
-use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
 
@@ -40,10 +40,10 @@ pub struct RubyEmitter;
 /// `HttpRoute` covers Sinatra / Rails / Rack.  `CliSubcommand` covers
 /// `ARGV`-driven scripts.  `Function` covers plain methods and
 /// controller method shapes.
-const SUPPORTED: &[EntryKind] = &[
-    EntryKind::Function,
-    EntryKind::HttpRoute,
-    EntryKind::CliSubcommand,
+const SUPPORTED: &[EntryKindTag] = &[
+    EntryKindTag::Function,
+    EntryKindTag::HttpRoute,
+    EntryKindTag::CliSubcommand,
 ];
 
 impl LangEmitter for RubyEmitter {
@@ -51,13 +51,13 @@ impl LangEmitter for RubyEmitter {
         emit(spec)
     }
 
-    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+    fn entry_kinds_supported(&self) -> &'static [EntryKindTag] {
         SUPPORTED
     }
 
-    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+    fn entry_kind_hint(&self, attempted: EntryKindTag) -> String {
         format!(
-            "ruby emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 15 shape dispatch"
+            "ruby emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 15 / 19 / 20 / 21 shape dispatch"
         )
     }
 
@@ -154,7 +154,7 @@ impl RubyShape {
     /// the source win over `spec.entry_kind`.
     pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
         let entry = spec.entry_name.as_str();
-        let kind = spec.entry_kind;
+        let kind = spec.entry_kind.tag();
 
         let has_sinatra = source.contains("require 'sinatra'")
             || source.contains("require \"sinatra\"")
@@ -188,7 +188,7 @@ impl RubyShape {
         if has_rack {
             return Self::RackMiddleware;
         }
-        if kind == EntryKind::HttpRoute && has_class {
+        if kind == EntryKindTag::HttpRoute && has_class {
             return Self::ControllerMethod;
         }
         if has_class && has_def && !entry.is_empty() && !entry_named_class {
@@ -959,7 +959,7 @@ fn parse_first_class_name(source: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use crate::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
     use crate::labels::Cap;
     use crate::symbol::Lang;
 
@@ -989,18 +989,18 @@ mod tests {
         assert!(!RubyEmitter.entry_kinds_supported().is_empty());
         assert!(RubyEmitter
             .entry_kinds_supported()
-            .contains(&EntryKind::Function));
+            .contains(&EntryKindTag::Function));
         assert!(RubyEmitter
             .entry_kinds_supported()
-            .contains(&EntryKind::HttpRoute));
+            .contains(&EntryKindTag::HttpRoute));
         assert!(RubyEmitter
             .entry_kinds_supported()
-            .contains(&EntryKind::CliSubcommand));
+            .contains(&EntryKindTag::CliSubcommand));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = RubyEmitter.entry_kind_hint(EntryKind::LibraryApi);
+        let hint = RubyEmitter.entry_kind_hint(EntryKindTag::LibraryApi);
         assert!(hint.contains("LibraryApi"));
         assert!(hint.contains("Phase 15"));
     }

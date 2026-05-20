@@ -28,7 +28,7 @@
 //! - `PayloadSlot::Argv(n)` — `main(argc, argv)` shape: appended to argv.
 
 use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
-use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use std::path::PathBuf;
 
@@ -40,10 +40,10 @@ pub struct CEmitter;
 /// `Function` covers free functions (libfuzzer-style + plain (const
 /// char*, size_t)).  `CliSubcommand` covers `main(argc, argv)`.
 /// `LibraryApi` covers libFuzzer `LLVMFuzzerTestOneInput`.
-const SUPPORTED: &[EntryKind] = &[
-    EntryKind::Function,
-    EntryKind::CliSubcommand,
-    EntryKind::LibraryApi,
+const SUPPORTED: &[EntryKindTag] = &[
+    EntryKindTag::Function,
+    EntryKindTag::CliSubcommand,
+    EntryKindTag::LibraryApi,
 ];
 
 // ── Phase 16: shape detector ─────────────────────────────────────────────────
@@ -66,7 +66,7 @@ impl CShape {
     /// Detect the shape from `(spec, source)`.
     pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
         let entry = spec.entry_name.as_str();
-        let kind = spec.entry_kind;
+        let kind = spec.entry_kind.tag();
 
         let has_main_argv = (source.contains("int main(") || source.contains("int main ("))
             && (source.contains("argc") || source.contains("char *argv")
@@ -80,8 +80,8 @@ impl CShape {
             return Self::MainArgv;
         }
         match kind {
-            EntryKind::CliSubcommand => Self::MainArgv,
-            EntryKind::LibraryApi => Self::LibfuzzerEntry,
+            EntryKindTag::CliSubcommand => Self::MainArgv,
+            EntryKindTag::LibraryApi => Self::LibfuzzerEntry,
             _ => Self::FreeFn,
         }
     }
@@ -362,13 +362,13 @@ impl LangEmitter for CEmitter {
         emit(spec)
     }
 
-    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+    fn entry_kinds_supported(&self) -> &'static [EntryKindTag] {
         SUPPORTED
     }
 
-    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+    fn entry_kind_hint(&self, attempted: EntryKindTag) -> String {
         format!(
-            "c emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 16 shape dispatch (main / libFuzzer / free function)"
+            "c emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 16 / 19 / 20 / 21 shape dispatch (main / libFuzzer / free function + future class / msg / job adapters)"
         )
     }
 
@@ -646,7 +646,7 @@ clean:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use crate::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
     use crate::labels::Cap;
     use crate::symbol::Lang;
 
@@ -674,14 +674,14 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!CEmitter.entry_kinds_supported().is_empty());
-        assert!(CEmitter.entry_kinds_supported().contains(&EntryKind::Function));
-        assert!(CEmitter.entry_kinds_supported().contains(&EntryKind::CliSubcommand));
-        assert!(CEmitter.entry_kinds_supported().contains(&EntryKind::LibraryApi));
+        assert!(CEmitter.entry_kinds_supported().contains(&EntryKindTag::Function));
+        assert!(CEmitter.entry_kinds_supported().contains(&EntryKindTag::CliSubcommand));
+        assert!(CEmitter.entry_kinds_supported().contains(&EntryKindTag::LibraryApi));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = CEmitter.entry_kind_hint(EntryKind::LibraryApi);
+        let hint = CEmitter.entry_kind_hint(EntryKindTag::LibraryApi);
         assert!(hint.contains("LibraryApi"));
         assert!(hint.contains("Phase 16"));
     }

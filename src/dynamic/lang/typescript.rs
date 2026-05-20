@@ -16,7 +16,7 @@
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{js_shared, ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
-use crate::dynamic::spec::{EntryKind, HarnessSpec};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec};
 use crate::evidence::UnsupportedReason;
 
 /// Zero-sized [`LangEmitter`] handle for TypeScript.
@@ -32,13 +32,13 @@ impl LangEmitter for TypeScriptEmitter {
         js_shared::emit(spec, true)
     }
 
-    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+    fn entry_kinds_supported(&self) -> &'static [EntryKindTag] {
         js_shared::SUPPORTED
     }
 
-    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+    fn entry_kind_hint(&self, attempted: EntryKindTag) -> String {
         format!(
-            "typescript emitter supports {supported:?} (shared dispatch with javascript via `js_shared`); this finding's enclosing context is `EntryKind::{attempted}` — see Phase 13 shape dispatch",
+            "typescript emitter supports {supported:?} (shared dispatch with javascript via `js_shared`); this finding's enclosing context is `EntryKind::{attempted}` — see Phase 13 / 19 / 20 / 21 shape dispatch",
             supported = js_shared::SUPPORTED,
         )
     }
@@ -59,7 +59,7 @@ impl LangEmitter for TypeScriptEmitter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::spec::{HarnessSpec, PayloadSlot, SpecDerivationStrategy};
+    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy};
     use crate::labels::Cap;
     use crate::symbol::Lang;
 
@@ -89,12 +89,12 @@ mod tests {
         assert!(!TypeScriptEmitter.entry_kinds_supported().is_empty());
         assert!(TypeScriptEmitter
             .entry_kinds_supported()
-            .contains(&EntryKind::HttpRoute));
+            .contains(&EntryKindTag::HttpRoute));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = TypeScriptEmitter.entry_kind_hint(EntryKind::HttpRoute);
+        let hint = TypeScriptEmitter.entry_kind_hint(EntryKindTag::HttpRoute);
         assert!(hint.contains("HttpRoute"));
         assert!(hint.contains("Phase 13"));
     }

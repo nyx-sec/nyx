@@ -338,7 +338,7 @@ fn entry_kind_unsupported_verdict(
     diag: Option<&Diag>,
     spec_entry_path: &str,
     lang: crate::symbol::Lang,
-    attempted: crate::dynamic::spec::EntryKind,
+    attempted: crate::dynamic::spec::EntryKindTag,
     policy: &SamplingPolicy,
 ) -> VerifyResult {
     let supported = crate::dynamic::lang::entry_kinds_supported(lang).to_vec();
@@ -618,7 +618,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             Some(diag),
             &spec.entry_file,
             spec.lang,
-            spec.entry_kind,
+            spec.entry_kind.tag(),
             &opts.telemetry_policy,
         );
     }
@@ -1210,13 +1210,13 @@ fn build_verdict(
             ) = &e
             {
                 let supported = crate::dynamic::lang::entry_kinds_supported(spec.lang);
-                if !supported.contains(&spec.entry_kind) {
+                if !supported.contains(&spec.entry_kind.tag()) {
                     return entry_kind_unsupported_verdict(
                         finding_id.to_owned(),
                         None,
                         &spec.entry_file,
                         spec.lang,
-                        spec.entry_kind,
+                        spec.entry_kind.tag(),
                         &opts.telemetry_policy,
                     );
                 }

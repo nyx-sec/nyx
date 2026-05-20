@@ -27,7 +27,7 @@ pub mod rust;
 pub mod typescript;
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::spec::{EntryKind, HarnessSpec};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec};
 use crate::evidence::UnsupportedReason;
 use crate::symbol::Lang;
 
@@ -132,14 +132,17 @@ pub trait LangEmitter {
     /// Build a harness source bundle for `spec`.
     fn emit(&self, spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason>;
 
-    /// The set of [`EntryKind`] variants this emitter understands.
+    /// The set of [`EntryKind`] variants this emitter understands,
+    /// projected to the [`EntryKindTag`] discriminant so the slice can
+    /// live in `'static` storage even after Phase 18 extended
+    /// `EntryKind` with data-bearing variants.
     ///
     /// Must be non-empty: every emitter advertises at least one shape it can
     /// (or will) drive — even stub modules whose `emit` returns
     /// `LangUnsupported`.  Empty would be indistinguishable from "language
     /// not in the dispatch table" and would defeat the structured
     /// advertisement that callers consume.
-    fn entry_kinds_supported(&self) -> &'static [EntryKind];
+    fn entry_kinds_supported(&self) -> &'static [EntryKindTag];
 
     /// Human-actionable hint produced when `attempted` is not in
     /// [`entry_kinds_supported`](LangEmitter::entry_kinds_supported).
@@ -149,7 +152,7 @@ pub trait LangEmitter {
     /// surfaces directly to operators triaging dynamic verification gaps;
     /// keep it specific (name the supported kinds, name the phase that will
     /// extend support).
-    fn entry_kind_hint(&self, attempted: EntryKind) -> String;
+    fn entry_kind_hint(&self, attempted: EntryKindTag) -> String;
 
     /// Synthesise the language-specific manifest / lockfile contents that
     /// pin the [`Environment`]'s direct deps + toolchain into a file the
@@ -251,7 +254,7 @@ pub fn materialize_runtime(env: &Environment) -> RuntimeArtifacts {
 /// in (instead of producing a never-runnable harness).
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     let supported = entry_kinds_supported(spec.lang);
-    if !supported.is_empty() && !supported.contains(&spec.entry_kind) {
+    if !supported.is_empty() && !supported.contains(&spec.entry_kind.tag()) {
         return Err(UnsupportedReason::EntryKindUnsupported);
     }
     dispatch(spec.lang, |e| e.emit(spec))
@@ -263,7 +266,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 /// Returns an empty slice when `lang` has no registered emitter — callers
 /// distinguish that from "emitter exists but advertises none" by treating
 /// empty as "language unsupported".
-pub fn entry_kinds_supported(lang: Lang) -> &'static [EntryKind] {
+pub fn entry_kinds_supported(lang: Lang) -> &'static [EntryKindTag] {
     dispatch(lang, |e| e.entry_kinds_supported()).unwrap_or(&[])
 }
 
@@ -271,7 +274,7 @@ pub fn entry_kinds_supported(lang: Lang) -> &'static [EntryKind] {
 ///
 /// Falls back to a generic message when `lang` has no registered emitter so
 /// callers do not need to special-case that path.
-pub fn entry_kind_hint(lang: Lang, attempted: EntryKind) -> String {
+pub fn entry_kind_hint(lang: Lang, attempted: EntryKindTag) -> String {
     dispatch(lang, |e| e.entry_kind_hint(attempted)).unwrap_or_else(|| {
         format!(
             "no harness emitter is registered for {lang:?}; attempted {attempted}"
@@ -300,6 +303,7 @@ fn dispatch<R>(lang: Lang, f: impl FnOnce(&dyn LangEmitter) -> R) -> Option<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dynamic::spec::EntryKind;
 
     /// Every registered emitter must advertise at least one entry kind so the
     /// verifier never produces an empty `supported` list in
@@ -328,10 +332,110 @@ mod tests {
 
     #[test]
     fn entry_kind_hint_mentions_attempted() {
-        let hint = entry_kind_hint(Lang::Python, EntryKind::HttpRoute);
+        let hint = entry_kind_hint(Lang::Python, EntryKindTag::HttpRoute);
         assert!(
             hint.contains("HttpRoute"),
             "hint must mention the attempted entry kind, got: {hint:?}"
         );
+    }
+
+    /// Phase 18 (Track M.0) — every Phase 18 variant resolves to a
+    /// distinct [`EntryKindTag`] via [`EntryKind::tag`], and the
+    /// per-language emitters short-circuit those tags with a typed
+    /// `Inconclusive(EntryKindUnsupported)` hint that mentions the
+    /// follow-up phase that will close the gap.
+    #[test]
+    fn entry_kind_tag_round_trips_for_phase_18_variants() {
+        use crate::evidence::EntryKindTag as T;
+        assert_eq!(EntryKind::Function.tag(), T::Function);
+        assert_eq!(EntryKind::HttpRoute.tag(), T::HttpRoute);
+        assert_eq!(EntryKind::CliSubcommand.tag(), T::CliSubcommand);
+        assert_eq!(EntryKind::LibraryApi.tag(), T::LibraryApi);
+        assert_eq!(
+            EntryKind::ClassMethod {
+                class: "Cls".into(),
+                method: "do".into(),
+            }
+            .tag(),
+            T::ClassMethod
+        );
+        assert_eq!(
+            EntryKind::MessageHandler {
+                queue: "q".into(),
+                message_schema: None,
+            }
+            .tag(),
+            T::MessageHandler
+        );
+        assert_eq!(
+            EntryKind::ScheduledJob { schedule: None }.tag(),
+            T::ScheduledJob
+        );
+        assert_eq!(
+            EntryKind::GraphQLResolver {
+                type_name: "User".into(),
+                field: "name".into(),
+            }
+            .tag(),
+            T::GraphQLResolver
+        );
+        assert_eq!(
+            EntryKind::WebSocket { path: "/ws".into() }.tag(),
+            T::WebSocket
+        );
+        assert_eq!(
+            EntryKind::Middleware { name: "auth".into() }.tag(),
+            T::Middleware
+        );
+        assert_eq!(
+            EntryKind::Migration { version: None }.tag(),
+            T::Migration
+        );
+        assert_eq!(EntryKind::Unknown.tag(), T::Unknown);
+    }
+
+    /// Phase 18 (Track M.0) — none of the Phase 18 variants are wired
+    /// into any per-language emitter yet (those land in Phase 19 /
+    /// 20 / 21).  Confirm every lang routes them through the
+    /// supported-set gate so the verifier produces a structured
+    /// `Inconclusive(EntryKindUnsupported)` rather than degrading
+    /// silently.
+    #[test]
+    fn entry_kind_phase_18_variants_are_unsupported_everywhere() {
+        use crate::evidence::EntryKindTag as T;
+        let new = [
+            T::ClassMethod,
+            T::MessageHandler,
+            T::ScheduledJob,
+            T::GraphQLResolver,
+            T::WebSocket,
+            T::Middleware,
+            T::Migration,
+        ];
+        for lang in [
+            Lang::Python,
+            Lang::Rust,
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Go,
+            Lang::Java,
+            Lang::Php,
+            Lang::Ruby,
+            Lang::C,
+            Lang::Cpp,
+        ] {
+            let supported = entry_kinds_supported(lang);
+            for tag in new {
+                assert!(
+                    !supported.contains(&tag),
+                    "{lang:?} prematurely advertised {tag:?} — Phase 18 keeps the new variants unsupported until Phase 19 / 20 / 21 lands the per-lang adapters"
+                );
+                let hint = entry_kind_hint(lang, tag);
+                assert!(
+                    hint.contains(tag.as_str()),
+                    "{lang:?} hint must mention {tag:?}, got: {hint:?}"
+                );
+            }
+        }
     }
 }

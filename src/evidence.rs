@@ -216,13 +216,88 @@ pub enum UnsupportedReason {
     },
 }
 
+/// Discriminant tag for [`EntryKind`].
+///
+/// Phase 18 (Track M.0) extends [`EntryKind`] with data-bearing variants
+/// (`ClassMethod`, `MessageHandler`, `ScheduledJob`, …) so the enum can no
+/// longer be `Copy` and cannot appear in `&'static [EntryKind]` slices.
+/// `EntryKindTag` is the unit-only sibling used for: the per-emitter
+/// supported-set declaration (`LangEmitter::entry_kinds_supported` returns
+/// `&'static [EntryKindTag]`), the supported / attempted fields on
+/// [`InconclusiveReason::EntryKindUnsupported`], and any other site that
+/// needs a `Copy + Hash` discriminant.
+///
+/// `Unknown` is the back-compat fallback: a future variant that an older
+/// binary doesn't recognise round-trips as `Unknown` rather than failing
+/// deserialisation.  Mirrors the `#[serde(other)]` shape on the
+/// data-bearing enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum EntryKindTag {
+    Function,
+    HttpRoute,
+    CliSubcommand,
+    LibraryApi,
+    ClassMethod,
+    MessageHandler,
+    ScheduledJob,
+    GraphQLResolver,
+    WebSocket,
+    Middleware,
+    Migration,
+    /// Back-compat fallback for unrecognised variants from future bundles.
+    #[serde(other)]
+    Unknown,
+}
+
+impl fmt::Display for EntryKindTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl EntryKindTag {
+    /// Stable string form (matches the Serde PascalCase representation).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Function => "Function",
+            Self::HttpRoute => "HttpRoute",
+            Self::CliSubcommand => "CliSubcommand",
+            Self::LibraryApi => "LibraryApi",
+            Self::ClassMethod => "ClassMethod",
+            Self::MessageHandler => "MessageHandler",
+            Self::ScheduledJob => "ScheduledJob",
+            Self::GraphQLResolver => "GraphQLResolver",
+            Self::WebSocket => "WebSocket",
+            Self::Middleware => "Middleware",
+            Self::Migration => "Migration",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
 /// What kind of entry point a harness should call.
 ///
 /// Lives in `evidence.rs` (not `dynamic::spec`) so that
 /// [`InconclusiveReason::EntryKindUnsupported`] can name the attempted /
 /// supported variants without depending on the `dynamic` feature. The
 /// canonical accessor is `crate::dynamic::spec::EntryKind` (re-export).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Phase 18 (Track M.0) extends the enum with seven data-bearing variants
+/// (`ClassMethod`, `MessageHandler`, `ScheduledJob`, `GraphQLResolver`,
+/// `WebSocket`, `Middleware`, `Migration`) plus an `Unknown` back-compat
+/// fallback.  Each new variant carries the language-agnostic minimum
+/// context the per-language adapter needs to stand the entry up; lang
+/// emitters opt in per follow-up phase (19 / 20 / 21) and unsupported
+/// kinds short-circuit to `Inconclusive(EntryKindUnsupported)` with a
+/// hint pointing at the phase that will close the gap.
+///
+/// Because the new variants own `String` / `serde_json::Value` payloads
+/// the enum is no longer `Copy` (or `Hash`).  The sibling
+/// [`EntryKindTag`] discriminant is the right type for any site that
+/// needs a `Copy + Hash` handle (supported-set lookups, hashmap keys,
+/// `InconclusiveReason::EntryKindUnsupported` fields).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum EntryKind {
     /// Free function. Build a `main` that calls it directly.
     Function,
@@ -232,17 +307,212 @@ pub enum EntryKind {
     CliSubcommand,
     /// Library API surface. Build an in-process consumer.
     LibraryApi,
+    /// Method on a class / struct / module type.  Carries the qualified
+    /// class name and the method to drive so the lang emitter can build
+    /// a `Cls(<ctor-args>).method(<payload>)` invocation.  Land in
+    /// Phase 19.
+    ClassMethod {
+        class: String,
+        method: String,
+    },
+    /// Message-queue subscriber / consumer.  `queue` is the topic /
+    /// stream / channel name; `message_schema`, when present, is a
+    /// free-form JSON description of the expected message body that the
+    /// harness can use to mint a fresh envelope around the payload.
+    /// Land in Phase 20.
+    MessageHandler {
+        queue: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_schema: Option<serde_json::Value>,
+    },
+    /// Scheduled job / cron handler.  `schedule`, when present, is the
+    /// raw schedule expression as it appears in source (cron syntax,
+    /// rate string, etc.) — kept opaque because each scheduler library
+    /// uses a slightly different grammar.  Land in Phase 21.
+    ScheduledJob {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schedule: Option<String>,
+    },
+    /// GraphQL resolver — `type_name.field` pair the harness drives via
+    /// an in-process GraphQL execution layer.  Land in Phase 21.
+    GraphQLResolver {
+        type_name: String,
+        field: String,
+    },
+    /// WebSocket handler — `path` is the canonical mount point; the
+    /// harness opens a loopback ws connection and sends the payload as
+    /// the first message frame.  Land in Phase 21.
+    WebSocket {
+        path: String,
+    },
+    /// HTTP / framework middleware — `name` is the middleware identifier
+    /// (class name, function name, registration key) the harness mounts
+    /// on a synthetic pipeline before invoking it with a crafted
+    /// request.  Land in Phase 21.
+    Middleware {
+        name: String,
+    },
+    /// Database migration / schema-change script — `version`, when
+    /// present, is the migration revision identifier (Alembic / Flyway /
+    /// Rails string) so the harness can pin the apply step.  Land in
+    /// Phase 21.
+    Migration {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    /// Back-compat fallback.  An older binary that does not yet
+    /// recognise a future variant deserialises it into `Unknown` rather
+    /// than failing the bundle load.  Mirrors the
+    /// `#[serde(other)]` shape on [`EntryKindTag`].
+    Unknown,
+}
+
+impl EntryKind {
+    /// Discriminant tag — used for supported-set lookups and any other
+    /// site that needs a `Copy + Hash` handle.
+    pub fn tag(&self) -> EntryKindTag {
+        match self {
+            Self::Function => EntryKindTag::Function,
+            Self::HttpRoute => EntryKindTag::HttpRoute,
+            Self::CliSubcommand => EntryKindTag::CliSubcommand,
+            Self::LibraryApi => EntryKindTag::LibraryApi,
+            Self::ClassMethod { .. } => EntryKindTag::ClassMethod,
+            Self::MessageHandler { .. } => EntryKindTag::MessageHandler,
+            Self::ScheduledJob { .. } => EntryKindTag::ScheduledJob,
+            Self::GraphQLResolver { .. } => EntryKindTag::GraphQLResolver,
+            Self::WebSocket { .. } => EntryKindTag::WebSocket,
+            Self::Middleware { .. } => EntryKindTag::Middleware,
+            Self::Migration { .. } => EntryKindTag::Migration,
+            Self::Unknown => EntryKindTag::Unknown,
+        }
+    }
 }
 
 impl fmt::Display for EntryKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            Self::Function => "Function",
-            Self::HttpRoute => "HttpRoute",
-            Self::CliSubcommand => "CliSubcommand",
-            Self::LibraryApi => "LibraryApi",
-        };
-        f.write_str(s)
+        f.write_str(self.tag().as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for EntryKind {
+    /// Back-compat deserialiser.  Externally-tagged enums do not
+    /// support `#[serde(other)]` on Serde 1.0.228, so we route through
+    /// `serde_json::Value` and fall through to [`EntryKind::Unknown`]
+    /// for any tag the current binary does not recognise.  Older
+    /// bundles whose `entry_kind` is a bare PascalCase string (the
+    /// pre-Phase-18 wire format for the four unit variants) continue
+    /// to decode unchanged.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let value = serde_json::Value::deserialize(deserializer)
+            .map_err(D::Error::custom)?;
+
+        // Bare-string form (legacy unit variants).
+        if let Some(tag) = value.as_str() {
+            return Ok(match tag {
+                "Function" => Self::Function,
+                "HttpRoute" => Self::HttpRoute,
+                "CliSubcommand" => Self::CliSubcommand,
+                "LibraryApi" => Self::LibraryApi,
+                "Unknown" => Self::Unknown,
+                _ => Self::Unknown,
+            });
+        }
+
+        // Externally-tagged struct form: { "ClassMethod": { ... } }.
+        if let Some(map) = value.as_object() {
+            if map.len() == 1 {
+                let (tag, body) = map.iter().next().expect("len == 1");
+                let body = body.clone();
+                let parsed = match tag.as_str() {
+                    "Function" => Some(Self::Function),
+                    "HttpRoute" => Some(Self::HttpRoute),
+                    "CliSubcommand" => Some(Self::CliSubcommand),
+                    "LibraryApi" => Some(Self::LibraryApi),
+                    "Unknown" => Some(Self::Unknown),
+                    "ClassMethod" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            class: String,
+                            method: String,
+                        }
+                        serde_json::from_value::<F>(body).ok().map(|f| Self::ClassMethod {
+                            class: f.class,
+                            method: f.method,
+                        })
+                    }
+                    "MessageHandler" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            queue: String,
+                            #[serde(default)]
+                            message_schema: Option<serde_json::Value>,
+                        }
+                        serde_json::from_value::<F>(body).ok().map(|f| Self::MessageHandler {
+                            queue: f.queue,
+                            message_schema: f.message_schema,
+                        })
+                    }
+                    "ScheduledJob" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            #[serde(default)]
+                            schedule: Option<String>,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::ScheduledJob { schedule: f.schedule })
+                    }
+                    "GraphQLResolver" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            type_name: String,
+                            field: String,
+                        }
+                        serde_json::from_value::<F>(body).ok().map(|f| Self::GraphQLResolver {
+                            type_name: f.type_name,
+                            field: f.field,
+                        })
+                    }
+                    "WebSocket" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            path: String,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::WebSocket { path: f.path })
+                    }
+                    "Middleware" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            name: String,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::Middleware { name: f.name })
+                    }
+                    "Migration" => {
+                        #[derive(Deserialize)]
+                        struct F {
+                            #[serde(default)]
+                            version: Option<String>,
+                        }
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::Migration { version: f.version })
+                    }
+                    _ => None,
+                };
+                return Ok(parsed.unwrap_or(Self::Unknown));
+            }
+        }
+
+        Ok(Self::Unknown)
     }
 }
 
@@ -314,10 +584,15 @@ pub enum InconclusiveReason {
     /// [`EntryKind`].  Carries the language, the attempted entry kind, the
     /// list of entry kinds the emitter currently understands, and a
     /// human-actionable hint pointing at the phase that will add support.
+    ///
+    /// Phase 18: `attempted` / `supported` use the [`EntryKindTag`]
+    /// discriminant rather than the (now data-bearing) [`EntryKind`] so
+    /// the verdict stays cheap to copy and the serialised form remains
+    /// a list of PascalCase strings.
     EntryKindUnsupported {
         lang: Lang,
-        attempted: EntryKind,
-        supported: Vec<EntryKind>,
+        attempted: EntryKindTag,
+        supported: Vec<EntryKindTag>,
         hint: String,
     },
     /// The capability's corpus lacks a paired benign control payload, so
@@ -1916,5 +2191,167 @@ mod tests {
         // Verify snake_case serialization
         let json = serde_json::to_string(&crate::labels::SourceKind::UserInput).unwrap();
         assert_eq!(json, "\"user_input\"");
+    }
+
+    // ── Phase 18 (Track M.0) — EntryKind data-bearing variants ──────────────
+
+    /// Legacy unit variants round-trip as bare PascalCase strings — the
+    /// pre-Phase-18 wire format an older binary expects.
+    #[test]
+    fn entry_kind_legacy_unit_variants_round_trip() {
+        for (kind, json) in [
+            (EntryKind::Function, "\"Function\""),
+            (EntryKind::HttpRoute, "\"HttpRoute\""),
+            (EntryKind::CliSubcommand, "\"CliSubcommand\""),
+            (EntryKind::LibraryApi, "\"LibraryApi\""),
+        ] {
+            let serialised = serde_json::to_string(&kind).unwrap();
+            assert_eq!(serialised, json, "serialise {kind:?}");
+            let parsed: EntryKind = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed, kind, "deserialise {json}");
+        }
+    }
+
+    /// New Phase 18 variants serialise as externally-tagged objects and
+    /// round-trip with their data payloads intact.
+    #[test]
+    fn entry_kind_phase_18_variants_round_trip() {
+        let cases: Vec<EntryKind> = vec![
+            EntryKind::ClassMethod {
+                class: "UserController".into(),
+                method: "show".into(),
+            },
+            EntryKind::MessageHandler {
+                queue: "orders.new".into(),
+                message_schema: Some(serde_json::json!({"type":"object"})),
+            },
+            EntryKind::MessageHandler {
+                queue: "orders.new".into(),
+                message_schema: None,
+            },
+            EntryKind::ScheduledJob {
+                schedule: Some("0 */6 * * *".into()),
+            },
+            EntryKind::ScheduledJob { schedule: None },
+            EntryKind::GraphQLResolver {
+                type_name: "Query".into(),
+                field: "user".into(),
+            },
+            EntryKind::WebSocket { path: "/ws/feed".into() },
+            EntryKind::Middleware { name: "auth_filter".into() },
+            EntryKind::Migration {
+                version: Some("0042_user_table".into()),
+            },
+            EntryKind::Migration { version: None },
+            EntryKind::Unknown,
+        ];
+        for kind in cases {
+            let json = serde_json::to_string(&kind).unwrap();
+            let parsed: EntryKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, kind, "round-trip {json}");
+        }
+    }
+
+    /// Back-compat: a bundle that mentions a future variant the current
+    /// binary does not recognise deserialises to [`EntryKind::Unknown`]
+    /// instead of failing the parse.  Mirrors the
+    /// `#[serde(other)]` shape promised in the Phase 18 brief.
+    #[test]
+    fn entry_kind_unknown_future_variant_falls_back_to_unknown() {
+        // Externally-tagged object form.
+        let unknown_obj = r#"{"FutureKind":{"foo":42}}"#;
+        let parsed: EntryKind = serde_json::from_str(unknown_obj).unwrap();
+        assert_eq!(parsed, EntryKind::Unknown);
+
+        // Bare-string form (e.g. older binary writes a future name as a
+        // unit tag rather than a struct).
+        let unknown_str = "\"FutureKind\"";
+        let parsed: EntryKind = serde_json::from_str(unknown_str).unwrap();
+        assert_eq!(parsed, EntryKind::Unknown);
+    }
+
+    /// Tag discriminant projection — used by every supported-set lookup
+    /// path so the slice can stay `'static` after Phase 18.
+    #[test]
+    fn entry_kind_tag_matches_variant_for_each_phase_18_variant() {
+        assert_eq!(EntryKind::Function.tag(), EntryKindTag::Function);
+        assert_eq!(EntryKind::HttpRoute.tag(), EntryKindTag::HttpRoute);
+        assert_eq!(EntryKind::CliSubcommand.tag(), EntryKindTag::CliSubcommand);
+        assert_eq!(EntryKind::LibraryApi.tag(), EntryKindTag::LibraryApi);
+        assert_eq!(
+            EntryKind::ClassMethod {
+                class: String::new(),
+                method: String::new()
+            }
+            .tag(),
+            EntryKindTag::ClassMethod
+        );
+        assert_eq!(
+            EntryKind::MessageHandler {
+                queue: String::new(),
+                message_schema: None
+            }
+            .tag(),
+            EntryKindTag::MessageHandler
+        );
+        assert_eq!(
+            EntryKind::ScheduledJob { schedule: None }.tag(),
+            EntryKindTag::ScheduledJob
+        );
+        assert_eq!(
+            EntryKind::GraphQLResolver {
+                type_name: String::new(),
+                field: String::new()
+            }
+            .tag(),
+            EntryKindTag::GraphQLResolver
+        );
+        assert_eq!(
+            EntryKind::WebSocket {
+                path: String::new()
+            }
+            .tag(),
+            EntryKindTag::WebSocket
+        );
+        assert_eq!(
+            EntryKind::Middleware {
+                name: String::new()
+            }
+            .tag(),
+            EntryKindTag::Middleware
+        );
+        assert_eq!(
+            EntryKind::Migration { version: None }.tag(),
+            EntryKindTag::Migration
+        );
+        assert_eq!(EntryKind::Unknown.tag(), EntryKindTag::Unknown);
+    }
+
+    /// [`EntryKindTag`] round-trips through the externally-tagged wire
+    /// format used by [`InconclusiveReason::EntryKindUnsupported`] and
+    /// honours `#[serde(other)]` for unknown tags.
+    #[test]
+    fn entry_kind_tag_serde_round_trip_and_unknown_fallback() {
+        for tag in [
+            EntryKindTag::Function,
+            EntryKindTag::HttpRoute,
+            EntryKindTag::CliSubcommand,
+            EntryKindTag::LibraryApi,
+            EntryKindTag::ClassMethod,
+            EntryKindTag::MessageHandler,
+            EntryKindTag::ScheduledJob,
+            EntryKindTag::GraphQLResolver,
+            EntryKindTag::WebSocket,
+            EntryKindTag::Middleware,
+            EntryKindTag::Migration,
+            EntryKindTag::Unknown,
+        ] {
+            let json = serde_json::to_string(&tag).unwrap();
+            let rt: EntryKindTag = serde_json::from_str(&json).unwrap();
+            assert_eq!(rt, tag);
+        }
+        // Future tag → Unknown via `#[serde(other)]`.
+        let parsed: EntryKindTag = serde_json::from_str("\"FutureKind\"").unwrap();
+        assert_eq!(parsed, EntryKindTag::Unknown);
     }
 }

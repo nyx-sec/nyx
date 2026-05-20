@@ -20,7 +20,7 @@ mod spec_strategies {
     use nyx_scanner::commands::scan::Diag;
     use nyx_scanner::dynamic::spec::{
         derive_from_callgraph_entry, derive_from_func_summary, derive_from_rule_namespace,
-        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, EntryKindTag, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
     };
     use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
     use nyx_scanner::evidence::{
@@ -360,13 +360,13 @@ mod spec_strategies {
                 hint,
             }) => {
                 assert_eq!(lang, nyx_scanner::symbol::Lang::C);
-                assert!(matches!(attempted, EntryKind::HttpRoute));
+                assert!(matches!(attempted, EntryKindTag::HttpRoute));
                 assert!(
                     !supported.is_empty(),
                     "supported list must be non-empty so operators can triage"
                 );
                 assert!(
-                    supported.contains(&EntryKind::Function),
+                    supported.contains(&EntryKindTag::Function),
                     "C emitter must advertise Function support; got {supported:?}"
                 );
                 assert!(

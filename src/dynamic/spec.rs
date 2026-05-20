@@ -58,6 +58,14 @@ pub struct EntryRef {
 /// attempted / supported variants without depending on the `dynamic` feature.
 pub use crate::evidence::EntryKind;
 
+/// Re-export of [`crate::evidence::EntryKindTag`].
+///
+/// The discriminant tag used by every site that needs a `Copy + Hash`
+/// handle to an `EntryKind`: supported-set lookups, the
+/// [`crate::evidence::InconclusiveReason::EntryKindUnsupported`] fields,
+/// the lang-emitter trait surface.
+pub use crate::evidence::EntryKindTag;
+
 /// Where the payload goes when the harness fires.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PayloadSlot {
@@ -363,7 +371,7 @@ impl HarnessSpec {
     /// `Unsupported`.
     pub fn entry_kind_is_supported(&self) -> bool {
         let supported = crate::dynamic::lang::entry_kinds_supported(self.lang);
-        supported.contains(&self.entry_kind)
+        supported.contains(&self.entry_kind.tag())
     }
 
     /// Returns the ordered list of derivation strategies that
@@ -1221,6 +1229,29 @@ fn attach_framework_binding(spec: &mut HarnessSpec, summaries: Option<&GlobalSum
         // shapes (Quarkus / Micronaut / Servlet).
         if spec.lang == Lang::Java && binding.adapter == "java-spring" {
             spec.java_toolchain.with_spring_test = true;
+        }
+        // Phase 18 (Track M.0): the binding carries the adapter's view
+        // of the entry shape — when the adapter stamps one of the new
+        // data-bearing variants (`ClassMethod`, `MessageHandler`,
+        // `ScheduledJob`, …), propagate that onto the spec so the
+        // verifier's `entry_kind_is_supported` gate sees the structural
+        // shape and short-circuits to a typed
+        // `Inconclusive(EntryKindUnsupported)`.  We deliberately do not
+        // overwrite the legacy unit variants here: every adapter
+        // shipped through Phase 17 stamps `Function` / `HttpRoute` and
+        // the derivation pipeline already routes those correctly.
+        if matches!(
+            binding.kind.tag(),
+            crate::evidence::EntryKindTag::ClassMethod
+                | crate::evidence::EntryKindTag::MessageHandler
+                | crate::evidence::EntryKindTag::ScheduledJob
+                | crate::evidence::EntryKindTag::GraphQLResolver
+                | crate::evidence::EntryKindTag::WebSocket
+                | crate::evidence::EntryKindTag::Middleware
+                | crate::evidence::EntryKindTag::Migration
+        ) {
+            spec.entry_kind = binding.kind.clone();
+            spec.spec_hash = compute_spec_hash(spec);
         }
         spec.framework = Some(binding);
     }

@@ -23,7 +23,7 @@
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
 use crate::dynamic::lang::{ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
-use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+use crate::dynamic::spec::{EntryKindTag, HarnessSpec, PayloadSlot};
 use crate::evidence::UnsupportedReason;
 use crate::labels::Cap;
 use std::path::PathBuf;
@@ -38,11 +38,11 @@ pub struct RustEmitter;
 /// covers clap-driven CLIs.  `LibraryApi` covers libfuzzer
 /// `fuzz_target!` entry points.  `Function` covers plain free functions
 /// and is the fallback when shape detection is inconclusive.
-const SUPPORTED: &[EntryKind] = &[
-    EntryKind::Function,
-    EntryKind::HttpRoute,
-    EntryKind::CliSubcommand,
-    EntryKind::LibraryApi,
+const SUPPORTED: &[EntryKindTag] = &[
+    EntryKindTag::Function,
+    EntryKindTag::HttpRoute,
+    EntryKindTag::CliSubcommand,
+    EntryKindTag::LibraryApi,
 ];
 
 impl LangEmitter for RustEmitter {
@@ -50,13 +50,13 @@ impl LangEmitter for RustEmitter {
         emit(spec)
     }
 
-    fn entry_kinds_supported(&self) -> &'static [EntryKind] {
+    fn entry_kinds_supported(&self) -> &'static [EntryKindTag] {
         SUPPORTED
     }
 
-    fn entry_kind_hint(&self, attempted: EntryKind) -> String {
+    fn entry_kind_hint(&self, attempted: EntryKindTag) -> String {
         format!(
-            "rust emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 16 shape dispatch (actix / axum / clap / libfuzzer)"
+            "rust emitter supports {SUPPORTED:?}; this finding's enclosing context is `EntryKind::{attempted}` — see Phase 16 / 19 / 20 / 21 shape dispatch (actix / axum / clap / libfuzzer + future class / msg / job adapters)"
         )
     }
 
@@ -527,7 +527,7 @@ impl RustShape {
     /// bytes of the entry file (best-effort — empty string falls back
     /// to [`Self::Generic`]).
     pub fn detect(spec: &HarnessSpec, source: &str) -> Self {
-        let kind = spec.entry_kind;
+        let kind = spec.entry_kind.tag();
         let entry = spec.entry_name.as_str();
 
         let has_warp = source.contains("use warp::")
@@ -598,9 +598,9 @@ impl RustShape {
             return Self::LibfuzzerTarget;
         }
         match kind {
-            EntryKind::HttpRoute => Self::ActixWebRoute,
-            EntryKind::CliSubcommand => Self::ClapCli,
-            EntryKind::LibraryApi => Self::LibfuzzerTarget,
+            EntryKindTag::HttpRoute => Self::ActixWebRoute,
+            EntryKindTag::CliSubcommand => Self::ClapCli,
+            EntryKindTag::LibraryApi => Self::LibfuzzerTarget,
             _ => Self::Generic,
         }
     }
@@ -1050,7 +1050,7 @@ fn clap_invocation(spec: &HarnessSpec, func: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
+    use crate::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
     use crate::labels::Cap;
     use crate::symbol::Lang;
 
@@ -1140,12 +1140,12 @@ mod tests {
         assert!(!RustEmitter.entry_kinds_supported().is_empty());
         assert!(RustEmitter
             .entry_kinds_supported()
-            .contains(&EntryKind::Function));
+            .contains(&EntryKindTag::Function));
     }
 
     #[test]
     fn entry_kind_hint_names_attempted_and_phase() {
-        let hint = RustEmitter.entry_kind_hint(EntryKind::LibraryApi);
+        let hint = RustEmitter.entry_kind_hint(EntryKindTag::LibraryApi);
         assert!(hint.contains("LibraryApi"));
         assert!(hint.contains("Phase 16"));
     }
