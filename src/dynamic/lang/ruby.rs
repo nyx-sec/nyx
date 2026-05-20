@@ -44,6 +44,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
+    EntryKindTag::ClassMethod,
 ];
 
 impl LangEmitter for RubyEmitter {
@@ -431,6 +432,11 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 19 (Track M.1): ClassMethod short-circuit.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        return Ok(emit_class_method_harness(class, method));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = RubyShape::detect(spec, &entry_source);
     let source = generate_source(spec, shape);
@@ -442,6 +448,110 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files: vec![],
         entry_subpath: Some("entry.rb".to_owned()),
     })
+}
+
+/// Phase 19 (Track M.1) — class-method harness for Ruby.
+///
+/// Requires the entry file, looks up `class` as a top-level constant,
+/// instantiates via `.new` (falling back to a single mock-dependency
+/// `.new(...)` when the no-arg path raises `ArgumentError`), and
+/// invokes `instance.send(method, payload)`.
+fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
+    let shim = probe_shim();
+    let mock_http = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::HttpClient,
+        crate::symbol::Lang::Ruby,
+    );
+    let mock_db = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::DatabaseConnection,
+        crate::symbol::Lang::Ruby,
+    );
+    let mock_log = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::Logger,
+        crate::symbol::Lang::Ruby,
+    );
+    let body = format!(
+        r#"# Nyx dynamic harness — class method (Phase 19 / Track M.1).
+{shim}
+{mock_http}
+{mock_db}
+{mock_log}
+
+def nyx_payload
+  v = ENV['NYX_PAYLOAD']
+  return v if v && !v.empty?
+  b64 = ENV['NYX_PAYLOAD_B64']
+  if b64 && !b64.empty?
+    begin
+      require 'base64'
+      return Base64.decode64(b64)
+    rescue StandardError
+      return ''
+    end
+  end
+  ''
+end
+
+$nyx_payload = nyx_payload
+
+begin
+  require_relative './entry'
+rescue LoadError, ScriptError => e
+  STDERR.puts("NYX_IMPORT_ERROR: #{{e.message}}")
+  exit 77
+end
+
+cls_name = {class:?}
+unless Object.const_defined?(cls_name)
+  STDERR.puts("NYX_CLASS_NOT_FOUND: #{{cls_name}}")
+  exit 78
+end
+cls = Object.const_get(cls_name)
+
+def _nyx_build_receiver(cls)
+  begin
+    return cls.new
+  rescue ArgumentError
+  end
+  begin
+    return cls.new(MockHttpClient.new, MockDatabaseConnection.new, MockLogger.new)
+  rescue StandardError
+  end
+  [MockDatabaseConnection.new, MockHttpClient.new, MockLogger.new, nil].each do |dep|
+    begin
+      return cls.new(dep)
+    rescue StandardError
+    end
+  end
+  nil
+end
+
+instance = _nyx_build_receiver(cls)
+if instance.nil?
+  STDERR.puts("NYX_CLASS_CTOR_FAILED: #{{cls_name}}")
+  exit 78
+end
+unless instance.respond_to?({method:?})
+  STDERR.puts("NYX_METHOD_NOT_FOUND: " + {method:?})
+  exit 78
+end
+begin
+  result = instance.send({method:?}, $nyx_payload)
+  print(result.to_s) if result
+rescue StandardError => e
+  STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+end
+"#,
+        class = class,
+        method = method,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: Some("entry.rb".to_owned()),
+    }
 }
 
 /// Phase 03 — Track J.1 deserialize harness for Ruby.

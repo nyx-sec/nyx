@@ -54,6 +54,7 @@
 pub mod filesystem;
 pub mod http;
 pub mod ldap_server;
+pub mod mocks;
 pub mod redis;
 pub mod sql;
 pub mod xpath_document;
@@ -61,6 +62,7 @@ pub mod xpath_document;
 pub use filesystem::FilesystemStub;
 pub use http::HttpStub;
 pub use ldap_server::LdapStub;
+pub use mocks::{mock_source, MockKind};
 pub use redis::RedisStub;
 pub use sql::SqlStub;
 

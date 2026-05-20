@@ -45,6 +45,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
+    EntryKindTag::ClassMethod,
 ];
 
 impl LangEmitter for PythonEmitter {
@@ -679,6 +680,17 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 19 (Track M.1): ClassMethod short-circuit.  When the spec's
+    // entry_kind is the data-bearing `ClassMethod { class, method }`
+    // variant the harness instantiates the class via its default
+    // constructor (falling back to a single mock-dependency argument
+    // when the constructor refuses zero args) and invokes the method
+    // with the payload.  The dispatch never reaches the per-shape
+    // generator below.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        return Ok(emit_class_method(spec, class, method));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PythonShape::detect(spec, &entry_source);
     let body = generate_for_shape(spec, shape);
@@ -690,6 +702,107 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files: extra_files_for_shape(shape),
         entry_subpath: None,
     })
+}
+
+/// Phase 19 (Track M.1) — class-method harness for Python.
+///
+/// Imports the entry module, locates `class`, instantiates the
+/// receiver via the default constructor (preferred path), and invokes
+/// `method(payload)`.  When the default constructor raises a
+/// `TypeError` (missing positional args), the harness falls back to a
+/// single mock dependency drawn from [`crate::dynamic::stubs::mocks`]
+/// — covering the typical controller-needs-service / service-needs-
+/// repository injection shape Phase 19's brief calls out.
+fn emit_class_method(spec: &HarnessSpec, class: &str, method: &str) -> HarnessSource {
+    let preamble = harness_preamble(spec);
+    let postamble = harness_postamble();
+    let mock_http = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::HttpClient,
+        crate::symbol::Lang::Python,
+    );
+    let mock_db = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::DatabaseConnection,
+        crate::symbol::Lang::Python,
+    );
+    let mock_log = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::Logger,
+        crate::symbol::Lang::Python,
+    );
+    let body = format!(
+        r#"# Shape: class method — instantiate receiver, invoke method(payload).
+{mock_http}
+{mock_db}
+{mock_log}
+
+_cls = getattr(_entry_mod, {class:?}, None)
+if _cls is None:
+    print("NYX_CLASS_NOT_FOUND: " + {class:?}, file=sys.stderr, flush=True)
+    sys.exit(78)
+
+def _nyx_build_receiver(cls):
+    # Preferred path: zero-arg ctor.
+    try:
+        return cls()
+    except TypeError:
+        pass
+    # Fallback path: stubbed dependencies.  Walk the ctor's positional
+    # formals (best-effort via inspect.signature) and pass mocks for
+    # known shapes; default to `None` for the rest.
+    import inspect
+    try:
+        sig = inspect.signature(cls.__init__)
+        args = []
+        for name, p in list(sig.parameters.items())[1:]:  # skip `self`
+            n = name.lower()
+            if 'http' in n or 'client' in n:
+                args.append(MockHttpClient())
+            elif 'db' in n or 'conn' in n or 'session' in n:
+                args.append(MockDatabaseConnection())
+            elif 'log' in n:
+                args.append(MockLogger())
+            else:
+                args.append(None)
+        return cls(*args)
+    except Exception as _e:
+        # Last resort: single-mock fallback so a single-arg ctor still
+        # constructs.
+        try:
+            return cls(MockHttpClient())
+        except Exception:
+            pass
+    return None
+
+_instance = _nyx_build_receiver(_cls)
+if _instance is None:
+    print("NYX_CLASS_CTOR_FAILED: " + {class:?}, file=sys.stderr, flush=True)
+    sys.exit(78)
+
+try:
+    _m = getattr(_instance, {method:?}, None)
+    if _m is None:
+        print("NYX_METHOD_NOT_FOUND: " + {method:?}, file=sys.stderr, flush=True)
+        sys.exit(78)
+    _result = _m(payload)
+    if _result is not None:
+        try:
+            print(str(_result), flush=True)
+        except Exception:
+            pass
+except SystemExit as _e:
+    sys.exit(_e.code)
+except Exception as _e:
+    print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+"#,
+        class = class,
+        method = method,
+    );
+    HarnessSource {
+        source: format!("{preamble}\n{body}\n{postamble}"),
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
 }
 
 /// Phase 03 — Track J.1 deserialize harness for Python.

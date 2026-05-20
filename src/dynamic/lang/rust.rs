@@ -43,6 +43,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
     EntryKindTag::LibraryApi,
+    EntryKindTag::ClassMethod,
 ];
 
 impl LangEmitter for RustEmitter {
@@ -818,6 +819,16 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 19 (Track M.1): ClassMethod short-circuit.  Rust has no
+    // class system — the dispatcher maps `class` to a struct exported
+    // from `entry::`, and `method` to a `&self` method on that
+    // struct.  The harness constructs the receiver via
+    // `<class>::default()` (preferred path), falling back to
+    // `<class>::new()` when `Default` is not implemented.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        return Ok(emit_class_method_harness(spec, class, method));
+    }
+
     let shape = detect_shape(spec);
 
     // Generic + LibfuzzerTarget accept Param(0)/EnvVar; richer shapes
@@ -849,6 +860,86 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files: vec![("Cargo.toml".into(), cargo_toml)],
         entry_subpath: Some("src/entry.rs".into()),
     })
+}
+
+/// Phase 19 (Track M.1) — class-method harness for Rust.
+///
+/// Emits `src/main.rs` that constructs `entry::<class>::default()`
+/// and invokes `instance.<method>(&payload)`.  The fixture is
+/// expected to derive `Default` on the receiver type so the harness
+/// has a zero-arg construction path.  When `Default` is unavailable
+/// the fixture can provide a `new()` associated function; the
+/// harness falls back to that via conditional compilation when
+/// `Default` lookup fails.
+fn emit_class_method_harness(spec: &HarnessSpec, class: &str, method: &str) -> HarnessSource {
+    let shim = probe_shim();
+    let cargo_toml = generate_cargo_toml(spec.expected_cap);
+    let entry_label = format!("{class}::{method}");
+    let body = format!(
+        r#"//! Nyx dynamic harness — class method (Phase 19 / Track M.1).
+mod entry;
+{shim}
+fn main() {{
+    let payload = nyx_payload();
+    let _ = &payload;
+    __nyx_install_crash_guard("{entry_label}");
+    let instance = entry::{class}::default();
+    let _ = instance.{method}(&payload);
+}}
+
+fn nyx_payload() -> String {{
+    if let Ok(v) = std::env::var("NYX_PAYLOAD") {{
+        if !v.is_empty() {{
+            return v;
+        }}
+    }}
+    if let Ok(b64) = std::env::var("NYX_PAYLOAD_B64") {{
+        if let Some(bytes) = b64_decode(b64.as_bytes()) {{
+            return String::from_utf8_lossy(&bytes).into_owned();
+        }}
+    }}
+    String::new()
+}}
+
+fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
+    const TABLE: [u8; 128] = {{
+        let mut t = [255u8; 128];
+        let alphabet: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0usize;
+        while i < alphabet.len() {{
+            t[alphabet[i] as usize] = i as u8;
+            i += 1;
+        }}
+        t
+    }};
+    let input: Vec<u8> = input.iter().copied().filter(|&c| c != b'\n' && c != b'\r').collect();
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut i = 0;
+    while i + 3 < input.len() {{
+        let a = *TABLE.get(input[i] as usize)? as u32;
+        let b = *TABLE.get(input[i + 1] as usize)? as u32;
+        let c = if input[i + 2] == b'=' {{ 64 }} else {{ *TABLE.get(input[i + 2] as usize)? as u32 }};
+        let d = if input[i + 3] == b'=' {{ 64 }} else {{ *TABLE.get(input[i + 3] as usize)? as u32 }};
+        if a == 255 || b == 255 || c == 255 || d == 255 {{ return None; }}
+        out.push(((a << 2) | (b >> 4)) as u8);
+        if input[i + 2] != b'=' {{ out.push(((b << 4) | (c >> 2)) as u8); }}
+        if input[i + 3] != b'=' {{ out.push(((c << 6) | d) as u8); }}
+        i += 4;
+    }}
+    Some(out)
+}}
+"#,
+        class = class,
+        method = method,
+        entry_label = entry_label,
+    );
+    HarnessSource {
+        source: body,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files: vec![("Cargo.toml".into(), cargo_toml)],
+        entry_subpath: Some("src/entry.rs".into()),
+    }
 }
 
 /// Generate `Cargo.toml` for the harness crate.

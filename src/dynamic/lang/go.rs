@@ -55,6 +55,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
+    EntryKindTag::ClassMethod,
 ];
 
 impl LangEmitter for GoEmitter {
@@ -571,6 +572,17 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_open_redirect_harness(spec));
     }
 
+    // Phase 19 (Track M.1): ClassMethod short-circuit.  Go has no
+    // classes — the dispatcher treats `class` as a top-level struct
+    // declared in the entry file and `method` as a method on its
+    // value or pointer receiver.  The harness instantiates a zero
+    // value (`var v entry.Class`) and invokes `v.Method(payload)` via
+    // reflection so an unexported method on a pointer receiver still
+    // dispatches.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        return Ok(emit_class_method_harness(class, method));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = GoShape::detect(spec, &entry_source);
     let main_go = generate_main_go(spec, shape);
@@ -1022,6 +1034,99 @@ fn framework_route_invocation(
 
 fn generate_go_mod() -> String {
     "module nyx-harness\n\ngo 1.21\n".to_owned()
+}
+
+/// Phase 19 (Track M.1) — class-method harness for Go.
+///
+/// `class` is mapped to a struct type declared in `entry/entry.go`
+/// and `method` to a method-on-receiver.  The harness uses reflection
+/// to construct a zero value, then invokes the method with the
+/// payload — supporting both value and pointer receivers.
+fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let source = format!(
+        r##"// Nyx dynamic harness — class method (Phase 19 / Track M.1).
+package main
+
+import (
+	"fmt"
+	"os"
+	"reflect"
+
+	"nyx-harness/entry"
+)
+
+{shim}
+
+func nyxBuildReceiver(structName string) (reflect.Value, error) {{
+	// Look up the exported type by name on the entry package.  Go's
+	// reflect API does not expose package-level reflection over types
+	// directly, so the dispatcher uses the package's well-known
+	// `NyxReceivers` registry the entry file is expected to publish.
+	if r, ok := entry.NyxReceivers[structName]; ok {{
+		return reflect.ValueOf(r), nil
+	}}
+	return reflect.Value{{}}, fmt.Errorf("class not found: %s", structName)
+}}
+
+func nyxPayload() string {{
+	if v := os.Getenv("NYX_PAYLOAD"); v != "" {{
+		return v
+	}}
+	return ""
+}}
+
+func main() {{
+	payload := nyxPayload()
+	__nyx_install_crash_guard("{class}.{method}")
+	v, err := nyxBuildReceiver("{class}")
+	if err != nil {{
+		fmt.Fprintln(os.Stderr, "NYX_CLASS_NOT_FOUND: "+"{class}")
+		os.Exit(78)
+	}}
+	m := v.MethodByName("{method}")
+	if !m.IsValid() {{
+		// reflect.ValueOf(receiver) returns a non-addressable Value, so
+		// v.CanAddr() is always false.  Promote to an addressable copy
+		// via reflect.New so pointer-receiver methods bind.
+		ptr := reflect.New(v.Type())
+		ptr.Elem().Set(v)
+		m = ptr.MethodByName("{method}")
+	}}
+	if !m.IsValid() {{
+		fmt.Fprintln(os.Stderr, "NYX_METHOD_NOT_FOUND: "+"{method}")
+		os.Exit(78)
+	}}
+	defer func() {{
+		if r := recover(); r != nil {{
+			fmt.Fprintf(os.Stderr, "NYX_EXCEPTION: panic: %v\n", r)
+		}}
+	}}()
+	args := make([]reflect.Value, m.Type().NumIn())
+	for i := 0; i < m.Type().NumIn(); i++ {{
+		if m.Type().In(i).Kind() == reflect.String {{
+			args[i] = reflect.ValueOf(payload)
+		}} else {{
+			args[i] = reflect.Zero(m.Type().In(i))
+		}}
+	}}
+	out := m.Call(args)
+	if len(out) > 0 {{
+		fmt.Println(out[0].Interface())
+	}}
+}}
+"##,
+        class = class,
+        method = method,
+    );
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files: vec![("go.mod".to_owned(), go_mod)],
+        entry_subpath: Some("entry/entry.go".to_owned()),
+    }
 }
 
 /// Minimal `gin` stub package used by [`GoShape::GinHandler`] fixtures

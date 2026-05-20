@@ -567,6 +567,14 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_prototype_pollution_harness(spec));
     }
 
+    // Phase 19 (Track M.1): ClassMethod short-circuit.  Same shape gap
+    // closer as the Python emitter — instantiate the class via its
+    // zero-arg constructor (falling back to a stubbed-dependency ctor
+    // when the zero-arg path throws) and invoke `method(payload)`.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        return Ok(emit_class_method(spec, class, method, is_typescript));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JsShape::detect(spec, &entry_source);
     let entry_subpath = entry_subpath_for_shape(shape, is_typescript);
@@ -579,6 +587,111 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         extra_files: extra_files_for_shape(shape),
         entry_subpath: Some(entry_subpath),
     })
+}
+
+/// Phase 19 (Track M.1) — class-method harness for Node.js / TypeScript.
+///
+/// Imports the entry module, locates `class` on the exported surface,
+/// instantiates via the default constructor, falls back to a single
+/// mock-dependency ctor when the zero-arg path throws, and invokes
+/// `instance[method](payload)`.
+fn emit_class_method(
+    _spec: &HarnessSpec,
+    class: &str,
+    method: &str,
+    is_typescript: bool,
+) -> HarnessSource {
+    let probe = probe_shim();
+    let entry_subpath = if is_typescript { "entry.ts" } else { "entry.js" };
+    let entry_require_path = entry_require_path(entry_subpath);
+    let mock_http = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::HttpClient,
+        crate::symbol::Lang::JavaScript,
+    );
+    let mock_db = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::DatabaseConnection,
+        crate::symbol::Lang::JavaScript,
+    );
+    let mock_log = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::Logger,
+        crate::symbol::Lang::JavaScript,
+    );
+    let body = format!(
+        r#"'use strict';
+// Nyx dynamic harness — class method (Phase 19 / Track M.1), auto-generated.
+{probe}
+
+{mock_http}
+{mock_db}
+{mock_log}
+
+const payload = (process.env.NYX_PAYLOAD && process.env.NYX_PAYLOAD.length > 0)
+    ? process.env.NYX_PAYLOAD
+    : (process.env.NYX_PAYLOAD_B64
+        ? Buffer.from(process.env.NYX_PAYLOAD_B64, 'base64').toString('utf8')
+        : '');
+
+let _entry;
+try {{
+    _entry = require('./{entry_require_path}');
+}} catch (e) {{
+    process.stderr.write('NYX_IMPORT_ERROR: ' + e.message + '\n');
+    process.exit(77);
+}}
+
+const _Cls = _entry[{class:?}] || (_entry.default && _entry.default[{class:?}]) || (typeof _entry.default === 'function' && _entry.default.name === {class:?} ? _entry.default : null);
+if (typeof _Cls !== 'function') {{
+    process.stderr.write('NYX_CLASS_NOT_FOUND: ' + {class:?} + '\n');
+    process.exit(78);
+}}
+
+function _nyxBuildReceiver(Cls) {{
+    try {{
+        return new Cls();
+    }} catch (_e) {{
+        // Fall back to a single mock-dependency ctor.  The brief allows
+        // up to depth-3 dependency stubbing; v1 keeps the chain depth
+        // at one and lets the verifier promote precision in a later
+        // phase.
+        try {{ return new Cls(new MockHttpClient(), new MockDatabaseConnection(), new MockLogger()); }} catch (_e2) {{}}
+        try {{ return new Cls(new MockDatabaseConnection()); }} catch (_e3) {{}}
+        try {{ return new Cls(new MockHttpClient()); }} catch (_e4) {{}}
+        try {{ return new Cls(new MockLogger()); }} catch (_e5) {{}}
+        return null;
+    }}
+}}
+
+const _instance = _nyxBuildReceiver(_Cls);
+if (_instance == null) {{
+    process.stderr.write('NYX_CLASS_CTOR_FAILED: ' + {class:?} + '\n');
+    process.exit(78);
+}}
+
+const _m = _instance[{method:?}];
+if (typeof _m !== 'function') {{
+    process.stderr.write('NYX_METHOD_NOT_FOUND: ' + {method:?} + '\n');
+    process.exit(78);
+}}
+
+(async () => {{
+    try {{
+        const _result = await Promise.resolve(_m.call(_instance, payload));
+        if (_result != null) process.stdout.write(String(_result) + '\n');
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}})();
+"#,
+        class = class,
+        method = method,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: Some(entry_subpath.to_owned()),
+    }
 }
 
 /// Phase 04 — Track J.2 SSTI harness for Node (Handlebars).
@@ -1634,6 +1747,7 @@ pub const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
     EntryKindTag::LibraryApi,
+    EntryKindTag::ClassMethod,
 ];
 
 #[cfg(test)]

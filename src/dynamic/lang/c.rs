@@ -44,6 +44,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
     EntryKindTag::CliSubcommand,
     EntryKindTag::LibraryApi,
+    EntryKindTag::ClassMethod,
 ];
 
 // ── Phase 16: shape detector ─────────────────────────────────────────────────
@@ -438,6 +439,14 @@ fn c_string_literal(s: &str) -> String {
 
 /// Emit a C harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+    // Phase 19 (Track M.1): ClassMethod short-circuit.  C has no class
+    // system — the dispatcher treats `class` + `method` as a single
+    // free function whose name is the entry symbol (often
+    // `Class_method` by convention) and calls it with the payload.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        return Ok(emit_class_method_harness(class, method));
+    }
+
     let shape = detect_shape(spec);
 
     match (&spec.payload_slot, shape) {
@@ -456,6 +465,58 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files: vec![("Makefile".into(), makefile)],
         entry_subpath: Some("entry.c".into()),
     })
+}
+
+/// Phase 19 (Track M.1) — class-method harness for C.
+///
+/// C has no classes; the dispatcher calls the conventional
+/// `<class>_<method>(const char *payload, size_t len)` free function
+/// the fixture declares.  When the fixture exposes a different
+/// symbol shape the caller is expected to pre-rewrite the
+/// `entry_name` field; this fallback keeps the build path uniform
+/// for the Phase 19 acceptance harness even though the class /
+/// method projection collapses to a free-function call in C.
+fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
+    let shim = probe_shim();
+    let symbol = format!("{class}_{method}");
+    let body = format!(
+        r#"/* Nyx dynamic harness — class method (Phase 19 / Track M.1). */
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+{shim}
+static char *nyx_payload(void);
+
+#include "entry.c"
+
+int main(int argc, char *argv[]) {{
+    (void)argc; (void)argv;
+    char *payload = nyx_payload();
+    if (!payload) payload = (char*)"";
+    __nyx_install_crash_guard("{symbol}");
+    {symbol}(payload, strlen(payload));
+    return 0;
+}}
+
+static char *nyx_payload(void) {{
+    const char *v = getenv("NYX_PAYLOAD");
+    if (v && *v) {{
+        return strdup(v);
+    }}
+    return strdup("");
+}}
+"#,
+        symbol = symbol,
+    );
+    HarnessSource {
+        source: body,
+        filename: "main.c".into(),
+        command: vec!["./nyx_harness".into()],
+        extra_files: vec![("Makefile".into(), generate_makefile())],
+        entry_subpath: Some("entry.c".into()),
+    }
 }
 
 /// Generate the harness `main.c` for the resolved shape.

@@ -1222,39 +1222,50 @@ fn attach_framework_binding(spec: &mut HarnessSpec, summaries: Option<&GlobalSum
     if let Some(binding) =
         crate::dynamic::framework::detect_binding(summary_ref, tree.root_node(), &bytes, spec.lang)
     {
-        // Phase 14 (Track L.12): flip the Spring-test toolchain knob
-        // when the java-spring adapter binds, so the Java emitter
-        // bootstraps `SpringApplication.run` / `MockMvc` for Spring
-        // routes and skips that heavier path for the other Java
-        // shapes (Quarkus / Micronaut / Servlet).
-        if spec.lang == Lang::Java && binding.adapter == "java-spring" {
-            spec.java_toolchain.with_spring_test = true;
-        }
-        // Phase 18 (Track M.0): the binding carries the adapter's view
-        // of the entry shape — when the adapter stamps one of the new
-        // data-bearing variants (`ClassMethod`, `MessageHandler`,
-        // `ScheduledJob`, …), propagate that onto the spec so the
-        // verifier's `entry_kind_is_supported` gate sees the structural
-        // shape and short-circuits to a typed
-        // `Inconclusive(EntryKindUnsupported)`.  We deliberately do not
-        // overwrite the legacy unit variants here: every adapter
-        // shipped through Phase 17 stamps `Function` / `HttpRoute` and
-        // the derivation pipeline already routes those correctly.
-        if matches!(
-            binding.kind.tag(),
-            crate::evidence::EntryKindTag::ClassMethod
-                | crate::evidence::EntryKindTag::MessageHandler
-                | crate::evidence::EntryKindTag::ScheduledJob
-                | crate::evidence::EntryKindTag::GraphQLResolver
-                | crate::evidence::EntryKindTag::WebSocket
-                | crate::evidence::EntryKindTag::Middleware
-                | crate::evidence::EntryKindTag::Migration
-        ) {
-            spec.entry_kind = binding.kind.clone();
-            spec.spec_hash = compute_spec_hash(spec);
-        }
-        spec.framework = Some(binding);
+        stamp_framework_binding(spec, binding);
     }
+}
+
+/// Phase 18 (Track M.0) — apply a resolved [`FrameworkBinding`] onto
+/// the spec.  Carved out of [`attach_framework_binding`] so the
+/// stamping branch (Phase 18 data-bearing-variant propagation +
+/// Phase 14 Spring-test toolchain knob) is unit-testable without
+/// needing a registered framework adapter — the deferred-fix Phase
+/// 18 test for `spec_attach_framework_binding_stamps_new_entry_kind_variant`
+/// drives a synthetic binding through this helper directly.
+fn stamp_framework_binding(spec: &mut HarnessSpec, binding: FrameworkBinding) {
+    // Phase 14 (Track L.12): flip the Spring-test toolchain knob
+    // when the java-spring adapter binds, so the Java emitter
+    // bootstraps `SpringApplication.run` / `MockMvc` for Spring
+    // routes and skips that heavier path for the other Java
+    // shapes (Quarkus / Micronaut / Servlet).
+    if spec.lang == Lang::Java && binding.adapter == "java-spring" {
+        spec.java_toolchain.with_spring_test = true;
+    }
+    // Phase 18 (Track M.0): the binding carries the adapter's view
+    // of the entry shape — when the adapter stamps one of the new
+    // data-bearing variants (`ClassMethod`, `MessageHandler`,
+    // `ScheduledJob`, …), propagate that onto the spec so the
+    // verifier's `entry_kind_is_supported` gate sees the structural
+    // shape and short-circuits to a typed
+    // `Inconclusive(EntryKindUnsupported)`.  We deliberately do not
+    // overwrite the legacy unit variants here: every adapter
+    // shipped through Phase 17 stamps `Function` / `HttpRoute` and
+    // the derivation pipeline already routes those correctly.
+    if matches!(
+        binding.kind.tag(),
+        crate::evidence::EntryKindTag::ClassMethod
+            | crate::evidence::EntryKindTag::MessageHandler
+            | crate::evidence::EntryKindTag::ScheduledJob
+            | crate::evidence::EntryKindTag::GraphQLResolver
+            | crate::evidence::EntryKindTag::WebSocket
+            | crate::evidence::EntryKindTag::Middleware
+            | crate::evidence::EntryKindTag::Migration
+    ) {
+        spec.entry_kind = binding.kind.clone();
+        spec.spec_hash = compute_spec_hash(spec);
+    }
+    spec.framework = Some(binding);
 }
 
 /// Pick the tree-sitter `Language` for a given [`Lang`].  Returns
@@ -2143,5 +2154,105 @@ mod tests {
         //    hash identically.  Phase 01 contract: framework is purely
         //    descriptive metadata.
         assert_eq!(spec_no_summaries.spec_hash, spec_with_summaries.spec_hash);
+    }
+
+    /// Phase 18 (Track M.0) deferred-fix: when a [`FrameworkBinding`]
+    /// carries one of the seven data-bearing variants
+    /// (`ClassMethod`, `MessageHandler`, …), the spec stamping path
+    /// propagates the variant onto `spec.entry_kind` and recomputes
+    /// `spec.spec_hash`.  Validated against the synthetic
+    /// [`stamp_framework_binding`] entry point so the test does not
+    /// need to register an adapter that emits the variant.
+    #[test]
+    fn spec_attach_framework_binding_stamps_new_entry_kind_variant() {
+        let mut spec = HarnessSpec {
+            finding_id: "phase18stamp0001".into(),
+            entry_file: "src/handler.py".into(),
+            entry_name: "run".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Python,
+            toolchain_id: "phase18".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: crate::labels::Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "src/handler.py".into(),
+            sink_line: 1,
+            spec_hash: "phase18stamp0001".into(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: JavaToolchain::default(),
+        };
+        let pre_hash = spec.spec_hash.clone();
+        let pre_tag = spec.entry_kind.tag();
+
+        let binding = FrameworkBinding {
+            adapter: "phase19-synthetic".to_owned(),
+            kind: EntryKind::ClassMethod {
+                class: "UserRepository".to_owned(),
+                method: "find_by_name".to_owned(),
+            },
+            route: None,
+            request_params: vec![],
+            response_writer: None,
+            middleware: vec![],
+        };
+
+        stamp_framework_binding(&mut spec, binding);
+
+        assert_eq!(
+            spec.entry_kind.tag(),
+            crate::evidence::EntryKindTag::ClassMethod,
+            "stamping must replace Function with ClassMethod when the binding carries one of the Phase 18 variants",
+        );
+        assert_ne!(pre_tag, spec.entry_kind.tag());
+        assert_ne!(
+            pre_hash, spec.spec_hash,
+            "spec_hash must change when entry_kind tag flips",
+        );
+        assert_eq!(
+            spec.framework.as_ref().map(|b| b.adapter.as_str()),
+            Some("phase19-synthetic"),
+        );
+    }
+
+    /// Companion guard: when the binding carries a legacy unit
+    /// variant (`Function` / `HttpRoute`), the stamping branch keeps
+    /// `spec.entry_kind` and `spec.spec_hash` unchanged.
+    #[test]
+    fn spec_attach_framework_binding_keeps_legacy_unit_variant_unchanged() {
+        let mut spec = HarnessSpec {
+            finding_id: "phase18stamp0002".into(),
+            entry_file: "src/handler.py".into(),
+            entry_name: "run".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Python,
+            toolchain_id: "phase18".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: crate::labels::Cap::SQL_QUERY,
+            constraint_hints: vec![],
+            sink_file: "src/handler.py".into(),
+            sink_line: 1,
+            spec_hash: "phase18stamp0002".into(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: JavaToolchain::default(),
+        };
+        let pre_hash = spec.spec_hash.clone();
+
+        let binding = FrameworkBinding {
+            adapter: "phase17-synthetic".to_owned(),
+            kind: EntryKind::Function,
+            route: None,
+            request_params: vec![],
+            response_writer: None,
+            middleware: vec![],
+        };
+        stamp_framework_binding(&mut spec, binding);
+
+        assert_eq!(spec.entry_kind.tag(), crate::evidence::EntryKindTag::Function);
+        assert_eq!(spec.spec_hash, pre_hash);
+        assert!(spec.framework.is_some());
     }
 }

@@ -47,6 +47,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
+    EntryKindTag::ClassMethod,
 ];
 
 impl LangEmitter for PhpEmitter {
@@ -487,6 +488,11 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // Phase 09 (Track J.7): OPEN_REDIRECT-sink short-circuit.
     if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
         return Ok(emit_open_redirect_harness(spec));
+    }
+
+    // Phase 19 (Track M.1): ClassMethod short-circuit.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        return Ok(emit_class_method_harness(class, method));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -1137,6 +1143,104 @@ fn build_entry_block(_shape: PhpShape) -> String {
     exit(77);
 }"#
     .to_owned()
+}
+
+/// Phase 19 (Track M.1) — class-method harness for PHP.
+///
+/// Includes the entry file, instantiates the class via its default
+/// constructor (`new $class()`), falls back to a single mock-dependency
+/// ctor when the zero-arg path throws, then invokes
+/// `$instance->method($payload)`.
+fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
+    let shim = probe_shim();
+    let mock_http = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::HttpClient,
+        crate::symbol::Lang::Php,
+    );
+    let mock_db = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::DatabaseConnection,
+        crate::symbol::Lang::Php,
+    );
+    let mock_log = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::Logger,
+        crate::symbol::Lang::Php,
+    );
+    let body = format!(
+        r#"<?php
+// Nyx dynamic harness — class method (Phase 19 / Track M.1).
+{shim}
+{mock_http}
+{mock_db}
+{mock_log}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+$_b64 = getenv('NYX_PAYLOAD_B64');
+if ((!$payload || $payload === '') && is_string($_b64) && $_b64 !== '') {{
+    $decoded = base64_decode($_b64, true);
+    if ($decoded !== false) $payload = $decoded;
+}}
+
+try {{
+    require_once __DIR__ . '/entry.php';
+}} catch (Throwable $e) {{
+    fwrite(STDERR, 'NYX_IMPORT_ERROR: ' . $e->getMessage() . "\n");
+    exit(77);
+}}
+
+function _nyx_build_receiver(string $cls) {{
+    if (!class_exists($cls)) return null;
+    try {{ return new $cls(); }} catch (Throwable $e) {{}}
+    $rc = new ReflectionClass($cls);
+    $ctor = $rc->getConstructor();
+    if ($ctor === null) {{
+        try {{ return $rc->newInstanceWithoutConstructor(); }} catch (Throwable $e) {{}}
+        return null;
+    }}
+    $args = [];
+    foreach ($ctor->getParameters() as $p) {{
+        $n = strtolower($p->getName());
+        if (strpos($n, 'http') !== false || strpos($n, 'client') !== false) {{
+            $args[] = new MockHttpClient();
+        }} elseif (strpos($n, 'db') !== false || strpos($n, 'conn') !== false || strpos($n, 'repo') !== false || strpos($n, 'session') !== false) {{
+            $args[] = new MockDatabaseConnection();
+        }} elseif (strpos($n, 'log') !== false) {{
+            $args[] = new MockLogger();
+        }} else {{
+            $args[] = null;
+        }}
+    }}
+    try {{ return $rc->newInstanceArgs($args); }} catch (Throwable $e) {{}}
+    return null;
+}}
+
+$instance = _nyx_build_receiver({class_lit:?});
+if ($instance === null) {{
+    fwrite(STDERR, "NYX_CLASS_CTOR_FAILED: " . {class_lit:?} . "\n");
+    exit(78);
+}}
+if (!method_exists($instance, {method_lit:?})) {{
+    fwrite(STDERR, "NYX_METHOD_NOT_FOUND: " . {method_lit:?} . "\n");
+    exit(78);
+}}
+try {{
+    $result = call_user_func([$instance, {method_lit:?}], $payload);
+    if ($result !== null) {{
+        echo $result . "\n";
+    }}
+}} catch (Throwable $e) {{
+    fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+}}
+"#,
+        class_lit = class,
+        method_lit = method,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: vec![],
+        entry_subpath: Some("entry.php".to_owned()),
+    }
 }
 
 fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {

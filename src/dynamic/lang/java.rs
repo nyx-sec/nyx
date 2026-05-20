@@ -54,6 +54,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
+    EntryKindTag::ClassMethod,
 ];
 
 impl LangEmitter for JavaEmitter {
@@ -588,6 +589,16 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     }
     if spec.expected_cap == crate::labels::Cap::OPEN_REDIRECT {
         return Ok(emit_open_redirect_harness(spec));
+    }
+
+    // Phase 19 (Track M.1): ClassMethod short-circuit.  Routes through
+    // the existing `invokeReflective` helper so the harness instantiates
+    // the receiver via its no-arg constructor (or null-fills primitive
+    // / null-safe-object formals) before dispatching `method(payload)`.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        let entry_source = read_entry_source(&spec.entry_file);
+        let entry_class = derive_entry_class(&entry_source);
+        return Ok(emit_class_method_harness(spec, class, method, &entry_class));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -1779,6 +1790,152 @@ const REFLECTIVE_HELPER: &str = r#"
         match.invoke(instance, args);
     }
 "#;
+
+/// Phase 19 (Track M.1) — class-method harness for Java.
+///
+/// Emits a `NyxHarness.java` whose `main` reflectively constructs the
+/// target class via its no-arg constructor (when available) — or
+/// fills primitive parameters with defaults + object parameters with
+/// the Phase 19 [`crate::dynamic::stubs::MockKind`] doubles when the
+/// no-arg path is missing — and invokes `method(payload)`.  The class
+/// is loaded via the same FQN qualifier used by the regular Java
+/// shapes so it works on both default-package fixtures and packaged
+/// OWASP-style entries.
+fn emit_class_method_harness(
+    spec: &HarnessSpec,
+    class: &str,
+    method: &str,
+    entry_class: &str,
+) -> HarnessSource {
+    let probe = probe_shim();
+    let pre_call = pre_call_setup(spec);
+    let mock_http = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::HttpClient,
+        crate::symbol::Lang::Java,
+    );
+    let mock_db = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::DatabaseConnection,
+        crate::symbol::Lang::Java,
+    );
+    let mock_log = crate::dynamic::stubs::mock_source(
+        crate::dynamic::stubs::MockKind::Logger,
+        crate::symbol::Lang::Java,
+    );
+    let source = format!(
+        r#"// Nyx dynamic harness — class method (Phase 19 / Track M.1).
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
+
+public class NyxHarness {{
+{probe}
+
+{mock_http}
+{mock_db}
+{mock_log}
+
+    static Object nyxBuildReceiver(Class<?> cls) throws Exception {{
+        // Preferred path: zero-arg ctor.
+        try {{
+            Constructor<?> c = cls.getDeclaredConstructor();
+            c.setAccessible(true);
+            return c.newInstance();
+        }} catch (NoSuchMethodException ignore) {{
+        }}
+        // Fallback path: walk declared ctors and stub each formal.
+        for (Constructor<?> c : cls.getDeclaredConstructors()) {{
+            c.setAccessible(true);
+            Class<?>[] params = c.getParameterTypes();
+            Object[] args = new Object[params.length];
+            for (int i = 0; i < params.length; i++) {{
+                args[i] = nyxStubForType(params[i]);
+            }}
+            try {{ return c.newInstance(args); }} catch (Exception ignore) {{}}
+        }}
+        return null;
+    }}
+
+    static Object nyxStubForType(Class<?> t) {{
+        String n = t.getName().toLowerCase();
+        if (n.contains("http") || n.contains("client")) return new MockHttpClient();
+        if (n.contains("database") || n.contains("connection") || n.contains("session") || n.contains("repository")) return new MockDatabaseConnection();
+        if (n.contains("logger") || n.contains("log")) return new MockLogger();
+        if (t.equals(String.class)) return "";
+        if (t.equals(int.class) || t.equals(Integer.class)) return 0;
+        if (t.equals(long.class) || t.equals(Long.class)) return 0L;
+        if (t.equals(boolean.class) || t.equals(Boolean.class)) return false;
+        return null;
+    }}
+
+    public static void main(String[] args) {{
+        String payload = nyxPayload();
+{pre_call}        try {{
+            Class<?> cls;
+            try {{
+                cls = Class.forName({class_fqn:?});
+            }} catch (ClassNotFoundException cnfe) {{
+                cls = Class.forName({entry_class_fqn:?});
+            }}
+            Object instance = nyxBuildReceiver(cls);
+            if (instance == null) {{
+                System.err.println("NYX_CLASS_CTOR_FAILED: " + cls.getName());
+                System.exit(78);
+            }}
+            Method match = null;
+            for (Method m : cls.getDeclaredMethods()) {{
+                if (m.getName().equals({method:?})) {{ match = m; break; }}
+            }}
+            if (match == null) {{
+                System.err.println("NYX_METHOD_NOT_FOUND: " + {method:?});
+                System.exit(78);
+            }}
+            match.setAccessible(true);
+            Class<?>[] params = match.getParameterTypes();
+            Object[] mArgs = new Object[params.length];
+            for (int i = 0; i < params.length; i++) {{
+                mArgs[i] = params[i].equals(String.class) ? payload : nyxStubForType(params[i]);
+            }}
+            match.invoke(instance, mArgs);
+        }} catch (InvocationTargetException ite) {{
+            Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+            System.err.println("NYX_EXCEPTION: " + cause.getClass().getName() + ": " + cause.getMessage());
+        }} catch (Throwable e) {{
+            System.err.println("NYX_EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
+        }}
+    }}
+
+    static String nyxPayload() {{
+        String v = System.getenv("NYX_PAYLOAD");
+        if (v != null && !v.isEmpty()) {{
+            return v;
+        }}
+        String b64 = System.getenv("NYX_PAYLOAD_B64");
+        if (b64 != null && !b64.isEmpty()) {{
+            byte[] decoded = java.util.Base64.getDecoder().decode(b64);
+            return new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+        }}
+        return "";
+    }}
+}}
+"#,
+        class_fqn = class,
+        entry_class_fqn = entry_class,
+        method = method,
+        pre_call = pre_call,
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: vec![],
+        entry_subpath: Some(format!("{entry_class}.java")),
+    }
+}
 
 /// Reflective JUnit-shape invocation.  Reads the payload from
 /// `NYX_PAYLOAD` (no method argument) — JUnit tests typically capture

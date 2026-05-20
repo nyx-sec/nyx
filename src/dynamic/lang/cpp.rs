@@ -28,6 +28,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
     EntryKindTag::CliSubcommand,
     EntryKindTag::LibraryApi,
+    EntryKindTag::ClassMethod,
 ];
 
 // ── Phase 16: shape detector ─────────────────────────────────────────────────
@@ -390,6 +391,15 @@ fn cpp_string_literal(s: &str) -> String {
 
 /// Emit a C++ harness for `spec`.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
+    // Phase 19 (Track M.1): ClassMethod short-circuit.  The harness
+    // constructs the receiver via its default constructor and invokes
+    // `method(payload)`.  Fixtures are expected to expose a default
+    // constructor; the fallback path lets the harness build by
+    // null-filling primitive formals when the default ctor is missing.
+    if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
+        return Ok(emit_class_method_harness(class, method));
+    }
+
     let shape = detect_shape(spec);
 
     match (&spec.payload_slot, shape) {
@@ -408,6 +418,54 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         extra_files: vec![("CMakeLists.txt".into(), cmake)],
         entry_subpath: Some("entry.cpp".into()),
     })
+}
+
+/// Phase 19 (Track M.1) — class-method harness for C++.
+///
+/// Includes `entry.cpp`, constructs the class via the default
+/// constructor (`<class> instance;`), and calls
+/// `instance.<method>(payload)`.
+fn emit_class_method_harness(class: &str, method: &str) -> HarnessSource {
+    let shim = probe_shim();
+    let body = format!(
+        r#"// Nyx dynamic harness — class method (Phase 19 / Track M.1).
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <iostream>
+{shim}
+static std::string nyx_payload();
+
+#include "entry.cpp"
+
+int main(int argc, char *argv[]) {{
+    (void)argc; (void)argv;
+    std::string payload = nyx_payload();
+    __nyx_install_crash_guard("{class}::{method}");
+    {class} instance;
+    instance.{method}(payload);
+    return 0;
+}}
+
+static std::string nyx_payload() {{
+    if (const char *v = std::getenv("NYX_PAYLOAD")) {{
+        if (*v) return std::string(v);
+    }}
+    return std::string();
+}}
+"#,
+        class = class,
+        method = method,
+    );
+    HarnessSource {
+        source: body,
+        filename: "main.cpp".into(),
+        command: vec!["./nyx_harness".into()],
+        extra_files: vec![("CMakeLists.txt".into(), generate_cmake())],
+        entry_subpath: Some("entry.cpp".into()),
+    }
 }
 
 fn generate_main_cpp(spec: &HarnessSpec, shape: CppShape) -> String {

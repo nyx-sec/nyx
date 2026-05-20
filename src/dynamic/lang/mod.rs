@@ -394,17 +394,16 @@ mod tests {
         assert_eq!(EntryKind::Unknown.tag(), T::Unknown);
     }
 
-    /// Phase 18 (Track M.0) — none of the Phase 18 variants are wired
-    /// into any per-language emitter yet (those land in Phase 19 /
-    /// 20 / 21).  Confirm every lang routes them through the
+    /// Phase 18 (Track M.0) baseline — the Phase 18 variants not yet
+    /// wired by a follow-up phase still route through the
     /// supported-set gate so the verifier produces a structured
     /// `Inconclusive(EntryKindUnsupported)` rather than degrading
-    /// silently.
+    /// silently.  Phase 19 lands `ClassMethod`, so it is excluded
+    /// from the still-unsupported set.
     #[test]
-    fn entry_kind_phase_18_variants_are_unsupported_everywhere() {
+    fn entry_kind_phase_20_21_variants_are_unsupported_everywhere() {
         use crate::evidence::EntryKindTag as T;
-        let new = [
-            T::ClassMethod,
+        let still_unsupported = [
             T::MessageHandler,
             T::ScheduledJob,
             T::GraphQLResolver,
@@ -425,10 +424,10 @@ mod tests {
             Lang::Cpp,
         ] {
             let supported = entry_kinds_supported(lang);
-            for tag in new {
+            for tag in still_unsupported {
                 assert!(
                     !supported.contains(&tag),
-                    "{lang:?} prematurely advertised {tag:?} — Phase 18 keeps the new variants unsupported until Phase 19 / 20 / 21 lands the per-lang adapters"
+                    "{lang:?} prematurely advertised {tag:?} — Phase 20 / 21 has not landed the per-lang adapters for this variant"
                 );
                 let hint = entry_kind_hint(lang, tag);
                 assert!(
@@ -436,6 +435,32 @@ mod tests {
                     "{lang:?} hint must mention {tag:?}, got: {hint:?}"
                 );
             }
+        }
+    }
+
+    /// Phase 19 (Track M.1) — every lang emitter now advertises
+    /// `ClassMethod` so the verifier dispatches structurally instead
+    /// of degrading to `Inconclusive(EntryKindUnsupported)`.
+    #[test]
+    fn entry_kind_class_method_supported_everywhere_after_phase_19() {
+        use crate::evidence::EntryKindTag as T;
+        for lang in [
+            Lang::Python,
+            Lang::Rust,
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Go,
+            Lang::Java,
+            Lang::Php,
+            Lang::Ruby,
+            Lang::C,
+            Lang::Cpp,
+        ] {
+            let supported = entry_kinds_supported(lang);
+            assert!(
+                supported.contains(&T::ClassMethod),
+                "{lang:?} must advertise ClassMethod after Phase 19; got {supported:?}"
+            );
         }
     }
 }
