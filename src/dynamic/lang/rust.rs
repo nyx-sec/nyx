@@ -864,17 +864,23 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
 /// Phase 19 (Track M.1) — class-method harness for Rust.
 ///
-/// Emits `src/main.rs` that constructs `entry::<class>::default()`
-/// and invokes `instance.<method>(&payload)`.  The fixture is
-/// expected to derive `Default` on the receiver type so the harness
-/// has a zero-arg construction path.  When `Default` is unavailable
-/// the fixture can provide a `new()` associated function; the
-/// harness falls back to that via conditional compilation when
-/// `Default` lookup fails.
+/// Emits `src/main.rs` that constructs `entry::<class>` and invokes
+/// `instance.<method>(&payload)`.  The constructor pick is driven by
+/// scanning the entry source for the receiver's construction shape:
+/// when the class derives `Default` (or implements `Default` directly)
+/// the harness emits `<class>::default()`; otherwise it falls back to
+/// `<class>::new()`.  This keeps the harness compilable against
+/// non-Default fixtures without a separate emit path.
 fn emit_class_method_harness(spec: &HarnessSpec, class: &str, method: &str) -> HarnessSource {
     let shim = probe_shim();
     let cargo_toml = generate_cargo_toml(spec.expected_cap);
     let entry_label = format!("{class}::{method}");
+    let entry_src = read_entry_source(&spec.entry_file);
+    let ctor = if class_derives_default(&entry_src, class) {
+        "default"
+    } else {
+        "new"
+    };
     let body = format!(
         r#"//! Nyx dynamic harness — class method (Phase 19 / Track M.1).
 mod entry;
@@ -883,7 +889,7 @@ fn main() {{
     let payload = nyx_payload();
     let _ = &payload;
     __nyx_install_crash_guard("{entry_label}");
-    let instance = entry::{class}::default();
+    let instance = entry::{class}::{ctor}();
     let _ = instance.{method}(&payload);
 }}
 
@@ -940,6 +946,122 @@ fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
         extra_files: vec![("Cargo.toml".into(), cargo_toml)],
         entry_subpath: Some("src/entry.rs".into()),
     }
+}
+
+/// True when the entry source declares `class` as a type that derives
+/// or implements `Default`.  Two byte-level patterns are recognised:
+///
+/// - `#[derive(...Default...)]` immediately preceding a `struct`/`enum`
+///   declaration whose name matches `class`.
+/// - An explicit `impl Default for <class>` block anywhere in the file.
+///
+/// When neither is present the caller falls back to a `<class>::new()`
+/// ctor.  The scan is conservative: unrecognised entry sources produce
+/// `false` (so the harness emits `new()`), which keeps non-Default
+/// fixtures compilable.
+fn class_derives_default(entry_src: &str, class: &str) -> bool {
+    let impl_marker = format!("impl Default for {class}");
+    if entry_src.contains(&impl_marker) {
+        return true;
+    }
+    let struct_marker = format!("struct {class}");
+    let enum_marker = format!("enum {class}");
+    let mut search_from = 0usize;
+    let bytes = entry_src.as_bytes();
+    loop {
+        let struct_at = entry_src[search_from..].find(&struct_marker);
+        let enum_at = entry_src[search_from..].find(&enum_marker);
+        let (rel, marker_len) = match (struct_at, enum_at) {
+            (Some(s), Some(e)) if s <= e => (s, struct_marker.len()),
+            (Some(_), Some(e)) => (e, enum_marker.len()),
+            (Some(s), None) => (s, struct_marker.len()),
+            (None, Some(e)) => (e, enum_marker.len()),
+            (None, None) => return false,
+        };
+        let decl_pos = search_from + rel;
+        let next_byte = bytes.get(decl_pos + marker_len).copied();
+        let boundary_ok = matches!(next_byte, Some(b) if !b.is_ascii_alphanumeric() && b != b'_');
+        if boundary_ok {
+            let window_start = decl_pos.saturating_sub(256);
+            let window = &entry_src[window_start..decl_pos];
+            if let Some(derive_pos) = window.rfind("#[derive(") {
+                if let Some(end_rel) = window[derive_pos..].find(")]") {
+                    let end = derive_pos + end_rel;
+                    let derive_list = &window[derive_pos + "#[derive(".len()..end];
+                    let between = &window[end + ")]".len()..];
+                    // The derive attribute must directly precede the
+                    // declaration — no other item / statement may sit
+                    // between `#[derive(...)]` and the `struct` /
+                    // `enum` token.  Forbidden tokens (`;`, `{`, `}`,
+                    // `=`, or another item keyword) signal the derive
+                    // belongs to an earlier declaration.
+                    let between_clean = strip_attrs_and_comments(between);
+                    let forbidden = ['{', '}', ';', '='];
+                    let item_keyword = ["struct", "enum", "fn", "impl", "trait", "type", "mod"]
+                        .iter()
+                        .any(|kw| word_in_text(&between_clean, kw));
+                    let attaches_to_decl = !between_clean.chars().any(|c| forbidden.contains(&c))
+                        && !item_keyword;
+                    if attaches_to_decl
+                        && derive_list.split(',').any(|t| t.trim() == "Default")
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        search_from = decl_pos + 1;
+    }
+}
+
+/// Drop `//` line comments and `#[...]` attribute blocks from `text`,
+/// returning the remaining bytes joined by spaces.  Used by
+/// [`class_derives_default`] to decide whether the text between a
+/// derive attribute and a declaration is empty (modulo visibility
+/// modifiers and other attributes).
+fn strip_attrs_and_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let mut s = line.trim();
+        while s.starts_with("#[") {
+            if let Some(end) = s.find(']') {
+                s = s[end + 1..].trim_start();
+            } else {
+                break;
+            }
+        }
+        if let Some(idx) = s.find("//") {
+            s = &s[..idx];
+        }
+        out.push_str(s.trim());
+        out.push(' ');
+    }
+    out
+}
+
+/// True when `kw` appears in `text` as a whole word (ASCII word
+/// boundaries on both sides).
+fn word_in_text(text: &str, kw: &str) -> bool {
+    let bytes = text.as_bytes();
+    let kw_bytes = kw.as_bytes();
+    if kw_bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0usize;
+    while i + kw_bytes.len() <= bytes.len() {
+        if &bytes[i..i + kw_bytes.len()] == kw_bytes {
+            let before_ok = i == 0
+                || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+            let after_idx = i + kw_bytes.len();
+            let after_ok = after_idx >= bytes.len()
+                || (!bytes[after_idx].is_ascii_alphanumeric() && bytes[after_idx] != b'_');
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Generate `Cargo.toml` for the harness crate.
@@ -1202,6 +1324,49 @@ mod tests {
         let spec = make_spec(PayloadSlot::Param(0));
         let harness = emit(&spec).unwrap();
         assert_eq!(harness.entry_subpath, Some("src/entry.rs".to_string()));
+    }
+
+    #[test]
+    fn class_derives_default_matches_derive_attribute() {
+        let src = "#[derive(Default)]\npub struct UserService;";
+        assert!(class_derives_default(src, "UserService"));
+    }
+
+    #[test]
+    fn class_derives_default_matches_derive_among_other_traits() {
+        let src = "#[derive(Clone, Debug, Default, PartialEq)]\nstruct UserService { id: u32 }";
+        assert!(class_derives_default(src, "UserService"));
+    }
+
+    #[test]
+    fn class_derives_default_matches_explicit_impl() {
+        let src = "struct UserService;\nimpl Default for UserService { fn default() -> Self { Self } }";
+        assert!(class_derives_default(src, "UserService"));
+    }
+
+    #[test]
+    fn class_derives_default_matches_enum() {
+        let src = "#[derive(Default)]\nenum Mode { #[default] Off, On }";
+        assert!(class_derives_default(src, "Mode"));
+    }
+
+    #[test]
+    fn class_derives_default_false_when_absent() {
+        let src = "pub struct UserService { id: u32 }\nimpl UserService { pub fn new() -> Self { Self { id: 0 } } }";
+        assert!(!class_derives_default(src, "UserService"));
+    }
+
+    #[test]
+    fn class_derives_default_false_when_derive_on_different_type() {
+        let src = "#[derive(Default)]\nstruct OtherType;\npub struct UserService;";
+        assert!(!class_derives_default(src, "UserService"));
+    }
+
+    #[test]
+    fn class_derives_default_respects_word_boundary() {
+        // `struct UserServiceImpl` must not be treated as `UserService`.
+        let src = "#[derive(Default)]\nstruct UserServiceImpl;";
+        assert!(!class_derives_default(src, "UserService"));
     }
 
     #[test]

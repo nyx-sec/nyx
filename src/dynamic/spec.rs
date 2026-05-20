@@ -2216,6 +2216,65 @@ mod tests {
         );
     }
 
+    /// Phase 20 (Track M.2) deferred-fix companion: when a real
+    /// `MessageHandler` adapter binds, the spec carries both the
+    /// `MessageHandler` variant on `entry_kind` and the broker
+    /// adapter id on `framework.adapter`.  The Python emitter's
+    /// `python_broker_for_adapter` reads `framework.adapter` to
+    /// route the broker pick, and the `MessageHandler` short-circuit
+    /// reads `entry_kind` to dispatch — both fields must be
+    /// populated by `stamp_framework_binding` so real spec-derivation
+    /// matches the manual fixture path in `tests/message_handler_corpus.rs`.
+    #[test]
+    fn spec_attach_framework_binding_stamps_message_handler_and_sets_broker_adapter() {
+        let mut spec = HarnessSpec {
+            finding_id: "phase20stamp0001".into(),
+            entry_file: "src/consumer.py".into(),
+            entry_name: "on_message".into(),
+            entry_kind: EntryKind::Function,
+            lang: Lang::Python,
+            toolchain_id: "phase20".into(),
+            payload_slot: PayloadSlot::Param(0),
+            expected_cap: crate::labels::Cap::CODE_EXEC,
+            constraint_hints: vec![],
+            sink_file: "src/consumer.py".into(),
+            sink_line: 1,
+            spec_hash: "phase20stamp0001".into(),
+            derivation: SpecDerivationStrategy::FromFlowSteps,
+            stubs_required: vec![],
+            framework: None,
+            java_toolchain: JavaToolchain::default(),
+        };
+        let pre_hash = spec.spec_hash.clone();
+
+        let binding = FrameworkBinding {
+            adapter: "kafka-python".to_owned(),
+            kind: EntryKind::MessageHandler {
+                queue: "orders".to_owned(),
+                message_schema: None,
+            },
+            route: None,
+            request_params: vec![],
+            response_writer: None,
+            middleware: vec![],
+        };
+        stamp_framework_binding(&mut spec, binding);
+
+        assert_eq!(
+            spec.entry_kind.tag(),
+            crate::evidence::EntryKindTag::MessageHandler,
+            "MessageHandler variant must propagate from binding onto spec.entry_kind",
+        );
+        if let EntryKind::MessageHandler { queue, .. } = &spec.entry_kind {
+            assert_eq!(queue, "orders");
+        } else {
+            panic!("expected MessageHandler variant");
+        }
+        let fw = spec.framework.as_ref().expect("framework must be set");
+        assert_eq!(fw.adapter, "kafka-python");
+        assert_ne!(pre_hash, spec.spec_hash);
+    }
+
     /// Companion guard: when the binding carries a legacy unit
     /// variant (`Function` / `HttpRoute`), the stamping branch keeps
     /// `spec.entry_kind` and `spec.spec_hash` unchanged.
