@@ -46,6 +46,14 @@ fn visit(node: Node<'_>, bytes: &[u8], out: &mut Vec<SinatraRoute>) {
             return;
         }
     }
+    // Sinatra routes live at top level or directly under a `class App <
+    // Sinatra::Base` body — never inside a helper method's body.  Skip
+    // descent through `method` / `singleton_method` so a stray `get '/x'
+    // do ... end` nested inside `def helper ... end` (allowed by the
+    // AST, never by Sinatra) is not collected as a route.
+    if matches!(node.kind(), "method" | "singleton_method") {
+        return;
+    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         visit(child, bytes, out);
@@ -250,6 +258,32 @@ mod tests {
             .detect(&summary("save"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().method, HttpMethod::POST);
+    }
+
+    #[test]
+    fn fires_on_modular_class_form() {
+        let src: &[u8] = b"require 'sinatra/base'\nclass App < Sinatra::Base\n  get '/run' do |payload|\n    payload\n  end\nend\n";
+        let tree = parse(src);
+        let binding = RubySinatraAdapter
+            .detect(&summary("run"), tree.root_node(), src)
+            .expect("modular class-form binding");
+        assert_eq!(binding.adapter, "ruby-sinatra");
+        let route = binding.route.unwrap();
+        assert_eq!(route.method, HttpMethod::GET);
+        assert_eq!(route.path, "/run");
+    }
+
+    #[test]
+    fn skips_route_nested_in_method_body() {
+        // A `get` call hidden inside a helper method's body is not a
+        // Sinatra route declaration; the depth filter must reject it
+        // even though `require 'sinatra'` is in scope.
+        let src: &[u8] =
+            b"require 'sinatra'\ndef helper\n  get '/run' do |payload|\n    payload\n  end\nend\n";
+        let tree = parse(src);
+        assert!(RubySinatraAdapter
+            .detect(&summary("run"), tree.root_node(), src)
+            .is_none());
     }
 
     #[test]
