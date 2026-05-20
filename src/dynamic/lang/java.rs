@@ -1239,8 +1239,9 @@ public class NyxHarness {{
 /// *unmodified* value bytes (including any embedded `\r\n`) via a
 /// `ProbeKind::HeaderEmit` probe.  Mirrors the synthetic-harness
 /// pattern used by Phase 03 / 04 / 05 / 06 / 07.
-pub fn emit_header_injection_harness(_spec: &HarnessSpec) -> HarnessSource {
+pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let extra_files = servlet_stubs_for_entry(&spec.entry_file);
     let source = format!(
         r#"// Nyx dynamic harness — HEADER_INJECTION HttpServletResponse.setHeader (Phase 08 / Track J.6).
 import java.io.FileWriter;
@@ -1307,7 +1308,7 @@ public class NyxHarness {{
             ".".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: Vec::new(),
+        extra_files,
         entry_subpath: None,
     }
 }
@@ -1320,8 +1321,9 @@ public class NyxHarness {{
 /// `Location:` value plus the request's origin host via a
 /// `ProbeKind::Redirect` probe.  Mirrors the synthetic-harness
 /// pattern used by Phase 03 / 04 / 05 / 06 / 07 / 08.
-pub fn emit_open_redirect_harness(_spec: &HarnessSpec) -> HarnessSource {
+pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
+    let extra_files = servlet_stubs_for_entry(&spec.entry_file);
     let source = format!(
         r#"// Nyx dynamic harness — OPEN_REDIRECT HttpServletResponse.sendRedirect (Phase 09 / Track J.7).
 import java.io.FileWriter;
@@ -1386,8 +1388,25 @@ public class NyxHarness {{
             ".".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: Vec::new(),
+        extra_files,
         entry_subpath: None,
+    }
+}
+
+/// Stage the `javax.servlet.*` / `jakarta.servlet.*` stub bundle when
+/// the entry source imports either namespace.  Phase 08 / 09 fixtures
+/// (`HttpServletResponse.setHeader` / `.sendRedirect`) carry the
+/// `import javax.servlet.http.HttpServletResponse;` so `javac` over
+/// the workdir's `*.java` set needs the symbols on the classpath even
+/// though `NyxHarness.java` itself uses no servlet types.  Without the
+/// stubs the verifier flips to `BuildFailed` and the per-lang e2e
+/// tests silently skip via the SKIP-on-`BuildFailed` branch.
+fn servlet_stubs_for_entry(entry_file: &str) -> Vec<(String, String)> {
+    let entry_source = read_entry_source(entry_file);
+    if entry_source.contains("javax.servlet") || entry_source.contains("jakarta.servlet") {
+        crate::dynamic::lang::java_servlet_stubs::servlet_stub_files()
+    } else {
+        Vec::new()
     }
 }
 

@@ -622,7 +622,11 @@ func main() {{
         filename: "main.go".to_owned(),
         command: vec!["./nyx_harness".to_owned()],
         extra_files: vec![("go.mod".to_owned(), go_mod)],
-        entry_subpath: None,
+        // Park the fixture under `entry/` so `go build .` only picks up
+        // the synthetic `main.go` — fixtures declare `package vuln` /
+        // `package benign`, which would otherwise collide with the
+        // harness's `package main` and break the build.
+        entry_subpath: Some("entry/entry.go".to_owned()),
     }
 }
 
@@ -684,7 +688,11 @@ func main() {{
         filename: "main.go".to_owned(),
         command: vec!["./nyx_harness".to_owned()],
         extra_files: vec![("go.mod".to_owned(), go_mod)],
-        entry_subpath: None,
+        // Park the fixture under `entry/` so `go build .` only picks up
+        // the synthetic `main.go` — fixtures declare `package vuln` /
+        // `package benign`, which would otherwise collide with the
+        // harness's `package main` and break the build.
+        entry_subpath: Some("entry/entry.go".to_owned()),
     }
 }
 
@@ -744,7 +752,11 @@ func main() {{
         filename: "main.go".to_owned(),
         command: vec!["./nyx_harness".to_owned()],
         extra_files: vec![("go.mod".to_owned(), go_mod)],
-        entry_subpath: None,
+        // Park the fixture under `entry/` so `go build .` only picks up
+        // the synthetic `main.go` — fixtures declare `package vuln` /
+        // `package benign`, which would otherwise collide with the
+        // harness's `package main` and break the build.
+        entry_subpath: Some("entry/entry.go".to_owned()),
     }
 }
 
