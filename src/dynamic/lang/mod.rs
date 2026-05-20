@@ -394,17 +394,16 @@ mod tests {
         assert_eq!(EntryKind::Unknown.tag(), T::Unknown);
     }
 
-    /// Phase 18 (Track M.0) baseline — the Phase 18 variants not yet
-    /// wired by a follow-up phase still route through the
-    /// supported-set gate so the verifier produces a structured
-    /// `Inconclusive(EntryKindUnsupported)` rather than degrading
-    /// silently.  Phase 19 lands `ClassMethod`, so it is excluded
-    /// from the still-unsupported set.
+    /// Phase 18 (Track M.0) baseline — the variants not yet wired by a
+    /// follow-up phase still route through the supported-set gate so the
+    /// verifier produces a structured `Inconclusive(EntryKindUnsupported)`
+    /// rather than degrading silently.  Phase 19 lands `ClassMethod`;
+    /// Phase 20 lands `MessageHandler` on five langs (Python, Java,
+    /// JavaScript, TypeScript, Go); the rest stay unsupported.
     #[test]
-    fn entry_kind_phase_20_21_variants_are_unsupported_everywhere() {
+    fn entry_kind_phase_21_variants_are_unsupported_everywhere() {
         use crate::evidence::EntryKindTag as T;
         let still_unsupported = [
-            T::MessageHandler,
             T::ScheduledJob,
             T::GraphQLResolver,
             T::WebSocket,
@@ -427,7 +426,7 @@ mod tests {
             for tag in still_unsupported {
                 assert!(
                     !supported.contains(&tag),
-                    "{lang:?} prematurely advertised {tag:?} — Phase 20 / 21 has not landed the per-lang adapters for this variant"
+                    "{lang:?} prematurely advertised {tag:?} — Phase 21 has not landed the per-lang adapters for this variant"
                 );
                 let hint = entry_kind_hint(lang, tag);
                 assert!(
@@ -435,6 +434,44 @@ mod tests {
                     "{lang:?} hint must mention {tag:?}, got: {hint:?}"
                 );
             }
+        }
+    }
+
+    /// Phase 20 (Track M.2) — `MessageHandler` is supported on the five
+    /// langs the brief lists (Python, Java, JavaScript, TypeScript, Go)
+    /// and remains unsupported on the rest (Ruby, PHP, Rust, C, Cpp).
+    /// The verifier should produce a structured
+    /// `Inconclusive(EntryKindUnsupported)` for the unsupported set.
+    #[test]
+    fn entry_kind_message_handler_supported_in_phase_20_langs() {
+        use crate::evidence::EntryKindTag as T;
+        let supported_langs = [
+            Lang::Python,
+            Lang::Java,
+            Lang::JavaScript,
+            Lang::TypeScript,
+            Lang::Go,
+        ];
+        let unsupported_langs = [
+            Lang::Php,
+            Lang::Ruby,
+            Lang::Rust,
+            Lang::C,
+            Lang::Cpp,
+        ];
+        for lang in supported_langs {
+            let supported = entry_kinds_supported(lang);
+            assert!(
+                supported.contains(&T::MessageHandler),
+                "{lang:?} must advertise MessageHandler after Phase 20; got {supported:?}",
+            );
+        }
+        for lang in unsupported_langs {
+            let supported = entry_kinds_supported(lang);
+            assert!(
+                !supported.contains(&T::MessageHandler),
+                "{lang:?} must not yet advertise MessageHandler — Phase 20 only covers 5 langs",
+            );
         }
     }
 

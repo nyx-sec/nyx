@@ -55,6 +55,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
     EntryKindTag::ClassMethod,
+    EntryKindTag::MessageHandler,
 ];
 
 impl LangEmitter for JavaEmitter {
@@ -599,6 +600,15 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         let entry_source = read_entry_source(&spec.entry_file);
         let entry_class = derive_entry_class(&entry_source);
         return Ok(emit_class_method_harness(spec, class, method, &entry_class));
+    }
+
+    // Phase 20 (Track M.2): MessageHandler short-circuit.  Mounts the
+    // in-process broker loopback declared by `broker_{kafka,sqs,rabbit}`
+    // and dispatches the payload synchronously to the named handler.
+    if let crate::evidence::EntryKind::MessageHandler { queue, .. } = &spec.entry_kind {
+        let entry_source = read_entry_source(&spec.entry_file);
+        let entry_class = derive_entry_class(&entry_source);
+        return Ok(emit_message_handler_harness(spec, queue, &entry_class));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -1934,6 +1944,182 @@ public class NyxHarness {{
         ],
         extra_files: vec![],
         entry_subpath: Some(format!("{entry_class}.java")),
+    }
+}
+
+/// Phase 20 (Track M.2) — message-handler harness for Java.
+///
+/// Locates `entry_class` (the fixture's public class) reflectively,
+/// instantiates it via its no-arg ctor (or via the stubbed-dependency
+/// fallback path used by [`emit_class_method_harness`]), mounts the
+/// broker loopback selected by `spec.framework.adapter`
+/// (`kafka-java` → `NyxKafkaLoopback`, `sqs-java` → `NyxSqsLoopback`,
+/// `rabbit-java` → `NyxRabbitChannel`; default → Kafka), subscribes the
+/// handler method named by `spec.entry_name`, and publishes the payload
+/// onto `queue`.
+fn emit_message_handler_harness(
+    spec: &HarnessSpec,
+    queue: &str,
+    entry_class: &str,
+) -> HarnessSource {
+    let probe = probe_shim();
+    let handler = &spec.entry_name;
+    let broker = java_broker_for_adapter(spec);
+
+    let kafka_src = crate::dynamic::stubs::kafka_source(crate::symbol::Lang::Java);
+    let sqs_src = crate::dynamic::stubs::sqs_source(crate::symbol::Lang::Java);
+    let rabbit_src = crate::dynamic::stubs::rabbit_source(crate::symbol::Lang::Java);
+
+    let (publish_marker, dispatch_block) = match broker {
+        JavaBroker::Sqs => (
+            crate::dynamic::stubs::SQS_PUBLISH_MARKER,
+            format!(
+                r#"            NyxSqsLoopback brokerRef = new NyxSqsLoopback();
+            brokerRef.subscribe({queue:?}, env -> {{
+                System.out.println("__NYX_SINK_HIT__");
+                try {{
+                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, java.util.Map.class);
+                    m.setAccessible(true);
+                    m.invoke(entryInst, env);
+                }} catch (Exception e) {{
+                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+            }});
+            System.out.println({publish_marker:?} + " " + {queue:?});
+            brokerRef.publish({queue:?}, payload);"#,
+                handler = handler,
+                queue = queue,
+                publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
+            ),
+        ),
+        JavaBroker::Rabbit => (
+            crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
+            format!(
+                r#"            NyxRabbitChannel chan = new NyxRabbitChannel();
+            chan.basicConsume({queue:?}, (mid, body) -> {{
+                System.out.println("__NYX_SINK_HIT__");
+                try {{
+                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, String.class, String.class);
+                    m.setAccessible(true);
+                    m.invoke(entryInst, mid, body);
+                }} catch (NoSuchMethodException nsme) {{
+                    try {{
+                        java.lang.reflect.Method m2 = entryInst.getClass().getDeclaredMethod({handler:?}, String.class);
+                        m2.setAccessible(true);
+                        m2.invoke(entryInst, body);
+                    }} catch (Exception ie) {{
+                        Throwable c = (ie instanceof java.lang.reflect.InvocationTargetException && ie.getCause() != null) ? ie.getCause() : ie;
+                        System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                    }}
+                }} catch (Exception e) {{
+                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+            }});
+            System.out.println({publish_marker:?} + " " + {queue:?});
+            chan.basicPublish("", {queue:?}, payload);"#,
+                handler = handler,
+                queue = queue,
+                publish_marker = crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
+            ),
+        ),
+        JavaBroker::Kafka => (
+            crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
+            format!(
+                r#"            NyxKafkaLoopback brokerRef = new NyxKafkaLoopback();
+            brokerRef.subscribe({queue:?}, body -> {{
+                System.out.println("__NYX_SINK_HIT__");
+                try {{
+                    java.lang.reflect.Method m = entryInst.getClass().getDeclaredMethod({handler:?}, String.class);
+                    m.setAccessible(true);
+                    m.invoke(entryInst, body);
+                }} catch (Exception e) {{
+                    Throwable c = (e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null) ? e.getCause() : e;
+                    System.err.println("NYX_EXCEPTION: " + c.getClass().getName() + ": " + c.getMessage());
+                }}
+            }});
+            System.out.println({publish_marker:?} + " " + {queue:?});
+            brokerRef.publish({queue:?}, payload);"#,
+                handler = handler,
+                queue = queue,
+                publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
+            ),
+        ),
+    };
+    let _ = publish_marker;
+
+    let source = format!(
+        r#"// Nyx dynamic harness — message handler (Phase 20 / Track M.2).
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+
+public class NyxHarness {{
+{probe}
+
+{kafka_src}
+{sqs_src}
+{rabbit_src}
+
+    public static void main(String[] args) {{
+        String payload = nyxPayload();
+        try {{
+            Class<?> entryCls = Class.forName({entry_class:?});
+            Constructor<?> ctor = entryCls.getDeclaredConstructor();
+            ctor.setAccessible(true);
+            final Object entryInst = ctor.newInstance();
+{dispatch_block}
+        }} catch (Throwable e) {{
+            System.err.println("NYX_EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
+        }}
+    }}
+
+    static String nyxPayload() {{
+        String v = System.getenv("NYX_PAYLOAD");
+        if (v != null && !v.isEmpty()) return v;
+        String b64 = System.getenv("NYX_PAYLOAD_B64");
+        if (b64 != null && !b64.isEmpty()) {{
+            byte[] decoded = java.util.Base64.getDecoder().decode(b64);
+            return new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+        }}
+        return "";
+    }}
+}}
+"#,
+        entry_class = entry_class,
+        dispatch_block = dispatch_block,
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: vec![],
+        entry_subpath: Some(format!("{entry_class}.java")),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum JavaBroker {
+    Kafka,
+    Sqs,
+    Rabbit,
+}
+
+fn java_broker_for_adapter(spec: &HarnessSpec) -> JavaBroker {
+    let adapter = spec
+        .framework
+        .as_ref()
+        .map(|b| b.adapter.as_str())
+        .unwrap_or("");
+    match adapter {
+        "sqs-java" => JavaBroker::Sqs,
+        "rabbit-java" => JavaBroker::Rabbit,
+        _ => JavaBroker::Kafka,
     }
 }
 

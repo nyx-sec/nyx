@@ -575,6 +575,14 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_class_method(spec, class, method, is_typescript));
     }
 
+    // Phase 20 (Track M.2): MessageHandler short-circuit.  Mounts the
+    // in-process SQS loopback (the only broker Node has a dedicated
+    // adapter for in this phase) and dispatches the payload to the
+    // named handler synchronously.
+    if let crate::evidence::EntryKind::MessageHandler { queue, .. } = &spec.entry_kind {
+        return Ok(emit_message_handler(spec, queue, is_typescript));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JsShape::detect(spec, &entry_source);
     let entry_subpath = entry_subpath_for_shape(shape, is_typescript);
@@ -684,6 +692,84 @@ if (typeof _m !== 'function') {{
 "#,
         class = class,
         method = method,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: Some(entry_subpath.to_owned()),
+    }
+}
+
+/// Phase 20 (Track M.2) — message-handler harness for Node.js / TypeScript.
+///
+/// Imports the entry module, locates the handler function named by
+/// `spec.entry_name`, mounts the `NyxSqsLoopback` in-process loopback,
+/// and publishes the payload onto `queue` so the handler fires
+/// synchronously.  SQS is the only broker Node has a dedicated Phase
+/// 20 adapter for (`sqs-node`); the dispatch defaults to it.
+fn emit_message_handler(
+    spec: &HarnessSpec,
+    queue: &str,
+    is_typescript: bool,
+) -> HarnessSource {
+    let probe = probe_shim();
+    let entry_subpath = if is_typescript { "entry.ts" } else { "entry.js" };
+    let entry_require_path = entry_require_path(entry_subpath);
+    let handler = &spec.entry_name;
+    let sqs_src = crate::dynamic::stubs::sqs_source(crate::symbol::Lang::JavaScript);
+    let publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER;
+
+    let body = format!(
+        r#"'use strict';
+// Nyx dynamic harness — message handler (Phase 20 / Track M.2).
+{probe}
+
+{sqs_src}
+
+const payload = (process.env.NYX_PAYLOAD && process.env.NYX_PAYLOAD.length > 0)
+    ? process.env.NYX_PAYLOAD
+    : (process.env.NYX_PAYLOAD_B64
+        ? Buffer.from(process.env.NYX_PAYLOAD_B64, 'base64').toString('utf8')
+        : '');
+
+let _entry;
+try {{
+    _entry = require('./{entry_require_path}');
+}} catch (e) {{
+    process.stderr.write('NYX_IMPORT_ERROR: ' + e.message + '\n');
+    process.exit(77);
+}}
+
+const _handler = _entry[{handler:?}]
+    || (_entry.default && _entry.default[{handler:?}])
+    || (typeof _entry.default === 'function' && _entry.default.name === {handler:?} ? _entry.default : null);
+if (typeof _handler !== 'function') {{
+    process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
+    process.exit(78);
+}}
+
+const _broker = new NyxSqsLoopback();
+_broker.subscribe({queue:?}, async (envelope) => {{
+    try {{
+        // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
+        // gate requires this byte sequence on stdout / stderr.
+        process.stdout.write('__NYX_SINK_HIT__\n');
+        await Promise.resolve(_handler(envelope));
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}});
+
+(async () => {{
+    process.stdout.write({publish_marker:?} + ' ' + {queue:?} + '\n');
+    _broker.publish({queue:?}, payload);
+}})();
+"#,
+        handler = handler,
+        queue = queue,
+        publish_marker = publish_marker,
     );
     HarnessSource {
         source: body,
@@ -1748,6 +1834,7 @@ pub const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::CliSubcommand,
     EntryKindTag::LibraryApi,
     EntryKindTag::ClassMethod,
+    EntryKindTag::MessageHandler,
 ];
 
 #[cfg(test)]

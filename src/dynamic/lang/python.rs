@@ -46,6 +46,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
     EntryKindTag::ClassMethod,
+    EntryKindTag::MessageHandler,
 ];
 
 impl LangEmitter for PythonEmitter {
@@ -691,6 +692,18 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_class_method(spec, class, method));
     }
 
+    // Phase 20 (Track M.2): MessageHandler short-circuit.  The harness
+    // publishes the payload through one of the in-process broker
+    // loopbacks (`NyxKafkaLoopback`, `NyxSqsLoopback`,
+    // `NyxPubsubLoopback`, `NyxRabbitChannel`) which routes synchronously
+    // to the registered handler.  Broker selection is picked by
+    // `spec.framework.adapter`; an unknown / missing adapter falls back
+    // to the Kafka loopback (kept stable so test fixtures with no
+    // framework binding still drive the message-handler dispatch).
+    if let crate::evidence::EntryKind::MessageHandler { queue, .. } = &spec.entry_kind {
+        return Ok(emit_message_handler(spec, queue));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PythonShape::detect(spec, &entry_source);
     let body = generate_for_shape(spec, shape);
@@ -803,6 +816,160 @@ except Exception as _e:
         extra_files: vec![],
         entry_subpath: None,
     }
+}
+
+/// Phase 20 (Track M.2) — message-handler harness for Python.
+///
+/// Imports the entry module, locates the handler function named by
+/// `spec.entry_name`, registers it against the requested broker
+/// loopback (`NyxKafkaLoopback` / `NyxSqsLoopback` / `NyxPubsubLoopback`
+/// / `NyxRabbitChannel`), then publishes the payload onto `queue`.  The
+/// loopback dispatches synchronously so the handler under test fires
+/// the sink before `main` returns.
+///
+/// Broker pick: derived from the spec's framework adapter id when
+/// present (`kafka-python`, `sqs-python`, `pubsub-python`,
+/// `rabbit-python`); otherwise defaults to Kafka, which keeps the
+/// dispatch deterministic for fixtures with no framework binding.
+fn emit_message_handler(spec: &HarnessSpec, queue: &str) -> HarnessSource {
+    let preamble = harness_preamble(spec);
+    let postamble = harness_postamble();
+    let handler = &spec.entry_name;
+    let broker = python_broker_for_adapter(spec);
+
+    let kafka_src = crate::dynamic::stubs::kafka_source(crate::symbol::Lang::Python);
+    let sqs_src = crate::dynamic::stubs::sqs_source(crate::symbol::Lang::Python);
+    let pubsub_src = crate::dynamic::stubs::pubsub_source(crate::symbol::Lang::Python);
+    let rabbit_src = crate::dynamic::stubs::rabbit_source(crate::symbol::Lang::Python);
+
+    let register_and_publish = match broker {
+        PythonBroker::Sqs => format!(
+            r#"_loop = NyxSqsLoopback()
+def _nyx_sqs_dispatch(envelope):
+    _h = getattr(_entry_mod, {handler:?}, None)
+    if _h is None:
+        print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+        sys.exit(78)
+    _h(envelope)
+_loop.subscribe({queue:?}, _nyx_sqs_dispatch)
+print({publish_marker:?} + " " + {queue:?}, flush=True)
+_loop.publish({queue:?}, payload)"#,
+            handler = handler,
+            queue = queue,
+            publish_marker = crate::dynamic::stubs::SQS_PUBLISH_MARKER,
+        ),
+        PythonBroker::Pubsub => format!(
+            r#"_loop = NyxPubsubLoopback()
+def _nyx_pubsub_dispatch(message):
+    _h = getattr(_entry_mod, {handler:?}, None)
+    if _h is None:
+        print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+        sys.exit(78)
+    _h(message)
+_loop.subscribe({queue:?}, _nyx_pubsub_dispatch)
+print({publish_marker:?} + " " + {queue:?}, flush=True)
+_loop.publish({queue:?}, payload)"#,
+            handler = handler,
+            queue = queue,
+            publish_marker = crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
+        ),
+        PythonBroker::Rabbit => format!(
+            r#"_chan = NyxRabbitChannel()
+def _nyx_rabbit_dispatch(ch, method, props, body):
+    _h = getattr(_entry_mod, {handler:?}, None)
+    if _h is None:
+        print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+        sys.exit(78)
+    _h(ch, method, props, body)
+_chan.basic_consume(queue={queue:?}, on_message_callback=_nyx_rabbit_dispatch)
+print({publish_marker:?} + " " + {queue:?}, flush=True)
+_chan.basic_publish(exchange="", routing_key={queue:?}, body=payload)"#,
+            handler = handler,
+            queue = queue,
+            publish_marker = crate::dynamic::stubs::RABBIT_PUBLISH_MARKER,
+        ),
+        PythonBroker::Kafka => format!(
+            r#"_loop = NyxKafkaLoopback()
+def _nyx_kafka_dispatch(message):
+    _h = getattr(_entry_mod, {handler:?}, None)
+    if _h is None:
+        print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+        sys.exit(78)
+    _h(message)
+_loop.subscribe({queue:?}, _nyx_kafka_dispatch)
+print({publish_marker:?} + " " + {queue:?}, flush=True)
+_loop.publish({queue:?}, payload)"#,
+            handler = handler,
+            queue = queue,
+            publish_marker = crate::dynamic::stubs::KAFKA_PUBLISH_MARKER,
+        ),
+    };
+
+    let body = format!(
+        r#"# Shape: message handler — Phase 20 / Track M.2.
+{kafka_src}
+{sqs_src}
+{pubsub_src}
+{rabbit_src}
+
+try:
+{register_and_publish}
+except SystemExit as _e:
+    sys.exit(_e.code)
+except Exception as _e:
+    print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+"#,
+        kafka_src = kafka_src,
+        sqs_src = sqs_src,
+        pubsub_src = pubsub_src,
+        rabbit_src = rabbit_src,
+        register_and_publish = indent_lines(&register_and_publish, "    "),
+    );
+    HarnessSource {
+        source: format!("{preamble}\n{body}\n{postamble}"),
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PythonBroker {
+    Kafka,
+    Sqs,
+    Pubsub,
+    Rabbit,
+}
+
+fn python_broker_for_adapter(spec: &HarnessSpec) -> PythonBroker {
+    let adapter = spec
+        .framework
+        .as_ref()
+        .map(|b| b.adapter.as_str())
+        .unwrap_or("");
+    match adapter {
+        "sqs-python" => PythonBroker::Sqs,
+        "pubsub-python" => PythonBroker::Pubsub,
+        "rabbit-python" => PythonBroker::Rabbit,
+        _ => PythonBroker::Kafka,
+    }
+}
+
+fn indent_lines(src: &str, prefix: &str) -> String {
+    let mut out = String::with_capacity(src.len() + 16);
+    let mut first = true;
+    for line in src.lines() {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+        if !line.is_empty() {
+            out.push_str(prefix);
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// Phase 03 — Track J.1 deserialize harness for Python.

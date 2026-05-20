@@ -214,19 +214,18 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_17() {
-        // Phase 17 (Track L.15) adds four Go framework adapters
-        // (`go-chi`, `go-echo`, `go-fiber`, `go-gin`) to the Go
-        // slice, growing it 3 → 7, plus four Rust framework adapters
-        // (`rust-actix`, `rust-axum`, `rust-rocket`, `rust-warp`)
-        // growing the Rust slice 2 → 6.  The Phase 16 baseline for
-        // the other languages stays put: Java 11, Php 10, Python 11,
-        // Ruby 8, JavaScript 11, TypeScript 4.  C / Cpp stay empty.
+    fn registry_baseline_after_phase_20() {
+        // Phase 20 (Track M.2) adds 10 MessageHandler-flavoured
+        // framework adapters distributed across Java (3 — Kafka,
+        // RabbitMQ, SQS), Python (4 — Kafka, Pub/Sub, RabbitMQ, SQS),
+        // Go (2 — Pub/Sub, NATS), and JavaScript (1 — SQS).  The
+        // Phase 17 baseline for the other languages stays put: Php 10,
+        // Ruby 8, TypeScript 4, Rust 6, C/Cpp empty.
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
-            11,
-            "Java must have J.1+J.2+J.3+J.4+J.5+J.6+J.7 (7) + L.12 Spring/Quarkus/Micronaut/Servlet (4)",
+            14,
+            "Java must have Phase 17 baseline (11) + M.2 Kafka/Rabbit/SQS (3)",
         );
         for adapter in java_registered {
             assert_eq!(adapter.lang(), Lang::Java);
@@ -243,8 +242,8 @@ mod tests {
         let python_registered = registry::adapters_for(Lang::Python);
         assert_eq!(
             python_registered.len(),
-            11,
-            "Python must have J.1..J.7 (7) + L.10 Flask/Django/FastAPI/Starlette (4)",
+            15,
+            "Python must have Phase 17 baseline (11) + M.2 Kafka/Pub-Sub/Rabbit/SQS (4)",
         );
         for adapter in python_registered {
             assert_eq!(adapter.lang(), Lang::Python);
@@ -261,8 +260,8 @@ mod tests {
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(
             js_registered.len(),
-            11,
-            "JavaScript must have J.2 + J.5 + J.6 + J.7 + J.8(×3) + L.11(×4) adapters",
+            12,
+            "JavaScript must have Phase 17 baseline (11) + M.2 sqs-node (1)",
         );
         for adapter in js_registered {
             assert_eq!(adapter.lang(), Lang::JavaScript);
@@ -279,8 +278,8 @@ mod tests {
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
             go_registered.len(),
-            7,
-            "Go must have J.3 + J.6 + J.7 (3) + L.15 chi/echo/fiber/gin (4) adapters",
+            9,
+            "Go must have Phase 17 baseline (7) + M.2 pubsub-go/nats-go (2)",
         );
         for adapter in go_registered {
             assert_eq!(adapter.lang(), Lang::Go);

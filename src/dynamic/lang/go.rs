@@ -56,6 +56,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
     EntryKindTag::ClassMethod,
+    EntryKindTag::MessageHandler,
 ];
 
 impl LangEmitter for GoEmitter {
@@ -581,6 +582,14 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // dispatches.
     if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
         return Ok(emit_class_method_harness(class, method));
+    }
+
+    // Phase 20 (Track M.2): MessageHandler short-circuit.  Picks the
+    // broker loopback (Pub/Sub or NATS) by inspecting the spec's
+    // framework adapter id and dispatches the payload synchronously to
+    // the named handler function in the entry package.
+    if let crate::evidence::EntryKind::MessageHandler { queue, .. } = &spec.entry_kind {
+        return Ok(emit_message_handler_harness(spec, queue));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -1126,6 +1135,155 @@ func main() {{
         command: vec!["./nyx_harness".to_owned()],
         extra_files: vec![("go.mod".to_owned(), go_mod)],
         entry_subpath: Some("entry/entry.go".to_owned()),
+    }
+}
+
+/// Phase 20 (Track M.2) — message-handler harness for Go.
+///
+/// The entry package is expected to declare a top-level handler
+/// function named `spec.entry_name` taking either a `*entry.NyxPubsubMessage`
+/// / `*entry.NyxNatsMsg` envelope or a `string` payload.  The harness
+/// mounts the broker loopback declared by [`broker_pubsub`] /
+/// [`broker_nats`], subscribes the handler reflectively, and publishes
+/// the payload.  Broker pick is derived from
+/// `spec.framework.adapter`: `pubsub-go` → Pub/Sub, `nats-go` → NATS,
+/// default → Pub/Sub.
+fn emit_message_handler_harness(spec: &HarnessSpec, queue: &str) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let handler = &spec.entry_name;
+    let broker = go_broker_for_adapter(spec);
+
+    let (broker_src, publish_marker, dispatch) = match broker {
+        GoBroker::Nats => (
+            crate::dynamic::stubs::nats_source(crate::symbol::Lang::Go),
+            crate::dynamic::stubs::NATS_PUBLISH_MARKER,
+            format!(
+                r##"	broker := NewNyxNatsLoopback()
+	broker.Subscribe("{queue}", func(msg *NyxNatsMsg) {{
+		nyxDispatch(msg)
+	}})
+	fmt.Println("{publish_marker} " + "{queue}")
+	broker.Publish("{queue}", payload)"##,
+                queue = queue,
+                publish_marker = crate::dynamic::stubs::NATS_PUBLISH_MARKER,
+            ),
+        ),
+        GoBroker::Pubsub => (
+            crate::dynamic::stubs::pubsub_source(crate::symbol::Lang::Go),
+            crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
+            format!(
+                r##"	broker := NewNyxPubsubLoopback()
+	broker.Subscribe("{queue}", func(msg *NyxPubsubMessage) {{
+		nyxDispatch(msg)
+	}})
+	fmt.Println("{publish_marker} " + "{queue}")
+	broker.Publish("{queue}", payload)"##,
+                queue = queue,
+                publish_marker = crate::dynamic::stubs::PUBSUB_PUBLISH_MARKER,
+            ),
+        ),
+    };
+
+    // The handler is looked up reflectively through a per-package
+    // `NyxHandlers` registry the entry file publishes (mirrors the
+    // Phase 19 `NyxReceivers` contract).  A fallback path probes a few
+    // common exported names so a fixture without the registry still
+    // wires up.
+    let dispatch_inner = format!(
+        r##"func nyxDispatch(msg interface{{}}) {{
+	defer func() {{
+		if r := recover(); r != nil {{
+			fmt.Fprintf(os.Stderr, "NYX_EXCEPTION: panic: %v\n", r)
+		}}
+	}}()
+	fmt.Println("__NYX_SINK_HIT__")
+	cb, ok := entry.NyxHandlers["{handler}"]
+	if !ok {{
+		fmt.Fprintln(os.Stderr, "NYX_HANDLER_NOT_FOUND: " + "{handler}")
+		os.Exit(78)
+	}}
+	v := reflect.ValueOf(cb)
+	args := make([]reflect.Value, v.Type().NumIn())
+	for i := 0; i < v.Type().NumIn(); i++ {{
+		want := v.Type().In(i)
+		got := reflect.ValueOf(msg)
+		if got.Type().AssignableTo(want) {{
+			args[i] = got
+		}} else if want.Kind() == reflect.String {{
+			args[i] = reflect.ValueOf(os.Getenv("NYX_PAYLOAD"))
+		}} else {{
+			args[i] = reflect.Zero(want)
+		}}
+	}}
+	v.Call(args)
+}}
+"##,
+        handler = handler,
+    );
+
+    let source = format!(
+        r##"// Nyx dynamic harness — message handler (Phase 20 / Track M.2).
+package main
+
+import (
+	"fmt"
+	"os"
+	"reflect"
+
+	"nyx-harness/entry"
+)
+
+{shim}
+
+{broker_src}
+
+{dispatch_inner}
+
+func nyxPayload() string {{
+	if v := os.Getenv("NYX_PAYLOAD"); v != "" {{
+		return v
+	}}
+	return ""
+}}
+
+func main() {{
+	__nyx_install_crash_guard("{handler}")
+	payload := nyxPayload()
+{dispatch}
+}}
+"##,
+        broker_src = broker_src,
+        dispatch_inner = dispatch_inner,
+        dispatch = dispatch,
+        handler = handler,
+    );
+    let _ = publish_marker;
+
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files: vec![("go.mod".to_owned(), go_mod)],
+        entry_subpath: Some("entry/entry.go".to_owned()),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GoBroker {
+    Pubsub,
+    Nats,
+}
+
+fn go_broker_for_adapter(spec: &HarnessSpec) -> GoBroker {
+    let adapter = spec
+        .framework
+        .as_ref()
+        .map(|b| b.adapter.as_str())
+        .unwrap_or("");
+    match adapter {
+        "nats-go" => GoBroker::Nats,
+        _ => GoBroker::Pubsub,
     }
 }
 

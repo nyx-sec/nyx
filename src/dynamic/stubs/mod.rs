@@ -51,6 +51,11 @@
 //!   [`crate::dynamic::oracle::oracle_fired_with_stubs`] so the
 //!   `StubEventMatches` predicate can satisfy a payload.
 
+pub mod broker_kafka;
+pub mod broker_nats;
+pub mod broker_pubsub;
+pub mod broker_rabbit;
+pub mod broker_sqs;
 pub mod filesystem;
 pub mod http;
 pub mod ldap_server;
@@ -59,6 +64,11 @@ pub mod redis;
 pub mod sql;
 pub mod xpath_document;
 
+pub use broker_kafka::{kafka_source, KAFKA_PUBLISH_MARKER};
+pub use broker_nats::{nats_source, NATS_PUBLISH_MARKER};
+pub use broker_pubsub::{pubsub_source, PUBSUB_PUBLISH_MARKER};
+pub use broker_rabbit::{rabbit_source, RABBIT_PUBLISH_MARKER};
+pub use broker_sqs::{sqs_source, SQS_PUBLISH_MARKER};
 pub use filesystem::FilesystemStub;
 pub use http::HttpStub;
 pub use ldap_server::LdapStub;

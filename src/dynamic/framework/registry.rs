@@ -62,8 +62,11 @@ static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::JavaServletAdapter,
     &super::adapters::JavaSpringAdapter,
     &super::adapters::JavaThymeleafAdapter,
+    &super::adapters::KafkaJavaAdapter,
     &super::adapters::LdapSpringAdapter,
+    &super::adapters::RabbitJavaAdapter,
     &super::adapters::RedirectJavaAdapter,
+    &super::adapters::SqsJavaAdapter,
     &super::adapters::XpathJavaAdapter,
     &super::adapters::XxeJavaAdapter,
 ];
@@ -73,6 +76,8 @@ static GO: &[&dyn FrameworkAdapter] = &[
     &super::adapters::GoFiberAdapter,
     &super::adapters::GoGinAdapter,
     &super::adapters::HeaderGoAdapter,
+    &super::adapters::NatsGoAdapter,
+    &super::adapters::PubsubGoAdapter,
     &super::adapters::RedirectGoAdapter,
     &super::adapters::XxeGoAdapter,
 ];
@@ -90,14 +95,18 @@ static PHP: &[&dyn FrameworkAdapter] = &[
 ];
 static PYTHON: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderPythonAdapter,
+    &super::adapters::KafkaPythonAdapter,
     &super::adapters::LdapPythonAdapter,
+    &super::adapters::PubsubPythonAdapter,
     &super::adapters::PythonDjangoAdapter,
     &super::adapters::PythonFastApiAdapter,
     &super::adapters::PythonFlaskAdapter,
     &super::adapters::PythonJinja2Adapter,
     &super::adapters::PythonPickleAdapter,
     &super::adapters::PythonStarletteAdapter,
+    &super::adapters::RabbitPythonAdapter,
     &super::adapters::RedirectPythonAdapter,
+    &super::adapters::SqsPythonAdapter,
     &super::adapters::XpathPythonAdapter,
     &super::adapters::XxePythonAdapter,
 ];
@@ -128,5 +137,6 @@ static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[
     &super::adapters::PpLodashMergeJsAdapter,
     &super::adapters::PpObjectAssignJsAdapter,
     &super::adapters::RedirectJsAdapter,
+    &super::adapters::SqsNodeAdapter,
     &super::adapters::XpathJsAdapter,
 ];
