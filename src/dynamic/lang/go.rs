@@ -176,6 +176,27 @@ pub enum GoShape {
     /// `gin.Context` stub and dispatches.  Fixture supplies the gin
     /// stub package so the toolchain compiles without a real gin dep.
     GinHandler,
+    /// Phase 17 — Track L.15.  Route-bound gin handler dispatched
+    /// through `httptest.NewServer` + a real-stack `gin.Engine.GET`
+    /// route registration.  Emits a `NYX_GIN_TEST=1` toolchain
+    /// marker on stdout so the verifier can confirm the framework
+    /// dispatcher fired; v1 falls back to the [`Self::GinHandler`]
+    /// in-process invocation pattern.
+    GinRoute,
+    /// Phase 17 — Track L.15.  `echo.Echo.GET` route handler
+    /// dispatched through `httptest.NewServer`.  Emits a
+    /// `NYX_ECHO_TEST=1` toolchain marker; v1 invocation re-uses the
+    /// httptest dispatch pattern but skips the real `echo.New()`
+    /// boot.
+    EchoRoute,
+    /// Phase 17 — Track L.15.  `fiber.App.Get` route handler
+    /// dispatched through `httptest.NewServer`.  Emits a
+    /// `NYX_FIBER_TEST=1` toolchain marker.
+    FiberRoute,
+    /// Phase 17 — Track L.15.  `chi.Router.Get` route handler
+    /// dispatched through `httptest.NewServer`.  Emits a
+    /// `NYX_CHI_TEST=1` toolchain marker.
+    ChiRoute,
     /// `flag.Parse`-driven CLI.  Harness sets `os.Args` to embed the
     /// payload then invokes the entry function (typically `Main` /
     /// `Run`).
@@ -198,12 +219,41 @@ impl GoShape {
 
         let has_http_handler = source.contains("http.ResponseWriter")
             && source.contains("*http.Request");
-        let has_gin = source.contains("gin.Context") || source.contains("*gin.Context");
+        let has_gin_import = source.contains("github.com/gin-gonic/gin")
+            || source.contains("// nyx-shape: gin");
+        let has_gin_ctx = source.contains("gin.Context") || source.contains("*gin.Context");
+        let has_echo = source.contains("github.com/labstack/echo")
+            || source.contains("echo.New")
+            || source.contains("echo.Context")
+            || source.contains("// nyx-shape: echo");
+        let has_fiber = source.contains("github.com/gofiber/fiber")
+            || source.contains("fiber.New")
+            || source.contains("fiber.Ctx")
+            || source.contains("// nyx-shape: fiber");
+        let has_chi = source.contains("github.com/go-chi/chi")
+            || source.contains("chi.NewRouter")
+            || source.contains("// nyx-shape: chi");
         let has_flag_parse = source.contains("flag.Parse()") || source.contains("flag.Parse(");
         let has_fuzz_signature = source.contains("[]byte")
             && (entry.starts_with("Fuzz") || source.contains("// nyx-shape: fuzz"));
 
-        if has_gin {
+        // Phase 17 framework variants win over the legacy generic
+        // gin / http shapes.  When the source declares a route at
+        // `r.Verb("/path", target)`, prefer the framework shape so
+        // the harness emits the correct toolchain marker.
+        if has_chi {
+            return Self::ChiRoute;
+        }
+        if has_fiber {
+            return Self::FiberRoute;
+        }
+        if has_echo {
+            return Self::EchoRoute;
+        }
+        if has_gin_import {
+            return Self::GinRoute;
+        }
+        if has_gin_ctx {
             return Self::GinHandler;
         }
         if has_http_handler {
@@ -819,6 +869,12 @@ fn imports_for_shape(shape: GoShape) -> String {
         GoShape::Generic | GoShape::FlagParseCli | GoShape::FuzzVariadic => &[],
         GoShape::HttpHandlerFunc => &["net/http", "net/http/httptest"],
         GoShape::GinHandler => &["net/http", "net/http/httptest"],
+        // Phase 17 framework variants drive a `httptest.NewServer`
+        // bootstrap so they need the full net/http surface.
+        GoShape::GinRoute
+        | GoShape::EchoRoute
+        | GoShape::FiberRoute
+        | GoShape::ChiRoute => &["fmt", "net/http", "net/http/httptest"],
     };
     let local_pkgs: &[&str] = match shape {
         GoShape::GinHandler => &["nyx-harness/entry", "nyx-harness/entry/gin"],
@@ -905,7 +961,63 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: GoShape, entry_fn: &str) -> Strin
         }
         GoShape::FlagParseCli => format!("\tentry.{entry_fn}()\n"),
         GoShape::FuzzVariadic => format!("\t_ = entry.{entry_fn}([]byte(payload))\n"),
+        // Phase 17 framework dispatchers.  Each marker line is
+        // matched against the verifier's per-framework toolchain
+        // probe so the runner can confirm the right harness ran.
+        // v1 invocation re-uses the HttpHandlerFunc-style
+        // `httptest.NewRequest` + `httptest.NewRecorder` shape
+        // because the synthetic entry.go ships a stdlib
+        // `(w, r)` handler shim that mirrors the framework
+        // handler's body.
+        GoShape::GinRoute => framework_route_invocation(
+            spec,
+            "NYX_GIN_TEST=1",
+            entry_fn,
+            use_body,
+            &query_param,
+        ),
+        GoShape::EchoRoute => framework_route_invocation(
+            spec,
+            "NYX_ECHO_TEST=1",
+            entry_fn,
+            use_body,
+            &query_param,
+        ),
+        GoShape::FiberRoute => framework_route_invocation(
+            spec,
+            "NYX_FIBER_TEST=1",
+            entry_fn,
+            use_body,
+            &query_param,
+        ),
+        GoShape::ChiRoute => framework_route_invocation(
+            spec,
+            "NYX_CHI_TEST=1",
+            entry_fn,
+            use_body,
+            &query_param,
+        ),
     }
+}
+
+fn framework_route_invocation(
+    _spec: &HarnessSpec,
+    marker: &str,
+    entry_fn: &str,
+    use_body: bool,
+    query_param: &str,
+) -> String {
+    let req_setup = if use_body {
+        "\treq := httptest.NewRequest(\"POST\", \"/\", strings.NewReader(payload))\n".to_owned()
+    } else {
+        format!(
+            "\treq := httptest.NewRequest(\"GET\", \"/?{q}=\"+payload, strings.NewReader(\"\"))\n",
+            q = query_param
+        )
+    };
+    format!(
+        "\tfmt.Println(\"{marker}\")\n{req_setup}\trw := httptest.NewRecorder()\n\tentry.{entry_fn}(rw, req)\n\t_ = http.StatusOK\n"
+    )
 }
 
 fn generate_go_mod() -> String {
@@ -1105,6 +1217,66 @@ mod tests {
         let src = "package entry\nimport \"nyx-harness/entry/gin\"\nfunc Handle(c *gin.Context) {}";
         let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
         assert_eq!(GoShape::detect(&spec, src), GoShape::GinHandler);
+    }
+
+    #[test]
+    fn shape_detect_gin_route() {
+        let src = "package main\nimport \"github.com/gin-gonic/gin\"\nfunc Handle(c *gin.Context) {}";
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::GinRoute);
+    }
+
+    #[test]
+    fn shape_detect_echo_route() {
+        let src = "package main\nimport \"github.com/labstack/echo/v4\"\nfunc Handle(c echo.Context) error { return nil }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::EchoRoute);
+    }
+
+    #[test]
+    fn shape_detect_fiber_route() {
+        let src = "package main\nimport \"github.com/gofiber/fiber/v2\"\nfunc Handle(c *fiber.Ctx) error { return nil }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::FiberRoute);
+    }
+
+    #[test]
+    fn shape_detect_chi_route() {
+        let src = "package main\nimport \"github.com/go-chi/chi/v5\"\nfunc Handle(w http.ResponseWriter, r *http.Request) {}";
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        assert_eq!(GoShape::detect(&spec, src), GoShape::ChiRoute);
+    }
+
+    #[test]
+    fn gin_route_emits_marker_in_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        let src = generate_main_go(&spec, GoShape::GinRoute);
+        assert!(
+            src.contains("NYX_GIN_TEST=1"),
+            "GinRoute must emit NYX_GIN_TEST=1 marker, got: {src}",
+        );
+        assert!(src.contains("httptest.NewRequest"));
+    }
+
+    #[test]
+    fn echo_route_emits_marker_in_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        let src = generate_main_go(&spec, GoShape::EchoRoute);
+        assert!(src.contains("NYX_ECHO_TEST=1"));
+    }
+
+    #[test]
+    fn fiber_route_emits_marker_in_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        let src = generate_main_go(&spec, GoShape::FiberRoute);
+        assert!(src.contains("NYX_FIBER_TEST=1"));
+    }
+
+    #[test]
+    fn chi_route_emits_marker_in_invocation() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
+        let src = generate_main_go(&spec, GoShape::ChiRoute);
+        assert!(src.contains("NYX_CHI_TEST=1"));
     }
 
     #[test]

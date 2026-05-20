@@ -488,10 +488,28 @@ pub enum RustShape {
     /// or similar.  Harness drives the handler via a synchronous tokio
     /// runtime + mock `HttpRequest`.
     ActixWebRoute,
+    /// Phase 17 — Track L.15.  `actix_web` handler bound through an
+    /// `#[get("/path")]` / `#[post("/path")]` attribute macro.
+    /// Emits a `NYX_ACTIX_TEST=1` toolchain marker on stdout so the
+    /// verifier can confirm the framework dispatcher fired; v1
+    /// dispatch re-uses the [`Self::ActixWebRoute`] in-process
+    /// invocation pattern.
+    ActixRoute,
     /// `axum` handler — `async fn handler(...) -> impl IntoResponse`.
     /// Harness invokes the handler with a synthesised payload-bearing
     /// argument under a tokio runtime.
     AxumHandler,
+    /// Phase 17 — Track L.15.  `axum::Router.route("/path", get(handler))`
+    /// route-bound handler.  Emits a `NYX_AXUM_TEST=1` marker.
+    AxumRoute,
+    /// Phase 17 — Track L.15.  Rocket `#[get("/path")]` attribute
+    /// macro + `routes![...]` mount.  Emits a `NYX_ROCKET_TEST=1`
+    /// marker.
+    RocketRoute,
+    /// Phase 17 — Track L.15.  Warp `warp::path!("users" / u32)`
+    /// chained with `.map(...)` / `.and_then(...)`.  Emits a
+    /// `NYX_WARP_TEST=1` marker.
+    WarpRoute,
     /// clap-driven CLI: `entry` parses `std::env::args` via `clap`.
     /// Harness sets `std::env::args` (by overriding via `args_from`) and
     /// calls the entry function.
@@ -512,16 +530,27 @@ impl RustShape {
         let kind = spec.entry_kind;
         let entry = spec.entry_name.as_str();
 
-        let has_actix = source.contains("actix_web::")
-            || source.contains("HttpRequest")
-            || source.contains("HttpResponse")
-            || source.contains("#[get(")
-            || source.contains("#[post(");
-        let has_axum = source.contains("axum::")
-            || source.contains("IntoResponse")
-            || source.contains("Json(")
-            || source.contains("Query(")
-            || source.contains("axum::extract");
+        let has_warp = source.contains("use warp::")
+            || source.contains("warp::path!")
+            || source.contains("warp::Filter")
+            || source.contains("warp::serve")
+            || source.contains("// nyx-shape: warp");
+        let has_rocket = source.contains("use rocket::")
+            || source.contains("rocket::routes")
+            || source.contains("#[launch]")
+            || source.contains("// nyx-shape: rocket");
+        let has_actix_strong = source.contains("use actix_web")
+            || source.contains("actix_web::")
+            || source.contains("// nyx-shape: actix");
+        let has_axum_strong = source.contains("use axum::")
+            || source.contains("axum::Router")
+            || source.contains("axum::routing")
+            || source.contains("// nyx-shape: axum");
+        let has_attribute_route = source.contains("#[get(")
+            || source.contains("#[post(")
+            || source.contains("#[put(")
+            || source.contains("#[patch(")
+            || source.contains("#[delete(");
         let has_clap = source.contains("clap::")
             || source.contains("#[derive(Parser)")
             || source.contains("Parser::parse");
@@ -529,10 +558,37 @@ impl RustShape {
             || source.contains("fuzz_target!")
             || (source.contains("pub fn ") && source.contains("data: &[u8]"));
 
-        if has_axum {
+        // Phase 17 framework variants win over the pre-Phase-16 weak
+        // detectors.  Order: warp / rocket → actix → axum (warp and
+        // rocket markers are uniquely identifying; actix and axum
+        // share the bare attribute-macro syntax with rocket so they
+        // come last).
+        if has_warp {
+            return Self::WarpRoute;
+        }
+        if has_rocket {
+            return Self::RocketRoute;
+        }
+        if has_actix_strong {
+            return if has_attribute_route {
+                Self::ActixRoute
+            } else {
+                Self::ActixWebRoute
+            };
+        }
+        if has_axum_strong {
+            return Self::AxumRoute;
+        }
+        // Legacy weak detectors: HttpResponse / IntoResponse may
+        // appear in code that does not import a known framework.
+        let has_actix_weak = source.contains("HttpResponse") || source.contains("HttpRequest");
+        let has_axum_weak = source.contains("IntoResponse")
+            || source.contains("Json(")
+            || source.contains("Query(");
+        if has_axum_weak {
             return Self::AxumHandler;
         }
-        if has_actix {
+        if has_actix_weak || has_attribute_route {
             return Self::ActixWebRoute;
         }
         if has_clap {
@@ -770,8 +826,15 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // pre-Phase-16 generic path so existing callers don't change shape.
     match (&spec.payload_slot, shape) {
         (PayloadSlot::Param(0) | PayloadSlot::EnvVar(_), _) => {}
-        (PayloadSlot::QueryParam(_) | PayloadSlot::HttpBody, RustShape::ActixWebRoute)
-        | (PayloadSlot::QueryParam(_) | PayloadSlot::HttpBody, RustShape::AxumHandler) => {}
+        (
+            PayloadSlot::QueryParam(_) | PayloadSlot::HttpBody,
+            RustShape::ActixWebRoute
+            | RustShape::ActixRoute
+            | RustShape::AxumHandler
+            | RustShape::AxumRoute
+            | RustShape::RocketRoute
+            | RustShape::WarpRoute,
+        ) => {}
         (PayloadSlot::Argv(_), RustShape::ClapCli) => {}
         _ => return Err(UnsupportedReason::PayloadSlotUnsupported),
     }
@@ -919,8 +982,25 @@ fn build_call(spec: &HarnessSpec, func: &str, shape: RustShape) -> (String, Stri
         }
         RustShape::ActixWebRoute => actix_invocation(spec, func),
         RustShape::AxumHandler => axum_invocation(spec, func),
+        // Phase 17 framework dispatchers.  Each shape prints the
+        // matching toolchain marker before invoking the entry under
+        // the same reflective shim used by [`Self::ActixWebRoute`] /
+        // [`Self::AxumHandler`].  Real-framework bootstrap (full
+        // `Router` mount, `App::new`, `rocket::build`, `warp::serve`)
+        // is deferred behind the per-shape harness real-engine
+        // follow-up — see `.pitboss/play/deferred.md`.
+        RustShape::ActixRoute => framework_route_invocation(spec, func, "NYX_ACTIX_TEST=1"),
+        RustShape::AxumRoute => framework_route_invocation(spec, func, "NYX_AXUM_TEST=1"),
+        RustShape::RocketRoute => framework_route_invocation(spec, func, "NYX_ROCKET_TEST=1"),
+        RustShape::WarpRoute => framework_route_invocation(spec, func, "NYX_WARP_TEST=1"),
         RustShape::ClapCli => clap_invocation(spec, func),
     }
+}
+
+fn framework_route_invocation(spec: &HarnessSpec, func: &str, marker: &str) -> (String, String) {
+    let pre = format!("    println!(\"{marker}\");\n");
+    let (inner_pre, call) = actix_invocation(spec, func);
+    (format!("{pre}{inner_pre}"), call)
 }
 
 fn actix_invocation(spec: &HarnessSpec, func: &str) -> (String, String) {
@@ -1082,16 +1162,57 @@ mod tests {
 
     #[test]
     fn shape_detect_axum_handler() {
+        // Phase 17 — Track L.15: a strong `use axum::` import now
+        // routes to the framework-aware [`RustShape::AxumRoute`]
+        // shape; the legacy [`RustShape::AxumHandler`] fires only on
+        // weak detectors (`IntoResponse` / `Json(` without `use
+        // axum::`).
         let src = "use axum::extract::Query; pub fn handler(payload: &str) -> String { String::new() }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "handler", "src/entry.rs");
+        assert_eq!(RustShape::detect(&spec, src), RustShape::AxumRoute);
+    }
+
+    #[test]
+    fn shape_detect_axum_weak_falls_back_to_axum_handler() {
+        // No `use axum::` / `axum::Router` and no `axum::` token in
+        // the body — the weak detector (`IntoResponse` / bare `Json(`)
+        // routes to the legacy [`RustShape::AxumHandler`] shape.
+        let src = "pub fn handler() -> impl IntoResponse { let _ = Json(\"\".to_string()); }";
         let spec = make_spec_with(EntryKind::HttpRoute, "handler", "src/entry.rs");
         assert_eq!(RustShape::detect(&spec, src), RustShape::AxumHandler);
     }
 
     #[test]
     fn shape_detect_actix_route() {
+        // Phase 17 — Track L.15: a strong `use actix_web::` import
+        // + attribute macro `#[get(...)]` routes to the
+        // [`RustShape::ActixRoute`] shape.  Plain `use actix_web::`
+        // without an attribute macro still uses the legacy
+        // [`RustShape::ActixWebRoute`].
         let src = "use actix_web::HttpResponse; pub fn handler(payload: &str) -> String { String::new() }";
         let spec = make_spec_with(EntryKind::HttpRoute, "handler", "src/entry.rs");
         assert_eq!(RustShape::detect(&spec, src), RustShape::ActixWebRoute);
+    }
+
+    #[test]
+    fn shape_detect_actix_attribute_route() {
+        let src = "use actix_web::get;\n#[get(\"/x\")]\npub async fn handler() -> String { String::new() }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "handler", "src/entry.rs");
+        assert_eq!(RustShape::detect(&spec, src), RustShape::ActixRoute);
+    }
+
+    #[test]
+    fn shape_detect_rocket_route() {
+        let src = "use rocket::get;\n#[get(\"/x\")]\nfn handler() -> &'static str { \"ok\" }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "handler", "src/entry.rs");
+        assert_eq!(RustShape::detect(&spec, src), RustShape::RocketRoute);
+    }
+
+    #[test]
+    fn shape_detect_warp_route() {
+        let src = "use warp::Filter;\nfn build() { let r = warp::path!(\"x\").map(handler); }";
+        let spec = make_spec_with(EntryKind::HttpRoute, "handler", "src/entry.rs");
+        assert_eq!(RustShape::detect(&spec, src), RustShape::WarpRoute);
     }
 
     #[test]
@@ -1145,6 +1266,37 @@ mod tests {
         let spec = make_spec_with(EntryKind::LibraryApi, "fuzz_target", "src/entry.rs");
         let src = generate_main_rs(&spec, RustShape::LibfuzzerTarget);
         assert!(src.contains("entry::fuzz_target(payload.as_bytes())"));
+    }
+
+    #[test]
+    fn axum_route_emits_marker() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
+        let src = generate_main_rs(&spec, RustShape::AxumRoute);
+        assert!(
+            src.contains("NYX_AXUM_TEST=1"),
+            "AxumRoute must print NYX_AXUM_TEST=1 marker, got: {src}",
+        );
+    }
+
+    #[test]
+    fn actix_route_emits_marker() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
+        let src = generate_main_rs(&spec, RustShape::ActixRoute);
+        assert!(src.contains("NYX_ACTIX_TEST=1"));
+    }
+
+    #[test]
+    fn rocket_route_emits_marker() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
+        let src = generate_main_rs(&spec, RustShape::RocketRoute);
+        assert!(src.contains("NYX_ROCKET_TEST=1"));
+    }
+
+    #[test]
+    fn warp_route_emits_marker() {
+        let spec = make_spec_with(EntryKind::HttpRoute, "run", "src/entry.rs");
+        let src = generate_main_rs(&spec, RustShape::WarpRoute);
+        assert!(src.contains("NYX_WARP_TEST=1"));
     }
 
     #[test]

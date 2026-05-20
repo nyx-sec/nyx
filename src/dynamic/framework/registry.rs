@@ -47,6 +47,10 @@ pub fn adapters_for(lang: Lang) -> &'static [&'static dyn FrameworkAdapter] {
 static RUST: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderRustAdapter,
     &super::adapters::RedirectRustAdapter,
+    &super::adapters::RustActixAdapter,
+    &super::adapters::RustAxumAdapter,
+    &super::adapters::RustRocketAdapter,
+    &super::adapters::RustWarpAdapter,
 ];
 static C: &[&dyn FrameworkAdapter] = &[];
 static CPP: &[&dyn FrameworkAdapter] = &[];
@@ -64,6 +68,10 @@ static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxeJavaAdapter,
 ];
 static GO: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::GoChiAdapter,
+    &super::adapters::GoEchoAdapter,
+    &super::adapters::GoFiberAdapter,
+    &super::adapters::GoGinAdapter,
     &super::adapters::HeaderGoAdapter,
     &super::adapters::RedirectGoAdapter,
     &super::adapters::XxeGoAdapter,

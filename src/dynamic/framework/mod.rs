@@ -214,13 +214,14 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_16() {
-        // Phase 16 (Track L.14) adds three PHP framework adapters
-        // (`php-codeigniter`, `php-laravel`, `php-symfony`) to the
-        // PHP slice, growing it from 7 → 10.  The Phase 15 baseline
-        // for the other languages stays put: Java 11, Python 11,
-        // Ruby 8, JavaScript 11, TypeScript 4, Go 3, Rust 2.  C / Cpp
-        // stay empty.
+    fn registry_baseline_after_phase_17() {
+        // Phase 17 (Track L.15) adds four Go framework adapters
+        // (`go-chi`, `go-echo`, `go-fiber`, `go-gin`) to the Go
+        // slice, growing it 3 → 7, plus four Rust framework adapters
+        // (`rust-actix`, `rust-axum`, `rust-rocket`, `rust-warp`)
+        // growing the Rust slice 2 → 6.  The Phase 16 baseline for
+        // the other languages stays put: Java 11, Php 10, Python 11,
+        // Ruby 8, JavaScript 11, TypeScript 4.  C / Cpp stay empty.
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
@@ -278,8 +279,8 @@ mod tests {
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
             go_registered.len(),
-            3,
-            "Go must have J.3 + J.6 + J.7 adapters",
+            7,
+            "Go must have J.3 + J.6 + J.7 (3) + L.15 chi/echo/fiber/gin (4) adapters",
         );
         for adapter in go_registered {
             assert_eq!(adapter.lang(), Lang::Go);
@@ -287,8 +288,8 @@ mod tests {
         let rust_registered = registry::adapters_for(Lang::Rust);
         assert_eq!(
             rust_registered.len(),
-            2,
-            "Rust must have the J.6 + J.7 adapters",
+            6,
+            "Rust must have the J.6 + J.7 (2) + L.15 actix/axum/rocket/warp (4) adapters",
         );
         for adapter in rust_registered {
             assert_eq!(adapter.lang(), Lang::Rust);
