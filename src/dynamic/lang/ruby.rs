@@ -45,6 +45,10 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
     EntryKindTag::ClassMethod,
+    EntryKindTag::ScheduledJob,
+    EntryKindTag::WebSocket,
+    EntryKindTag::Middleware,
+    EntryKindTag::Migration,
 ];
 
 impl LangEmitter for RubyEmitter {
@@ -437,6 +441,26 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_class_method_harness(class, method));
     }
 
+    // Phase 21 (Track M.3): ScheduledJob short-circuit (Sidekiq workers).
+    if let crate::evidence::EntryKind::ScheduledJob { schedule } = &spec.entry_kind {
+        return Ok(emit_scheduled_job_harness(&spec.entry_name, schedule.as_deref()));
+    }
+
+    // Phase 21 (Track M.3): WebSocket short-circuit (ActionCable channels).
+    if let crate::evidence::EntryKind::WebSocket { path } = &spec.entry_kind {
+        return Ok(emit_websocket_handler_harness(&spec.entry_name, path));
+    }
+
+    // Phase 21 (Track M.3): Middleware short-circuit (Rack-shape).
+    if let crate::evidence::EntryKind::Middleware { name } = &spec.entry_kind {
+        return Ok(emit_middleware_harness(&spec.entry_name, name));
+    }
+
+    // Phase 21 (Track M.3): Migration short-circuit (ActiveRecord up/down).
+    if let crate::evidence::EntryKind::Migration { version } = &spec.entry_kind {
+        return Ok(emit_migration_harness(&spec.entry_name, version.as_deref()));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = RubyShape::detect(spec, &entry_source);
     let source = generate_source(spec, shape);
@@ -544,6 +568,253 @@ end
 "#,
         class = class,
         method = method,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: Some("entry.rb".to_owned()),
+    }
+}
+
+// ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
+
+fn nyx_ruby_preamble() -> String {
+    let shim = probe_shim();
+    format!(
+        r#"# Nyx dynamic harness — Phase 21 / Track M.3 (auto-generated).
+{shim}
+
+def nyx_payload
+  v = ENV['NYX_PAYLOAD']
+  return v if v && !v.empty?
+  b64 = ENV['NYX_PAYLOAD_B64']
+  if b64 && !b64.empty?
+    begin
+      require 'base64'
+      return Base64.decode64(b64)
+    rescue StandardError
+      return ''
+    end
+  end
+  ''
+end
+
+$nyx_payload = nyx_payload
+
+begin
+  require_relative './entry'
+rescue LoadError, ScriptError => e
+  STDERR.puts("NYX_IMPORT_ERROR: #{{e.message}}")
+  exit 77
+end
+
+puts "__NYX_SINK_HIT__"
+"#,
+        shim = shim,
+    )
+}
+
+fn emit_scheduled_job_harness(handler: &str, schedule: Option<&str>) -> HarnessSource {
+    let preamble = nyx_ruby_preamble();
+    let sched = schedule.unwrap_or("<unscheduled>");
+    let body = format!(
+        r#"{preamble}
+puts "__NYX_SCHEDULED_JOB__: " + {sched:?}
+
+# Sidekiq workers expose perform(*args) on a class.  Try looking up the
+# named class first; fall back to a top-level function.
+target = nil
+if Object.const_defined?({handler:?})
+  begin
+    target = Object.const_get({handler:?}).new
+    if target.respond_to?(:perform)
+      begin
+        result = target.perform($nyx_payload)
+        print(result.to_s) if result
+      rescue StandardError => e
+        STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+      end
+      exit 0
+    end
+  rescue StandardError
+  end
+end
+
+if respond_to?({handler:?}.to_sym, true)
+  begin
+    result = send({handler:?}.to_sym, $nyx_payload)
+    print(result.to_s) if result
+  rescue StandardError => e
+    STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+  end
+else
+  STDERR.puts("NYX_HANDLER_NOT_FOUND: " + {handler:?})
+  exit 78
+end
+"#,
+        preamble = preamble,
+        handler = handler,
+        sched = sched,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: Some("entry.rb".to_owned()),
+    }
+}
+
+fn emit_websocket_handler_harness(handler: &str, path: &str) -> HarnessSource {
+    let preamble = nyx_ruby_preamble();
+    let body = format!(
+        r#"{preamble}
+puts "__NYX_WEBSOCKET__: " + {path:?}
+
+# ActionCable channels expose `receive(data)` on a subclass.  Find the
+# enclosing class via const lookup; fall back to top-level send.
+if Object.const_defined?({handler:?})
+  cls = Object.const_get({handler:?})
+  begin
+    inst = cls.new rescue (cls.allocate rescue nil)
+    if inst && inst.respond_to?(:receive)
+      begin
+        result = inst.receive($nyx_payload)
+        print(result.to_s) if result
+      rescue StandardError => e
+        STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+      end
+      exit 0
+    end
+  rescue StandardError
+  end
+end
+
+if respond_to?({handler:?}.to_sym, true)
+  begin
+    result = send({handler:?}.to_sym, $nyx_payload)
+    print(result.to_s) if result
+  rescue StandardError => e
+    STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+  end
+else
+  STDERR.puts("NYX_HANDLER_NOT_FOUND: " + {handler:?})
+  exit 78
+end
+"#,
+        preamble = preamble,
+        handler = handler,
+        path = path,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: Some("entry.rb".to_owned()),
+    }
+}
+
+fn emit_middleware_harness(handler: &str, name: &str) -> HarnessSource {
+    let preamble = nyx_ruby_preamble();
+    let body = format!(
+        r#"{preamble}
+puts "__NYX_MIDDLEWARE__: " + {name:?}
+
+# Rack-shape middleware: class with #call(env).
+env = {{
+  'REQUEST_METHOD' => 'POST',
+  'PATH_INFO' => '/nyx',
+  'QUERY_STRING' => "q=#{{$nyx_payload}}",
+  'rack.input' => StringIO.new($nyx_payload),
+  'nyx.payload' => $nyx_payload,
+}}
+require 'stringio'
+
+if Object.const_defined?({handler:?})
+  cls = Object.const_get({handler:?})
+  begin
+    inst = cls.new(lambda {{ |e| [200, {{}}, ['ok']] }})
+    if inst.respond_to?(:call)
+      result = inst.call(env)
+      print(result.to_s) if result
+      exit 0
+    end
+  rescue StandardError => e
+    STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+  end
+end
+
+if respond_to?({handler:?}.to_sym, true)
+  begin
+    result = send({handler:?}.to_sym, env)
+    print(result.to_s) if result
+  rescue StandardError => e
+    STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+  end
+else
+  STDERR.puts("NYX_HANDLER_NOT_FOUND: " + {handler:?})
+  exit 78
+end
+"#,
+        preamble = preamble,
+        handler = handler,
+        name = name,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.rb".to_owned(),
+        command: vec!["ruby".to_owned(), "harness.rb".to_owned()],
+        extra_files: vec![],
+        entry_subpath: Some("entry.rb".to_owned()),
+    }
+}
+
+fn emit_migration_harness(handler: &str, version: Option<&str>) -> HarnessSource {
+    let preamble = nyx_ruby_preamble();
+    let ver = version.unwrap_or("<no-version>");
+    let body = format!(
+        r#"{preamble}
+puts "__NYX_MIGRATION__: " + {ver:?}
+
+# ActiveRecord migrations expose `up` / `down` / `change` on a subclass.
+if Object.const_defined?({handler:?})
+  cls = Object.const_get({handler:?})
+  begin
+    inst = cls.new
+    %i[up change down].each do |m|
+      if inst.respond_to?(m)
+        begin
+          result = inst.send(m)
+          print(result.to_s) if result
+        rescue StandardError => e
+          STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+        end
+        exit 0
+      end
+    end
+  rescue StandardError => e
+    STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+  end
+end
+
+if respond_to?({handler:?}.to_sym, true)
+  begin
+    result = send({handler:?}.to_sym)
+    print(result.to_s) if result
+  rescue StandardError => e
+    STDERR.puts("NYX_EXCEPTION: #{{e.class.name}}: #{{e.message}}")
+  end
+else
+  STDERR.puts("NYX_HANDLER_NOT_FOUND: " + {handler:?})
+  exit 78
+end
+"#,
+        preamble = preamble,
+        handler = handler,
+        ver = ver,
     );
     HarnessSource {
         source: body,

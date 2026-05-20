@@ -57,6 +57,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::CliSubcommand,
     EntryKindTag::ClassMethod,
     EntryKindTag::MessageHandler,
+    EntryKindTag::GraphQLResolver,
 ];
 
 impl LangEmitter for GoEmitter {
@@ -590,6 +591,11 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // the named handler function in the entry package.
     if let crate::evidence::EntryKind::MessageHandler { queue, .. } = &spec.entry_kind {
         return Ok(emit_message_handler_harness(spec, queue));
+    }
+
+    // Phase 21 (Track M.3): GraphQLResolver short-circuit (gqlgen).
+    if let crate::evidence::EntryKind::GraphQLResolver { type_name, field } = &spec.entry_kind {
+        return Ok(emit_graphql_resolver_harness(&spec.entry_name, type_name, field));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -1260,6 +1266,85 @@ func main() {{
     );
     let _ = publish_marker;
 
+    HarnessSource {
+        source,
+        filename: "main.go".to_owned(),
+        command: vec!["./nyx_harness".to_owned()],
+        extra_files: vec![("go.mod".to_owned(), go_mod)],
+        entry_subpath: Some("entry/entry.go".to_owned()),
+    }
+}
+
+// ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
+
+/// Phase 21 (Track M.3) — GraphQL resolver harness for Go (gqlgen).
+///
+/// Looks up the named resolver via the entry package's `NyxResolvers`
+/// map (mirrors the `NyxReceivers` / `NyxHandlers` contracts from
+/// Phase 19 / 20), constructs a synthetic `context.Background()`, and
+/// invokes the resolver with the payload positionally.
+fn emit_graphql_resolver_harness(handler: &str, type_name: &str, field: &str) -> HarnessSource {
+    let shim = probe_shim();
+    let go_mod = generate_go_mod();
+    let source = format!(
+        r##"// Nyx dynamic harness — GraphQL resolver (Phase 21 / Track M.3).
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"reflect"
+
+	"nyx-harness/entry"
+)
+
+{shim}
+
+func nyxPayload() string {{
+	if v := os.Getenv("NYX_PAYLOAD"); v != "" {{
+		return v
+	}}
+	return ""
+}}
+
+func main() {{
+	__nyx_install_crash_guard("{type_name}.{field}")
+	payload := nyxPayload()
+	fmt.Println("__NYX_GRAPHQL_RESOLVER__: " + "{type_name}" + "." + "{field}")
+	fmt.Println("__NYX_SINK_HIT__")
+	cb, ok := entry.NyxResolvers["{handler}"]
+	if !ok {{
+		fmt.Fprintln(os.Stderr, "NYX_RESOLVER_NOT_FOUND: " + "{handler}")
+		os.Exit(78)
+	}}
+	v := reflect.ValueOf(cb)
+	args := make([]reflect.Value, v.Type().NumIn())
+	for i := 0; i < v.Type().NumIn(); i++ {{
+		want := v.Type().In(i)
+		if want.Kind() == reflect.String {{
+			args[i] = reflect.ValueOf(payload)
+		}} else if want.String() == "context.Context" {{
+			args[i] = reflect.ValueOf(context.Background())
+		}} else {{
+			args[i] = reflect.Zero(want)
+		}}
+	}}
+	defer func() {{
+		if r := recover(); r != nil {{
+			fmt.Fprintf(os.Stderr, "NYX_EXCEPTION: panic: %v\n", r)
+		}}
+	}}()
+	out := v.Call(args)
+	if len(out) > 0 {{
+		fmt.Println(out[0].Interface())
+	}}
+}}
+"##,
+        handler = handler,
+        type_name = type_name,
+        field = field,
+    );
     HarnessSource {
         source,
         filename: "main.go".to_owned(),

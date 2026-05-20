@@ -394,16 +394,65 @@ mod tests {
         assert_eq!(EntryKind::Unknown.tag(), T::Unknown);
     }
 
-    /// Phase 18 (Track M.0) baseline — the variants not yet wired by a
-    /// follow-up phase still route through the supported-set gate so the
-    /// verifier produces a structured `Inconclusive(EntryKindUnsupported)`
-    /// rather than degrading silently.  Phase 19 lands `ClassMethod`;
-    /// Phase 20 lands `MessageHandler` on five langs (Python, Java,
-    /// JavaScript, TypeScript, Go); the rest stay unsupported.
+    /// Phase 21 (Track M.3) — the five remaining `EntryKind` variants
+    /// (`ScheduledJob` / `GraphQLResolver` / `WebSocket` / `Middleware`
+    /// / `Migration`) are now wired on the per-lang emitters the brief
+    /// targets.  This regression guard pins the per-lang advertisement
+    /// matrix.  Languages outside each variant's lang-set still route
+    /// through the supported-set gate so the verifier emits
+    /// `Inconclusive(EntryKindUnsupported)` rather than degrading
+    /// silently.
     #[test]
-    fn entry_kind_phase_21_variants_are_unsupported_everywhere() {
+    fn entry_kind_phase_21_variants_advertised_per_brief() {
         use crate::evidence::EntryKindTag as T;
-        let still_unsupported = [
+        let want = |lang: Lang, tag: T| -> bool {
+            match (lang, tag) {
+                // ScheduledJob: cron (JS), quartz (Java), celery (Python),
+                // sidekiq (Ruby).  TypeScript shares the JS emitter so it
+                // inherits the variant through the shared SUPPORTED slice.
+                (
+                    Lang::Python | Lang::JavaScript | Lang::TypeScript | Lang::Java | Lang::Ruby,
+                    T::ScheduledJob,
+                ) => true,
+                // GraphQLResolver: apollo + relay (JS), graphene (Python),
+                // juniper (Rust), gqlgen (Go).  TypeScript shares the JS
+                // emitter so it inherits resolver dispatch.
+                (
+                    Lang::Python
+                    | Lang::JavaScript
+                    | Lang::TypeScript
+                    | Lang::Rust
+                    | Lang::Go,
+                    T::GraphQLResolver,
+                ) => true,
+                // WebSocket: socketio + channels (Python), ws (JS),
+                // actioncable (Ruby).
+                (Lang::Python | Lang::JavaScript | Lang::TypeScript | Lang::Ruby, T::WebSocket) => true,
+                // Middleware: express (JS), django (Python), rails (Ruby),
+                // spring (Java), laravel (PHP).
+                (
+                    Lang::Python
+                    | Lang::JavaScript
+                    | Lang::TypeScript
+                    | Lang::Java
+                    | Lang::Ruby
+                    | Lang::Php,
+                    T::Middleware,
+                ) => true,
+                // Migration: rails (Ruby), django + flask (Python),
+                // laravel (PHP), sequelize + prisma (JS).
+                (
+                    Lang::Python
+                    | Lang::JavaScript
+                    | Lang::TypeScript
+                    | Lang::Ruby
+                    | Lang::Php,
+                    T::Migration,
+                ) => true,
+                _ => false,
+            }
+        };
+        let phase_21_tags = [
             T::ScheduledJob,
             T::GraphQLResolver,
             T::WebSocket,
@@ -423,16 +472,20 @@ mod tests {
             Lang::Cpp,
         ] {
             let supported = entry_kinds_supported(lang);
-            for tag in still_unsupported {
-                assert!(
-                    !supported.contains(&tag),
-                    "{lang:?} prematurely advertised {tag:?} — Phase 21 has not landed the per-lang adapters for this variant"
+            for tag in phase_21_tags {
+                let expected = want(lang, tag);
+                let actual = supported.contains(&tag);
+                assert_eq!(
+                    actual, expected,
+                    "{lang:?} expected supported={expected:?} for {tag:?}; got supported={actual:?}",
                 );
-                let hint = entry_kind_hint(lang, tag);
-                assert!(
-                    hint.contains(tag.as_str()),
-                    "{lang:?} hint must mention {tag:?}, got: {hint:?}"
-                );
+                if !actual {
+                    let hint = entry_kind_hint(lang, tag);
+                    assert!(
+                        hint.contains(tag.as_str()),
+                        "{lang:?} hint for unsupported {tag:?} must mention the attempted tag, got: {hint:?}"
+                    );
+                }
             }
         }
     }

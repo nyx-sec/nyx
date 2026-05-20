@@ -44,6 +44,7 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::CliSubcommand,
     EntryKindTag::LibraryApi,
     EntryKindTag::ClassMethod,
+    EntryKindTag::GraphQLResolver,
 ];
 
 impl LangEmitter for RustEmitter {
@@ -829,6 +830,13 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_class_method_harness(spec, class, method));
     }
 
+    // Phase 21 (Track M.3): GraphQLResolver short-circuit (Juniper).
+    // Emits a `src/main.rs` that invokes `entry::<handler>(payload)`
+    // directly — Juniper resolvers are plain async fns in the source.
+    if let crate::evidence::EntryKind::GraphQLResolver { type_name, field } = &spec.entry_kind {
+        return Ok(emit_graphql_resolver_harness(spec, type_name, field));
+    }
+
     let shape = detect_shape(spec);
 
     // Generic + LibfuzzerTarget accept Param(0)/EnvVar; richer shapes
@@ -938,6 +946,92 @@ fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
         class = class,
         method = method,
         entry_label = entry_label,
+    );
+    HarnessSource {
+        source: body,
+        filename: "src/main.rs".into(),
+        command: vec!["target/release/nyx_harness".into()],
+        extra_files: vec![("Cargo.toml".into(), cargo_toml)],
+        entry_subpath: Some("src/entry.rs".into()),
+    }
+}
+
+// ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
+
+/// Phase 21 (Track M.3) — GraphQL resolver harness for Rust (Juniper).
+///
+/// Emits a `src/main.rs` that invokes `entry::<handler>(&payload)` —
+/// the harness assumes the entry module exposes a free function with
+/// the resolver name; Juniper's `#[graphql_object]` impl methods are
+/// not directly reachable through `mod entry`, so the v1 path goes
+/// through a thin re-export the entry file is expected to publish.
+fn emit_graphql_resolver_harness(
+    spec: &HarnessSpec,
+    type_name: &str,
+    field: &str,
+) -> HarnessSource {
+    let shim = probe_shim();
+    let cargo_toml = generate_cargo_toml(spec.expected_cap);
+    let handler = &spec.entry_name;
+    let label = format!("{type_name}.{field}");
+    let body = format!(
+        r#"//! Nyx dynamic harness — GraphQL resolver (Phase 21 / Track M.3).
+mod entry;
+{shim}
+fn main() {{
+    let payload = nyx_payload();
+    __nyx_install_crash_guard("{label}");
+    println!("__NYX_GRAPHQL_RESOLVER__: {type_name}.{field}");
+    println!("__NYX_SINK_HIT__");
+    let _ = entry::{handler}(&payload);
+}}
+
+fn nyx_payload() -> String {{
+    if let Ok(v) = std::env::var("NYX_PAYLOAD") {{
+        if !v.is_empty() {{
+            return v;
+        }}
+    }}
+    if let Ok(b64) = std::env::var("NYX_PAYLOAD_B64") {{
+        if let Some(bytes) = b64_decode(b64.as_bytes()) {{
+            return String::from_utf8_lossy(&bytes).into_owned();
+        }}
+    }}
+    String::new()
+}}
+
+fn b64_decode(input: &[u8]) -> Option<Vec<u8>> {{
+    const TABLE: [u8; 128] = {{
+        let mut t = [255u8; 128];
+        let alphabet: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut i = 0usize;
+        while i < alphabet.len() {{
+            t[alphabet[i] as usize] = i as u8;
+            i += 1;
+        }}
+        t
+    }};
+    let input: Vec<u8> = input.iter().copied().filter(|&c| c != b'\n' && c != b'\r').collect();
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut i = 0;
+    while i + 3 < input.len() {{
+        let a = *TABLE.get(input[i] as usize)? as u32;
+        let b = *TABLE.get(input[i + 1] as usize)? as u32;
+        let c = if input[i + 2] == b'=' {{ 64 }} else {{ *TABLE.get(input[i + 2] as usize)? as u32 }};
+        let d = if input[i + 3] == b'=' {{ 64 }} else {{ *TABLE.get(input[i + 3] as usize)? as u32 }};
+        if a == 255 || b == 255 || c == 255 || d == 255 {{ return None; }}
+        out.push(((a << 2) | (b >> 4)) as u8);
+        if input[i + 2] != b'=' {{ out.push(((b << 4) | (c >> 2)) as u8); }}
+        if input[i + 3] != b'=' {{ out.push(((c << 6) | d) as u8); }}
+        i += 4;
+    }}
+    Some(out)
+}}
+"#,
+        handler = handler,
+        type_name = type_name,
+        field = field,
+        label = label,
     );
     HarnessSource {
         source: body,

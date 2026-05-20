@@ -45,6 +45,7 @@ pub fn adapters_for(lang: Lang) -> &'static [&'static dyn FrameworkAdapter] {
 // later phase that appends a new adapter cannot silently re-order
 // the existing first-match.
 static RUST: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::GraphqlJuniperAdapter,
     &super::adapters::HeaderRustAdapter,
     &super::adapters::RedirectRustAdapter,
     &super::adapters::RustActixAdapter,
@@ -64,8 +65,10 @@ static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::JavaThymeleafAdapter,
     &super::adapters::KafkaJavaAdapter,
     &super::adapters::LdapSpringAdapter,
+    &super::adapters::MiddlewareSpringAdapter,
     &super::adapters::RabbitJavaAdapter,
     &super::adapters::RedirectJavaAdapter,
+    &super::adapters::ScheduledQuartzAdapter,
     &super::adapters::SqsJavaAdapter,
     &super::adapters::XpathJavaAdapter,
     &super::adapters::XxeJavaAdapter,
@@ -75,6 +78,7 @@ static GO: &[&dyn FrameworkAdapter] = &[
     &super::adapters::GoEchoAdapter,
     &super::adapters::GoFiberAdapter,
     &super::adapters::GoGinAdapter,
+    &super::adapters::GraphqlGqlgenAdapter,
     &super::adapters::HeaderGoAdapter,
     &super::adapters::NatsGoAdapter,
     &super::adapters::PubsubGoAdapter,
@@ -84,6 +88,8 @@ static GO: &[&dyn FrameworkAdapter] = &[
 static PHP: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderPhpAdapter,
     &super::adapters::LdapPhpAdapter,
+    &super::adapters::MiddlewareLaravelAdapter,
+    &super::adapters::MigrationLaravelAdapter,
     &super::adapters::PhpCodeIgniterAdapter,
     &super::adapters::PhpLaravelAdapter,
     &super::adapters::PhpSymfonyAdapter,
@@ -94,9 +100,13 @@ static PHP: &[&dyn FrameworkAdapter] = &[
     &super::adapters::XxePhpAdapter,
 ];
 static PYTHON: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::GraphqlGrapheneAdapter,
     &super::adapters::HeaderPythonAdapter,
     &super::adapters::KafkaPythonAdapter,
     &super::adapters::LdapPythonAdapter,
+    &super::adapters::MiddlewareDjangoAdapter,
+    &super::adapters::MigrationDjangoAdapter,
+    &super::adapters::MigrationFlaskAdapter,
     &super::adapters::PubsubPythonAdapter,
     &super::adapters::PythonDjangoAdapter,
     &super::adapters::PythonFastApiAdapter,
@@ -106,18 +116,25 @@ static PYTHON: &[&dyn FrameworkAdapter] = &[
     &super::adapters::PythonStarletteAdapter,
     &super::adapters::RabbitPythonAdapter,
     &super::adapters::RedirectPythonAdapter,
+    &super::adapters::ScheduledCeleryAdapter,
     &super::adapters::SqsPythonAdapter,
+    &super::adapters::WebsocketChannelsAdapter,
+    &super::adapters::WebsocketSocketIoAdapter,
     &super::adapters::XpathPythonAdapter,
     &super::adapters::XxePythonAdapter,
 ];
 static RUBY: &[&dyn FrameworkAdapter] = &[
     &super::adapters::HeaderRubyAdapter,
+    &super::adapters::MiddlewareRailsAdapter,
+    &super::adapters::MigrationRailsAdapter,
     &super::adapters::RedirectRubyAdapter,
     &super::adapters::RubyErbAdapter,
     &super::adapters::RubyHanamiAdapter,
     &super::adapters::RubyMarshalAdapter,
     &super::adapters::RubyRailsAdapter,
     &super::adapters::RubySinatraAdapter,
+    &super::adapters::ScheduledSidekiqAdapter,
+    &super::adapters::WebsocketActionCableAdapter,
     &super::adapters::XxeRubyAdapter,
 ];
 static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[
@@ -127,16 +144,23 @@ static TYPESCRIPT: &[&dyn FrameworkAdapter] = &[
     &super::adapters::TsNestAdapter,
 ];
 static JAVASCRIPT: &[&dyn FrameworkAdapter] = &[
+    &super::adapters::GraphqlApolloAdapter,
+    &super::adapters::GraphqlRelayAdapter,
     &super::adapters::HeaderJsAdapter,
     &super::adapters::JsExpressAdapter,
     &super::adapters::JsFastifyAdapter,
     &super::adapters::JsHandlebarsAdapter,
     &super::adapters::JsKoaAdapter,
     &super::adapters::JsNestAdapter,
+    &super::adapters::MiddlewareExpressAdapter,
+    &super::adapters::MigrationPrismaAdapter,
+    &super::adapters::MigrationSequelizeAdapter,
     &super::adapters::PpJsonDeepAssignJsAdapter,
     &super::adapters::PpLodashMergeJsAdapter,
     &super::adapters::PpObjectAssignJsAdapter,
     &super::adapters::RedirectJsAdapter,
+    &super::adapters::ScheduledCronAdapter,
     &super::adapters::SqsNodeAdapter,
+    &super::adapters::WebsocketWsAdapter,
     &super::adapters::XpathJsAdapter,
 ];

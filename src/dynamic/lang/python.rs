@@ -47,6 +47,11 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::CliSubcommand,
     EntryKindTag::ClassMethod,
     EntryKindTag::MessageHandler,
+    EntryKindTag::ScheduledJob,
+    EntryKindTag::GraphQLResolver,
+    EntryKindTag::WebSocket,
+    EntryKindTag::Middleware,
+    EntryKindTag::Migration,
 ];
 
 impl LangEmitter for PythonEmitter {
@@ -704,6 +709,41 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         return Ok(emit_message_handler(spec, queue));
     }
 
+    // Phase 21 (Track M.3): ScheduledJob short-circuit.  Synthetic
+    // harness — imports the entry module, invokes the named handler
+    // with the payload as the single positional argument (matching
+    // Celery's `task(arg)` shape), then prints the sink-hit sentinel.
+    if let crate::evidence::EntryKind::ScheduledJob { schedule } = &spec.entry_kind {
+        return Ok(emit_scheduled_job(spec, schedule.as_deref()));
+    }
+
+    // Phase 21 (Track M.3): GraphQLResolver short-circuit.  Synthetic
+    // resolver dispatch — `resolve_<field>(self, info, payload)`.
+    if let crate::evidence::EntryKind::GraphQLResolver { type_name, field } = &spec.entry_kind {
+        return Ok(emit_graphql_resolver(spec, type_name, field));
+    }
+
+    // Phase 21 (Track M.3): WebSocket short-circuit.  Invokes the
+    // handler with `(self, payload)` shape that python-socketio /
+    // Django Channels both accept.
+    if let crate::evidence::EntryKind::WebSocket { path } = &spec.entry_kind {
+        return Ok(emit_websocket_handler(spec, path));
+    }
+
+    // Phase 21 (Track M.3): Middleware short-circuit.  Builds a
+    // synthetic `request` object whose body field carries the payload
+    // and invokes the middleware with `(request, lambda r: r)` next.
+    if let crate::evidence::EntryKind::Middleware { name } = &spec.entry_kind {
+        return Ok(emit_middleware(spec, name));
+    }
+
+    // Phase 21 (Track M.3): Migration short-circuit.  Invokes the
+    // module-level `upgrade()` / `up()` function (no args) so the
+    // migration's SQL / DDL emitter runs.
+    if let crate::evidence::EntryKind::Migration { version } = &spec.entry_kind {
+        return Ok(emit_migration(spec, version.as_deref()));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = PythonShape::detect(spec, &entry_source);
     let body = generate_for_shape(spec, shape);
@@ -924,6 +964,257 @@ except Exception as _e:
         pubsub_src = pubsub_src,
         rabbit_src = rabbit_src,
         register_and_publish = indent_lines(&register_and_publish, "    "),
+    );
+    HarnessSource {
+        source: format!("{preamble}\n{body}\n{postamble}"),
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+// ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
+
+/// Phase 21: ScheduledJob harness.  Imports the entry module, locates
+/// the named function, invokes it with the payload string as the
+/// single positional argument, and prints the sink-hit sentinel.
+fn emit_scheduled_job(spec: &HarnessSpec, schedule: Option<&str>) -> HarnessSource {
+    let preamble = harness_preamble(spec);
+    let postamble = harness_postamble();
+    let handler = &spec.entry_name;
+    let schedule_repr = schedule.unwrap_or("<unscheduled>");
+    let body = format!(
+        r#"# Shape: scheduled job — Phase 21 / Track M.3.
+print("__NYX_SCHEDULED_JOB__: " + {schedule:?}, flush=True)
+_h = getattr(_entry_mod, {handler:?}, None)
+if _h is None:
+    print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+    sys.exit(78)
+try:
+    _result = _h(payload)
+    if _result is not None:
+        try:
+            print(str(_result), flush=True)
+        except Exception:
+            pass
+except SystemExit as _e:
+    sys.exit(_e.code)
+except Exception as _e:
+    print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+"#,
+        handler = handler,
+        schedule = schedule_repr,
+    );
+    HarnessSource {
+        source: format!("{preamble}\n{body}\n{postamble}"),
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 21: GraphQLResolver harness.  Imports the entry module,
+/// locates the named resolver function, builds a synthetic `info`
+/// context object, and invokes the resolver with `(info, payload)`.
+fn emit_graphql_resolver(spec: &HarnessSpec, type_name: &str, field: &str) -> HarnessSource {
+    let preamble = harness_preamble(spec);
+    let postamble = harness_postamble();
+    let handler = &spec.entry_name;
+    let body = format!(
+        r#"# Shape: GraphQL resolver — Phase 21 / Track M.3.
+print("__NYX_GRAPHQL_RESOLVER__: " + {type_name:?} + "." + {field:?}, flush=True)
+
+class _NyxGraphQLInfo:
+    """Synthetic resolver context — apollo-style {{ context, fieldName }}."""
+    def __init__(self, field_name):
+        self.field_name = field_name
+        self.context = {{}}
+
+_resolver = getattr(_entry_mod, {handler:?}, None)
+if _resolver is None:
+    print("NYX_RESOLVER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+    sys.exit(78)
+try:
+    # Graphene resolvers are `resolve_field(self, info, **args)`; we
+    # synthesise `self = None`, `info = _NyxGraphQLInfo`, and pass the
+    # payload positionally so a `def resolve_foo(self, info, id):` shape
+    # binds `id = payload`.
+    _result = _resolver(None, _NyxGraphQLInfo({field:?}), payload)
+    if _result is not None:
+        try:
+            print(str(_result), flush=True)
+        except Exception:
+            pass
+except SystemExit as _e:
+    sys.exit(_e.code)
+except TypeError:
+    # Fallback for free-function resolvers without the `self` formal.
+    try:
+        _result = _resolver(_NyxGraphQLInfo({field:?}), payload)
+        if _result is not None:
+            print(str(_result), flush=True)
+    except Exception as _e:
+        print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+except Exception as _e:
+    print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+"#,
+        type_name = type_name,
+        field = field,
+        handler = handler,
+    );
+    HarnessSource {
+        source: format!("{preamble}\n{body}\n{postamble}"),
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 21: WebSocket handler harness.  Imports the entry module,
+/// locates the handler (`receive` / `on_<event>` / free function),
+/// and invokes it with the payload as the single message frame.
+fn emit_websocket_handler(spec: &HarnessSpec, path: &str) -> HarnessSource {
+    let preamble = harness_preamble(spec);
+    let postamble = harness_postamble();
+    let handler = &spec.entry_name;
+    let body = format!(
+        r#"# Shape: WebSocket handler — Phase 21 / Track M.3.
+print("__NYX_WEBSOCKET__: " + {path:?}, flush=True)
+_h = getattr(_entry_mod, {handler:?}, None)
+if _h is None:
+    print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+    sys.exit(78)
+try:
+    # python-socketio handlers are `def message(sid, data)`; Channels
+    # consumers are `def receive(self, text_data=None, bytes_data=None)`.
+    # Try (sid, payload) first, then fall back to (payload).
+    try:
+        _result = _h("nyx-sid", payload)
+    except TypeError:
+        try:
+            _result = _h(payload)
+        except TypeError:
+            _result = _h(None, payload)
+    if _result is not None:
+        try:
+            print(str(_result), flush=True)
+        except Exception:
+            pass
+except SystemExit as _e:
+    sys.exit(_e.code)
+except Exception as _e:
+    print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+"#,
+        path = path,
+        handler = handler,
+    );
+    HarnessSource {
+        source: format!("{preamble}\n{body}\n{postamble}"),
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 21: Middleware harness.  Builds a synthetic request object
+/// whose body carries the payload, invokes the middleware with a
+/// pass-through `next` callable.
+fn emit_middleware(spec: &HarnessSpec, name: &str) -> HarnessSource {
+    let preamble = harness_preamble(spec);
+    let postamble = harness_postamble();
+    let handler = &spec.entry_name;
+    let body = format!(
+        r#"# Shape: middleware — Phase 21 / Track M.3.
+print("__NYX_MIDDLEWARE__: " + {name:?}, flush=True)
+
+class _NyxRequest:
+    """Synthetic Django / Flask-ish request carrying the payload."""
+    def __init__(self, body):
+        self.body = body
+        self.path = "/nyx"
+        self.method = "POST"
+        self.META = {{}}
+        self.GET = {{"q": body}}
+        self.POST = {{"q": body}}
+
+_h = getattr(_entry_mod, {handler:?}, None)
+if _h is None:
+    print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+    sys.exit(78)
+try:
+    _req = _NyxRequest(payload)
+    # Try class-shaped middleware (instantiate with a get_response stub).
+    try:
+        _mw = _h(lambda r: r)
+        _result = _mw(_req)
+    except TypeError:
+        # Method on an existing class instance.
+        _result = _h(_req)
+    if _result is not None:
+        try:
+            print(str(_result), flush=True)
+        except Exception:
+            pass
+except SystemExit as _e:
+    sys.exit(_e.code)
+except Exception as _e:
+    print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+"#,
+        name = name,
+        handler = handler,
+    );
+    HarnessSource {
+        source: format!("{preamble}\n{body}\n{postamble}"),
+        filename: "harness.py".to_owned(),
+        command: vec!["python3".to_owned(), "harness.py".to_owned()],
+        extra_files: vec![],
+        entry_subpath: None,
+    }
+}
+
+/// Phase 21: Migration harness.  Invokes the module-level `upgrade()`
+/// / `up()` function and prints the version sentinel.
+fn emit_migration(spec: &HarnessSpec, version: Option<&str>) -> HarnessSource {
+    let preamble = harness_preamble(spec);
+    let postamble = harness_postamble();
+    let handler = &spec.entry_name;
+    let version_repr = version.unwrap_or("<no-version>");
+    let body = format!(
+        r#"# Shape: migration — Phase 21 / Track M.3.
+print("__NYX_MIGRATION__: " + {version:?}, flush=True)
+_h = getattr(_entry_mod, {handler:?}, None)
+if _h is None:
+    print("NYX_HANDLER_NOT_FOUND: " + {handler:?}, file=sys.stderr, flush=True)
+    sys.exit(78)
+try:
+    # Migrations conventionally take no arguments; pass payload if the
+    # function declares positional params (best-effort introspection).
+    import inspect
+    sig = None
+    try:
+        sig = inspect.signature(_h)
+    except (TypeError, ValueError):
+        sig = None
+    if sig is not None and len(sig.parameters) >= 1:
+        _result = _h(payload)
+    else:
+        _result = _h()
+    if _result is not None:
+        try:
+            print(str(_result), flush=True)
+        except Exception:
+            pass
+except SystemExit as _e:
+    sys.exit(_e.code)
+except Exception as _e:
+    print(f"NYX_EXCEPTION: {{type(_e).__name__}}: {{_e}}", file=sys.stderr, flush=True)
+"#,
+        version = version_repr,
+        handler = handler,
     );
     HarnessSource {
         source: format!("{preamble}\n{body}\n{postamble}"),

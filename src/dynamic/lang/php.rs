@@ -48,6 +48,8 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::HttpRoute,
     EntryKindTag::CliSubcommand,
     EntryKindTag::ClassMethod,
+    EntryKindTag::Middleware,
+    EntryKindTag::Migration,
 ];
 
 impl LangEmitter for PhpEmitter {
@@ -493,6 +495,16 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     // Phase 19 (Track M.1): ClassMethod short-circuit.
     if let crate::evidence::EntryKind::ClassMethod { class, method } = &spec.entry_kind {
         return Ok(emit_class_method_harness(class, method));
+    }
+
+    // Phase 21 (Track M.3): Middleware short-circuit (Laravel handle()).
+    if let crate::evidence::EntryKind::Middleware { name } = &spec.entry_kind {
+        return Ok(emit_middleware_harness(&spec.entry_name, name));
+    }
+
+    // Phase 21 (Track M.3): Migration short-circuit (Laravel up()).
+    if let crate::evidence::EntryKind::Migration { version } = &spec.entry_kind {
+        return Ok(emit_migration_harness(&spec.entry_name, version.as_deref()));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -1233,6 +1245,131 @@ try {{
 "#,
         class_lit = class,
         method_lit = method,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: vec![],
+        entry_subpath: Some("entry.php".to_owned()),
+    }
+}
+
+// ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
+
+fn nyx_php_preamble() -> String {
+    let shim = probe_shim();
+    format!(
+        r#"<?php
+// Nyx dynamic harness — Phase 21 / Track M.3 (auto-generated).
+{shim}
+
+$payload = (string) (getenv('NYX_PAYLOAD') ?: '');
+$_b64 = getenv('NYX_PAYLOAD_B64');
+if ((!$payload || $payload === '') && is_string($_b64) && $_b64 !== '') {{
+    $decoded = base64_decode($_b64, true);
+    if ($decoded !== false) $payload = $decoded;
+}}
+
+try {{
+    require_once __DIR__ . '/entry.php';
+}} catch (Throwable $e) {{
+    fwrite(STDERR, 'NYX_IMPORT_ERROR: ' . $e->getMessage() . "\n");
+    exit(77);
+}}
+
+echo "__NYX_SINK_HIT__\n";
+"#,
+        shim = shim,
+    )
+}
+
+fn emit_middleware_harness(handler: &str, name: &str) -> HarnessSource {
+    let preamble = nyx_php_preamble();
+    let body = format!(
+        r#"{preamble}
+echo "__NYX_MIDDLEWARE__: " . {name:?} . "\n";
+
+$req = new stdClass();
+$req->body = $payload;
+$req->path = '/nyx';
+$req->method = 'POST';
+$req->query = [ 'q' => $payload ];
+$next = function ($r) {{ return $r; }};
+
+if (class_exists({handler:?})) {{
+    $inst = new {handler}();
+    if (method_exists($inst, 'handle')) {{
+        try {{
+            $result = $inst->handle($req, $next);
+            if ($result !== null) echo (string)$result . "\n";
+        }} catch (Throwable $e) {{
+            fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+        }}
+    }} else {{
+        fwrite(STDERR, 'NYX_METHOD_NOT_FOUND: handle' . "\n");
+        exit(78);
+    }}
+}} elseif (function_exists({handler:?})) {{
+    try {{
+        $result = call_user_func({handler:?}, $req, $next);
+        if ($result !== null) echo (string)$result . "\n";
+    }} catch (Throwable $e) {{
+        fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+    }}
+}} else {{
+    fwrite(STDERR, 'NYX_HANDLER_NOT_FOUND: ' . {handler:?} . "\n");
+    exit(78);
+}}
+"#,
+        preamble = preamble,
+        handler = handler,
+        name = name,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.php".to_owned(),
+        command: vec!["php".to_owned(), "harness.php".to_owned()],
+        extra_files: vec![],
+        entry_subpath: Some("entry.php".to_owned()),
+    }
+}
+
+fn emit_migration_harness(handler: &str, version: Option<&str>) -> HarnessSource {
+    let preamble = nyx_php_preamble();
+    let version_repr = version.unwrap_or("<no-version>");
+    let body = format!(
+        r#"{preamble}
+echo "__NYX_MIGRATION__: " . {version:?} . "\n";
+
+if (class_exists({handler:?})) {{
+    $inst = new {handler}();
+    if (method_exists($inst, 'up')) {{
+        try {{
+            $result = $inst->up();
+            if ($result !== null) echo (string)$result . "\n";
+        }} catch (Throwable $e) {{
+            fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+        }}
+    }} else {{
+        fwrite(STDERR, 'NYX_METHOD_NOT_FOUND: up' . "\n");
+        exit(78);
+    }}
+}} elseif (function_exists({handler:?})) {{
+    try {{
+        $result = call_user_func({handler:?});
+        if ($result !== null) echo (string)$result . "\n";
+    }} catch (Throwable $e) {{
+        fwrite(STDERR, 'NYX_EXCEPTION: ' . get_class($e) . ': ' . $e->getMessage() . "\n");
+    }}
+}} else {{
+    fwrite(STDERR, 'NYX_HANDLER_NOT_FOUND: ' . {handler:?} . "\n");
+    exit(78);
+}}
+"#,
+        preamble = preamble,
+        handler = handler,
+        version = version_repr,
     );
     HarnessSource {
         source: body,

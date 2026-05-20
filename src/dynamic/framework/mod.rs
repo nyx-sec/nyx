@@ -214,18 +214,31 @@ mod tests {
     }
 
     #[test]
-    fn registry_baseline_after_phase_20() {
-        // Phase 20 (Track M.2) adds 10 MessageHandler-flavoured
-        // framework adapters distributed across Java (3 — Kafka,
-        // RabbitMQ, SQS), Python (4 — Kafka, Pub/Sub, RabbitMQ, SQS),
-        // Go (2 — Pub/Sub, NATS), and JavaScript (1 — SQS).  The
-        // Phase 17 baseline for the other languages stays put: Php 10,
-        // Ruby 8, TypeScript 4, Rust 6, C/Cpp empty.
+    fn registry_baseline_after_phase_21() {
+        // Phase 21 (Track M.3) adds the remaining five `EntryKind`
+        // variants — `ScheduledJob` / `GraphQLResolver` / `WebSocket`
+        // / `Middleware` / `Migration` — distributed across the
+        // language slices.  Per-lang deltas vs the Phase 20 baseline:
+        //   Java: +2 (ScheduledQuartz, MiddlewareSpring)        14 → 16
+        //   Php:  +2 (MiddlewareLaravel, MigrationLaravel)      10 → 12
+        //   Python: +7 (GraphqlGraphene, MiddlewareDjango,
+        //              MigrationDjango, MigrationFlask,
+        //              ScheduledCelery, WebsocketChannels,
+        //              WebsocketSocketIo)                       15 → 22
+        //   Ruby: +4 (MiddlewareRails, MigrationRails,
+        //              ScheduledSidekiq, WebsocketActionCable)   8 → 12
+        //   JavaScript: +7 (GraphqlApollo, GraphqlRelay,
+        //              MiddlewareExpress, MigrationPrisma,
+        //              MigrationSequelize, ScheduledCron,
+        //              WebsocketWs)                            12 → 19
+        //   Go: +1 (GraphqlGqlgen)                              9 → 10
+        //   Rust: +1 (GraphqlJuniper)                           6 → 7
+        // TypeScript / C / Cpp stay unchanged.
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
-            14,
-            "Java must have Phase 17 baseline (11) + M.2 Kafka/Rabbit/SQS (3)",
+            16,
+            "Java must have Phase 20 baseline (14) + M.3 Quartz/Spring-middleware (2)",
         );
         for adapter in java_registered {
             assert_eq!(adapter.lang(), Lang::Java);
@@ -233,8 +246,8 @@ mod tests {
         let php_registered = registry::adapters_for(Lang::Php);
         assert_eq!(
             php_registered.len(),
-            10,
-            "Php must have J.1..J.7 (7) + L.14 Laravel/Symfony/CodeIgniter (3) adapters",
+            12,
+            "Php must have Phase 20 baseline (10) + M.3 Laravel middleware+migration (2)",
         );
         for adapter in php_registered {
             assert_eq!(adapter.lang(), Lang::Php);
@@ -242,8 +255,8 @@ mod tests {
         let python_registered = registry::adapters_for(Lang::Python);
         assert_eq!(
             python_registered.len(),
-            15,
-            "Python must have Phase 17 baseline (11) + M.2 Kafka/Pub-Sub/Rabbit/SQS (4)",
+            22,
+            "Python must have Phase 20 baseline (15) + M.3 Phase-21 (7)",
         );
         for adapter in python_registered {
             assert_eq!(adapter.lang(), Lang::Python);
@@ -251,8 +264,8 @@ mod tests {
         let ruby_registered = registry::adapters_for(Lang::Ruby);
         assert_eq!(
             ruby_registered.len(),
-            8,
-            "Ruby must have the J.1 + J.2 + J.3 + J.6 + J.7 (5) + L.13 Rails/Sinatra/Hanami (3) adapters",
+            12,
+            "Ruby must have Phase 20 baseline (8) + M.3 Phase-21 (4)",
         );
         for adapter in ruby_registered {
             assert_eq!(adapter.lang(), Lang::Ruby);
@@ -260,8 +273,8 @@ mod tests {
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(
             js_registered.len(),
-            12,
-            "JavaScript must have Phase 17 baseline (11) + M.2 sqs-node (1)",
+            19,
+            "JavaScript must have Phase 20 baseline (12) + M.3 Phase-21 (7)",
         );
         for adapter in js_registered {
             assert_eq!(adapter.lang(), Lang::JavaScript);
@@ -270,7 +283,7 @@ mod tests {
         assert_eq!(
             ts_registered.len(),
             4,
-            "TypeScript must have the J.8(×3) prototype-pollution adapters + L.11 ts-nest",
+            "TypeScript stays at Phase 20 baseline (4)",
         );
         for adapter in ts_registered {
             assert_eq!(adapter.lang(), Lang::TypeScript);
@@ -278,8 +291,8 @@ mod tests {
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
             go_registered.len(),
-            9,
-            "Go must have Phase 17 baseline (7) + M.2 pubsub-go/nats-go (2)",
+            10,
+            "Go must have Phase 20 baseline (9) + M.3 gqlgen (1)",
         );
         for adapter in go_registered {
             assert_eq!(adapter.lang(), Lang::Go);
@@ -287,8 +300,8 @@ mod tests {
         let rust_registered = registry::adapters_for(Lang::Rust);
         assert_eq!(
             rust_registered.len(),
-            6,
-            "Rust must have the J.6 + J.7 (2) + L.15 actix/axum/rocket/warp (4) adapters",
+            7,
+            "Rust must have Phase 20 baseline (6) + M.3 juniper (1)",
         );
         for adapter in rust_registered {
             assert_eq!(adapter.lang(), Lang::Rust);

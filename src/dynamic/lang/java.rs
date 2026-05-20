@@ -56,6 +56,8 @@ const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::CliSubcommand,
     EntryKindTag::ClassMethod,
     EntryKindTag::MessageHandler,
+    EntryKindTag::ScheduledJob,
+    EntryKindTag::Middleware,
 ];
 
 impl LangEmitter for JavaEmitter {
@@ -609,6 +611,20 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
         let entry_source = read_entry_source(&spec.entry_file);
         let entry_class = derive_entry_class(&entry_source);
         return Ok(emit_message_handler_harness(spec, queue, &entry_class));
+    }
+
+    // Phase 21 (Track M.3): ScheduledJob short-circuit (Quartz).
+    if let crate::evidence::EntryKind::ScheduledJob { schedule } = &spec.entry_kind {
+        let entry_source = read_entry_source(&spec.entry_file);
+        let entry_class = derive_entry_class(&entry_source);
+        return Ok(emit_scheduled_job_harness(spec, schedule.as_deref(), &entry_class));
+    }
+
+    // Phase 21 (Track M.3): Middleware short-circuit (Spring HandlerInterceptor / Filter).
+    if let crate::evidence::EntryKind::Middleware { name } = &spec.entry_kind {
+        let entry_source = read_entry_source(&spec.entry_file);
+        let entry_class = derive_entry_class(&entry_source);
+        return Ok(emit_middleware_harness(spec, name, &entry_class));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -2088,6 +2104,165 @@ public class NyxHarness {{
 "#,
         entry_class = entry_class,
         dispatch_block = dispatch_block,
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: vec![],
+        entry_subpath: Some(format!("{entry_class}.java")),
+    }
+}
+
+// ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
+
+fn emit_scheduled_job_harness(
+    spec: &HarnessSpec,
+    schedule: Option<&str>,
+    entry_class: &str,
+) -> HarnessSource {
+    let probe = probe_shim();
+    let pre_call = pre_call_setup(spec);
+    let method = &spec.entry_name;
+    let schedule_repr = schedule.unwrap_or("<unscheduled>");
+    let source = format!(
+        r#"// Nyx dynamic harness — scheduled job (Phase 21 / Track M.3).
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
+
+public class NyxHarness {{
+{probe}
+
+    public static void main(String[] args) {{
+        String payload = nyxPayload();
+{pre_call}        System.out.println("__NYX_SCHEDULED_JOB__: " + {schedule:?});
+        System.out.println("__NYX_SINK_HIT__");
+        try {{
+            Class<?> cls = Class.forName({entry_class:?});
+            Constructor<?> ctor = cls.getDeclaredConstructor();
+            ctor.setAccessible(true);
+            Object instance = ctor.newInstance();
+            Method m = null;
+            for (Method candidate : cls.getDeclaredMethods()) {{
+                if (candidate.getName().equals({method:?})) {{ m = candidate; break; }}
+            }}
+            if (m == null) {{
+                System.err.println("NYX_METHOD_NOT_FOUND: " + {method:?});
+                System.exit(78);
+            }}
+            m.setAccessible(true);
+            Class<?>[] params = m.getParameterTypes();
+            Object[] mArgs = new Object[params.length];
+            for (int i = 0; i < params.length; i++) {{
+                mArgs[i] = params[i].equals(String.class) ? payload : null;
+            }}
+            m.invoke(instance, mArgs);
+        }} catch (InvocationTargetException ite) {{
+            Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+            System.err.println("NYX_EXCEPTION: " + cause.getClass().getName() + ": " + cause.getMessage());
+        }} catch (Throwable e) {{
+            System.err.println("NYX_EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
+        }}
+    }}
+
+    static String nyxPayload() {{
+        String v = System.getenv("NYX_PAYLOAD");
+        if (v != null && !v.isEmpty()) return v;
+        String b64 = System.getenv("NYX_PAYLOAD_B64");
+        if (b64 != null && !b64.isEmpty()) {{
+            byte[] decoded = java.util.Base64.getDecoder().decode(b64);
+            return new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+        }}
+        return "";
+    }}
+}}
+"#,
+        entry_class = entry_class,
+        method = method,
+        schedule = schedule_repr,
+        pre_call = pre_call,
+    );
+    HarnessSource {
+        source,
+        filename: "NyxHarness.java".to_owned(),
+        command: vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ],
+        extra_files: vec![],
+        entry_subpath: Some(format!("{entry_class}.java")),
+    }
+}
+
+fn emit_middleware_harness(spec: &HarnessSpec, name: &str, entry_class: &str) -> HarnessSource {
+    let probe = probe_shim();
+    let pre_call = pre_call_setup(spec);
+    let method = &spec.entry_name;
+    let source = format!(
+        r#"// Nyx dynamic harness — middleware (Phase 21 / Track M.3).
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
+
+public class NyxHarness {{
+{probe}
+
+    public static void main(String[] args) {{
+        String payload = nyxPayload();
+{pre_call}        System.out.println("__NYX_MIDDLEWARE__: " + {name:?});
+        System.out.println("__NYX_SINK_HIT__");
+        try {{
+            Class<?> cls = Class.forName({entry_class:?});
+            Constructor<?> ctor = cls.getDeclaredConstructor();
+            ctor.setAccessible(true);
+            Object instance = ctor.newInstance();
+            Method m = null;
+            for (Method candidate : cls.getDeclaredMethods()) {{
+                if (candidate.getName().equals({method:?})) {{ m = candidate; break; }}
+            }}
+            if (m == null) {{
+                System.err.println("NYX_METHOD_NOT_FOUND: " + {method:?});
+                System.exit(78);
+            }}
+            m.setAccessible(true);
+            Class<?>[] params = m.getParameterTypes();
+            Object[] mArgs = new Object[params.length];
+            for (int i = 0; i < params.length; i++) {{
+                mArgs[i] = params[i].equals(String.class) ? payload : null;
+            }}
+            m.invoke(instance, mArgs);
+        }} catch (InvocationTargetException ite) {{
+            Throwable cause = ite.getCause() == null ? ite : ite.getCause();
+            System.err.println("NYX_EXCEPTION: " + cause.getClass().getName() + ": " + cause.getMessage());
+        }} catch (Throwable e) {{
+            System.err.println("NYX_EXCEPTION: " + e.getClass().getName() + ": " + e.getMessage());
+        }}
+    }}
+
+    static String nyxPayload() {{
+        String v = System.getenv("NYX_PAYLOAD");
+        if (v != null && !v.isEmpty()) return v;
+        String b64 = System.getenv("NYX_PAYLOAD_B64");
+        if (b64 != null && !b64.isEmpty()) {{
+            byte[] decoded = java.util.Base64.getDecoder().decode(b64);
+            return new String(decoded, java.nio.charset.StandardCharsets.UTF_8);
+        }}
+        return "";
+    }}
+}}
+"#,
+        entry_class = entry_class,
+        method = method,
+        name = name,
+        pre_call = pre_call,
     );
     HarnessSource {
         source,

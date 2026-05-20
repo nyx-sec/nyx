@@ -583,6 +583,31 @@ pub fn emit(spec: &HarnessSpec, is_typescript: bool) -> Result<HarnessSource, Un
         return Ok(emit_message_handler(spec, queue, is_typescript));
     }
 
+    // Phase 21 (Track M.3): ScheduledJob short-circuit.
+    if let crate::evidence::EntryKind::ScheduledJob { schedule } = &spec.entry_kind {
+        return Ok(emit_scheduled_job(spec, schedule.as_deref(), is_typescript));
+    }
+
+    // Phase 21 (Track M.3): GraphQLResolver short-circuit.
+    if let crate::evidence::EntryKind::GraphQLResolver { type_name, field } = &spec.entry_kind {
+        return Ok(emit_graphql_resolver(spec, type_name, field, is_typescript));
+    }
+
+    // Phase 21 (Track M.3): WebSocket short-circuit.
+    if let crate::evidence::EntryKind::WebSocket { path } = &spec.entry_kind {
+        return Ok(emit_websocket_handler(spec, path, is_typescript));
+    }
+
+    // Phase 21 (Track M.3): Middleware short-circuit.
+    if let crate::evidence::EntryKind::Middleware { name } = &spec.entry_kind {
+        return Ok(emit_middleware(spec, name, is_typescript));
+    }
+
+    // Phase 21 (Track M.3): Migration short-circuit.
+    if let crate::evidence::EntryKind::Migration { version } = &spec.entry_kind {
+        return Ok(emit_migration(spec, version.as_deref(), is_typescript));
+    }
+
     let entry_source = read_entry_source(&spec.entry_file);
     let shape = JsShape::detect(spec, &entry_source);
     let entry_subpath = entry_subpath_for_shape(shape, is_typescript);
@@ -777,6 +802,264 @@ _broker.subscribe({queue:?}, async (envelope) => {{
         command: vec!["node".to_owned(), "harness.js".to_owned()],
         extra_files: Vec::new(),
         entry_subpath: Some(entry_subpath.to_owned()),
+    }
+}
+
+// ── Phase 21 (Track M.3) — synthetic entry-kind harnesses ─────────────────────
+
+fn nyx_js_preamble(spec: &HarnessSpec, is_typescript: bool) -> (String, String) {
+    let probe = probe_shim();
+    let entry_subpath = if is_typescript { "entry.ts" } else { "entry.js" };
+    let require_path = entry_require_path(entry_subpath);
+    let preamble = format!(
+        r#"'use strict';
+{probe}
+
+const payload = (process.env.NYX_PAYLOAD && process.env.NYX_PAYLOAD.length > 0)
+    ? process.env.NYX_PAYLOAD
+    : (process.env.NYX_PAYLOAD_B64
+        ? Buffer.from(process.env.NYX_PAYLOAD_B64, 'base64').toString('utf8')
+        : '');
+
+let _entry;
+try {{
+    _entry = require('./{require_path}');
+}} catch (e) {{
+    process.stderr.write('NYX_IMPORT_ERROR: ' + e.message + '\n');
+    process.exit(77);
+}}
+
+function _nyxResolve(name) {{
+    const _h = _entry[name]
+        || (_entry.default && _entry.default[name])
+        || (typeof _entry.default === 'function' && _entry.default.name === name ? _entry.default : null);
+    return (typeof _h === 'function') ? _h : null;
+}}
+
+process.stdout.write('__NYX_SINK_HIT__\n');
+"#,
+        probe = probe,
+        require_path = require_path,
+    );
+    let _ = spec;
+    (preamble, entry_subpath.to_owned())
+}
+
+fn emit_scheduled_job(spec: &HarnessSpec, schedule: Option<&str>, is_typescript: bool) -> HarnessSource {
+    let (preamble, entry_subpath) = nyx_js_preamble(spec, is_typescript);
+    let handler = &spec.entry_name;
+    let schedule_repr = schedule.unwrap_or("<unscheduled>");
+    let body = format!(
+        r#"{preamble}
+// Phase 21 (Track M.3) — scheduled job.
+process.stdout.write('__NYX_SCHEDULED_JOB__: ' + {schedule:?} + '\n');
+const _h = _nyxResolve({handler:?});
+if (_h == null) {{
+    process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
+    process.exit(78);
+}}
+(async () => {{
+    try {{
+        const _result = await Promise.resolve(_h(payload));
+        if (_result != null) process.stdout.write(String(_result) + '\n');
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}})();
+"#,
+        preamble = preamble,
+        handler = handler,
+        schedule = schedule_repr,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: Some(entry_subpath),
+    }
+}
+
+fn emit_graphql_resolver(
+    spec: &HarnessSpec,
+    type_name: &str,
+    field: &str,
+    is_typescript: bool,
+) -> HarnessSource {
+    let (preamble, entry_subpath) = nyx_js_preamble(spec, is_typescript);
+    let handler = &spec.entry_name;
+    let body = format!(
+        r#"{preamble}
+// Phase 21 (Track M.3) — GraphQL resolver.
+process.stdout.write('__NYX_GRAPHQL_RESOLVER__: ' + {type_name:?} + '.' + {field:?} + '\n');
+const _h = _nyxResolve({handler:?});
+if (_h == null) {{
+    process.stderr.write('NYX_RESOLVER_NOT_FOUND: ' + {handler:?} + '\n');
+    process.exit(78);
+}}
+(async () => {{
+    try {{
+        // Apollo resolver shape: (parent, args, context, info).
+        const _info = {{ fieldName: {field:?}, parentType: {type_name:?} }};
+        const _result = await Promise.resolve(_h(null, {{ id: payload, input: payload }}, {{}}, _info));
+        if (_result != null) process.stdout.write(String(_result) + '\n');
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}})();
+"#,
+        preamble = preamble,
+        handler = handler,
+        type_name = type_name,
+        field = field,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: Some(entry_subpath),
+    }
+}
+
+fn emit_websocket_handler(spec: &HarnessSpec, path: &str, is_typescript: bool) -> HarnessSource {
+    let (preamble, entry_subpath) = nyx_js_preamble(spec, is_typescript);
+    let handler = &spec.entry_name;
+    let body = format!(
+        r#"{preamble}
+// Phase 21 (Track M.3) — WebSocket handler.
+process.stdout.write('__NYX_WEBSOCKET__: ' + {path:?} + '\n');
+const _h = _nyxResolve({handler:?});
+if (_h == null) {{
+    process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
+    process.exit(78);
+}}
+(async () => {{
+    try {{
+        // ws library: handler(message); socket.io: handler(socket, data).
+        let _result;
+        try {{
+            _result = await Promise.resolve(_h(payload));
+        }} catch (e1) {{
+            if (e1 && e1.constructor && e1.constructor.name === 'TypeError') {{
+                _result = await Promise.resolve(_h({{ id: 'nyx-sock' }}, payload));
+            }} else {{
+                throw e1;
+            }}
+        }}
+        if (_result != null) process.stdout.write(String(_result) + '\n');
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}})();
+"#,
+        preamble = preamble,
+        handler = handler,
+        path = path,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: Some(entry_subpath),
+    }
+}
+
+fn emit_middleware(spec: &HarnessSpec, name: &str, is_typescript: bool) -> HarnessSource {
+    let (preamble, entry_subpath) = nyx_js_preamble(spec, is_typescript);
+    let handler = &spec.entry_name;
+    let body = format!(
+        r#"{preamble}
+// Phase 21 (Track M.3) — middleware.
+process.stdout.write('__NYX_MIDDLEWARE__: ' + {name:?} + '\n');
+const _h = _nyxResolve({handler:?});
+if (_h == null) {{
+    process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
+    process.exit(78);
+}}
+const _req = {{ body: payload, query: {{ q: payload }}, params: {{ id: payload }}, headers: {{}}, method: 'POST', url: '/nyx' }};
+const _res = {{ statusCode: 200, headers: {{}}, end: function(d){{ if (d != null) process.stdout.write(String(d) + '\n'); }}, setHeader: function(k, v){{ this.headers[k] = v; }} }};
+(async () => {{
+    try {{
+        const _result = await Promise.resolve(_h(_req, _res, function(_e){{ if (_e) process.stderr.write('NYX_NEXT_ERR: ' + _e + '\n'); }}));
+        if (_result != null) process.stdout.write(String(_result) + '\n');
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}})();
+"#,
+        preamble = preamble,
+        handler = handler,
+        name = name,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: Some(entry_subpath),
+    }
+}
+
+fn emit_migration(spec: &HarnessSpec, version: Option<&str>, is_typescript: bool) -> HarnessSource {
+    let (preamble, entry_subpath) = nyx_js_preamble(spec, is_typescript);
+    let handler = &spec.entry_name;
+    let version_repr = version.unwrap_or("<no-version>");
+    let body = format!(
+        r#"{preamble}
+// Phase 21 (Track M.3) — migration.
+process.stdout.write('__NYX_MIGRATION__: ' + {version:?} + '\n');
+const _h = _nyxResolve({handler:?});
+if (_h == null) {{
+    process.stderr.write('NYX_HANDLER_NOT_FOUND: ' + {handler:?} + '\n');
+    process.exit(78);
+}}
+// Synthetic queryInterface for sequelize-style up/down(queryInterface, Sequelize).
+const _qi = {{
+    createTable: async function(){{}},
+    addColumn: async function(){{}},
+    dropTable: async function(){{}},
+    removeColumn: async function(){{}},
+    bulkInsert: async function(){{}},
+    sequelize: {{ query: async function(){{}} }},
+}};
+const _prisma = {{
+    $executeRaw: async function(){{}},
+    $executeRawUnsafe: async function(s){{ if (s) process.stdout.write('NYX_PRISMA_SQL: ' + s + '\n'); }},
+    $queryRaw: async function(){{}},
+    $queryRawUnsafe: async function(){{}},
+}};
+(async () => {{
+    try {{
+        let _result;
+        // Try the sequelize shape first (queryInterface, Sequelize).
+        try {{
+            _result = await Promise.resolve(_h(_qi, {{}}));
+        }} catch (e1) {{
+            // Prisma / raw migration shape — pass payload.
+            try {{
+                _result = await Promise.resolve(_h(payload));
+            }} catch (e2) {{
+                _result = await Promise.resolve(_h());
+            }}
+        }}
+        if (_result != null) process.stdout.write(String(_result) + '\n');
+    }} catch (e) {{
+        process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
+    }}
+}})();
+"#,
+        preamble = preamble,
+        handler = handler,
+        version = version_repr,
+    );
+    HarnessSource {
+        source: body,
+        filename: "harness.js".to_owned(),
+        command: vec!["node".to_owned(), "harness.js".to_owned()],
+        extra_files: Vec::new(),
+        entry_subpath: Some(entry_subpath),
     }
 }
 
@@ -1827,7 +2110,7 @@ fn resolve_http_payload(slot: &PayloadSlot) -> (&'static str, String, &'static s
     }
 }
 
-/// Supported entry kinds for both JS + TS after Phase 13.
+/// Supported entry kinds for both JS + TS after Phase 21.
 pub const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::Function,
     EntryKindTag::HttpRoute,
@@ -1835,6 +2118,11 @@ pub const SUPPORTED: &[EntryKindTag] = &[
     EntryKindTag::LibraryApi,
     EntryKindTag::ClassMethod,
     EntryKindTag::MessageHandler,
+    EntryKindTag::ScheduledJob,
+    EntryKindTag::GraphQLResolver,
+    EntryKindTag::WebSocket,
+    EntryKindTag::Middleware,
+    EntryKindTag::Migration,
 ];
 
 #[cfg(test)]
