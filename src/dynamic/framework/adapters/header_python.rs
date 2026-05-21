@@ -39,6 +39,27 @@ fn source_imports_python_web(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// header value through a canonical URL-encoder / HTML-escaper.
+fn value_routed_through_encoder(file_bytes: &[u8]) -> bool {
+    const ENCODER_CALLS: &[&[u8]] = &[
+        b"urllib.parse.quote(",
+        b"parse.quote(",
+        b"urllib.parse.quote_plus(",
+        b"parse.quote_plus(",
+        b"quote_plus(",
+        b"werkzeug.urls.url_quote(",
+        b"url_quote(",
+        b"urlencode(",
+        b"html.escape(",
+        b"markupsafe.escape(",
+        b"escape_html(",
+    ];
+    ENCODER_CALLS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for HeaderPythonAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -54,6 +75,9 @@ impl FrameworkAdapter for HeaderPythonAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if value_routed_through_encoder(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
         let matches_source = source_imports_python_web(file_bytes);
         if matches_call && matches_source {
@@ -103,6 +127,26 @@ mod tests {
         let tree = parse_python(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(HeaderPythonAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_value_url_encoded() {
+        let src: &[u8] = b"from flask import make_response\n\
+            from urllib.parse import quote\n\
+            def run(value):\n    resp = make_response('hi')\n    \
+                resp.headers['Set-Cookie'] = quote_plus(value)\n    return resp\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("__setitem__"),
+                crate::summary::CalleeSite::bare("quote_plus"),
+            ],
             ..Default::default()
         };
         assert!(HeaderPythonAdapter

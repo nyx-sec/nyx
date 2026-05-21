@@ -45,6 +45,20 @@ fn source_uses_node_http(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// header value through a canonical Node / browser URL-encoder.
+fn value_routed_through_encoder(file_bytes: &[u8]) -> bool {
+    const ENCODER_CALLS: &[&[u8]] = &[
+        b"encodeURIComponent(",
+        b"encodeURI(",
+        b"querystring.escape(",
+        b"qs.escape(",
+    ];
+    ENCODER_CALLS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for HeaderJsAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -60,6 +74,9 @@ impl FrameworkAdapter for HeaderJsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if value_routed_through_encoder(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
         let matches_source = source_uses_node_http(file_bytes);
         if matches_call && matches_source {
@@ -109,6 +126,24 @@ mod tests {
         let tree = parse_js(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(HeaderJsAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_value_url_encoded() {
+        let src: &[u8] = b"const http = require('http');\n\
+            function run(res, value) { res.setHeader('Set-Cookie', encodeURIComponent(value)); }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("setHeader"),
+                crate::summary::CalleeSite::bare("encodeURIComponent"),
+            ],
             ..Default::default()
         };
         assert!(HeaderJsAdapter

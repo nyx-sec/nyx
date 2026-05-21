@@ -36,6 +36,23 @@ fn source_imports_xml(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly pins
+/// `encoding/xml`'s `Decoder.Strict` to `true` (Go's safe-by-default
+/// XML parser does not resolve external entities, but the brief
+/// flags `Strict = false` as the XXE-prone shape, so explicit
+/// `Strict = true` declarations are the canonical hardening marker).
+fn parser_is_hardened(file_bytes: &[u8]) -> bool {
+    const HARDENING_NEEDLES: &[&[u8]] = &[
+        b"Strict: true",
+        b"Strict:true",
+        b".Strict = true",
+        b".Strict=true",
+    ];
+    HARDENING_NEEDLES
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for XxeGoAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -51,6 +68,9 @@ impl FrameworkAdapter for XxeGoAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if parser_is_hardened(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_xml_parser);
         let matches_source = source_imports_xml(file_bytes);
         if matches_call && matches_source {
@@ -104,6 +124,25 @@ mod tests {
         let tree = parse_go(src);
         let summary = FuncSummary {
             name: "Add".into(),
+            ..Default::default()
+        };
+        assert!(XxeGoAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_decoder_strict_pinned_true() {
+        let src: &[u8] = b"package main\nimport (\"bytes\"; \"encoding/xml\")\n\
+            func Run(body string) {\n\
+                d := xml.NewDecoder(bytes.NewReader([]byte(body)))\n\
+                d.Strict = true\n\
+                _ = d.Decode(&struct{}{})\n\
+            }\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "Run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("NewDecoder")],
             ..Default::default()
         };
         assert!(XxeGoAdapter

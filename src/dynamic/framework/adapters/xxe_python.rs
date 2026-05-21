@@ -47,6 +47,29 @@ fn source_imports_xml(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly hardens the
+/// XML parser against external-entity expansion.  Conservative: only
+/// recognises canonical lxml `resolve_entities=False` /
+/// `no_network=True` parser flags and the `defusedxml` package
+/// (whose parsers are safe-by-default).
+fn parser_is_hardened(file_bytes: &[u8]) -> bool {
+    const HARDENING_NEEDLES: &[&[u8]] = &[
+        b"resolve_entities=False",
+        b"resolve_entities =False",
+        b"resolve_entities= False",
+        b"resolve_entities = False",
+        b"no_network=True",
+        b"no_network =True",
+        b"no_network= True",
+        b"no_network = True",
+        b"from defusedxml",
+        b"import defusedxml",
+    ];
+    HARDENING_NEEDLES
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for XxePythonAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -62,6 +85,9 @@ impl FrameworkAdapter for XxePythonAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if parser_is_hardened(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_xml_parser);
         let matches_source = source_imports_xml(file_bytes);
         if matches_call && matches_source {
@@ -111,6 +137,38 @@ mod tests {
         let tree = parse_python(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(XxePythonAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_resolve_entities_false() {
+        let src: &[u8] = b"from lxml import etree\n\
+            def run(body):\n\
+                parser = etree.XMLParser(resolve_entities=False, no_network=True)\n\
+                return etree.fromstring(body, parser)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("fromstring")],
+            ..Default::default()
+        };
+        assert!(XxePythonAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_defusedxml_imported() {
+        let src: &[u8] = b"from defusedxml import ElementTree\n\
+            def run(body):\n    return ElementTree.fromstring(body)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("fromstring")],
             ..Default::default()
         };
         assert!(XxePythonAdapter

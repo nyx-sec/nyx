@@ -45,6 +45,32 @@ fn source_imports_xml_parser(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly hardens the
+/// XML parser against external-entity / DTD expansion.  Conservative:
+/// only recognises hardening invocations in their canonical
+/// syntactic form (quoted feature URIs or full call expressions) so
+/// the detector ignores casual prose mentions in Javadoc / line
+/// comments.  False negatives turn into adapter fires, which the
+/// rest of the pipeline still double-checks; false positives would
+/// silently drop a real finding.
+fn parser_is_hardened(file_bytes: &[u8]) -> bool {
+    const HARDENING_NEEDLES: &[&[u8]] = &[
+        b"\"http://apache.org/xml/features/disallow-doctype-decl\"",
+        b"setFeature(XMLConstants.FEATURE_SECURE_PROCESSING",
+        b"setFeature( XMLConstants.FEATURE_SECURE_PROCESSING",
+        b"setExpandEntityReferences(false)",
+        b"setExpandEntityReferences (false)",
+        b"\"http://xml.org/sax/features/external-general-entities\"",
+        b"\"http://xml.org/sax/features/external-parameter-entities\"",
+        b"XMLConstants.ACCESS_EXTERNAL_DTD,",
+        b"XMLConstants.ACCESS_EXTERNAL_SCHEMA,",
+        b"setXIncludeAware(false)",
+    ];
+    HARDENING_NEEDLES
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for XxeJavaAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -60,6 +86,9 @@ impl FrameworkAdapter for XxeJavaAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if parser_is_hardened(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_xml_parse);
         let matches_source = source_imports_xml_parser(file_bytes);
         if matches_call && matches_source {
@@ -130,6 +159,45 @@ mod tests {
         let tree = parse_java(src);
         let summary = FuncSummary {
             name: "run".into(),
+            ..Default::default()
+        };
+        assert!(XxeJavaAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_disallow_doctype_decl_set() {
+        let src: &[u8] = b"import javax.xml.parsers.DocumentBuilderFactory;\n\
+            public class V {\n  public static void run(byte[] b) throws Exception {\n\
+                DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();\n\
+                f.setFeature(\"http://apache.org/xml/features/disallow-doctype-decl\", true);\n\
+                f.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(b));\n\
+            }\n}\n";
+        let tree = parse_java(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("parse")],
+            ..Default::default()
+        };
+        assert!(XxeJavaAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_feature_secure_processing_set() {
+        let src: &[u8] = b"import javax.xml.parsers.DocumentBuilderFactory;\n\
+            import javax.xml.XMLConstants;\n\
+            public class V {\n  public static void run(byte[] b) throws Exception {\n\
+                DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();\n\
+                f.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);\n\
+                f.newDocumentBuilder().parse(new java.io.ByteArrayInputStream(b));\n\
+            }\n}\n";
+        let tree = parse_java(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("parse")],
             ..Default::default()
         };
         assert!(XxeJavaAdapter

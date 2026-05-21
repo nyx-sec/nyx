@@ -33,6 +33,27 @@ fn source_imports_servlet(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// header value through a canonical URL-encoder / HTML-escaper.  The
+/// header-setter then receives a CRLF-free string and cannot smuggle
+/// a second header.
+fn value_routed_through_encoder(file_bytes: &[u8]) -> bool {
+    const ENCODER_CALLS: &[&[u8]] = &[
+        b"URLEncoder.encode(",
+        b"Encode.forHtml(",
+        b"Encode.forHtmlAttribute(",
+        b"Encode.forUri(",
+        b"Encode.forUriComponent(",
+        b"escapeHtml(",
+        b"escapeHtml4(",
+        b"escapeXml(",
+        b"StringEscapeUtils.escape",
+    ];
+    ENCODER_CALLS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for HeaderJavaAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -48,6 +69,9 @@ impl FrameworkAdapter for HeaderJavaAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if value_routed_through_encoder(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
         let matches_source = source_imports_servlet(file_bytes);
         if matches_call && matches_source {
@@ -97,6 +121,26 @@ mod tests {
         let tree = parse_java(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(HeaderJavaAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_value_url_encoded() {
+        let src: &[u8] = b"import javax.servlet.http.HttpServletResponse;\n\
+            import java.net.URLEncoder;\n\
+            class C { void run(HttpServletResponse r, String v) throws Exception { \
+                String safe = URLEncoder.encode(v, \"UTF-8\"); r.setHeader(\"X-Token\", safe); } }\n";
+        let tree = parse_java(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("setHeader"),
+                crate::summary::CalleeSite::bare("encode"),
+            ],
             ..Default::default()
         };
         assert!(HeaderJavaAdapter

@@ -31,6 +31,38 @@ fn source_imports_go_web(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// redirect URL through a canonical host-allowlist / URL-validator.
+fn url_routed_through_validator(file_bytes: &[u8]) -> bool {
+    const VALIDATOR_TOKENS: &[&[u8]] = &[
+        b"url.Parse(",
+        b"allowedHosts",
+        b"AllowedHosts",
+        b"allowlist",
+        b"Allowlist",
+        b".Host ==",
+        b".Hostname() ==",
+    ];
+    VALIDATOR_TOKENS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
+/// Returns `true` when the surrounding source looks like a mockgen-
+/// generated mock (`gomock` / `EXPECT()` chains).  The `Redirect`
+/// callee on those receivers is a recorded-call assertion, not an
+/// HTTP redirect.
+fn looks_like_mockgen(file_bytes: &[u8]) -> bool {
+    const MOCK_TOKENS: &[&[u8]] = &[
+        b"github.com/golang/mock/gomock",
+        b"go.uber.org/mock/gomock",
+        b".EXPECT().",
+    ];
+    MOCK_TOKENS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for RedirectGoAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -46,6 +78,9 @@ impl FrameworkAdapter for RedirectGoAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if looks_like_mockgen(file_bytes) || url_routed_through_validator(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_redirect);
         let matches_source = source_imports_go_web(file_bytes);
         if matches_call && matches_source {
@@ -95,6 +130,42 @@ mod tests {
         let tree = parse_go(src);
         let summary = FuncSummary {
             name: "Add".into(),
+            ..Default::default()
+        };
+        assert!(RedirectGoAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_url_validated_against_allowlist() {
+        let src: &[u8] = b"package vuln\n\nimport (\n\t\"net/http\"\n\t\"net/url\"\n\t\"github.com/gin-gonic/gin\"\n)\n\
+            func Run(c *gin.Context, v string) {\n\t\
+                u, err := url.Parse(v)\n\t\
+                if err != nil || u.Hostname() != \"example.com\" { return }\n\t\
+                c.Redirect(http.StatusFound, v)\n}\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "Run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("Redirect"),
+                crate::summary::CalleeSite::bare("Parse"),
+            ],
+            ..Default::default()
+        };
+        assert!(RedirectGoAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_file_uses_gomock() {
+        let src: &[u8] = b"package vuln\n\nimport (\n\t\"github.com/golang/mock/gomock\"\n)\n\
+            func Run(m *MockRouter, v string) {\n\tm.EXPECT().Redirect(v)\n}\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "Run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("Redirect")],
             ..Default::default()
         };
         assert!(RedirectGoAdapter

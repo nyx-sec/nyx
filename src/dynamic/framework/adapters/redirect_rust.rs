@@ -37,6 +37,23 @@ fn source_imports_rust_web(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// redirect URL through a canonical host-allowlist / URL-validator.
+fn url_routed_through_validator(file_bytes: &[u8]) -> bool {
+    const VALIDATOR_TOKENS: &[&[u8]] = &[
+        b"Url::parse(",
+        b"allowed_hosts",
+        b"AllowedHosts",
+        b"allowlist",
+        b"Allowlist",
+        b".host_str()",
+        b".host() ==",
+    ];
+    VALIDATOR_TOKENS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for RedirectRustAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -52,6 +69,9 @@ impl FrameworkAdapter for RedirectRustAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if url_routed_through_validator(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_redirect);
         let matches_source = source_imports_rust_web(file_bytes);
         if matches_call && matches_source {
@@ -101,6 +121,28 @@ mod tests {
         let tree = parse_rust(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(RedirectRustAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_url_validated_against_allowlist() {
+        let src: &[u8] = b"use axum::response::Redirect;\n\
+            use url::Url;\n\n\
+            fn run(v: String) -> Option<Redirect> {\n\
+                let u = Url::parse(&v).ok()?;\n\
+                if u.host_str() != Some(\"example.com\") { return None; }\n\
+                Some(Redirect::to(&v))\n}\n";
+        let tree = parse_rust(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("to"),
+                crate::summary::CalleeSite::bare("parse"),
+            ],
             ..Default::default()
         };
         assert!(RedirectRustAdapter

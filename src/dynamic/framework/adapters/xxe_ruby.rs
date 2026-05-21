@@ -36,6 +36,38 @@ fn source_imports_xml(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly hardens the
+/// Ruby XML parser against external-entity expansion.  Canonical
+/// hardeners: `REXML::Document.entity_expansion_limit = 0` (kills
+/// entity expansion outright) and `Nokogiri::XML::ParseOptions::NONET`
+/// (no network for entity resolution).
+///
+/// If `Nokogiri::XML::ParseOptions::NOENT` is present the parser is
+/// explicitly *un*-hardened (the flag asks Nokogiri to expand
+/// entities), so the hardening verdict is suppressed.
+fn parser_is_hardened(file_bytes: &[u8]) -> bool {
+    let mentions_noent = file_bytes
+        .windows(b"ParseOptions::NOENT".len())
+        .any(|w| w == b"ParseOptions::NOENT")
+        || file_bytes
+            .windows(b"::NOENT".len())
+            .any(|w| w == b"::NOENT");
+    if mentions_noent {
+        return false;
+    }
+    const HARDENING_NEEDLES: &[&[u8]] = &[
+        b"entity_expansion_limit = 0",
+        b"entity_expansion_limit=0",
+        b"entity_expansion_limit =0",
+        b"entity_expansion_limit= 0",
+        b"ParseOptions::NONET",
+        b"Nokogiri::XML::ParseOptions::NONET",
+    ];
+    HARDENING_NEEDLES
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for XxeRubyAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -51,6 +83,9 @@ impl FrameworkAdapter for XxeRubyAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if parser_is_hardened(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_xml_parser);
         let matches_source = source_imports_xml(file_bytes);
         if matches_call && matches_source {
@@ -105,5 +140,51 @@ mod tests {
         assert!(XxeRubyAdapter
             .detect(&summary, tree.root_node(), src)
             .is_none());
+    }
+
+    #[test]
+    fn skips_when_entity_expansion_limit_zero() {
+        let src: &[u8] = b"require 'rexml/document'\n\
+            REXML::Document.entity_expansion_limit = 0\n\
+            def run(body)\n  REXML::Document.new(body)\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("new")],
+            ..Default::default()
+        };
+        assert!(XxeRubyAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_nokogiri_nonet_used() {
+        let src: &[u8] = b"require 'nokogiri'\n\
+            def run(body)\n  Nokogiri::XML(body) { |c| c.options = Nokogiri::XML::ParseOptions::NONET }\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("XML")],
+            ..Default::default()
+        };
+        assert!(XxeRubyAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn still_fires_when_nokogiri_noent_present() {
+        let src: &[u8] = b"require 'nokogiri'\n\
+            def run(body)\n  Nokogiri::XML(body) { |c| c.options = Nokogiri::XML::ParseOptions::NOENT | Nokogiri::XML::ParseOptions::DTDLOAD }\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("XML")],
+            ..Default::default()
+        };
+        assert!(XxeRubyAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_some());
     }
 }

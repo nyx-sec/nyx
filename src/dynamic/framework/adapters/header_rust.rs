@@ -39,6 +39,20 @@ fn source_imports_rust_http(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// header value through a canonical Rust URL-encoder.
+fn value_routed_through_encoder(file_bytes: &[u8]) -> bool {
+    const ENCODER_CALLS: &[&[u8]] = &[
+        b"utf8_percent_encode(",
+        b"percent_encode(",
+        b"urlencoding::encode(",
+        b"form_urlencoded::byte_serialize(",
+    ];
+    ENCODER_CALLS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for HeaderRustAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -54,6 +68,9 @@ impl FrameworkAdapter for HeaderRustAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if value_routed_through_encoder(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
         let matches_source = source_imports_rust_http(file_bytes);
         if matches_call && matches_source {
@@ -103,6 +120,28 @@ mod tests {
         let tree = parse_rust(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(HeaderRustAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_value_url_encoded() {
+        let src: &[u8] = b"use axum::http::HeaderMap;\n\
+            use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};\n\
+            fn run(headers: &mut HeaderMap, value: &str) {\n\
+                let safe = utf8_percent_encode(value, NON_ALPHANUMERIC).to_string();\n\
+                headers.insert(\"set-cookie\", safe.parse().unwrap());\n\
+            }\n";
+        let tree = parse_rust(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("insert"),
+                crate::summary::CalleeSite::bare("utf8_percent_encode"),
+            ],
             ..Default::default()
         };
         assert!(HeaderRustAdapter

@@ -33,6 +33,25 @@ fn source_imports_servlet(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// redirect URL through a canonical host-allowlist / URL-validator
+/// helper, so the redirect cannot reach an off-origin attacker host.
+fn url_routed_through_validator(file_bytes: &[u8]) -> bool {
+    const VALIDATOR_TOKENS: &[&[u8]] = &[
+        b"UrlValidator",
+        b".isValid(",
+        b"allowedHosts",
+        b"allowlist",
+        b"allowList",
+        b"WHITELIST",
+        b"isAllowedHost",
+        b"isAllowedRedirect",
+    ];
+    VALIDATOR_TOKENS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for RedirectJavaAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -48,6 +67,9 @@ impl FrameworkAdapter for RedirectJavaAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if url_routed_through_validator(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_redirect);
         let matches_source = source_imports_servlet(file_bytes);
         if matches_call && matches_source {
@@ -97,6 +119,29 @@ mod tests {
         let tree = parse_java(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(RedirectJavaAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_url_validated_against_allowlist() {
+        let src: &[u8] = b"import javax.servlet.http.HttpServletResponse;\n\
+            import org.apache.commons.validator.routines.UrlValidator;\n\
+            class C { void run(HttpServletResponse r, String v) throws Exception {\n\
+                UrlValidator vd = new UrlValidator();\n\
+                if (!vd.isValid(v)) return;\n\
+                r.sendRedirect(v);\n\
+            } }\n";
+        let tree = parse_java(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("sendRedirect"),
+                crate::summary::CalleeSite::bare("isValid"),
+            ],
             ..Default::default()
         };
         assert!(RedirectJavaAdapter

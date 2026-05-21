@@ -36,6 +36,24 @@ fn source_imports_ruby_web(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// redirect URL through a canonical host-allowlist / URL-validator.
+fn url_routed_through_validator(file_bytes: &[u8]) -> bool {
+    const VALIDATOR_TOKENS: &[&[u8]] = &[
+        b"URI.parse(",
+        b"URI(",
+        b"allowed_hosts",
+        b"ALLOWED_HOSTS",
+        b"allowlist",
+        b"ALLOWLIST",
+        b".host ==",
+        b".host?(",
+    ];
+    VALIDATOR_TOKENS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for RedirectRubyAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -51,6 +69,9 @@ impl FrameworkAdapter for RedirectRubyAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if url_routed_through_validator(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_redirect);
         let matches_source = source_imports_ruby_web(file_bytes);
         if matches_call && matches_source {
@@ -100,6 +121,27 @@ mod tests {
         let tree = parse_ruby(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(RedirectRubyAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_url_validated_against_allowlist() {
+        let src: &[u8] = b"require 'rack'\nrequire 'uri'\n\
+            def run(value)\n  allowed_hosts = ['example.com']\n  \
+                host = URI.parse(value).host\n  \
+                return unless allowed_hosts.include?(host)\n  \
+                resp = Rack::Response.new\n  resp.redirect(value)\n  resp\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("redirect"),
+                crate::summary::CalleeSite::bare("parse"),
+            ],
             ..Default::default()
         };
         assert!(RedirectRubyAdapter

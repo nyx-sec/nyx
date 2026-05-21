@@ -38,6 +38,22 @@ fn source_imports_php_web(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// redirect URL through a canonical host-allowlist / URL-validator.
+fn url_routed_through_validator(file_bytes: &[u8]) -> bool {
+    const VALIDATOR_TOKENS: &[&[u8]] = &[
+        b"parse_url(",
+        b"allowedHosts",
+        b"allowed_hosts",
+        b"allowlist",
+        b"in_array(",
+        b"filter_var(",
+    ];
+    VALIDATOR_TOKENS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for RedirectPhpAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -53,6 +69,9 @@ impl FrameworkAdapter for RedirectPhpAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if url_routed_through_validator(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_redirect);
         let matches_source = source_imports_php_web(file_bytes);
         if matches_call && matches_source {
@@ -102,6 +121,28 @@ mod tests {
         let tree = parse_php(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(RedirectPhpAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_url_validated_against_allowlist() {
+        let src: &[u8] = b"<?php\nfunction run($v) {\n\
+            $allowedHosts = ['example.com'];\n\
+            $parts = parse_url($v);\n\
+            if (!in_array($parts['host'], $allowedHosts, true)) return;\n\
+            header(\"Location: \" . $v);\n}\n";
+        let tree = parse_php(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("header"),
+                crate::summary::CalleeSite::bare("parse_url"),
+                crate::summary::CalleeSite::bare("in_array"),
+            ],
             ..Default::default()
         };
         assert!(RedirectPhpAdapter

@@ -37,6 +37,20 @@ fn source_imports_go_http(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// header value through a canonical Go URL-encoder / HTML-escaper.
+fn value_routed_through_encoder(file_bytes: &[u8]) -> bool {
+    const ENCODER_CALLS: &[&[u8]] = &[
+        b"url.QueryEscape(",
+        b"url.PathEscape(",
+        b"template.HTMLEscapeString(",
+        b"template.JSEscapeString(",
+    ];
+    ENCODER_CALLS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for HeaderGoAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -52,6 +66,9 @@ impl FrameworkAdapter for HeaderGoAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if value_routed_through_encoder(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
         let matches_source = source_imports_go_http(file_bytes);
         if matches_call && matches_source {
@@ -101,6 +118,24 @@ mod tests {
         let tree = parse_go(src);
         let summary = FuncSummary {
             name: "Add".into(),
+            ..Default::default()
+        };
+        assert!(HeaderGoAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_value_url_encoded() {
+        let src: &[u8] = b"package x\nimport (\"net/http\"; \"net/url\")\n\
+            func Run(w http.ResponseWriter, v string) { w.Header().Set(\"X-Token\", url.QueryEscape(v)) }\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "Run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("Set"),
+                crate::summary::CalleeSite::bare("QueryEscape"),
+            ],
             ..Default::default()
         };
         assert!(HeaderGoAdapter

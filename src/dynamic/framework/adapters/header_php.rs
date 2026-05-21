@@ -37,6 +37,20 @@ fn source_uses_php_response(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// header value through a canonical PHP URL-encoder / HTML-escaper.
+fn value_routed_through_encoder(file_bytes: &[u8]) -> bool {
+    const ENCODER_CALLS: &[&[u8]] = &[
+        b"urlencode(",
+        b"rawurlencode(",
+        b"htmlspecialchars(",
+        b"htmlentities(",
+    ];
+    ENCODER_CALLS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for HeaderPhpAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -52,6 +66,9 @@ impl FrameworkAdapter for HeaderPhpAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if value_routed_through_encoder(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
         let matches_source = source_uses_php_response(file_bytes);
         if matches_call && matches_source {
@@ -100,6 +117,24 @@ mod tests {
         let tree = parse_php(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(HeaderPhpAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_value_url_encoded() {
+        let src: &[u8] =
+            b"<?php\nfunction run($v) { header('Set-Cookie: ' . urlencode($v)); }\n";
+        let tree = parse_php(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("header"),
+                crate::summary::CalleeSite::bare("urlencode"),
+            ],
             ..Default::default()
         };
         assert!(HeaderPhpAdapter

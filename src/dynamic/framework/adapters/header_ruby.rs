@@ -38,6 +38,23 @@ fn source_uses_ruby_web(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// header value through a canonical Ruby URL-encoder / HTML-escaper.
+fn value_routed_through_encoder(file_bytes: &[u8]) -> bool {
+    const ENCODER_CALLS: &[&[u8]] = &[
+        b"URI.encode_www_form_component(",
+        b"encode_www_form_component(",
+        b"CGI.escape(",
+        b"CGI.escapeHTML(",
+        b"ERB::Util.url_encode(",
+        b"ERB::Util.h(",
+        b"Rack::Utils.escape(",
+    ];
+    ENCODER_CALLS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for HeaderRubyAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -53,6 +70,9 @@ impl FrameworkAdapter for HeaderRubyAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if value_routed_through_encoder(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
         let matches_source = source_uses_ruby_web(file_bytes);
         if matches_call && matches_source {
@@ -102,6 +122,25 @@ mod tests {
         let tree = parse_ruby(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(HeaderRubyAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_value_url_encoded() {
+        let src: &[u8] = b"require 'rack'\nrequire 'uri'\n\
+            def run(value)\n  response = Rack::Response.new\n  \
+                response.set_header('Set-Cookie', URI.encode_www_form_component(value))\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("set_header"),
+                crate::summary::CalleeSite::bare("encode_www_form_component"),
+            ],
             ..Default::default()
         };
         assert!(HeaderRubyAdapter

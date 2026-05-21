@@ -38,6 +38,26 @@ fn source_imports_python_web(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// Returns `true` when the surrounding source visibly routes the
+/// redirect URL through a canonical host-allowlist / URL-validator.
+fn url_routed_through_validator(file_bytes: &[u8]) -> bool {
+    const VALIDATOR_TOKENS: &[&[u8]] = &[
+        b"is_safe_url(",
+        b"url_has_allowed_host_and_scheme(",
+        b"allowed_hosts",
+        b"ALLOWED_HOSTS",
+        b"ALLOWLIST",
+        b"allowlist",
+        b".netloc in ",
+        b".netloc.in_",
+        b"urlparse(",
+        b"url_parse(",
+    ];
+    VALIDATOR_TOKENS
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
 impl FrameworkAdapter for RedirectPythonAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -53,6 +73,9 @@ impl FrameworkAdapter for RedirectPythonAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if url_routed_through_validator(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_redirect);
         let matches_source = source_imports_python_web(file_bytes);
         if matches_call && matches_source {
@@ -102,6 +125,27 @@ mod tests {
         let tree = parse_python(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(RedirectPythonAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_url_validated_against_allowlist() {
+        let src: &[u8] = b"from flask import redirect\n\
+            from django.utils.http import url_has_allowed_host_and_scheme\n\
+            def run(value):\n    \
+                if not url_has_allowed_host_and_scheme(value, allowed_hosts={'example.com'}):\n        \
+                    return None\n    return redirect(value)\n";
+        let tree = parse_python(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![
+                crate::summary::CalleeSite::bare("redirect"),
+                crate::summary::CalleeSite::bare("url_has_allowed_host_and_scheme"),
+            ],
             ..Default::default()
         };
         assert!(RedirectPythonAdapter
