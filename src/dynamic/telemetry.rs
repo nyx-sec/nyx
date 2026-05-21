@@ -1,9 +1,9 @@
-//! Telemetry event log (§21.1).
+//! Telemetry event log.
 //!
 //! Writes one JSON line per verdict to `~/.cache/nyx/dynamic/events.jsonl`.
-//! `NYX_NO_TELEMETRY=1` silently disables all writes (§21.4).
+//! `NYX_NO_TELEMETRY=1` silently disables all writes.
 //!
-//! # Schema (Phase 27)
+//! # Schema
 //!
 //! Every record starts with three envelope fields so the on-disk format can
 //! evolve across releases without silently mixing incompatible records:
@@ -12,11 +12,10 @@
 //! - `nyx_version`: the Cargo package version that wrote the record.
 //! - `corpus_version`: the payload-corpus version active at write time.
 //!
-//! Followed by a `kind` discriminator (`"verdict"` or `"rank_delta"`).  All
-//! readers (`read_events`, the M7 ship gate) require `schema_version ==
-//! [`SCHEMA_VERSION`]; mismatched records produce
-//! [`TelemetryReadError::SchemaMismatch`] instead of being silently parsed
-//! as if they matched.
+//! Followed by a `kind` discriminator (`"verdict"` or `"rank_delta"`). All
+//! readers require `schema_version == SCHEMA_VERSION`; mismatched records
+//! produce [`TelemetryReadError::SchemaMismatch`] instead of being silently
+//! parsed as if they matched.
 //!
 //! ```json
 //! {
@@ -258,12 +257,10 @@ fn lang_from_path(path: &str) -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
-/// Sampling decision for telemetry writes (Phase 27, Track H.2).
+/// Sampling decision for telemetry writes.
 ///
-/// Confirmed and Inconclusive verdicts are calibration-critical (false-Confirmed
-/// rate gates M7 ship; Inconclusive reasons drive the spec-derivation roadmap)
-/// and are always retained.  Other verdict statuses can be downsampled to bound
-/// log growth on high-volume scans.
+/// Confirmed and Inconclusive verdicts are kept for calibration. Other verdict
+/// statuses can be downsampled to bound log growth on high-volume scans.
 ///
 /// The decision is seeded by `spec_hash` so the *same* finding makes the *same*
 /// keep-or-drop call across reruns. Without this, two scans of the same project
@@ -413,12 +410,11 @@ pub fn log_path() -> Option<std::path::PathBuf> {
     events_log_path()
 }
 
-// ── Reading events back (Phase 27) ───────────────────────────────────────────
+// Reading events back
 
 /// Structured error returned by [`read_events`].
 ///
-/// Surfaced to the M7 ship gate so Gate 2 can fail loudly on schema-mismatch
-/// rather than silently treating mismatched records as "no data".
+/// Returned when a log mixes records from incompatible schema versions.
 #[derive(Debug, thiserror::Error)]
 pub enum TelemetryReadError {
     #[error("io error reading {path}: {source}")]
@@ -451,14 +447,12 @@ pub enum TelemetryReadError {
 ///
 /// Returns each line as a `serde_json::Value` so callers can dispatch on the
 /// `kind` discriminator themselves.  Rejects any record whose `schema_version`
-/// does not match [`SCHEMA_VERSION`] (this is the explicit failure mode the
-/// M7 ship gate Gate 2 consumes; a v0 record from an older release must not
-/// silently parse as if the schema had never changed).
+/// does not match [`SCHEMA_VERSION`]. A v0 record from an older release must
+/// not silently parse as if the schema had never changed.
 ///
-/// Blank lines are skipped.  Any malformed JSON or missing `schema_version`
-/// fails the whole read; partial recovery is not the contract here because
-/// the ship gate already treats "log missing or unreadable" as "no data,
-/// skip Gate 2 with a notice."
+/// Blank lines are skipped. Any malformed JSON or missing `schema_version`
+/// fails the whole read; partial recovery is not the contract for telemetry
+/// logs.
 pub fn read_events(path: &Path) -> Result<Vec<serde_json::Value>, TelemetryReadError> {
     let file = std::fs::File::open(path).map_err(|e| TelemetryReadError::Io {
         path: path.to_path_buf(),
@@ -551,8 +545,8 @@ pub fn feedback_wrong_for_finding(path: &Path, finding_id: &str) -> Option<bool>
 /// One telemetry event per ranked finding that carries a dynamic verdict delta.
 ///
 /// Emitted by `rank::rank_diags` for every diag whose dynamic verdict shifts
-/// its rank score (delta != 0). Used by the M7 calibration pipeline to tune
-/// the N/M boost/penalty constants from real-world verdict distributions.
+/// its rank score (delta != 0). Used to tune the N/M boost/penalty constants
+/// from real-world verdict distributions.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct RankDeltaEvent {
     pub schema_version: u32,

@@ -11,9 +11,9 @@ export interface StartScanBody {
   engine_profile?: EngineProfile;
   /**
    * Override dynamic verification for this scan.
-   * true  — force on.
-   * false — force off (skip verification; M7 default is on).
-   * absent — use server config default (true since M7).
+   * true - force on.
+   * false - force off.
+   * absent - use server config default.
    */
   verify?: boolean;
   /** Also verify Confidence < Medium findings. Default false. */

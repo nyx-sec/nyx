@@ -1,14 +1,13 @@
-//! Phase 27 — Track H.1 integration test.
+//! Dynamic telemetry schema tests.
 //!
-//! Locks in the on-disk telemetry schema contract that `scripts/m7_ship_gate.sh`
-//! Gate 2 relies on:
+//! Locks in the on-disk telemetry schema contract:
 //!
 //! - Records produced today carry the `schema_version`, `nyx_version`, and
 //!   `corpus_version` envelope fields, plus a `kind` discriminator.
 //! - `read_events(path)` accepts the current schema.
 //! - A hand-crafted record with `schema_version: 0` is rejected by
 //!   `read_events` with a typed [`TelemetryReadError::SchemaMismatch`] (this
-//!   is the explicit Phase 27 acceptance bullet).
+//!   is the required failure mode for mixed-schema logs).
 //! - The sampling policy retains Confirmed and Inconclusive verdicts even at
 //!   `sample_rate_other = 0.0`.
 

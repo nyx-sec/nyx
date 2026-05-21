@@ -1,17 +1,10 @@
-# Phase 31: ratchet values set to the headline targets.
+# Eval corpus budget.
 #
-# These are the published acceptance numbers behind the dynamic-verification
-# overhaul (see `docs/dynamic.md` "Headline metrics").  The ratchet schedule
-# from Phase 29 collapsed into a single target row: every (cap, lang) cell is
-# now gated against the same headline thresholds.  Per-cell carve-outs were
-# dropped in Phase 31; if a cell is still wider than these numbers in practice
-# it shows up as a per-cell `FAIL` in `report.py` and as a gate-1 failure in
-# `scripts/m7_ship_gate.sh`, which is the intended forcing function for the
-# remaining engine follow-ups tracked in `.pitboss/play/deferred.md`.
+# `report.py` enforces these values when `run.sh` or `run_full.sh` pass
+# `--budget`. Each (cap, lang) cell uses the default row unless a specific
+# override appears below.
 #
-# Wall-clock cost (≤ 2× static-only) is enforced separately by Gate 3 of
-# `scripts/m7_ship_gate.sh` against `benches/fixtures/`; it is not a per-cell
-# budget knob and has no entry in this file.
+# Wall-clock cost is measured separately from this per-cell budget.
 #
 # Schema:
 #

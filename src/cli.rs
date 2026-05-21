@@ -471,9 +471,9 @@ pub enum Commands {
 
         /// Build a harness and dynamically verify each finding in a sandbox.
         ///
-        /// Dynamic verification is on by default (M7). This flag is a no-op
-        /// when verification is already enabled via config. Use `--no-verify`
-        /// to disable for a single run. Requires the binary to be built with
+        /// Dynamic verification is on by default. This flag is a no-op when
+        /// verification is already enabled via config. Use `--no-verify` to
+        /// disable it for a single run. Requires the binary to be built with
         /// `--features dynamic`; without that feature this flag is silently ignored.
         #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
         #[arg(long, help_heading = "Dynamic", conflicts_with = "no_verify")]
@@ -489,9 +489,9 @@ pub enum Commands {
 
         /// Also verify `Confidence < Medium` findings dynamically.
         ///
-        /// By default only `Confidence >= Medium` findings are verified (§5.1).
-        /// Pass this flag to run verification on all findings regardless of
-        /// confidence. Intended for corpus-building and backfill runs.
+        /// By default only `Confidence >= Medium` findings are verified. Pass
+        /// this flag to run verification on all findings regardless of
+        /// confidence. Intended for payload tuning and backfill runs.
         #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
         #[arg(long, help_heading = "Dynamic")]
         verify_all_confidence: bool,
@@ -532,7 +532,7 @@ pub enum Commands {
         )]
         harden: Option<String>,
 
-        // ── Baseline / patch-validation (§M6.5) ────────────────────────
+        // Baseline / patch-validation
         /// Read a previous scan's JSON output (or a stripped .nyx/baseline.json)
         /// and diff it against the current scan on stable_hash.
         ///
@@ -564,7 +564,7 @@ pub enum Commands {
         gate: Option<String>,
     },
 
-    /// Submit feedback on a dynamic verification verdict (§21.2).
+    /// Submit feedback on a dynamic verification verdict.
     ///
     /// Records a correction or confirmation for a finding's verdict in the
     /// local telemetry log. Requires `--features dynamic`.

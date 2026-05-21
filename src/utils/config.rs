@@ -251,8 +251,8 @@ pub struct ScannerConfig {
 
     /// Run dynamic verification on each finding after the static pass.
     ///
-    /// Default `true` (M7 flip). Each `Confidence >= Medium` finding is
-    /// passed to `dynamic::verify_finding` and the result is stored in
+    /// Default `true`. Each `Confidence >= Medium` finding is passed to
+    /// `dynamic::verify_finding` and the result is stored in
     /// `Evidence::dynamic_verdict`. Use `--no-verify` (CLI) or set
     /// `verify = false` in `nyx.toml` to disable.
     ///

@@ -145,7 +145,7 @@ fn named_child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
 pub fn class_name<'a>(class: Node<'a>, bytes: &'a [u8]) -> Option<&'a str> {
     let mut cur = class.walk();
     for c in class.named_children(&mut cur) {
-        if c.kind() == "constant" {
+        if c.kind() == "constant" || c.kind() == "scope_resolution" {
             return c.utf8_text(bytes).ok();
         }
     }
@@ -350,6 +350,22 @@ pub fn bind_path_params(formals: &[String], path: &str) -> Vec<ParamBinding> {
 
 fn is_implicit_formal(name: &str) -> bool {
     matches!(name, "env" | "request" | "req" | "params" | "response" | "res")
+}
+
+/// Read the first positional symbol argument (`:foo`) from an
+/// `argument_list` child.  Used by the Rails router DSL to pull the
+/// namespace name out of `namespace :api do ... end` and the
+/// positional form of `scope :v1 do ... end`.  The returned string
+/// is the symbol's identifier portion without the leading colon.
+pub fn first_symbol_arg<'a>(args: Node<'a>, bytes: &'a [u8]) -> Option<String> {
+    let mut cur = args.walk();
+    for c in args.named_children(&mut cur) {
+        if c.kind() == "simple_symbol" {
+            let raw = c.utf8_text(bytes).ok()?;
+            return Some(raw.trim_start_matches(':').to_owned());
+        }
+    }
+    None
 }
 
 /// Read the first positional string-literal argument from an

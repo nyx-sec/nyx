@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# Eval corpus runner for M7 pre-flip gate calibration.
+# Eval corpus runner.
 #
 # Usage:
 #   tests/eval_corpus/run.sh [--output DIR] [--nyx BIN] [--sets owasp,sard,inhouse]
 #
-# Bootstraps OWASP Benchmark v1.2, NIST SARD subset, and in-house
-# bughunt-curated fixtures. Runs `nyx scan --verify` on each. Emits
+# Bootstraps OWASP Benchmark v1.2, the NIST SARD subset, and Nyx benchmark
+# fixtures. Runs `nyx scan --verify` on each. Emits
 # per-cell (cap x language) precision/recall table and per-cap Unsupported
 # rate to stdout (and --output DIR if given).
 #
 # Environment:
-#   NYX_EVAL_CORPUS_DIR  — path to pre-downloaded corpus roots
+#   NYX_EVAL_CORPUS_DIR  - path to pre-downloaded corpus roots
 #                          (default: ~/.cache/nyx/eval_corpus)
-#   NYX_BIN              — path to nyx binary (default: ./target/release/nyx)
+#   NYX_BIN              - path to nyx binary (default: ./target/release/nyx)
 #
 # Exit codes:
-#   0 — all gate thresholds met
-#   1 — setup or I/O error
-#   2 — one or more gate thresholds exceeded (see output for details)
+#   0 - all budget thresholds met
+#   1 - setup or I/O error
+#   2 - one or more budget thresholds exceeded (see output for details)
 
 set -euo pipefail
 
@@ -173,9 +173,8 @@ python3 "${SCRIPT_DIR}/report.py" \
   ${DIFF_FILE:+--diff "$DIFF_FILE"}
 REPORT_RC=$?
 set -e
-# Propagate gate-fail (exit 2) and malformed-config (exit 3) so the
-# m7_ship_gate.sh Gate-1 dispatch can tell them apart.  Treat other
-# non-zero as setup error (exit 1).
+# Propagate budget failures (exit 2) and malformed config (exit 3). Treat other
+# non-zero exits as setup errors.
 if [[ $REPORT_RC -eq 2 ]]; then
   exit 2
 elif [[ $REPORT_RC -eq 3 ]]; then

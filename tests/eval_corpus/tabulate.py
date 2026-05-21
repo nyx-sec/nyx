@@ -415,8 +415,8 @@ def main() -> int:
             elif status == "Confirmed":
                 cells[key]["confirmed"] += 1
                 # Repro-stability and false-Confirmed counts are optional
-                # fields tabulate.py reads off the verdict when callers
-                # (m7_ship_gate.sh / corpus_promote.yml) have stamped them.
+                # fields tabulate.py reads off the verdict when callers have
+                # stamped them.
                 if dv.get("wrong") is True:
                     cells[key]["wrong_confirmed"] += 1
                 if dv.get("replay_stable") is True:

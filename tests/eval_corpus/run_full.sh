@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# Phase 31: full eval-corpus orchestrator.
+# Full eval-corpus orchestrator.
 #
 # Drives a complete pass against every corpus set the project knows about
-# (OWASP Benchmark v1.2, the NIST SARD subset, and the in-house bughunt
-# fixtures), then emits a stable `tests/eval_corpus/results.json` so
-# downstream consumers (M7 ship gate, monotonic-improvement diff, the
-# headline metrics table in `docs/dynamic.md`) can read a single
-# well-known path.
+# (OWASP Benchmark v1.2, the NIST SARD subset, and the Nyx benchmark
+# fixtures), then emits `tests/eval_corpus/results.json` for reports,
+# diffs, and docs.
 #
 # Usage:
 #   tests/eval_corpus/run_full.sh [--nyx BIN] [--budget FILE] [--diff FILE]
@@ -15,11 +13,9 @@
 # Differences vs `run.sh`:
 #   * Always runs every set (no `--sets` selector).
 #   * Always passes `--budget tests/eval_corpus/budget.toml` so the
-#     headline targets (Unsupported < 20%, FalseConfirmed < 2%, Repro
-#     stability >= 95%) gate every pass.
+#     configured per-cell limits are checked on every pass.
 #   * Copies the timestamped results file to
-#     `tests/eval_corpus/results.json` (canonical path consumed by
-#     `scripts/m7_ship_gate.sh` and the published metrics doc).
+#     `tests/eval_corpus/results.json`.
 #
 # Exit codes:
 #   0  every set ran and the merged result met the per-cell budget.

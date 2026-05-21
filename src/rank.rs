@@ -99,7 +99,7 @@ pub fn compute_attack_rank(diag: &Diag) -> AttackRank {
     // All other verdicts (Unsupported, Inconclusive, no verdict) are
     // unaffected: no data is better than speculative data.
     //
-    // Calibrated values (M7 eval corpus): N=20, M=5.
+    // Calibrated values from the eval corpus: N=20, M=5.
     // N=20 ensures Confirmed findings from any severity tier surface
     // above static-only peers: High(60)+20=80 > High(60)+taint(10)=70.
     // M=5 nudges exhausted-corpus NotConfirmed below equal static peers
@@ -209,7 +209,7 @@ pub fn rank_diags(diags: &mut [Diag]) {
         if !rank.components.is_empty() {
             d.rank_reason = Some(rank.components.clone());
         }
-        // Emit rank-delta telemetry for M7 calibration (§21 / deferred M7 hook).
+        // Emit rank-delta telemetry for score calibration.
         // Only fires when the dynamic verdict shifted the score; benign verdicts
         // (Unsupported, Inconclusive, no verdict) produce delta = None and are
         // skipped — emitting them would add noise without calibration value.
@@ -247,17 +247,16 @@ pub fn rank_diags(diags: &mut [Diag]) {
 /// Returns `None` when there is no verdict (static-only scan) or the verdict
 /// does not change the score (Unsupported, Inconclusive).
 ///
-/// Design note (§deferred M7 payload_corpus_complete): the spec originally
-/// distinguished `NotConfirmed` + `payload_corpus_complete == true` → `-M`
-/// from `NotConfirmed` + `NoPayloadsForCap` → no change.  In practice the
+/// Design note: the spec originally distinguished `NotConfirmed` +
+/// `payload_corpus_complete == true` from `NotConfirmed` +
+/// `NoPayloadsForCap`. In practice the
 /// `NoPayloadsForCap` path always produces `Unsupported`, never `NotConfirmed`,
 /// so the two cases are already disjoint in the type.  The heuristic
 /// `!dv.attempts.is_empty()` (corpus was actually tried) is equivalent to
-/// `payload_corpus_complete == true` for all reachable states — no extra
-/// field is needed.  See also §deferred decision in `.pitboss/play/deferred.md`.
+/// `payload_corpus_complete == true` for all reachable states, so no extra
+/// field is needed.
 ///
-/// Values calibrated against M7 eval corpus (OWASP Benchmark v1.2 + in-house curated set):
-/// N=20, M=5 — see `docs/dynamic_eval_m7.md` for precision/recall breakdowns.
+/// Values calibrated against the eval corpus: N=20, M=5.
 fn dynamic_verdict_delta(diag: &Diag) -> Option<f64> {
     use crate::evidence::VerifyStatus;
     let dv = diag.evidence.as_ref()?.dynamic_verdict.as_ref()?;

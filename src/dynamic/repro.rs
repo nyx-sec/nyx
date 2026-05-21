@@ -565,10 +565,9 @@ pub enum ReplayResult {
 /// Tri-state map of [`ReplayResult`] onto the eval-corpus
 /// `VerifyResult::replay_stable` field shape.
 ///
-/// * `Some(true)` — replay matched the recorded outcome.
-/// * `Some(false)` — replay diverged or aborted in a way that the M7
-///   Gate-5 inversion treats as instability.
-/// * `None` — replay was not informative (toolchain mismatched, docker
+/// * `Some(true)` - replay matched the recorded outcome.
+/// * `Some(false)` - replay diverged or aborted.
+/// * `None` - replay was not informative (toolchain mismatched, docker
 ///   unavailable, or the bundle had no `reproduce.sh`).  The corpus
 ///   tabulator treats `None` as "no signal" and excludes the row from
 ///   the per-cell `stable_replays` numerator.
@@ -582,15 +581,14 @@ pub fn replay_stability(result: &ReplayResult) -> Option<bool> {
     }
 }
 
-/// Phase 28 — Track H.3.  Run `reproduce.sh` in `bundle_root` and map the
-/// shell exit code into a [`ReplayResult`].
+/// Run `reproduce.sh` in `bundle_root` and map the shell exit code into a
+/// [`ReplayResult`].
 ///
 /// `extra_args` is appended to `reproduce.sh` (`--docker` when the caller
 /// wants the docker backend; empty for the process backend).
 ///
-/// This is the host-side companion to the M7 Gate 5 inversion: callers
-/// who want "did this bundle replay green?" semantics see a typed result
-/// and the M7 gate script gets a uniform contract to assert against.
+/// Callers who want "did this bundle replay green?" semantics get a typed
+/// result instead of parsing shell output.
 pub fn replay_bundle(
     bundle_root: &Path,
     extra_args: &[&str],

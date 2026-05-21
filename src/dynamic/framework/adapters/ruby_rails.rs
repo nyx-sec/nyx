@@ -18,7 +18,7 @@ use tree_sitter::Node;
 
 use super::ruby_routes::{
     bind_path_params, class_extends, class_name, find_class_with_method, first_string_arg,
-    kwarg_string, method_formal_names, source_imports_rails, verb_from_ident,
+    first_symbol_arg, kwarg_string, method_formal_names, source_imports_rails, verb_from_ident,
 };
 
 pub struct RubyRailsAdapter;
@@ -40,9 +40,13 @@ fn class_is_rails_controller(class: Node<'_>, bytes: &[u8]) -> bool {
 /// Walk the file's top-level `call` nodes looking for a
 /// `Rails.application.routes.draw` block or bare `get / post / ...`
 /// dispatch lines, and return the first `(method, path)` whose
-/// `to: 'controller#action'` kwarg references the target.  Returns
-/// `None` when no route mapping is present (the caller then falls
-/// back to the conventional `/{action}` shape).
+/// `to: 'controller#action'` kwarg references the target.  Respects
+/// `namespace :api do ... end` and `scope :v1 do ... end` /
+/// `scope path: '/v1' do ... end` nesting so a route declared inside
+/// such a block resolves against the prefixed path + controller name
+/// Rails actually mounts it under.  Returns `None` when no mapping
+/// is present (the caller then falls back to the conventional
+/// `/{action}` shape).
 fn find_route_mapping<'a>(
     root: Node<'a>,
     bytes: &'a [u8],
@@ -50,7 +54,7 @@ fn find_route_mapping<'a>(
     action: &str,
 ) -> Option<(HttpMethod, String)> {
     let mut hit: Option<(HttpMethod, String)> = None;
-    visit_routes(root, bytes, controller, action, &mut hit);
+    visit_routes(root, bytes, controller, action, "", "", &mut hit);
     hit
 }
 
@@ -59,19 +63,98 @@ fn visit_routes<'a>(
     bytes: &'a [u8],
     controller: &str,
     action: &str,
+    path_prefix: &str,
+    ctrl_prefix: &str,
     out: &mut Option<(HttpMethod, String)>,
 ) {
     if out.is_some() {
         return;
     }
-    if node.kind() == "call"
-        && let Some(found) = try_route_mapping(node, bytes, controller, action) {
+    if node.kind() == "call" {
+        if let Some((kind, ident)) = route_nesting_kind(node, bytes) {
+            let (path_pfx, ctrl_pfx) = match kind {
+                NestingKind::Namespace => (
+                    format!("{path_prefix}/{ident}"),
+                    format!("{ctrl_prefix}{ident}/"),
+                ),
+                NestingKind::ScopeSymbol => (
+                    format!("{path_prefix}/{ident}"),
+                    format!("{ctrl_prefix}{ident}/"),
+                ),
+                NestingKind::ScopePath => (format!("{path_prefix}/{ident}"), ctrl_prefix.to_owned()),
+            };
+            recurse_into_block(node, bytes, controller, action, &path_pfx, &ctrl_pfx, out);
+            return;
+        }
+        if let Some(found) = try_route_mapping(node, bytes, controller, action, path_prefix, ctrl_prefix) {
             *out = Some(found);
             return;
         }
+    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
-        visit_routes(child, bytes, controller, action, out);
+        visit_routes(child, bytes, controller, action, path_prefix, ctrl_prefix, out);
+    }
+}
+
+enum NestingKind {
+    Namespace,
+    ScopeSymbol,
+    ScopePath,
+}
+
+/// If `call` is a routes-DSL nesting block (`namespace :api do ... end`,
+/// `scope :v1 do ... end`, or `scope path: '/v1' do ... end`) return
+/// the kind + the extracted identifier (a bare token for namespace /
+/// symbol-scope, a leading-slash-stripped path for path-scope).
+fn route_nesting_kind<'a>(call: Node<'a>, bytes: &'a [u8]) -> Option<(NestingKind, String)> {
+    let mut cur = call.walk();
+    let mut ident: Option<&str> = None;
+    let mut args: Option<Node<'a>> = None;
+    for child in call.named_children(&mut cur) {
+        match child.kind() {
+            "identifier" => ident = child.utf8_text(bytes).ok(),
+            "argument_list" => args = Some(child),
+            _ => {}
+        }
+    }
+    let ident = ident?;
+    let args = args?;
+    match ident {
+        "namespace" => {
+            let sym = first_symbol_arg(args, bytes)?;
+            Some((NestingKind::Namespace, sym))
+        }
+        "scope" => {
+            if let Some(sym) = first_symbol_arg(args, bytes) {
+                Some((NestingKind::ScopeSymbol, sym))
+            } else {
+                let path = kwarg_string(args, bytes, "path")?;
+                let trimmed = path.trim_start_matches('/').to_owned();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                Some((NestingKind::ScopePath, trimmed))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn recurse_into_block<'a>(
+    call: Node<'a>,
+    bytes: &'a [u8],
+    controller: &str,
+    action: &str,
+    path_prefix: &str,
+    ctrl_prefix: &str,
+    out: &mut Option<(HttpMethod, String)>,
+) {
+    let mut cur = call.walk();
+    for child in call.named_children(&mut cur) {
+        if child.kind() == "do_block" || child.kind() == "block" {
+            visit_routes(child, bytes, controller, action, path_prefix, ctrl_prefix, out);
+        }
     }
 }
 
@@ -80,6 +163,8 @@ fn try_route_mapping<'a>(
     bytes: &'a [u8],
     controller: &str,
     action: &str,
+    path_prefix: &str,
+    ctrl_prefix: &str,
 ) -> Option<(HttpMethod, String)> {
     let mut cur = call.walk();
     let mut verb: Option<HttpMethod> = None;
@@ -100,8 +185,14 @@ fn try_route_mapping<'a>(
     let path = first_string_arg(args, bytes)?;
     let to = kwarg_string(args, bytes, "to")?;
     let (ctrl, act) = to.split_once('#')?;
-    if controller_matches(ctrl, controller) && act == action {
-        return Some((verb, path));
+    let full_ctrl = format!("{ctrl_prefix}{ctrl}");
+    if controller_matches(&full_ctrl, controller) && act == action {
+        let full_path = if path_prefix.is_empty() {
+            path
+        } else {
+            format!("{}/{}", path_prefix, path.trim_start_matches('/'))
+        };
+        return Some((verb, full_path));
     }
     None
 }
@@ -267,6 +358,51 @@ mod tests {
         assert_eq!(route.path, "/u/:id");
         let id = binding.request_params.iter().find(|p| p.name == "id").unwrap();
         assert!(matches!(id.source, crate::dynamic::framework::ParamSource::PathSegment(_)));
+    }
+
+    #[test]
+    fn routes_draw_namespace_applies_prefix_to_path_and_controller() {
+        let src: &[u8] = b"Rails.application.routes.draw do\n  namespace :api do\n    get '/users', to: 'users#index'\n  end\nend\n\nclass Api::UsersController < ApplicationController\n  def index\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let binding = RubyRailsAdapter
+            .detect(&summary("index"), tree.root_node(), src)
+            .expect("binding");
+        let route = binding.route.unwrap();
+        assert_eq!(route.path, "/api/users");
+        assert_eq!(route.method, HttpMethod::GET);
+    }
+
+    #[test]
+    fn routes_draw_scope_path_prefixes_path_only() {
+        let src: &[u8] = b"Rails.application.routes.draw do\n  scope path: '/v1' do\n    get '/users', to: 'users#index'\n  end\nend\n\nclass UsersController < ApplicationController\n  def index\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let binding = RubyRailsAdapter
+            .detect(&summary("index"), tree.root_node(), src)
+            .expect("binding");
+        let route = binding.route.unwrap();
+        assert_eq!(route.path, "/v1/users");
+    }
+
+    #[test]
+    fn routes_draw_scope_symbol_prefixes_path_and_controller() {
+        let src: &[u8] = b"Rails.application.routes.draw do\n  scope :admin do\n    get '/users', to: 'users#index'\n  end\nend\n\nclass Admin::UsersController < ApplicationController\n  def index\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let binding = RubyRailsAdapter
+            .detect(&summary("index"), tree.root_node(), src)
+            .expect("binding");
+        let route = binding.route.unwrap();
+        assert_eq!(route.path, "/admin/users");
+    }
+
+    #[test]
+    fn routes_draw_nested_namespaces_compose_prefixes() {
+        let src: &[u8] = b"Rails.application.routes.draw do\n  namespace :api do\n    namespace :v1 do\n      get '/users', to: 'users#index'\n    end\n  end\nend\n\nclass Api::V1::UsersController < ApplicationController\n  def index\n    'ok'\n  end\nend\n";
+        let tree = parse(src);
+        let binding = RubyRailsAdapter
+            .detect(&summary("index"), tree.root_node(), src)
+            .expect("binding");
+        let route = binding.route.unwrap();
+        assert_eq!(route.path, "/api/v1/users");
     }
 
     #[test]

@@ -283,10 +283,17 @@ pub fn method_formal_types(method: Node<'_>, bytes: &[u8]) -> Vec<(String, Strin
 
 /// Extract placeholder names from a route path template.
 ///
-/// Supports two placeholder syntaxes:
+/// Supports three placeholder syntaxes:
 ///   - JAX-RS / Spring / Micronaut: `/users/{id}` → `id`,
 ///     `/users/{id:[0-9]+}` → `id`.
-///   - Servlet-mapping `*` wildcards: ignored (no name to bind).
+///   - Spring 5.3+ capture-all variables: `/files/{*path}` → `path`
+///     (matches the remainder of the URI including slashes).
+///   - Bare Ant-style `*` / `**` wildcards (`/users/*`, `/files/**`):
+///     intentionally yield no placeholders. They are unnamed by Spring's
+///     `AntPathMatcher` and cannot bind by formal name; handlers that
+///     need the matched segment use `HttpServletRequest.getRequestURI()`
+///     (already routed to [`ParamSource::Implicit`]) or the named
+///     `{*name}` capture-all syntax above.
 pub fn extract_path_placeholders(path: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let bytes = path.as_bytes();
@@ -295,7 +302,8 @@ pub fn extract_path_placeholders(path: &str) -> Vec<String> {
         if bytes[i] == b'{'
             && let Some(end) = bytes[i + 1..].iter().position(|&b| b == b'}') {
                 let inner = &path[i + 1..i + 1 + end];
-                let name = inner.split(':').next().unwrap_or(inner).trim();
+                let inner_name = inner.split(':').next().unwrap_or(inner).trim();
+                let name = inner_name.strip_prefix('*').unwrap_or(inner_name);
                 if !name.is_empty() && !out.iter().any(|n| n == name) {
                     out.push(name.to_owned());
                 }
@@ -418,6 +426,26 @@ mod tests {
             vec!["id", "slug"]
         );
         assert_eq!(extract_path_placeholders("/u/{id:[0-9]+}"), vec!["id"]);
+    }
+
+    #[test]
+    fn extracts_capture_all_variable() {
+        assert_eq!(extract_path_placeholders("/files/{*path}"), vec!["path"]);
+        assert_eq!(
+            extract_path_placeholders("/api/{tenant}/files/{*resource}"),
+            vec!["tenant", "resource"]
+        );
+    }
+
+    #[test]
+    fn unnamed_ant_globs_yield_no_placeholders() {
+        // Bare `*` and `**` are unnamed by Spring's AntPathMatcher and have
+        // no name to bind a formal to. Handlers that need the matched
+        // segment use the request object (routed to [`ParamSource::Implicit`])
+        // or the named `{*name}` capture-all syntax above.
+        assert!(extract_path_placeholders("/users/*").is_empty());
+        assert!(extract_path_placeholders("/files/**").is_empty());
+        assert!(extract_path_placeholders("/a/*/b/**/c").is_empty());
     }
 
     #[test]

@@ -46,7 +46,7 @@ A focused release on three fronts: an attack-surface map and chain composer that
 - **New `Cap` corpora.** Vulnerable + patched fixtures landed for the seven new cap classes (LDAP injection, XPath injection, header injection, open redirect, SSTI, XXE, prototype pollution) plus deserialization, crypto, JSON parsing, unauthorized-id, and data exfiltration. Every cap now carries at least one positive / negative / adversarial / unsupported fixture quad per supported language.
 - **OWASP Benchmark v1.2 importer.** `tests/eval_corpus/owasp_gt_convert.py` converts the OWASP Java Benchmark expected-results manifest into Nyx ground truth and lands a 16k-line `owasp_benchmark_v1.2.json` for evaluation.
 - **NIST SARD importer.** `tests/eval_corpus/sard_gt_convert.py` converts SARD test cases into the same format so cross-dataset recall numbers stay comparable.
-- **`scripts/m7_ship_gate.sh`** runs five gates against `tests/eval_corpus/budget.toml`: Unsupported under 20% per `(cap, lang)` cell, False-Confirmed under 2% per cap, repro stability at or above 95%, wall-clock no more than 2× static-only, sandbox-escape suite green. `tests/eval_corpus/run_full.sh` is the canonical orchestrator and writes `tests/eval_corpus/results.json` for the gate plus the published metrics table in `docs/dynamic.md`.
+- **Evaluation corpus tooling.** `tests/eval_corpus/run_full.sh` runs the Nyx benchmark, OWASP Benchmark, and NIST SARD evaluation sets and writes `tests/eval_corpus/results.json`. `tests/eval_corpus/report.py` and `tabulate.py` produce the per-cap and per-language summary used to track coverage and accuracy.
 
 ### Engine
 

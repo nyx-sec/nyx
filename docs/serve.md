@@ -12,9 +12,8 @@ nyx serve --no-browser            # don't auto-open
 Persistent settings live under `[server]` in `nyx.conf` / `nyx.local`.
 
 Starting a scan from the UI runs dynamic verification on `Confidence >= Medium`
-findings by default (M7). Check "Skip dynamic verification" in the scan modal
-to get a fast static-only result. See [Dynamic verification](dynamic.md) for
-details.
+findings by default. Check "Skip dynamic verification" in the scan modal to get
+a fast static-only result. See [Dynamic verification](dynamic.md) for details.
 
 <p align="center"><img src="assets/screenshots/docs/serve-overview.png" alt="Nyx UI overview: total findings, severity breakdown, language and category distribution, top affected files" width="900"/></p>
 

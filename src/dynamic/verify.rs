@@ -85,14 +85,11 @@ pub struct VerifyOptions {
     /// Default `false`. [`Self::from_config`] honours the
     /// `NYX_VERIFY_REPLAY_STABLE` environment variable (`1` / `true`).
     pub replay_stable_check: bool,
-    /// Phase 31 follow-up: when `true` and `replay_stable_check` is also
-    /// `true`, the verifier passes `--docker` to `reproduce.sh` instead of
-    /// running it through the host's process backend.  Lets the eval-corpus
-    /// driver mark `replay_stable` based on the bare-image replay path so
-    /// the M7 ship-gate's Gate 5 reflects the docker bundle's green/red
-    /// signal — required when the corpus walks a host that has stripped
-    /// the language toolchains (the bare-image CI matrix at
-    /// `.github/workflows/repro-bare.yml`).
+    /// When `true` and `replay_stable_check` is also `true`, the verifier
+    /// passes `--docker` to `reproduce.sh` instead of running it through the
+    /// host's process backend. This lets eval-corpus runs mark
+    /// `replay_stable` from the bare-image replay path when the host has
+    /// stripped language toolchains.
     ///
     /// Default `false`.  [`Self::from_config`] honours the
     /// `NYX_VERIFY_REPLAY_DOCKER` environment variable (`1` / `true`).

@@ -36,9 +36,9 @@ struct StartScanRequest {
     engine_profile: Option<String>,
     /// Override dynamic verification for this scan.
     ///
-    /// `true`  — force on even if config says off.
-    /// `false` — force off even if config says on (M7 default-on).
-    /// absent  — inherit config default (true since M7).
+    /// `true`  - force on even if config says off.
+    /// `false` - force off even if config says on.
+    /// absent  - inherit config default.
     ///
     /// Requires `--features dynamic`; `true` returns 400 when the
     /// feature is absent.

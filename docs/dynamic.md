@@ -1,125 +1,116 @@
 # Dynamic verification
 
-Nyx verifies every `Confidence >= Medium` finding by default: it builds
-a minimal harness, runs your code's entry point against a curated payload corpus
-inside a sandbox, and records the verdict in each finding's evidence block.
+Nyx re-runs findings in generated harnesses when verification is enabled. By
+default, `nyx scan` verifies each `Confidence >= Medium` finding, tries
+payloads in a sandbox, and writes the result to `evidence.dynamic_verdict`.
 
-## Headline metrics
+Dynamic verification is a second signal, not a replacement for review. A
+confirmed verdict means Nyx triggered the sink in its harness. `NotConfirmed`
+means the harness ran but no payload fired.
 
-The dynamic-verification overhaul ships with four published acceptance targets,
-gated end-to-end by `scripts/m7_ship_gate.sh` (Phase 31) against the eval
-corpus (OWASP Benchmark v1.2 + NIST SARD subset + the in-house curated set
-from `tests/benchmark/corpus`):
+## Running it
 
-| Metric | Target | Gate | Source |
-| --- | --- | --- | --- |
-| Unsupported% per `(cap, lang)` cell | < 20% | M7 Gate 1 | `tests/eval_corpus/budget.toml` → `[default].unsupported_rate` |
-| False-Confirmed% per cap | < 2% | M7 Gate 2 | `~/.cache/nyx/dynamic/events.jsonl` (`kind: feedback`, `wrong: true`) |
-| Repro stability | ≥ 95% | M7 Gate 5 | `~/.cache/nyx/dynamic/repro/*/reproduce.sh` exit 0 |
-| Wall-clock cost | ≤ 2× static-only | M7 Gate 3 | `benches/fixtures/` (default vs `--no-verify`) |
-
-The corresponding orchestrator is `tests/eval_corpus/run_full.sh`; it bundles
-the three corpus sets, writes a canonical `tests/eval_corpus/results.json`,
-and propagates the per-cell budget through `tabulate.py` and `report.py`.
-
-A non-zero exit from `m7_ship_gate.sh` is a hard merge blocker for the
-default-on flip.  Failures map back to the engine follow-ups recorded in
-`.pitboss/play/deferred.md` (per-language probe-shim splicing, composite
-chain reverifier wiring, telemetry-stability stamping, et al.).
-
-
-## Default-on semantics
-
-```
-nyx scan                 # verifies Medium+ findings (default)
-nyx scan --no-verify     # static analysis only, no harness execution
-nyx scan --verify        # same as default; explicit for clarity in scripts
+```bash
+nyx scan                 # verifies Medium and High confidence findings
+nyx scan --no-verify     # static analysis only
+nyx scan --verify        # explicit form of the default behavior
 ```
 
-`--no-verify` is the escape hatch. It overrides the config default for a single
-run without changing `nyx.toml`.
+Use `--no-verify` for fast local checks or editor workflows. Keep verification
+on for CI when scan time allows it.
 
-### What "verified" means
+To verify low-confidence findings too:
 
-A finding with `dynamic_verdict.status: Confirmed` was successfully triggered
-by at least one payload in nyx's corpus. The corpus covers common patterns for
-each vulnerability class (SQL injection, XSS, command injection, SSRF, etc.) per
-language.
-
-A finding with `dynamic_verdict.status: NotConfirmed` was attempted but no
-payload fired. This is not a false-positive signal. It means the corpus did not
-have a payload that matched the specific sink variant, or the execution path was
-not reachable in the test harness.
-
-A finding with `dynamic_verdict.status: Unsupported` could not be attempted.
-Common reasons: confidence below threshold, no flow steps, language or sink type
-not yet supported by the harness layer.
-
-### Confidence gate
-
-Only `Confidence >= Medium` findings are verified by default (§5.1). To also
-verify low-confidence findings (for corpus building or backfill), pass
-`--verify-all-confidence`:
-
-```
+```bash
 nyx scan --verify-all-confidence
 ```
 
-This is not recommended for production scans because low-confidence findings have
-a higher false-positive rate and the harness may produce unreliable verdicts.
+Use it when tuning payloads or investigating coverage. It is slower and noisier
+than the default.
 
-## nyx.toml opt-out
+## Verdicts
 
-If you want static-only scans permanently, set `verify = false` in `nyx.toml`:
+| Status | Meaning |
+| --- | --- |
+| `Confirmed` | At least one payload reached the expected sink in the harness. |
+| `NotConfirmed` | The harness ran, but no payload reached the sink. Treat the original finding as still open until reviewed. |
+| `Inconclusive` | Nyx could not finish the check with enough isolation or runtime support. |
+| `Unsupported` | Nyx did not try the finding. Common causes are unsupported language, unsupported sink shape, missing flow steps, or confidence below the verification threshold. |
+
+## Configuration
+
+To disable verification for a project, set:
 
 ```toml
 [scanner]
 verify = false
 ```
 
-This survives upgrades. The M7 default flip only changes the inherited default
-for projects that have not explicitly set the field.
+This makes scans static-only unless the command line overrides it.
+
+The related scanner settings are:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `verify` | `true` | Run dynamic verification after static analysis. |
+| `verify_all_confidence` | `false` | Include findings below `Confidence::Medium`. |
+| `verify_backend` | `"auto"` | Use Docker when available, otherwise use the process backend. |
+| `harden_profile` | `"standard"` | Hardening profile for the process backend. |
+
+See [Configuration](configuration.md) for the full config table.
 
 ## Sandbox backends
 
-nyx uses docker when available, then falls back to an in-process runner:
-
-```
-nyx scan --backend docker    # require docker; fail if unavailable
-nyx scan --backend process   # in-process runner (no container; less isolation)
+```bash
+nyx scan --backend docker    # require Docker
+nyx scan --backend process   # run directly on the host with weaker isolation
 nyx scan --unsafe-sandbox    # alias for --backend process
 ```
 
-The docker backend mounts only the entry file's directory and blocks all
-outbound network by default. When out-of-band detection is enabled (`oob_listener`
-in config), the container gets `--network bridge` with a host-gateway route.
+Docker is the preferred backend. It mounts only the entry file's directory and
+blocks outbound network by default. If out-of-band detection is enabled with
+`oob_listener`, Docker uses bridge networking with a host-gateway route so the
+harness can reach the listener.
+
+The process backend is useful for development and machines without Docker. It
+does not provide the same isolation.
 
 ## Repro artifacts
 
-When a finding is `Confirmed`, nyx writes a repro artifact to
-`~/.cache/nyx/repro/<stable_hash>/`. The artifact contains the harness spec and
-the triggering payload. You can regenerate the verdict with:
+Confirmed findings write a repro bundle under:
 
-```
-nyx scan --verify <path>    # re-scans and re-verifies
+```text
+~/.cache/nyx/dynamic/repro/<spec_hash>/
 ```
 
-See `docs/output.md` for the `dynamic_verdict` field schema.
+The bundle contains the harness spec, payload, expected output, trace, and
+`reproduce.sh`.
 
-## Wall-clock cost
+```bash
+cd ~/.cache/nyx/dynamic/repro/<spec_hash>
+./reproduce.sh
+./reproduce.sh --docker
+```
 
-Verification adds harness build + sandbox startup time per finding. On typical
-codebases with 10–50 Medium+ findings, end-to-end overhead is 2–5× static-only.
+Use the Docker form when the bundle records a pinned container image or when
+host toolchains differ from the original run.
 
-If scan time is unacceptable for a given workflow (e.g. IDE integration, quick
-pre-commit check), use `--no-verify` for that workflow and rely on the full scan
-in CI.
+## Runtime cost
 
-## Event schema
+Verification adds harness build time and sandbox startup time for each verified
+finding. For quick local checks, `--no-verify` is usually the right choice. For
+CI or scheduled scans, keep verification enabled so confirmed findings rank
+higher and not-confirmed findings carry the extra context.
 
-The dynamic layer writes one JSON record per verdict to
-`~/.cache/nyx/dynamic/events.jsonl`. Every record begins with a fixed envelope
-so older readers fail loudly instead of silently mixing incompatible shapes:
+## Event log
+
+Nyx writes verdict events to:
+
+```text
+~/.cache/nyx/dynamic/events.jsonl
+```
+
+Each line is a JSON object with a versioned envelope:
 
 ```json
 {
@@ -140,74 +131,54 @@ so older readers fail loudly instead of silently mixing incompatible shapes:
 }
 ```
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `schema_version` | integer | Bumped on any breaking change. Readers reject mismatches. |
-| `nyx_version` | string | `CARGO_PKG_VERSION` of the writing binary. |
-| `corpus_version` | string | Payload-corpus version the verdict was scored against. |
-| `kind` | string | `"verdict"` (per-finding) or `"rank_delta"` (rank-score shift). |
-| `ts` | RFC-3339 string | Wall-clock at write time. |
-| `finding_id` | string | Stable finding identifier. |
-| `spec_hash` | string | Hash of the `HarnessSpec` that drove the run. |
-| `lang` | string | Language slug; `"unknown"` when spec derivation failed. |
-| `cap` | string | Sink capability (e.g. `SQL_QUERY`, `CODE_EXEC`). |
-| `status` | string | `Confirmed`, `NotConfirmed`, `Inconclusive`, or `Unsupported`. |
-| `inconclusive_reason` | string | Present iff `status == Inconclusive`. |
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | Event schema version. Readers reject mismatches. |
+| `nyx_version` | Version of the Nyx binary that wrote the event. |
+| `corpus_version` | Payload corpus version used for the verdict. |
+| `kind` | `verdict`, `rank_delta`, or `feedback`. |
+| `ts` | Write time in RFC 3339 format. |
+| `finding_id` | Stable finding identifier. |
+| `spec_hash` | Hash of the harness spec. |
+| `lang` | Language slug, or `unknown` when spec derivation failed. |
+| `cap` | Sink capability, such as `SQL_QUERY` or `CODE_EXEC`. |
+| `status` | `Confirmed`, `NotConfirmed`, `Inconclusive`, or `Unsupported`. |
+| `inconclusive_reason` | Present when `status` is `Inconclusive`. |
 
-A `rank_delta` record carries the envelope plus `finding_id`, `status`, and a
-signed `delta` applied to the rank score.
+If the schema changes, move or delete the old `events.jsonl` before reading it
+with the new binary. Programmatic readers should use
+`crate::dynamic::telemetry::read_events(path)`.
 
-### Schema-version mismatch
+## Sampling
 
-`scripts/m7_ship_gate.sh` Gate 2 walks every line of the log, requires
-`schema_version == EXPECTED_SCHEMA_VERSION`, and exits 3 if any record fails
-the check. Programmatic readers use
-`crate::dynamic::telemetry::read_events(path)`, which surfaces the same
-condition as `TelemetryReadError::SchemaMismatch { expected, found, .. }`.
-
-When schema bumps land, the canonical migration is to roll the log over (move
-or delete `events.jsonl`) so new and old records never coexist in a file. The
-gate refuses to skip silently on mismatch.
-
-### Sampling
-
-`[telemetry]` in `nyx.toml` controls the on-disk sampling policy:
+`[telemetry]` in `nyx.toml` controls event retention:
 
 ```toml
 [telemetry]
-keep_all_confirmed = true     # default: retain every Confirmed verdict
-keep_all_inconclusive = true  # default: retain every Inconclusive verdict
-sample_rate_other = 1.0       # 0.0–1.0 for NotConfirmed / Unsupported
+keep_all_confirmed = true
+keep_all_inconclusive = true
+sample_rate_other = 1.0
 ```
 
-`sample_rate_other < 1.0` downsamples NotConfirmed and Unsupported verdicts
-deterministically. The decision is seeded by the finding's `spec_hash`, so a
-given finding makes the same keep-or-drop call across reruns. Confirmed and
-Inconclusive verdicts ignore the rate and are always retained (they gate the
-false-Confirmed budget and drive the spec-derivation roadmap).
+`sample_rate_other` accepts `0.0` to `1.0` and applies to `NotConfirmed` and
+`Unsupported` verdicts. The decision is deterministic for a given `spec_hash`.
+Confirmed, Inconclusive, and rank-delta events are always kept by default.
 
-Rank-delta records (emitted by `emit_rank_delta` when a verdict shifts a
-finding's position in the ranked output) are also retained unconditionally and
-do **not** consult `sample_rate_other`. They are calibration-critical and small
-in volume, so the carve-out is intentional; setting `sample_rate_other = 0.0`
-to throttle log growth will still produce rank-delta lines.
+Set `NYX_NO_TELEMETRY=1` to disable event writes.
 
-`NYX_NO_TELEMETRY=1` disables every write regardless of the policy.
+## Feedback
 
-## Opting in to feedback
+To record a bad verdict:
 
-False positives (nyx says `Confirmed` but you disagree) can be recorded:
-
-```
+```bash
 nyx verify-feedback <finding_id> --wrong "reason"
 ```
 
-This writes to the local telemetry log (`~/.cache/nyx/dynamic/events.jsonl`)
-and contributes to precision monitoring. Feedback is never uploaded automatically.
+Feedback is written to the local event log. Nyx does not upload it.
 
-## nyx serve integration
+## Browser UI
 
-The browser UI shows `dynamic_verdict` in each finding's detail panel and
-uses the verdict in ranking (Confirmed findings surface first). The scan compare
-page has a **Verdict Diff** tab that shows which findings changed verification
-status between two scans.
+`nyx serve` shows dynamic verdicts on finding detail pages, uses them in
+ranking, and can compare verdict changes between saved scans.
+
+See [Output formats](output.md) for the `dynamic_verdict` schema.
