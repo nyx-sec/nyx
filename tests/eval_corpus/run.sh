@@ -24,12 +24,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# ── Defaults ──────────────────────────────────────────────────────────────────
+# Defaults
 OUTPUT_DIR=""
 NYX_BIN="${NYX_BIN:-${REPO_ROOT}/target/release/nyx}"
 CORPUS_CACHE="${NYX_EVAL_CORPUS_DIR:-${HOME}/.cache/nyx/eval_corpus}"
 SETS="owasp,sard,inhouse"
-# Phase 29 (Track I): per-cell budgets + monotonic-improvement diff.
+# Optional per-cell budgets and monotonic-improvement diff.
 BUDGET_FILE=""
 DIFF_FILE=""
 

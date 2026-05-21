@@ -537,7 +537,7 @@ fn build_toolchain_lock(spec: &HarnessSpec, root: &Path) -> Result<serde_json::V
     }))
 }
 
-/// Phase 28 — Track H.3.  Outcome of [`replay_bundle`].
+/// Outcome of [`replay_bundle`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplayResult {
     /// `reproduce.sh` exited 0 — replay matched the recorded outcome.
@@ -548,14 +548,13 @@ pub enum ReplayResult {
     DockerUnavailable,
     /// `reproduce.sh` exited 3 — host toolchain mismatched in process mode.
     ToolchainMismatch,
-    /// Any other non-zero exit code, treated as an unexpected error.  The
-    /// Phase 28 m7 Gate 5 inversion treats this as instability.
+    /// Any other non-zero exit code, treated as an unexpected error.
     UnexpectedError {
         /// Exit code surfaced by the script.
         exit_code: i32,
     },
     /// `reproduce.sh` could not be invoked at all (script missing,
-    /// permissions, etc.).  Phase 28 Gate 5 treats this as instability.
+    /// permissions, etc.).
     ScriptInvocationFailed {
         /// Human-readable error.
         message: String,

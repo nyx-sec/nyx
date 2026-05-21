@@ -138,8 +138,7 @@ use tree-sitter and are stable; parsing is not a differentiator.
 - **Framework context**: Rails helpers (`sanitize_sql`, `permit`, `require`).
 - **Known gaps**: string interpolation inside shell and SQL strings is
   recognized structurally but not modeled as a distinct operator.
-  `begin/rescue/ensure` exception-edge wiring is documented as deferred
-  (structurally incompatible with `build_try()`).
+  `begin/rescue/ensure` exception-edge wiring is not implemented.
 
 #### Rust: 100% P / 100% R / 100% F1 *(70-case adversarial corpus)*
 

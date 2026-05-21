@@ -21,6 +21,28 @@ fn callee_is_header_setter(name: &str) -> bool {
     matches!(last, "Set" | "Add" | "Header" | "WriteHeader")
 }
 
+/// True when `receiver` looks like a Go HTTP response-writer or framework
+/// context expression.  Filters out `url.Values.Set` / `sync.Map.Store` /
+/// `flag.FlagSet.Set` and similar map-like receivers whose `Set` / `Add`
+/// names collide with `http.Header.Set` / `Add`.
+///
+/// Drilled forms (root_receiver_text reduces `w.Header().Set` to `w`):
+///   * `w` / `rw` / `writer` — canonical `http.ResponseWriter` names
+///   * `c` / `ctx` — gin / echo / fiber / chi context handles
+///   * `resp` / `response` — common response-wrapper names
+///   * `headers` — `Header` value handle
+///
+/// Non-drilled forms (raw text when drilling fails):
+///   * Any expression containing `.Header()` or `.Headers()` —
+///     canonical chain accessor returning `http.Header`.
+fn receiver_is_go_response_writer(receiver: &str) -> bool {
+    matches!(
+        receiver,
+        "w" | "rw" | "writer" | "c" | "ctx" | "resp" | "response" | "headers" | "header"
+    ) || receiver.contains(".Header()")
+        || receiver.contains(".Headers()")
+}
+
 fn source_imports_go_http(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"\"net/http\"",
@@ -69,7 +91,11 @@ impl FrameworkAdapter for HeaderGoAdapter {
         if value_routed_through_encoder(file_bytes) {
             return None;
         }
-        let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
+        let matches_call = super::any_callee_matches_with_receiver(
+            summary,
+            callee_is_header_setter,
+            receiver_is_go_response_writer,
+        );
         let matches_source = source_imports_go_http(file_bytes);
         if matches_call && matches_source {
             Some(FrameworkBinding {
@@ -123,6 +149,55 @@ mod tests {
         assert!(HeaderGoAdapter
             .detect(&summary, tree.root_node(), src)
             .is_none());
+    }
+
+    #[test]
+    fn skips_url_values_set_collision() {
+        // `params.Set(k, v)` on a `url.Values` collides with `http.Header.Set`
+        // on the bare callee name.  Real CFG-derived callees carry the
+        // receiver text `params`, which is not in the response-writer
+        // allowlist, so the adapter rejects.  Net/url is intentionally
+        // imported here to ensure the source-import gate alone would fire.
+        let src: &[u8] = b"package x\nimport (\"net/http\"; \"net/url\")\n\
+            func Run(w http.ResponseWriter, v string) {\n\
+                params := url.Values{}\n\
+                params.Set(\"k\", v)\n\
+                _ = params\n\
+            }\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "Run".into(),
+            callees: vec![crate::summary::CalleeSite {
+                name: "Set".into(),
+                receiver: Some("params".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(HeaderGoAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn fires_on_response_writer_receiver() {
+        // Receiver-text discriminator accepts `w` (canonical
+        // `http.ResponseWriter` shorthand).
+        let src: &[u8] = b"package x\nimport \"net/http\"\n\
+            func Run(w http.ResponseWriter, v string) { w.Header().Set(\"X\", v) }\n";
+        let tree = parse_go(src);
+        let summary = FuncSummary {
+            name: "Run".into(),
+            callees: vec![crate::summary::CalleeSite {
+                name: "Set".into(),
+                receiver: Some("w".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(HeaderGoAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_some());
     }
 
     #[test]

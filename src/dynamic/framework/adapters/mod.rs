@@ -227,6 +227,36 @@ fn any_callee_matches(
         .any(|c| predicate(c.name.as_str()))
 }
 
+/// True when any callee in `summary.callees` matches `name_pred` AND
+/// (its receiver matches `receiver_pred` OR its receiver is `None`).
+///
+/// Used by adapters where the callee name is ambiguous (e.g. Go's bare
+/// `Set` / `Add` collides with `url.Values.Set`, Rust's `insert` collides
+/// with `BTreeMap::insert`) and the receiver text provides the only
+/// non-type-aware discriminator.
+///
+/// Receivers of `None` fall through to acceptance to preserve backward
+/// compatibility with synthetic unit-test summaries built via
+/// `CalleeSite::bare(...)` and with adapters whose callees are free
+/// functions (no receiver).  Real CFG-derived callees populate
+/// `CalleeSite.receiver` whenever the call is a method invocation, so
+/// the gate engages on production scans.
+fn any_callee_matches_with_receiver(
+    summary: &crate::summary::FuncSummary,
+    name_pred: impl Fn(&str) -> bool,
+    receiver_pred: impl Fn(&str) -> bool,
+) -> bool {
+    summary.callees.iter().any(|c| {
+        if !name_pred(c.name.as_str()) {
+            return false;
+        }
+        match c.receiver.as_deref() {
+            Some(r) => receiver_pred(r),
+            None => true,
+        }
+    })
+}
+
 /// True when `arg_text` resolves to a function parameter whose 0-based
 /// index participates in taint flow — either listed in
 /// `summary.tainted_sink_params` (param reaches an internal sink) or

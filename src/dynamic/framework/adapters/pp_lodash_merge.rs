@@ -16,6 +16,19 @@ fn callee_is_lodash_merge(name: &str) -> bool {
     matches!(last, "merge" | "mergeWith" | "defaultsDeep" | "set" | "setWith")
 }
 
+/// True when `receiver` looks like a lodash module handle (`_`, `lodash`,
+/// or any expression where lodash sits to the left of the dot).
+///
+/// Filters out `state.set(k, v)` on `Map`, `cache.set(k, v)` on `LRU`,
+/// `tokens.merge(...)` on a user class, and similar same-name collisions
+/// outside lodash scope.  Receivers of `None` (bare callees like
+/// `set(state, key, value)` from `const { set } = require('lodash')`
+/// or unit-test `CalleeSite::bare`) pass through to preserve the
+/// standalone-import path.
+fn receiver_is_lodash(receiver: &str) -> bool {
+    matches!(receiver, "_" | "lodash" | "lodashImport") || receiver.starts_with("_.")
+}
+
 fn source_imports_lodash(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"require('lodash')",
@@ -68,7 +81,11 @@ impl FrameworkAdapter for PpLodashMergeJsAdapter {
         if super::source_filters_proto_keys(file_bytes) {
             return None;
         }
-        let matches_call = super::any_callee_matches(summary, callee_is_lodash_merge);
+        let matches_call = super::any_callee_matches_with_receiver(
+            summary,
+            callee_is_lodash_merge,
+            receiver_is_lodash,
+        );
         let matches_source = source_imports_lodash(file_bytes);
         if matches_call && matches_source {
             Some(build_binding(JS_ADAPTER_NAME))
@@ -100,7 +117,11 @@ impl FrameworkAdapter for PpLodashMergeTsAdapter {
         if super::source_filters_proto_keys(file_bytes) {
             return None;
         }
-        let matches_call = super::any_callee_matches(summary, callee_is_lodash_merge);
+        let matches_call = super::any_callee_matches_with_receiver(
+            summary,
+            callee_is_lodash_merge,
+            receiver_is_lodash,
+        );
         let matches_source = source_imports_lodash(file_bytes);
         if matches_call && matches_source {
             Some(build_binding(TS_ADAPTER_NAME))
@@ -147,6 +168,54 @@ mod tests {
         assert!(PpLodashMergeJsAdapter
             .detect(&summary, tree.root_node(), src)
             .is_none());
+    }
+
+    #[test]
+    fn skips_map_set_collision() {
+        // `state.set(k, v)` on a Map collides with `_.set(state, k, v)`
+        // on the bare callee name.  Receiver text `state` is not in the
+        // lodash allowlist, so the adapter rejects.  The lodash import
+        // is intentionally present to ensure the source-import gate
+        // alone would have fired.
+        let src: &[u8] = b"const _ = require('lodash');\n\
+            function run(payload) {\n\
+              const state = new Map();\n\
+              state.set('key', payload);\n\
+              return state;\n\
+            }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite {
+                name: "set".into(),
+                receiver: Some("state".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(PpLodashMergeJsAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn fires_on_underscore_receiver() {
+        // Receiver `_` is the canonical lodash binding.
+        let src: &[u8] = b"const _ = require('lodash');\n\
+            function run(payload) { return _.merge({}, payload); }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite {
+                name: "merge".into(),
+                receiver: Some("_".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(PpLodashMergeJsAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_some());
     }
 
     #[test]

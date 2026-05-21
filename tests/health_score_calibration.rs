@@ -1,9 +1,8 @@
 //! Health-score calibration regression net (v3.5).
 //!
-//! Pins synthetic reference scenarios catalogued in
-//! `docs/health-score-audit.md` to expected score bands.  When a
-//! constant or weight in `src/server/health.rs` changes, this test
-//! fails fast if the change silently re-grades the boundary cases.
+//! Pins synthetic reference scenarios to expected score bands. When a constant
+//! or weight in `src/server/health.rs` changes, this test fails fast if the
+//! change silently re-grades the boundary cases.
 //!
 //! Bands are deliberately wide (±5 points around the calibration
 //! number) so honest curve-shape adjustments don't trip the test ,
@@ -142,7 +141,7 @@ fn sev(h: &HealthScore) -> u8 {
         .score
 }
 
-// ── Calibration cases (synthetic, mirror docs/health-score-audit.md) ─────────
+// Calibration cases
 
 #[test]
 fn calibration_clean_first_scan() {

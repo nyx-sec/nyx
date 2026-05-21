@@ -22,6 +22,23 @@ fn callee_is_header_setter(name: &str) -> bool {
     matches!(last, "set_header" | "[]=" | "store" | "add_header")
 }
 
+/// True when `receiver` looks like a Ruby response or headers handle.
+/// Filters out `Hash#[]=` / generic `Hash#store` collisions where the
+/// receiver is an unrelated local (`h`, `params`, `attrs`, etc.).
+///
+/// Drilled forms covered:
+///   * `response` / `resp` / `res` — `Rack::Response` / Rails / Sinatra response
+///   * `headers` — bare headers handle
+///   * `@response` / `@headers` — instance-var equivalents
+///   * Any expression containing `.headers` or `.response` (chain access).
+fn receiver_is_ruby_response(receiver: &str) -> bool {
+    matches!(
+        receiver,
+        "response" | "resp" | "res" | "headers" | "@response" | "@headers"
+    ) || receiver.contains(".headers")
+        || receiver.contains(".response")
+}
+
 fn source_uses_ruby_web(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
         b"Rack::Response",
@@ -73,7 +90,11 @@ impl FrameworkAdapter for HeaderRubyAdapter {
         if value_routed_through_encoder(file_bytes) {
             return None;
         }
-        let matches_call = super::any_callee_matches(summary, callee_is_header_setter);
+        let matches_call = super::any_callee_matches_with_receiver(
+            summary,
+            callee_is_header_setter,
+            receiver_is_ruby_response,
+        );
         let matches_source = source_uses_ruby_web(file_bytes);
         if matches_call && matches_source {
             Some(FrameworkBinding {
@@ -127,6 +148,49 @@ mod tests {
         assert!(HeaderRubyAdapter
             .detect(&summary, tree.root_node(), src)
             .is_none());
+    }
+
+    #[test]
+    fn skips_hash_subscript_assign_collision() {
+        // `h['Set-Cookie'] = value` on a plain `Hash` collides with
+        // `response['Set-Cookie'] = value` on the bare `[]=` callee
+        // name.  Receiver text `h` is not in the response allowlist,
+        // so the adapter rejects.
+        let src: &[u8] = b"require 'rack'\n\
+            def run(value)\n  h = {}\n  h['Set-Cookie'] = value\n  h\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite {
+                name: "[]=".into(),
+                receiver: Some("h".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(HeaderRubyAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn fires_on_response_receiver() {
+        // Receiver `response` is in the allowlist.
+        let src: &[u8] = b"require 'rack'\n\
+            def run(value)\n  response = Rack::Response.new\n  response['Set-Cookie'] = value\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite {
+                name: "[]=".into(),
+                receiver: Some("response".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(HeaderRubyAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_some());
     }
 
     #[test]

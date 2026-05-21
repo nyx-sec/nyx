@@ -53,7 +53,7 @@ When a private helper is called only from authorized route handlers in the same 
 
 - Iterated to a small fixpoint so transitive chains (route to mid_helper to leaf_helper) are covered.
 - Refuses to authorize helpers with no in-file caller, helpers called from a mix of authorized and unauthorized callers, and helpers called only from un-lifted helpers.
-- Cross-file equivalent is deferred.
+- Cross-file caller-scope lifting is not implemented yet.
 
 This closes the FastAPI / Django / Flask shape where a route authenticates via decorator or dependency, then delegates to a private helper that performs the sink.
 

@@ -122,8 +122,7 @@ async fn overview(State(state): State<AppState>) -> Json<OverviewResponse> {
             fixed_since_last,
             reintroduced: reintroduced_count,
             // Files-scanned proxy for repo size, used for size-aware
-            // severity dampening in `health::compute`.  See
-            // `docs/health-score-audit.md` for calibration data.
+            // severity dampening in `health::compute`.
             repo_files: scanner_quality
                 .as_ref()
                 .map(|q| q.files_scanned)
@@ -1128,7 +1127,4 @@ fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
-// `compute_health_score` moved to `crate::server::health::compute`
-// after the v2 audit (2026-04-28).  See `docs/health-score-audit.md`
-// for calibration data and the rationale, and `docs/health-score.md`
-// for the customer-facing methodology.
+// `compute_health_score` moved to `crate::server::health::compute`.
