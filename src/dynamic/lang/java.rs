@@ -827,13 +827,11 @@ pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
 // control `7*7` has no `[[${{ ... }}]]` markers so the engine echoes
 // it verbatim.
 //
-// Compile + classpath bootstrap is handled by the brief's Maven
-// addendum — the synthetic harness this replaces never linked
-// Thymeleaf, so the build path needs `pom.xml` plumbing routed
-// through `prepare_java` before a host without `org.thymeleaf`
-// on the classpath can run the harness.  Until that plumbing
-// lands the e2e Java SSTI test SKIPs via the runner's BuildFailed
-// branch.
+// The companion `pom.xml` (shipped via `HarnessSource::extra_files`)
+// declares the Thymeleaf dependency; `prepare_java` runs
+// `mvn dependency:copy-dependencies -DoutputDirectory=lib` against
+// any workdir that carries a `pom.xml`, then folds `lib/*` into the
+// javac and runtime classpath via the `-cp` arg below.
 import java.io.FileWriter;
 import java.io.IOException;
 import org.thymeleaf.TemplateEngine;
@@ -897,12 +895,45 @@ public class NyxHarness {{
         command: vec![
             "java".to_owned(),
             "-cp".to_owned(),
-            ".".to_owned(),
+            ".:lib/*".to_owned(),
             "NyxHarness".to_owned(),
         ],
-        extra_files: Vec::new(),
+        extra_files: vec![("pom.xml".to_owned(), ssti_thymeleaf_pom().to_owned())],
         entry_subpath: None,
     }
+}
+
+/// `pom.xml` manifest for the SSTI Thymeleaf harness.
+///
+/// Declares `org.thymeleaf:thymeleaf:3.1.x` so `prepare_java` can resolve
+/// the runtime classpath via `mvn dependency:copy-dependencies` before
+/// the javac step.  The Thymeleaf 3.1 line is the current LTS branch and
+/// the lowest Java baseline (`java 11`) we still target across the test
+/// matrix.
+fn ssti_thymeleaf_pom() -> &'static str {
+    r#"<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.nyx</groupId>
+  <artifactId>nyx-harness-thymeleaf</artifactId>
+  <version>0.0.1</version>
+  <packaging>jar</packaging>
+  <properties>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.thymeleaf</groupId>
+      <artifactId>thymeleaf</artifactId>
+      <version>3.1.2.RELEASE</version>
+    </dependency>
+  </dependencies>
+</project>
+"#
 }
 
 /// Phase 05 — Track J.3 XXE harness for Java (`DocumentBuilderFactory`).

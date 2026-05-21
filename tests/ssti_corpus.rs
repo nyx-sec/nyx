@@ -322,10 +322,11 @@ fn slug(lang: Lang) -> &'static str {
 // `ProbePredicate::TemplateEvalEqual { expected: 49 }` → differential
 // pair against the `7*7` benign control.
 //
-// Java is skipped: the Thymeleaf fixture imports `org.thymeleaf.*`
-// which is not on the JDK stdlib, so `javac *.java` over the workdir
-// fails before the synthetic harness can run.  Phase 04 deferred
-// item 5 (real-engine Thymeleaf harness) is the structural fix.
+// Java/Thymeleaf rides the Maven plumbing added in `prepare_java`:
+// the harness ships a `pom.xml` via `extra_files`, prepare_java runs
+// `mvn dependency:copy-dependencies -DoutputDirectory=lib` to stage
+// `org.thymeleaf.*` jars, and javac compiles with `-cp .:lib/*`.
+// The e2e cell SKIPs when `mvn` or `javac` is absent on the host.
 
 mod e2e_phase_04 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
@@ -355,7 +356,8 @@ mod e2e_phase_04 {
             Lang::Ruby => "ruby",
             Lang::Php => "php",
             Lang::JavaScript => "node",
-            _ => unreachable!("e2e_phase_04 covers Python/Ruby/PHP/JS only"),
+            Lang::Java => "javac",
+            _ => unreachable!("e2e_phase_04 covers Python/Ruby/PHP/JS/Java only"),
         }
     }
 
@@ -365,6 +367,7 @@ mod e2e_phase_04 {
             Lang::Ruby => "ruby_erb",
             Lang::Php => "php_twig",
             Lang::JavaScript => "js_handlebars",
+            Lang::Java => "java_thymeleaf",
             _ => unreachable!(),
         }
     }
@@ -415,6 +418,12 @@ mod e2e_phase_04 {
         let bin = toolchain_for(lang);
         if !command_available(bin) {
             eprintln!("SKIP {lang:?} {fixture}: missing toolchain {bin}");
+            return None;
+        }
+        // Java/Thymeleaf also needs Maven on PATH to resolve the
+        // Thymeleaf jars before javac runs.
+        if matches!(lang, Lang::Java) && !command_available("mvn") {
+            eprintln!("SKIP {lang:?} {fixture}: missing mvn for dependency resolution");
             return None;
         }
         let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -483,6 +492,20 @@ mod e2e_phase_04 {
         assert!(
             outcome.triggered_by.is_some(),
             "JS Handlebars SSTI vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn java_thymeleaf_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Java, "vuln.java", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Java Thymeleaf SSTI vuln must Confirm via run_spec; got {outcome:?}",
         );
         let diff = outcome
             .differential

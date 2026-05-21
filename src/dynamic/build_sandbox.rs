@@ -570,6 +570,14 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
                 let _ = std::fs::copy(&src, &dst);
             }
         }
+        // Restore cached Maven-resolved jars when the harness shipped a
+        // `pom.xml`; the harness command embeds `-cp .:lib/*` so the
+        // runtime classpath needs these jars staged in the workdir.
+        let cached_lib = cache_path.join("lib");
+        let workdir_lib = workdir.join("lib");
+        if cached_lib.exists() && !workdir_lib.exists() {
+            let _ = copy_dir_all(&cached_lib, &workdir_lib);
+        }
         return Ok(BuildResult {
             venv_path: cache_path,
             cache_hit: true,
@@ -647,6 +655,15 @@ fn java_target_release(toolchain_id: &str) -> Option<u32> {
 fn try_compile_java(workdir: &Path, cache_path: &Path, target_release: Option<u32>) -> Result<(), String> {
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
 
+    // If the harness emitter shipped a `pom.xml`, stage Maven-resolved
+    // jars under `workdir/lib` so javac (and the runtime classpath
+    // baked into the harness command) can resolve framework imports
+    // like `org.thymeleaf.*`.
+    let lib_on_cp = workdir.join("pom.xml").exists() && {
+        fetch_maven_deps(workdir)?;
+        workdir.join("lib").exists()
+    };
+
     let sources = collect_java_sources(workdir);
     if sources.is_empty() {
         return Err("no Java sources found in workdir".to_owned());
@@ -657,6 +674,10 @@ fn try_compile_java(workdir: &Path, cache_path: &Path, target_release: Option<u3
     if let Some(rel) = target_release {
         args.push("--release".to_owned());
         args.push(rel.to_string());
+    }
+    if lib_on_cp {
+        args.push("-cp".to_owned());
+        args.push(".:lib/*".to_owned());
     }
     for src in &sources {
         args.push(src.to_string_lossy().into_owned());
@@ -687,6 +708,50 @@ fn try_compile_java(workdir: &Path, cache_path: &Path, target_release: Option<u3
         if src.exists() {
             let _ = std::fs::copy(&src, &dst);
         }
+    }
+    // Persist Maven-resolved jars alongside the class cache so cache-hit
+    // restores can rebuild the `lib/` classpath without re-running mvn.
+    if lib_on_cp {
+        let lib_src = workdir.join("lib");
+        if lib_src.exists() {
+            let _ = copy_dir_all(&lib_src, &cache_path.join("lib"));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the `pom.xml` declared dependencies into `workdir/lib`.
+///
+/// Runs `mvn dependency:copy-dependencies` on the host, scoped to
+/// runtime + compile so a transitive test-scoped jar can not bleed
+/// into the harness classpath.  Honors `NYX_MAVEN_BIN` so CI hosts
+/// with a pinned Maven install can override the binary lookup.
+///
+/// Returns `Err` with the Maven output on failure so the harness
+/// build path can surface it as `BuildFailed` upstream.
+fn fetch_maven_deps(workdir: &Path) -> Result<(), String> {
+    let mvn = std::env::var("NYX_MAVEN_BIN").unwrap_or_else(|_| "mvn".to_owned());
+    let output = Command::new(&mvn)
+        .args([
+            "-q",
+            "-B",
+            "dependency:copy-dependencies",
+            "-DoutputDirectory=lib",
+            "-DincludeScope=runtime",
+        ])
+        .current_dir(workdir)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .output()
+        .map_err(|e| format!("mvn dependency:copy-dependencies: {e}"))?;
+
+    if !output.status.success() {
+        let mut msg = String::from_utf8_lossy(&output.stderr).into_owned();
+        if msg.is_empty() {
+            msg = String::from_utf8_lossy(&output.stdout).into_owned();
+        }
+        return Err(format!("mvn dependency:copy-dependencies failed: {msg}"));
     }
     Ok(())
 }
@@ -745,6 +810,13 @@ fn compute_java_source_hash(workdir: &Path, target_release: Option<u32>) -> Stri
             h.update(rel.to_string_lossy().as_bytes());
             h.update(&content);
         }
+    }
+    // Fold the harness `pom.xml` into the hash so a manifest edit (a
+    // new dep, a version bump) busts the build cache and re-runs
+    // `mvn dependency:copy-dependencies` on the next build.
+    if let Ok(pom) = std::fs::read(workdir.join("pom.xml")) {
+        h.update(b":pom=");
+        h.update(&pom);
     }
     // Fold the target release into the hash so a workdir compiled at
     // `--release 17` cannot collide with the same workdir at `--release 21`.

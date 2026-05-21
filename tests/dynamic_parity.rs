@@ -120,13 +120,16 @@ mod parity_tests {
     /// Assert two verdicts agree on status (and on reason for non-Confirmed).
     fn assert_parity(fixture: &str, process_result: &nyx_scanner::evidence::VerifyResult,
                      docker_result: &nyx_scanner::evidence::VerifyResult) {
-        // If docker backend is unavailable, docker result will be Unsupported.
-        // That's acceptable — we can't compare when docker is missing.
-        if docker_result.status == VerifyStatus::Unsupported {
-            if let Some(ref r) = docker_result.reason {
-                if format!("{r:?}").contains("BackendUnavailable") {
-                    return; // Docker absent — skip comparison.
-                }
+        // Docker reachability fluctuates per host: `docker info` may exit 0
+        // (daemon listening) while the sandbox's container-start path still
+        // fails (image not pulled, socket gated by Docker Desktop's
+        // privileged-mode toggle, etc.).  The downstream verifier folds
+        // BackendUnavailable into Unsupported OR Inconclusive depending on
+        // where the error surfaces, so the skip predicate looks at the
+        // reason text, not the verdict status.
+        if let Some(ref r) = docker_result.reason {
+            if format!("{r:?}").contains("BackendUnavailable") {
+                return; // Docker absent — skip comparison.
             }
         }
 
