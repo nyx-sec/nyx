@@ -2715,10 +2715,6 @@ fn sink_in_entrypoint(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
 }
 
 impl CfgAnalysis for UnguardedSink {
-    fn name(&self) -> &'static str {
-        "unguarded-sink"
-    }
-
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         let doms = dominators::compute_dominators(ctx.cfg, ctx.entry);
         let sink_nodes = dominators::find_sink_nodes(ctx.cfg);
@@ -2976,7 +2972,6 @@ impl CfgAnalysis for UnguardedSink {
 
             findings.push(CfgFinding {
                 rule_id: "cfg-unguarded-sink".to_string(),
-                title: "Unguarded sink".to_string(),
                 severity,
                 confidence,
                 span: sink_info.ast.span,

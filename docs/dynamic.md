@@ -119,7 +119,7 @@ Each line is a JSON object with a versioned envelope:
 {
   "schema_version": 1,
   "nyx_version": "0.7.0",
-  "corpus_version": "4",
+  "corpus_version": "15",
   "kind": "verdict",
   "ts": "2026-05-15T18:42:09Z",
   "finding_id": "a3b1...",
@@ -133,6 +133,8 @@ Each line is a JSON object with a versioned envelope:
   "build_attempts": 1
 }
 ```
+
+The literal `nyx_version` and `corpus_version` values shift between releases; see `crate::dynamic::telemetry::CORPUS_VERSION` for the active payload-corpus version your binary writes.
 
 | Field | Meaning |
 | --- | --- |

@@ -1893,7 +1893,6 @@ impl<'a> ParsedFile<'a> {
                 cfg: &body.graph,
                 entry: body.entry,
                 lang: caller_lang,
-                file_path: &self.source.file_path_str,
                 source_bytes: self.source.bytes,
                 func_summaries: self.local_summaries(),
                 global_summaries,

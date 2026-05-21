@@ -140,8 +140,6 @@ pub enum Confidence {
 #[derive(Debug, Clone)]
 pub struct CfgFinding {
     pub rule_id: String,
-    #[allow(dead_code)]
-    pub title: String,
     pub severity: Severity,
     pub confidence: Confidence,
     pub span: (usize, usize),
@@ -154,12 +152,8 @@ pub struct AnalysisContext<'a> {
     pub cfg: &'a crate::cfg::Cfg,
     pub entry: NodeIndex,
     pub lang: Lang,
-    #[allow(dead_code)]
-    pub file_path: &'a str,
-    #[allow(dead_code)]
     pub source_bytes: &'a [u8],
     pub func_summaries: &'a FuncSummaries,
-    #[allow(dead_code)]
     pub global_summaries: Option<&'a GlobalSummaries>,
     /// Per-file SSA summaries map produced by
     /// `lower_all_functions_from_bodies` (after both the augment pass
@@ -170,7 +164,6 @@ pub struct AnalysisContext<'a> {
     /// suppress structural findings whose taint flow has been proven
     /// validated through helper summaries (CVE-2026-25544 patched
     /// counterpart).
-    #[allow(dead_code)]
     pub ssa_summaries: Option<
         &'a std::collections::HashMap<
             crate::symbol::FuncKey,
@@ -218,8 +211,6 @@ pub struct AnalysisContext<'a> {
 }
 
 pub trait CfgAnalysis {
-    #[allow(dead_code)]
-    fn name(&self) -> &'static str;
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding>;
 }
 

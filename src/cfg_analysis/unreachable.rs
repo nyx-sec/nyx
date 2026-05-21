@@ -38,10 +38,6 @@ fn event_handler_callbacks(ctx: &AnalysisContext) -> HashSet<String> {
 }
 
 impl CfgAnalysis for UnreachableCode {
-    fn name(&self) -> &'static str {
-        "unreachable-code"
-    }
-
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         let reachable = dominators::reachable_set(ctx.cfg, ctx.entry);
         let handler_callbacks = event_handler_callbacks(ctx);
@@ -122,7 +118,6 @@ impl CfgAnalysis for UnreachableCode {
 
             findings.push(CfgFinding {
                 rule_id: rule_id.to_string(),
-                title: title.to_string(),
                 severity,
                 confidence: Confidence::High,
                 span: info.ast.span,
