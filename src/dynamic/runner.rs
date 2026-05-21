@@ -124,6 +124,24 @@ impl From<SandboxError> for RunError {
     }
 }
 
+/// Detect the conventional harness import-error signal: exit code 77 plus
+/// the `NYX_IMPORT_ERROR:` marker on stderr.  Per-lang harness preambles in
+/// `src/dynamic/lang/{js_shared,ruby,php}.rs` emit this when the fixture's
+/// top-level `require` / `import` / `use` fails at runtime (missing npm,
+/// gem, or composer dep; unparseable syntax).  Treated as a build failure
+/// upstream so the SKIP-on-`BuildFailed` branch in e2e corpus tests catches
+/// missing host deps instead of failing the assertion.
+fn is_runtime_import_error(outcome: &sandbox::SandboxOutcome) -> bool {
+    if outcome.exit_code != Some(77) {
+        return false;
+    }
+    let needle = b"NYX_IMPORT_ERROR:";
+    outcome
+        .stderr
+        .windows(needle.len())
+        .any(|w| w == needle)
+}
+
 /// Build harness (with retry), run every payload, stop at first confirmed trigger.
 ///
 /// "Confirmed trigger" = `oracle_fired && sink_hit` (§4.1).
@@ -427,6 +445,23 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             )),
         );
 
+        // Harness runtime-load failure: the per-lang preamble at
+        // `src/dynamic/lang/{js_shared,ruby,php}.rs` writes the marker
+        // `NYX_IMPORT_ERROR:` to stderr and `exit(77)` when the fixture's
+        // top-level imports fail (missing npm / gem / composer dep, syntax
+        // the runtime can't parse, etc.).  Semantically this is a build
+        // failure — the harness "linked" against deps that don't resolve at
+        // run time — so route through `RunError::BuildFailed` to keep the
+        // SKIP-on-BuildFailed branch in the e2e corpus tests honest.  Only
+        // checked on the first vuln payload because the missing dep won't
+        // appear later in the run.
+        if i == 0 && is_runtime_import_error(&outcome) {
+            return Err(RunError::BuildFailed {
+                stderr: String::from_utf8_lossy(&outcome.stderr).into_owned(),
+                attempts: build_attempts,
+            });
+        }
+
         // For OOB payloads, check the nonce listener and update the outcome flag.
         if let (Some(nonce), Some(listener)) = (&oob_nonce, effective_opts.oob_listener()) {
             // Poll until the nonce arrives or the budget expires. The sandbox run
@@ -648,5 +683,57 @@ mod tests {
         let n1 = generate_nonce();
         let n2 = generate_nonce();
         assert_ne!(n1, n2, "consecutive nonces must differ");
+    }
+
+    fn outcome_with(exit_code: Option<i32>, stderr: &[u8]) -> sandbox::SandboxOutcome {
+        sandbox::SandboxOutcome {
+            exit_code,
+            stdout: Vec::new(),
+            stderr: stderr.to_vec(),
+            timed_out: false,
+            oob_callback_seen: false,
+            sink_hit: false,
+            duration: std::time::Duration::ZERO,
+            hardening_outcome: None,
+        }
+    }
+
+    #[test]
+    fn import_error_detects_exit_77_with_marker() {
+        let outcome = outcome_with(Some(77), b"NYX_IMPORT_ERROR: Cannot find module 'express'\n");
+        assert!(is_runtime_import_error(&outcome));
+    }
+
+    #[test]
+    fn import_error_ignores_clean_exit() {
+        let outcome = outcome_with(Some(0), b"NYX_IMPORT_ERROR: bogus\n");
+        assert!(!is_runtime_import_error(&outcome));
+    }
+
+    #[test]
+    fn import_error_ignores_other_nonzero_exits() {
+        let outcome = outcome_with(Some(1), b"some other crash\n");
+        assert!(!is_runtime_import_error(&outcome));
+    }
+
+    #[test]
+    fn import_error_ignores_exit_77_without_marker() {
+        let outcome = outcome_with(Some(77), b"crash but no marker\n");
+        assert!(!is_runtime_import_error(&outcome));
+    }
+
+    #[test]
+    fn import_error_ignores_signal_no_exit_code() {
+        let outcome = outcome_with(None, b"NYX_IMPORT_ERROR: spurious\n");
+        assert!(!is_runtime_import_error(&outcome));
+    }
+
+    #[test]
+    fn import_error_matches_marker_embedded_in_other_stderr() {
+        let outcome = outcome_with(
+            Some(77),
+            b"some preamble\nNYX_IMPORT_ERROR: real failure\nmore noise\n",
+        );
+        assert!(is_runtime_import_error(&outcome));
     }
 }
