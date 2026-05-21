@@ -603,19 +603,25 @@ pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
     let body = format!(
         r#"<?php
 // Nyx dynamic harness — SSTI Twig (Phase 04 / Track J.2).
+//
+// Routes `NYX_PAYLOAD` through the real `twig/twig` composer
+// package's `Twig\Environment::createTemplate(...)->render([])`
+// call.  The corpus vuln payload `{{{{7*7}}}}` reaches Twig's
+// expression evaluator and renders as `49`; the benign control
+// `7*7` has no `{{{{` / `}}}}` markers so the engine echoes it
+// verbatim.
+require_once __DIR__ . '/vendor/autoload.php';
+
 {shim}
 
 function _nyx_twig_render(string $payload): string {{
-    return preg_replace_callback('/\{{\{{(.+?)\}}\}}/', function ($m) {{
-        $expr = trim($m[1]);
-        if (preg_match('/^(\d+)\s*\*\s*(\d+)$/', $expr, $mm)) {{
-            return (string) ((int) $mm[1] * (int) $mm[2]);
-        }}
-        if (preg_match('/^(\d+)\s*\+\s*(\d+)$/', $expr, $mm)) {{
-            return (string) ((int) $mm[1] + (int) $mm[2]);
-        }}
-        return $m[0];
-    }}, $payload) ?? $payload;
+    try {{
+        $twig = new \Twig\Environment(new \Twig\Loader\ArrayLoader([]));
+        $template = $twig->createTemplate($payload);
+        return $template->render([]);
+    }} catch (\Throwable $e) {{
+        return '<twig-error:' . get_class($e) . '>';
+    }}
 }}
 
 function _nyx_ssti_probe(string $rendered): void {{
@@ -643,7 +649,20 @@ echo json_encode(["render" => $rendered]) . "\n";
         source: body,
         filename: "harness.php".to_owned(),
         command: vec!["php".to_owned(), "harness.php".to_owned()],
-        extra_files: vec![],
+        extra_files: vec![(
+            "composer.json".to_owned(),
+            r#"{
+    "name": "nyx/ssti-twig-harness",
+    "require": {
+        "twig/twig": "^3.0"
+    },
+    "config": {
+        "preferred-install": "dist"
+    }
+}
+"#
+            .to_owned(),
+        )],
         entry_subpath: None,
     }
 }

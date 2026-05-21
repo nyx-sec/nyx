@@ -1074,20 +1074,30 @@ pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let body = format!(
         r#"// Nyx dynamic harness — SSTI Handlebars (Phase 04 / Track J.2).
+//
+// Routes `NYX_PAYLOAD` through the real `handlebars` npm package's
+// `compile(payload)({{}})` call.  Handlebars does not evaluate
+// arithmetic in `{{{{ ... }}}}` blocks by itself; the corpus vuln
+// payload `{{{{multiply 7 7}}}}` invokes a registered `multiply`
+// helper which returns `49`.  The benign control `7*7` has no
+// `{{{{` / `}}}}` markers so the engine echoes it verbatim.
 {shim}
 
+const Handlebars = require('handlebars');
+
+Handlebars.registerHelper('multiply', function (a, b) {{
+  return String(Number(a) * Number(b));
+}});
+Handlebars.registerHelper('add', function (a, b) {{
+  return String(Number(a) + Number(b));
+}});
+
 function nyxHandlebarsRender(payload) {{
-  return payload.replace(/\{{\{{(.+?)\}}\}}/g, function (_, raw) {{
-    const expr = raw.trim();
-    const helperMatch = expr.match(/^(\w+)\s+(\d+)\s+(\d+)$/);
-    if (helperMatch) {{
-      const a = parseInt(helperMatch[2], 10);
-      const b = parseInt(helperMatch[3], 10);
-      if (helperMatch[1] === 'multiply') return String(a * b);
-      if (helperMatch[1] === 'add') return String(a + b);
-    }}
-    return _;
-  }});
+  try {{
+    return Handlebars.compile(payload)({{}});
+  }} catch (e) {{
+    return '<handlebars-error:' + (e && e.name ? e.name : 'Error') + '>';
+  }}
 }}
 
 function nyxSstiProbe(rendered) {{
@@ -1119,7 +1129,12 @@ console.log(JSON.stringify({{ render: rendered }}));
         source: body,
         filename: "harness.js".to_owned(),
         command: vec!["node".to_owned(), "harness.js".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: vec![(
+            "package.json".to_owned(),
+            r#"{"name":"nyx-ssti-handlebars-harness","private":true,"dependencies":{"handlebars":"^4.7.8"}}
+"#
+            .to_owned(),
+        )],
         entry_subpath: None,
     }
 }

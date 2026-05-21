@@ -921,20 +921,21 @@ pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let body = format!(
         r#"# Nyx dynamic harness — SSTI ERB (Phase 04 / Track J.2).
+#
+# Routes `NYX_PAYLOAD` through the real stdlib `ERB.new(payload).result`
+# call.  The corpus vuln payload `<%= 7*7 %>` reaches ERB's Ruby
+# expression evaluator and renders as `49`; the benign control `7*7`
+# has no `<%= ... %>` markers so the engine echoes it verbatim.
+require 'erb'
 require 'json'
 
 {shim}
 
 def _nyx_erb_render(payload)
-  payload.gsub(/<%=\s*([^%]+?)\s*%>/) do
-    expr = Regexp.last_match(1).strip
-    if (m = expr.match(/\A(\d+)\s*\*\s*(\d+)\z/))
-      (m[1].to_i * m[2].to_i).to_s
-    elsif (m = expr.match(/\A(\d+)\s*\+\s*(\d+)\z/))
-      (m[1].to_i + m[2].to_i).to_s
-    else
-      Regexp.last_match(0)
-    end
+  begin
+    ERB.new(payload).result(binding)
+  rescue ScriptError, StandardError => e
+    "<erb-error:#{{e.class.name}}>"
   end
 end
 
@@ -955,7 +956,6 @@ end
 payload = ENV['NYX_PAYLOAD'] || ''
 rendered = _nyx_erb_render(payload)
 _nyx_ssti_probe(rendered)
-# Sink-hit sentinel and render JSON body.
 STDOUT.puts '__NYX_SINK_HIT__'
 STDOUT.puts JSON.generate({{"render" => rendered}})
 STDOUT.flush

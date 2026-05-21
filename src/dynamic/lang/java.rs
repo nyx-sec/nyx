@@ -820,38 +820,36 @@ pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let source = format!(
         r#"// Nyx dynamic harness — SSTI Thymeleaf (Phase 04 / Track J.2).
+//
+// Routes `NYX_PAYLOAD` through the real `org.thymeleaf.TemplateEngine`
+// dependency.  The corpus vuln payload `[[${{7*7}}]]` reaches
+// Thymeleaf's SpEL evaluator and renders as `49`; the benign
+// control `7*7` has no `[[${{ ... }}]]` markers so the engine echoes
+// it verbatim.
+//
+// Compile + classpath bootstrap is handled by the brief's Maven
+// addendum — the synthetic harness this replaces never linked
+// Thymeleaf, so the build path needs `pom.xml` plumbing routed
+// through `prepare_java` before a host without `org.thymeleaf`
+// on the classpath can run the harness.  Until that plumbing
+// lands the e2e Java SSTI test SKIPs via the runner's BuildFailed
+// branch.
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import org.thymeleaf.TemplateEngine;
+import org.thymeleaf.context.Context;
 
 public class NyxHarness {{
 {shim}
 
     static String nyxThymeleafRender(String payload) {{
-        Pattern p = Pattern.compile("\\[\\[\\$\\{{(.+?)\\}}\\]\\]");
-        Matcher m = p.matcher(payload);
-        StringBuffer out = new StringBuffer(payload.length());
-        while (m.find()) {{
-            String expr = m.group(1).trim();
-            Matcher mul = Pattern.compile("^(\\d+)\\s*\\*\\s*(\\d+)$").matcher(expr);
-            Matcher add = Pattern.compile("^(\\d+)\\s*\\+\\s*(\\d+)$").matcher(expr);
-            String repl;
-            if (mul.matches()) {{
-                long a = Long.parseLong(mul.group(1));
-                long b = Long.parseLong(mul.group(2));
-                repl = Long.toString(a * b);
-            }} else if (add.matches()) {{
-                long a = Long.parseLong(add.group(1));
-                long b = Long.parseLong(add.group(2));
-                repl = Long.toString(a + b);
-            }} else {{
-                repl = Matcher.quoteReplacement(m.group(0));
-            }}
-            m.appendReplacement(out, Matcher.quoteReplacement(repl));
+        try {{
+            TemplateEngine engine = new TemplateEngine();
+            Context ctx = new Context();
+            return engine.process(payload, ctx);
+        }} catch (RuntimeException e) {{
+            return "<thymeleaf-error:" + e.getClass().getSimpleName() + ">";
         }}
-        m.appendTail(out);
-        return out.toString();
     }}
 
     static void nyxSstiProbe(String rendered) {{

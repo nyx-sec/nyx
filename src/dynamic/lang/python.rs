@@ -1380,24 +1380,22 @@ pub fn emit_ssti_harness(_spec: &HarnessSpec) -> HarnessSource {
     let probe = probe_shim();
     let body = format!(
         r#"#!/usr/bin/env python3
-"""Nyx dynamic harness — SSTI Jinja2 (Phase 04 / Track J.2)."""
-import os, json, re, sys
+"""Nyx dynamic harness — SSTI Jinja2 (Phase 04 / Track J.2).
+
+Routes `NYX_PAYLOAD` through the real `jinja2.Template(...).render()`
+call.  The corpus vuln payload `{{{{7*7}}}}` reaches Jinja2's
+expression evaluator and renders as `49`; the benign control `7*7`
+has no `{{{{` / `}}}}` markers so the engine echoes it verbatim.
+"""
+import os, json, sys
 
 {probe}
 
+import jinja2
+
 def _nyx_jinja2_render(payload):
-    # Concretised Jinja2 evaluator for the corpus payloads: substitutes
-    # arithmetic inside `{{` / `}}` markers and echoes everything else.
-    def _eval(match):
-        expr = match.group(1).strip()
-        m = re.match(r"^(\d+)\s*\*\s*(\d+)$", expr)
-        if m:
-            return str(int(m.group(1)) * int(m.group(2)))
-        m = re.match(r"^(\d+)\s*\+\s*(\d+)$", expr)
-        if m:
-            return str(int(m.group(1)) + int(m.group(2)))
-        return match.group(0)
-    return re.sub(r"\{{\{{(.+?)\}}\}}", _eval, payload)
+    template = jinja2.Template(payload)
+    return template.render()
 
 def _nyx_ssti_probe(rendered):
     rec = {{
@@ -1416,13 +1414,12 @@ def __nyx_now_ns():
 
 def _nyx_run():
     payload = os.environ.get("NYX_PAYLOAD", "")
-    rendered = _nyx_jinja2_render(payload)
+    try:
+        rendered = _nyx_jinja2_render(payload)
+    except jinja2.TemplateError as exc:
+        rendered = "<jinja2-error:{{}}>".format(type(exc).__name__)
     _nyx_ssti_probe(rendered)
-    # Sink-hit sentinel — flips SandboxOutcome.sink_hit so the runner's
-    # `vuln_fired && sink_hit` gate clears.
     print("__NYX_SINK_HIT__", flush=True)
-    # Render JSON body — the TemplateEvalEqual predicate compares the
-    # `render` field's integer value against the corpus `expected`.
     sys.stdout.write(json.dumps({{"render": rendered}}) + "\n")
     sys.stdout.flush()
 
@@ -1434,7 +1431,7 @@ if __name__ == "__main__":
         source: body,
         filename: "harness.py".to_owned(),
         command: vec!["python3".to_owned(), "harness.py".to_owned()],
-        extra_files: Vec::new(),
+        extra_files: vec![("requirements.txt".to_owned(), "Jinja2\n".to_owned())],
         entry_subpath: None,
     }
 }
