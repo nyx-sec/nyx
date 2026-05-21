@@ -145,9 +145,11 @@ mod tests {
         let src: &[u8] = b"<?php\nuse Twig\\Environment;\nfunction render($body, $twig) {\n    $tpl = $twig->createTemplate($body);\n    return $tpl->render([]);\n}\n";
         let tree = parse_php(src);
         let summary = summary_for("render", &["body", "twig"], &[0]);
-        assert!(PhpTwigAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PhpTwigAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -158,9 +160,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(PhpTwigAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpTwigAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -170,9 +174,11 @@ mod tests {
         let src: &[u8] = b"<?php\n// Twig\\Environment is great\nfunction render($body, $twig) {\n    $tpl = $twig->createTemplate('static');\n    return $tpl->render([]);\n}\n";
         let tree = parse_php(src);
         let summary = summary_for("render", &["body", "twig"], &[0]);
-        assert!(PhpTwigAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpTwigAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -180,8 +186,10 @@ mod tests {
         let src: &[u8] = b"<?php\nuse Twig\\Environment;\nfunction render($body, $twig) {\n    $tpl = $twig->createTemplate($body);\n    return $tpl->render([]);\n}\n";
         let tree = parse_php(src);
         let summary = summary_for("render", &["body", "twig"], &[]);
-        assert!(PhpTwigAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpTwigAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

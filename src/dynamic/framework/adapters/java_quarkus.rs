@@ -39,17 +39,15 @@ fn class_path_prefix(class: Node<'_>, bytes: &[u8]) -> String {
     let mut prefix = String::new();
     iter_annotations(class, bytes, |ann, name| {
         if name == "Path"
-            && let Some(p) = annotation_string_arg(ann, bytes) {
-                prefix = p;
-            }
+            && let Some(p) = annotation_string_arg(ann, bytes)
+        {
+            prefix = p;
+        }
     });
     prefix
 }
 
-fn method_verb_and_path(
-    method: Node<'_>,
-    bytes: &[u8],
-) -> Option<(HttpMethod, String)> {
+fn method_verb_and_path(method: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, String)> {
     let mut verb: Option<HttpMethod> = None;
     let mut path = String::new();
     iter_annotations(method, bytes, |ann, name| {
@@ -57,9 +55,10 @@ fn method_verb_and_path(
             verb = Some(v);
         }
         if name == "Path"
-            && let Some(p) = annotation_string_arg(ann, bytes) {
-                path = p;
-            }
+            && let Some(p) = annotation_string_arg(ann, bytes)
+        {
+            path = p;
+        }
     });
     Some((verb?, path))
 }
@@ -157,17 +156,21 @@ mod tests {
     fn skips_non_quarkus_file() {
         let src: &[u8] = b"@RestController\npublic class C {\n  @GetMapping(\"/x\")\n  public String x() { return \"\"; }\n}\n";
         let tree = parse(src);
-        assert!(JavaQuarkusAdapter
-            .detect(&summary("x"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaQuarkusAdapter
+                .detect(&summary("x"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_method_without_verb_annotation() {
         let src: &[u8] = b"import jakarta.ws.rs.Path;\n@Path(\"/api\")\npublic class V {\n  public String helper() { return \"\"; }\n}\n";
         let tree = parse(src);
-        assert!(JavaQuarkusAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaQuarkusAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

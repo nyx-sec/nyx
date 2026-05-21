@@ -18,9 +18,7 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::oracle::{
-    oracle_fired_with_stubs, Oracle, ProbePredicate,
-};
+use nyx_scanner::dynamic::oracle::{Oracle, ProbePredicate, oracle_fired_with_stubs};
 use nyx_scanner::dynamic::probe::{ProbeArg, ProbeChannel, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::dynamic::stubs::{
@@ -77,7 +75,10 @@ fn sql_stub_vuln_fixture_confirms_with_captured_query() {
     // Synthetic harness: read the vuln fixture, record the executed
     // query against the stub, then evaluate the oracle.
     let payload = extract_payload(&read_fixture("sql", "vuln.txt"));
-    assert!(payload.contains("OR 1=1"), "vuln fixture must carry a tautology");
+    assert!(
+        payload.contains("OR 1=1"),
+        "vuln fixture must carry a tautology"
+    );
     stub.record_query(&payload).unwrap();
 
     let oracle = Oracle::StubEvent {
@@ -85,7 +86,11 @@ fn sql_stub_vuln_fixture_confirms_with_captured_query() {
         needle: "OR 1=1",
     };
     let events = stub.drain_events();
-    assert_eq!(events.len(), 1, "stub must have captured the executed query");
+    assert_eq!(
+        events.len(),
+        1,
+        "stub must have captured the executed query"
+    );
     assert!(
         events[0].summary.contains("OR 1=1"),
         "captured query must be visible in probe output: {:?}",
@@ -103,7 +108,10 @@ fn sql_stub_benign_fixture_does_not_confirm() {
     let stub = SqlStub::start(dir.path()).unwrap();
 
     let payload = extract_payload(&read_fixture("sql", "benign.txt"));
-    assert!(!payload.contains("OR 1=1"), "benign control must lack tautology");
+    assert!(
+        !payload.contains("OR 1=1"),
+        "benign control must lack tautology"
+    );
     stub.record_query(&payload).unwrap();
 
     let oracle = Oracle::StubEvent {
@@ -161,7 +169,10 @@ fn http_stub_vuln_fixture_confirms_recorded_request() {
     let workdir = TempDir::new().unwrap();
     let stub = HttpStub::start(workdir.path()).unwrap();
     let payload = extract_payload(&read_fixture("http", "vuln.txt"));
-    assert!(payload.contains("169.254"), "vuln fixture must carry metadata host");
+    assert!(
+        payload.contains("169.254"),
+        "vuln fixture must carry metadata host"
+    );
 
     stub.record(payload.clone());
     let events = stub.drain_events();
@@ -172,7 +183,12 @@ fn http_stub_vuln_fixture_confirms_recorded_request() {
         kind: StubKind::Http,
         needle: "169.254",
     };
-    assert!(oracle_fired_with_stubs(&oracle, &empty_outcome(), &[], &events));
+    assert!(oracle_fired_with_stubs(
+        &oracle,
+        &empty_outcome(),
+        &[],
+        &events
+    ));
 }
 
 #[test]
@@ -187,7 +203,12 @@ fn http_stub_benign_fixture_does_not_confirm() {
         kind: StubKind::Http,
         needle: "169.254",
     };
-    assert!(!oracle_fired_with_stubs(&oracle, &empty_outcome(), &[], &events));
+    assert!(!oracle_fired_with_stubs(
+        &oracle,
+        &empty_outcome(),
+        &[],
+        &events
+    ));
 }
 
 // ── Redis stub ───────────────────────────────────────────────────────
@@ -204,7 +225,12 @@ fn redis_stub_vuln_fixture_confirms_destructive_command() {
         kind: StubKind::Redis,
         needle: "FLUSHALL",
     };
-    assert!(oracle_fired_with_stubs(&oracle, &empty_outcome(), &[], &events));
+    assert!(oracle_fired_with_stubs(
+        &oracle,
+        &empty_outcome(),
+        &[],
+        &events
+    ));
 }
 
 #[test]
@@ -221,7 +247,12 @@ fn redis_stub_benign_fixture_does_not_confirm() {
         kind: StubKind::Redis,
         needle: "FLUSHALL",
     };
-    assert!(!oracle_fired_with_stubs(&oracle, &empty_outcome(), &[], &events));
+    assert!(!oracle_fired_with_stubs(
+        &oracle,
+        &empty_outcome(),
+        &[],
+        &events
+    ));
 }
 
 // ── Filesystem stub ──────────────────────────────────────────────────
@@ -239,7 +270,12 @@ fn filesystem_stub_vuln_fixture_confirms_path_traversal() {
         kind: StubKind::Filesystem,
         needle: "/etc/passwd",
     };
-    assert!(oracle_fired_with_stubs(&oracle, &empty_outcome(), &[], &events));
+    assert!(oracle_fired_with_stubs(
+        &oracle,
+        &empty_outcome(),
+        &[],
+        &events
+    ));
 }
 
 #[test]
@@ -255,7 +291,12 @@ fn filesystem_stub_benign_fixture_does_not_confirm() {
         kind: StubKind::Filesystem,
         needle: "/etc/passwd",
     };
-    assert!(!oracle_fired_with_stubs(&oracle, &empty_outcome(), &[], &events));
+    assert!(!oracle_fired_with_stubs(
+        &oracle,
+        &empty_outcome(),
+        &[],
+        &events
+    ));
 }
 
 // ── Performance invariant ────────────────────────────────────────────

@@ -11,7 +11,7 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::framework::{detect_binding, HttpMethod, ParamSource};
+use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
 use nyx_scanner::symbol::Lang;

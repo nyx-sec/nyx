@@ -7,16 +7,16 @@
 
 use crate::dynamic::build_sandbox;
 use crate::dynamic::corpus::{
-    materialise_bytes, payloads_for, payloads_for_lang, resolve_benign_control,
-    resolve_benign_control_lang, Payload,
+    Payload, materialise_bytes, payloads_for, payloads_for_lang, resolve_benign_control,
+    resolve_benign_control_lang,
 };
 use crate::dynamic::differential;
 use crate::dynamic::harness::{self, HarnessError};
-use crate::dynamic::oracle::{oracle_fired_with_stubs, probe_crash_signal, Oracle};
+use crate::dynamic::oracle::{Oracle, oracle_fired_with_stubs, probe_crash_signal};
 use crate::dynamic::probe::{ProbeChannel, SinkProbe};
-use crate::dynamic::stubs::StubEvent;
 use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
 use crate::dynamic::spec::HarnessSpec;
+use crate::dynamic::stubs::StubEvent;
 use crate::dynamic::trace::{TraceStage, VerifyTrace};
 use crate::evidence::{DifferentialOutcome, DifferentialVerdict};
 use crate::symbol::Lang;
@@ -105,10 +105,17 @@ pub enum RunError {
     /// at the verify boundary so unsupported-budget accounting
     /// distinguishes "no oracle exists" from "no payloads carved
     /// yet".
-    SoundOracleUnavailable { cap: crate::labels::Cap, lang: Lang, hint: String },
+    SoundOracleUnavailable {
+        cap: crate::labels::Cap,
+        lang: Lang,
+        hint: String,
+    },
     Harness(HarnessError),
     Sandbox(SandboxError),
-    BuildFailed { stderr: String, attempts: u32 },
+    BuildFailed {
+        stderr: String,
+        attempts: u32,
+    },
 }
 
 impl From<SandboxError> for RunError {
@@ -198,12 +205,13 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             match build_sandbox::prepare_python(spec, &harness.workdir) {
                 Ok(build_result) => {
                     if let Some(cmd0) = harness.command.first_mut()
-                        && (cmd0 == "python3" || cmd0 == "python") {
-                            let venv_python = build_result.venv_path.join("bin").join("python3");
-                            if venv_python.exists() {
-                                *cmd0 = venv_python.to_string_lossy().into_owned();
-                            }
+                        && (cmd0 == "python3" || cmd0 == "python")
+                    {
+                        let venv_python = build_result.venv_path.join("bin").join("python3");
+                        if venv_python.exists() {
+                            *cmd0 = venv_python.to_string_lossy().into_owned();
                         }
+                    }
                 }
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });
@@ -221,17 +229,18 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                         harness.command = vec![binary.to_string_lossy().into_owned()];
                     } else {
                         // Fall back to binary inside the workdir.
-                        let fallback = harness.workdir.join("target").join("release").join("nyx_harness");
+                        let fallback = harness
+                            .workdir
+                            .join("target")
+                            .join("release")
+                            .join("nyx_harness");
                         if fallback.exists() {
                             harness.command = vec![fallback.to_string_lossy().into_owned()];
                         }
                     }
                 }
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
-                    return Err(RunError::BuildFailed {
-                        stderr,
-                        attempts,
-                    });
+                    return Err(RunError::BuildFailed { stderr, attempts });
                 }
                 Err(_) => {
                     // Io: fall back to whatever command was set (will likely fail at exec).
@@ -240,7 +249,9 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         }
         Lang::JavaScript | Lang::TypeScript => {
             // npm install for dependency resolution (no deps in basic fixtures).
-            if let Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) = build_sandbox::prepare_node(spec, &harness.workdir) {
+            if let Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) =
+                build_sandbox::prepare_node(spec, &harness.workdir)
+            {
                 return Err(RunError::BuildFailed { stderr, attempts });
             }
         }
@@ -284,7 +295,9 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         }
         Lang::Php => {
             // composer install if composer.json is present.
-            if let Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) = build_sandbox::prepare_php(spec, &harness.workdir) {
+            if let Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) =
+                build_sandbox::prepare_php(spec, &harness.workdir)
+            {
                 return Err(RunError::BuildFailed { stderr, attempts });
             }
         }
@@ -352,9 +365,10 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     // oracle still works without a channel.
     let mut effective_opts = opts.clone();
     if effective_opts.probe_channel.is_none()
-        && let Ok(ch) = ProbeChannel::for_workdir(&harness.workdir) {
-            effective_opts.probe_channel = Some(Arc::new(ch));
-        }
+        && let Ok(ch) = ProbeChannel::for_workdir(&harness.workdir)
+    {
+        effective_opts.probe_channel = Some(Arc::new(ch));
+    }
     let probe_channel: Option<Arc<ProbeChannel>> = effective_opts.probe_channel.clone();
 
     // Run only vuln (non-benign) payloads in the main loop.
@@ -435,12 +449,8 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             .map(|h| h.drain_all())
             .unwrap_or_default();
 
-        let vuln_fired = oracle_fired_with_stubs(
-            &payload.oracle,
-            &outcome,
-            &vuln_probes,
-            &vuln_stub_events,
-        );
+        let vuln_fired =
+            oracle_fired_with_stubs(&payload.oracle, &outcome, &vuln_probes, &vuln_stub_events);
         let sink_hit = outcome.sink_hit;
         trace_record(
             trace_handle.as_ref(),
@@ -512,8 +522,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                     if let Some(ch) = &probe_channel {
                         let _ = ch.clear();
                     }
-                    let benign_outcome =
-                        sandbox::run(&harness, &benign_bytes, &effective_opts)?;
+                    let benign_outcome = sandbox::run(&harness, &benign_bytes, &effective_opts)?;
                     let benign_probes: Vec<SinkProbe> = probe_channel
                         .as_ref()
                         .map(|ch| ch.drain())
@@ -605,7 +614,6 @@ fn uses_docker_backend(opts: &SandboxOptions) -> bool {
     }
 }
 
-
 /// Generate a random 16-character hex nonce for OOB callback tracking.
 fn generate_nonce() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -629,7 +637,10 @@ mod tests {
     fn generate_nonce_is_16_hex_chars() {
         let n = generate_nonce();
         assert_eq!(n.len(), 16);
-        assert!(n.chars().all(|c| c.is_ascii_hexdigit()), "nonce must be hex: {n}");
+        assert!(
+            n.chars().all(|c| c.is_ascii_hexdigit()),
+            "nonce must be hex: {n}"
+        );
     }
 
     #[test]

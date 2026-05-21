@@ -83,22 +83,13 @@ fn contains_any(haystack: &[u8], needles: &[&[u8]]) -> bool {
 /// Find a top-level `function_item` whose `name` field equals
 /// `target`.  Walks the AST recursively so functions nested inside
 /// `impl` blocks are also matched.
-pub fn find_rust_function<'a>(
-    root: Node<'a>,
-    bytes: &'a [u8],
-    target: &str,
-) -> Option<Node<'a>> {
+pub fn find_rust_function<'a>(root: Node<'a>, bytes: &'a [u8], target: &str) -> Option<Node<'a>> {
     let mut hit: Option<Node<'a>> = None;
     walk_rs(root, bytes, target, &mut hit);
     hit
 }
 
-fn walk_rs<'a>(
-    node: Node<'a>,
-    bytes: &'a [u8],
-    target: &str,
-    out: &mut Option<Node<'a>>,
-) {
+fn walk_rs<'a>(node: Node<'a>, bytes: &'a [u8], target: &str, out: &mut Option<Node<'a>>) {
     if out.is_some() {
         return;
     }
@@ -143,9 +134,10 @@ fn push_pattern_name(pat: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
     match pat.kind() {
         "identifier" => {
             if let Ok(text) = pat.utf8_text(bytes)
-                && text != "_" {
-                    out.push(text.to_owned());
-                }
+                && text != "_"
+            {
+                out.push(text.to_owned());
+            }
         }
         "mut_pattern" | "ref_pattern" => {
             let mut cur = pat.walk();
@@ -310,10 +302,7 @@ pub fn rust_string_literal(node: Node<'_>, bytes: &[u8]) -> Option<String> {
     }
     let raw = node.utf8_text(bytes).ok()?;
     let trimmed = raw.trim();
-    if trimmed.len() >= 2
-        && trimmed.starts_with('"')
-        && trimmed.ends_with('"')
-    {
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
         Some(trimmed[1..trimmed.len() - 1].to_owned())
     } else {
         None
@@ -324,10 +313,7 @@ pub fn rust_string_literal(node: Node<'_>, bytes: &[u8]) -> Option<String> {
 /// for a `#[get("/path")]` / `#[post(...)]` / `#[route(...)]` macro.
 /// Returns `(method, path)` on first match.  Used by both actix-web
 /// (`#[get("/path")]`) and rocket (same syntax).
-pub fn find_method_attribute<'a>(
-    func: Node<'a>,
-    bytes: &'a [u8],
-) -> Option<(HttpMethod, String)> {
+pub fn find_method_attribute<'a>(func: Node<'a>, bytes: &'a [u8]) -> Option<(HttpMethod, String)> {
     let parent = func.parent()?;
     let mut cur = parent.walk();
     let children: Vec<Node<'_>> = parent.children(&mut cur).collect();
@@ -359,9 +345,10 @@ pub fn find_method_attribute<'a>(
     let mut cur = func.walk();
     for c in func.children(&mut cur) {
         if c.kind() == "attribute_item"
-            && let Some(hit) = read_route_attribute(c, bytes) {
-                return Some(hit);
-            }
+            && let Some(hit) = read_route_attribute(c, bytes)
+        {
+            return Some(hit);
+        }
     }
     None
 }
@@ -494,20 +481,14 @@ fn try_axum_route_call<'a>(
 
 /// Parse the `get(handler)` / `axum::routing::get(handler)` wrapper
 /// emitted by axum.  Returns `(method, handler_node)` on success.
-fn parse_axum_verb_wrapper<'a>(
-    node: Node<'a>,
-    bytes: &'a [u8],
-) -> Option<(HttpMethod, Node<'a>)> {
+fn parse_axum_verb_wrapper<'a>(node: Node<'a>, bytes: &'a [u8]) -> Option<(HttpMethod, Node<'a>)> {
     if node.kind() != "call_expression" {
         return None;
     }
     let func = node.child_by_field_name("function")?;
     let leaf = match func.kind() {
         "identifier" => func.utf8_text(bytes).ok()?,
-        "scoped_identifier" => func
-            .child_by_field_name("name")?
-            .utf8_text(bytes)
-            .ok()?,
+        "scoped_identifier" => func.child_by_field_name("name")?.utf8_text(bytes).ok()?,
         _ => return None,
     };
     let method = verb_from_ident(leaf)?;
@@ -613,10 +594,7 @@ fn try_actix_route_call<'a>(
 /// Parse `web::get().to(handler)` / `web::post().to(handler)` /
 /// `web::method(Method::PATCH).to(handler)` shapes.  Returns
 /// `(method, handler_node)` on the first matching `.to(...)` call.
-fn parse_actix_web_verb_to<'a>(
-    node: Node<'a>,
-    bytes: &'a [u8],
-) -> Option<(HttpMethod, Node<'a>)> {
+fn parse_actix_web_verb_to<'a>(node: Node<'a>, bytes: &'a [u8]) -> Option<(HttpMethod, Node<'a>)> {
     if node.kind() != "call_expression" {
         return None;
     }
@@ -721,21 +699,21 @@ fn walk_warp<'a>(
         while let Some(p) = parent {
             if p.kind() == "call_expression"
                 && let Some(func) = p.child_by_field_name("function")
-                    && func.kind() == "field_expression"
-                    && let Some(field) = func.child_by_field_name("field")
-                    && let Ok(field_text) = field.utf8_text(bytes)
-                    && matches!(field_text, "map" | "and_then" | "untuple_one")
-                {
-                    let args = p.child_by_field_name("arguments");
-                    if let Some(args) = args {
-                        let mut cur = args.walk();
-                        for c in args.named_children(&mut cur) {
-                            if axum_callable_matches(c, bytes, target) {
-                                hit_target = true;
-                            }
+                && func.kind() == "field_expression"
+                && let Some(field) = func.child_by_field_name("field")
+                && let Ok(field_text) = field.utf8_text(bytes)
+                && matches!(field_text, "map" | "and_then" | "untuple_one")
+            {
+                let args = p.child_by_field_name("arguments");
+                if let Some(args) = args {
+                    let mut cur = args.walk();
+                    for c in args.named_children(&mut cur) {
+                        if axum_callable_matches(c, bytes, target) {
+                            hit_target = true;
                         }
                     }
                 }
+            }
             // Detect verb-filter calls (`warp::get()`, `warp::post()`).
             let mut cur = p.walk();
             for child in p.children(&mut cur) {
@@ -843,8 +821,7 @@ mod tests {
     fn finds_axum_route_get() {
         let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().route(\"/u/{id}\", get(show)) }\nfn show() {}\n";
         let tree = parse(src);
-        let (method, path) =
-            find_axum_route(tree.root_node(), src, "show").expect("hit");
+        let (method, path) = find_axum_route(tree.root_node(), src, "show").expect("hit");
         assert_eq!(method, HttpMethod::GET);
         assert_eq!(path, "/u/{id}");
     }
@@ -853,8 +830,7 @@ mod tests {
     fn finds_axum_route_with_scoped_verb() {
         let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().route(\"/x\", axum::routing::post(save)) }\nfn save() {}\n";
         let tree = parse(src);
-        let (method, path) =
-            find_axum_route(tree.root_node(), src, "save").expect("hit");
+        let (method, path) = find_axum_route(tree.root_node(), src, "save").expect("hit");
         assert_eq!(method, HttpMethod::POST);
         assert_eq!(path, "/x");
     }
@@ -871,8 +847,7 @@ mod tests {
 
     #[test]
     fn finds_rocket_post_attribute() {
-        let src: &[u8] =
-            b"#[post(\"/save\", data = \"<body>\")]\nfn save(body: String) {}\n";
+        let src: &[u8] = b"#[post(\"/save\", data = \"<body>\")]\nfn save(body: String) {}\n";
         let tree = parse(src);
         let func = find_rust_function(tree.root_node(), src, "save").unwrap();
         let (method, path) = find_method_attribute(func, src).expect("hit");
@@ -890,7 +865,11 @@ mod tests {
 
     #[test]
     fn binds_implicit_request_as_implicit() {
-        let formals = vec!["req".to_string(), "request".to_string(), "state".to_string()];
+        let formals = vec![
+            "req".to_string(),
+            "request".to_string(),
+            "state".to_string(),
+        ];
         let bindings = bind_rust_path_params(&formals, "/x");
         for b in &bindings {
             assert!(matches!(b.source, ParamSource::Implicit));
@@ -908,8 +887,7 @@ mod tests {
     fn finds_warp_path_macro_with_map_target() {
         let src: &[u8] = b"use warp::Filter;\nfn build() { let r = warp::path!(\"users\" / u32).map(show); }\nfn show(id: u32) -> String { String::new() }\n";
         let tree = parse(src);
-        let (_method, path) =
-            find_warp_route(tree.root_node(), src, "show").expect("hit");
+        let (_method, path) = find_warp_route(tree.root_node(), src, "show").expect("hit");
         assert!(path.contains("users"));
     }
 
@@ -923,8 +901,7 @@ mod tests {
     #[test]
     fn warp_multi_typed_anonymous_placeholders_bind_positionally() {
         let formals = vec!["user_id".to_string(), "post_slug".to_string()];
-        let bindings =
-            bind_rust_path_params(&formals, "/users/{u32}/posts/{String}");
+        let bindings = bind_rust_path_params(&formals, "/users/{u32}/posts/{String}");
         assert!(matches!(bindings[0].source, ParamSource::PathSegment(_)));
         assert!(matches!(bindings[1].source, ParamSource::PathSegment(_)));
     }

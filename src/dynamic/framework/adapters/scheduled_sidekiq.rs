@@ -15,10 +15,7 @@ const ADAPTER_NAME: &str = "scheduled-sidekiq";
 
 fn callee_is_sidekiq(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "perform_async" | "perform_in" | "perform" | "set"
-    )
+    matches!(last, "perform_async" | "perform_in" | "perform" | "set")
 }
 
 fn source_imports_sidekiq(file_bytes: &[u8]) -> bool {

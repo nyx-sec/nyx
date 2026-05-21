@@ -29,9 +29,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 15,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/xxe/php/vuln.php",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/xxe/php/vuln.php"],
         oob_nonce_slot: true,
         probe_predicates: &[],
         benign_control: None,
@@ -57,9 +55,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 9,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/xxe/php/vuln.php",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/xxe/php/vuln.php"],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::XxeEntityExpanded {
             require_expanded: true,
@@ -82,9 +78,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 9,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/xxe/php/benign.php",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/xxe/php/benign.php"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

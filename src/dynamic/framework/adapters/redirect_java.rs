@@ -108,9 +108,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("sendRedirect")],
             ..Default::default()
         };
-        assert!(RedirectJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RedirectJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -121,9 +123,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(RedirectJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -144,8 +148,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(RedirectJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

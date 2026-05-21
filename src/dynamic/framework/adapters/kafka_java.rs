@@ -35,7 +35,12 @@ fn source_imports_kafka(file_bytes: &[u8]) -> bool {
 
 fn extract_topic(file_bytes: &[u8]) -> String {
     let text = std::str::from_utf8(file_bytes).unwrap_or("");
-    for needle in ["topics = \"", "topics=\"", "topics = {\"", "subscribe(Arrays.asList(\""] {
+    for needle in [
+        "topics = \"",
+        "topics=\"",
+        "topics = {\"",
+        "subscribe(Arrays.asList(\"",
+    ] {
         if let Some(idx) = text.find(needle) {
             let after = &text[idx + needle.len()..];
             if let Some(end) = after.find('"') {

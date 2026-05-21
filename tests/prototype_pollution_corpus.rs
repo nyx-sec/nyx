@@ -16,12 +16,12 @@
 mod common;
 
 use nyx_scanner::dynamic::corpus::{
-    audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
-    resolve_benign_control_lang, Oracle,
+    Oracle, audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
+    resolve_benign_control_lang,
 };
 use nyx_scanner::dynamic::framework::registry::adapters_for;
 use nyx_scanner::dynamic::lang;
-use nyx_scanner::dynamic::oracle::{oracle_fired, ProbePredicate};
+use nyx_scanner::dynamic::oracle::{ProbePredicate, oracle_fired};
 use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
@@ -63,7 +63,10 @@ fn corpus_registers_prototype_pollution_for_js_and_ts() {
         );
         let has_vuln = slice.iter().any(|p| !p.is_benign);
         let has_benign = slice.iter().any(|p| p.is_benign);
-        assert!(has_vuln, "{lang:?} PROTOTYPE_POLLUTION missing vuln payload");
+        assert!(
+            has_vuln,
+            "{lang:?} PROTOTYPE_POLLUTION missing vuln payload"
+        );
         assert!(
             has_benign,
             "{lang:?} PROTOTYPE_POLLUTION missing benign control"
@@ -111,10 +114,9 @@ fn payload_oracle_carries_prototype_canary_predicate() {
         match &vuln.oracle {
             Oracle::SinkProbe { predicates } => {
                 assert!(
-                    predicates.iter().any(|p| matches!(
-                        p,
-                        ProbePredicate::PrototypeCanaryTouched { .. }
-                    )),
+                    predicates
+                        .iter()
+                        .any(|p| matches!(p, ProbePredicate::PrototypeCanaryTouched { .. })),
                     "{lang:?} vuln payload missing PrototypeCanaryTouched predicate",
                 );
             }
@@ -246,7 +248,9 @@ fn lang_emitter_dispatches_to_prototype_pollution_harness() {
             "{lang:?} harness must reference the canary property name",
         );
         assert!(
-            harness.source.contains("Object.defineProperty(Object.prototype"),
+            harness
+                .source
+                .contains("Object.defineProperty(Object.prototype"),
             "{lang:?} harness must install the canary trap on Object.prototype",
         );
         assert!(
@@ -408,10 +412,10 @@ fn slug(lang: Lang) -> &'static str {
 
 mod e2e_phase_10 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -523,13 +527,17 @@ mod e2e_phase_10 {
 
     #[test]
     fn js_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else { return };
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
         assert_confirmed(Lang::JavaScript, &outcome);
     }
 
     #[test]
     fn ts_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::TypeScript, "vuln.ts", "run") else { return };
+        let Some(outcome) = run(Lang::TypeScript, "vuln.ts", "run") else {
+            return;
+        };
         assert_confirmed(Lang::TypeScript, &outcome);
     }
 }

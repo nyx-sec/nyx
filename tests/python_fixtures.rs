@@ -14,15 +14,14 @@ mod common;
 #[cfg(feature = "dynamic")]
 mod python_fixture_tests {
     use crate::common::fixture_harness::{
-        run_fixture_and_compare_to_golden, run_harness_snapshot, run_shape_fixture,
-        CopyStrategy, FixtureSpec, Prerequisite,
+        CopyStrategy, FixtureSpec, Prerequisite, run_fixture_and_compare_to_golden,
+        run_harness_snapshot, run_shape_fixture,
     };
     use nyx_scanner::commands::scan::Diag;
     use nyx_scanner::dynamic::spec::PayloadSlot;
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{
-        Confidence, EntryKind, Evidence, FlowStep, FlowStepKind, UnsupportedReason,
-        VerifyStatus,
+        Confidence, EntryKind, Evidence, FlowStep, FlowStepKind, UnsupportedReason, VerifyStatus,
     };
     use nyx_scanner::labels::Cap;
     use nyx_scanner::patterns::{FindingCategory, Severity};
@@ -39,7 +38,12 @@ mod python_fixture_tests {
             .unwrap_or(false)
     }
 
-    fn spec(fixture: &'static str, func: &'static str, cap: Cap, sink_line: u32) -> FixtureSpec<'static> {
+    fn spec(
+        fixture: &'static str,
+        func: &'static str,
+        cap: Cap,
+        sink_line: u32,
+    ) -> FixtureSpec<'static> {
         FixtureSpec {
             lang_dir: "python",
             fixture,
@@ -82,13 +86,19 @@ mod python_fixture_tests {
 
     #[test]
     fn sqli_positive_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         run_fixture_and_compare_to_golden(&spec("sqli_positive.py", "login", Cap::SQL_QUERY, 17));
     }
 
     #[test]
     fn sqli_negative_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         run_fixture_and_compare_to_golden(&spec("sqli_negative.py", "login", Cap::SQL_QUERY, 12));
     }
 
@@ -104,22 +114,46 @@ mod python_fixture_tests {
 
     #[test]
     fn sqli_adversarial_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
-        run_fixture_and_compare_to_golden(&spec("sqli_adversarial.py", "get_value", Cap::SQL_QUERY, 999));
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
+        run_fixture_and_compare_to_golden(&spec(
+            "sqli_adversarial.py",
+            "get_value",
+            Cap::SQL_QUERY,
+            999,
+        ));
     }
 
     // ── Command injection ────────────────────────────────────────────────────
 
     #[test]
     fn cmdi_positive_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
-        run_fixture_and_compare_to_golden(&spec("cmdi_positive.py", "run_ping", Cap::CODE_EXEC, 13));
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
+        run_fixture_and_compare_to_golden(&spec(
+            "cmdi_positive.py",
+            "run_ping",
+            Cap::CODE_EXEC,
+            13,
+        ));
     }
 
     #[test]
     fn cmdi_negative_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
-        run_fixture_and_compare_to_golden(&spec("cmdi_negative.py", "run_ping", Cap::CODE_EXEC, 17));
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
+        run_fixture_and_compare_to_golden(&spec(
+            "cmdi_negative.py",
+            "run_ping",
+            Cap::CODE_EXEC,
+            17,
+        ));
     }
 
     #[test]
@@ -134,7 +168,10 @@ mod python_fixture_tests {
 
     #[test]
     fn cmdi_adversarial_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         run_fixture_and_compare_to_golden(&spec(
             "cmdi_adversarial.py",
             "process_input",
@@ -147,14 +184,30 @@ mod python_fixture_tests {
 
     #[test]
     fn fileio_positive_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
-        run_fixture_and_compare_to_golden(&spec("fileio_positive.py", "read_file", Cap::FILE_IO, 11));
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
+        run_fixture_and_compare_to_golden(&spec(
+            "fileio_positive.py",
+            "read_file",
+            Cap::FILE_IO,
+            11,
+        ));
     }
 
     #[test]
     fn fileio_negative_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
-        run_fixture_and_compare_to_golden(&spec("fileio_negative.py", "read_file", Cap::FILE_IO, 18));
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
+        run_fixture_and_compare_to_golden(&spec(
+            "fileio_negative.py",
+            "read_file",
+            Cap::FILE_IO,
+            18,
+        ));
     }
 
     #[test]
@@ -169,21 +222,35 @@ mod python_fixture_tests {
 
     #[test]
     fn fileio_adversarial_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
-        run_fixture_and_compare_to_golden(&spec("fileio_adversarial.py", "read_file", Cap::FILE_IO, 999));
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
+        run_fixture_and_compare_to_golden(&spec(
+            "fileio_adversarial.py",
+            "read_file",
+            Cap::FILE_IO,
+            999,
+        ));
     }
 
     // ── SSRF ─────────────────────────────────────────────────────────────────
 
     #[test]
     fn ssrf_positive_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         run_fixture_and_compare_to_golden(&spec("ssrf_positive.py", "fetch_url", Cap::SSRF, 11));
     }
 
     #[test]
     fn ssrf_negative_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         run_fixture_and_compare_to_golden(&spec("ssrf_negative.py", "fetch_url", Cap::SSRF, 26));
     }
 
@@ -194,15 +261,26 @@ mod python_fixture_tests {
 
     #[test]
     fn ssrf_adversarial_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
-        run_fixture_and_compare_to_golden(&spec("ssrf_adversarial.py", "fetch_url", Cap::SSRF, 999));
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
+        run_fixture_and_compare_to_golden(&spec(
+            "ssrf_adversarial.py",
+            "fetch_url",
+            Cap::SSRF,
+            999,
+        ));
     }
 
     // ── XSS ──────────────────────────────────────────────────────────────────
 
     #[test]
     fn xss_positive_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         run_fixture_and_compare_to_golden(&spec(
             "xss_positive.py",
             "render_comment",
@@ -213,7 +291,10 @@ mod python_fixture_tests {
 
     #[test]
     fn xss_negative_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         run_fixture_and_compare_to_golden(&spec(
             "xss_negative.py",
             "render_comment",
@@ -234,7 +315,10 @@ mod python_fixture_tests {
 
     #[test]
     fn xss_adversarial_matches_golden() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         run_fixture_and_compare_to_golden(&spec(
             "xss_adversarial.py",
             "render_comment",
@@ -342,20 +426,36 @@ mod python_fixture_tests {
 
     #[test]
     fn generic_vuln_is_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         let r = run_shape_fixture(
-            "generic", "vuln.py", "run_ping", Cap::CODE_EXEC, 12,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "generic",
+            "vuln.py",
+            "run_ping",
+            Cap::CODE_EXEC,
+            12,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
         assert_confirmed("generic", &r);
     }
 
     #[test]
     fn generic_benign_not_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         let r = run_shape_fixture(
-            "generic", "benign.py", "run_ping", Cap::CODE_EXEC, 20,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "generic",
+            "benign.py",
+            "run_ping",
+            Cap::CODE_EXEC,
+            20,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
         assert_not_confirmed("generic", &r);
     }
@@ -363,8 +463,13 @@ mod python_fixture_tests {
     #[test]
     fn generic_harness_snapshot_matches_golden() {
         run_harness_snapshot(
-            "generic", "vuln.py", "run_ping", Cap::CODE_EXEC, 12,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "generic",
+            "vuln.py",
+            "run_ping",
+            Cap::CODE_EXEC,
+            12,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
     }
 
@@ -372,20 +477,36 @@ mod python_fixture_tests {
 
     #[test]
     fn cli_vuln_is_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         let r = run_shape_fixture(
-            "cli", "vuln.py", "main", Cap::CODE_EXEC, 14,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "cli",
+            "vuln.py",
+            "main",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         );
         assert_confirmed("cli", &r);
     }
 
     #[test]
     fn cli_benign_not_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         let r = run_shape_fixture(
-            "cli", "benign.py", "main", Cap::CODE_EXEC, 11,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "cli",
+            "benign.py",
+            "main",
+            Cap::CODE_EXEC,
+            11,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         );
         assert_not_confirmed("cli", &r);
     }
@@ -393,8 +514,13 @@ mod python_fixture_tests {
     #[test]
     fn cli_harness_snapshot_matches_golden() {
         run_harness_snapshot(
-            "cli", "vuln.py", "main", Cap::CODE_EXEC, 14,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "cli",
+            "vuln.py",
+            "main",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         );
     }
 
@@ -402,20 +528,36 @@ mod python_fixture_tests {
 
     #[test]
     fn pytest_vuln_is_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         let r = run_shape_fixture(
-            "pytest", "vuln.py", "test_run_ping", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "pytest",
+            "vuln.py",
+            "test_run_ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         );
         assert_confirmed("pytest", &r);
     }
 
     #[test]
     fn pytest_benign_not_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         let r = run_shape_fixture(
-            "pytest", "benign.py", "test_run_ping", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "pytest",
+            "benign.py",
+            "test_run_ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         );
         assert_not_confirmed("pytest", &r);
     }
@@ -423,8 +565,13 @@ mod python_fixture_tests {
     #[test]
     fn pytest_harness_snapshot_matches_golden() {
         run_harness_snapshot(
-            "pytest", "vuln.py", "test_run_ping", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "pytest",
+            "vuln.py",
+            "test_run_ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         );
     }
 
@@ -432,20 +579,36 @@ mod python_fixture_tests {
 
     #[test]
     fn async_vuln_is_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         let r = run_shape_fixture(
-            "async", "vuln.py", "run_ping", Cap::CODE_EXEC, 13,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "async",
+            "vuln.py",
+            "run_ping",
+            Cap::CODE_EXEC,
+            13,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
         assert_confirmed("async", &r);
     }
 
     #[test]
     fn async_benign_not_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         let r = run_shape_fixture(
-            "async", "benign.py", "run_ping", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "async",
+            "benign.py",
+            "run_ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
         assert_not_confirmed("async", &r);
     }
@@ -453,8 +616,13 @@ mod python_fixture_tests {
     #[test]
     fn async_harness_snapshot_matches_golden() {
         run_harness_snapshot(
-            "async", "vuln.py", "run_ping", Cap::CODE_EXEC, 13,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "async",
+            "vuln.py",
+            "run_ping",
+            Cap::CODE_EXEC,
+            13,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
     }
 
@@ -462,28 +630,44 @@ mod python_fixture_tests {
 
     #[test]
     fn celery_vuln_is_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         if !python_module_available("celery") {
             eprintln!("SKIP: celery not importable");
             return;
         }
         let r = run_shape_fixture(
-            "celery", "vuln.py", "run_job", Cap::CODE_EXEC, 17,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "celery",
+            "vuln.py",
+            "run_job",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
         assert_confirmed("celery", &r);
     }
 
     #[test]
     fn celery_benign_not_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         if !python_module_available("celery") {
             eprintln!("SKIP: celery not importable");
             return;
         }
         let r = run_shape_fixture(
-            "celery", "benign.py", "run_job", Cap::CODE_EXEC, 17,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "celery",
+            "benign.py",
+            "run_job",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
         assert_not_confirmed("celery", &r);
     }
@@ -491,8 +675,13 @@ mod python_fixture_tests {
     #[test]
     fn celery_harness_snapshot_matches_golden() {
         run_harness_snapshot(
-            "celery", "vuln.py", "run_job", Cap::CODE_EXEC, 17,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "celery",
+            "vuln.py",
+            "run_job",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         );
     }
 
@@ -500,28 +689,44 @@ mod python_fixture_tests {
 
     #[test]
     fn flask_vuln_is_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         if !python_module_available("flask") {
             eprintln!("SKIP: flask not importable");
             return;
         }
         let r = run_shape_fixture(
-            "flask", "vuln.py", "ping", Cap::CODE_EXEC, 18,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "flask",
+            "vuln.py",
+            "ping",
+            Cap::CODE_EXEC,
+            18,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
         assert_confirmed("flask", &r);
     }
 
     #[test]
     fn flask_benign_not_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         if !python_module_available("flask") {
             eprintln!("SKIP: flask not importable");
             return;
         }
         let r = run_shape_fixture(
-            "flask", "benign.py", "ping", Cap::CODE_EXEC, 17,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "flask",
+            "benign.py",
+            "ping",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
         assert_not_confirmed("flask", &r);
     }
@@ -529,8 +734,13 @@ mod python_fixture_tests {
     #[test]
     fn flask_harness_snapshot_matches_golden() {
         run_harness_snapshot(
-            "flask", "vuln.py", "ping", Cap::CODE_EXEC, 18,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "flask",
+            "vuln.py",
+            "ping",
+            Cap::CODE_EXEC,
+            18,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
     }
 
@@ -538,28 +748,44 @@ mod python_fixture_tests {
 
     #[test]
     fn fastapi_vuln_is_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         if !python_module_available("fastapi") {
             eprintln!("SKIP: fastapi not importable");
             return;
         }
         let r = run_shape_fixture(
-            "fastapi", "vuln.py", "ping", Cap::CODE_EXEC, 16,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "fastapi",
+            "vuln.py",
+            "ping",
+            Cap::CODE_EXEC,
+            16,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
         assert_confirmed("fastapi", &r);
     }
 
     #[test]
     fn fastapi_benign_not_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         if !python_module_available("fastapi") {
             eprintln!("SKIP: fastapi not importable");
             return;
         }
         let r = run_shape_fixture(
-            "fastapi", "benign.py", "ping", Cap::CODE_EXEC, 16,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "fastapi",
+            "benign.py",
+            "ping",
+            Cap::CODE_EXEC,
+            16,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
         assert_not_confirmed("fastapi", &r);
     }
@@ -567,8 +793,13 @@ mod python_fixture_tests {
     #[test]
     fn fastapi_harness_snapshot_matches_golden() {
         run_harness_snapshot(
-            "fastapi", "vuln.py", "ping", Cap::CODE_EXEC, 16,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "fastapi",
+            "vuln.py",
+            "ping",
+            Cap::CODE_EXEC,
+            16,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
     }
 
@@ -576,28 +807,44 @@ mod python_fixture_tests {
 
     #[test]
     fn django_vuln_is_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         if !python_module_available("django") {
             eprintln!("SKIP: django not importable");
             return;
         }
         let r = run_shape_fixture(
-            "django", "vuln.py", "ping", Cap::CODE_EXEC, 15,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "django",
+            "vuln.py",
+            "ping",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
         assert_confirmed("django", &r);
     }
 
     #[test]
     fn django_benign_not_confirmed() {
-        if !python3_available() { eprintln!("SKIP: python3 not available"); return; }
+        if !python3_available() {
+            eprintln!("SKIP: python3 not available");
+            return;
+        }
         if !python_module_available("django") {
             eprintln!("SKIP: django not importable");
             return;
         }
         let r = run_shape_fixture(
-            "django", "benign.py", "ping", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "django",
+            "benign.py",
+            "ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
         assert_not_confirmed("django", &r);
     }
@@ -605,8 +852,13 @@ mod python_fixture_tests {
     #[test]
     fn django_harness_snapshot_matches_golden() {
         run_harness_snapshot(
-            "django", "vuln.py", "ping", Cap::CODE_EXEC, 15,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
+            "django",
+            "vuln.py",
+            "ping",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
         );
     }
 

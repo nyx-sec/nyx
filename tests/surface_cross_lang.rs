@@ -15,7 +15,7 @@ use nyx_scanner::callgraph::CallGraph;
 use nyx_scanner::summary::GlobalSummaries;
 use nyx_scanner::surface::{
     Framework, SurfaceMap, SurfaceNode,
-    build::{build_surface_map, SurfaceBuildInputs},
+    build::{SurfaceBuildInputs, build_surface_map},
 };
 use nyx_scanner::utils::config::Config;
 use std::path::{Path, PathBuf};

@@ -17,9 +17,7 @@
 
 use crate::entry_points::HttpMethod;
 use crate::surface::lang::common::python_imports_any;
-use crate::surface::{
-    EntryPoint, Framework, SourceLocation, SurfaceNode, relative_path_string,
-};
+use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceNode, relative_path_string};
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
@@ -273,9 +271,7 @@ fn decorator_is_auth_marker(decorator: Node, bytes: &[u8]) -> bool {
         return false;
     };
     let leaf = text.rsplit('.').next().unwrap_or(text).trim();
-    AUTH_DECORATORS
-        .iter()
-        .any(|d| leaf.eq_ignore_ascii_case(d))
+    AUTH_DECORATORS.iter().any(|d| leaf.eq_ignore_ascii_case(d))
 }
 
 /// Read the function name from a `function_definition` node.

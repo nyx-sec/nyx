@@ -46,9 +46,7 @@ pub fn detect_spring_routes(
             if member.kind() != "method_declaration" {
                 continue;
             }
-            if let Some((method, route_path, auth)) =
-                method_mapping(member, bytes, &class_path)
-            {
+            if let Some((method, route_path, auth)) = method_mapping(member, bytes, &class_path) {
                 let auth_required = class_auth || auth;
                 let handler_name = method_name(member, bytes).unwrap_or_default();
                 out.push(SurfaceNode::EntryPoint(EntryPoint {
@@ -114,9 +112,7 @@ fn class_has_auth_annotation(class: Node, bytes: &[u8]) -> bool {
             continue;
         }
         if let Some((name, _)) = annotation_name_and_args(ann, bytes)
-            && AUTH_ANNOTATIONS
-                .iter()
-                .any(|a| leaf_matches(&name, &[a]))
+            && AUTH_ANNOTATIONS.iter().any(|a| leaf_matches(&name, &[a]))
         {
             return true;
         }
@@ -140,10 +136,7 @@ fn method_mapping(
         let Some((name, args_text)) = annotation_name_and_args(ann, bytes) else {
             continue;
         };
-        if AUTH_ANNOTATIONS
-            .iter()
-            .any(|a| leaf_matches(&name, &[a]))
-        {
+        if AUTH_ANNOTATIONS.iter().any(|a| leaf_matches(&name, &[a])) {
             auth = true;
         }
         if found.is_some() {
@@ -156,7 +149,11 @@ fn method_mapping(
                     // Class-only mapping; method has no path.
                     method_route = class_path.to_string();
                 } else if !class_path.is_empty() {
-                    method_route = format!("{}/{}", class_path.trim_end_matches('/'), method_route.trim_start_matches('/'));
+                    method_route = format!(
+                        "{}/{}",
+                        class_path.trim_end_matches('/'),
+                        method_route.trim_start_matches('/')
+                    );
                 }
                 let method = default_method
                     .or_else(|| extract_request_method_from_args(&args_text))
@@ -171,10 +168,7 @@ fn method_mapping(
 }
 
 fn is_annotation(node: Node) -> bool {
-    matches!(
-        node.kind(),
-        "annotation" | "marker_annotation"
-    )
+    matches!(node.kind(), "annotation" | "marker_annotation")
 }
 
 /// Returns `(annotation_name, raw_args_text)` for an annotation node.
@@ -253,7 +247,8 @@ public class UserController {
 }
 "#;
         let (tree, bytes) = parse(src);
-        let nodes = detect_spring_routes(&tree, &bytes, &PathBuf::from("UserController.java"), None);
+        let nodes =
+            detect_spring_routes(&tree, &bytes, &PathBuf::from("UserController.java"), None);
         assert_eq!(nodes.len(), 1);
         let SurfaceNode::EntryPoint(ep) = &nodes[0] else {
             panic!()

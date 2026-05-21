@@ -42,7 +42,11 @@ pub fn prepare_rust(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
     // Cache hit: binary already compiled and stored.
     let binary = cache_path.join("nyx_harness");
     if binary.exists() {
-        return Ok(BuildResult { venv_path: cache_path, cache_hit: true, duration: Duration::ZERO });
+        return Ok(BuildResult {
+            venv_path: cache_path,
+            cache_hit: true,
+            duration: Duration::ZERO,
+        });
     }
 
     let start = Instant::now();
@@ -72,7 +76,10 @@ pub fn prepare_rust(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         }
     }
 
-    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+    Err(BuildError::BuildFailed {
+        stderr: last_err,
+        attempts: MAX_ATTEMPTS,
+    })
 }
 
 fn try_build_rust_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
@@ -86,10 +93,14 @@ fn try_build_rust_binary(workdir: &Path, binary_dest: &Path) -> Result<(), Strin
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
         // Inherit CARGO_HOME so the local registry cache is reused.
-        .env("CARGO_HOME", std::env::var("CARGO_HOME").unwrap_or_else(|_| {
-            dirs_next_cargo_home()
-        }))
-        .env("RUSTUP_HOME", std::env::var("RUSTUP_HOME").unwrap_or_default())
+        .env(
+            "CARGO_HOME",
+            std::env::var("CARGO_HOME").unwrap_or_else(|_| dirs_next_cargo_home()),
+        )
+        .env(
+            "RUSTUP_HOME",
+            std::env::var("RUSTUP_HOME").unwrap_or_default(),
+        )
         .output()
         .map_err(|e| format!("cargo build: {e}"))?;
 
@@ -101,8 +112,7 @@ fn try_build_rust_binary(workdir: &Path, binary_dest: &Path) -> Result<(), Strin
     // Copy binary to cache location.
     let compiled = workdir.join("target").join("release").join("nyx_harness");
     if compiled.exists() {
-        std::fs::copy(&compiled, binary_dest)
-            .map_err(|e| format!("copy binary: {e}"))?;
+        std::fs::copy(&compiled, binary_dest).map_err(|e| format!("copy binary: {e}"))?;
     }
 
     Ok(())
@@ -137,7 +147,10 @@ fn compute_rust_lockfile_hash(workdir: &Path) -> String {
         h.update(&content);
     }
     let out = h.finalize();
-    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
 }
 
 /// Result of a successful build.
@@ -168,10 +181,7 @@ impl From<std::io::Error> for BuildError {
 ///
 /// If a compatible cache entry exists, returns it immediately. Otherwise
 /// builds in isolation and caches the result.
-pub fn prepare_python(
-    spec: &HarnessSpec,
-    workdir: &Path,
-) -> Result<BuildResult, BuildError> {
+pub fn prepare_python(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, BuildError> {
     let lockfile_hash = compute_lockfile_hash(workdir);
     let cache_path = build_cache_path(&lockfile_hash, "python", &spec.toolchain_id)?;
 
@@ -217,11 +227,7 @@ pub fn prepare_python(
     })
 }
 
-fn try_build_venv(
-    venv_path: &Path,
-    workdir: &Path,
-    spec: &HarnessSpec,
-) -> Result<(), String> {
+fn try_build_venv(venv_path: &Path, workdir: &Path, spec: &HarnessSpec) -> Result<(), String> {
     // Find python binary.
     let python = python_binary(spec);
 
@@ -262,10 +268,7 @@ fn try_build_venv(
 
 fn python_binary(spec: &HarnessSpec) -> String {
     // Try the pinned version first; fall back to python3.
-    let ver = spec
-        .toolchain_id
-        .strip_prefix("python-")
-        .unwrap_or("3");
+    let ver = spec.toolchain_id.strip_prefix("python-").unwrap_or("3");
     let candidate = format!("python{ver}");
     if which_exists(&candidate) {
         return candidate;
@@ -290,7 +293,10 @@ fn compute_lockfile_hash(workdir: &Path) -> String {
         }
     }
     let out = h.finalize();
-    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
 }
 
 fn build_cache_path(
@@ -308,9 +314,7 @@ fn build_cache_path(
                 "cannot determine cache dir",
             ))
         })?;
-        dirs.cache_dir()
-            .join("dynamic")
-            .join("build-cache")
+        dirs.cache_dir().join("dynamic").join("build-cache")
     };
 
     let name = format!("{lockfile_hash}-{language}-{toolchain_id}");
@@ -366,7 +370,9 @@ pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
 
     for attempt in 0..MAX_ATTEMPTS {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
+            std::thread::sleep(std::time::Duration::from_secs(
+                BACKOFF[attempt as usize - 1],
+            ));
         }
         match try_npm_install(workdir) {
             Ok(()) => {
@@ -389,7 +395,10 @@ pub fn prepare_node(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         }
     }
 
-    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+    Err(BuildError::BuildFailed {
+        stderr: last_err,
+        attempts: MAX_ATTEMPTS,
+    })
 }
 
 fn try_npm_install(workdir: &Path) -> Result<(), String> {
@@ -430,14 +439,22 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 fn compute_node_lockfile_hash(workdir: &Path) -> String {
     let mut h = Hasher::new();
-    for fname in &["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"] {
+    for fname in &[
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+    ] {
         if let Ok(content) = std::fs::read(workdir.join(fname)) {
             h.update(fname.as_bytes());
             h.update(&content);
         }
     }
     let out = h.finalize();
-    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
 }
 
 // ── Go build sandbox ──────────────────────────────────────────────────────────
@@ -470,7 +487,9 @@ pub fn prepare_go(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bui
 
     for attempt in 0..MAX_ATTEMPTS {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
+            std::thread::sleep(std::time::Duration::from_secs(
+                BACKOFF[attempt as usize - 1],
+            ));
         }
         let _ = std::fs::remove_dir_all(&cache_path);
         std::fs::create_dir_all(&cache_path)?;
@@ -490,23 +509,41 @@ pub fn prepare_go(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bui
         }
     }
 
-    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+    Err(BuildError::BuildFailed {
+        stderr: last_err,
+        attempts: MAX_ATTEMPTS,
+    })
 }
 
 fn try_build_go_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
     let go_bin = std::env::var("NYX_GO_BIN").unwrap_or_else(|_| "go".to_owned());
     let output = Command::new(&go_bin)
-        .args(["build", "-o", binary_dest.to_str().unwrap_or("nyx_harness"), "."])
+        .args([
+            "build",
+            "-o",
+            binary_dest.to_str().unwrap_or("nyx_harness"),
+            ".",
+        ])
         .current_dir(workdir)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
-        .env("GOPATH", std::env::var("GOPATH").unwrap_or_else(|_| {
-            std::env::var("HOME").map(|h| format!("{h}/go")).unwrap_or_else(|_| "/tmp/go".to_owned())
-        }))
-        .env("GOMODCACHE", std::env::var("GOMODCACHE").unwrap_or_else(|_| {
-            std::env::var("HOME").map(|h| format!("{h}/go/pkg/mod")).unwrap_or_else(|_| "/tmp/gomod".to_owned())
-        }))
+        .env(
+            "GOPATH",
+            std::env::var("GOPATH").unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| format!("{h}/go"))
+                    .unwrap_or_else(|_| "/tmp/go".to_owned())
+            }),
+        )
+        .env(
+            "GOMODCACHE",
+            std::env::var("GOMODCACHE").unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| format!("{h}/go/pkg/mod"))
+                    .unwrap_or_else(|_| "/tmp/gomod".to_owned())
+            }),
+        )
         .output()
         .map_err(|e| format!("go build: {e}"))?;
 
@@ -529,7 +566,10 @@ fn compute_go_source_hash(workdir: &Path) -> String {
         h.update(&content);
     }
     let out = h.finalize();
-    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
 }
 
 // ── Java build sandbox ────────────────────────────────────────────────────────
@@ -592,7 +632,9 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
 
     for attempt in 0..MAX_ATTEMPTS {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
+            std::thread::sleep(std::time::Duration::from_secs(
+                BACKOFF[attempt as usize - 1],
+            ));
         }
         match try_compile_java(workdir, &cache_path, target_release) {
             Ok(()) => {
@@ -622,7 +664,10 @@ pub fn prepare_java(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, B
         }
     }
 
-    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+    Err(BuildError::BuildFailed {
+        stderr: last_err,
+        attempts: MAX_ATTEMPTS,
+    })
 }
 
 /// Parse the bytecode target release from a `java-NN` toolchain id.
@@ -652,7 +697,11 @@ fn java_target_release(toolchain_id: &str) -> Option<u32> {
     }
 }
 
-fn try_compile_java(workdir: &Path, cache_path: &Path, target_release: Option<u32>) -> Result<(), String> {
+fn try_compile_java(
+    workdir: &Path,
+    cache_path: &Path,
+    target_release: Option<u32>,
+) -> Result<(), String> {
     let javac = std::env::var("NYX_JAVAC_BIN").unwrap_or_else(|_| "javac".to_owned());
 
     // If the harness emitter shipped a `pom.xml`, stage Maven-resolved
@@ -792,9 +841,10 @@ fn collect_class_files(root: &Path) -> Vec<PathBuf> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().map(|e| e == "class").unwrap_or(false)
-                && let Ok(rel) = path.strip_prefix(root) {
-                    out.push(rel.to_path_buf());
-                }
+                && let Ok(rel) = path.strip_prefix(root)
+            {
+                out.push(rel.to_path_buf());
+            }
         }
     }
     out.sort();
@@ -826,7 +876,10 @@ fn compute_java_source_hash(workdir: &Path, target_release: Option<u32>) -> Stri
         h.update(b":release=host");
     }
     let out = h.finalize();
-    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
 }
 
 // ── PHP build sandbox ─────────────────────────────────────────────────────────
@@ -869,7 +922,9 @@ pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
 
     for attempt in 0..MAX_ATTEMPTS {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
+            std::thread::sleep(std::time::Duration::from_secs(
+                BACKOFF[attempt as usize - 1],
+            ));
         }
         match try_composer_install(workdir) {
             Ok(()) => {
@@ -892,7 +947,10 @@ pub fn prepare_php(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
         }
     }
 
-    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+    Err(BuildError::BuildFailed {
+        stderr: last_err,
+        attempts: MAX_ATTEMPTS,
+    })
 }
 
 fn try_composer_install(workdir: &Path) -> Result<(), String> {
@@ -922,7 +980,10 @@ fn compute_php_lockfile_hash(workdir: &Path) -> String {
         }
     }
     let out = h.finalize();
-    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
 }
 
 // ── C build sandbox ───────────────────────────────────────────────────────────
@@ -959,7 +1020,9 @@ pub fn prepare_c(
 
     for attempt in 0..MAX_ATTEMPTS {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
+            std::thread::sleep(std::time::Duration::from_secs(
+                BACKOFF[attempt as usize - 1],
+            ));
         }
         let _ = std::fs::remove_dir_all(&cache_path);
         std::fs::create_dir_all(&cache_path)?;
@@ -979,7 +1042,10 @@ pub fn prepare_c(
         }
     }
 
-    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+    Err(BuildError::BuildFailed {
+        stderr: last_err,
+        attempts: MAX_ATTEMPTS,
+    })
 }
 
 fn try_build_c_binary(workdir: &Path, binary_dest: &Path, static_link: bool) -> Result<(), String> {
@@ -1032,7 +1098,12 @@ pub(crate) fn static_link_env_override() -> bool {
     )
 }
 
-fn run_cc(cc_bin: &str, workdir: &Path, binary_dest: &Path, leading_flags: &[&str]) -> Result<(), String> {
+fn run_cc(
+    cc_bin: &str,
+    workdir: &Path,
+    binary_dest: &Path,
+    leading_flags: &[&str],
+) -> Result<(), String> {
     let binary_str = binary_dest.to_str().unwrap_or("nyx_harness");
     let mut args: Vec<&str> = leading_flags.to_vec();
     args.extend(["-o", binary_str, "main.c"]);
@@ -1067,7 +1138,10 @@ fn compute_c_source_hash(workdir: &Path, static_link: bool) -> String {
         h.update(b"static");
     }
     let out = h.finalize();
-    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
 }
 
 // ── C++ build sandbox ─────────────────────────────────────────────────────────
@@ -1093,7 +1167,9 @@ pub fn prepare_cpp(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
 
     for attempt in 0..MAX_ATTEMPTS {
         if attempt > 0 {
-            std::thread::sleep(std::time::Duration::from_secs(BACKOFF[attempt as usize - 1]));
+            std::thread::sleep(std::time::Duration::from_secs(
+                BACKOFF[attempt as usize - 1],
+            ));
         }
         let _ = std::fs::remove_dir_all(&cache_path);
         std::fs::create_dir_all(&cache_path)?;
@@ -1113,7 +1189,10 @@ pub fn prepare_cpp(spec: &HarnessSpec, workdir: &Path) -> Result<BuildResult, Bu
         }
     }
 
-    Err(BuildError::BuildFailed { stderr: last_err, attempts: MAX_ATTEMPTS })
+    Err(BuildError::BuildFailed {
+        stderr: last_err,
+        attempts: MAX_ATTEMPTS,
+    })
 }
 
 fn try_build_cpp_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String> {
@@ -1122,7 +1201,14 @@ fn try_build_cpp_binary(workdir: &Path, binary_dest: &Path) -> Result<(), String
         "c++".to_owned()
     });
     let output = Command::new(&cxx_bin)
-        .args(["-O0", "-g", "-std=c++17", "-o", binary_dest.to_str().unwrap_or("nyx_harness"), "main.cpp"])
+        .args([
+            "-O0",
+            "-g",
+            "-std=c++17",
+            "-o",
+            binary_dest.to_str().unwrap_or("nyx_harness"),
+            "main.cpp",
+        ])
         .current_dir(workdir)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -1145,7 +1231,10 @@ fn compute_cpp_source_hash(workdir: &Path) -> String {
         }
     }
     let out = h.finalize();
-    format!("{:016x}", u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(out.as_bytes()[..8].try_into().unwrap())
+    )
 }
 
 // ── Uniform per-language build dispatch (Phase 26 — composite chains) ────────
@@ -1251,10 +1340,14 @@ fn start_isolated_build_container(
     network_none: bool,
 ) -> bool {
     let mut args: Vec<&str> = vec![
-        "run", "-d", "--rm",
-        "--name", name,
+        "run",
+        "-d",
+        "--rm",
+        "--name",
+        name,
         "--cap-drop=ALL",
-        "--security-opt", "no-new-privileges:true",
+        "--security-opt",
+        "no-new-privileges:true",
     ];
     if network_none {
         args.extend_from_slice(&["--network", "none"]);
@@ -1319,16 +1412,22 @@ pub fn prepare_rust_in_docker(workdir: &Path) -> Result<(), String> {
         return Err("failed to start rust:slim build container; image may not be available".into());
     }
 
-    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    let _guard = BuildContainerGuard {
+        docker: docker.clone(),
+        name: container.clone(),
+    };
     copy_workdir_to_build_container(&docker, workdir, &container, "/build");
 
     // CARGO_NET_OFFLINE prevents any registry contact; std lib is pre-built in the image.
     let _ = std::process::Command::new(&docker)
         .args([
             "exec",
-            "-e", "CARGO_NET_OFFLINE=true",
+            "-e",
+            "CARGO_NET_OFFLINE=true",
             &container,
-            "sh", "-c", "cd /build && cargo build --release 2>&1",
+            "sh",
+            "-c",
+            "cd /build && cargo build --release 2>&1",
         ])
         .output();
 
@@ -1347,10 +1446,15 @@ pub fn prepare_node_in_docker(workdir: &Path) -> Result<(), String> {
     let container = build_container_id("nodebuild", workdir);
 
     if !start_isolated_build_container(&docker, &container, "node:20-slim", true) {
-        return Err("failed to start node:20-slim build container; image may not be available".into());
+        return Err(
+            "failed to start node:20-slim build container; image may not be available".into(),
+        );
     }
 
-    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    let _guard = BuildContainerGuard {
+        docker: docker.clone(),
+        name: container.clone(),
+    };
     copy_workdir_to_build_container(&docker, workdir, &container, "/build");
 
     // npm install may fail if the registry is unreachable (--network none), but the
@@ -1359,7 +1463,8 @@ pub fn prepare_node_in_docker(workdir: &Path) -> Result<(), String> {
         .args([
             "exec",
             &container,
-            "sh", "-c",
+            "sh",
+            "-c",
             "cd /build && npm install --no-save --no-audit --no-fund 2>&1",
         ])
         .output();
@@ -1379,20 +1484,29 @@ pub fn prepare_go_in_docker(workdir: &Path) -> Result<(), String> {
     let container = build_container_id("gobuild", workdir);
 
     if !start_isolated_build_container(&docker, &container, "golang:1.21-slim", true) {
-        return Err("failed to start golang:1.21-slim build container; image may not be available".into());
+        return Err(
+            "failed to start golang:1.21-slim build container; image may not be available".into(),
+        );
     }
 
-    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    let _guard = BuildContainerGuard {
+        docker: docker.clone(),
+        name: container.clone(),
+    };
     copy_workdir_to_build_container(&docker, workdir, &container, "/build");
 
     // GOPROXY=off prevents module downloads; std library is pre-compiled in the image.
     let _ = std::process::Command::new(&docker)
         .args([
             "exec",
-            "-e", "GOPROXY=off",
-            "-e", "GONOSUMDB=*",
+            "-e",
+            "GOPROXY=off",
+            "-e",
+            "GONOSUMDB=*",
             &container,
-            "sh", "-c", "cd /build && go build ./... 2>&1",
+            "sh",
+            "-c",
+            "cd /build && go build ./... 2>&1",
         ])
         .output();
 
@@ -1413,26 +1527,26 @@ pub fn prepare_java_in_docker(workdir: &Path) -> Result<(), String> {
 
     // Bridge network: Maven must download exec-maven-plugin from Maven Central.
     // Filesystem isolation still holds: /tmp inside the container is private.
-    if !start_isolated_build_container(
-        &docker,
-        &container,
-        "maven:3.9-eclipse-temurin-21",
-        false,
-    ) {
+    if !start_isolated_build_container(&docker, &container, "maven:3.9-eclipse-temurin-21", false) {
         return Err(
             "failed to start maven:3.9-eclipse-temurin-21 build container; image may not be available"
                 .into(),
         );
     }
 
-    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    let _guard = BuildContainerGuard {
+        docker: docker.clone(),
+        name: container.clone(),
+    };
     copy_workdir_to_build_container(&docker, workdir, &container, "/build");
 
     let _ = std::process::Command::new(&docker)
         .args([
             "exec",
             &container,
-            "sh", "-c", "cd /build && mvn --no-transfer-progress validate 2>&1",
+            "sh",
+            "-c",
+            "cd /build && mvn --no-transfer-progress validate 2>&1",
         ])
         .output();
 
@@ -1451,10 +1565,15 @@ pub fn prepare_php_in_docker(workdir: &Path) -> Result<(), String> {
     let container = build_container_id("phpbuild", workdir);
 
     if !start_isolated_build_container(&docker, &container, "composer:2", true) {
-        return Err("failed to start composer:2 build container; image may not be available".into());
+        return Err(
+            "failed to start composer:2 build container; image may not be available".into(),
+        );
     }
 
-    let _guard = BuildContainerGuard { docker: docker.clone(), name: container.clone() };
+    let _guard = BuildContainerGuard {
+        docker: docker.clone(),
+        name: container.clone(),
+    };
     copy_workdir_to_build_container(&docker, workdir, &container, "/build");
 
     // Empty require{} means no packages to fetch; post-install-cmd still fires.
@@ -1462,7 +1581,8 @@ pub fn prepare_php_in_docker(workdir: &Path) -> Result<(), String> {
         .args([
             "exec",
             &container,
-            "sh", "-c",
+            "sh",
+            "-c",
             "cd /build && composer install --no-dev --no-interaction --prefer-dist 2>&1",
         ])
         .output();
@@ -1519,11 +1639,7 @@ mod tests {
     #[test]
     fn java_source_hash_differs_across_target_release() {
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            dir.path().join("Vuln.java"),
-            "public class Vuln {}\n",
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("Vuln.java"), "public class Vuln {}\n").unwrap();
         let h_none = compute_java_source_hash(dir.path(), None);
         let h17 = compute_java_source_hash(dir.path(), Some(17));
         let h21 = compute_java_source_hash(dir.path(), Some(21));
@@ -1568,7 +1684,10 @@ mod tests {
         copy_dir_all(src.path(), dst.path()).unwrap();
 
         assert_eq!(std::fs::read(dst.path().join("a.txt")).unwrap(), b"hello");
-        assert_eq!(std::fs::read(dst.path().join("sub").join("b.txt")).unwrap(), b"world");
+        assert_eq!(
+            std::fs::read(dst.path().join("sub").join("b.txt")).unwrap(),
+            b"world"
+        );
     }
 
     #[test]
@@ -1760,7 +1879,11 @@ mod tests {
 
             let result = dispatch_prepare(&spec, dir.path(), ProcessHardeningProfile::Standard)
                 .expect("TypeScript dispatch must succeed on a workdir with no package.json");
-            assert_eq!(result.lang, Lang::TypeScript, "lang field must echo the spec's");
+            assert_eq!(
+                result.lang,
+                Lang::TypeScript,
+                "lang field must echo the spec's"
+            );
             assert!(
                 !result.cache_hit,
                 "first dispatch on a fresh cache must be a cache miss; got {result:?}",

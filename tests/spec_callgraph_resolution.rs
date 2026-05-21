@@ -15,11 +15,9 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::ast::analyse_file_fused;
-use nyx_scanner::callgraph::{analyse, build_call_graph, CallGraph, CallGraphAnalysis};
+use nyx_scanner::callgraph::{CallGraph, CallGraphAnalysis, analyse, build_call_graph};
 use nyx_scanner::commands::scan::Diag;
-use nyx_scanner::dynamic::spec::{
-    is_entry_point, EntryKind, HarnessSpec, SpecDerivationStrategy,
-};
+use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, SpecDerivationStrategy, is_entry_point};
 use nyx_scanner::evidence::{Confidence, Evidence, FlowStep, FlowStepKind};
 use nyx_scanner::labels::Cap;
 use nyx_scanner::patterns::{FindingCategory, Severity};
@@ -50,8 +48,7 @@ fn build_context(file: &Path) -> (GlobalSummaries, CallGraph, CallGraphAnalysis)
     let root = file.parent().unwrap();
     let root_str = root.to_string_lossy();
     let bytes = std::fs::read(file).expect("read fixture");
-    let result = analyse_file_fused(&bytes, file, &cfg, None, Some(root))
-        .expect("analyse fixture");
+    let result = analyse_file_fused(&bytes, file, &cfg, None, Some(root)).expect("analyse fixture");
     let mut gs = GlobalSummaries::new();
     for s in result.summaries {
         let key = s.func_key(Some(&root_str));

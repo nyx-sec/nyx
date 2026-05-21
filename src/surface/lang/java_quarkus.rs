@@ -141,7 +141,10 @@ fn class_has_auth_annotation(class: Node, bytes: &[u8]) -> bool {
         }
         if let Some(name) = annotation_name(ann, bytes) {
             let leaf = name.rsplit('.').next().unwrap_or(&name);
-            if AUTH_ANNOTATIONS.iter().any(|a| leaf.eq_ignore_ascii_case(a)) {
+            if AUTH_ANNOTATIONS
+                .iter()
+                .any(|a| leaf.eq_ignore_ascii_case(a))
+            {
                 return true;
             }
         }
@@ -149,7 +152,11 @@ fn class_has_auth_annotation(class: Node, bytes: &[u8]) -> bool {
     false
 }
 
-fn method_mapping(method: Node, bytes: &[u8], class_path: &str) -> Option<(HttpMethod, String, bool)> {
+fn method_mapping(
+    method: Node,
+    bytes: &[u8],
+    class_path: &str,
+) -> Option<(HttpMethod, String, bool)> {
     let modifiers = crate::surface::lang::common::child_or_named(method, "modifiers")?;
     let mut cursor = modifiers.walk();
     let mut verb: Option<HttpMethod> = None;
@@ -163,7 +170,10 @@ fn method_mapping(method: Node, bytes: &[u8], class_path: &str) -> Option<(HttpM
             continue;
         };
         let leaf = name.rsplit('.').next().unwrap_or(&name);
-        if let Some((_, m)) = JAXRS_VERBS.iter().find(|(n, _)| n.eq_ignore_ascii_case(leaf)) {
+        if let Some((_, m)) = JAXRS_VERBS
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(leaf))
+        {
             verb = Some(*m);
         }
         if leaf == "Path"
@@ -171,7 +181,10 @@ fn method_mapping(method: Node, bytes: &[u8], class_path: &str) -> Option<(HttpM
         {
             method_path = p;
         }
-        if AUTH_ANNOTATIONS.iter().any(|a| leaf.eq_ignore_ascii_case(a)) {
+        if AUTH_ANNOTATIONS
+            .iter()
+            .any(|a| leaf.eq_ignore_ascii_case(a))
+        {
             auth = true;
         }
     }
@@ -181,7 +194,11 @@ fn method_mapping(method: Node, bytes: &[u8], class_path: &str) -> Option<(HttpM
     } else if method_path.is_empty() {
         class_path.to_string()
     } else {
-        format!("{}/{}", class_path.trim_end_matches('/'), method_path.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            class_path.trim_end_matches('/'),
+            method_path.trim_start_matches('/')
+        )
     };
     Some((v, combined, auth))
 }
@@ -258,7 +275,8 @@ public class GreetResource {
 }
 "#;
         let (tree, bytes) = parse(src);
-        let nodes = detect_quarkus_routes(&tree, &bytes, &PathBuf::from("GreetResource.java"), None);
+        let nodes =
+            detect_quarkus_routes(&tree, &bytes, &PathBuf::from("GreetResource.java"), None);
         assert_eq!(nodes.len(), 1);
         let SurfaceNode::EntryPoint(ep) = &nodes[0] else {
             panic!()

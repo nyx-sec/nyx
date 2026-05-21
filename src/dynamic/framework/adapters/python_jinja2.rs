@@ -92,9 +92,7 @@ impl FrameworkAdapter for PythonJinja2Adapter {
         ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let cheap_filter = file_bytes
-            .windows(b"jinja2".len())
-            .any(|w| w == b"jinja2")
+        let cheap_filter = file_bytes.windows(b"jinja2".len()).any(|w| w == b"jinja2")
             || file_bytes
                 .windows(b"from_string".len())
                 .any(|w| w == b"from_string")
@@ -149,9 +147,11 @@ mod tests {
             b"from jinja2 import Template\ndef render(body):\n    return Template(body).render()\n";
         let tree = parse_python(src);
         let summary = summary_for("render", &["body"], &[0]);
-        assert!(PythonJinja2Adapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PythonJinja2Adapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -161,9 +161,11 @@ mod tests {
         let tree = parse_python(src);
         let mut summary = summary_for("view", &["body"], &[0]);
         summary.callees = vec![crate::summary::CalleeSite::bare("render_template_string")];
-        assert!(PythonJinja2Adapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PythonJinja2Adapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -174,9 +176,11 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(PythonJinja2Adapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonJinja2Adapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -186,9 +190,11 @@ mod tests {
         let src: &[u8] = b"\"\"\"renders via jinja2.Template\"\"\"\ndef render(body):\n    return Template(\"hello\").render()\n";
         let tree = parse_python(src);
         let summary = summary_for("render", &["body"], &[0]);
-        assert!(PythonJinja2Adapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonJinja2Adapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -199,8 +205,10 @@ mod tests {
             b"from jinja2 import Template\ndef render(body):\n    return Template(body).render()\n";
         let tree = parse_python(src);
         let summary = summary_for("render", &["body"], &[]);
-        assert!(PythonJinja2Adapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonJinja2Adapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

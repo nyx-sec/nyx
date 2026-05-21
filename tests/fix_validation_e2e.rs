@@ -13,8 +13,8 @@
 mod common;
 
 use nyx_scanner::baseline::{
-    check_gate, compute_verdict_diff, diags_to_baseline_entries, load_baseline, write_baseline,
-    BaselineEntry, Transition, GATE_NO_NEW_CONFIRMED, GATE_RESOLVE_ALL_CONFIRMED,
+    BaselineEntry, GATE_NO_NEW_CONFIRMED, GATE_RESOLVE_ALL_CONFIRMED, Transition, check_gate,
+    compute_verdict_diff, diags_to_baseline_entries, load_baseline, write_baseline,
 };
 use nyx_scanner::commands::scan::compute_stable_hash;
 use nyx_scanner::evidence::{Evidence, VerifyResult, VerifyStatus};
@@ -32,10 +32,7 @@ fn scan_with_hashes(dir: &Path) -> Vec<nyx_scanner::commands::scan::Diag> {
 }
 
 /// Attach a simulated dynamic verdict to every finding in the list.
-fn set_verdict(
-    diags: &mut [nyx_scanner::commands::scan::Diag],
-    status: VerifyStatus,
-) {
+fn set_verdict(diags: &mut [nyx_scanner::commands::scan::Diag], status: VerifyStatus) {
     for d in diags.iter_mut() {
         let fid = format!("{:016x}", d.stable_hash);
         let ev = d.evidence.get_or_insert_with(Evidence::default);
@@ -89,7 +86,10 @@ fn fix_resolves_confirmed_finding() {
 
     // Step 1: scan vulnerable, simulate Confirmed verdict.
     let mut vuln_diags = scan_with_hashes(vuln_path);
-    assert!(!vuln_diags.is_empty(), "Need at least one SQL injection finding");
+    assert!(
+        !vuln_diags.is_empty(),
+        "Need at least one SQL injection finding"
+    );
     set_verdict(&mut vuln_diags, VerifyStatus::Confirmed);
 
     // Step 2: write stripped baseline.
@@ -260,7 +260,6 @@ fn load_baseline_accepts_full_diag_json() {
     // Hashes must round-trip.
     let loaded_hashes: std::collections::HashSet<u64> =
         loaded.iter().map(|e| e.stable_hash).collect();
-    let diag_hashes: std::collections::HashSet<u64> =
-        diags.iter().map(|d| d.stable_hash).collect();
+    let diag_hashes: std::collections::HashSet<u64> = diags.iter().map(|d| d.stable_hash).collect();
     assert_eq!(loaded_hashes, diag_hashes);
 }

@@ -168,9 +168,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("search_s")],
             ..Default::default()
         };
-        assert!(LdapPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            LdapPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -181,9 +183,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(LdapPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            LdapPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -198,8 +202,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("search_s")],
             ..Default::default()
         };
-        assert!(LdapPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            LdapPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

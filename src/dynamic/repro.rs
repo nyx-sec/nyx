@@ -136,7 +136,10 @@ pub fn write(
         fs::create_dir_all(&src_dir)?;
         // Also write Cargo.toml for Rust repro bundles.
         let cargo_content = crate::dynamic::lang::rust::generate_cargo_toml(spec.expected_cap);
-        fs::write(root.join("harness").join("Cargo.toml"), cargo_content.as_bytes())?;
+        fs::write(
+            root.join("harness").join("Cargo.toml"),
+            cargo_content.as_bytes(),
+        )?;
         src_dir.join("main.rs")
     } else {
         root.join("harness").join(format!("harness.{ext}"))
@@ -145,7 +148,10 @@ pub fn write(
 
     // harness/Dockerfile.harness
     let dockerfile = dockerfile_for_spec(spec);
-    fs::write(root.join("harness").join("Dockerfile.harness"), dockerfile.as_bytes())?;
+    fs::write(
+        root.join("harness").join("Dockerfile.harness"),
+        dockerfile.as_bytes(),
+    )?;
 
     // payload/payload.bin + payload.meta.json
     fs::write(root.join("payload").join("payload.bin"), payload_bytes)?;
@@ -154,7 +160,10 @@ pub fn write(
         "len": payload_bytes.len(),
         "encoding": "raw",
     });
-    write_json(&root.join("payload").join("payload.meta.json"), &payload_meta)?;
+    write_json(
+        &root.join("payload").join("payload.meta.json"),
+        &payload_meta,
+    )?;
 
     // sandbox/options.json
     let sandbox_opts = serde_json::json!({
@@ -166,7 +175,10 @@ pub fn write(
 
     // sandbox/env.allowlist.json
     let env_list: Vec<&str> = opts.env_passthrough.iter().map(|s| s.as_str()).collect();
-    write_json(&root.join("sandbox").join("env.allowlist.json"), &serde_json::json!(env_list))?;
+    write_json(
+        &root.join("sandbox").join("env.allowlist.json"),
+        &serde_json::json!(env_list),
+    )?;
 
     // expected/outcome.json — redacted
     let redacted_stdout = redact::redact(&outcome.stdout);
@@ -235,7 +247,10 @@ pub fn write(
 
     // Per-project symlink (§12 Q1)
     let symlink = if let Some(proj_root) = project_root {
-        let link_dir = proj_root.join(".nyx").join("dynamic-cache").join("symlinks");
+        let link_dir = proj_root
+            .join(".nyx")
+            .join("dynamic-cache")
+            .join("symlinks");
         let _ = fs::create_dir_all(&link_dir);
         let link_path = link_dir.join(&spec.spec_hash);
         let _ = create_symlink(&root, &link_path);
@@ -252,11 +267,12 @@ fn repro_root(spec_hash: &str) -> Result<PathBuf, ReproError> {
     let base = if let Ok(p) = std::env::var("NYX_REPRO_BASE") {
         PathBuf::from(p)
     } else {
-        let dirs = ProjectDirs::from("", "", "nyx")
-            .ok_or_else(|| ReproError::Io(std::io::Error::new(
+        let dirs = ProjectDirs::from("", "", "nyx").ok_or_else(|| {
+            ReproError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "cannot determine cache dir",
-            )))?;
+            ))
+        })?;
         dirs.cache_dir().join("dynamic").join("repro")
     };
 
@@ -328,7 +344,10 @@ fn resolve_dockerfile_from(spec: &HarnessSpec) -> String {
             format!("rust:{toolchain}-slim")
         }
         Lang::Python => {
-            format!("python:{}", spec.toolchain_id.strip_prefix("python-").unwrap_or("3"))
+            format!(
+                "python:{}",
+                spec.toolchain_id.strip_prefix("python-").unwrap_or("3")
+            )
         }
         _ => "ubuntu:latest".to_owned(),
     }
@@ -391,7 +410,10 @@ fn reproduce_script(spec: &HarnessSpec, payload_label: &str) -> String {
     // `reproduce.sh --docker` which sources the runtime from the pinned
     // image and bypasses the host toolchain entirely.
     let host_probe_cmd = match spec.lang {
-        Lang::Rust | Lang::Go | Lang::C | Lang::Cpp => "./harness/nyx_harness --help >/dev/null 2>&1 || test -x ./harness/nyx_harness".to_owned(),
+        Lang::Rust | Lang::Go | Lang::C | Lang::Cpp => {
+            "./harness/nyx_harness --help >/dev/null 2>&1 || test -x ./harness/nyx_harness"
+                .to_owned()
+        }
         Lang::Python => "command -v python3".to_owned(),
         Lang::JavaScript | Lang::TypeScript => "command -v node".to_owned(),
         Lang::Java => "command -v java".to_owned(),
@@ -510,7 +532,10 @@ fn build_toolchain_lock(spec: &HarnessSpec, root: &Path) -> Result<serde_json::V
         if abs.exists() {
             let bytes = fs::read(&abs)?;
             let digest = blake3::hash(&bytes);
-            files.insert(rel.to_owned(), serde_json::Value::String(digest.to_hex().to_string()));
+            files.insert(
+                rel.to_owned(),
+                serde_json::Value::String(digest.to_hex().to_string()),
+            );
         }
         Ok(())
     };
@@ -524,7 +549,10 @@ fn build_toolchain_lock(spec: &HarnessSpec, root: &Path) -> Result<serde_json::V
     if matches!(spec.lang, Lang::Rust) {
         record("harness/Cargo.toml")?;
     }
-    record(&format!("entry/extracted_source.{}", source_ext_for_lang(&spec.lang)))?;
+    record(&format!(
+        "entry/extracted_source.{}",
+        source_ext_for_lang(&spec.lang)
+    ))?;
     record("payload/payload.bin")?;
 
     let pinned_image = crate::dynamic::toolchain::pinned_image_ref(&spec.toolchain_id);
@@ -588,10 +616,7 @@ pub fn replay_stability(result: &ReplayResult) -> Option<bool> {
 ///
 /// Callers who want "did this bundle replay green?" semantics get a typed
 /// result instead of parsing shell output.
-pub fn replay_bundle(
-    bundle_root: &Path,
-    extra_args: &[&str],
-) -> ReplayResult {
+pub fn replay_bundle(bundle_root: &Path, extra_args: &[&str]) -> ReplayResult {
     use std::process::Command;
     let script = bundle_root.join("reproduce.sh");
     if !script.exists() {
@@ -779,9 +804,17 @@ mod tests {
         let outcome = make_outcome();
         let verdict = make_verdict();
         let artifact = write(
-            &spec, &opts, &outcome, &verdict,
-            "# harness", "# entry", b"payload", "label", None,
-        ).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "# harness",
+            "# entry",
+            b"payload",
+            "label",
+            None,
+        )
+        .unwrap();
         let lock_path = artifact.root.join("toolchain.lock");
         assert!(lock_path.exists(), "toolchain.lock missing");
         let lock: serde_json::Value =
@@ -848,9 +881,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         unsafe { std::env::set_var("NYX_REPRO_BASE", dir.path().to_str().unwrap()) };
         let artifact = write(
-            &make_spec(), &SandboxOptions::default(), &make_outcome(), &make_verdict(),
-            "# harness", "# entry", b"payload", "label", None,
-        ).unwrap();
+            &make_spec(),
+            &SandboxOptions::default(),
+            &make_outcome(),
+            &make_verdict(),
+            "# harness",
+            "# entry",
+            b"payload",
+            "label",
+            None,
+        )
+        .unwrap();
         let script = std::fs::read_to_string(artifact.root.join("reproduce.sh")).unwrap();
         // Exit code 3 documented + emitted on host toolchain mismatch.
         assert!(script.contains("EXPECTED_TOOLCHAIN=\"python-3.11\""));
@@ -872,7 +913,8 @@ mod tests {
             std::fs::set_permissions(
                 bundle.join("reproduce.sh"),
                 std::fs::Permissions::from_mode(0o755),
-            ).unwrap();
+            )
+            .unwrap();
         }
         assert_eq!(replay_bundle(&bundle, &[]), ReplayResult::Pass);
     }
@@ -891,14 +933,16 @@ mod tests {
             std::fs::write(
                 bundle.join("reproduce.sh"),
                 format!("#!/bin/sh\nexit {code}\n"),
-            ).unwrap();
+            )
+            .unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(
                     bundle.join("reproduce.sh"),
                     std::fs::Permissions::from_mode(0o755),
-                ).unwrap();
+                )
+                .unwrap();
             }
             assert_eq!(replay_bundle(&bundle, &[]), *expected);
         }
@@ -961,9 +1005,17 @@ mod tests {
         let outcome = make_outcome();
         let verdict = make_verdict();
         let artifact = write(
-            &spec, &opts, &outcome, &verdict,
-            "# harness", "# entry", b"payload", "label", None,
-        ).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "# harness",
+            "# entry",
+            b"payload",
+            "label",
+            None,
+        )
+        .unwrap();
         let resolved = bundle_root_for(&spec.spec_hash).unwrap();
         assert_eq!(resolved, artifact.root);
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
@@ -982,12 +1034,24 @@ mod tests {
         let verdict = make_verdict();
 
         let artifact = write(
-            &spec, &opts, &outcome, &verdict,
-            "# harness", "# entry", b"payload", "label", None,
-        ).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "# harness",
+            "# entry",
+            b"payload",
+            "label",
+            None,
+        )
+        .unwrap();
 
-        let outcome_json = std::fs::read_to_string(artifact.root.join("expected/outcome.json")).unwrap();
-        assert!(!outcome_json.contains("AKIAFAKETEST00000000"), "AWS key must be redacted in outcome.json");
+        let outcome_json =
+            std::fs::read_to_string(artifact.root.join("expected/outcome.json")).unwrap();
+        assert!(
+            !outcome_json.contains("AKIAFAKETEST00000000"),
+            "AWS key must be redacted in outcome.json"
+        );
 
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }

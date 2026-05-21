@@ -100,12 +100,13 @@ pub fn load_or_build(
 ) -> NyxResult<SurfaceMap> {
     if let Ok((project, db_path)) = get_project_info(scan_root, database_dir)
         && db_path.exists()
-            && let Ok(pool) = Indexer::init(&db_path)
-                && let Ok(idx) = Indexer::from_pool(&project, &pool)
-                    && let Ok(Some(map)) = idx.load_surface_map()
-                        && !map.nodes.is_empty() {
-                            return Ok(map);
-                        }
+        && let Ok(pool) = Indexer::init(&db_path)
+        && let Ok(idx) = Indexer::from_pool(&project, &pool)
+        && let Ok(Some(map)) = idx.load_surface_map()
+        && !map.nodes.is_empty()
+    {
+        return Ok(map);
+    }
     build_from_filesystem(scan_root, config)
 }
 
@@ -151,11 +152,7 @@ fn build_full_from_filesystem(scan_root: &Path, config: &Config) -> NyxResult<Su
 ///
 /// Per-file errors are swallowed so a single bad file does not kill
 /// the whole map.
-fn build_summaries_inline(
-    files: &[PathBuf],
-    scan_root: &Path,
-    config: &Config,
-) -> GlobalSummaries {
+fn build_summaries_inline(files: &[PathBuf], scan_root: &Path, config: &Config) -> GlobalSummaries {
     let root_str = scan_root.to_string_lossy().into_owned();
     let mg = config.module_graph.as_deref();
     files
@@ -279,7 +276,8 @@ pub fn render_text(map: &SurfaceMap, scan_root: Option<&Path>) -> String {
         }
         for &i in indices {
             match &map.nodes[i] {
-                SurfaceNode::DataStore(_) | SurfaceNode::ExternalService(_)
+                SurfaceNode::DataStore(_)
+                | SurfaceNode::ExternalService(_)
                 | SurfaceNode::DangerousLocal(_) => {
                     if !entry_indices.is_empty() {
                         continue;
@@ -456,10 +454,18 @@ pub fn render_dot(map: &SurfaceMap) -> String {
                     escape_dot(&ep.handler_name),
                 ),
                 "box",
-                if ep.auth_required { "#3aa57c" } else { "#3072c4" },
+                if ep.auth_required {
+                    "#3aa57c"
+                } else {
+                    "#3072c4"
+                },
             ),
             SurfaceNode::DataStore(ds) => (
-                format!("DataStore ({})\\n{}", ds_kind_str(ds.kind), escape_dot(&ds.label)),
+                format!(
+                    "DataStore ({})\\n{}",
+                    ds_kind_str(ds.kind),
+                    escape_dot(&ds.label)
+                ),
                 "cylinder",
                 "#b07a18",
             ),
@@ -543,9 +549,7 @@ fn render_svg(map: &SurfaceMap) -> NyxResult<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::entry_points::HttpMethod;
-    use crate::surface::{
-        EntryPoint, Framework, SourceLocation, SurfaceEdge, SurfaceNode,
-    };
+    use crate::surface::{EntryPoint, Framework, SourceLocation, SurfaceEdge, SurfaceNode};
 
     fn flask_fixture_map() -> SurfaceMap {
         let mut map = SurfaceMap::new();
@@ -598,12 +602,13 @@ mod tests {
     #[test]
     fn text_render_groups_reaches_under_entry() {
         let mut m = flask_fixture_map();
-        m.nodes
-            .push(SurfaceNode::DangerousLocal(crate::surface::DangerousLocal {
+        m.nodes.push(SurfaceNode::DangerousLocal(
+            crate::surface::DangerousLocal {
                 location: SourceLocation::new("app.py", 12, 1),
                 function_name: "eval".into(),
                 cap_bits: crate::labels::Cap::CODE_EXEC.bits(),
-            }));
+            },
+        ));
         // Build edge after canonicalize so indices are stable.
         m.canonicalize();
         let ep_idx = m
@@ -657,10 +662,7 @@ mod tests {
         let canon = project_dir.canonicalize().unwrap();
         let files = collect_files(&canon, &cfg).unwrap();
         let summaries = build_summaries_inline(&files, &canon, &cfg);
-        let names: Vec<String> = summaries
-            .iter()
-            .map(|(k, _)| k.qualified_name())
-            .collect();
+        let names: Vec<String> = summaries.iter().map(|(k, _)| k.qualified_name()).collect();
         assert!(
             names.iter().any(|n| n.ends_with("run")),
             "summaries should contain `run`, got {names:?}"

@@ -22,7 +22,7 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::environment::{
-    build_secret_bag, derive_secret, extract_env_var_references, SECRET_VALUE_PREFIX,
+    SECRET_VALUE_PREFIX, build_secret_bag, derive_secret, extract_env_var_references,
 };
 use nyx_scanner::symbol::Lang;
 use std::path::{Path, PathBuf};
@@ -228,7 +228,10 @@ fn flask_fixture_boots_with_derived_secret_env() {
     // Spawn python3 in the fixture directory, env-clear, layer the bag
     // on top, and confirm the module imports without raising.
     let mut cmd = std::process::Command::new("python3");
-    cmd.args(["-c", "import sys; sys.path.insert(0, '.'); import app; print('OK')"]);
+    cmd.args([
+        "-c",
+        "import sys; sys.path.insert(0, '.'); import app; print('OK')",
+    ]);
     cmd.current_dir(&fixture);
     cmd.env_clear();
     // PATH is required so python3 can re-locate its stdlib; the

@@ -17,7 +17,15 @@ const ADAPTER_NAME: &str = "header-java";
 
 fn callee_is_header_setter(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "setHeader" | "addHeader" | "setDateHeader" | "addDateHeader" | "setIntHeader" | "addIntHeader")
+    matches!(
+        last,
+        "setHeader"
+            | "addHeader"
+            | "setDateHeader"
+            | "addDateHeader"
+            | "setIntHeader"
+            | "addIntHeader"
+    )
 }
 
 fn source_imports_servlet(file_bytes: &[u8]) -> bool {
@@ -110,9 +118,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("setHeader")],
             ..Default::default()
         };
-        assert!(HeaderJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            HeaderJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -123,9 +133,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(HeaderJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -143,8 +155,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(HeaderJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

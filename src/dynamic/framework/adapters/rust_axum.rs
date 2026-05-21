@@ -116,17 +116,21 @@ mod tests {
     fn skips_when_axum_not_imported() {
         let src: &[u8] = b"fn show() {}\n";
         let tree = parse(src);
-        assert!(RustAxumAdapter
-            .detect(&summary("show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RustAxumAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_route_does_not_reference_function() {
         let src: &[u8] = b"use axum::Router;\nfn build() -> Router { Router::new().route(\"/u\", get(show)) }\nfn helper() {}\n";
         let tree = parse(src);
-        assert!(RustAxumAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RustAxumAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

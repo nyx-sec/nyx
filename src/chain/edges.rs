@@ -182,30 +182,28 @@ pub fn pick_chain_cap(bits: u32) -> Option<Cap> {
     while remaining != 0 {
         let bit = 1u32 << remaining.trailing_zeros();
         if let Some(cap) = Cap::from_bits(bit)
-            && lookup_impact(cap, None).is_some() {
-                return Some(cap);
-            }
+            && lookup_impact(cap, None).is_some()
+        {
+            return Some(cap);
+        }
         remaining &= !bit;
     }
     lowest_cap(bits)
 }
 
-fn locate_reach(
-    loc: &SourceLocation,
-    surface: &SurfaceMap,
-    reach: Option<&FileReachMap>,
-) -> Reach {
+fn locate_reach(loc: &SourceLocation, surface: &SurfaceMap, reach: Option<&FileReachMap>) -> Reach {
     // Pass 1: file-local match (legacy behaviour, always applies).
     for node in &surface.nodes {
         if let SurfaceNode::EntryPoint(ep) = node
-            && ep.handler_location.file == loc.file {
-                return Reach::Reachable {
-                    location: ep.location.clone(),
-                    method: ep.method,
-                    route: ep.route.clone(),
-                    auth_required: ep.auth_required,
-                };
-            }
+            && ep.handler_location.file == loc.file
+        {
+            return Reach::Reachable {
+                location: ep.location.clone(),
+                method: ep.method,
+                route: ep.route.clone(),
+                auth_required: ep.auth_required,
+            };
+        }
     }
     // Pass 2: transitive caller match via the call graph.  Only fires
     // when `reach` is supplied — keeps the legacy file-local behaviour
@@ -213,14 +211,15 @@ fn locate_reach(
     if let Some(reach) = reach {
         for node in &surface.nodes {
             if let SurfaceNode::EntryPoint(ep) = node
-                && reach.reaches(&ep.handler_location.file, &loc.file) {
-                    return Reach::Reachable {
-                        location: ep.location.clone(),
-                        method: ep.method,
-                        route: ep.route.clone(),
-                        auth_required: ep.auth_required,
-                    };
-                }
+                && reach.reaches(&ep.handler_location.file, &loc.file)
+            {
+                return Reach::Reachable {
+                    location: ep.location.clone(),
+                    method: ep.method,
+                    route: ep.route.clone(),
+                    auth_required: ep.auth_required,
+                };
+            }
         }
     }
     Reach::Unreachable

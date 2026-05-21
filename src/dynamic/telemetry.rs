@@ -768,7 +768,10 @@ mod tests {
         );
         emit(&event);
 
-        assert!(!log.exists(), "log must not be created when NYX_NO_TELEMETRY=1");
+        assert!(
+            !log.exists(),
+            "log must not be created when NYX_NO_TELEMETRY=1"
+        );
 
         unsafe {
             std::env::remove_var("NYX_NO_TELEMETRY");
@@ -795,7 +798,9 @@ mod tests {
         .unwrap();
         let err = read_events(&log).expect_err("schema 0 must be rejected");
         match err {
-            TelemetryReadError::SchemaMismatch { expected, found, .. } => {
+            TelemetryReadError::SchemaMismatch {
+                expected, found, ..
+            } => {
                 assert_eq!(expected, SCHEMA_VERSION);
                 assert_eq!(found, 0);
             }

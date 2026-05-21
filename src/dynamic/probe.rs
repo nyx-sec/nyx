@@ -307,7 +307,6 @@ pub enum ProbeKind {
     },
 }
 
-
 /// Bounded forensic snapshot captured alongside a [`SinkProbe`]
 /// (Phase 08 — Track C.5).
 ///
@@ -515,9 +514,8 @@ impl ProbeChannel {
             .append(true)
             .create(true)
             .open(&self.path)?;
-        let line = serde_json::to_string(probe).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })?;
+        let line = serde_json::to_string(probe)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         file.write_all(line.as_bytes())?;
         file.write_all(b"\n")?;
         Ok(())
@@ -611,13 +609,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let ch = ProbeChannel::for_workdir(dir.path()).unwrap();
         let mut p = sample_probe("crash-test");
-        p.kind = ProbeKind::Crash { signal: Signal::Sigsegv };
+        p.kind = ProbeKind::Crash {
+            signal: Signal::Sigsegv,
+        };
         ch.write(&p).unwrap();
         let drained = ch.drain();
         assert_eq!(drained.len(), 1);
         assert!(matches!(
             drained[0].kind,
-            ProbeKind::Crash { signal: Signal::Sigsegv }
+            ProbeKind::Crash {
+                signal: Signal::Sigsegv
+            }
         ));
     }
 
@@ -660,7 +662,9 @@ mod tests {
         assert_eq!(w.payload_bytes.len(), policy::PAYLOAD_CAPTURE_LIMIT_BYTES);
         assert_eq!(w.env_snapshot.get("PATH").map(String::as_str), Some("/bin"));
         assert_eq!(
-            w.env_snapshot.get("AWS_SECRET_ACCESS_KEY").map(String::as_str),
+            w.env_snapshot
+                .get("AWS_SECRET_ACCESS_KEY")
+                .map(String::as_str),
             Some(policy::REDACTED_VALUE)
         );
         assert_eq!(w.args_repr, vec!["ls; whoami".to_owned()]);

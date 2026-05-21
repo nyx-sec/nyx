@@ -79,11 +79,21 @@ impl JsShape {
         // ── Framework / runtime markers ─────────────────────────────
         let has_express = source_has_marker(
             source,
-            &["require('express')", "require(\"express\")", "from 'express'", "from \"express\""],
+            &[
+                "require('express')",
+                "require(\"express\")",
+                "from 'express'",
+                "from \"express\"",
+            ],
         );
         let has_koa = source_has_marker(
             source,
-            &["require('koa')", "require(\"koa\")", "from 'koa'", "from \"koa\""],
+            &[
+                "require('koa')",
+                "require(\"koa\")",
+                "from 'koa'",
+                "from \"koa\"",
+            ],
         );
         let has_fastify = source_has_marker(
             source,
@@ -109,7 +119,13 @@ impl JsShape {
         );
         let has_next = source_has_marker(
             source,
-            &["from 'next'", "from \"next\"", "NextApiRequest", "NextApiResponse", "// nyx-shape: next"],
+            &[
+                "from 'next'",
+                "from \"next\"",
+                "NextApiRequest",
+                "NextApiResponse",
+                "// nyx-shape: next",
+            ],
         );
         let has_jsdom = source_has_marker(
             source,
@@ -374,9 +390,10 @@ pub fn materialize_node(env: &Environment) -> RuntimeArtifacts {
     }
     for fw in &env.frameworks {
         if let Some(name) = node_framework_pkg_name(*fw)
-            && seen.insert(name.to_owned()) {
-                deps.push((name.to_owned(), "*"));
-            }
+            && seen.insert(name.to_owned())
+        {
+            deps.push((name.to_owned(), "*"));
+        }
     }
     deps.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -406,10 +423,26 @@ pub fn materialize_node(env: &Environment) -> RuntimeArtifacts {
 fn is_node_builtin(name: &str) -> bool {
     matches!(
         name,
-        "fs" | "path" | "http" | "https" | "url" | "crypto" | "stream"
-            | "util" | "child_process" | "os" | "events" | "buffer"
-            | "querystring" | "zlib" | "assert" | "process" | "net"
-            | "tls" | "dns" | "readline" | "tty"
+        "fs" | "path"
+            | "http"
+            | "https"
+            | "url"
+            | "crypto"
+            | "stream"
+            | "util"
+            | "child_process"
+            | "os"
+            | "events"
+            | "buffer"
+            | "querystring"
+            | "zlib"
+            | "assert"
+            | "process"
+            | "net"
+            | "tls"
+            | "dns"
+            | "readline"
+            | "tty"
     )
 }
 
@@ -431,24 +464,54 @@ fn node_framework_pkg_name(fw: DetectedFramework) -> Option<&'static str> {
 fn extra_files_for_shape(shape: JsShape) -> Vec<(String, String)> {
     match shape {
         JsShape::Express => vec![
-            ("package.json".to_owned(), package_json_for("express", "^4.19.2")),
-            ("package-lock.json".to_owned(), package_lock_skeleton("nyx-harness-express")),
+            (
+                "package.json".to_owned(),
+                package_json_for("express", "^4.19.2"),
+            ),
+            (
+                "package-lock.json".to_owned(),
+                package_lock_skeleton("nyx-harness-express"),
+            ),
         ],
         JsShape::Koa => vec![
-            ("package.json".to_owned(), package_json_for("koa", "^2.15.3")),
-            ("package-lock.json".to_owned(), package_lock_skeleton("nyx-harness-koa")),
+            (
+                "package.json".to_owned(),
+                package_json_for("koa", "^2.15.3"),
+            ),
+            (
+                "package-lock.json".to_owned(),
+                package_lock_skeleton("nyx-harness-koa"),
+            ),
         ],
         JsShape::NextRoute => vec![
-            ("package.json".to_owned(), package_json_for("next", "^14.2.5")),
-            ("package-lock.json".to_owned(), package_lock_skeleton("nyx-harness-next")),
+            (
+                "package.json".to_owned(),
+                package_json_for("next", "^14.2.5"),
+            ),
+            (
+                "package-lock.json".to_owned(),
+                package_lock_skeleton("nyx-harness-next"),
+            ),
         ],
         JsShape::BrowserEvent => vec![
-            ("package.json".to_owned(), package_json_for("jsdom", "^24.1.1")),
-            ("package-lock.json".to_owned(), package_lock_skeleton("nyx-harness-jsdom")),
+            (
+                "package.json".to_owned(),
+                package_json_for("jsdom", "^24.1.1"),
+            ),
+            (
+                "package-lock.json".to_owned(),
+                package_lock_skeleton("nyx-harness-jsdom"),
+            ),
         ],
         JsShape::Fastify => vec![
-            ("package.json".to_owned(), package_json_for("fastify", "^4.28.1")),
-            ("package-lock.json".to_owned(), package_lock_skeleton("nyx-harness-fastify")),
+            (
+                "package.json".to_owned(),
+                package_json_for("fastify", "^4.28.1"),
+            ),
+            (
+                "package-lock.json".to_owned(),
+                package_lock_skeleton("nyx-harness-fastify"),
+            ),
         ],
         JsShape::Nest => vec![
             (
@@ -634,7 +697,11 @@ fn emit_class_method(
     is_typescript: bool,
 ) -> HarnessSource {
     let probe = probe_shim();
-    let entry_subpath = if is_typescript { "entry.ts" } else { "entry.js" };
+    let entry_subpath = if is_typescript {
+        "entry.ts"
+    } else {
+        "entry.js"
+    };
     let entry_require_path = entry_require_path(entry_subpath);
     let mock_http = crate::dynamic::stubs::mock_source(
         crate::dynamic::stubs::MockKind::HttpClient,
@@ -733,13 +800,13 @@ if (typeof _m !== 'function') {{
 /// and publishes the payload onto `queue` so the handler fires
 /// synchronously.  SQS is the only broker Node has a dedicated Phase
 /// 20 adapter for (`sqs-node`); the dispatch defaults to it.
-fn emit_message_handler(
-    spec: &HarnessSpec,
-    queue: &str,
-    is_typescript: bool,
-) -> HarnessSource {
+fn emit_message_handler(spec: &HarnessSpec, queue: &str, is_typescript: bool) -> HarnessSource {
     let probe = probe_shim();
-    let entry_subpath = if is_typescript { "entry.ts" } else { "entry.js" };
+    let entry_subpath = if is_typescript {
+        "entry.ts"
+    } else {
+        "entry.js"
+    };
     let entry_require_path = entry_require_path(entry_subpath);
     let handler = &spec.entry_name;
     let sqs_src = crate::dynamic::stubs::sqs_source(crate::symbol::Lang::JavaScript);
@@ -808,7 +875,11 @@ _broker.subscribe({queue:?}, async (envelope) => {{
 
 fn nyx_js_preamble(spec: &HarnessSpec, is_typescript: bool) -> (String, String) {
     let probe = probe_shim();
-    let entry_subpath = if is_typescript { "entry.ts" } else { "entry.js" };
+    let entry_subpath = if is_typescript {
+        "entry.ts"
+    } else {
+        "entry.js"
+    };
     let require_path = entry_require_path(entry_subpath);
     let preamble = format!(
         r#"'use strict';
@@ -844,7 +915,11 @@ process.stdout.write('__NYX_SINK_HIT__\n');
     (preamble, entry_subpath.to_owned())
 }
 
-fn emit_scheduled_job(spec: &HarnessSpec, schedule: Option<&str>, is_typescript: bool) -> HarnessSource {
+fn emit_scheduled_job(
+    spec: &HarnessSpec,
+    schedule: Option<&str>,
+    is_typescript: bool,
+) -> HarnessSource {
     let (preamble, entry_subpath) = nyx_js_preamble(spec, is_typescript);
     let handler = &spec.entry_name;
     let schedule_repr = schedule.unwrap_or("<unscheduled>");
@@ -2214,21 +2289,33 @@ mod tests {
     #[test]
     fn detect_express_via_require() {
         let src = "const express = require('express');\nfunction ping(req, res) {}";
-        let spec = make_spec(EntryKind::Function, "ping", PayloadSlot::QueryParam("host".into()));
+        let spec = make_spec(
+            EntryKind::Function,
+            "ping",
+            PayloadSlot::QueryParam("host".into()),
+        );
         assert_eq!(JsShape::detect(&spec, src), JsShape::Express);
     }
 
     #[test]
     fn detect_koa_via_require() {
         let src = "const Koa = require('koa');\nasync function ping(ctx) {}";
-        let spec = make_spec(EntryKind::Function, "ping", PayloadSlot::QueryParam("host".into()));
+        let spec = make_spec(
+            EntryKind::Function,
+            "ping",
+            PayloadSlot::QueryParam("host".into()),
+        );
         assert_eq!(JsShape::detect(&spec, src), JsShape::Koa);
     }
 
     #[test]
     fn detect_next_via_marker() {
         let src = "// nyx-shape: next\nmodule.exports = async function handler(req, res) {};";
-        let spec = make_spec(EntryKind::HttpRoute, "handler", PayloadSlot::QueryParam("host".into()));
+        let spec = make_spec(
+            EntryKind::HttpRoute,
+            "handler",
+            PayloadSlot::QueryParam("host".into()),
+        );
         assert_eq!(JsShape::detect(&spec, src), JsShape::NextRoute);
     }
 
@@ -2248,7 +2335,8 @@ mod tests {
 
     #[test]
     fn detect_esm_default_export() {
-        let src = "// nyx-shape: esm-default\nexport default function runPing(host) { return host; }";
+        let src =
+            "// nyx-shape: esm-default\nexport default function runPing(host) { return host; }";
         let spec = make_spec(EntryKind::Function, "runPing", PayloadSlot::Param(0));
         assert_eq!(JsShape::detect(&spec, src), JsShape::EsModuleDefault);
     }
@@ -2262,7 +2350,11 @@ mod tests {
 
     #[test]
     fn emit_express_uses_mock_req_res() {
-        let spec = make_spec(EntryKind::HttpRoute, "ping", PayloadSlot::QueryParam("host".into()));
+        let spec = make_spec(
+            EntryKind::HttpRoute,
+            "ping",
+            PayloadSlot::QueryParam("host".into()),
+        );
         let src = generate_for_shape(&spec, JsShape::Express, "entry.js");
         assert!(src.contains("Express handler"));
         assert!(src.contains("_req.query[_payload_key] = payload"));
@@ -2270,7 +2362,11 @@ mod tests {
 
     #[test]
     fn emit_koa_awaits_middleware() {
-        let spec = make_spec(EntryKind::HttpRoute, "ping", PayloadSlot::QueryParam("host".into()));
+        let spec = make_spec(
+            EntryKind::HttpRoute,
+            "ping",
+            PayloadSlot::QueryParam("host".into()),
+        );
         let src = generate_for_shape(&spec, JsShape::Koa, "entry.js");
         assert!(src.contains("await _mw(_ctx"));
     }
@@ -2293,7 +2389,11 @@ mod tests {
     #[test]
     fn extra_files_for_express_has_package_json() {
         let extras = extra_files_for_shape(JsShape::Express);
-        assert!(extras.iter().any(|(p, c)| p == "package.json" && c.contains("express")));
+        assert!(
+            extras
+                .iter()
+                .any(|(p, c)| p == "package.json" && c.contains("express"))
+        );
         assert!(extras.iter().any(|(p, _)| p == "package-lock.json"));
     }
 

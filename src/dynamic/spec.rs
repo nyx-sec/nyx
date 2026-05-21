@@ -298,7 +298,10 @@ impl HarnessSpec {
             }
         }
 
-        let evidence = diag.evidence.as_ref().ok_or(UnsupportedReason::NoFlowSteps)?;
+        let evidence = diag
+            .evidence
+            .as_ref()
+            .ok_or(UnsupportedReason::NoFlowSteps)?;
 
         // Phase 04 pre-step: when both callgraph *and* summaries are
         // present, walk reverse edges to a framework-bound ancestor.
@@ -313,9 +316,10 @@ impl HarnessSpec {
         // strategies (FromFlowSteps / FromRuleNamespace / FromFuncSummaryAuto)
         // whenever the rule id happens to contain `.http.` / `.cli.`.
         if let (Some(s), Some(cg)) = (summaries, callgraph)
-            && let Some(spec) = derive_from_callgraph_walk_only(diag, evidence, s, cg) {
-                return Ok(spec);
-            }
+            && let Some(spec) = derive_from_callgraph_walk_only(diag, evidence, s, cg)
+        {
+            return Ok(spec);
+        }
 
         // Try each strategy in priority order; first non-None wins.
         if let Some(spec) = derive_from_flow_steps(diag, evidence, summaries) {
@@ -327,8 +331,7 @@ impl HarnessSpec {
         if let Some(spec) = derive_from_func_summary_auto(diag, evidence, summaries) {
             return Ok(spec);
         }
-        if let Some(spec) = derive_from_callgraph_entry_full(diag, evidence, summaries, callgraph)
-        {
+        if let Some(spec) = derive_from_callgraph_entry_full(diag, evidence, summaries, callgraph) {
             return Ok(spec);
         }
 
@@ -520,9 +523,10 @@ pub fn derive_from_rule_namespace_with(
     // language prefix when both are available. Disagreement is a stronger
     // signal of a mis-rooted finding than a missing extension.
     if let Some(path_lang) = lang_from_path(&diag.path)
-        && path_lang != lang {
-            return None;
-        }
+        && path_lang != lang
+    {
+        return None;
+    }
 
     let entry_function = resolve_enclosing_function(diag, evidence, summaries, lang)
         .unwrap_or_else(|| "<unknown>".to_owned());
@@ -749,33 +753,34 @@ pub fn derive_from_callgraph_entry_full(
     // Step 0: callgraph-aware reverse-edge walk to the nearest entry-point
     // ancestor. Only fires when both summaries *and* callgraph are present.
     if let (Some(s), Some(cg)) = (summaries, callgraph)
-        && let Some(found) = find_entry_via_callgraph(diag, evidence, s, cg, lang) {
-            let entry_kind = found
-                .summary
-                .entry_kind
-                .as_ref()
-                .map(entry_kind_from_summary)
-                .unwrap_or_else(|| name_to_entry_kind(&found.summary.name));
-            let entry_file = if !found.summary.file_path.is_empty() {
-                found.summary.file_path.clone()
-            } else {
-                diag.path.clone()
-            };
-            let mut spec = finalize_spec(
-                diag,
-                entry_file,
-                found.summary.name.clone(),
-                lang,
-                expected_cap,
-                diag.path.clone(),
-                diag.line as u32,
-                SpecDerivationStrategy::FromCallgraphEntry,
-                Some(s),
-            );
-            spec.entry_kind = entry_kind;
-            spec.spec_hash = compute_spec_hash(&spec);
-            return Some(spec);
-        }
+        && let Some(found) = find_entry_via_callgraph(diag, evidence, s, cg, lang)
+    {
+        let entry_kind = found
+            .summary
+            .entry_kind
+            .as_ref()
+            .map(entry_kind_from_summary)
+            .unwrap_or_else(|| name_to_entry_kind(&found.summary.name));
+        let entry_file = if !found.summary.file_path.is_empty() {
+            found.summary.file_path.clone()
+        } else {
+            diag.path.clone()
+        };
+        let mut spec = finalize_spec(
+            diag,
+            entry_file,
+            found.summary.name.clone(),
+            lang,
+            expected_cap,
+            diag.path.clone(),
+            diag.line as u32,
+            SpecDerivationStrategy::FromCallgraphEntry,
+            Some(s),
+        );
+        spec.entry_kind = entry_kind;
+        spec.spec_hash = compute_spec_hash(&spec);
+        return Some(spec);
+    }
 
     // Step 1: try summary-based classification of the enclosing function.
     let summary_kind = enclosing_function_from_flow_steps(evidence)
@@ -934,12 +939,13 @@ fn find_entry_via_callgraph<'a>(
             }
             let caller_key = &callgraph.graph[caller_node];
             if let Some(caller_summary) = summaries.get(caller_key)
-                && is_entry_point(caller_summary, callgraph) {
-                    return Some(EntryHit {
-                        key: caller_key.clone(),
-                        summary: caller_summary,
-                    });
-                }
+                && is_entry_point(caller_summary, callgraph)
+            {
+                return Some(EntryHit {
+                    key: caller_key.clone(),
+                    summary: caller_summary,
+                });
+            }
             queue.push_back(caller_node);
         }
     }
@@ -970,9 +976,10 @@ fn entry_kind_from_summary(_kind: &crate::entry_points::EntryKind) -> EntryKind 
 fn lang_from_path(path: &str) -> Option<Lang> {
     let p = Path::new(path);
     if let Some(ext) = p.extension().and_then(|e| e.to_str())
-        && let Some(lang) = Lang::from_extension(ext) {
-            return Some(lang);
-        }
+        && let Some(lang) = Lang::from_extension(ext)
+    {
+        return Some(lang);
+    }
     // Fall back to a shebang / content sniff over the file head.
     let head = read_file_head(p, 200);
     if head.is_empty() {
@@ -1305,12 +1312,13 @@ pub fn outermost_entry(steps: &[crate::evidence::FlowStep]) -> Option<EntryRef> 
     for step in steps {
         if matches!(step.kind, FlowStepKind::Source)
             && let Some(ref func) = step.function
-                && !func.is_empty() {
-                    return Some(EntryRef {
-                        file: step.file.clone(),
-                        function: func.clone(),
-                    });
-                }
+            && !func.is_empty()
+        {
+            return Some(EntryRef {
+                file: step.file.clone(),
+                function: func.clone(),
+            });
+        }
     }
     None
 }
@@ -1401,7 +1409,10 @@ fn compute_spec_hash(spec: &HarnessSpec) -> String {
 
     let out = h.finalize();
     let bytes = out.as_bytes();
-    format!("{:016x}", u64::from_le_bytes(bytes[..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_le_bytes(bytes[..8].try_into().unwrap())
+    )
 }
 
 #[cfg(test)]
@@ -1441,7 +1452,10 @@ mod tests {
 
     #[test]
     fn outermost_entry_picks_source_step() {
-        let steps = vec![source_step("src/main.rs", "handle_request"), sink_step("src/main.rs")];
+        let steps = vec![
+            source_step("src/main.rs", "handle_request"),
+            sink_step("src/main.rs"),
+        ];
         let entry = outermost_entry(&steps).unwrap();
         assert_eq!(entry.file, "src/main.rs");
         assert_eq!(entry.function, "handle_request");
@@ -1580,7 +1594,10 @@ mod tests {
         let mut s2 = s1.clone();
         s2.entry_file = "src/other.rs".into();
         s2.spec_hash = compute_spec_hash(&s2);
-        assert_ne!(s1.spec_hash, s2.spec_hash, "entry_file mutation must change spec_hash");
+        assert_ne!(
+            s1.spec_hash, s2.spec_hash,
+            "entry_file mutation must change spec_hash"
+        );
     }
 
     #[test]
@@ -1589,7 +1606,10 @@ mod tests {
         let mut s2 = s1.clone();
         s2.entry_name = "other_handler".into();
         s2.spec_hash = compute_spec_hash(&s2);
-        assert_ne!(s1.spec_hash, s2.spec_hash, "entry_name mutation must change spec_hash");
+        assert_ne!(
+            s1.spec_hash, s2.spec_hash,
+            "entry_name mutation must change spec_hash"
+        );
     }
 
     #[test]
@@ -1598,17 +1618,26 @@ mod tests {
         let mut s2 = s1.clone();
         s2.payload_slot = PayloadSlot::Param(1);
         s2.spec_hash = compute_spec_hash(&s2);
-        assert_ne!(s1.spec_hash, s2.spec_hash, "payload_slot mutation must change spec_hash");
+        assert_ne!(
+            s1.spec_hash, s2.spec_hash,
+            "payload_slot mutation must change spec_hash"
+        );
 
         let mut s3 = s1.clone();
         s3.payload_slot = PayloadSlot::HttpBody;
         s3.spec_hash = compute_spec_hash(&s3);
-        assert_ne!(s1.spec_hash, s3.spec_hash, "payload_slot tag change must change spec_hash");
+        assert_ne!(
+            s1.spec_hash, s3.spec_hash,
+            "payload_slot tag change must change spec_hash"
+        );
 
         let mut s4 = s1.clone();
         s4.payload_slot = PayloadSlot::EnvVar("NYX_INPUT".into());
         s4.spec_hash = compute_spec_hash(&s4);
-        assert_ne!(s1.spec_hash, s4.spec_hash, "EnvVar payload_slot must change spec_hash");
+        assert_ne!(
+            s1.spec_hash, s4.spec_hash,
+            "EnvVar payload_slot must change spec_hash"
+        );
     }
 
     #[test]
@@ -1618,7 +1647,10 @@ mod tests {
         let mut s2 = s1.clone();
         s2.expected_cap = Cap::CODE_EXEC;
         s2.spec_hash = compute_spec_hash(&s2);
-        assert_ne!(s1.spec_hash, s2.spec_hash, "expected_cap mutation must change spec_hash");
+        assert_ne!(
+            s1.spec_hash, s2.spec_hash,
+            "expected_cap mutation must change spec_hash"
+        );
     }
 
     #[test]
@@ -1627,7 +1659,10 @@ mod tests {
         let mut s2 = s1.clone();
         s2.constraint_hints = vec!["prefix:admin/".into()];
         s2.spec_hash = compute_spec_hash(&s2);
-        assert_ne!(s1.spec_hash, s2.spec_hash, "constraint_hints mutation must change spec_hash");
+        assert_ne!(
+            s1.spec_hash, s2.spec_hash,
+            "constraint_hints mutation must change spec_hash"
+        );
     }
 
     #[test]
@@ -1636,7 +1671,10 @@ mod tests {
         let mut s2 = s1.clone();
         s2.toolchain_id = "rust-nightly".into();
         s2.spec_hash = compute_spec_hash(&s2);
-        assert_ne!(s1.spec_hash, s2.spec_hash, "toolchain_id mutation must change spec_hash");
+        assert_ne!(
+            s1.spec_hash, s2.spec_hash,
+            "toolchain_id mutation must change spec_hash"
+        );
     }
 
     // ── Phase 01: derivation strategies ──────────────────────────────────────
@@ -1691,7 +1729,11 @@ mod tests {
     #[test]
     fn rule_namespace_strategy_fires_without_flow_steps() {
         use crate::labels::Cap;
-        let diag = diag_with_rule_id("py.cmdi.os_system", "app/handler.py", Cap::SHELL_ESCAPE.bits());
+        let diag = diag_with_rule_id(
+            "py.cmdi.os_system",
+            "app/handler.py",
+            Cap::SHELL_ESCAPE.bits(),
+        );
         let spec = HarnessSpec::from_finding(&diag).unwrap();
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
         assert_eq!(spec.lang, Lang::Python);
@@ -1713,11 +1755,7 @@ mod tests {
     fn rule_namespace_strategy_pins_rs_auth_mapping() {
         // Regression: `rs.auth.*` must map to `Lang::Rust` + `Cap::UNAUTHORIZED_ID`.
         // The plan calls out this exemplar but had no test coverage.
-        let diag = diag_with_rule_id(
-            "rs.auth.missing_ownership_check.taint",
-            "src/handler.rs",
-            0,
-        );
+        let diag = diag_with_rule_id("rs.auth.missing_ownership_check.taint", "src/handler.rs", 0);
         let spec = HarnessSpec::from_finding(&diag).unwrap();
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
         assert_eq!(spec.lang, Lang::Rust);
@@ -1729,7 +1767,11 @@ mod tests {
     fn rule_namespace_strategy_rejects_path_lang_mismatch() {
         use crate::labels::Cap;
         // `py.*` rule id, but a `.java` file — the cross-check refuses.
-        let diag = diag_with_rule_id("py.cmdi.os_system", "src/Main.java", Cap::SHELL_ESCAPE.bits());
+        let diag = diag_with_rule_id(
+            "py.cmdi.os_system",
+            "src/Main.java",
+            Cap::SHELL_ESCAPE.bits(),
+        );
         assert_eq!(
             HarnessSpec::from_finding(&diag).unwrap_err(),
             UnsupportedReason::SpecDerivationFailed
@@ -1752,8 +1794,11 @@ mod tests {
         // Unregistered `taint-*` rule slugs (e.g. the legacy generic
         // `taint-unsanitised-flow`) are not in `CAP_RULE_REGISTRY`; the
         // shortcut must skip them so downstream strategies can try.
-        let diag =
-            diag_with_rule_id("taint-unsanitised-flow", "app/handler.py", Cap::SHELL_ESCAPE.bits());
+        let diag = diag_with_rule_id(
+            "taint-unsanitised-flow",
+            "app/handler.py",
+            Cap::SHELL_ESCAPE.bits(),
+        );
         // No flow_steps, no http/cli marker → ends in SpecDerivationFailed.
         assert_eq!(
             HarnessSpec::from_finding(&diag).unwrap_err(),
@@ -1793,8 +1838,11 @@ mod tests {
     fn rule_namespace_strategy_taint_id_lang_follows_path_extension() {
         use crate::labels::Cap;
         // Same rule slug, different file extension → derives a Go spec.
-        let diag =
-            diag_with_rule_id("taint-data-exfiltration", "cmd/leak.go", Cap::DATA_EXFIL.bits());
+        let diag = diag_with_rule_id(
+            "taint-data-exfiltration",
+            "cmd/leak.go",
+            Cap::DATA_EXFIL.bits(),
+        );
         let spec = HarnessSpec::from_finding(&diag).unwrap();
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromRuleNamespace);
         assert_eq!(spec.lang, Lang::Go);
@@ -1881,7 +1929,11 @@ mod tests {
     #[test]
     fn callgraph_entry_strategy_fires_on_cli_rule_id() {
         use crate::labels::Cap;
-        let diag = diag_with_rule_id("rs.cli.parse_subcommand", "src/main.rs", Cap::SHELL_ESCAPE.bits());
+        let diag = diag_with_rule_id(
+            "rs.cli.parse_subcommand",
+            "src/main.rs",
+            Cap::SHELL_ESCAPE.bits(),
+        );
         let spec = HarnessSpec::from_finding(&diag).unwrap();
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromCallgraphEntry);
         assert!(matches!(spec.entry_kind, EntryKind::CliSubcommand));
@@ -1928,7 +1980,14 @@ mod tests {
         }
     }
 
-    fn build_summary(name: &str, file: &str, lang: &str, sink_caps: u32, tainted_params: Vec<usize>, entry_kind: Option<crate::entry_points::EntryKind>) -> FuncSummary {
+    fn build_summary(
+        name: &str,
+        file: &str,
+        lang: &str,
+        sink_caps: u32,
+        tainted_params: Vec<usize>,
+        entry_kind: Option<crate::entry_points::EntryKind>,
+    ) -> FuncSummary {
         FuncSummary {
             name: name.into(),
             file_path: file.into(),
@@ -1962,10 +2021,7 @@ mod tests {
         // enclosing function name.
         use crate::labels::Cap;
         let ev = Evidence {
-            flow_steps: vec![sink_only_step_with_function(
-                "app/handler.py",
-                "do_request",
-            )],
+            flow_steps: vec![sink_only_step_with_function("app/handler.py", "do_request")],
             sink_caps: Cap::SHELL_ESCAPE.bits(),
             ..Default::default()
         };
@@ -2004,10 +2060,7 @@ mod tests {
         gs.insert(key, summary);
 
         let ev = Evidence {
-            flow_steps: vec![sink_only_step_with_function(
-                "app/handler.py",
-                "do_request",
-            )],
+            flow_steps: vec![sink_only_step_with_function("app/handler.py", "do_request")],
             sink_caps: Cap::SHELL_ESCAPE.bits(),
             ..Default::default()
         };
@@ -2041,7 +2094,9 @@ mod tests {
             "python",
             Cap::SSRF.bits(),
             vec![],
-            Some(StaticEntryKind::FlaskRoute { method: HttpMethod::GET }),
+            Some(StaticEntryKind::FlaskRoute {
+                method: HttpMethod::GET,
+            }),
         );
         let key = FuncKey::new_function(Lang::Python, "app/views.py", "index", Some(1));
         gs.insert(key, summary);
@@ -2302,7 +2357,10 @@ mod tests {
         };
         stamp_framework_binding(&mut spec, binding);
 
-        assert_eq!(spec.entry_kind.tag(), crate::evidence::EntryKindTag::Function);
+        assert_eq!(
+            spec.entry_kind.tag(),
+            crate::evidence::EntryKindTag::Function
+        );
         assert_eq!(spec.spec_hash, pre_hash);
         assert!(spec.framework.is_some());
     }

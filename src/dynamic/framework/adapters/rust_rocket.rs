@@ -86,7 +86,8 @@ mod tests {
 
     #[test]
     fn fires_on_get_with_angle_placeholder() {
-        let src: &[u8] = b"use rocket::get;\n#[get(\"/u/<id>\")]\nfn show(id: String) -> String { id }\n";
+        let src: &[u8] =
+            b"use rocket::get;\n#[get(\"/u/<id>\")]\nfn show(id: String) -> String { id }\n";
         let tree = parse(src);
         let binding = RustRocketAdapter
             .detect(&summary("show"), tree.root_node(), src)
@@ -118,8 +119,10 @@ mod tests {
     fn skips_when_rocket_not_imported() {
         let src: &[u8] = b"#[get(\"/u\")]\nfn show() {}\n";
         let tree = parse(src);
-        assert!(RustRocketAdapter
-            .detect(&summary("show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RustRocketAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

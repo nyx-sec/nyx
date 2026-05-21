@@ -59,7 +59,9 @@ fn oob_outbound_carries_listener() {
         return;
     };
     let listener = Arc::new(listener);
-    let p = NetworkPolicy::OobOutbound { listener: Arc::clone(&listener) };
+    let p = NetworkPolicy::OobOutbound {
+        listener: Arc::clone(&listener),
+    };
     assert!(p.allows_network());
     let got = p.oob_listener().expect("listener present");
     assert!(

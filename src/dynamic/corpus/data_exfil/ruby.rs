@@ -10,7 +10,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         bytes: b"attacker.test",
         label: "data-exfil-ruby-external",
         oracle: Oracle::SinkProbe {
-            predicates: &[ProbePredicate::OutboundHostNotIn { allowlist: ALLOWLIST }],
+            predicates: &[ProbePredicate::OutboundHostNotIn {
+                allowlist: ALLOWLIST,
+            }],
         },
         is_benign: false,
         provenance: PayloadProvenance::Curated,
@@ -18,7 +20,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/dynamic_fixtures/data_exfil/ruby/vuln.rb"],
         oob_nonce_slot: false,
-        probe_predicates: &[ProbePredicate::OutboundHostNotIn { allowlist: ALLOWLIST }],
+        probe_predicates: &[ProbePredicate::OutboundHostNotIn {
+            allowlist: ALLOWLIST,
+        }],
         benign_control: Some(PayloadRef {
             label: "data-exfil-ruby-benign",
         }),
@@ -28,7 +32,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         bytes: b"127.0.0.1",
         label: "data-exfil-ruby-benign",
         oracle: Oracle::SinkProbe {
-            predicates: &[ProbePredicate::OutboundHostNotIn { allowlist: ALLOWLIST }],
+            predicates: &[ProbePredicate::OutboundHostNotIn {
+                allowlist: ALLOWLIST,
+            }],
         },
         is_benign: true,
         provenance: PayloadProvenance::Curated,

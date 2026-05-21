@@ -22,7 +22,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         ],
         oob_nonce_slot: false,
         probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "cmdi-benign" }),
+        benign_control: Some(PayloadRef {
+            label: "cmdi-benign",
+        }),
         no_benign_control_rationale: None,
     },
     // Benign control: plain text that should never produce the cmdi marker.

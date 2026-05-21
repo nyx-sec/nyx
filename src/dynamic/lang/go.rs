@@ -220,10 +220,10 @@ impl GoShape {
         let entry = spec.entry_name.as_str();
         let kind = spec.entry_kind.tag();
 
-        let has_http_handler = source.contains("http.ResponseWriter")
-            && source.contains("*http.Request");
-        let has_gin_import = source.contains("github.com/gin-gonic/gin")
-            || source.contains("// nyx-shape: gin");
+        let has_http_handler =
+            source.contains("http.ResponseWriter") && source.contains("*http.Request");
+        let has_gin_import =
+            source.contains("github.com/gin-gonic/gin") || source.contains("// nyx-shape: gin");
         let has_gin_ctx = source.contains("gin.Context") || source.contains("*gin.Context");
         let has_echo = source.contains("github.com/labstack/echo")
             || source.contains("echo.New")
@@ -286,7 +286,10 @@ pub fn detect_shape(spec: &HarnessSpec) -> GoShape {
 }
 
 fn read_entry_source(entry_file: &str) -> String {
-    let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
+    let candidates = [
+        PathBuf::from(entry_file),
+        PathBuf::from(".").join(entry_file),
+    ];
     for path in &candidates {
         if let Ok(s) = std::fs::read_to_string(path) {
             return s;
@@ -595,7 +598,11 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
     // Phase 21 (Track M.3): GraphQLResolver short-circuit (gqlgen).
     if let crate::evidence::EntryKind::GraphQLResolver { type_name, field } = &spec.entry_kind {
-        return Ok(emit_graphql_resolver_harness(&spec.entry_name, type_name, field));
+        return Ok(emit_graphql_resolver_harness(
+            &spec.entry_name,
+            type_name,
+            field,
+        ));
     }
 
     let entry_source = read_entry_source(&spec.entry_file);
@@ -923,13 +930,7 @@ func nyxPayload() string {{
 
 /// Imports required by the spliced probe shim.  Always present, deduped
 /// against per-shape additions in [`imports_for_shape`].
-const SHIM_IMPORTS: &[&str] = &[
-    "encoding/json",
-    "os/signal",
-    "strings",
-    "syscall",
-    "time",
-];
+const SHIM_IMPORTS: &[&str] = &["encoding/json", "os/signal", "strings", "syscall", "time"];
 
 fn imports_for_shape(shape: GoShape) -> String {
     let stdlib_base: &[&str] = &["encoding/base64", "os"];
@@ -939,10 +940,9 @@ fn imports_for_shape(shape: GoShape) -> String {
         GoShape::GinHandler => &["net/http", "net/http/httptest"],
         // Phase 17 framework variants drive a `httptest.NewServer`
         // bootstrap so they need the full net/http surface.
-        GoShape::GinRoute
-        | GoShape::EchoRoute
-        | GoShape::FiberRoute
-        | GoShape::ChiRoute => &["fmt", "net/http", "net/http/httptest"],
+        GoShape::GinRoute | GoShape::EchoRoute | GoShape::FiberRoute | GoShape::ChiRoute => {
+            &["fmt", "net/http", "net/http/httptest"]
+        }
     };
     let local_pkgs: &[&str] = match shape {
         GoShape::GinHandler => &["nyx-harness/entry", "nyx-harness/entry/gin"],
@@ -979,7 +979,10 @@ fn pre_call_setup(spec: &HarnessSpec) -> String {
     match &spec.payload_slot {
         PayloadSlot::EnvVar(name) => format!("\tos.Setenv({name:?}, payload)\n"),
         PayloadSlot::Argv(n) => {
-            let pads = (0..*n).map(|_| "\"\"".to_owned()).collect::<Vec<_>>().join(", ");
+            let pads = (0..*n)
+                .map(|_| "\"\"".to_owned())
+                .collect::<Vec<_>>()
+                .join(", ");
             if pads.is_empty() {
                 "\tos.Args = []string{\"nyx_harness\", payload}\n".to_string()
             } else {
@@ -1037,34 +1040,18 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: GoShape, entry_fn: &str) -> Strin
         // because the synthetic entry.go ships a stdlib
         // `(w, r)` handler shim that mirrors the framework
         // handler's body.
-        GoShape::GinRoute => framework_route_invocation(
-            spec,
-            "NYX_GIN_TEST=1",
-            entry_fn,
-            use_body,
-            &query_param,
-        ),
-        GoShape::EchoRoute => framework_route_invocation(
-            spec,
-            "NYX_ECHO_TEST=1",
-            entry_fn,
-            use_body,
-            &query_param,
-        ),
-        GoShape::FiberRoute => framework_route_invocation(
-            spec,
-            "NYX_FIBER_TEST=1",
-            entry_fn,
-            use_body,
-            &query_param,
-        ),
-        GoShape::ChiRoute => framework_route_invocation(
-            spec,
-            "NYX_CHI_TEST=1",
-            entry_fn,
-            use_body,
-            &query_param,
-        ),
+        GoShape::GinRoute => {
+            framework_route_invocation(spec, "NYX_GIN_TEST=1", entry_fn, use_body, &query_param)
+        }
+        GoShape::EchoRoute => {
+            framework_route_invocation(spec, "NYX_ECHO_TEST=1", entry_fn, use_body, &query_param)
+        }
+        GoShape::FiberRoute => {
+            framework_route_invocation(spec, "NYX_FIBER_TEST=1", entry_fn, use_body, &query_param)
+        }
+        GoShape::ChiRoute => {
+            framework_route_invocation(spec, "NYX_CHI_TEST=1", entry_fn, use_body, &query_param)
+        }
     }
 }
 
@@ -1187,10 +1174,7 @@ func main() {{
         command: vec!["./nyx_harness".to_owned()],
         extra_files: vec![
             ("go.mod".to_owned(), go_mod),
-            (
-                "entry/nyx_auto_registry.go".to_owned(),
-                auto_registry,
-            ),
+            ("entry/nyx_auto_registry.go".to_owned(), auto_registry),
         ],
         entry_subpath: Some("entry/entry.go".to_owned()),
     }
@@ -1591,9 +1575,21 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!GoEmitter.entry_kinds_supported().is_empty());
-        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKindTag::Function));
-        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKindTag::HttpRoute));
-        assert!(GoEmitter.entry_kinds_supported().contains(&EntryKindTag::CliSubcommand));
+        assert!(
+            GoEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::Function)
+        );
+        assert!(
+            GoEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::HttpRoute)
+        );
+        assert!(
+            GoEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::CliSubcommand)
+        );
     }
 
     #[test]
@@ -1644,7 +1640,8 @@ mod tests {
 
     #[test]
     fn shape_detect_gin_route() {
-        let src = "package main\nimport \"github.com/gin-gonic/gin\"\nfunc Handle(c *gin.Context) {}";
+        let src =
+            "package main\nimport \"github.com/gin-gonic/gin\"\nfunc Handle(c *gin.Context) {}";
         let spec = make_spec_with(EntryKind::HttpRoute, "Handle", "entry.go");
         assert_eq!(GoShape::detect(&spec, src), GoShape::GinRoute);
     }
@@ -1769,7 +1766,8 @@ mod tests {
             "install_crash_guard definition missing from generated main.go",
         );
         assert!(
-            h.source.contains("__nyx_install_crash_guard(\"HandleRequest\")"),
+            h.source
+                .contains("__nyx_install_crash_guard(\"HandleRequest\")"),
             "install_crash_guard call site missing or wrong callee in main()",
         );
         let install_pos = h

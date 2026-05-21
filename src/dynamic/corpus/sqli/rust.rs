@@ -18,7 +18,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "sqli-benign" }),
+        benign_control: Some(PayloadRef {
+            label: "sqli-benign",
+        }),
         no_benign_control_rationale: None,
     },
     CuratedPayload {
@@ -32,7 +34,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/sqli/sqli_rusqlite_format.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "sqli-benign" }),
+        benign_control: Some(PayloadRef {
+            label: "sqli-benign",
+        }),
         no_benign_control_rationale: None,
     },
     // Benign control: ordinary value that should never produce the SQL marker.

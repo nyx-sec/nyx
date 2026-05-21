@@ -115,7 +115,8 @@ mod escape_tests {
                 let stdout = std::str::from_utf8(&outcome.stdout).unwrap_or("");
                 let stderr = std::str::from_utf8(&outcome.stderr).unwrap_or("");
                 assert!(
-                    !stdout.contains("NYX_ESCAPE_SUCCESS") && !stderr.contains("NYX_ESCAPE_SUCCESS"),
+                    !stdout.contains("NYX_ESCAPE_SUCCESS")
+                        && !stderr.contains("NYX_ESCAPE_SUCCESS"),
                     "fixture {fixture}: escape succeeded!\nstdout: {stdout}\nstderr: {stderr}"
                 );
 
@@ -143,7 +144,9 @@ mod escape_tests {
         ($name:ident, $fixture:literal) => {
             #[test]
             fn $name() {
-                if !docker_available() { return; }
+                if !docker_available() {
+                    return;
+                }
                 let (_tmpdir, harness) = harness_for_fixture($fixture);
                 let result = sandbox::run(&harness, &noop_payload(), &escape_opts());
                 assert_no_escape(result, $fixture, None);
@@ -157,7 +160,9 @@ mod escape_tests {
             #[cfg(target_os = "linux")]
             #[test]
             fn $name() {
-                if !docker_available() { return; }
+                if !docker_available() {
+                    return;
+                }
                 let (_tmpdir, harness) = harness_for_fixture($fixture);
                 let result = sandbox::run(&harness, &noop_payload(), &escape_opts());
                 assert_no_escape(result, $fixture, None);
@@ -166,7 +171,9 @@ mod escape_tests {
         ($name:ident, $fixture:literal, marker = $marker:expr) => {
             #[test]
             fn $name() {
-                if !docker_available() { return; }
+                if !docker_available() {
+                    return;
+                }
                 let marker: PathBuf = PathBuf::from($marker);
                 // Remove stale marker before test.
                 let _ = fs::remove_file(&marker);
@@ -181,7 +188,9 @@ mod escape_tests {
             #[cfg(target_os = "linux")]
             #[test]
             fn $name() {
-                if !docker_available() { return; }
+                if !docker_available() {
+                    return;
+                }
                 let marker: PathBuf = PathBuf::from($marker);
                 let _ = fs::remove_file(&marker);
                 let (_tmpdir, harness) = harness_for_fixture($fixture);
@@ -236,20 +245,20 @@ mod escape_tests {
     /// Skips gracefully when Docker is unavailable or `rust:slim` is not pulled.
     #[test]
     fn escape_rust_malicious_build_rs() {
-        if !docker_available() { return; }
+        if !docker_available() {
+            return;
+        }
 
         let tmpdir = tempfile::TempDir::new().expect("temp dir");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/dynamic_fixtures/escape/rust_build_rs");
-        copy_dir_recursive(&fixture, tmpdir.path())
-            .expect("copy rust_build_rs fixture");
+        copy_dir_recursive(&fixture, tmpdir.path()).expect("copy rust_build_rs fixture");
 
         let marker: PathBuf = PathBuf::from("/tmp/pwned_build_rs");
         let _ = fs::remove_file(&marker);
 
         // Run Docker-isolated cargo build. Returns Err if Docker/image unavailable.
-        let result =
-            nyx_scanner::dynamic::build_sandbox::prepare_rust_in_docker(tmpdir.path());
+        let result = nyx_scanner::dynamic::build_sandbox::prepare_rust_in_docker(tmpdir.path());
         if result.is_err() {
             // Docker or rust:slim unavailable — no container ran.
             return;
@@ -274,19 +283,19 @@ mod escape_tests {
     /// Skips gracefully when Docker is unavailable or `node:20-slim` is not pulled.
     #[test]
     fn escape_npm_malicious_lifecycle() {
-        if !docker_available() { return; }
+        if !docker_available() {
+            return;
+        }
 
         let tmpdir = tempfile::TempDir::new().expect("temp dir");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/dynamic_fixtures/escape/npm_malicious_lifecycle");
-        copy_dir_recursive(&fixture, tmpdir.path())
-            .expect("copy npm_malicious_lifecycle fixture");
+        copy_dir_recursive(&fixture, tmpdir.path()).expect("copy npm_malicious_lifecycle fixture");
 
         let marker: PathBuf = PathBuf::from("/tmp/pwned_npm_lifecycle");
         let _ = fs::remove_file(&marker);
 
-        let result =
-            nyx_scanner::dynamic::build_sandbox::prepare_node_in_docker(tmpdir.path());
+        let result = nyx_scanner::dynamic::build_sandbox::prepare_node_in_docker(tmpdir.path());
         if result.is_err() {
             return;
         }
@@ -310,20 +319,20 @@ mod escape_tests {
     /// Skips gracefully when Docker is unavailable or `golang:1.21-slim` is not pulled.
     #[test]
     fn escape_go_malicious_init() {
-        if !docker_available() { return; }
+        if !docker_available() {
+            return;
+        }
 
         let tmpdir = tempfile::TempDir::new().expect("temp dir");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/dynamic_fixtures/escape/go_malicious_init_main");
-        copy_dir_recursive(&fixture, tmpdir.path())
-            .expect("copy go_malicious_init_main fixture");
+        copy_dir_recursive(&fixture, tmpdir.path()).expect("copy go_malicious_init_main fixture");
 
         let marker: PathBuf = PathBuf::from("/tmp/pwned_go_init");
         let _ = fs::remove_file(&marker);
 
         // Docker-isolated go build: init() does not run during compilation.
-        let result =
-            nyx_scanner::dynamic::build_sandbox::prepare_go_in_docker(tmpdir.path());
+        let result = nyx_scanner::dynamic::build_sandbox::prepare_go_in_docker(tmpdir.path());
         if result.is_err() {
             return;
         }
@@ -346,19 +355,19 @@ mod escape_tests {
     /// Skips gracefully when Docker is unavailable or the Maven image is not pulled.
     #[test]
     fn escape_maven_malicious_plugin() {
-        if !docker_available() { return; }
+        if !docker_available() {
+            return;
+        }
 
         let tmpdir = tempfile::TempDir::new().expect("temp dir");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/dynamic_fixtures/escape/maven_malicious_plugin");
-        copy_dir_recursive(&fixture, tmpdir.path())
-            .expect("copy maven_malicious_plugin fixture");
+        copy_dir_recursive(&fixture, tmpdir.path()).expect("copy maven_malicious_plugin fixture");
 
         let marker: PathBuf = PathBuf::from("/tmp/pwned_maven_plugin");
         let _ = fs::remove_file(&marker);
 
-        let result =
-            nyx_scanner::dynamic::build_sandbox::prepare_java_in_docker(tmpdir.path());
+        let result = nyx_scanner::dynamic::build_sandbox::prepare_java_in_docker(tmpdir.path());
         if result.is_err() {
             return;
         }
@@ -380,7 +389,9 @@ mod escape_tests {
     /// Skips gracefully when Docker is unavailable or `composer:2` is not pulled.
     #[test]
     fn escape_composer_malicious_postinstall() {
-        if !docker_available() { return; }
+        if !docker_available() {
+            return;
+        }
 
         let tmpdir = tempfile::TempDir::new().expect("temp dir");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -391,8 +402,7 @@ mod escape_tests {
         let marker: PathBuf = PathBuf::from("/tmp/pwned_composer_postinstall");
         let _ = fs::remove_file(&marker);
 
-        let result =
-            nyx_scanner::dynamic::build_sandbox::prepare_php_in_docker(tmpdir.path());
+        let result = nyx_scanner::dynamic::build_sandbox::prepare_php_in_docker(tmpdir.path());
         if result.is_err() {
             return;
         }
@@ -434,12 +444,17 @@ mod escape_tests {
         let container_name = format!("nyx-posctl-{}", std::process::id());
         let status = std::process::Command::new("docker")
             .args([
-                "run", "-d", "--rm",
-                "--name", &container_name,
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                &container_name,
                 "--cap-add=SYS_ADMIN",
-                "--network", "none",
+                "--network",
+                "none",
                 "python:3-slim",
-                "sleep", "60",
+                "sleep",
+                "60",
             ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -470,8 +485,10 @@ mod escape_tests {
         // Run the fixture and capture output.
         let out = std::process::Command::new("docker")
             .args([
-                "exec", &container_name,
-                "python3", "/workdir/cap_sys_admin_positive_control.py",
+                "exec",
+                &container_name,
+                "python3",
+                "/workdir/cap_sys_admin_positive_control.py",
             ])
             .output()
             .expect("docker exec positive control");
@@ -503,7 +520,9 @@ mod escape_tests {
     /// the container registry holds one entry (started once, reused once).
     #[test]
     fn docker_exec_reuse_for_same_workdir() {
-        if !docker_available() { return; }
+        if !docker_available() {
+            return;
+        }
 
         let (_tmpdir, harness) = harness_for_fixture("dns_leak.py");
         let opts = escape_opts();
@@ -524,7 +543,9 @@ mod escape_tests {
 
         // Verify the container is still running (not torn down between calls).
         // Container name is derived from the workdir path.
-        let spec_hash = _tmpdir.path().file_name()
+        let spec_hash = _tmpdir
+            .path()
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
         let container_name = format!("nyx-{spec_hash}");
@@ -535,10 +556,7 @@ mod escape_tests {
 
         match out {
             Ok(o) if o.status.success() => {
-                let running = std::str::from_utf8(&o.stdout)
-                    .unwrap_or("")
-                    .trim()
-                    == "true";
+                let running = std::str::from_utf8(&o.stdout).unwrap_or("").trim() == "true";
                 // Container should still be running (exec reuse kept it alive).
                 assert!(
                     running,

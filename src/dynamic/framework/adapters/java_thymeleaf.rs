@@ -123,9 +123,11 @@ mod tests {
         let src: &[u8] = b"import org.thymeleaf.TemplateEngine;\npublic class V { public static String run(String body) { TemplateEngine e = new TemplateEngine(); return e.process(body, null); } }\n";
         let tree = parse_java(src);
         let summary = summary_for("run", &["body"], &[0]);
-        assert!(JavaThymeleafAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            JavaThymeleafAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -137,9 +139,11 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(JavaThymeleafAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaThymeleafAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -149,9 +153,11 @@ mod tests {
         let src: &[u8] = b"// org.thymeleaf.TemplateEngine is great\npublic class V { public static String run(String body) { TemplateEngine e = new TemplateEngine(); return e.process(\"static\", null); } }\n";
         let tree = parse_java(src);
         let summary = summary_for("run", &["body"], &[0]);
-        assert!(JavaThymeleafAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaThymeleafAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -159,8 +165,10 @@ mod tests {
         let src: &[u8] = b"import org.thymeleaf.TemplateEngine;\npublic class V { public static String run(String body) { TemplateEngine e = new TemplateEngine(); return e.process(body, null); } }\n";
         let tree = parse_java(src);
         let summary = summary_for("run", &["body"], &[]);
-        assert!(JavaThymeleafAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaThymeleafAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

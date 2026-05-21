@@ -187,8 +187,7 @@ impl PythonShape {
         let kind = spec.entry_kind.tag();
 
         // ── Framework-first detection ────────────────────────────────
-        let has_flask =
-            source_has_marker(source, &["from flask", "import flask", "Flask("]);
+        let has_flask = source_has_marker(source, &["from flask", "import flask", "Flask("]);
         let has_fastapi = source_has_marker(
             source,
             &["from fastapi", "import fastapi", "FastAPI(", "APIRouter("],
@@ -270,8 +269,7 @@ fn source_has_marker(source: &str, markers: &[&str]) -> bool {
 fn function_is_pytest(source: &str, name: &str) -> bool {
     let needle = format!("def {name}(");
     let async_needle = format!("async def {name}(");
-    (source.contains(&needle) || source.contains(&async_needle))
-        && name.starts_with("test_")
+    (source.contains(&needle) || source.contains(&async_needle)) && name.starts_with("test_")
 }
 
 fn function_is_async(source: &str, name: &str) -> bool {
@@ -613,8 +611,12 @@ fn python_framework_pkg_name(fw: DetectedFramework) -> Option<&'static str> {
 /// pre-Phase-12 behaviour.
 pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     match &spec.payload_slot {
-        PayloadSlot::Param(_) | PayloadSlot::EnvVar(_) | PayloadSlot::Stdin
-        | PayloadSlot::QueryParam(_) | PayloadSlot::HttpBody | PayloadSlot::Argv(_) => {}
+        PayloadSlot::Param(_)
+        | PayloadSlot::EnvVar(_)
+        | PayloadSlot::Stdin
+        | PayloadSlot::QueryParam(_)
+        | PayloadSlot::HttpBody
+        | PayloadSlot::Argv(_) => {}
     }
 
     // Phase 03 (Track J.1): short-circuit to the deserialize harness
@@ -1934,10 +1936,9 @@ fn read_entry_source(entry_file: &str) -> String {
 fn extra_files_for_shape(shape: PythonShape) -> Vec<(String, String)> {
     match shape {
         PythonShape::FlaskRoute => vec![("requirements.txt".to_owned(), "Flask\n".to_owned())],
-        PythonShape::FastApiRoute => vec![(
-            "requirements.txt".to_owned(),
-            "fastapi\nhttpx\n".to_owned(),
-        )],
+        PythonShape::FastApiRoute => {
+            vec![("requirements.txt".to_owned(), "fastapi\nhttpx\n".to_owned())]
+        }
         PythonShape::StarletteRoute => vec![(
             "requirements.txt".to_owned(),
             "starlette\nhttpx\n".to_owned(),
@@ -2494,7 +2495,12 @@ fn build_call(spec: &HarnessSpec, func: &str) -> (String, String) {
             // Heuristic: identifiers starting with lowercase that look
             // like Python identifiers are kwargs; everything else is an
             // env var.
-            if name.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) {
+            if name
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_lowercase())
+                .unwrap_or(false)
+            {
                 let pre = String::new();
                 let call = format!("_entry_mod.{func}({name}=payload)");
                 (pre, call)
@@ -2505,8 +2511,8 @@ fn build_call(spec: &HarnessSpec, func: &str) -> (String, String) {
             }
         }
         PayloadSlot::Stdin => {
-            let pre = "import io\nsys.stdin = io.TextIOWrapper(io.BytesIO(_payload_raw))\n"
-                .to_owned();
+            let pre =
+                "import io\nsys.stdin = io.TextIOWrapper(io.BytesIO(_payload_raw))\n".to_owned();
             let call = format!("_entry_mod.{func}()");
             (pre, call)
         }
@@ -2534,7 +2540,12 @@ fn build_call_args(spec: &HarnessSpec) -> (String, String) {
             (pre, args)
         }
         PayloadSlot::EnvVar(name) => {
-            if name.chars().next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) {
+            if name
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_lowercase())
+                .unwrap_or(false)
+            {
                 (String::new(), format!("{name}=payload"))
             } else {
                 let pre = format!("os.environ[{name:?}] = payload\n");
@@ -2542,8 +2553,8 @@ fn build_call_args(spec: &HarnessSpec) -> (String, String) {
             }
         }
         PayloadSlot::Stdin => {
-            let pre = "import io\nsys.stdin = io.TextIOWrapper(io.BytesIO(_payload_raw))\n"
-                .to_owned();
+            let pre =
+                "import io\nsys.stdin = io.TextIOWrapper(io.BytesIO(_payload_raw))\n".to_owned();
             (pre, String::new())
         }
         _ => (String::new(), "payload".to_owned()),
@@ -2625,7 +2636,11 @@ mod tests {
     fn emit_env_var_slot_uppercase_sets_env() {
         let spec = make_spec(PayloadSlot::EnvVar("USER_INPUT".into()));
         let harness = emit(&spec).unwrap();
-        assert!(harness.source.contains("os.environ[\"USER_INPUT\"] = payload"));
+        assert!(
+            harness
+                .source
+                .contains("os.environ[\"USER_INPUT\"] = payload")
+        );
         assert!(harness.source.contains("login()"));
     }
 
@@ -2687,7 +2702,8 @@ mod tests {
 
     #[test]
     fn shape_detect_fastapi() {
-        let src = "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/')\ndef index(): pass\n";
+        let src =
+            "from fastapi import FastAPI\napp = FastAPI()\n@app.get('/')\ndef index(): pass\n";
         let spec = make_spec_with(EntryKind::HttpRoute, "index");
         assert_eq!(PythonShape::detect(&spec, src), PythonShape::FastApiRoute);
     }
@@ -2809,15 +2825,21 @@ mod tests {
     #[test]
     fn extra_files_flask_pins_flask() {
         let extras = extra_files_for_shape(PythonShape::FlaskRoute);
-        assert!(extras.iter().any(|(p, c)| p == "requirements.txt" && c.contains("Flask")));
+        assert!(
+            extras
+                .iter()
+                .any(|(p, c)| p == "requirements.txt" && c.contains("Flask"))
+        );
     }
 
     #[test]
     fn extra_files_fastapi_pins_httpx() {
         let extras = extra_files_for_shape(PythonShape::FastApiRoute);
-        assert!(extras
-            .iter()
-            .any(|(p, c)| p == "requirements.txt" && c.contains("fastapi") && c.contains("httpx")));
+        assert!(
+            extras.iter().any(|(p, c)| p == "requirements.txt"
+                && c.contains("fastapi")
+                && c.contains("httpx"))
+        );
     }
 
     #[test]
@@ -2832,9 +2854,9 @@ mod tests {
     #[test]
     fn extra_files_starlette_pins_httpx() {
         let extras = extra_files_for_shape(PythonShape::StarletteRoute);
-        assert!(extras.iter().any(
-            |(p, c)| p == "requirements.txt" && c.contains("starlette") && c.contains("httpx")
-        ));
+        assert!(extras.iter().any(|(p, c)| p == "requirements.txt"
+            && c.contains("starlette")
+            && c.contains("httpx")));
     }
 
     fn make_spec_with(kind: EntryKind, name: &str) -> HarnessSpec {

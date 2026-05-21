@@ -82,10 +82,7 @@ fn single_edge(diag: Diag, surface: &SurfaceMap) -> ChainEdge {
 #[test]
 fn rule_cmdi_alone_maps_to_rce() {
     let surface = synthetic_surface("app.py", "/run");
-    let edge = single_edge(
-        diag_with_caps("app.py", 12, Cap::CODE_EXEC),
-        &surface,
-    );
+    let edge = single_edge(diag_with_caps("app.py", 12, Cap::CODE_EXEC), &surface);
     assert_eq!(edge.primary_cap, Cap::CODE_EXEC);
     assert!(matches!(edge.reach, Reach::Reachable { .. }));
     assert_eq!(
@@ -97,10 +94,7 @@ fn rule_cmdi_alone_maps_to_rce() {
 #[test]
 fn rule_deserialize_alone_maps_to_rce() {
     let surface = synthetic_surface("app.py", "/load");
-    let edge = single_edge(
-        diag_with_caps("app.py", 7, Cap::DESERIALIZE),
-        &surface,
-    );
+    let edge = single_edge(diag_with_caps("app.py", 7, Cap::DESERIALIZE), &surface);
     assert_eq!(edge.primary_cap, Cap::DESERIALIZE);
     assert_eq!(
         lookup_impact(edge.primary_cap, None),
@@ -111,10 +105,7 @@ fn rule_deserialize_alone_maps_to_rce() {
 #[test]
 fn rule_ssrf_alone_maps_to_internal_network_access() {
     let surface = synthetic_surface("fetch.py", "/proxy");
-    let edge = single_edge(
-        diag_with_caps("fetch.py", 4, Cap::SSRF),
-        &surface,
-    );
+    let edge = single_edge(diag_with_caps("fetch.py", 4, Cap::SSRF), &surface);
     assert_eq!(edge.primary_cap, Cap::SSRF);
     assert_eq!(
         lookup_impact(edge.primary_cap, None),
@@ -186,9 +177,6 @@ fn finding_in_file_with_no_entry_point_is_unreachable() {
 #[test]
 fn feasibility_defaults_to_unverified() {
     let surface = synthetic_surface("app.py", "/");
-    let edge = single_edge(
-        diag_with_caps("app.py", 1, Cap::CODE_EXEC),
-        &surface,
-    );
+    let edge = single_edge(diag_with_caps("app.py", 1, Cap::CODE_EXEC), &surface);
     assert_eq!(edge.feasibility, Feasibility::Unverified);
 }

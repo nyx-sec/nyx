@@ -117,9 +117,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("Object.assign")],
             ..Default::default()
         };
-        assert!(PpObjectAssignJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PpObjectAssignJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -130,24 +132,27 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(PpObjectAssignJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpObjectAssignJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_object_create_null_mitigation() {
-        let src: &[u8] =
-            b"function run(payload) { return Object.create(null); }\n";
+        let src: &[u8] = b"function run(payload) { return Object.create(null); }\n";
         let tree = parse_js(src);
         let summary = FuncSummary {
             name: "run".into(),
             callees: vec![crate::summary::CalleeSite::bare("Object.create")],
             ..Default::default()
         };
-        assert!(PpObjectAssignJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpObjectAssignJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -164,8 +169,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("Object.assign")],
             ..Default::default()
         };
-        assert!(PpObjectAssignJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpObjectAssignJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -53,7 +53,10 @@ fn scan_dir_recursive(project_root: &Path, dir: &Path, notes: &mut Vec<FilterNot
 }
 
 fn is_excluded_dir(name: &str) -> bool {
-    matches!(name, ".git" | "node_modules" | "__pycache__" | ".tox" | "venv" | ".venv")
+    matches!(
+        name,
+        ".git" | "node_modules" | "__pycache__" | ".tox" | "venv" | ".venv"
+    )
 }
 
 fn matches_dir_pattern(name: &str) -> Option<&'static str> {
@@ -128,9 +131,17 @@ mod tests {
     #[test]
     fn detects_pem_file() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("server.pem"), "-----BEGIN CERTIFICATE-----\n").unwrap();
+        fs::write(
+            dir.path().join("server.pem"),
+            "-----BEGIN CERTIFICATE-----\n",
+        )
+        .unwrap();
         let notes = scan_sensitive_files(dir.path());
-        assert!(notes.iter().any(|n| n.path.ends_with(".pem") || n.path.contains("server.pem")));
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.path.ends_with(".pem") || n.path.contains("server.pem"))
+        );
     }
 
     #[test]
@@ -146,6 +157,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("main.py"), "print('hi')\n").unwrap();
         let notes = scan_sensitive_files(dir.path());
-        assert!(notes.is_empty(), "clean dir should produce no notes: {notes:?}");
+        assert!(
+            notes.is_empty(),
+            "clean dir should produce no notes: {notes:?}"
+        );
     }
 }

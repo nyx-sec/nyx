@@ -139,7 +139,10 @@ fn class_has_auth_annotation(class: Node, bytes: &[u8]) -> bool {
         }
         if let Some(name) = annotation_name(ann, bytes)
             && AUTH_ANNOTATIONS.iter().any(|a| {
-                name.rsplit('.').next().unwrap_or(&name).eq_ignore_ascii_case(a)
+                name.rsplit('.')
+                    .next()
+                    .unwrap_or(&name)
+                    .eq_ignore_ascii_case(a)
             })
         {
             return true;
@@ -148,7 +151,11 @@ fn class_has_auth_annotation(class: Node, bytes: &[u8]) -> bool {
     false
 }
 
-fn jaxrs_method_mapping(method: Node, bytes: &[u8], class_path: &str) -> Option<(HttpMethod, String, bool)> {
+fn jaxrs_method_mapping(
+    method: Node,
+    bytes: &[u8],
+    class_path: &str,
+) -> Option<(HttpMethod, String, bool)> {
     let modifiers = crate::surface::lang::common::child_or_named(method, "modifiers")?;
     let mut cursor = modifiers.walk();
     let mut verb: Option<HttpMethod> = None;
@@ -162,7 +169,10 @@ fn jaxrs_method_mapping(method: Node, bytes: &[u8], class_path: &str) -> Option<
             continue;
         };
         let leaf = name.rsplit('.').next().unwrap_or(&name);
-        if let Some((_, m)) = JAXRS_VERBS.iter().find(|(n, _)| n.eq_ignore_ascii_case(leaf)) {
+        if let Some((_, m)) = JAXRS_VERBS
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(leaf))
+        {
             verb = Some(*m);
         }
         if leaf == "Path"
@@ -183,7 +193,11 @@ fn jaxrs_method_mapping(method: Node, bytes: &[u8], class_path: &str) -> Option<
     } else if method_path.is_empty() {
         class_path.to_string()
     } else {
-        format!("{}/{}", class_path.trim_end_matches('/'), method_path.trim_start_matches('/'))
+        format!(
+            "{}/{}",
+            class_path.trim_end_matches('/'),
+            method_path.trim_start_matches('/')
+        )
     };
     Some((v, combined, auth))
 }
@@ -255,7 +269,8 @@ public class UsersResource {
 }
 "#;
         let (tree, bytes) = parse(src);
-        let nodes = detect_servlet_routes(&tree, &bytes, &PathBuf::from("UsersResource.java"), None);
+        let nodes =
+            detect_servlet_routes(&tree, &bytes, &PathBuf::from("UsersResource.java"), None);
         assert!(!nodes.is_empty());
         let SurfaceNode::EntryPoint(ep) = &nodes[0] else {
             panic!()

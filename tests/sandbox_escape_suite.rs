@@ -155,7 +155,10 @@ mod escape_suite {
             unsafe { std::env::set_var(format!("NYX_ESCAPE_DYN_{technique}_{variant}"), "1") };
         }
 
-        builds().lock().unwrap().insert(key.clone(), Some(out_bin.clone()));
+        builds()
+            .lock()
+            .unwrap()
+            .insert(key.clone(), Some(out_bin.clone()));
         Some(out_bin)
     }
 
@@ -291,34 +294,58 @@ mod escape_suite {
     // keep the build dependency-free.
 
     #[test]
-    fn chmod_4755_benign() { let _ = assert_contained("chmod_4755", "benign"); }
+    fn chmod_4755_benign() {
+        let _ = assert_contained("chmod_4755", "benign");
+    }
     #[test]
-    fn chmod_4755_vuln()   { let _ = assert_contained("chmod_4755", "vuln"); }
+    fn chmod_4755_vuln() {
+        let _ = assert_contained("chmod_4755", "vuln");
+    }
 
     #[test]
-    fn etc_write_benign() { let _ = assert_contained("etc_write", "benign"); }
+    fn etc_write_benign() {
+        let _ = assert_contained("etc_write", "benign");
+    }
     #[test]
-    fn etc_write_vuln()   { let _ = assert_contained("etc_write", "vuln"); }
+    fn etc_write_vuln() {
+        let _ = assert_contained("etc_write", "vuln");
+    }
 
     #[test]
-    fn dlopen_outside_chroot_benign() { let _ = assert_contained("dlopen_outside_chroot", "benign"); }
+    fn dlopen_outside_chroot_benign() {
+        let _ = assert_contained("dlopen_outside_chroot", "benign");
+    }
     #[test]
-    fn dlopen_outside_chroot_vuln()   { let _ = assert_contained("dlopen_outside_chroot", "vuln"); }
+    fn dlopen_outside_chroot_vuln() {
+        let _ = assert_contained("dlopen_outside_chroot", "vuln");
+    }
 
     #[test]
-    fn proc_root_passwd_benign() { let _ = assert_contained("proc_root_passwd", "benign"); }
+    fn proc_root_passwd_benign() {
+        let _ = assert_contained("proc_root_passwd", "benign");
+    }
     #[test]
-    fn proc_root_passwd_vuln()   { let _ = assert_contained("proc_root_passwd", "vuln"); }
+    fn proc_root_passwd_vuln() {
+        let _ = assert_contained("proc_root_passwd", "vuln");
+    }
 
     #[test]
-    fn raw_socket_bind_benign() { let _ = assert_contained("raw_socket_bind", "benign"); }
+    fn raw_socket_bind_benign() {
+        let _ = assert_contained("raw_socket_bind", "benign");
+    }
     #[test]
-    fn raw_socket_bind_vuln()   { let _ = assert_contained("raw_socket_bind", "vuln"); }
+    fn raw_socket_bind_vuln() {
+        let _ = assert_contained("raw_socket_bind", "vuln");
+    }
 
     #[test]
-    fn setuid_zero_benign() { let _ = assert_contained("setuid_zero", "benign"); }
+    fn setuid_zero_benign() {
+        let _ = assert_contained("setuid_zero", "benign");
+    }
     #[test]
-    fn setuid_zero_vuln()   { let _ = assert_contained("setuid_zero", "vuln"); }
+    fn setuid_zero_vuln() {
+        let _ = assert_contained("setuid_zero", "vuln");
+    }
 
     // ── Track-B regression tripwire ──────────────────────────────────────────
 

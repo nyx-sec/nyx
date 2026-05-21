@@ -19,7 +19,9 @@ pub struct XxePhpAdapter;
 const ADAPTER_NAME: &str = "xxe-php";
 
 fn callee_is_xml_parser(name: &str) -> bool {
-    let last = name.rsplit_once("::").map(|(_, s)| s)
+    let last = name
+        .rsplit_once("::")
+        .map(|(_, s)| s)
         .or_else(|| name.rsplit_once('.').map(|(_, s)| s))
         .or_else(|| name.rsplit_once("->").map(|(_, s)| s))
         .unwrap_or(name);
@@ -137,16 +139,19 @@ mod tests {
 
     #[test]
     fn fires_on_simplexml_load_string() {
-        let src: &[u8] = b"<?php\nfunction run($body) {\n    return simplexml_load_string($body);\n}\n";
+        let src: &[u8] =
+            b"<?php\nfunction run($body) {\n    return simplexml_load_string($body);\n}\n";
         let tree = parse_php(src);
         let summary = FuncSummary {
             name: "run".into(),
             callees: vec![crate::summary::CalleeSite::bare("simplexml_load_string")],
             ..Default::default()
         };
-        assert!(XxePhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XxePhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -157,9 +162,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(XxePhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxePhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -173,9 +180,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("simplexml_load_string")],
             ..Default::default()
         };
-        assert!(XxePhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxePhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -188,9 +197,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("simplexml_load_string")],
             ..Default::default()
         };
-        assert!(XxePhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxePhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -206,8 +217,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("simplexml_load_string")],
             ..Default::default()
         };
-        assert!(XxePhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XxePhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 }

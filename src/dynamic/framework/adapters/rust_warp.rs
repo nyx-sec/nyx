@@ -112,17 +112,21 @@ mod tests {
     fn skips_when_warp_not_imported() {
         let src: &[u8] = b"fn show() {}\n";
         let tree = parse(src);
-        assert!(RustWarpAdapter
-            .detect(&summary("show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RustWarpAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_no_path_macro() {
         let src: &[u8] = b"use warp::Filter;\nfn show() {}\n";
         let tree = parse(src);
-        assert!(RustWarpAdapter
-            .detect(&summary("show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RustWarpAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

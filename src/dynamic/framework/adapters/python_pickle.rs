@@ -34,9 +34,7 @@ impl FrameworkAdapter for PythonPickleAdapter {
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
         let matches_call = super::any_callee_matches(summary, callee_is_python_deserialize);
-        let matches_source = file_bytes
-            .windows(b"pickle".len())
-            .any(|w| w == b"pickle")
+        let matches_source = file_bytes.windows(b"pickle".len()).any(|w| w == b"pickle")
             || file_bytes
                 .windows(b"yaml.unsafe_load".len())
                 .any(|w| w == b"yaml.unsafe_load")
@@ -77,9 +75,11 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(PythonPickleAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PythonPickleAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -90,8 +90,10 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(PythonPickleAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonPickleAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

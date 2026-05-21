@@ -19,8 +19,8 @@
 //! The runtime `corpus_registry::audit` test mirrors both checks so
 //! failure surfaces in `cargo test` output, not just `cargo build`.
 
-use super::registry::{CORPUS, CORPUS_UNSUPPORTED_LANG_NEUTRAL};
 use super::CuratedPayload;
+use super::registry::{CORPUS, CORPUS_UNSUPPORTED_LANG_NEUTRAL};
 use crate::labels::Cap;
 
 /// Byte-level equality for `&'static str` usable in const eval.
@@ -121,9 +121,7 @@ pub fn audit_benign_controls_runtime() -> Result<(), String> {
             }
             match p.benign_control {
                 Some(r) => {
-                    let found = slice
-                        .iter()
-                        .any(|q| q.is_benign && q.label == r.label);
+                    let found = slice.iter().any(|q| q.is_benign && q.label == r.label);
                     if !found {
                         return Err(format!(
                             "({:?}, {:?}) vuln payload {:?} references missing \
@@ -180,17 +178,18 @@ pub fn audit_benign_label_uniqueness_runtime() -> Result<(), String> {
                 continue;
             }
             if let Some(prev_lang) = bucket.insert(p.label, lang)
-                && prev_lang != lang {
-                    return Err(format!(
-                        "benign label {:?} for cap {:#x} is registered in both \
+                && prev_lang != lang
+            {
+                return Err(format!(
+                    "benign label {:?} for cap {:#x} is registered in both \
                          {:?} and {:?} — lang-agnostic resolve_benign_control \
                          could match the wrong language",
-                        p.label,
-                        cap.bits(),
-                        prev_lang,
-                        lang,
-                    ));
-                }
+                    p.label,
+                    cap.bits(),
+                    prev_lang,
+                    lang,
+                ));
+            }
         }
     }
     Ok(())
@@ -206,7 +205,6 @@ mod corpus_registry {
     fn audit() {
         audit_benign_controls_runtime().expect("benign_control audit failed");
         audit_cap_coverage_runtime().expect("cap coverage audit failed");
-        audit_benign_label_uniqueness_runtime()
-            .expect("benign label uniqueness audit failed");
+        audit_benign_label_uniqueness_runtime().expect("benign label uniqueness audit failed");
     }
 }

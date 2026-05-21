@@ -115,9 +115,10 @@ impl Lang {
     /// CLI entry points and other extensionless / non-canonical files.
     pub fn from_path_or_content(path: &Path, head_bytes: &[u8]) -> Option<Lang> {
         if let Some(ext) = path.extension().and_then(|e| e.to_str())
-            && let Some(lang) = Self::from_extension(ext) {
-                return Some(lang);
-            }
+            && let Some(lang) = Self::from_extension(ext)
+        {
+            return Some(lang);
+        }
         if let Some(lang) = lang_from_shebang(head_bytes) {
             return Some(lang);
         }
@@ -352,10 +353,7 @@ fn lang_from_shebang(head: &[u8]) -> Option<Lang> {
         return None;
     }
     let cap = head.len().min(SNIFF_HEAD_LIMIT);
-    let line_end = head[..cap]
-        .iter()
-        .position(|&b| b == b'\n')
-        .unwrap_or(cap);
+    let line_end = head[..cap].iter().position(|&b| b == b'\n').unwrap_or(cap);
     let line = std::str::from_utf8(&head[..line_end]).ok()?;
     let line = line.trim_end_matches('\r').trim();
     let rest = line.strip_prefix("#!")?.trim();

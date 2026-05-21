@@ -119,7 +119,9 @@ fn check_chained_middleware(call: Node, bytes: &[u8]) -> bool {
             && name_text == "middleware"
             && let Some(args) = p.child_by_field_name("arguments")
             && let Ok(args_text) = args.utf8_text(bytes)
-            && (args_text.contains("auth") || args_text.contains("jwt") || args_text.contains("authenticated"))
+            && (args_text.contains("auth")
+                || args_text.contains("jwt")
+                || args_text.contains("authenticated"))
         {
             return true;
         }

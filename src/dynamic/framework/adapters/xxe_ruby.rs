@@ -17,7 +17,9 @@ pub struct XxeRubyAdapter;
 const ADAPTER_NAME: &str = "xxe-ruby";
 
 fn callee_is_xml_parser(name: &str) -> bool {
-    let last = name.rsplit_once("::").map(|(_, s)| s)
+    let last = name
+        .rsplit_once("::")
+        .map(|(_, s)| s)
         .or_else(|| name.rsplit_once('.').map(|(_, s)| s))
         .unwrap_or(name);
     matches!(last, "new" | "parse" | "XML" | "load")
@@ -124,9 +126,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("new")],
             ..Default::default()
         };
-        assert!(XxeRubyAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XxeRubyAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -137,9 +141,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(XxeRubyAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxeRubyAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -153,9 +159,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("new")],
             ..Default::default()
         };
-        assert!(XxeRubyAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxeRubyAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -168,9 +176,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("XML")],
             ..Default::default()
         };
-        assert!(XxeRubyAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxeRubyAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -183,8 +193,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("XML")],
             ..Default::default()
         };
-        assert!(XxeRubyAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XxeRubyAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 }

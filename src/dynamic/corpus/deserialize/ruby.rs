@@ -26,9 +26,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 7,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/deserialize/ruby/vuln.rb",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/deserialize/ruby/vuln.rb"],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::DeserializeGadgetInvoked {
             require_invoked: true,
@@ -50,9 +48,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 7,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/deserialize/ruby/benign.rb",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/deserialize/ruby/benign.rb"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

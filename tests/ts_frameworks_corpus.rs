@@ -9,15 +9,14 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::framework::{detect_binding, HttpMethod, ParamSource};
+use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
 use nyx_scanner::symbol::Lang;
 
 fn parse_ts(src: &[u8]) -> tree_sitter::Tree {
     let mut parser = tree_sitter::Parser::new();
-    let lang =
-        tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+    let lang = tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
     parser.set_language(&lang).unwrap();
     parser.parse(src, None).unwrap()
 }

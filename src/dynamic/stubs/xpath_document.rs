@@ -47,7 +47,10 @@ pub const XPATH_CORPUS_NODE_COUNT: u32 = 3;
 /// `(filename, bytes)` pair the harness emitter folds into its
 /// [`crate::dynamic::lang::HarnessSource::extra_files`].
 pub fn extra_file_pair() -> (String, String) {
-    (XPATH_CORPUS_FILENAME.to_owned(), XPATH_CORPUS_XML.to_owned())
+    (
+        XPATH_CORPUS_FILENAME.to_owned(),
+        XPATH_CORPUS_XML.to_owned(),
+    )
 }
 
 #[cfg(test)]

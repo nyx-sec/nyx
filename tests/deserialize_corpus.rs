@@ -13,8 +13,8 @@
 mod common;
 
 use nyx_scanner::dynamic::corpus::{
-    audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
-    resolve_benign_control_lang, Oracle,
+    Oracle, audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
+    resolve_benign_control_lang,
 };
 use nyx_scanner::dynamic::framework::registry::adapters_for;
 use nyx_scanner::dynamic::lang;
@@ -105,7 +105,9 @@ fn payload_oracle_carries_deserialize_predicate() {
                 assert!(
                     predicates.iter().any(|p| matches!(
                         p,
-                        ProbePredicate::DeserializeGadgetInvoked { require_invoked: true }
+                        ProbePredicate::DeserializeGadgetInvoked {
+                            require_invoked: true
+                        }
                     )),
                     "{lang:?} vuln payload missing DeserializeGadgetInvoked predicate",
                 );
@@ -166,8 +168,8 @@ fn lang_emitter_dispatches_to_deserialize_harness() {
         ),
     ] {
         let spec = make_spec(lang, entry_file, entry_name);
-        let harness = lang::emit(&spec)
-            .unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
+        let harness =
+            lang::emit(&spec).unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
         assert!(
             harness.source.contains("NYX_GADGET_CLASS:"),
             "{lang:?} deserialize harness must parse NYX_GADGET_CLASS marker",
@@ -187,10 +189,19 @@ fn framework_adapters_detect_deserialize_sink() {
     // EntryKind::Function binding when the fixture contains the
     // canonical sink call.
     for (lang, fixture) in [
-        (Lang::Java, "tests/dynamic_fixtures/deserialize/java/Vuln.java"),
-        (Lang::Python, "tests/dynamic_fixtures/deserialize/python/vuln.py"),
+        (
+            Lang::Java,
+            "tests/dynamic_fixtures/deserialize/java/Vuln.java",
+        ),
+        (
+            Lang::Python,
+            "tests/dynamic_fixtures/deserialize/python/vuln.py",
+        ),
         (Lang::Php, "tests/dynamic_fixtures/deserialize/php/vuln.php"),
-        (Lang::Ruby, "tests/dynamic_fixtures/deserialize/ruby/vuln.rb"),
+        (
+            Lang::Ruby,
+            "tests/dynamic_fixtures/deserialize/ruby/vuln.rb",
+        ),
     ] {
         let bytes = std::fs::read(fixture).expect("fixture exists");
         let ts_lang = ts_language_for(lang);
@@ -204,19 +215,15 @@ fn framework_adapters_detect_deserialize_sink() {
             ..Default::default()
         };
         let registry_slice = adapters_for(lang);
-        assert!(
-            !registry_slice.is_empty(),
-            "{lang:?} adapter slice empty",
-        );
+        assert!(!registry_slice.is_empty(), "{lang:?} adapter slice empty",);
         let binding = nyx_scanner::dynamic::framework::detect_binding(
             &summary,
             tree.root_node(),
             &bytes,
             lang,
         );
-        let b = binding.unwrap_or_else(|| {
-            panic!("{lang:?} adapter must detect the deserialize sink fixture")
-        });
+        let b = binding
+            .unwrap_or_else(|| panic!("{lang:?} adapter must detect the deserialize sink fixture"));
         assert_eq!(b.kind, EntryKind::Function);
         assert!(!b.adapter.is_empty());
     }
@@ -262,10 +269,10 @@ fn slug(lang: Lang) -> &'static str {
 
 mod e2e_phase_03 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::SandboxOptions;
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -383,7 +390,9 @@ mod e2e_phase_03 {
     /// an allow-listed class name and writes no probe).
     #[test]
     fn java_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else { return };
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Java DESERIALIZE vuln must Confirm via run_spec; got {outcome:?}",
@@ -401,7 +410,9 @@ mod e2e_phase_03 {
 
     #[test]
     fn python_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Python DESERIALIZE vuln must Confirm via run_spec; got {outcome:?}",
@@ -415,7 +426,9 @@ mod e2e_phase_03 {
 
     #[test]
     fn php_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "PHP DESERIALIZE vuln must Confirm via run_spec; got {outcome:?}",
@@ -429,7 +442,9 @@ mod e2e_phase_03 {
 
     #[test]
     fn ruby_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else { return };
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Ruby DESERIALIZE vuln must Confirm via run_spec; got {outcome:?}",

@@ -19,81 +19,307 @@ struct ClientRule {
 
 const CLIENT_RULES: &[ClientRule] = &[
     // HTTP
-    ClientRule { leaf: "requests.get",         kind: ExternalServiceKind::HttpApi, label: "requests (Python)" },
-    ClientRule { leaf: "requests.post",        kind: ExternalServiceKind::HttpApi, label: "requests (Python)" },
-    ClientRule { leaf: "httpx.get",            kind: ExternalServiceKind::HttpApi, label: "httpx (Python)" },
-    ClientRule { leaf: "httpx.post",           kind: ExternalServiceKind::HttpApi, label: "httpx (Python)" },
-    ClientRule { leaf: "urllib.request.urlopen", kind: ExternalServiceKind::HttpApi, label: "urllib" },
-    ClientRule { leaf: "fetch",                kind: ExternalServiceKind::HttpApi, label: "fetch (JS)" },
-    ClientRule { leaf: "axios.get",            kind: ExternalServiceKind::HttpApi, label: "axios" },
-    ClientRule { leaf: "axios.post",           kind: ExternalServiceKind::HttpApi, label: "axios" },
-    ClientRule { leaf: "http.request",         kind: ExternalServiceKind::HttpApi, label: "node http" },
-    ClientRule { leaf: "got",                  kind: ExternalServiceKind::HttpApi, label: "got (JS)" },
-    ClientRule { leaf: "HttpClient.send",      kind: ExternalServiceKind::HttpApi, label: "Java HttpClient" },
-    ClientRule { leaf: "HttpClient.execute",   kind: ExternalServiceKind::HttpApi, label: "Java HttpClient" },
-    ClientRule { leaf: "RestTemplate.exchange", kind: ExternalServiceKind::HttpApi, label: "Spring RestTemplate" },
-    ClientRule { leaf: "RestTemplate.getForObject", kind: ExternalServiceKind::HttpApi, label: "Spring RestTemplate" },
-    ClientRule { leaf: "OkHttpClient.newCall", kind: ExternalServiceKind::HttpApi, label: "OkHttp" },
-    ClientRule { leaf: "http.Get",             kind: ExternalServiceKind::HttpApi, label: "net/http (Go)" },
-    ClientRule { leaf: "http.Post",            kind: ExternalServiceKind::HttpApi, label: "net/http (Go)" },
-    ClientRule { leaf: "http.NewRequest",      kind: ExternalServiceKind::HttpApi, label: "net/http (Go)" },
-    ClientRule { leaf: "client.Do",            kind: ExternalServiceKind::HttpApi, label: "go http client" },
-    ClientRule { leaf: "reqwest::get",         kind: ExternalServiceKind::HttpApi, label: "reqwest (Rust)" },
-    ClientRule { leaf: "reqwest::Client",      kind: ExternalServiceKind::HttpApi, label: "reqwest (Rust)" },
-    ClientRule { leaf: "Net::HTTP",            kind: ExternalServiceKind::HttpApi, label: "Net::HTTP (Ruby)" },
-    ClientRule { leaf: "HTTParty.get",         kind: ExternalServiceKind::HttpApi, label: "HTTParty" },
-    ClientRule { leaf: "Faraday",              kind: ExternalServiceKind::HttpApi, label: "Faraday (Ruby)" },
-    ClientRule { leaf: "curl_exec",            kind: ExternalServiceKind::HttpApi, label: "PHP curl" },
-    ClientRule { leaf: "file_get_contents",    kind: ExternalServiceKind::HttpApi, label: "PHP file_get_contents" },
-    ClientRule { leaf: "Guzzle",               kind: ExternalServiceKind::HttpApi, label: "Guzzle (PHP)" },
-
+    ClientRule {
+        leaf: "requests.get",
+        kind: ExternalServiceKind::HttpApi,
+        label: "requests (Python)",
+    },
+    ClientRule {
+        leaf: "requests.post",
+        kind: ExternalServiceKind::HttpApi,
+        label: "requests (Python)",
+    },
+    ClientRule {
+        leaf: "httpx.get",
+        kind: ExternalServiceKind::HttpApi,
+        label: "httpx (Python)",
+    },
+    ClientRule {
+        leaf: "httpx.post",
+        kind: ExternalServiceKind::HttpApi,
+        label: "httpx (Python)",
+    },
+    ClientRule {
+        leaf: "urllib.request.urlopen",
+        kind: ExternalServiceKind::HttpApi,
+        label: "urllib",
+    },
+    ClientRule {
+        leaf: "fetch",
+        kind: ExternalServiceKind::HttpApi,
+        label: "fetch (JS)",
+    },
+    ClientRule {
+        leaf: "axios.get",
+        kind: ExternalServiceKind::HttpApi,
+        label: "axios",
+    },
+    ClientRule {
+        leaf: "axios.post",
+        kind: ExternalServiceKind::HttpApi,
+        label: "axios",
+    },
+    ClientRule {
+        leaf: "http.request",
+        kind: ExternalServiceKind::HttpApi,
+        label: "node http",
+    },
+    ClientRule {
+        leaf: "got",
+        kind: ExternalServiceKind::HttpApi,
+        label: "got (JS)",
+    },
+    ClientRule {
+        leaf: "HttpClient.send",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Java HttpClient",
+    },
+    ClientRule {
+        leaf: "HttpClient.execute",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Java HttpClient",
+    },
+    ClientRule {
+        leaf: "RestTemplate.exchange",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Spring RestTemplate",
+    },
+    ClientRule {
+        leaf: "RestTemplate.getForObject",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Spring RestTemplate",
+    },
+    ClientRule {
+        leaf: "OkHttpClient.newCall",
+        kind: ExternalServiceKind::HttpApi,
+        label: "OkHttp",
+    },
+    ClientRule {
+        leaf: "http.Get",
+        kind: ExternalServiceKind::HttpApi,
+        label: "net/http (Go)",
+    },
+    ClientRule {
+        leaf: "http.Post",
+        kind: ExternalServiceKind::HttpApi,
+        label: "net/http (Go)",
+    },
+    ClientRule {
+        leaf: "http.NewRequest",
+        kind: ExternalServiceKind::HttpApi,
+        label: "net/http (Go)",
+    },
+    ClientRule {
+        leaf: "client.Do",
+        kind: ExternalServiceKind::HttpApi,
+        label: "go http client",
+    },
+    ClientRule {
+        leaf: "reqwest::get",
+        kind: ExternalServiceKind::HttpApi,
+        label: "reqwest (Rust)",
+    },
+    ClientRule {
+        leaf: "reqwest::Client",
+        kind: ExternalServiceKind::HttpApi,
+        label: "reqwest (Rust)",
+    },
+    ClientRule {
+        leaf: "Net::HTTP",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Net::HTTP (Ruby)",
+    },
+    ClientRule {
+        leaf: "HTTParty.get",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTParty",
+    },
+    ClientRule {
+        leaf: "Faraday",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Faraday (Ruby)",
+    },
+    ClientRule {
+        leaf: "curl_exec",
+        kind: ExternalServiceKind::HttpApi,
+        label: "PHP curl",
+    },
+    ClientRule {
+        leaf: "file_get_contents",
+        kind: ExternalServiceKind::HttpApi,
+        label: "PHP file_get_contents",
+    },
+    ClientRule {
+        leaf: "Guzzle",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Guzzle (PHP)",
+    },
     // Message brokers
-    ClientRule { leaf: "kafka.send",           kind: ExternalServiceKind::MessageBroker, label: "Kafka" },
-    ClientRule { leaf: "KafkaProducer.send",   kind: ExternalServiceKind::MessageBroker, label: "Kafka" },
-    ClientRule { leaf: "rabbitmq.publish",     kind: ExternalServiceKind::MessageBroker, label: "RabbitMQ" },
-    ClientRule { leaf: "amqp.publish",         kind: ExternalServiceKind::MessageBroker, label: "AMQP" },
-    ClientRule { leaf: "sqs.send_message",     kind: ExternalServiceKind::MessageBroker, label: "AWS SQS" },
-    ClientRule { leaf: "sns.publish",          kind: ExternalServiceKind::MessageBroker, label: "AWS SNS" },
-
+    ClientRule {
+        leaf: "kafka.send",
+        kind: ExternalServiceKind::MessageBroker,
+        label: "Kafka",
+    },
+    ClientRule {
+        leaf: "KafkaProducer.send",
+        kind: ExternalServiceKind::MessageBroker,
+        label: "Kafka",
+    },
+    ClientRule {
+        leaf: "rabbitmq.publish",
+        kind: ExternalServiceKind::MessageBroker,
+        label: "RabbitMQ",
+    },
+    ClientRule {
+        leaf: "amqp.publish",
+        kind: ExternalServiceKind::MessageBroker,
+        label: "AMQP",
+    },
+    ClientRule {
+        leaf: "sqs.send_message",
+        kind: ExternalServiceKind::MessageBroker,
+        label: "AWS SQS",
+    },
+    ClientRule {
+        leaf: "sns.publish",
+        kind: ExternalServiceKind::MessageBroker,
+        label: "AWS SNS",
+    },
     // Search indices
-    ClientRule { leaf: "Elasticsearch",        kind: ExternalServiceKind::SearchIndex, label: "Elasticsearch" },
-    ClientRule { leaf: "elasticsearch.search", kind: ExternalServiceKind::SearchIndex, label: "Elasticsearch" },
-    ClientRule { leaf: "OpenSearch",           kind: ExternalServiceKind::SearchIndex, label: "OpenSearch" },
-    ClientRule { leaf: "Algolia",              kind: ExternalServiceKind::SearchIndex, label: "Algolia" },
-
+    ClientRule {
+        leaf: "Elasticsearch",
+        kind: ExternalServiceKind::SearchIndex,
+        label: "Elasticsearch",
+    },
+    ClientRule {
+        leaf: "elasticsearch.search",
+        kind: ExternalServiceKind::SearchIndex,
+        label: "Elasticsearch",
+    },
+    ClientRule {
+        leaf: "OpenSearch",
+        kind: ExternalServiceKind::SearchIndex,
+        label: "OpenSearch",
+    },
+    ClientRule {
+        leaf: "Algolia",
+        kind: ExternalServiceKind::SearchIndex,
+        label: "Algolia",
+    },
     // Auth providers
-    ClientRule { leaf: "auth0",                kind: ExternalServiceKind::AuthProvider, label: "Auth0" },
-    ClientRule { leaf: "passport.authenticate", kind: ExternalServiceKind::AuthProvider, label: "Passport.js" },
-    ClientRule { leaf: "OAuth2Client",         kind: ExternalServiceKind::AuthProvider, label: "OAuth2 client" },
-    ClientRule { leaf: "google.oauth2",        kind: ExternalServiceKind::AuthProvider, label: "Google OAuth2" },
-
+    ClientRule {
+        leaf: "auth0",
+        kind: ExternalServiceKind::AuthProvider,
+        label: "Auth0",
+    },
+    ClientRule {
+        leaf: "passport.authenticate",
+        kind: ExternalServiceKind::AuthProvider,
+        label: "Passport.js",
+    },
+    ClientRule {
+        leaf: "OAuth2Client",
+        kind: ExternalServiceKind::AuthProvider,
+        label: "OAuth2 client",
+    },
+    ClientRule {
+        leaf: "google.oauth2",
+        kind: ExternalServiceKind::AuthProvider,
+        label: "Google OAuth2",
+    },
     // SMTP
-    ClientRule { leaf: "smtplib.SMTP",         kind: ExternalServiceKind::HttpApi, label: "SMTP (Python)" },
-    ClientRule { leaf: "Mail::send",           kind: ExternalServiceKind::HttpApi, label: "Laravel Mail" },
-    ClientRule { leaf: "ActionMailer",         kind: ExternalServiceKind::HttpApi, label: "Rails ActionMailer" },
-
+    ClientRule {
+        leaf: "smtplib.SMTP",
+        kind: ExternalServiceKind::HttpApi,
+        label: "SMTP (Python)",
+    },
+    ClientRule {
+        leaf: "Mail::send",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Laravel Mail",
+    },
+    ClientRule {
+        leaf: "ActionMailer",
+        kind: ExternalServiceKind::HttpApi,
+        label: "Rails ActionMailer",
+    },
     // DNS
-    ClientRule { leaf: "socket.gethostbyname", kind: ExternalServiceKind::HttpApi, label: "DNS resolver" },
-    ClientRule { leaf: "dns.lookup",           kind: ExternalServiceKind::HttpApi, label: "DNS resolver" },
-    ClientRule { leaf: "net.LookupIP",         kind: ExternalServiceKind::HttpApi, label: "DNS resolver" },
-
+    ClientRule {
+        leaf: "socket.gethostbyname",
+        kind: ExternalServiceKind::HttpApi,
+        label: "DNS resolver",
+    },
+    ClientRule {
+        leaf: "dns.lookup",
+        kind: ExternalServiceKind::HttpApi,
+        label: "DNS resolver",
+    },
+    ClientRule {
+        leaf: "net.LookupIP",
+        kind: ExternalServiceKind::HttpApi,
+        label: "DNS resolver",
+    },
     // Type-qualified — fires when the SSA type-fact engine resolves a
     // receiver to `TypeKind::HttpClient` regardless of the bare callee
     // name (`session = requests.Session(); session.get(url)` →
     // typed_call_receivers maps the `.get` ordinal to "HttpClient", so
     // the bound-receiver call surfaces as an outbound HTTP node even
     // though `requests.get` is the only direct-import rule above).
-    ClientRule { leaf: "HttpClient.get",      kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
-    ClientRule { leaf: "HttpClient.post",     kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
-    ClientRule { leaf: "HttpClient.put",      kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
-    ClientRule { leaf: "HttpClient.delete",   kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
-    ClientRule { leaf: "HttpClient.patch",    kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
-    ClientRule { leaf: "HttpClient.request",  kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
-    ClientRule { leaf: "HttpClient.head",     kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
-    ClientRule { leaf: "HttpClient.options",  kind: ExternalServiceKind::HttpApi, label: "HTTP client" },
-    ClientRule { leaf: "RequestBuilder.send", kind: ExternalServiceKind::HttpApi, label: "HTTP request builder" },
-    ClientRule { leaf: "URL.openConnection",  kind: ExternalServiceKind::HttpApi, label: "URL connection" },
-    ClientRule { leaf: "URL.openStream",      kind: ExternalServiceKind::HttpApi, label: "URL connection" },
+    ClientRule {
+        leaf: "HttpClient.get",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP client",
+    },
+    ClientRule {
+        leaf: "HttpClient.post",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP client",
+    },
+    ClientRule {
+        leaf: "HttpClient.put",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP client",
+    },
+    ClientRule {
+        leaf: "HttpClient.delete",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP client",
+    },
+    ClientRule {
+        leaf: "HttpClient.patch",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP client",
+    },
+    ClientRule {
+        leaf: "HttpClient.request",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP client",
+    },
+    ClientRule {
+        leaf: "HttpClient.head",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP client",
+    },
+    ClientRule {
+        leaf: "HttpClient.options",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP client",
+    },
+    ClientRule {
+        leaf: "RequestBuilder.send",
+        kind: ExternalServiceKind::HttpApi,
+        label: "HTTP request builder",
+    },
+    ClientRule {
+        leaf: "URL.openConnection",
+        kind: ExternalServiceKind::HttpApi,
+        label: "URL connection",
+    },
+    ClientRule {
+        leaf: "URL.openStream",
+        kind: ExternalServiceKind::HttpApi,
+        label: "URL connection",
+    },
 ];
 
 /// Walk every function summary's callee list and emit one
@@ -109,10 +335,11 @@ const CLIENT_RULES: &[ClientRule] = &[
 /// client.get(url)`) that the name-only matcher misses.
 pub fn detect_external_services(summaries: &GlobalSummaries) -> Vec<SurfaceNode> {
     let mut out: Vec<SurfaceNode> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for (key, summary) in summaries.iter() {
-        let typed = summaries.get_ssa(key).map(|s| s.typed_call_receivers.as_slice());
+        let typed = summaries
+            .get_ssa(key)
+            .map(|s| s.typed_call_receivers.as_slice());
         for callee in &summary.callees {
             let rule = match_rule(&callee.name).or_else(|| {
                 typed
@@ -161,7 +388,10 @@ fn qualify(container: &str, callee_name: &str) -> String {
 }
 
 fn container_for_ordinal(typed: &[(u32, String)], ordinal: u32) -> Option<&str> {
-    typed.iter().find(|(o, _)| *o == ordinal).map(|(_, c)| c.as_str())
+    typed
+        .iter()
+        .find(|(o, _)| *o == ordinal)
+        .map(|(_, c)| c.as_str())
 }
 
 fn match_rule(callee: &str) -> Option<&'static ClientRule> {

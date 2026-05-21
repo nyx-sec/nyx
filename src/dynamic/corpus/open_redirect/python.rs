@@ -21,7 +21,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         bytes: b"https://attacker.test/",
         label: "open-redirect-python-absolute",
         oracle: Oracle::SinkProbe {
-            predicates: &[ProbePredicate::RedirectHostNotIn { allowlist: ALLOWLIST }],
+            predicates: &[ProbePredicate::RedirectHostNotIn {
+                allowlist: ALLOWLIST,
+            }],
         },
         is_benign: false,
         provenance: PayloadProvenance::Curated,
@@ -29,7 +31,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/dynamic_fixtures/open_redirect/python/vuln.py"],
         oob_nonce_slot: false,
-        probe_predicates: &[ProbePredicate::RedirectHostNotIn { allowlist: ALLOWLIST }],
+        probe_predicates: &[ProbePredicate::RedirectHostNotIn {
+            allowlist: ALLOWLIST,
+        }],
         benign_control: Some(PayloadRef {
             label: "open-redirect-python-benign",
         }),
@@ -39,7 +43,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         bytes: b"/dashboard",
         label: "open-redirect-python-benign",
         oracle: Oracle::SinkProbe {
-            predicates: &[ProbePredicate::RedirectHostNotIn { allowlist: ALLOWLIST }],
+            predicates: &[ProbePredicate::RedirectHostNotIn {
+                allowlist: ALLOWLIST,
+            }],
         },
         is_benign: true,
         provenance: PayloadProvenance::Curated,

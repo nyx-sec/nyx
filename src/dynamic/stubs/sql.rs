@@ -30,7 +30,7 @@
 //! On drop the DB file and the log file are deleted along with the
 //! enclosing tempdir handle.
 
-use super::{monotonic_ns, StubEvent, StubKind, StubProvider};
+use super::{StubEvent, StubKind, StubProvider, monotonic_ns};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -60,8 +60,7 @@ impl SqlStub {
     /// files. When `workdir` is not writable, falls back to the
     /// process-wide temp directory.
     pub fn start(workdir: &Path) -> std::io::Result<Self> {
-        let tempdir = TempDir::new_in(workdir)
-            .or_else(|_| TempDir::new())?;
+        let tempdir = TempDir::new_in(workdir).or_else(|_| TempDir::new())?;
         let db_path = tempdir.path().join("nyx_sql_stub.db");
         let log_path = tempdir.path().join("nyx_sql_stub.queries.log");
 
@@ -126,7 +125,10 @@ impl StubProvider for SqlStub {
     }
 
     fn recording_endpoint(&self) -> Option<(&'static str, String)> {
-        Some((SQL_STUB_LOG_ENV_VAR, self.log_path.to_string_lossy().into_owned()))
+        Some((
+            SQL_STUB_LOG_ENV_VAR,
+            self.log_path.to_string_lossy().into_owned(),
+        ))
     }
 
     fn drain_events(&self) -> Vec<StubEvent> {
@@ -214,7 +216,8 @@ mod tests {
     fn record_query_lands_in_drain_events() {
         let dir = TempDir::new().unwrap();
         let stub = SqlStub::start(dir.path()).unwrap();
-        stub.record_query("SELECT * FROM users WHERE id = 1").unwrap();
+        stub.record_query("SELECT * FROM users WHERE id = 1")
+            .unwrap();
         let events = stub.drain_events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, StubKind::Sql);
@@ -230,7 +233,8 @@ mod tests {
             .append(true)
             .open(stub.log_path())
             .unwrap();
-        f.write_all(b"# driver: psycopg2\nSELECT * FROM accounts\n").unwrap();
+        f.write_all(b"# driver: psycopg2\nSELECT * FROM accounts\n")
+            .unwrap();
         drop(f);
 
         let events = stub.drain_events();

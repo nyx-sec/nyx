@@ -12,7 +12,7 @@
 
 use nyx_scanner::commands::scan::Diag;
 use nyx_scanner::dynamic::policy::{self, DenyRule, PolicyDecision};
-use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
 use nyx_scanner::evidence::{
     Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, SpanEvidence, VerifyStatus,
 };
@@ -78,9 +78,7 @@ fn allow_returns_for_diag_without_secrets() {
 fn credentials_rule_fires_on_aws_key_in_flow_step_snippet() {
     let mut diag = empty_diag();
     let mut ev = Evidence::default();
-    ev.flow_steps = vec![flow_step_with_snippet(
-        "key=AKIAFAKETEST00000000",
-    )];
+    ev.flow_steps = vec![flow_step_with_snippet("key=AKIAFAKETEST00000000")];
     diag.evidence = Some(ev);
     match policy::evaluate(&diag) {
         PolicyDecision::Deny {
@@ -116,9 +114,7 @@ fn credentials_rule_fires_on_bearer_header_note() {
 fn private_key_rule_fires_on_pem_block_in_snippet() {
     let mut diag = empty_diag();
     let mut ev = Evidence::default();
-    ev.source = Some(span_with_snippet(
-        "-----BEGIN OPENSSH PRIVATE KEY-----",
-    ));
+    ev.source = Some(span_with_snippet("-----BEGIN OPENSSH PRIVATE KEY-----"));
     diag.evidence = Some(ev);
     match policy::evaluate(&diag) {
         PolicyDecision::Deny { rule, .. } => {
@@ -185,9 +181,7 @@ fn credentials_rule_fires_before_other_rules() {
     // endpoint name.  Order asserted by the policy.evaluate impl.
     let mut diag = empty_diag();
     let mut ev = Evidence::default();
-    ev.notes = vec![
-        "deploying key=AKIAFAKETEST00000000 to api.prod.example.com".to_owned(),
-    ];
+    ev.notes = vec!["deploying key=AKIAFAKETEST00000000 to api.prod.example.com".to_owned()];
     diag.evidence = Some(ev);
     match policy::evaluate(&diag) {
         PolicyDecision::Deny { rule, .. } => {

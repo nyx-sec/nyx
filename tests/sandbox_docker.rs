@@ -16,8 +16,8 @@
 
 use nyx_scanner::dynamic::harness::BuiltHarness;
 use nyx_scanner::dynamic::sandbox::docker::{
-    ensure_image_pulled, image_reference_for_toolchain, network_args, stub_mount_args,
-    toolchain_is_pinned, workdir_mount_args, STUB_MOUNT_ROOT, WORK_MOUNT_PATH,
+    STUB_MOUNT_ROOT, WORK_MOUNT_PATH, ensure_image_pulled, image_reference_for_toolchain,
+    network_args, stub_mount_args, toolchain_is_pinned, workdir_mount_args,
 };
 use nyx_scanner::dynamic::sandbox::{
     self, HostPort, NetworkPolicy, SandboxBackend, SandboxOptions,
@@ -87,12 +87,20 @@ fn stub_mount_args_uses_indexed_fixed_paths() {
 
 #[test]
 fn network_args_translate_every_policy() {
-    assert!(network_args(&NetworkPolicy::None).iter().any(|a| a == "none"));
+    assert!(
+        network_args(&NetworkPolicy::None)
+            .iter()
+            .any(|a| a == "none")
+    );
     let stubs = NetworkPolicy::StubsOnly {
         allow: vec![HostPort::new("sql", 5432)],
     };
     let stubs_args = network_args(&stubs);
-    assert!(stubs_args.iter().any(|a| a == "--add-host=sql:host-gateway"));
+    assert!(
+        stubs_args
+            .iter()
+            .any(|a| a == "--add-host=sql:host-gateway")
+    );
     let open = network_args(&NetworkPolicy::Open);
     assert!(open.iter().any(|a| a == "bridge"));
     assert!(!open.iter().any(|a| a.starts_with("--add-host=")));
@@ -117,9 +125,15 @@ fn toolchain_pinning_state_is_observable() {
     let pinned = toolchain_is_pinned("python-3.11");
     let r = image_reference_for_toolchain("python-3.11").unwrap();
     if pinned {
-        assert!(r.contains("@sha256:"), "pinned ref must carry digest, got {r}");
+        assert!(
+            r.contains("@sha256:"),
+            "pinned ref must carry digest, got {r}"
+        );
     } else {
-        assert!(!r.contains("@sha256:"), "unpinned ref must not carry digest, got {r}");
+        assert!(
+            !r.contains("@sha256:"),
+            "unpinned ref must not carry digest, got {r}"
+        );
     }
 }
 
@@ -131,8 +145,8 @@ fn ensure_image_pulled_returns_true_for_python_slim() {
         eprintln!("docker unavailable — skipping");
         return;
     }
-    let r = image_reference_for_toolchain("python-3.11")
-        .expect("python-3.11 must be in the catalogue");
+    let r =
+        image_reference_for_toolchain("python-3.11").expect("python-3.11 must be in the catalogue");
     assert!(
         ensure_image_pulled(r),
         "ensure_image_pulled must succeed for `{r}` when docker is available",
@@ -170,8 +184,7 @@ fn harness_workdir_is_mounted_at_fixed_work_path() {
         return;
     }
     let tmp = tempfile::TempDir::new().expect("tempdir");
-    std::fs::write(tmp.path().join("token.txt"), "phase-19-mount-token\n")
-        .expect("write fixture");
+    std::fs::write(tmp.path().join("token.txt"), "phase-19-mount-token\n").expect("write fixture");
     write_harness_script(
         tmp.path(),
         // Read from the fixed /work mount path — this passes only when the

@@ -21,7 +21,7 @@
 
 mod common;
 
-use nyx_scanner::dynamic::framework::{detect_binding, HttpMethod, ParamSource};
+use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
 use nyx_scanner::symbol::Lang;
@@ -193,10 +193,10 @@ fn fastapi_adapter_runs_before_starlette_for_fastapi_files() {
 #[cfg(feature = "dynamic")]
 mod e2e_phase_12 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::SandboxOptions;
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -277,7 +277,9 @@ mod e2e_phase_12 {
     }
 
     fn assert_confirmed(fixture_subdir: &str) {
-        let Some(outcome) = run(fixture_subdir) else { return };
+        let Some(outcome) = run(fixture_subdir) else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "{fixture_subdir} CODE_EXEC vuln must Confirm via run_spec; got {outcome:?}",

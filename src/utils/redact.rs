@@ -74,16 +74,25 @@ static PATTERNS: &[Pattern] = &[
     // AWS access key IDs: AKIA[A-Z0-9]{16}
     Pattern {
         prefix: "AKIA",
-        replace_fn: |s| replace_pattern(s, |c: &str| {
-            if let Some(start) = c.find("AKIA") {
-                let rest = &c[start + 4..];
-                let end = rest.find(|ch: char| !ch.is_ascii_alphanumeric()).unwrap_or(rest.len());
-                if end >= 12 {
-                    return true;
-                }
-            }
-            false
-        }, "AKIA", 20),
+        replace_fn: |s| {
+            replace_pattern(
+                s,
+                |c: &str| {
+                    if let Some(start) = c.find("AKIA") {
+                        let rest = &c[start + 4..];
+                        let end = rest
+                            .find(|ch: char| !ch.is_ascii_alphanumeric())
+                            .unwrap_or(rest.len());
+                        if end >= 12 {
+                            return true;
+                        }
+                    }
+                    false
+                },
+                "AKIA",
+                20,
+            )
+        },
         matches_fn: |s| akia_matches(s),
     },
     // GitHub personal access tokens: ghp_, github_pat_, ghs_, ghr_
@@ -255,7 +264,9 @@ fn replace_pem_blocks(s: &str) -> String {
 fn akia_matches(s: &str) -> bool {
     if let Some(pos) = s.find("AKIA") {
         let rest = &s[pos + 4..];
-        let end = rest.find(|ch: char| !ch.is_ascii_alphanumeric()).unwrap_or(rest.len());
+        let end = rest
+            .find(|ch: char| !ch.is_ascii_alphanumeric())
+            .unwrap_or(rest.len());
         return end >= 12;
     }
     false
@@ -266,7 +277,9 @@ fn contains_sk_token(s: &str) -> bool {
     let mut rest = s;
     while let Some(pos) = rest.find("sk-") {
         let after = &rest[pos + 3..];
-        let end = after.find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-').unwrap_or(after.len());
+        let end = after
+            .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+            .unwrap_or(after.len());
         if end >= 20 {
             return true;
         }
@@ -285,7 +298,9 @@ fn replace_pattern(
     let mut rest = s;
     while let Some(pos) = rest.find(prefix) {
         let after = &rest[pos + prefix.len()..];
-        let end = after.find(|ch: char| !ch.is_ascii_alphanumeric()).unwrap_or(after.len());
+        let end = after
+            .find(|ch: char| !ch.is_ascii_alphanumeric())
+            .unwrap_or(after.len());
         if end >= token_len - prefix.len() {
             out.push_str(&rest[..pos]);
             out.push_str("<REDACTED>");
@@ -307,7 +322,10 @@ mod tests {
     fn redacts_aws_key() {
         let input = "key: AKIAFAKETEST00000000 in config";
         let out = redact_str(input);
-        assert!(!out.contains("AKIAFAKETEST00000000"), "AWS key must be redacted");
+        assert!(
+            !out.contains("AKIAFAKETEST00000000"),
+            "AWS key must be redacted"
+        );
         assert!(out.contains("<REDACTED>"));
     }
 
@@ -338,7 +356,10 @@ mod tests {
     fn passthrough_clean_bytes() {
         let input = b"\x80\x81 normal text here";
         let out = redact(input);
-        assert!(out.windows(b"normal text".len()).any(|w| w == b"normal text"));
+        assert!(
+            out.windows(b"normal text".len())
+                .any(|w| w == b"normal text")
+        );
     }
 
     #[test]
@@ -349,7 +370,8 @@ mod tests {
 
     #[test]
     fn redacts_pem_block() {
-        let input = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQ\n-----END RSA PRIVATE KEY-----";
+        let input =
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQ\n-----END RSA PRIVATE KEY-----";
         let out = redact_str(input);
         assert!(!out.contains("MIIEowIBAAKCAQ"));
         assert!(out.contains("<PEM-REDACTED>"));

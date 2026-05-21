@@ -25,9 +25,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 8,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/ssti/js_handlebars/vuln.js",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/ssti/js_handlebars/vuln.js"],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::TemplateEvalEqual { expected: 49 }],
         benign_control: Some(PayloadRef {
@@ -45,9 +43,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 8,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/ssti/js_handlebars/benign.js",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/ssti/js_handlebars/benign.js"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

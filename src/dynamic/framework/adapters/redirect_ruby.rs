@@ -18,7 +18,7 @@ const ADAPTER_NAME: &str = "redirect-ruby";
 
 fn callee_is_redirect(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "redirect" | "redirect_to" | "redirect!" )
+    matches!(last, "redirect" | "redirect_to" | "redirect!")
 }
 
 fn source_imports_ruby_web(file_bytes: &[u8]) -> bool {
@@ -110,9 +110,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("redirect")],
             ..Default::default()
         };
-        assert!(RedirectRubyAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RedirectRubyAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -123,9 +125,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(RedirectRubyAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectRubyAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -144,8 +148,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(RedirectRubyAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectRubyAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -33,7 +33,12 @@ pub fn source_imports_flask(bytes: &[u8]) -> bool {
 pub fn source_imports_fastapi(bytes: &[u8]) -> bool {
     contains_any(
         bytes,
-        &[b"from fastapi", b"import fastapi", b"FastAPI(", b"APIRouter("],
+        &[
+            b"from fastapi",
+            b"import fastapi",
+            b"FastAPI(",
+            b"APIRouter(",
+        ],
     )
 }
 
@@ -95,10 +100,11 @@ fn walk<'a>(node: Node<'a>, bytes: &[u8], target: &str) -> Option<(Node<'a>, Opt
         && let Some(name) = node
             .child_by_field_name("name")
             .and_then(|n| n.utf8_text(bytes).ok())
-            && name == target {
-                let decorated = node.parent().filter(|p| p.kind() == "decorated_definition");
-                return Some((node, decorated));
-            }
+        && name == target
+    {
+        let decorated = node.parent().filter(|p| p.kind() == "decorated_definition");
+        return Some((node, decorated));
+    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         if let Some(found) = walk(child, bytes, target) {

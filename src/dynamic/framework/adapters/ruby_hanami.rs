@@ -172,7 +172,11 @@ mod tests {
         let binding = RubyHanamiAdapter
             .detect(&summary("call"), tree.root_node(), src)
             .expect("binding");
-        let id = binding.request_params.iter().find(|p| p.name == "id").unwrap();
+        let id = binding
+            .request_params
+            .iter()
+            .find(|p| p.name == "id")
+            .unwrap();
         assert!(matches!(id.source, ParamSource::PathSegment(_)));
     }
 
@@ -184,7 +188,11 @@ mod tests {
         let binding = RubyHanamiAdapter
             .detect(&summary("call"), tree.root_node(), src)
             .expect("binding");
-        let req = binding.request_params.iter().find(|p| p.name == "req").unwrap();
+        let req = binding
+            .request_params
+            .iter()
+            .find(|p| p.name == "req")
+            .unwrap();
         assert!(matches!(req.source, ParamSource::Implicit));
     }
 
@@ -194,9 +202,11 @@ mod tests {
             b"require 'hanami/action'\nclass Plain\n  def call(req)\n    'ok'\n  end\nend\n";
         let tree = parse(src);
         // No `Hanami::Action` superclass / include — must skip.
-        assert!(RubyHanamiAdapter
-            .detect(&summary("call"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubyHanamiAdapter
+                .detect(&summary("call"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -207,8 +217,10 @@ mod tests {
         // `Hanami::Action` substring, so this fixture in fact does
         // trip the marker — the test exists to document that bare
         // `Hanami::Action` superclass alone is sufficient.
-        assert!(RubyHanamiAdapter
-            .detect(&summary("call"), tree.root_node(), src)
-            .is_some());
+        assert!(
+            RubyHanamiAdapter
+                .detect(&summary("call"), tree.root_node(), src)
+                .is_some()
+        );
     }
 }

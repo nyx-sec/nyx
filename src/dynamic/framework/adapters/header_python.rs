@@ -21,7 +21,10 @@ fn callee_is_header_setter(name: &str) -> bool {
     matches!(
         last,
         "__setitem__" | "set_header" | "setdefault" | "add_header" | "append"
-    ) || matches!(name, "Response.headers.__setitem__" | "make_response" | "Response.headers.add")
+    ) || matches!(
+        name,
+        "Response.headers.__setitem__" | "make_response" | "Response.headers.add"
+    )
 }
 
 fn source_imports_python_web(file_bytes: &[u8]) -> bool {
@@ -116,9 +119,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("__setitem__")],
             ..Default::default()
         };
-        assert!(HeaderPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            HeaderPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -129,9 +134,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(HeaderPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -149,8 +156,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(HeaderPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

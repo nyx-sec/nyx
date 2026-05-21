@@ -212,8 +212,8 @@ impl PhpShape {
             || source.contains("$router->post(")
             || source.contains("// nyx-shape: route");
         let has_argv = source.contains("$argv") || source.contains("// nyx-shape: cli");
-        let has_function_decl = source.contains("function ")
-            && !source.trim_start().starts_with("<?php\n//");
+        let has_function_decl =
+            source.contains("function ") && !source.trim_start().starts_with("<?php\n//");
         let entry_named_function = entry != "main"
             && entry != "__main__"
             && !entry.is_empty()
@@ -260,7 +260,10 @@ pub fn detect_shape(spec: &HarnessSpec) -> PhpShape {
 }
 
 fn read_entry_source(entry_file: &str) -> String {
-    let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
+    let candidates = [
+        PathBuf::from(entry_file),
+        PathBuf::from(".").join(entry_file),
+    ];
     for path in &candidates {
         if let Ok(s) = std::fs::read_to_string(path) {
             return s;
@@ -1124,7 +1127,11 @@ fn generate_source(spec: &HarnessSpec, shape: PhpShape) -> String {
     let call_expr = build_call_expr(spec, shape, entry_fn);
     let shim = probe_shim();
     let toolchain_marker = build_toolchain_marker(shape);
-    let crash_callee = if entry_fn.is_empty() { "main" } else { entry_fn.as_str() };
+    let crash_callee = if entry_fn.is_empty() {
+        "main"
+    } else {
+        entry_fn.as_str()
+    };
 
     format!(
         r#"<?php
@@ -1467,9 +1474,7 @@ fn build_call_expr(spec: &HarnessSpec, shape: PhpShape, func: &str) -> String {
                 "null".to_owned()
             }
         }
-        PhpShape::RouteClosure
-        | PhpShape::LaravelRoute
-        | PhpShape::CodeIgniterRoute => {
+        PhpShape::RouteClosure | PhpShape::LaravelRoute | PhpShape::CodeIgniterRoute => {
             // Entry script publishes the route closure via
             // `$GLOBALS['__nyx_route']`.  When the global is missing,
             // fall back to calling the named function directly.
@@ -1608,15 +1613,21 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!PhpEmitter.entry_kinds_supported().is_empty());
-        assert!(PhpEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::Function));
-        assert!(PhpEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::HttpRoute));
-        assert!(PhpEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::CliSubcommand));
+        assert!(
+            PhpEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::Function)
+        );
+        assert!(
+            PhpEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::HttpRoute)
+        );
+        assert!(
+            PhpEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::CliSubcommand)
+        );
     }
 
     #[test]

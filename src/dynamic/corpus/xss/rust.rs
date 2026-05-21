@@ -18,7 +18,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/xss/axum_html/main.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "xss-benign-text" }),
+        benign_control: Some(PayloadRef {
+            label: "xss-benign-text",
+        }),
         no_benign_control_rationale: None,
     },
     CuratedPayload {

@@ -124,9 +124,11 @@ mod tests {
     fn skips_when_gin_not_imported() {
         let src: &[u8] = b"package main\nfunc Show(id string) {}\n";
         let tree = parse(src);
-        assert!(GoGinAdapter
-            .detect(&summary("Show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            GoGinAdapter
+                .detect(&summary("Show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -134,9 +136,11 @@ mod tests {
         let src: &[u8] =
             b"package main\nimport \"github.com/gin-gonic/gin\"\nfunc init() { r := gin.Default(); r.GET(\"/users\", Show) }\nfunc Helper(x string) {}\n";
         let tree = parse(src);
-        assert!(GoGinAdapter
-            .detect(&summary("Helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            GoGinAdapter
+                .detect(&summary("Helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]

@@ -11,10 +11,7 @@ const ADAPTER_NAME: &str = "pubsub-python";
 
 fn callee_is_pubsub(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "subscribe" | "pull" | "callback" | "process_message"
-    )
+    matches!(last, "subscribe" | "pull" | "callback" | "process_message")
 }
 
 fn source_imports_pubsub(file_bytes: &[u8]) -> bool {

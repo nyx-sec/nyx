@@ -12,26 +12,26 @@
 
 pub mod common;
 
-pub mod python_flask;
-pub mod python_fastapi;
 pub mod python_django;
+pub mod python_fastapi;
+pub mod python_flask;
 
 pub mod js_express;
 pub mod js_koa;
 pub mod ts_next;
 
-pub mod java_spring;
-pub mod java_servlet;
 pub mod java_quarkus;
+pub mod java_servlet;
+pub mod java_spring;
 
-pub mod go_http;
 pub mod go_gin;
+pub mod go_http;
 
 pub mod php_laravel;
 pub mod php_slim;
 
-pub mod ruby_sinatra;
 pub mod ruby_rails;
+pub mod ruby_sinatra;
 
 pub mod rust_actix;
 pub mod rust_axum;

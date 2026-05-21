@@ -139,8 +139,10 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(ScheduledCronAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            ScheduledCronAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

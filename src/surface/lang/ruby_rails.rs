@@ -42,37 +42,35 @@ fn detect_routes_dsl(root: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<Sur
     fn recurse(node: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<SurfaceNode>) {
         if matches!(node.kind(), "call" | "method_call")
             && let Some(method_node) = node.child_by_field_name("method")
-                && let Ok(method_text) = method_node.utf8_text(bytes)
-                && let Some((_, method)) = VERBS.iter().find(|(v, _)| *v == method_text)
-            {
-                let args_opt = node
-                    .child_by_field_name("arguments")
-                    .or_else(|| {
-                        let mut c = node.walk();
-                        node.children(&mut c).find(|n| n.kind() == "argument_list")
-                    });
-                if let Some(args) = args_opt {
-                    let mut cursor = args.walk();
-                    let positional: Vec<Node> = args.named_children(&mut cursor).collect();
-                    if let Some(route_node) = positional.first()
-                        && let Some(route) = string_node_value(*route_node, bytes)
-                    {
-                        let handler_name = positional
-                            .iter()
-                            .find_map(|n| extract_to_handler(*n, bytes))
-                            .unwrap_or_default();
-                        out.push(SurfaceNode::EntryPoint(EntryPoint {
-                            location: loc_for(node, file_rel),
-                            framework: Framework::Rails,
-                            method: *method,
-                            route,
-                            handler_name,
-                            handler_location: loc_for(node, file_rel),
-                            auth_required: false,
-                        }));
-                    }
+            && let Ok(method_text) = method_node.utf8_text(bytes)
+            && let Some((_, method)) = VERBS.iter().find(|(v, _)| *v == method_text)
+        {
+            let args_opt = node.child_by_field_name("arguments").or_else(|| {
+                let mut c = node.walk();
+                node.children(&mut c).find(|n| n.kind() == "argument_list")
+            });
+            if let Some(args) = args_opt {
+                let mut cursor = args.walk();
+                let positional: Vec<Node> = args.named_children(&mut cursor).collect();
+                if let Some(route_node) = positional.first()
+                    && let Some(route) = string_node_value(*route_node, bytes)
+                {
+                    let handler_name = positional
+                        .iter()
+                        .find_map(|n| extract_to_handler(*n, bytes))
+                        .unwrap_or_default();
+                    out.push(SurfaceNode::EntryPoint(EntryPoint {
+                        location: loc_for(node, file_rel),
+                        framework: Framework::Rails,
+                        method: *method,
+                        route,
+                        handler_name,
+                        handler_location: loc_for(node, file_rel),
+                        auth_required: false,
+                    }));
                 }
             }
+        }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             recurse(child, bytes, file_rel, out);
@@ -109,9 +107,7 @@ fn extract_to_handler(node: Node, bytes: &[u8]) -> Option<String> {
 
 fn detect_controllers(root: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<SurfaceNode>) {
     fn recurse(node: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<SurfaceNode>) {
-        if node.kind() == "class"
-            && class_is_controller(node, bytes)
-        {
+        if node.kind() == "class" && class_is_controller(node, bytes) {
             let class_auth = class_has_before_authenticate(node, bytes);
             walk_methods(node, bytes, &mut |method_node, name| {
                 out.push(SurfaceNode::EntryPoint(EntryPoint {

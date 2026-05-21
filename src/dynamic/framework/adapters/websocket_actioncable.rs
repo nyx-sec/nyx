@@ -37,7 +37,12 @@ fn source_imports_actioncable(file_bytes: &[u8]) -> bool {
 
 fn extract_path(file_bytes: &[u8]) -> String {
     let text = std::str::from_utf8(file_bytes).unwrap_or("");
-    for needle in ["stream_from '", "stream_from \"", "stream_for '", "stream_for \""] {
+    for needle in [
+        "stream_from '",
+        "stream_from \"",
+        "stream_for '",
+        "stream_for \"",
+    ] {
         if let Some(idx) = text.find(needle) {
             let after = &text[idx + needle.len()..];
             let close = if needle.ends_with('"') { '"' } else { '\'' };

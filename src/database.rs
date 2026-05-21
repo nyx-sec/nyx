@@ -1913,10 +1913,7 @@ pub mod index {
         /// per project.  The map is canonicalised before serialisation so
         /// `replace_surface_map` + `load_surface_map` round-trip is
         /// byte-identical for structurally identical maps.
-        pub fn replace_surface_map(
-            &mut self,
-            map: &crate::surface::SurfaceMap,
-        ) -> NyxResult<()> {
+        pub fn replace_surface_map(&mut self, map: &crate::surface::SurfaceMap) -> NyxResult<()> {
             let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
             let mut canon = map.clone();
             let bytes = canon

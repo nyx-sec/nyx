@@ -264,8 +264,8 @@ impl CompositeReverifier for DefaultCompositeReverifier {
                             if result.cache_hit {
                                 cache_hits += 1;
                             }
-                            total_build_ms = total_build_ms
-                                .saturating_add(result.duration.as_millis());
+                            total_build_ms =
+                                total_build_ms.saturating_add(result.duration.as_millis());
                             built_steps.push((built_harness.workdir, spec));
                         }
                         Err(_) => build_errors += 1,
@@ -400,7 +400,11 @@ fn run_chain_steps(
     let mut prev_output: Option<Vec<u8>> = None;
     let last_idx = built_steps.len().saturating_sub(1);
     for (idx, (workdir, spec)) in built_steps.iter().enumerate() {
-        let step_terminal = if idx == last_idx { Some(terminal) } else { None };
+        let step_terminal = if idx == last_idx {
+            Some(terminal)
+        } else {
+            None
+        };
         let step = lang::compose_chain_step(spec.lang, prev_output.as_deref(), step_terminal);
 
         let step_path = workdir.join(&step.filename);
@@ -459,7 +463,13 @@ fn run_chain_steps(
             }
         }
     }
-    (steps_run, sandbox_errors, steps_timeout, nonzero_exits, final_sink_hit)
+    (
+        steps_run,
+        sandbox_errors,
+        steps_timeout,
+        nonzero_exits,
+        final_sink_hit,
+    )
 }
 
 /// Phase 26 — Track G.3: drive composite dynamic re-verification for
@@ -472,7 +482,13 @@ pub fn reverify_chain(
     surface: &SurfaceMap,
     opts: &VerifyOptions,
 ) -> ChainReverifyResult {
-    reverify_chain_with(chain, member_diags, surface, opts, &DefaultCompositeReverifier)
+    reverify_chain_with(
+        chain,
+        member_diags,
+        surface,
+        opts,
+        &DefaultCompositeReverifier,
+    )
 }
 
 /// Inject-the-reverifier flavour of [`reverify_chain`].
@@ -630,7 +646,10 @@ mod tests {
         assert!(!result.was_downgraded());
         assert_eq!(result.severity_after, ChainSeverity::Critical);
         assert_eq!(chain.severity, ChainSeverity::Critical);
-        assert_eq!(chain.dynamic_verdict.as_ref().unwrap().status, VerifyStatus::Confirmed);
+        assert_eq!(
+            chain.dynamic_verdict.as_ref().unwrap().status,
+            VerifyStatus::Confirmed
+        );
         assert!(chain.reverify_reason.is_none());
     }
 
@@ -690,7 +709,10 @@ mod tests {
         );
         assert!(results.is_empty());
         for c in &chains {
-            assert!(c.dynamic_verdict.is_none(), "no verdict attached when top_n=0");
+            assert!(
+                c.dynamic_verdict.is_none(),
+                "no verdict attached when top_n=0"
+            );
         }
     }
 

@@ -165,17 +165,21 @@ mod tests {
     fn skips_when_symfony_not_imported() {
         let src: &[u8] = b"<?php\n#[Route('/x')]\nfunction f() { return 1; }\n";
         let tree = parse(src);
-        assert!(PhpSymfonyAdapter
-            .detect(&summary("f"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpSymfonyAdapter
+                .detect(&summary("f"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_method_has_no_route_attribute() {
         let src: &[u8] = b"<?php\nuse Symfony\\Component\\Routing\\Annotation\\Route;\nclass C {\n  public function helper($x) { return $x; }\n}\n";
         let tree = parse(src);
-        assert!(PhpSymfonyAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpSymfonyAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

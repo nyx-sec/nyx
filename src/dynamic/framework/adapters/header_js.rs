@@ -18,7 +18,10 @@ const ADAPTER_NAME: &str = "header-js";
 
 fn callee_is_header_setter(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "setHeader" | "header" | "set" | "writeHead" | "append")
+    matches!(
+        last,
+        "setHeader" | "header" | "set" | "writeHead" | "append"
+    )
 }
 
 fn source_uses_node_http(file_bytes: &[u8]) -> bool {
@@ -115,9 +118,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("setHeader")],
             ..Default::default()
         };
-        assert!(HeaderJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            HeaderJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -128,9 +133,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(HeaderJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -146,8 +153,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(HeaderJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

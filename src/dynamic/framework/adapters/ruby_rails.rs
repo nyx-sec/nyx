@@ -81,19 +81,31 @@ fn visit_routes<'a>(
                     format!("{path_prefix}/{ident}"),
                     format!("{ctrl_prefix}{ident}/"),
                 ),
-                NestingKind::ScopePath => (format!("{path_prefix}/{ident}"), ctrl_prefix.to_owned()),
+                NestingKind::ScopePath => {
+                    (format!("{path_prefix}/{ident}"), ctrl_prefix.to_owned())
+                }
             };
             recurse_into_block(node, bytes, controller, action, &path_pfx, &ctrl_pfx, out);
             return;
         }
-        if let Some(found) = try_route_mapping(node, bytes, controller, action, path_prefix, ctrl_prefix) {
+        if let Some(found) =
+            try_route_mapping(node, bytes, controller, action, path_prefix, ctrl_prefix)
+        {
             *out = Some(found);
             return;
         }
     }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
-        visit_routes(child, bytes, controller, action, path_prefix, ctrl_prefix, out);
+        visit_routes(
+            child,
+            bytes,
+            controller,
+            action,
+            path_prefix,
+            ctrl_prefix,
+            out,
+        );
     }
 }
 
@@ -153,7 +165,15 @@ fn recurse_into_block<'a>(
     let mut cur = call.walk();
     for child in call.named_children(&mut cur) {
         if child.kind() == "do_block" || child.kind() == "block" {
-            visit_routes(child, bytes, controller, action, path_prefix, ctrl_prefix, out);
+            visit_routes(
+                child,
+                bytes,
+                controller,
+                action,
+                path_prefix,
+                ctrl_prefix,
+                out,
+            );
         }
     }
 }
@@ -208,9 +228,7 @@ fn controller_matches(routes_ctrl: &str, controller_class: &str) -> bool {
 }
 
 fn rails_controller_path(class_name: &str) -> String {
-    let stripped = class_name
-        .strip_suffix("Controller")
-        .unwrap_or(class_name);
+    let stripped = class_name.strip_suffix("Controller").unwrap_or(class_name);
     // Rails routes use the singular-segment lower form joined by `/`
     // for module-namespaced controllers (`Api::Users` → `api/users`).
     let segments: Vec<String> = stripped
@@ -356,8 +374,15 @@ mod tests {
             .expect("binding");
         let route = binding.route.unwrap();
         assert_eq!(route.path, "/u/:id");
-        let id = binding.request_params.iter().find(|p| p.name == "id").unwrap();
-        assert!(matches!(id.source, crate::dynamic::framework::ParamSource::PathSegment(_)));
+        let id = binding
+            .request_params
+            .iter()
+            .find(|p| p.name == "id")
+            .unwrap();
+        assert!(matches!(
+            id.source,
+            crate::dynamic::framework::ParamSource::PathSegment(_)
+        ));
     }
 
     #[test]
@@ -409,9 +434,11 @@ mod tests {
     fn skips_when_class_is_not_a_controller() {
         let src: &[u8] = b"class Foo\n  def bar\n    'ok'\n  end\nend\n";
         let tree = parse(src);
-        assert!(RubyRailsAdapter
-            .detect(&summary("bar"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubyRailsAdapter
+                .detect(&summary("bar"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -419,29 +446,29 @@ mod tests {
         let src: &[u8] =
             b"class UsersController < ApplicationController\n  def index\n    'ok'\n  end\nend\n";
         let tree = parse(src);
-        assert!(RubyRailsAdapter
-            .detect(&summary("missing"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubyRailsAdapter
+                .detect(&summary("missing"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_files_without_rails_marker() {
-        let src: &[u8] =
-            b"class UsersController < Object\n  def index\n    'ok'\n  end\nend\n";
+        let src: &[u8] = b"class UsersController < Object\n  def index\n    'ok'\n  end\nend\n";
         let tree = parse(src);
-        assert!(RubyRailsAdapter
-            .detect(&summary("index"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubyRailsAdapter
+                .detect(&summary("index"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn rails_controller_path_drops_suffix_and_snake_cases() {
         assert_eq!(rails_controller_path("UsersController"), "users");
         assert_eq!(rails_controller_path("UserPostsController"), "user_posts");
-        assert_eq!(
-            rails_controller_path("Api::UsersController"),
-            "api/users"
-        );
+        assert_eq!(rails_controller_path("Api::UsersController"), "api/users");
         assert_eq!(rails_controller_path("Foo"), "foo");
     }
 }

@@ -32,7 +32,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         ],
         oob_nonce_slot: false,
         probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "fmt-string-benign" }),
+        benign_control: Some(PayloadRef {
+            label: "fmt-string-benign",
+        }),
         no_benign_control_rationale: None,
     },
     CuratedPayload {

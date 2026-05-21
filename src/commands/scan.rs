@@ -370,7 +370,10 @@ fn load_verify_summaries(
         }
     };
     let root_str = scan_root.to_string_lossy().into_owned();
-    Some(Arc::new(crate::summary::merge_summaries(all, Some(&root_str))))
+    Some(Arc::new(crate::summary::merge_summaries(
+        all,
+        Some(&root_str),
+    )))
 }
 
 /// Build the whole-program [`crate::callgraph::CallGraph`] from a
@@ -446,60 +449,59 @@ pub fn handle(
     let chain_reach_slot: std::sync::OnceLock<crate::callgraph::FileReachMap> =
         std::sync::OnceLock::new();
 
-    let (mut diags, surface_map): (Vec<Diag>, crate::surface::SurfaceMap) = if index_mode
-        == IndexMode::Off
-    {
-        scan_filesystem_with_observer(
-            &scan_path,
-            config,
-            show_progress,
-            None,
-            None,
-            None,
-            Some(&preview_tier_seen),
-            Some(&chain_reach_slot),
-        )?
-    } else {
-        if index_mode == IndexMode::Rebuild || !db_path.exists() {
-            tracing::debug!("Scanning filesystem index filesystem");
-            crate::commands::index::build_index(
-                &project_name,
+    let (mut diags, surface_map): (Vec<Diag>, crate::surface::SurfaceMap) =
+        if index_mode == IndexMode::Off {
+            scan_filesystem_with_observer(
                 &scan_path,
-                &db_path,
                 config,
                 show_progress,
-            )?;
-        }
+                None,
+                None,
+                None,
+                Some(&preview_tier_seen),
+                Some(&chain_reach_slot),
+            )?
+        } else {
+            if index_mode == IndexMode::Rebuild || !db_path.exists() {
+                tracing::debug!("Scanning filesystem index filesystem");
+                crate::commands::index::build_index(
+                    &project_name,
+                    &scan_path,
+                    &db_path,
+                    config,
+                    show_progress,
+                )?;
+            }
 
-        let pool = Indexer::init(&db_path)?;
-        if config.database.vacuum_on_startup {
-            let idx = Indexer::from_pool(&project_name, &pool)?;
-            idx.vacuum()?;
-        }
-        // Indexed scan path: persist + return the SurfaceMap so the
-        // Phase 25 chain composer can walk it.  `scan_with_index_parallel_observer`
-        // already builds and persists the map into the `surface_map`
-        // SQLite table; reload it through the same pool so the indexed
-        // chain emission matches the non-indexed branch.
-        let scan_pool = Arc::clone(&pool);
-        let diags = scan_with_index_parallel_observer(
-            &project_name,
-            scan_pool,
-            config,
-            show_progress,
-            &scan_path,
-            None,
-            None,
-            None,
-            Some(&preview_tier_seen),
-            Some(&chain_reach_slot),
-        )?;
-        let surface_map = {
-            let idx = Indexer::from_pool(&project_name, &pool)?;
-            idx.load_surface_map()?.unwrap_or_default()
+            let pool = Indexer::init(&db_path)?;
+            if config.database.vacuum_on_startup {
+                let idx = Indexer::from_pool(&project_name, &pool)?;
+                idx.vacuum()?;
+            }
+            // Indexed scan path: persist + return the SurfaceMap so the
+            // Phase 25 chain composer can walk it.  `scan_with_index_parallel_observer`
+            // already builds and persists the map into the `surface_map`
+            // SQLite table; reload it through the same pool so the indexed
+            // chain emission matches the non-indexed branch.
+            let scan_pool = Arc::clone(&pool);
+            let diags = scan_with_index_parallel_observer(
+                &project_name,
+                scan_pool,
+                config,
+                show_progress,
+                &scan_path,
+                None,
+                None,
+                None,
+                Some(&preview_tier_seen),
+                Some(&chain_reach_slot),
+            )?;
+            let surface_map = {
+                let idx = Indexer::from_pool(&project_name, &pool)?;
+                idx.load_surface_map()?.unwrap_or_default()
+            };
+            (diags, surface_map)
         };
-        (diags, surface_map)
-    };
 
     // Print the Preview-tier banner to stderr once, after file enumeration
     // completes and before the console output.  Suppressed under --quiet and
@@ -646,8 +648,7 @@ pub fn handle(
     // empty (legacy / AST-only paths that never built a call graph),
     // the chain layer falls back to file-local reach.
     let chain_reach = chain_reach_slot.get();
-    let chain_edges =
-        crate::chain::findings_to_edges_with_reach(&diags, &surface_map, chain_reach);
+    let chain_edges = crate::chain::findings_to_edges_with_reach(&diags, &surface_map, chain_reach);
     let chain_search_cfg = crate::chain::ChainSearchConfig {
         max_depth: config.chain.max_depth,
         min_score: config.chain.min_score,
@@ -697,21 +698,15 @@ pub fn handle(
             let diff_value = verdict_diff
                 .as_ref()
                 .map(|d| serde_json::to_value(d).unwrap_or(serde_json::Value::Null));
-            let out = crate::output::build_findings_json(
-                &diags_for_output,
-                &chains,
-                diff_value.as_ref(),
-            );
+            let out =
+                crate::output::build_findings_json(&diags_for_output, &chains, diff_value.as_ref());
             let json = serde_json::to_string(&out)
                 .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
             println!("{json}");
         }
         OutputFormat::Sarif => {
-            let sarif = crate::output::build_sarif_with_chains(
-                &diags_for_output,
-                &chains,
-                &scan_path,
-            );
+            let sarif =
+                crate::output::build_sarif_with_chains(&diags_for_output, &chains, &scan_path);
             let json = serde_json::to_string_pretty(&sarif)
                 .map_err(|e| crate::errors::NyxError::Msg(e.to_string()))?;
             println!("{json}");
@@ -725,12 +720,7 @@ pub fn handle(
             tracing::debug!("Printing to console");
             print!(
                 "{}",
-                crate::fmt::render_console(
-                    &diags_for_output,
-                    &project_name,
-                    Some(&stats),
-                    &chains,
-                )
+                crate::fmt::render_console(&diags_for_output, &project_name, Some(&stats), &chains,)
             );
             if let Some(ref diff) = verdict_diff {
                 println!("\nBaseline comparison:");
@@ -769,10 +759,7 @@ pub fn handle(
     if let (Some(diff), Some(gate_name)) = (&verdict_diff, gate) {
         if !crate::baseline::check_gate(diff, gate_name) {
             if !suppress_status {
-                eprintln!(
-                    "Gate '{}' violated. Exit code 2.",
-                    gate_name
-                );
+                eprintln!("Gate '{}' violated. Exit code 2.", gate_name);
             }
             std::process::exit(2);
         }
@@ -2235,9 +2222,8 @@ pub(crate) fn scan_filesystem_with_observer(
     }
 
     if let Some(out) = chain_reach_out {
-        let _ = out.set(
-            crate::callgraph::FileReachMap::build(&call_graph).with_scan_root(Some(root)),
-        );
+        let _ =
+            out.set(crate::callgraph::FileReachMap::build(&call_graph).with_scan_root(Some(root)));
     }
 
     // ── Pass 2: re-run with cross-file global summaries ──────────────────
@@ -2311,15 +2297,14 @@ pub(crate) fn scan_filesystem_with_observer(
     // `surface_map` SQLite table.  The map is returned alongside the
     // diagnostics so consumers (e.g. `nyx surface`) can avoid scanning
     // twice.
-    let surface_map = crate::surface::build::build_surface_map(
-        &crate::surface::build::SurfaceBuildInputs {
+    let surface_map =
+        crate::surface::build::build_surface_map(&crate::surface::build::SurfaceBuildInputs {
             files: &all_paths,
             scan_root: Some(root),
             global_summaries: &gs,
             call_graph: &call_graph,
             config: cfg,
-        },
-    );
+        });
     if let Some(p) = progress {
         p.record_pass2_ms(pass2_start.elapsed().as_millis() as u64);
     }
@@ -3142,15 +3127,14 @@ pub fn scan_with_index_parallel_observer(
     // view.  Errors here are logged but not propagated — the surface
     // map is an additive Phase F deliverable, not a scan gate.
     {
-        let surface_map = crate::surface::build::build_surface_map(
-            &crate::surface::build::SurfaceBuildInputs {
+        let surface_map =
+            crate::surface::build::build_surface_map(&crate::surface::build::SurfaceBuildInputs {
                 files: &files,
                 scan_root: Some(scan_root),
                 global_summaries: &global_summaries,
                 call_graph: &call_graph,
                 config: cfg,
-            },
-        );
+            });
         let mut idx = Indexer::from_pool(project, &pool)?;
         if let Err(e) = idx.replace_surface_map(&surface_map) {
             tracing::warn!("failed to persist surface_map: {e}");

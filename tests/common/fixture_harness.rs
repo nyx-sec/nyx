@@ -14,10 +14,10 @@
 //! failure, prompting an explicit golden update.
 
 use nyx_scanner::commands::scan::Diag;
-use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
 use nyx_scanner::evidence::{
-    Confidence, EntryKind, Evidence, FlowStep, FlowStepKind, InconclusiveReason,
-    UnsupportedReason, VerifyResult, VerifyStatus,
+    Confidence, EntryKind, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
+    VerifyResult, VerifyStatus,
 };
 use nyx_scanner::labels::Cap;
 use nyx_scanner::patterns::{FindingCategory, Severity};
@@ -187,10 +187,7 @@ pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
                     Err(_) => return Err(SkipReason::MissingStaticLib(lib)),
                 };
                 use std::io::Write;
-                let mut handle = match std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(probe.path())
-                {
+                let mut handle = match std::fs::OpenOptions::new().write(true).open(probe.path()) {
                     Ok(h) => h,
                     Err(_) => return Err(SkipReason::MissingStaticLib(lib)),
                 };
@@ -207,7 +204,9 @@ pub fn check_prerequisites(reqs: &[Prerequisite]) -> Result<(), SkipReason> {
                 };
                 let status = std::process::Command::new("cc")
                     .args([
-                        "-x", "c", "-static",
+                        "-x",
+                        "c",
+                        "-static",
                         probe.path().to_str().unwrap_or(""),
                         "-o",
                         out.to_str().unwrap_or(""),
@@ -327,9 +326,8 @@ pub fn run_fixture_and_compare_to_golden(spec: &FixtureSpec<'_>) {
     current_json.push('\n');
 
     if std::env::var("NYX_UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
-        std::fs::write(&golden_path, &current_json).unwrap_or_else(|e| {
-            panic!("write golden {}: {e}", golden_path.display())
-        });
+        std::fs::write(&golden_path, &current_json)
+            .unwrap_or_else(|e| panic!("write golden {}: {e}", golden_path.display()));
         return;
     }
 
@@ -365,7 +363,9 @@ fn fixture_dir(lang_dir: &str) -> PathBuf {
 fn stage_fixture(src: &Path, tmp: &TempDir, copy: CopyStrategy) -> PathBuf {
     match copy {
         CopyStrategy::PreserveName => {
-            let dst = tmp.path().join(src.file_name().expect("fixture has filename"));
+            let dst = tmp
+                .path()
+                .join(src.file_name().expect("fixture has filename"));
             std::fs::copy(src, &dst).expect("copy fixture into tempdir");
             dst
         }
@@ -435,7 +435,7 @@ pub fn run_shape_fixture_lang(
     entry_kind: EntryKind,
     payload_slot: nyx_scanner::dynamic::spec::PayloadSlot,
 ) -> VerifyResult {
-    use nyx_scanner::dynamic::runner::{run_spec, RunError};
+    use nyx_scanner::dynamic::runner::{RunError, run_spec};
     use nyx_scanner::dynamic::sandbox::SandboxOptions;
     use nyx_scanner::dynamic::spec::{HarnessSpec, SpecDerivationStrategy};
 
@@ -801,9 +801,8 @@ pub fn run_harness_snapshot_lang(
         .replace(file, "<ENTRY_FILE>");
 
     if std::env::var("NYX_UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
-        std::fs::write(&snapshot_path, &normalised).unwrap_or_else(|e| {
-            panic!("write harness snapshot {}: {e}", snapshot_path.display())
-        });
+        std::fs::write(&snapshot_path, &normalised)
+            .unwrap_or_else(|e| panic!("write harness snapshot {}: {e}", snapshot_path.display()));
         return;
     }
 

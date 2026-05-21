@@ -16,8 +16,8 @@
 #[cfg(feature = "dynamic")]
 mod parity_tests {
     use nyx_scanner::commands::scan::Diag;
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
     use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus};
     use nyx_scanner::labels::Cap;
     use nyx_scanner::patterns::{FindingCategory, Severity};
@@ -118,8 +118,11 @@ mod parity_tests {
     }
 
     /// Assert two verdicts agree on status (and on reason for non-Confirmed).
-    fn assert_parity(fixture: &str, process_result: &nyx_scanner::evidence::VerifyResult,
-                     docker_result: &nyx_scanner::evidence::VerifyResult) {
+    fn assert_parity(
+        fixture: &str,
+        process_result: &nyx_scanner::evidence::VerifyResult,
+        docker_result: &nyx_scanner::evidence::VerifyResult,
+    ) {
         // Docker reachability fluctuates per host: `docker info` may exit 0
         // (daemon listening) while the sandbox's container-start path still
         // fails (image not pulled, socket gated by Docker Desktop's
@@ -128,16 +131,20 @@ mod parity_tests {
         // where the error surfaces, so the skip predicate looks at the
         // reason text, not the verdict status.
         if let Some(ref r) = docker_result.reason
-            && format!("{r:?}").contains("BackendUnavailable") {
-                return; // Docker absent — skip comparison.
-            }
+            && format!("{r:?}").contains("BackendUnavailable")
+        {
+            return; // Docker absent — skip comparison.
+        }
 
         assert_eq!(
-            process_result.status, docker_result.status,
+            process_result.status,
+            docker_result.status,
             "fixture {fixture}: status mismatch: process={:?} docker={:?}\n\
              process detail: {:?}\ndocker detail: {:?}",
-            process_result.status, docker_result.status,
-            process_result.detail, docker_result.detail,
+            process_result.status,
+            docker_result.status,
+            process_result.detail,
+            docker_result.detail,
         );
 
         // For non-Confirmed statuses, the reason must also match.
@@ -154,7 +161,9 @@ mod parity_tests {
 
     /// Helper: run a fixture through both backends and assert parity.
     fn parity_check(fixture: &str, function: &str, sink_line: u32, cap: Cap) {
-        if !docker_available() { return; }
+        if !docker_available() {
+            return;
+        }
 
         let diag = python_diag(fixture, function, sink_line, cap);
         let process_result = verify_finding(&diag, &process_opts());
@@ -266,7 +275,9 @@ mod parity_tests {
     /// Rust finding (lang unsupported) must return same status on both backends.
     #[test]
     fn parity_rust_lang_unsupported() {
-        if !docker_available() { return; }
+        if !docker_available() {
+            return;
+        }
 
         let diag = python_diag("src/handler.rs", "handle_request", 10, Cap::SQL_QUERY);
         let process_result = verify_finding(&diag, &process_opts());

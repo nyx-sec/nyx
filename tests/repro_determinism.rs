@@ -90,16 +90,19 @@ mod repro_determinism_tests {
 
         // Write repro bundle (first time).
         let artifact1 = repro::write(
-            &spec, &opts, &outcome, &verdict,
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
             "# harness source v1\n",
             "def login(x): pass\n",
             b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
             "sqli-union-nyx",
             None,
-        ).expect("first repro write must succeed");
+        )
+        .expect("first repro write must succeed");
 
-        let outcome_json_1 =
-            std::fs::read_to_string(artifact1.root.join("expected/outcome.json"))
+        let outcome_json_1 = std::fs::read_to_string(artifact1.root.join("expected/outcome.json"))
             .expect("outcome.json must exist after first write");
 
         // Write repro bundle (second time, same inputs).
@@ -107,16 +110,19 @@ mod repro_determinism_tests {
         std::fs::remove_dir_all(&artifact1.root).unwrap();
 
         let artifact2 = repro::write(
-            &spec, &opts, &outcome, &verdict,
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
             "# harness source v1\n",
             "def login(x): pass\n",
             b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
             "sqli-union-nyx",
             None,
-        ).expect("second repro write must succeed");
+        )
+        .expect("second repro write must succeed");
 
-        let outcome_json_2 =
-            std::fs::read_to_string(artifact2.root.join("expected/outcome.json"))
+        let outcome_json_2 = std::fs::read_to_string(artifact2.root.join("expected/outcome.json"))
             .expect("outcome.json must exist after second write");
 
         assert_eq!(
@@ -141,9 +147,17 @@ mod repro_determinism_tests {
         let verdict = make_confirmed_verdict("determinism00002");
 
         let artifact = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "# harness", "# entry", b"payload", "label", None,
-        ).expect("repro write must succeed");
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "# harness",
+            "# entry",
+            b"payload",
+            "label",
+            None,
+        )
+        .expect("repro write must succeed");
 
         let outcome_json =
             std::fs::read_to_string(artifact.root.join("expected/outcome.json")).unwrap();
@@ -262,8 +276,7 @@ fn main() {
             None,
         )
         .expect("first Rust repro write");
-        let json1 =
-            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+        let json1 = std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
 
         std::fs::remove_dir_all(&artifact1.root).unwrap();
 
@@ -279,8 +292,7 @@ fn main() {
             None,
         )
         .expect("second Rust repro write");
-        let json2 =
-            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+        let json2 = std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
 
         assert_eq!(
             json1, json2,
@@ -325,24 +337,39 @@ fn main() {
         let entry_src = "function login(username) { console.log(username); }\n";
 
         let artifact1 = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "// harness js\n", entry_src,
-            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
-        ).expect("first JS repro write");
-        let json1 =
-            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "// harness js\n",
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("first JS repro write");
+        let json1 = std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
 
         std::fs::remove_dir_all(&artifact1.root).unwrap();
 
         let artifact2 = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "// harness js\n", entry_src,
-            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
-        ).expect("second JS repro write");
-        let json2 =
-            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "// harness js\n",
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("second JS repro write");
+        let json2 = std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
 
-        assert_eq!(json1, json2, "JS outcome.json must be byte-identical across two writes");
+        assert_eq!(
+            json1, json2,
+            "JS outcome.json must be byte-identical across two writes"
+        );
 
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
@@ -382,24 +409,39 @@ fn main() {
         let entry_src = "package entry\nfunc Login(username string) {}\n";
 
         let artifact1 = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "// harness go\n", entry_src,
-            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
-        ).expect("first Go repro write");
-        let json1 =
-            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "// harness go\n",
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("first Go repro write");
+        let json1 = std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
 
         std::fs::remove_dir_all(&artifact1.root).unwrap();
 
         let artifact2 = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "// harness go\n", entry_src,
-            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
-        ).expect("second Go repro write");
-        let json2 =
-            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "// harness go\n",
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("second Go repro write");
+        let json2 = std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
 
-        assert_eq!(json1, json2, "Go outcome.json must be byte-identical across two writes");
+        assert_eq!(
+            json1, json2,
+            "Go outcome.json must be byte-identical across two writes"
+        );
 
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
@@ -439,24 +481,39 @@ fn main() {
         let entry_src = "public class Entry { public static void login(String u) {} }\n";
 
         let artifact1 = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "// NyxHarness.java\n", entry_src,
-            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
-        ).expect("first Java repro write");
-        let json1 =
-            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "// NyxHarness.java\n",
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("first Java repro write");
+        let json1 = std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
 
         std::fs::remove_dir_all(&artifact1.root).unwrap();
 
         let artifact2 = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "// NyxHarness.java\n", entry_src,
-            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
-        ).expect("second Java repro write");
-        let json2 =
-            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "// NyxHarness.java\n",
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("second Java repro write");
+        let json2 = std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
 
-        assert_eq!(json1, json2, "Java outcome.json must be byte-identical across two writes");
+        assert_eq!(
+            json1, json2,
+            "Java outcome.json must be byte-identical across two writes"
+        );
 
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
@@ -496,24 +553,39 @@ fn main() {
         let entry_src = "<?php\nfunction login($username) {}\n";
 
         let artifact1 = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "<?php // harness\n", entry_src,
-            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
-        ).expect("first PHP repro write");
-        let json1 =
-            std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "<?php // harness\n",
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("first PHP repro write");
+        let json1 = std::fs::read_to_string(artifact1.root.join("expected/outcome.json")).unwrap();
 
         std::fs::remove_dir_all(&artifact1.root).unwrap();
 
         let artifact2 = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "<?php // harness\n", entry_src,
-            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--", "sqli-union-nyx", None,
-        ).expect("second PHP repro write");
-        let json2 =
-            std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "<?php // harness\n",
+            entry_src,
+            b"' UNION SELECT 'NYX_SQL_CONFIRMED'--",
+            "sqli-union-nyx",
+            None,
+        )
+        .expect("second PHP repro write");
+        let json2 = std::fs::read_to_string(artifact2.root.join("expected/outcome.json")).unwrap();
 
-        assert_eq!(json1, json2, "PHP outcome.json must be byte-identical across two writes");
+        assert_eq!(
+            json1, json2,
+            "PHP outcome.json must be byte-identical across two writes"
+        );
 
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
@@ -530,9 +602,17 @@ fn main() {
         let verdict = make_confirmed_verdict("determinism00003");
 
         let artifact = repro::write(
-            &spec, &opts, &outcome, &verdict,
-            "# harness", "# entry", b"payload", "label", None,
-        ).expect("repro write must succeed");
+            &spec,
+            &opts,
+            &outcome,
+            &verdict,
+            "# harness",
+            "# entry",
+            b"payload",
+            "label",
+            None,
+        )
+        .expect("repro write must succeed");
 
         let verdict_json =
             std::fs::read_to_string(artifact.root.join("expected/verdict.json")).unwrap();

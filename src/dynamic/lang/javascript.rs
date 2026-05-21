@@ -15,11 +15,13 @@
 //! - [`PayloadSlot::Argv`] — coerced to positional `Param(0)` by build_call.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{js_shared, ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{
+    ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter, js_shared,
+};
 use crate::dynamic::spec::{EntryKindTag, HarnessSpec};
 use crate::evidence::UnsupportedReason;
 
-pub use js_shared::{detect_shape, materialize_node, probe_shim, JsShape};
+pub use js_shared::{JsShape, detect_shape, materialize_node, probe_shim};
 
 /// Zero-sized [`LangEmitter`] handle for JavaScript.
 pub struct JavaScriptEmitter;
@@ -115,7 +117,11 @@ mod tests {
     fn emit_env_var_slot() {
         let spec = make_spec(PayloadSlot::EnvVar("DB_HOST".into()));
         let harness = emit(&spec).unwrap();
-        assert!(harness.source.contains("process.env[\"DB_HOST\"] = payload"));
+        assert!(
+            harness
+                .source
+                .contains("process.env[\"DB_HOST\"] = payload")
+        );
     }
 
     #[test]
@@ -155,5 +161,4 @@ mod tests {
         assert!(hint.contains("HttpRoute"));
         assert!(hint.contains("Phase 13"));
     }
-
 }

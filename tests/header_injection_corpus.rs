@@ -16,12 +16,12 @@
 mod common;
 
 use nyx_scanner::dynamic::corpus::{
-    audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
-    resolve_benign_control_lang, Oracle,
+    Oracle, audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
+    resolve_benign_control_lang,
 };
 use nyx_scanner::dynamic::framework::registry::adapters_for;
 use nyx_scanner::dynamic::lang;
-use nyx_scanner::dynamic::oracle::{oracle_fired, ProbePredicate};
+use nyx_scanner::dynamic::oracle::{ProbePredicate, oracle_fired};
 use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
@@ -311,8 +311,8 @@ fn lang_emitter_dispatches_to_header_injection_harness() {
         ),
     ] {
         let spec = make_spec(lang, entry_file, entry_name);
-        let harness = lang::emit(&spec)
-            .unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
+        let harness =
+            lang::emit(&spec).unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
         assert!(
             harness.source.contains("HeaderEmit"),
             "{lang:?} header harness must carry the HeaderEmit probe kind",
@@ -396,8 +396,8 @@ fn framework_adapters_detect_header_sink() {
             &bytes,
             lang,
         );
-        let b = binding
-            .unwrap_or_else(|| panic!("{lang:?} adapter must detect the header fixture"));
+        let b =
+            binding.unwrap_or_else(|| panic!("{lang:?} adapter must detect the header fixture"));
         assert_eq!(b.kind, EntryKind::Function);
         assert!(!b.adapter.is_empty());
     }
@@ -457,10 +457,10 @@ fn slug(lang: Lang) -> &'static str {
 
 mod e2e_phase_08 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -588,43 +588,57 @@ mod e2e_phase_08 {
 
     #[test]
     fn java_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else { return };
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
         assert_confirmed(Lang::Java, &outcome);
     }
 
     #[test]
     fn python_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
         assert_confirmed(Lang::Python, &outcome);
     }
 
     #[test]
     fn php_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
         assert_confirmed(Lang::Php, &outcome);
     }
 
     #[test]
     fn ruby_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else { return };
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
         assert_confirmed(Lang::Ruby, &outcome);
     }
 
     #[test]
     fn js_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else { return };
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
         assert_confirmed(Lang::JavaScript, &outcome);
     }
 
     #[test]
     fn go_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Go, "vuln.go", "Run") else { return };
+        let Some(outcome) = run(Lang::Go, "vuln.go", "Run") else {
+            return;
+        };
         assert_confirmed(Lang::Go, &outcome);
     }
 
     #[test]
     fn rust_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Rust, "vuln.rs", "run") else { return };
+        let Some(outcome) = run(Lang::Rust, "vuln.rs", "run") else {
+            return;
+        };
         assert_confirmed(Lang::Rust, &outcome);
     }
 }

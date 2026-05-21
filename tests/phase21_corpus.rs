@@ -121,12 +121,7 @@ fn graphql_resolver_supported_in_target_langs() {
 
 #[test]
 fn websocket_supported_in_target_langs() {
-    for lang in [
-        Lang::Python,
-        Lang::JavaScript,
-        Lang::TypeScript,
-        Lang::Ruby,
-    ] {
+    for lang in [Lang::Python, Lang::JavaScript, Lang::TypeScript, Lang::Ruby] {
         assert!(
             lang::entry_kinds_supported(lang).contains(&EntryKindTag::WebSocket),
             "{lang:?} must advertise WebSocket after Phase 21",

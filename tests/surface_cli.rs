@@ -9,8 +9,8 @@ use nyx_scanner::callgraph::CallGraph;
 use nyx_scanner::commands::surface::{load_or_build, render_dot, render_text};
 use nyx_scanner::summary::GlobalSummaries;
 use nyx_scanner::surface::{
-    build::{build_surface_map, SurfaceBuildInputs},
     SurfaceMap,
+    build::{SurfaceBuildInputs, build_surface_map},
 };
 use nyx_scanner::utils::config::Config;
 use std::path::{Path, PathBuf};
@@ -78,7 +78,8 @@ fn text_output_matches_golden_for_flask_fixture() {
     let expected = std::fs::read_to_string(GOLDEN_PATH)
         .expect("read tests/dynamic_fixtures/surface/cli_output.golden.txt");
     assert_eq!(
-        actual, expected,
+        actual,
+        expected,
         "render_text output drifted from golden; re-run with UPDATE_GOLDEN=1 if intentional.\nfixture: {}",
         dir.display()
     );
@@ -98,7 +99,10 @@ fn json_output_round_trips_byte_identical() {
     let bytes = map.to_json().expect("canonical JSON");
     let mut rt = SurfaceMap::from_json(&bytes).expect("from_json");
     let rt_bytes = rt.to_json().expect("re-serialise");
-    assert_eq!(bytes, rt_bytes, "canonical JSON must round-trip identically");
+    assert_eq!(
+        bytes, rt_bytes,
+        "canonical JSON must round-trip identically"
+    );
 }
 
 #[test]

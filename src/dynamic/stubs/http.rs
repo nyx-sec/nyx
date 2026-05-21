@@ -31,7 +31,7 @@
 //! recording log lives under the workdir-rooted tempdir which is
 //! cleaned up by the verifier's tempdir handle.
 
-use super::{monotonic_ns, StubEvent, StubKind, StubProvider};
+use super::{StubEvent, StubKind, StubProvider, monotonic_ns};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -182,7 +182,10 @@ impl StubProvider for HttpStub {
     }
 
     fn recording_endpoint(&self) -> Option<(&'static str, String)> {
-        Some((HTTP_STUB_LOG_ENV_VAR, self.log_path.to_string_lossy().into_owned()))
+        Some((
+            HTTP_STUB_LOG_ENV_VAR,
+            self.log_path.to_string_lossy().into_owned(),
+        ))
     }
 
     fn drain_events(&self) -> Vec<StubEvent> {
@@ -227,9 +230,10 @@ fn accept_loop(
         let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
         if let Some(ev) = handle_connection(stream, MAX_REQUEST_BYTES)
-            && let Ok(mut g) = events.lock() {
-                g.push(ev);
-            }
+            && let Ok(mut g) = events.lock()
+        {
+            g.push(ev);
+        }
     }
 }
 
@@ -257,21 +261,19 @@ fn handle_connection(mut stream: TcpStream, max_bytes: usize) -> Option<StubEven
         if trimmed.is_empty() {
             break;
         }
-        if let Some(rest) = trimmed
-            .to_ascii_lowercase()
-            .strip_prefix("content-length:")
-            && let Ok(n) = rest.trim().parse::<usize>() {
-                content_length = n.min(max_bytes);
-            }
+        if let Some(rest) = trimmed.to_ascii_lowercase().strip_prefix("content-length:")
+            && let Ok(n) = rest.trim().parse::<usize>()
+        {
+            content_length = n.min(max_bytes);
+        }
         headers.push(trimmed.to_owned());
     }
 
     // Body, capped at content_length (already clamped to max_bytes).
     let mut body = vec![0u8; content_length];
-    if content_length > 0
-        && reader.read_exact(&mut body).is_err() {
-            body.clear();
-        }
+    if content_length > 0 && reader.read_exact(&mut body).is_err() {
+        body.clear();
+    }
 
     // Always reply 200 OK with no body.
     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
@@ -419,8 +421,10 @@ mod tests {
             .append(true)
             .open(stub.log_path())
             .unwrap();
-        f.write_all(b"# method: POST\n# url: http://example.com/login\nPOST http://example.com/login\n")
-            .unwrap();
+        f.write_all(
+            b"# method: POST\n# url: http://example.com/login\nPOST http://example.com/login\n",
+        )
+        .unwrap();
         drop(f);
 
         let events = stub.drain_events();

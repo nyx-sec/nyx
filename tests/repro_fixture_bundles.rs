@@ -21,10 +21,10 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::repro::{self, replay_bundle, ReplayResult};
+use nyx_scanner::dynamic::repro::{self, ReplayResult, replay_bundle};
 use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions, SandboxOutcome};
-use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use nyx_scanner::dynamic::spec::SpecDerivationStrategy;
+use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use nyx_scanner::evidence::{AttemptSummary, VerifyResult, VerifyStatus};
 use nyx_scanner::labels::Cap;
 use nyx_scanner::symbol::Lang;
@@ -123,8 +123,7 @@ fn flask_eval_verdict() -> VerifyResult {
         reason: None,
         inconclusive_reason: None,
         detail: Some(
-            "flask_eval chain composer fixture: eval(NYX_PAYLOAD) under python-3.11"
-                .into(),
+            "flask_eval chain composer fixture: eval(NYX_PAYLOAD) under python-3.11".into(),
         ),
         attempts: vec![AttemptSummary {
             payload_label: FLASK_EVAL_PAYLOAD_LABEL.into(),
@@ -167,10 +166,8 @@ fn flask_eval_bundle_root() -> PathBuf {
 }
 
 fn read_json(path: &Path) -> serde_json::Value {
-    let bytes = std::fs::read(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    serde_json::from_slice(&bytes)
-        .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
 /// Regenerate the committed flask_eval bundle.  Run with `--ignored` to
@@ -206,8 +203,7 @@ fn regen_python_3_11_flask_eval_bundle() {
     }
 
     assert_eq!(
-        artifact.root,
-        bundle_root,
+        artifact.root, bundle_root,
         "bundle wrote to unexpected path",
     );
 }

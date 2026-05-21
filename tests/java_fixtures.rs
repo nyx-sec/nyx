@@ -22,7 +22,7 @@ mod common;
 #[cfg(feature = "dynamic")]
 mod java_fixture_tests {
     use nyx_scanner::commands::scan::Diag;
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{
         Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
         VerifyStatus,
@@ -464,7 +464,7 @@ mod java_fixture_tests {
 
 #[cfg(feature = "dynamic")]
 mod phase14_shape_tests {
-    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
+    use crate::common::fixture_harness::{Prerequisite, run_shape_fixture_lang_or_skip};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
@@ -517,7 +517,15 @@ mod phase14_shape_tests {
                 Prerequisite::CommandAvailable("javac"),
                 Prerequisite::CommandAvailable("java"),
             ],
-            Lang::Java, "java", shape, file, func, cap, sink_line, kind, slot,
+            Lang::Java,
+            "java",
+            shape,
+            file,
+            func,
+            cap,
+            sink_line,
+            kind,
+            slot,
         )
     }
 
@@ -526,8 +534,13 @@ mod phase14_shape_tests {
     #[test]
     fn static_method_vuln_is_confirmed() {
         let Some(r) = run(
-            "static_method", "Vuln.java", "processInput", Cap::CODE_EXEC, 12,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "static_method",
+            "Vuln.java",
+            "processInput",
+            Cap::CODE_EXEC,
+            12,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -537,8 +550,13 @@ mod phase14_shape_tests {
     #[test]
     fn static_method_benign_not_confirmed() {
         let Some(r) = run(
-            "static_method", "Benign.java", "processInput", Cap::CODE_EXEC, 13,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "static_method",
+            "Benign.java",
+            "processInput",
+            Cap::CODE_EXEC,
+            13,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -550,8 +568,13 @@ mod phase14_shape_tests {
     #[test]
     fn static_main_vuln_is_confirmed() {
         let Some(r) = run(
-            "static_main", "Vuln.java", "main", Cap::CODE_EXEC, 13,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "static_main",
+            "Vuln.java",
+            "main",
+            Cap::CODE_EXEC,
+            13,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         ) else {
             return;
         };
@@ -561,8 +584,13 @@ mod phase14_shape_tests {
     #[test]
     fn static_main_benign_not_confirmed() {
         let Some(r) = run(
-            "static_main", "Benign.java", "main", Cap::CODE_EXEC, 12,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "static_main",
+            "Benign.java",
+            "main",
+            Cap::CODE_EXEC,
+            12,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         ) else {
             return;
         };
@@ -574,8 +602,13 @@ mod phase14_shape_tests {
     #[test]
     fn servlet_doget_vuln_is_confirmed() {
         let Some(r) = run(
-            "servlet_doget", "Vuln.java", "doGet", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+            "servlet_doget",
+            "Vuln.java",
+            "doGet",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("payload".into()),
         ) else {
             return;
         };
@@ -585,8 +618,13 @@ mod phase14_shape_tests {
     #[test]
     fn servlet_doget_benign_not_confirmed() {
         let Some(r) = run(
-            "servlet_doget", "Benign.java", "doGet", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+            "servlet_doget",
+            "Benign.java",
+            "doGet",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("payload".into()),
         ) else {
             return;
         };
@@ -598,8 +636,13 @@ mod phase14_shape_tests {
     #[test]
     fn servlet_dopost_vuln_is_confirmed() {
         let Some(r) = run(
-            "servlet_dopost", "Vuln.java", "doPost", Cap::CODE_EXEC, 13,
-            EntryKind::HttpRoute, PayloadSlot::HttpBody,
+            "servlet_dopost",
+            "Vuln.java",
+            "doPost",
+            Cap::CODE_EXEC,
+            13,
+            EntryKind::HttpRoute,
+            PayloadSlot::HttpBody,
         ) else {
             return;
         };
@@ -609,8 +652,13 @@ mod phase14_shape_tests {
     #[test]
     fn servlet_dopost_benign_not_confirmed() {
         let Some(r) = run(
-            "servlet_dopost", "Benign.java", "doPost", Cap::CODE_EXEC, 12,
-            EntryKind::HttpRoute, PayloadSlot::HttpBody,
+            "servlet_dopost",
+            "Benign.java",
+            "doPost",
+            Cap::CODE_EXEC,
+            12,
+            EntryKind::HttpRoute,
+            PayloadSlot::HttpBody,
         ) else {
             return;
         };
@@ -622,8 +670,13 @@ mod phase14_shape_tests {
     #[test]
     fn spring_controller_vuln_is_confirmed() {
         let Some(r) = run(
-            "spring_controller", "Vuln.java", "run", Cap::CODE_EXEC, 16,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "spring_controller",
+            "Vuln.java",
+            "run",
+            Cap::CODE_EXEC,
+            16,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -633,8 +686,13 @@ mod phase14_shape_tests {
     #[test]
     fn spring_controller_benign_not_confirmed() {
         let Some(r) = run(
-            "spring_controller", "Benign.java", "run", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "spring_controller",
+            "Benign.java",
+            "run",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -646,8 +704,13 @@ mod phase14_shape_tests {
     #[test]
     fn junit_test_vuln_is_confirmed() {
         let Some(r) = run(
-            "junit_test", "Vuln.java", "testRun", Cap::CODE_EXEC, 17,
-            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "junit_test",
+            "Vuln.java",
+            "testRun",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::Function,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };
@@ -657,8 +720,13 @@ mod phase14_shape_tests {
     #[test]
     fn junit_test_benign_not_confirmed() {
         let Some(r) = run(
-            "junit_test", "Benign.java", "testRun", Cap::CODE_EXEC, 15,
-            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "junit_test",
+            "Benign.java",
+            "testRun",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::Function,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };
@@ -670,8 +738,13 @@ mod phase14_shape_tests {
     #[test]
     fn quarkus_route_vuln_is_confirmed() {
         let Some(r) = run(
-            "quarkus_route", "Vuln.java", "run", Cap::CODE_EXEC, 17,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "quarkus_route",
+            "Vuln.java",
+            "run",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -681,8 +754,13 @@ mod phase14_shape_tests {
     #[test]
     fn quarkus_route_benign_not_confirmed() {
         let Some(r) = run(
-            "quarkus_route", "Benign.java", "run", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "quarkus_route",
+            "Benign.java",
+            "run",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };

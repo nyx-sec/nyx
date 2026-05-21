@@ -12,7 +12,7 @@
 #[cfg(feature = "dynamic")]
 mod js_fixture_tests {
     use nyx_scanner::commands::scan::Diag;
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{
         Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
         VerifyStatus,

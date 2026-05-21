@@ -92,9 +92,7 @@ fn chain_step(
     terminal: Option<&ChainStepTerminal>,
 ) -> ChainStepHarness {
     let shim = probe_shim();
-    let mut driver = String::from(
-        "prev = ENV[\"NYX_PREV_OUTPUT\"] || \"\"\n$stdout.write(prev)\n",
-    );
+    let mut driver = String::from("prev = ENV[\"NYX_PREV_OUTPUT\"] || \"\"\n$stdout.write(prev)\n");
     if let Some(t) = terminal {
         let callee = ruby_string_literal(&t.sink_callee);
         let sentinel = ruby_string_literal(ChainStepHarness::SINK_HIT_SENTINEL);
@@ -211,7 +209,10 @@ pub fn detect_shape(spec: &HarnessSpec) -> RubyShape {
 }
 
 fn read_entry_source(entry_file: &str) -> String {
-    let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
+    let candidates = [
+        PathBuf::from(entry_file),
+        PathBuf::from(".").join(entry_file),
+    ];
     for path in &candidates {
         if let Ok(s) = std::fs::read_to_string(path) {
             return s;
@@ -443,7 +444,10 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
     // Phase 21 (Track M.3): ScheduledJob short-circuit (Sidekiq workers).
     if let crate::evidence::EntryKind::ScheduledJob { schedule } = &spec.entry_kind {
-        return Ok(emit_scheduled_job_harness(&spec.entry_name, schedule.as_deref()));
+        return Ok(emit_scheduled_job_harness(
+            &spec.entry_name,
+            schedule.as_deref(),
+        ));
     }
 
     // Phase 21 (Track M.3): WebSocket short-circuit (ActionCable channels).
@@ -1188,7 +1192,11 @@ fn generate_source(spec: &HarnessSpec, shape: RubyShape) -> String {
     let pre_call = build_pre_call(spec);
     let invocation = invoke_for_shape(spec, shape, entry_fn);
     let shim = probe_shim();
-    let crash_callee = if entry_fn.is_empty() { "main" } else { entry_fn.as_str() };
+    let crash_callee = if entry_fn.is_empty() {
+        "main"
+    } else {
+        entry_fn.as_str()
+    };
 
     format!(
         r#"# Nyx dynamic harness — auto-generated, do not edit (Phase 15 — RubyShape::{shape:?}).
@@ -1448,15 +1456,21 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!RubyEmitter.entry_kinds_supported().is_empty());
-        assert!(RubyEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::Function));
-        assert!(RubyEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::HttpRoute));
-        assert!(RubyEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::CliSubcommand));
+        assert!(
+            RubyEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::Function)
+        );
+        assert!(
+            RubyEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::HttpRoute)
+        );
+        assert!(
+            RubyEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::CliSubcommand)
+        );
     }
 
     #[test]
@@ -1576,8 +1590,14 @@ mod tests {
 
     #[test]
     fn parse_first_class_name_picks_up_class_decl() {
-        assert_eq!(parse_first_class_name("class Foo\nend\n"), Some("Foo".to_owned()));
-        assert_eq!(parse_first_class_name("class Bar < Base\nend\n"), Some("Bar".to_owned()));
+        assert_eq!(
+            parse_first_class_name("class Foo\nend\n"),
+            Some("Foo".to_owned())
+        );
+        assert_eq!(
+            parse_first_class_name("class Bar < Base\nend\n"),
+            Some("Bar".to_owned())
+        );
         assert_eq!(parse_first_class_name("def foo\nend\n"), None);
     }
 
@@ -1590,7 +1610,8 @@ mod tests {
             "probe_shim banner missing from generated harness.rb — splicing regressed",
         );
         assert!(
-            h.source.contains("def __nyx_install_crash_guard(sink_callee)"),
+            h.source
+                .contains("def __nyx_install_crash_guard(sink_callee)"),
             "install_crash_guard definition missing from generated harness.rb",
         );
         assert!(

@@ -202,10 +202,12 @@ mod tests {
             .expect("binding");
         let route = binding.route.unwrap();
         assert_eq!(route.path, "/users/<id>");
-        assert!(binding
-            .request_params
-            .iter()
-            .any(|p| p.name == "id" && matches!(p.source, ParamSource::PathSegment(_))));
+        assert!(
+            binding
+                .request_params
+                .iter()
+                .any(|p| p.name == "id" && matches!(p.source, ParamSource::PathSegment(_)))
+        );
     }
 
     #[test]
@@ -234,17 +236,22 @@ mod tests {
     fn skips_when_flask_not_imported() {
         let src: &[u8] = b"def add(a, b):\n    return a + b\n";
         let tree = parse(src);
-        assert!(PythonFlaskAdapter
-            .detect(&summary("add"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonFlaskAdapter
+                .detect(&summary("add"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_function_has_no_decorator() {
-        let src: &[u8] = b"from flask import Flask\napp = Flask(__name__)\ndef helper(x):\n    return x\n";
+        let src: &[u8] =
+            b"from flask import Flask\napp = Flask(__name__)\ndef helper(x):\n    return x\n";
         let tree = parse(src);
-        assert!(PythonFlaskAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonFlaskAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

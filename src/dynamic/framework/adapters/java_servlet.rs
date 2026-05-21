@@ -126,10 +126,12 @@ mod tests {
         let route = binding.route.unwrap();
         assert_eq!(route.method, HttpMethod::GET);
         assert_eq!(route.path, "/admin");
-        assert!(binding
-            .request_params
-            .iter()
-            .all(|p| matches!(p.source, ParamSource::Implicit)));
+        assert!(
+            binding
+                .request_params
+                .iter()
+                .all(|p| matches!(p.source, ParamSource::Implicit))
+        );
     }
 
     #[test]
@@ -157,19 +159,24 @@ mod tests {
 
     #[test]
     fn skips_when_method_name_is_not_a_servlet_verb() {
-        let src: &[u8] = b"public class V extends HttpServlet { public void run(HttpServletRequest req) {} }\n";
+        let src: &[u8] =
+            b"public class V extends HttpServlet { public void run(HttpServletRequest req) {} }\n";
         let tree = parse(src);
-        assert!(JavaServletAdapter
-            .detect(&summary("run"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaServletAdapter
+                .detect(&summary("run"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_no_servlet_signature_markers() {
         let src: &[u8] = b"public class V {\n  public void doGet(String x) {}\n}\n";
         let tree = parse(src);
-        assert!(JavaServletAdapter
-            .detect(&summary("doGet"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaServletAdapter
+                .detect(&summary("doGet"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

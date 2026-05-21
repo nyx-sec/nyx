@@ -26,7 +26,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         fixture_paths: &["tests/benchmark/corpus/rust/ssrf/ssrf_reqwest.rs"],
         oob_nonce_slot: false,
         probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "ssrf-benign" }),
+        benign_control: Some(PayloadRef {
+            label: "ssrf-benign",
+        }),
         no_benign_control_rationale: None,
     },
     CuratedPayload {

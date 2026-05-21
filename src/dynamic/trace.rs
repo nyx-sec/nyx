@@ -208,7 +208,10 @@ mod tests {
     #[test]
     fn jsonl_round_trips_through_serde() {
         let t = VerifyTrace::new();
-        t.record(TraceStage::SandboxStarted, Some("payload=sqli-tautology".to_owned()));
+        t.record(
+            TraceStage::SandboxStarted,
+            Some("payload=sqli-tautology".to_owned()),
+        );
         t.record(TraceStage::OracleObserved, Some("fired=true".to_owned()));
         let jsonl = t.to_jsonl();
         let mut parsed = Vec::new();

@@ -193,8 +193,14 @@ fn compose_chain_step_threads_prev_output_for_every_emitter() {
             "{lang:?} emitter must thread NYX_PREV_OUTPUT via extra_env; got {:?}",
             step.extra_env
         );
-        assert!(!step.source.is_empty(), "{lang:?} step source must be non-empty");
-        assert!(!step.command.is_empty(), "{lang:?} step command must be non-empty");
+        assert!(
+            !step.source.is_empty(),
+            "{lang:?} step source must be non-empty"
+        );
+        assert!(
+            !step.command.is_empty(),
+            "{lang:?} step command must be non-empty"
+        );
         assert!(
             !step.source.contains(ChainStepHarness::SINK_HIT_SENTINEL),
             "{lang:?} non-terminal step must NOT carry the sink-hit sentinel; got source:\n{}",

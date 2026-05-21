@@ -50,24 +50,18 @@ fn walk_calls<'tree, F: FnMut(Node<'tree>)>(node: Node<'tree>, visit: &mut F) {
 fn match_sinatra_call(call: Node, bytes: &[u8], file_rel: &str) -> Option<SurfaceNode> {
     let method_name_node = call.child_by_field_name("method")?;
     let method_text = method_name_node.utf8_text(bytes).ok()?;
-    let (_, method) = VERBS
-        .iter()
-        .find(|(v, _)| *v == method_text)?;
+    let (_, method) = VERBS.iter().find(|(v, _)| *v == method_text)?;
     // Must have a block to be a Sinatra route.
-    let block = call
-        .child_by_field_name("block")
-        .or_else(|| {
-            let mut c = call.walk();
-            call.children(&mut c)
-                .find(|n| matches!(n.kind(), "do_block" | "block"))
-        })?;
+    let block = call.child_by_field_name("block").or_else(|| {
+        let mut c = call.walk();
+        call.children(&mut c)
+            .find(|n| matches!(n.kind(), "do_block" | "block"))
+    })?;
     // Args: Sinatra accepts a string literal as the first positional arg.
-    let args = call
-        .child_by_field_name("arguments")
-        .or_else(|| {
-            let mut c = call.walk();
-            call.children(&mut c).find(|n| n.kind() == "argument_list")
-        })?;
+    let args = call.child_by_field_name("arguments").or_else(|| {
+        let mut c = call.walk();
+        call.children(&mut c).find(|n| n.kind() == "argument_list")
+    })?;
     let mut cursor = args.walk();
     let route_node = args.named_children(&mut cursor).next()?;
     let route = string_node_value(route_node, bytes)?;

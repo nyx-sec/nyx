@@ -51,10 +51,12 @@ impl CppShape {
         let kind = spec.entry_kind.tag();
 
         let has_main_argv = (source.contains("int main(") || source.contains("int main ("))
-            && (source.contains("argc") || source.contains("char *argv")
-                || source.contains("char* argv") || source.contains("char **argv"));
-        let has_libfuzzer = source.contains("LLVMFuzzerTestOneInput")
-            || entry == "LLVMFuzzerTestOneInput";
+            && (source.contains("argc")
+                || source.contains("char *argv")
+                || source.contains("char* argv")
+                || source.contains("char **argv"));
+        let has_libfuzzer =
+            source.contains("LLVMFuzzerTestOneInput") || entry == "LLVMFuzzerTestOneInput";
 
         if has_libfuzzer {
             return Self::LibfuzzerEntry;
@@ -76,7 +78,10 @@ pub fn detect_shape(spec: &HarnessSpec) -> CppShape {
 }
 
 fn read_entry_source(entry_file: &str) -> String {
-    let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
+    let candidates = [
+        PathBuf::from(entry_file),
+        PathBuf::from(".").join(entry_file),
+    ];
     for path in &candidates {
         if let Ok(s) = std::fs::read_to_string(path) {
             return s;
@@ -649,9 +654,21 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!CppEmitter.entry_kinds_supported().is_empty());
-        assert!(CppEmitter.entry_kinds_supported().contains(&EntryKindTag::Function));
-        assert!(CppEmitter.entry_kinds_supported().contains(&EntryKindTag::CliSubcommand));
-        assert!(CppEmitter.entry_kinds_supported().contains(&EntryKindTag::LibraryApi));
+        assert!(
+            CppEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::Function)
+        );
+        assert!(
+            CppEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::CliSubcommand)
+        );
+        assert!(
+            CppEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::LibraryApi)
+        );
     }
 
     #[test]
@@ -672,7 +689,8 @@ mod tests {
 
     #[test]
     fn shape_detect_libfuzzer() {
-        let src = "extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t* d, size_t n) { return 0; }";
+        let src =
+            "extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t* d, size_t n) { return 0; }";
         let mut spec = make_spec(PayloadSlot::Param(0));
         spec.entry_kind = EntryKind::LibraryApi;
         spec.entry_name = "LLVMFuzzerTestOneInput".into();
@@ -713,7 +731,10 @@ mod tests {
         spec.entry_name = "nyx_entry_main".into();
         let h = emit(&spec).unwrap();
         assert!(h.source.contains("argv_storage.push_back(payload)"));
-        assert!(h.source.contains("nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())"));
+        assert!(
+            h.source
+                .contains("nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())")
+        );
     }
 
     #[test]
@@ -731,7 +752,9 @@ mod tests {
         );
         assert!(h.source.contains("#undef main"), "undef guard missing");
         assert!(
-            h.source.contains("__nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())"),
+            h.source.contains(
+                "__nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())"
+            ),
             "harness call site must target the renamed symbol",
         );
         assert!(h.source.contains("int main(int argc, char *argv[])"));
@@ -742,7 +765,10 @@ mod tests {
         let fh = emit(&fixture_spec).unwrap();
         assert!(!fh.source.contains("#define main"));
         assert!(!fh.source.contains("#undef main"));
-        assert!(fh.source.contains("nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())"));
+        assert!(
+            fh.source
+                .contains("nyx_entry_main(static_cast<int>(argv_storage.size()), new_argv.data())")
+        );
     }
 
     #[test]
@@ -764,9 +790,18 @@ mod tests {
             h.source.contains("__nyx_install_crash_guard(\"run\");"),
             "install_crash_guard call site missing or wrong callee",
         );
-        let install_pos = h.source.find("__nyx_install_crash_guard(\"run\");").unwrap();
-        let payload_pos = h.source.find("std::string payload = nyx_payload();").unwrap();
-        let invoke_pos = h.source.find("run(payload.c_str(), payload.size());").unwrap();
+        let install_pos = h
+            .source
+            .find("__nyx_install_crash_guard(\"run\");")
+            .unwrap();
+        let payload_pos = h
+            .source
+            .find("std::string payload = nyx_payload();")
+            .unwrap();
+        let invoke_pos = h
+            .source
+            .find("run(payload.c_str(), payload.size());")
+            .unwrap();
         assert!(
             payload_pos < install_pos && install_pos < invoke_pos,
             "install_crash_guard ordering wrong: payload_pos={payload_pos} install_pos={install_pos} invoke_pos={invoke_pos}",
@@ -780,7 +815,8 @@ mod tests {
         spec.entry_name = "main".into();
         let h = emit(&spec).unwrap();
         assert!(
-            h.source.contains("__nyx_install_crash_guard(\"__nyx_entry_main\");"),
+            h.source
+                .contains("__nyx_install_crash_guard(\"__nyx_entry_main\");"),
             "install_crash_guard must use post-rename symbol when entry_name == 'main'",
         );
     }
@@ -814,7 +850,11 @@ mod tests {
     fn emit_cmake_in_extra_files() {
         let spec = make_spec(PayloadSlot::Param(0));
         let h = emit(&spec).unwrap();
-        let mk = h.extra_files.iter().find(|(n, _)| n == "CMakeLists.txt").expect("CMakeLists.txt must be staged");
+        let mk = h
+            .extra_files
+            .iter()
+            .find(|(n, _)| n == "CMakeLists.txt")
+            .expect("CMakeLists.txt must be staged");
         assert!(mk.1.contains("add_executable(nyx_harness main.cpp)"));
     }
 
@@ -832,7 +872,8 @@ mod tests {
             "probe_shim banner missing from chain step source",
         );
         assert!(
-            step.source.contains("inline void __nyx_install_crash_guard("),
+            step.source
+                .contains("inline void __nyx_install_crash_guard("),
             "install_crash_guard missing from chain step source",
         );
         let shim_pos = step

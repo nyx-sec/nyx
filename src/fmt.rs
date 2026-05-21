@@ -260,7 +260,9 @@ fn render_chains(chains: &[ChainFinding], _width: usize) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "{}\n",
-        style(format!("Chains ({})", chains.len())).bold().underlined()
+        style(format!("Chains ({})", chains.len()))
+            .bold()
+            .underlined()
     ));
     for c in chains {
         let sev = chain_severity_tag(c.severity);
@@ -301,7 +303,11 @@ fn render_chains(chains: &[ChainFinding], _width: usize) -> String {
 fn chain_severity_tag(s: crate::chain::finding::ChainSeverity) -> String {
     use crate::chain::finding::ChainSeverity;
     match s {
-        ChainSeverity::Critical => format!("{} {}", style("✖").red().bold(), style("[CRITICAL]").red().bold()),
+        ChainSeverity::Critical => format!(
+            "{} {}",
+            style("✖").red().bold(),
+            style("[CRITICAL]").red().bold()
+        ),
         ChainSeverity::High => format!("{} {}", style("✖").red(), style("[HIGH]").red()),
         ChainSeverity::Medium => format!("{} {}", style("⚠").yellow(), style("[MEDIUM]").yellow()),
         ChainSeverity::Low => format!("{} {}", style("●").dim(), style("[LOW]").dim()),
@@ -609,14 +615,15 @@ fn format_inconclusive_reason(r: &crate::evidence::InconclusiveReason) -> String
             supported,
             ..
         } => {
-            format!(
-                "entry kind {attempted} unsupported for {lang:?} (supported: {supported:?})"
-            )
+            format!("entry kind {attempted} unsupported for {lang:?} (supported: {supported:?})")
         }
         InconclusiveReason::NoBenignControl => "no benign control payload".to_string(),
         InconclusiveReason::ReversedDifferential => "reversed differential".to_string(),
         InconclusiveReason::UnrelatedCrash => "unrelated crash (not sink-site)".to_string(),
-        InconclusiveReason::BackendInsufficient { backend, oracle_kind } => {
+        InconclusiveReason::BackendInsufficient {
+            backend,
+            oracle_kind,
+        } => {
             format!("backend {backend} cannot enforce {oracle_kind} oracle")
         }
         InconclusiveReason::PolicyDeniedDynamic { rule, .. } => {

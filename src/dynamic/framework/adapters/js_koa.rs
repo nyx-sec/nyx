@@ -39,22 +39,13 @@ fn receiver_looks_like_koa(name: &str) -> bool {
 /// that reference `target`.  Returns the matched call node so callers
 /// can stamp a middleware-shape binding when the verb-based dispatch
 /// fails to fire.
-fn find_use_middleware<'a>(
-    root: Node<'a>,
-    bytes: &[u8],
-    target: &str,
-) -> Option<Node<'a>> {
+fn find_use_middleware<'a>(root: Node<'a>, bytes: &[u8], target: &str) -> Option<Node<'a>> {
     let mut hit: Option<Node<'a>> = None;
     walk_for_use(root, bytes, target, &mut hit);
     hit
 }
 
-fn walk_for_use<'a>(
-    node: Node<'a>,
-    bytes: &[u8],
-    target: &str,
-    out: &mut Option<Node<'a>>,
-) {
+fn walk_for_use<'a>(node: Node<'a>, bytes: &[u8], target: &str, out: &mut Option<Node<'a>>) {
     if out.is_some() {
         return;
     }
@@ -108,8 +99,7 @@ impl FrameworkAdapter for JsKoaAdapter {
                 .unwrap_or_default();
             bind_path_params(&formals, path)
         };
-        if let Some((method, path)) =
-            find_route_registration(ast, file_bytes, &summary.name, &recv)
+        if let Some((method, path)) = find_route_registration(ast, file_bytes, &summary.name, &recv)
         {
             let request_params = formals_for(&path);
             return Some(FrameworkBinding {
@@ -180,8 +170,12 @@ mod tests {
         let route = binding.route.as_ref().unwrap();
         assert_eq!(route.method, HttpMethod::GET);
         assert_eq!(route.path, "/users/:id");
-        assert!(binding.request_params.iter().any(|p| p.name == "ctx"
-            && matches!(p.source, ParamSource::Implicit)));
+        assert!(
+            binding
+                .request_params
+                .iter()
+                .any(|p| p.name == "ctx" && matches!(p.source, ParamSource::Implicit))
+        );
     }
 
     #[test]
@@ -205,8 +199,10 @@ mod tests {
             function h(req, res) {}\n\
             router.get('/x', h);\n";
         let tree = parse_js(src);
-        assert!(JsKoaAdapter
-            .detect(&summary("h"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JsKoaAdapter
+                .detect(&summary("h"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

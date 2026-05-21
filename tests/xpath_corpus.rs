@@ -17,14 +17,12 @@
 mod common;
 
 use nyx_scanner::dynamic::corpus::{
-    audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
-    resolve_benign_control_lang, Oracle,
+    Oracle, audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
+    resolve_benign_control_lang,
 };
 use nyx_scanner::dynamic::framework::registry::adapters_for;
 use nyx_scanner::dynamic::lang;
-use nyx_scanner::dynamic::oracle::{
-    oracle_fired, ProbePredicate, SignalSet,
-};
+use nyx_scanner::dynamic::oracle::{ProbePredicate, SignalSet, oracle_fired};
 use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
@@ -63,7 +61,10 @@ fn make_spec(lang: Lang, entry_file: &str, entry_name: &str) -> HarnessSpec {
 fn corpus_registers_xpath_for_every_supported_lang() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::XPATH_INJECTION, *lang);
-        assert!(!slice.is_empty(), "XPATH_INJECTION has no payloads for {lang:?}");
+        assert!(
+            !slice.is_empty(),
+            "XPATH_INJECTION has no payloads for {lang:?}"
+        );
         let has_vuln = slice.iter().any(|p| !p.is_benign);
         let has_benign = slice.iter().any(|p| p.is_benign);
         assert!(has_vuln, "{lang:?} XPath missing vuln payload");
@@ -109,10 +110,9 @@ fn payload_oracle_carries_query_result_count_predicate() {
         match &vuln.oracle {
             Oracle::SinkProbe { predicates } => {
                 assert!(
-                    predicates.iter().any(|p| matches!(
-                        p,
-                        ProbePredicate::QueryResultCountGreaterThan { n: 1 }
-                    )),
+                    predicates
+                        .iter()
+                        .any(|p| matches!(p, ProbePredicate::QueryResultCountGreaterThan { n: 1 })),
                     "{lang:?} vuln payload missing QueryResultCountGreaterThan {{ n: 1 }}",
                 );
             }
@@ -221,7 +221,9 @@ fn query_result_count_predicate_also_matches_ldap_probe() {
         args: vec![],
         captured_at_ns: 1,
         payload_id: "phase07".into(),
-        kind: ProbeKind::Ldap { entries_returned: 3 },
+        kind: ProbeKind::Ldap {
+            entries_returned: 3,
+        },
         witness: ProbeWitness::empty(),
     }];
     let outcome = SandboxOutcome {
@@ -269,8 +271,8 @@ fn lang_emitter_dispatches_to_xpath_harness() {
         ),
     ] {
         let spec = make_spec(lang, entry_file, entry_name);
-        let harness = lang::emit(&spec)
-            .unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
+        let harness =
+            lang::emit(&spec).unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
         assert!(
             harness.source.contains("nodes_returned"),
             "{lang:?} xpath harness must carry the nodes_returned probe field",
@@ -354,8 +356,7 @@ fn framework_adapters_detect_xpath_sink() {
             &bytes,
             lang,
         );
-        let b = binding
-            .unwrap_or_else(|| panic!("{lang:?} adapter must detect the XPath fixture"));
+        let b = binding.unwrap_or_else(|| panic!("{lang:?} adapter must detect the XPath fixture"));
         assert_eq!(b.kind, EntryKind::Function);
         assert!(!b.adapter.is_empty());
     }
@@ -407,10 +408,10 @@ fn staged_corpus_carries_three_users() {
 
 mod e2e_phase_07 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -520,7 +521,9 @@ mod e2e_phase_07 {
 
     #[test]
     fn java_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else { return };
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Java XPath vuln must Confirm via run_spec; got {outcome:?}",
@@ -534,7 +537,9 @@ mod e2e_phase_07 {
 
     #[test]
     fn python_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Python XPath vuln must Confirm via run_spec; got {outcome:?}",
@@ -548,7 +553,9 @@ mod e2e_phase_07 {
 
     #[test]
     fn php_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "PHP XPath vuln must Confirm via run_spec; got {outcome:?}",
@@ -562,7 +569,9 @@ mod e2e_phase_07 {
 
     #[test]
     fn javascript_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else { return };
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "JavaScript XPath vuln must Confirm via run_spec; got {outcome:?}",

@@ -24,7 +24,7 @@
 
 use crate::dynamic::harness::BuiltHarness;
 use crate::dynamic::oob::OobListener;
-use crate::dynamic::probe::{ProbeChannel, PROBE_PATH_ENV};
+use crate::dynamic::probe::{PROBE_PATH_ENV, ProbeChannel};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -276,14 +276,12 @@ pub struct SandboxOptions {
 ///   default-deny seccomp filter scoped to [`SandboxOptions::seccomp_caps`].
 ///   Each primitive is best-effort; failures degrade to
 ///   [`HardeningLevel::Partial`] without aborting the run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessHardeningProfile {
     #[default]
     Standard,
     Strict,
 }
-
 
 /// Phase 20 follow-up (Track E.4 ablation harness): selectively skip or
 /// loosen individual Strict-profile primitives so the escape-fixture
@@ -387,7 +385,10 @@ pub struct HostPort {
 
 impl HostPort {
     pub fn new(host: impl Into<String>, port: u16) -> Self {
-        Self { host: host.into(), port }
+        Self {
+            host: host.into(),
+            port,
+        }
     }
 }
 
@@ -415,13 +416,16 @@ impl HostPort {
 /// - [`NetworkPolicy::Open`] — unrestricted outbound.  Docker: `bridge`
 ///   with no egress filter.  Reserved for diagnostic / dev-only runs;
 ///   the verifier never sets this in production.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub enum NetworkPolicy {
     #[default]
     None,
-    StubsOnly { allow: Vec<HostPort> },
-    OobOutbound { listener: Arc<OobListener> },
+    StubsOnly {
+        allow: Vec<HostPort>,
+    },
+    OobOutbound {
+        listener: Arc<OobListener>,
+    },
     Open,
 }
 
@@ -459,7 +463,6 @@ impl NetworkPolicy {
         }
     }
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxBackend {
@@ -590,14 +593,14 @@ fn apply_oob_egress_filter(container_name: &str, oob_port: u16) {
 
     let rules: &[&[&str]] = &[
         // Allow container → host OOB port (INPUT; docker0 bridge to host).
-        &["-I", "INPUT", "1", "-i", "docker0",
-          "-s", ip, "-p", "tcp", "--dport", &port_str, "-j", "ACCEPT"],
+        &[
+            "-I", "INPUT", "1", "-i", "docker0", "-s", ip, "-p", "tcp", "--dport", &port_str, "-j",
+            "ACCEPT",
+        ],
         // Drop all other container → host traffic (INPUT; position 2 fires after accept).
-        &["-I", "INPUT", "2", "-i", "docker0",
-          "-s", ip, "-j", "DROP"],
+        &["-I", "INPUT", "2", "-i", "docker0", "-s", ip, "-j", "DROP"],
         // Drop all container egress to external internet (FORWARD / DOCKER-USER).
-        &["-I", "DOCKER-USER", "1",
-          "-s", ip, "-j", "DROP"],
+        &["-I", "DOCKER-USER", "1", "-s", ip, "-j", "DROP"],
     ];
 
     let mut applied = 0usize;
@@ -617,7 +620,10 @@ fn apply_oob_egress_filter(container_name: &str, oob_port: u16) {
     if applied == rules.len() {
         oob_egress_registry().insert(
             container_name.to_owned(),
-            OobEgressState { container_ip, oob_port },
+            OobEgressState {
+                container_ip,
+                oob_port,
+            },
         );
     } else {
         eprintln!(
@@ -644,12 +650,12 @@ fn remove_oob_egress_filter(container_name: &str) {
     let ip = state.container_ip.as_str();
 
     let rules: &[&[&str]] = &[
-        &["-D", "INPUT", "-i", "docker0",
-          "-s", ip, "-p", "tcp", "--dport", &port_str, "-j", "ACCEPT"],
-        &["-D", "INPUT", "-i", "docker0",
-          "-s", ip, "-j", "DROP"],
-        &["-D", "DOCKER-USER",
-          "-s", ip, "-j", "DROP"],
+        &[
+            "-D", "INPUT", "-i", "docker0", "-s", ip, "-p", "tcp", "--dport", &port_str, "-j",
+            "ACCEPT",
+        ],
+        &["-D", "INPUT", "-i", "docker0", "-s", ip, "-j", "DROP"],
+        &["-D", "DOCKER-USER", "-s", ip, "-j", "DROP"],
     ];
 
     for rule in rules {
@@ -680,7 +686,9 @@ fn container_registry() -> &'static dashmap::DashMap<String, String> {
 /// on SIGKILL; the `sleep 300` in started containers bounds the leak window.
 #[cfg(unix)]
 extern "C" fn stop_all_containers() {
-    let Some(reg) = CONTAINER_REGISTRY.get() else { return };
+    let Some(reg) = CONTAINER_REGISTRY.get() else {
+        return;
+    };
     let bin = std::env::var("NYX_DOCKER_BIN").unwrap_or_else(|_| "docker".to_owned());
     for entry in reg.iter() {
         // Remove OOB egress filter before stopping the container so stale
@@ -779,10 +787,7 @@ pub fn run(
             // backend in that case so the harness picks up the host
             // venv / node_modules / vendor dir already prepared.
             let needs_host_deps = harness_needs_host_deps(harness);
-            if docker_available()
-                && harness_is_interpreted(&harness.command)
-                && !needs_host_deps
-            {
+            if docker_available() && harness_is_interpreted(&harness.command) && !needs_host_deps {
                 run_docker(harness, payload_bytes, opts)
             } else if docker_available() && harness_is_native_binary(&harness.command) {
                 run_native_binary_docker(harness, payload_bytes, opts)
@@ -841,7 +846,9 @@ fn run_firecracker(
     }
     #[cfg(not(feature = "firecracker"))]
     {
-        Err(SandboxError::BackendUnavailable(SandboxBackend::Firecracker))
+        Err(SandboxError::BackendUnavailable(
+            SandboxBackend::Firecracker,
+        ))
     }
 }
 
@@ -880,12 +887,9 @@ fn rewrite_extra_env_for_container(
                 && let Some(idx) = fs_stub_roots
                     .iter()
                     .position(|p| p.as_os_str() == std::ffi::OsStr::new(v))
-                {
-                    return (
-                        k.clone(),
-                        format!("{}/{idx}", docker::STUB_MOUNT_ROOT),
-                    );
-                }
+            {
+                return (k.clone(), format!("{}/{idx}", docker::STUB_MOUNT_ROOT));
+            }
             (k.clone(), v.clone())
         })
         .collect()
@@ -930,7 +934,13 @@ fn run_docker(
         registry.insert(container_name.clone(), container_name.clone());
     }
 
-    exec_in_container(&container_name, harness, payload_bytes, opts, &fs_stub_roots)
+    exec_in_container(
+        &container_name,
+        harness,
+        payload_bytes,
+        opts,
+        &fs_stub_roots,
+    )
 }
 
 /// Returns true when `docker info` succeeds using the current `NYX_DOCKER_BIN`.
@@ -998,16 +1008,20 @@ fn start_container(
         "run".into(),
         "-d".into(),
         "--rm".into(),
-        "--name".into(), name.into(),
+        "--name".into(),
+        name.into(),
         "--cap-drop=ALL".into(),
-        "--security-opt".into(), "no-new-privileges:true".into(),
-        "--tmpfs".into(), "/tmp:size=128m,exec".into(),
+        "--security-opt".into(),
+        "no-new-privileges:true".into(),
+        "--tmpfs".into(),
+        "/tmp:size=128m,exec".into(),
         // Bind-mount the host workdir at the fixed `/work` path
         // read-write so harness code can reference `/work/...` without
         // threading the host tempdir through every layer.  The mount
         // alone is sufficient to deliver harness files into the
         // container — no follow-up `docker cp` is needed.
-        "-v".into(), workdir_mount,
+        "-v".into(),
+        workdir_mount,
     ];
     // Phase 10 / Phase 19 (Track D.3 + E.3): bind-mount each
     // filesystem-stub root at `STUB_MOUNT_ROOT/<idx>:rw` so the
@@ -1141,8 +1155,10 @@ fn exec_in_container(
         // checks provide a second layer of defence on top of --cap-drop=ALL.
         // The container itself starts as root for setup (mkdir, docker cp),
         // but harness execution runs as nobody (uid/gid 65534).
-        "--user".into(), "65534:65534".into(),
-        "-e".into(), format!("NYX_PAYLOAD_B64={payload_b64}"),
+        "--user".into(),
+        "65534:65534".into(),
+        "-e".into(),
+        format!("NYX_PAYLOAD_B64={payload_b64}"),
     ];
     // Mirror the process backend's `NYX_PAYLOAD` raw env var when the
     // payload bytes are valid UTF-8 (most curated payloads are ASCII).
@@ -1157,10 +1173,11 @@ fn exec_in_container(
     // non-UTF-8 payloads (a `docker -e` argument must be valid UTF-8),
     // leaving consumers to decode `NYX_PAYLOAD_B64` themselves.
     if let Ok(s) = std::str::from_utf8(payload_bytes)
-        && !s.contains('\0') {
-            cmd_args.push("-e".into());
-            cmd_args.push(format!("NYX_PAYLOAD={s}"));
-        }
+        && !s.contains('\0')
+    {
+        cmd_args.push("-e".into());
+        cmd_args.push(format!("NYX_PAYLOAD={s}"));
+    }
     // Forward harness-specific env vars.
     for (k, v) in &harness.env {
         cmd_args.push("-e".into());
@@ -1276,7 +1293,11 @@ fn exec_in_container(
 /// fall through to the legacy tag mapping below so behaviour on a fresh
 /// catalogue stays unchanged.
 fn detect_image_for_harness(harness: &BuiltHarness) -> String {
-    let cmd0 = harness.command.first().map(|s| s.as_str()).unwrap_or("python3");
+    let cmd0 = harness
+        .command
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or("python3");
     let base = std::path::Path::new(cmd0)
         .file_name()
         .and_then(|n| n.to_str())
@@ -1329,10 +1350,12 @@ fn run_native_binary_docker(
 
     let binary_path = match harness.command.first() {
         Some(p) => p.clone(),
-        None => return Err(SandboxError::Spawn(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "empty command for native binary",
-        ))),
+        None => {
+            return Err(SandboxError::Spawn(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "empty command for native binary",
+            )));
+        }
     };
 
     let container_name = workdir_to_container_name(&harness.workdir);
@@ -1385,7 +1408,13 @@ fn run_native_binary_docker(
         registry.insert(container_name.clone(), container_name.clone());
     }
 
-    exec_native_binary_in_container(&container_name, harness, payload_bytes, opts, &fs_stub_roots)
+    exec_native_binary_in_container(
+        &container_name,
+        harness,
+        payload_bytes,
+        opts,
+        &fs_stub_roots,
+    )
 }
 
 /// Execute a native binary already in the container at `/work/nyx_harness`.
@@ -1403,8 +1432,10 @@ fn exec_native_binary_in_container(
     let mut cmd_args: Vec<String> = vec![
         "exec".into(),
         "-i".into(),
-        "--user".into(), "65534:65534".into(),
-        "-e".into(), format!("NYX_PAYLOAD_B64={payload_b64}"),
+        "--user".into(),
+        "65534:65534".into(),
+        "-e".into(),
+        format!("NYX_PAYLOAD_B64={payload_b64}"),
     ];
     for (k, v) in &harness.env {
         cmd_args.push("-e".into());
@@ -1566,10 +1597,8 @@ fn run_process(
             None => (resolved_cmd_path.clone(), harness.command[1..].to_vec()),
         };
     #[cfg(not(target_os = "macos"))]
-    let (effective_cmd_path, effective_cmd_args): (std::path::PathBuf, Vec<String>) = (
-        resolved_cmd_path.clone(),
-        harness.command[1..].to_vec(),
-    );
+    let (effective_cmd_path, effective_cmd_args): (std::path::PathBuf, Vec<String>) =
+        (resolved_cmd_path.clone(), harness.command[1..].to_vec());
 
     let mut cmd = Command::new(&effective_cmd_path);
     cmd.args(&effective_cmd_args);
@@ -1894,9 +1923,15 @@ mod tests {
 
     #[test]
     fn python_image_for_known_toolchains() {
-        assert_eq!(python_image_for_toolchain("python-3.11"), "python:3.11-slim");
+        assert_eq!(
+            python_image_for_toolchain("python-3.11"),
+            "python:3.11-slim"
+        );
         assert_eq!(python_image_for_toolchain("python-3"), "python:3-slim");
-        assert_eq!(python_image_for_toolchain("python-3.12"), "python:3.12-slim");
+        assert_eq!(
+            python_image_for_toolchain("python-3.12"),
+            "python:3.12-slim"
+        );
     }
 
     #[test]
@@ -1908,8 +1943,14 @@ mod tests {
 
     #[test]
     fn java_image_for_known_toolchains() {
-        assert_eq!(java_image_for_toolchain("java-21"), "eclipse-temurin:21-jre-jammy");
-        assert_eq!(java_image_for_toolchain("java-17"), "eclipse-temurin:17-jre-jammy");
+        assert_eq!(
+            java_image_for_toolchain("java-21"),
+            "eclipse-temurin:21-jre-jammy"
+        );
+        assert_eq!(
+            java_image_for_toolchain("java-17"),
+            "eclipse-temurin:17-jre-jammy"
+        );
     }
 
     #[test]
@@ -1927,13 +1968,21 @@ mod tests {
 
     #[test]
     fn harness_is_interpreted_java() {
-        let cmd = vec!["java".to_owned(), "-cp".to_owned(), ".".to_owned(), "NyxHarness".to_owned()];
+        let cmd = vec![
+            "java".to_owned(),
+            "-cp".to_owned(),
+            ".".to_owned(),
+            "NyxHarness".to_owned(),
+        ];
         assert!(harness_is_interpreted(&cmd));
     }
 
     #[test]
     fn harness_is_interpreted_node() {
-        assert!(harness_is_interpreted(&["node".to_owned(), "harness.js".to_owned()]));
+        assert!(harness_is_interpreted(&[
+            "node".to_owned(),
+            "harness.js".to_owned()
+        ]));
     }
 
     #[test]
@@ -2076,7 +2125,10 @@ mod tests {
     fn fetch_docker_image_digest_short_returns_empty_on_bad_image() {
         // A non-existent image tag always returns empty (inspect fails).
         let digest = fetch_docker_image_digest_short("nyx-nonexistent-image:does-not-exist-99999");
-        assert!(digest.is_empty(), "non-existent image must return empty digest");
+        assert!(
+            digest.is_empty(),
+            "non-existent image must return empty digest"
+        );
     }
 
     #[test]
@@ -2174,7 +2226,10 @@ mod tests {
     fn rewrite_extra_env_passes_unrelated_pairs_through() {
         let extra = vec![
             ("NYX_SQL_ENDPOINT".to_owned(), "/tmp/abc.db".to_owned()),
-            ("NYX_HTTP_ENDPOINT".to_owned(), "http://127.0.0.1:12345".to_owned()),
+            (
+                "NYX_HTTP_ENDPOINT".to_owned(),
+                "http://127.0.0.1:12345".to_owned(),
+            ),
         ];
         let out = rewrite_extra_env_for_container(&extra, &[]);
         assert_eq!(out, extra);
@@ -2183,9 +2238,10 @@ mod tests {
     #[test]
     fn rewrite_extra_env_maps_fs_root_to_container_mount() {
         let host_root = PathBuf::from("/tmp/host-fs-root-abc");
-        let extra = vec![
-            ("NYX_FS_ROOT".to_owned(), host_root.to_string_lossy().into_owned()),
-        ];
+        let extra = vec![(
+            "NYX_FS_ROOT".to_owned(),
+            host_root.to_string_lossy().into_owned(),
+        )];
         let out = rewrite_extra_env_for_container(&extra, &[host_root]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].0, "NYX_FS_ROOT");
@@ -2198,13 +2254,8 @@ mod tests {
         // active fs_stub_roots list is passed through unchanged.  This
         // keeps the rewrite from accidentally clobbering an emitter-
         // supplied placeholder.
-        let extra = vec![
-            ("NYX_FS_ROOT".to_owned(), "/some/host/path".to_owned()),
-        ];
-        let out = rewrite_extra_env_for_container(
-            &extra,
-            &[PathBuf::from("/different/host/path")],
-        );
+        let extra = vec![("NYX_FS_ROOT".to_owned(), "/some/host/path".to_owned())];
+        let out = rewrite_extra_env_for_container(&extra, &[PathBuf::from("/different/host/path")]);
         assert_eq!(out, extra);
     }
 
@@ -2212,9 +2263,10 @@ mod tests {
     fn rewrite_extra_env_indexes_multiple_fs_roots() {
         let root_a = PathBuf::from("/tmp/fs-a");
         let root_b = PathBuf::from("/tmp/fs-b");
-        let extra = vec![
-            ("NYX_FS_ROOT".to_owned(), root_b.to_string_lossy().into_owned()),
-        ];
+        let extra = vec![(
+            "NYX_FS_ROOT".to_owned(),
+            root_b.to_string_lossy().into_owned(),
+        )];
         let out = rewrite_extra_env_for_container(&extra, &[root_a, root_b]);
         assert_eq!(out[0].1, format!("{}/1", docker::STUB_MOUNT_ROOT));
     }
@@ -2229,11 +2281,9 @@ mod tests {
     fn collect_fs_stub_roots_returns_paths_for_filesystem_stubs() {
         use crate::dynamic::stubs::StubKind;
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let harness = crate::dynamic::stubs::StubHarness::start(
-            &[StubKind::Filesystem],
-            dir.path(),
-        )
-        .expect("start stub harness");
+        let harness =
+            crate::dynamic::stubs::StubHarness::start(&[StubKind::Filesystem], dir.path())
+                .expect("start stub harness");
         let endpoint = harness.stubs()[0].endpoint();
         let opts = SandboxOptions {
             stub_harness: Some(Arc::new(harness)),
@@ -2248,11 +2298,9 @@ mod tests {
     fn collect_fs_stub_roots_skips_network_stubs() {
         use crate::dynamic::stubs::StubKind;
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let harness = crate::dynamic::stubs::StubHarness::start(
-            &[StubKind::Http, StubKind::Sql],
-            dir.path(),
-        )
-        .expect("start stub harness");
+        let harness =
+            crate::dynamic::stubs::StubHarness::start(&[StubKind::Http, StubKind::Sql], dir.path())
+                .expect("start stub harness");
         let opts = SandboxOptions {
             stub_harness: Some(Arc::new(harness)),
             ..SandboxOptions::default()

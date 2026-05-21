@@ -11,7 +11,7 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::framework::{detect_binding, HttpMethod, ParamSource};
+use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
 use nyx_scanner::symbol::Lang;
@@ -155,8 +155,8 @@ fn sinatra_does_not_fire_on_rails_controller() {
     let bytes = std::fs::read(path).expect("rails vuln fixture exists");
     let tree = parse_ruby(&bytes);
     let summary = summary_for("index", path);
-    let binding = detect_binding(&summary, tree.root_node(), &bytes, Lang::Ruby)
-        .expect("adapter binds");
+    let binding =
+        detect_binding(&summary, tree.root_node(), &bytes, Lang::Ruby).expect("adapter binds");
     // First-match-wins ordering must produce `ruby-rails`, not
     // `ruby-sinatra`, even if both adapters could in theory match.
     assert_eq!(binding.adapter, "ruby-rails");

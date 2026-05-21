@@ -53,8 +53,7 @@ impl FilesystemStub {
     /// in restricted environments (e.g. CI sandboxes that share a
     /// read-only workdir).
     pub fn start(workdir: &Path) -> std::io::Result<Self> {
-        let tempdir = TempDir::new_in(workdir)
-            .or_else(|_| TempDir::new())?;
+        let tempdir = TempDir::new_in(workdir).or_else(|_| TempDir::new())?;
         let root = tempdir.path().to_owned();
         Ok(Self {
             tempdir: Some(tempdir),
@@ -88,7 +87,8 @@ impl FilesystemStub {
         // Canonicalise both sides where possible so symlinks /
         // relative path segments do not fool the prefix check.
         let resolved_root = std::fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
-        let resolved_cand = std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_owned());
+        let resolved_cand =
+            std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_owned());
         resolved_cand.starts_with(&resolved_root)
     }
 }
@@ -145,10 +145,7 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, StubKind::Filesystem);
         assert!(events[0].summary.contains("/etc/passwd"));
-        assert_eq!(
-            events[0].detail.get("op").map(String::as_str),
-            Some("read")
-        );
+        assert_eq!(events[0].detail.get("op").map(String::as_str), Some("read"));
     }
 
     #[test]

@@ -17,11 +17,7 @@ fn callee_is_django_middleware(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
     matches!(
         last,
-        "process_request"
-            | "process_response"
-            | "process_view"
-            | "process_exception"
-            | "__call__"
+        "process_request" | "process_response" | "process_view" | "process_exception" | "__call__"
     )
 }
 

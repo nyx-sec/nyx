@@ -124,7 +124,10 @@ const PROFILE_SOURCES: &[(&str, &str)] = &[
         include_str!("../sandbox_profiles/path_traversal.sb"),
     ),
     ("ssrf", include_str!("../sandbox_profiles/ssrf.sb")),
-    ("deserialize", include_str!("../sandbox_profiles/deserialize.sb")),
+    (
+        "deserialize",
+        include_str!("../sandbox_profiles/deserialize.sb"),
+    ),
     ("xxe", include_str!("../sandbox_profiles/xxe.sb")),
     (
         "open_redirect",
@@ -305,9 +308,7 @@ pub fn splice_deny_default(source: &str, seed: &str) -> String {
         rewritten.push('\n');
     }
     rewritten.push('\n');
-    rewritten.push_str(
-        ";; ── deny-default seed (spliced by NYX_SB_DENY_DEFAULT=1) ──────────\n",
-    );
+    rewritten.push_str(";; ── deny-default seed (spliced by NYX_SB_DENY_DEFAULT=1) ──────────\n");
     rewritten.push_str(seed.trim_end());
     rewritten.push('\n');
     rewritten
@@ -378,7 +379,9 @@ pub fn wrap_plan(input: &WrapInput<'_>) -> WrapResult {
             },
         };
     }
-    let profile = input.profile_override.unwrap_or_else(|| profile_for_caps(input.caps));
+    let profile = input
+        .profile_override
+        .unwrap_or_else(|| profile_for_caps(input.caps));
     // Profile keys must be `&'static str` (from `PROFILE_SOURCES`); reject
     // unknown overrides up-front so we don't accidentally wrap with a
     // profile we have no source for.
@@ -411,7 +414,8 @@ pub fn wrap_plan(input: &WrapInput<'_>) -> WrapResult {
         }
     };
 
-    let workdir_abs = std::fs::canonicalize(input.workdir).unwrap_or_else(|_| input.workdir.to_path_buf());
+    let workdir_abs =
+        std::fs::canonicalize(input.workdir).unwrap_or_else(|_| input.workdir.to_path_buf());
 
     let mut args: Vec<String> = Vec::with_capacity(6 + input.cmd_args.len());
     args.push("-f".to_owned());
@@ -573,7 +577,10 @@ mod tests {
         // resetting the env var below restores the default for subsequent
         // tests in the same process.
         unsafe { std::env::set_var(SANDBOX_EXEC_BIN_ENV, "/nonexistent/sandbox-exec") };
-        assert_eq!(sandbox_exec_bin(), PathBuf::from("/nonexistent/sandbox-exec"));
+        assert_eq!(
+            sandbox_exec_bin(),
+            PathBuf::from("/nonexistent/sandbox-exec")
+        );
         assert!(!sandbox_exec_available());
         unsafe { std::env::remove_var(SANDBOX_EXEC_BIN_ENV) };
     }

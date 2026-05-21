@@ -41,10 +41,11 @@ fn collect_routes(root: Node<'_>, bytes: &[u8]) -> Vec<SinatraRoute> {
 
 fn visit(node: Node<'_>, bytes: &[u8], out: &mut Vec<SinatraRoute>) {
     if node.kind() == "call"
-        && let Some(route) = try_route(node, bytes) {
-            out.push(route);
-            return;
-        }
+        && let Some(route) = try_route(node, bytes)
+    {
+        out.push(route);
+        return;
+    }
     // Sinatra routes live at top level or directly under a `class App <
     // Sinatra::Base` body — never inside a helper method's body.  Skip
     // descent through `method` / `singleton_method` so a stray `get '/x'
@@ -101,9 +102,10 @@ fn block_parameter_names(block: Node<'_>, bytes: &[u8]) -> Vec<String> {
         let mut bc = child.walk();
         for p in child.named_children(&mut bc) {
             if p.kind() == "identifier"
-                && let Ok(t) = p.utf8_text(bytes) {
-                    out.push(t.to_owned());
-                }
+                && let Ok(t) = p.utf8_text(bytes)
+            {
+                out.push(t.to_owned());
+            }
         }
     }
     out
@@ -196,8 +198,7 @@ mod tests {
 
     #[test]
     fn fires_on_marker_comment() {
-        let src: &[u8] =
-            b"# nyx-shape: sinatra\nget '/run' do |payload|\n  payload\nend\n";
+        let src: &[u8] = b"# nyx-shape: sinatra\nget '/run' do |payload|\n  payload\nend\n";
         let tree = parse(src);
         let binding = RubySinatraAdapter
             .detect(&summary("run"), tree.root_node(), src)
@@ -207,13 +208,16 @@ mod tests {
 
     #[test]
     fn binds_path_placeholder() {
-        let src: &[u8] =
-            b"require 'sinatra'\nget '/u/:id' do |id|\n  id\nend\n";
+        let src: &[u8] = b"require 'sinatra'\nget '/u/:id' do |id|\n  id\nend\n";
         let tree = parse(src);
         let binding = RubySinatraAdapter
             .detect(&summary("id"), tree.root_node(), src)
             .expect("binding");
-        let id = binding.request_params.iter().find(|p| p.name == "id").unwrap();
+        let id = binding
+            .request_params
+            .iter()
+            .find(|p| p.name == "id")
+            .unwrap();
         assert!(matches!(id.source, ParamSource::PathSegment(_)));
     }
 
@@ -223,9 +227,11 @@ mod tests {
         let tree = parse(src);
         // No do/end block — the Sinatra adapter must not claim a
         // Rails-style `routes.draw` mapping.
-        assert!(RubySinatraAdapter
-            .detect(&summary("run"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubySinatraAdapter
+                .detect(&summary("run"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -243,9 +249,11 @@ mod tests {
     fn skips_when_sinatra_not_imported() {
         let src: &[u8] = b"get '/run' do |p|\n  p\nend\n";
         let tree = parse(src);
-        assert!(RubySinatraAdapter
-            .detect(&summary("run"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubySinatraAdapter
+                .detect(&summary("run"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -279,9 +287,11 @@ mod tests {
         let src: &[u8] =
             b"require 'sinatra'\ndef helper\n  get '/run' do |payload|\n    payload\n  end\nend\n";
         let tree = parse(src);
-        assert!(RubySinatraAdapter
-            .detect(&summary("run"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubySinatraAdapter
+                .detect(&summary("run"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]

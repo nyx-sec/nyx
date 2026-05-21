@@ -113,9 +113,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("NewDecoder")],
             ..Default::default()
         };
-        assert!(XxeGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XxeGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -126,9 +128,11 @@ mod tests {
             name: "Add".into(),
             ..Default::default()
         };
-        assert!(XxeGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxeGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -145,8 +149,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("NewDecoder")],
             ..Default::default()
         };
-        assert!(XxeGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxeGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

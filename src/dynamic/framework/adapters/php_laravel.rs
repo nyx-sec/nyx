@@ -12,9 +12,9 @@
 //!     a `class UserController { public function show($id) {…} }`
 //!     declaration in the same file.
 
-use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
 #[cfg(test)]
 use crate::dynamic::framework::HttpMethod;
+use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
 use crate::symbol::Lang;
@@ -50,8 +50,7 @@ impl FrameworkAdapter for PhpLaravelAdapter {
         let (func_node, class) = find_php_function(ast, file_bytes, &summary.name)?;
         let controller = class.and_then(|c| php_class_name(c, file_bytes));
 
-        let (method, path) =
-            find_laravel_static_route(ast, file_bytes, &summary.name, controller)?;
+        let (method, path) = find_laravel_static_route(ast, file_bytes, &summary.name, controller)?;
 
         let formals = php_formal_names(func_node, file_bytes);
         let request_params = bind_php_path_params(&formals, &path);
@@ -143,17 +142,21 @@ mod tests {
     fn skips_when_laravel_not_imported() {
         let src: &[u8] = b"<?php\nfunction f($x) { return $x; }\n";
         let tree = parse(src);
-        assert!(PhpLaravelAdapter
-            .detect(&summary("f"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpLaravelAdapter
+                .detect(&summary("f"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_route_mapping_does_not_reference_function() {
         let src: &[u8] = b"<?php\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/users', 'UserController@show');\nfunction helper($x) { return $x; }\n";
         let tree = parse(src);
-        assert!(PhpLaravelAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpLaravelAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

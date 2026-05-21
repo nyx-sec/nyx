@@ -79,9 +79,11 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(RubyMarshalAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RubyMarshalAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -92,8 +94,10 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(RubyMarshalAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubyMarshalAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -90,7 +90,11 @@ pub fn ensure_image_pulled(image: &str) -> bool {
     // succeeds we can skip the network pull entirely.  When it fails we fall
     // through to `docker pull` so registry-side rotations / first-time runs
     // still settle.
-    let ok = if docker_image_present(image) { true } else { docker_pull(image) };
+    let ok = if docker_image_present(image) {
+        true
+    } else {
+        docker_pull(image)
+    };
     cache.insert(image.to_owned(), ok);
     ok
 }
@@ -249,7 +253,10 @@ mod tests {
                 .expect("oob listener must bind on 127.0.0.1 in tests"),
         );
         let args = network_args(&NetworkPolicy::OobOutbound { listener });
-        assert!(args.iter().any(|a| a == "--add-host=host-gateway:host-gateway"));
+        assert!(
+            args.iter()
+                .any(|a| a == "--add-host=host-gateway:host-gateway")
+        );
     }
 
     #[test]
@@ -261,8 +268,8 @@ mod tests {
     fn image_reference_for_toolchain_known_returns_pinned_digest() {
         // The catalogue ships with hand-seeded sha256 digests for every
         // catalogue entry, so known IDs resolve to `<base>@sha256:…` refs.
-        let r = image_reference_for_toolchain("python-3.11")
-            .expect("python-3.11 is in the catalogue");
+        let r =
+            image_reference_for_toolchain("python-3.11").expect("python-3.11 is in the catalogue");
         assert!(r.starts_with("python:3.11-slim@sha256:"), "got {r}");
     }
 

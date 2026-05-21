@@ -14,8 +14,8 @@
 mod common;
 
 use nyx_scanner::dynamic::corpus::{
-    audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
-    resolve_benign_control_lang, Oracle,
+    Oracle, audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
+    resolve_benign_control_lang,
 };
 use nyx_scanner::dynamic::framework::registry::adapters_for;
 use nyx_scanner::dynamic::lang;
@@ -89,8 +89,7 @@ fn benign_control_resolves_within_lang_slice() {
             .iter()
             .find(|p| !p.is_benign && !p.oob_nonce_slot)
             .unwrap();
-        let resolved =
-            resolve_benign_control_lang(vuln, Cap::XXE, *lang).expect("paired control");
+        let resolved = resolve_benign_control_lang(vuln, Cap::XXE, *lang).expect("paired control");
         assert!(resolved.is_benign);
         let direct = benign_payload_for_lang(Cap::XXE, *lang).unwrap();
         assert_eq!(direct.label, resolved.label);
@@ -113,7 +112,9 @@ fn payload_oracle_carries_xxe_entity_expanded_predicate() {
                 assert!(
                     predicates.iter().any(|p| matches!(
                         p,
-                        ProbePredicate::XxeEntityExpanded { require_expanded: true }
+                        ProbePredicate::XxeEntityExpanded {
+                            require_expanded: true
+                        }
                     )),
                     "{lang:?} vuln payload missing XxeEntityExpanded{{require_expanded:true}}",
                 );
@@ -208,8 +209,8 @@ fn lang_emitter_dispatches_to_xxe_harness() {
         ),
     ] {
         let spec = make_spec(lang, entry_file, entry_name);
-        let harness = lang::emit(&spec)
-            .unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
+        let harness =
+            lang::emit(&spec).unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
         assert!(
             harness.source.contains("entity_expanded"),
             "{lang:?} xxe harness must carry the entity_expanded probe field",
@@ -250,11 +251,7 @@ fn framework_adapters_detect_xxe_sink() {
             "tests/dynamic_fixtures/xxe/php/vuln.php",
             "simplexml_load_string",
         ),
-        (
-            Lang::Ruby,
-            "tests/dynamic_fixtures/xxe/ruby/vuln.rb",
-            "new",
-        ),
+        (Lang::Ruby, "tests/dynamic_fixtures/xxe/ruby/vuln.rb", "new"),
         (
             Lang::Go,
             "tests/dynamic_fixtures/xxe/go/vuln.go",
@@ -283,8 +280,7 @@ fn framework_adapters_detect_xxe_sink() {
             &bytes,
             lang,
         );
-        let b = binding
-            .unwrap_or_else(|| panic!("{lang:?} adapter must detect the XXE fixture"));
+        let b = binding.unwrap_or_else(|| panic!("{lang:?} adapter must detect the XXE fixture"));
         assert_eq!(b.kind, EntryKind::Function);
         assert!(!b.adapter.is_empty());
     }
@@ -344,10 +340,10 @@ fn slug(lang: Lang) -> &'static str {
 
 mod e2e_phase_05 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -454,9 +450,7 @@ mod e2e_phase_05 {
             match run_spec(&spec, &opts) {
                 Ok(outcome) => {
                     if is_jvm_cwd_flake(&outcome) && attempt < 2 {
-                        eprintln!(
-                            "RETRY {lang:?} {fixture}: JVM cwd flake on attempt {attempt}",
-                        );
+                        eprintln!("RETRY {lang:?} {fixture}: JVM cwd flake on attempt {attempt}",);
                         std::thread::sleep(std::time::Duration::from_millis(200));
                         continue;
                     }
@@ -485,7 +479,9 @@ mod e2e_phase_05 {
 
     #[test]
     fn java_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else { return };
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Java XXE vuln must Confirm via run_spec; got {outcome:?}",
@@ -499,7 +495,9 @@ mod e2e_phase_05 {
 
     #[test]
     fn python_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Python XXE vuln must Confirm via run_spec; got {outcome:?}",
@@ -513,7 +511,9 @@ mod e2e_phase_05 {
 
     #[test]
     fn php_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "PHP XXE vuln must Confirm via run_spec; got {outcome:?}",
@@ -527,7 +527,9 @@ mod e2e_phase_05 {
 
     #[test]
     fn ruby_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else { return };
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Ruby XXE vuln must Confirm via run_spec; got {outcome:?}",
@@ -541,7 +543,9 @@ mod e2e_phase_05 {
 
     #[test]
     fn go_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Go, "vuln.go", "run") else { return };
+        let Some(outcome) = run(Lang::Go, "vuln.go", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Go XXE vuln must Confirm via run_spec; got {outcome:?}",
@@ -657,31 +661,41 @@ mod e2e_phase_05 {
 
     #[test]
     fn python_xxe_oob_loopback_records_callback() {
-        let Some(outcome) = run_oob(Lang::Python, "vuln.py", "run") else { return };
+        let Some(outcome) = run_oob(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
         assert_oob_recorded(&outcome, "xxe-python-oob-nonce");
     }
 
     #[test]
     fn java_xxe_oob_loopback_records_callback() {
-        let Some(outcome) = run_oob(Lang::Java, "Vuln.java", "run") else { return };
+        let Some(outcome) = run_oob(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
         assert_oob_recorded(&outcome, "xxe-java-oob-nonce");
     }
 
     #[test]
     fn php_xxe_oob_loopback_records_callback() {
-        let Some(outcome) = run_oob(Lang::Php, "vuln.php", "run") else { return };
+        let Some(outcome) = run_oob(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
         assert_oob_recorded(&outcome, "xxe-php-oob-nonce");
     }
 
     #[test]
     fn ruby_xxe_oob_loopback_records_callback() {
-        let Some(outcome) = run_oob(Lang::Ruby, "vuln.rb", "run") else { return };
+        let Some(outcome) = run_oob(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
         assert_oob_recorded(&outcome, "xxe-ruby-oob-nonce");
     }
 
     #[test]
     fn go_xxe_oob_loopback_records_callback() {
-        let Some(outcome) = run_oob(Lang::Go, "vuln.go", "run") else { return };
+        let Some(outcome) = run_oob(Lang::Go, "vuln.go", "run") else {
+            return;
+        };
         assert_oob_recorded(&outcome, "xxe-go-oob-nonce");
     }
 }

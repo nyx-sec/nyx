@@ -299,12 +299,7 @@ mod tests {
     fn detects_app_router_get() {
         let src = "export async function GET(req: Request) { return new Response('ok'); }\n";
         let (tree, bytes) = parse(src);
-        let nodes = detect_next_routes(
-            &tree,
-            &bytes,
-            &PathBuf::from("app/users/route.ts"),
-            None,
-        );
+        let nodes = detect_next_routes(&tree, &bytes, &PathBuf::from("app/users/route.ts"), None);
         assert_eq!(nodes.len(), 1);
         let SurfaceNode::EntryPoint(ep) = &nodes[0] else {
             panic!()

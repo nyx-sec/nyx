@@ -16,7 +16,7 @@
 
 use nyx_scanner::dynamic::lang;
 use nyx_scanner::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
-use nyx_scanner::dynamic::stubs::{mock_source, MockKind};
+use nyx_scanner::dynamic::stubs::{MockKind, mock_source};
 use nyx_scanner::labels::Cap;
 use nyx_scanner::symbol::Lang;
 

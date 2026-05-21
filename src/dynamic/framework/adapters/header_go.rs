@@ -133,9 +133,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("Set")],
             ..Default::default()
         };
-        assert!(HeaderGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            HeaderGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -146,9 +148,11 @@ mod tests {
             name: "Add".into(),
             ..Default::default()
         };
-        assert!(HeaderGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -174,9 +178,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(HeaderGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -195,9 +201,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(HeaderGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            HeaderGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -213,8 +221,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(HeaderGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

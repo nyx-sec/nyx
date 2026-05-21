@@ -84,8 +84,7 @@ fn detect_nest(
     if !source_imports_nest(file_bytes) {
         return None;
     }
-    let (class_node, method_node) =
-        find_class_method(ast, file_bytes, &summary.name)?;
+    let (class_node, method_node) = find_class_method(ast, file_bytes, &summary.name)?;
     let prefix = class_controller_prefix(class_node, file_bytes)?;
     let (method, sub_path) = method_verb_and_path(method_node, file_bytes)?;
     let full_path = join_paths(&prefix, &sub_path);
@@ -213,10 +212,7 @@ fn class_controller_prefix(class_node: Node<'_>, bytes: &[u8]) -> Option<String>
 /// with one of the Nest verb decorators (`@Get`, `@Post`, ...).  The
 /// `sub_path` is `""` when the decorator carries no argument
 /// (`@Get()` mounts at the controller prefix root).
-fn method_verb_and_path(
-    method_node: Node<'_>,
-    bytes: &[u8],
-) -> Option<(HttpMethod, String)> {
+fn method_verb_and_path(method_node: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, String)> {
     const VERBS: &[&str] = &[
         "Get", "Head", "Post", "Put", "Patch", "Delete", "Options", "All",
     ];
@@ -461,8 +457,7 @@ mod tests {
 
     fn parse_ts(src: &[u8]) -> tree_sitter::Tree {
         let mut parser = tree_sitter::Parser::new();
-        let lang =
-            tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+        let lang = tree_sitter::Language::from(tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
         parser.set_language(&lang).unwrap();
         parser.parse(src, None).unwrap()
     }
@@ -562,8 +557,10 @@ mod tests {
               compute(x: number) { return x + 1; }\n\
             }\n";
         let tree = parse_ts(src);
-        assert!(TsNestAdapter
-            .detect(&summary("compute", "typescript"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            TsNestAdapter
+                .detect(&summary("compute", "typescript"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

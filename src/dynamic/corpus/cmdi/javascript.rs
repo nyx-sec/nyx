@@ -17,7 +17,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         ],
         oob_nonce_slot: false,
         probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "cmdi-benign-javascript" }),
+        benign_control: Some(PayloadRef {
+            label: "cmdi-benign-javascript",
+        }),
         no_benign_control_rationale: None,
     },
     CuratedPayload {

@@ -250,9 +250,10 @@ pub fn lookup_impact(source: Cap, adjacent: Option<Cap>) -> Option<ImpactCategor
     // try the standalone rule on adjacent_cap so a CODE_EXEC + UNRELATED
     // pair still reaches `Rce`.
     if let Some(adj) = adjacent
-        && let Some(cat) = standalone_lookup(adj) {
-            return Some(cat);
-        }
+        && let Some(cat) = standalone_lookup(adj)
+    {
+        return Some(cat);
+    }
     None
 }
 

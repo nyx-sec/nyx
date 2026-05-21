@@ -311,8 +311,8 @@ fn flask_eval_chain_dynamic_verdict_is_null_when_verify_disabled() {
         .success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone())
         .expect("nyx scan stdout is valid UTF-8");
-    let value: Value = serde_json::from_str(&stdout)
-        .expect("nyx scan --format json produced invalid JSON");
+    let value: Value =
+        serde_json::from_str(&stdout).expect("nyx scan --format json produced invalid JSON");
 
     let chains = value
         .get("chains")

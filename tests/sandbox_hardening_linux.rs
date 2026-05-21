@@ -27,9 +27,9 @@ mod hardening_tests {
         self, HardeningRecord, ProcessHardeningProfile, SandboxBackend, SandboxOptions,
     };
 
-    fn linux_outcome(out: &sandbox::SandboxOutcome)
-        -> Option<nyx_scanner::dynamic::sandbox::process_linux::HardeningOutcome>
-    {
+    fn linux_outcome(
+        out: &sandbox::SandboxOutcome,
+    ) -> Option<nyx_scanner::dynamic::sandbox::process_linux::HardeningOutcome> {
         match out.hardening_outcome.as_ref()? {
             HardeningRecord::Linux(o) => Some(*o),
             #[allow(unreachable_patterns)]
@@ -43,9 +43,7 @@ mod hardening_tests {
     static PROBE_BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
 
     fn probe_path() -> Option<&'static Path> {
-        PROBE_BINARY
-            .get_or_init(|| build_probe_once())
-            .as_deref()
+        PROBE_BINARY.get_or_init(|| build_probe_once()).as_deref()
     }
 
     fn build_probe_once() -> Option<PathBuf> {
@@ -310,7 +308,9 @@ mod hardening_tests {
     fn chroot_blocks_etc_passwd() {
         let Some(_) = probe_path() else { return };
         if !probe_is_static() {
-            eprintln!("SKIP: probe is dynamically linked — chroot would block its loader before main()");
+            eprintln!(
+                "SKIP: probe is dynamically linked — chroot would block its loader before main()"
+            );
             return;
         }
         let tmp = workdir();
@@ -372,7 +372,8 @@ mod hardening_tests {
                 "sink hit should be absent on a traversal-blocked run"
             );
             assert!(
-                stdout.contains("chroot blocked") || stdout.contains("chroot:blocked")
+                stdout.contains("chroot blocked")
+                    || stdout.contains("chroot:blocked")
                     || stdout.contains("traverse:blocked"),
                 "expected `chroot blocked` marker in probe stdout; got:\n{stdout}"
             );
@@ -505,10 +506,8 @@ mod hardening_tests {
         }
 
         use nyx_scanner::commands::scan::Diag;
-        use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
-        use nyx_scanner::evidence::{
-            Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus,
-        };
+        use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
+        use nyx_scanner::evidence::{Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus};
         use nyx_scanner::labels::Cap;
         use nyx_scanner::patterns::{FindingCategory, Severity};
         use nyx_scanner::utils::config::Config;
@@ -521,10 +520,7 @@ mod hardening_tests {
         std::fs::copy(&fixture_src, &dst).expect("stage fixture into tempdir");
 
         unsafe {
-            std::env::set_var(
-                "NYX_REPRO_BASE",
-                tmp.path().join("repro").to_str().unwrap(),
-            );
+            std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
             std::env::set_var(
                 "NYX_TELEMETRY_PATH",
                 tmp.path().join("events.jsonl").to_str().unwrap(),
@@ -688,10 +684,8 @@ mod hardening_tests {
         }
 
         use nyx_scanner::commands::scan::Diag;
-        use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
-        use nyx_scanner::evidence::{
-            Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus,
-        };
+        use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
+        use nyx_scanner::evidence::{Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus};
         use nyx_scanner::labels::Cap;
         use nyx_scanner::patterns::{FindingCategory, Severity};
         use nyx_scanner::utils::config::Config;
@@ -704,10 +698,7 @@ mod hardening_tests {
         std::fs::copy(&fixture_src, &dst).expect("stage fixture into tempdir");
 
         unsafe {
-            std::env::set_var(
-                "NYX_REPRO_BASE",
-                tmp.path().join("repro").to_str().unwrap(),
-            );
+            std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
             std::env::set_var(
                 "NYX_TELEMETRY_PATH",
                 tmp.path().join("events.jsonl").to_str().unwrap(),
@@ -871,4 +862,3 @@ mod non_linux_placeholder {
         );
     }
 }
-

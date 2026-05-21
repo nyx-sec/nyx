@@ -117,11 +117,7 @@ pub fn build_sarif(diags: &[Diag], scan_root: &Path) -> Value {
 /// process the diagnostics.  When the slice is empty the
 /// `properties.chains` array is still emitted (as `[]`) so consumers
 /// can rely on the key existing.
-pub fn build_sarif_with_chains(
-    diags: &[Diag],
-    chains: &[ChainFinding],
-    scan_root: &Path,
-) -> Value {
+pub fn build_sarif_with_chains(diags: &[Diag], chains: &[ChainFinding], scan_root: &Path) -> Value {
     let mut rule_ids: Vec<String> = Vec::new();
     let mut rule_index_map: HashMap<String, usize> = HashMap::new();
 
@@ -270,7 +266,11 @@ pub fn build_sarif_with_chains(
                 }
             }
 
-            if let Some(dv) = d.evidence.as_ref().and_then(|ev| ev.dynamic_verdict.as_ref()) {
+            if let Some(dv) = d
+                .evidence
+                .as_ref()
+                .and_then(|ev| ev.dynamic_verdict.as_ref())
+            {
                 result["partialFingerprints"] = json!({
                     "dynamic_verdict_status": serde_json::to_value(dv.status)
                         .unwrap_or(Value::Null)
@@ -316,9 +316,10 @@ pub fn build_sarif_with_chains(
             // reruns because both the finding's `stable_hash` and the
             // chain's `stable_hash` are byte-deterministic.
             if d.stable_hash != 0
-                && let Some(chain_hash) = chain_member_of.get(&d.stable_hash) {
-                    props.insert("chain_member_of".into(), json!(chain_hash));
-                }
+                && let Some(chain_hash) = chain_member_of.get(&d.stable_hash)
+            {
+                props.insert("chain_member_of".into(), json!(chain_hash));
+            }
 
             result["properties"] = Value::Object(props);
 
@@ -448,13 +449,19 @@ mod tests {
     #[test]
     fn rule_description_taint_prefix_returns_fallback() {
         let desc = rule_description("taint-unsanitised-flow");
-        assert!(desc.contains("Unsanitised"), "expected taint fallback, got: {desc}");
+        assert!(
+            desc.contains("Unsanitised"),
+            "expected taint fallback, got: {desc}"
+        );
     }
 
     #[test]
     fn rule_description_taint_with_suffix_normalises_to_base() {
         let desc = rule_description("taint-unsanitised-flow:foo.rs:42");
-        assert!(desc.contains("Unsanitised"), "expected taint fallback, got: {desc}");
+        assert!(
+            desc.contains("Unsanitised"),
+            "expected taint fallback, got: {desc}"
+        );
     }
 
     #[test]

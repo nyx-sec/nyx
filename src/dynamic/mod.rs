@@ -78,8 +78,8 @@ pub mod oracle;
 pub mod policy;
 pub mod probe;
 pub mod rand;
-pub mod repro;
 pub mod report;
+pub mod repro;
 pub mod runner;
 pub mod sandbox;
 pub mod spec;
@@ -91,4 +91,4 @@ pub mod verify;
 
 pub use report::{VerifyResult, VerifyStatus};
 pub use spec::HarnessSpec;
-pub use verify::{verify_finding, VerifyOptions};
+pub use verify::{VerifyOptions, verify_finding};

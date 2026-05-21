@@ -18,8 +18,10 @@
 #[cfg(feature = "dynamic")]
 mod verify_e2e {
     use nyx_scanner::commands::scan::Diag;
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
-    use nyx_scanner::evidence::{Confidence, Evidence, FlowStep, FlowStepKind, UnsupportedReason, VerifyStatus};
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
+    use nyx_scanner::evidence::{
+        Confidence, Evidence, FlowStep, FlowStepKind, UnsupportedReason, VerifyStatus,
+    };
     use nyx_scanner::labels::Cap;
     use nyx_scanner::patterns::{FindingCategory, Severity};
 
@@ -243,9 +245,15 @@ mod verify_e2e {
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
 
         assert!(v.get("status").is_some(), "status field must be present");
-        assert!(v.get("triggered_payload").is_none(), "triggered_payload must be absent");
+        assert!(
+            v.get("triggered_payload").is_none(),
+            "triggered_payload must be absent"
+        );
         assert!(v.get("detail").is_none(), "detail must be absent");
-        assert!(v.get("attempts").is_none(), "attempts must be absent (empty vec skipped)");
+        assert!(
+            v.get("attempts").is_none(),
+            "attempts must be absent (empty vec skipped)"
+        );
         assert!(v["finding_id"].is_string());
     }
 }

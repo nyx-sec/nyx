@@ -5,18 +5,20 @@
 
 use crate::callgraph::CallGraph;
 use crate::commands::scan::Diag;
-use crate::dynamic::corpus::{payloads_for, CORPUS_VERSION};
+use crate::dynamic::corpus::{CORPUS_VERSION, payloads_for};
 use crate::dynamic::oob::OobListener;
 use crate::dynamic::report::{AttemptSummary, VerifyResult, VerifyStatus};
-use crate::dynamic::runner::{run_spec, RunError};
-use crate::dynamic::sandbox::{toolchain_id_with_digest, SandboxOptions};
+use crate::dynamic::runner::{RunError, run_spec};
+use crate::dynamic::sandbox::{SandboxOptions, toolchain_id_with_digest};
 use crate::dynamic::spec::{HarnessSpec, SPEC_FORMAT_VERSION};
 use crate::dynamic::stubs::StubHarness;
 use crate::dynamic::telemetry::{self, SamplingPolicy, TelemetryEvent};
 use crate::dynamic::toolchain;
-use crate::evidence::{HardeningSummary, InconclusiveReason, SpecDerivationStrategy, UnsupportedReason};
 #[cfg(target_os = "linux")]
 use crate::evidence::HardeningPrimitive;
+use crate::evidence::{
+    HardeningSummary, InconclusiveReason, SpecDerivationStrategy, UnsupportedReason,
+};
 use crate::summary::GlobalSummaries;
 use crate::utils::config::Config;
 use std::path::Path;
@@ -208,10 +210,7 @@ impl VerifyOptions {
 /// [`verify_finding`].
 fn lang_needs_host_libs(lang: crate::symbol::Lang) -> bool {
     use crate::symbol::Lang::*;
-    matches!(
-        lang,
-        Python | JavaScript | TypeScript | Java | Ruby | Php
-    )
+    matches!(lang, Python | JavaScript | TypeScript | Java | Ruby | Php)
 }
 
 // ── Dynamic verdict cache helpers (§12 Q5) ───────────────────────────────────
@@ -391,8 +390,7 @@ fn spec_derivation_failed_verdict(
     policy: &SamplingPolicy,
 ) -> VerifyResult {
     if matches!(reason, UnsupportedReason::SpecDerivationFailed) && should_be_inconclusive(diag) {
-        let strategies: Vec<SpecDerivationStrategy> =
-            HarnessSpec::derivation_strategies().to_vec();
+        let strategies: Vec<SpecDerivationStrategy> = HarnessSpec::derivation_strategies().to_vec();
         let hint = derivation_failure_hint(diag);
         let inconclusive_reason = InconclusiveReason::SpecDerivationFailed {
             tried: strategies,
@@ -542,9 +540,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             triggered_payload: None,
             reason: None,
             inconclusive_reason: Some(inconclusive_reason),
-            detail: Some(format!(
-                "dynamic execution refused by policy rule {rule}"
-            )),
+            detail: Some(format!("dynamic execution refused by policy rule {rule}")),
             attempts: vec![],
             toolchain_match: None,
             differential: None,
@@ -626,9 +622,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     // structured `Inconclusive(BackendInsufficient)` so operators see
     // the backend gap instead of a quiet `Confirmed` against an
     // unhardened host.
-    if opts.refuse_filesystem_confirm
-        && spec.expected_cap.contains(crate::labels::Cap::FILE_IO)
-    {
+    if opts.refuse_filesystem_confirm && spec.expected_cap.contains(crate::labels::Cap::FILE_IO) {
         let backend = if cfg!(target_os = "macos") {
             "macos-process-without-sandbox-exec"
         } else {
@@ -701,7 +695,11 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         Lang::Php => toolchain::resolve_php(Path::new(".")),
         _ => toolchain::resolve_python(Path::new(".")),
     };
-    let toolchain_match = if toolchain_res.toolchain_drift { "drift" } else { "exact" };
+    let toolchain_match = if toolchain_res.toolchain_drift {
+        "drift"
+    } else {
+        "exact"
+    };
     // Enrich the resolved toolchain_id with the Docker image digest (§22.1).
     // The enriched ID is used as the toolchain_id component of the verdict cache
     // key so that image updates always invalidate stale cache entries.
@@ -717,9 +715,10 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
             &entry_hash,
             import_digest,
             &effective_toolchain_id,
-        ) {
-            return cached;
-        }
+        )
+    {
+        return cached;
+    }
 
     // Phase 10 (Track D.3): spawn the boundary stubs the spec
     // demands *before* the sandbox runs.  When `stubs_required` is
@@ -787,14 +786,7 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         _ => 1,
     };
 
-    let mut verdict = build_verdict(
-        &finding_id,
-        &spec,
-        result,
-        toolchain_match,
-        opts,
-        elapsed,
-    );
+    let mut verdict = build_verdict(&finding_id, &spec, result, toolchain_match, opts, elapsed);
 
     // Phase 29 follow-up: stamp `replay_stable` from a `reproduce.sh` rerun
     // against the freshly written bundle.  Opt-in (see
@@ -807,7 +799,11 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         && let Some(bundle) = crate::dynamic::repro::bundle_root_for(&spec.spec_hash)
         && bundle.join("reproduce.sh").exists()
     {
-        let replay_args: &[&str] = if opts.replay_use_docker { &["--docker"] } else { &[] };
+        let replay_args: &[&str] = if opts.replay_use_docker {
+            &["--docker"]
+        } else {
+            &[]
+        };
         let replay = crate::dynamic::repro::replay_bundle(&bundle, replay_args);
         verdict.replay_stable = crate::dynamic::repro::replay_stability(&replay);
     }
@@ -848,7 +844,6 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
 
     verdict
 }
-
 
 /// Project the platform-cfg'd [`crate::dynamic::sandbox::HardeningRecord`]
 /// into the portable [`HardeningSummary`] that lands on
@@ -961,10 +956,7 @@ fn build_verdict(
                 let triggered_payload = run.attempts[i].payload_label.to_string();
                 let payloads = payloads_for(spec.expected_cap);
                 let vuln_payloads: Vec<_> = payloads.iter().filter(|p| !p.is_benign).collect();
-                let payload_bytes = vuln_payloads
-                    .get(i)
-                    .map(|p| p.bytes)
-                    .unwrap_or(b"");
+                let payload_bytes = vuln_payloads.get(i).map(|p| p.bytes).unwrap_or(b"");
                 let hardening_outcome = summarize_hardening(&run.attempts[i].outcome);
 
                 // Emit repro artifact.
@@ -1223,7 +1215,10 @@ fn build_verdict(
             // (cf. §10 decision 14 and the verify_result_json_shape contract).
             let (reason, detail) = match &e {
                 crate::dynamic::harness::HarnessError::Unsupported(r) => (Some(r.clone()), None),
-                _ => (Some(UnsupportedReason::BackendUnavailable), Some(format!("{e}"))),
+                _ => (
+                    Some(UnsupportedReason::BackendUnavailable),
+                    Some(format!("{e}")),
+                ),
             };
             VerifyResult {
                 finding_id: finding_id.to_owned(),
@@ -1240,7 +1235,10 @@ fn build_verdict(
                 hardening_outcome: None,
             }
         }
-        Err(RunError::BuildFailed { stderr, attempts: build_att }) => VerifyResult {
+        Err(RunError::BuildFailed {
+            stderr,
+            attempts: build_att,
+        }) => VerifyResult {
             finding_id: finding_id.to_owned(),
             status: VerifyStatus::Inconclusive,
             triggered_payload: None,
@@ -1385,7 +1383,10 @@ mod tests {
         use crate::dynamic::sandbox::ProcessHardeningProfile;
         let opts = VerifyOptions::from_config(&Config::default());
         assert!(
-            matches!(opts.sandbox.process_hardening, ProcessHardeningProfile::Standard),
+            matches!(
+                opts.sandbox.process_hardening,
+                ProcessHardeningProfile::Standard
+            ),
             "back-compat: missing harden_profile must keep the Standard baseline so \
              existing call sites (process backend without `--harden=strict`) keep \
              their pre-Phase-17 hardening matrix"
@@ -1399,7 +1400,10 @@ mod tests {
         config.scanner.harden_profile = "strict".to_owned();
         let opts = VerifyOptions::from_config(&config);
         assert!(
-            matches!(opts.sandbox.process_hardening, ProcessHardeningProfile::Strict),
+            matches!(
+                opts.sandbox.process_hardening,
+                ProcessHardeningProfile::Strict
+            ),
             "harden_profile=strict must engage the full Phase-17/18 lockdown so \
              `--harden=strict` actually wraps the harness with sandbox-exec on macOS \
              and layers chroot + seccomp on Linux"
@@ -1451,7 +1455,10 @@ mod tests {
         config.scanner.harden_profile = "lockdown".to_owned();
         let opts = VerifyOptions::from_config(&config);
         assert!(
-            matches!(opts.sandbox.process_hardening, ProcessHardeningProfile::Standard),
+            matches!(
+                opts.sandbox.process_hardening,
+                ProcessHardeningProfile::Standard
+            ),
             "unknown harden_profile values must degrade to Standard so a typo in \
              nyx.toml does not silently leave the operator without the baseline \
              hardening they were already paying for"
@@ -1680,7 +1687,14 @@ mod tests {
         );
 
         // Insert with current CORPUS_VERSION → must be a HIT.
-        insert_verdict_cache(&db_path, "spec_stale", "hash_stale", "", "python-3.11", &result);
+        insert_verdict_cache(
+            &db_path,
+            "spec_stale",
+            "hash_stale",
+            "",
+            "python-3.11",
+            &result,
+        );
         let hit = lookup_verdict_cache(&db_path, "spec_stale", "hash_stale", "", "python-3.11");
         assert!(
             hit.is_some(),

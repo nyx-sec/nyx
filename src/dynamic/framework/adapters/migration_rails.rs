@@ -17,8 +17,7 @@ fn callee_is_rails_migration(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
     matches!(
         last,
-        "up"
-            | "down"
+        "up" | "down"
             | "change"
             | "create_table"
             | "add_column"

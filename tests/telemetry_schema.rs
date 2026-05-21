@@ -13,11 +13,11 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::telemetry::{
-    self, RankDeltaEvent, SamplingPolicy, TelemetryEvent, TelemetryReadError, CORPUS_VERSION,
-    NYX_VERSION, SCHEMA_VERSION,
-};
 use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy};
+use nyx_scanner::dynamic::telemetry::{
+    self, CORPUS_VERSION, NYX_VERSION, RankDeltaEvent, SCHEMA_VERSION, SamplingPolicy,
+    TelemetryEvent, TelemetryReadError,
+};
 use nyx_scanner::evidence::VerifyStatus;
 use nyx_scanner::labels::Cap;
 use nyx_scanner::symbol::Lang;

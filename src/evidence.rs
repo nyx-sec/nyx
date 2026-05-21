@@ -311,10 +311,7 @@ pub enum EntryKind {
     /// class name and the method to drive so the lang emitter can build
     /// a `Cls(<ctor-args>).method(<payload>)` invocation.  Land in
     /// Phase 19.
-    ClassMethod {
-        class: String,
-        method: String,
-    },
+    ClassMethod { class: String, method: String },
     /// Message-queue subscriber / consumer.  `queue` is the topic /
     /// stream / channel name; `message_schema`, when present, is a
     /// free-form JSON description of the expected message body that the
@@ -335,23 +332,16 @@ pub enum EntryKind {
     },
     /// GraphQL resolver — `type_name.field` pair the harness drives via
     /// an in-process GraphQL execution layer.  Land in Phase 21.
-    GraphQLResolver {
-        type_name: String,
-        field: String,
-    },
+    GraphQLResolver { type_name: String, field: String },
     /// WebSocket handler — `path` is the canonical mount point; the
     /// harness opens a loopback ws connection and sends the payload as
     /// the first message frame.  Land in Phase 21.
-    WebSocket {
-        path: String,
-    },
+    WebSocket { path: String },
     /// HTTP / framework middleware — `name` is the middleware identifier
     /// (class name, function name, registration key) the harness mounts
     /// on a synthetic pipeline before invoking it with a crafted
     /// request.  Land in Phase 21.
-    Middleware {
-        name: String,
-    },
+    Middleware { name: String },
     /// Database migration / schema-change script — `version`, when
     /// present, is the migration revision identifier (Alembic / Flyway /
     /// Rails string) so the harness can pin the apply step.  Land in
@@ -408,8 +398,7 @@ impl<'de> Deserialize<'de> for EntryKind {
     {
         use serde::de::Error as _;
 
-        let value = serde_json::Value::deserialize(deserializer)
-            .map_err(D::Error::custom)?;
+        let value = serde_json::Value::deserialize(deserializer).map_err(D::Error::custom)?;
 
         // Bare-string form (legacy unit variants).
         if let Some(tag) = value.as_str() {
@@ -440,10 +429,12 @@ impl<'de> Deserialize<'de> for EntryKind {
                             class: String,
                             method: String,
                         }
-                        serde_json::from_value::<F>(body).ok().map(|f| Self::ClassMethod {
-                            class: f.class,
-                            method: f.method,
-                        })
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::ClassMethod {
+                                class: f.class,
+                                method: f.method,
+                            })
                     }
                     "MessageHandler" => {
                         #[derive(Deserialize)]
@@ -452,10 +443,12 @@ impl<'de> Deserialize<'de> for EntryKind {
                             #[serde(default)]
                             message_schema: Option<serde_json::Value>,
                         }
-                        serde_json::from_value::<F>(body).ok().map(|f| Self::MessageHandler {
-                            queue: f.queue,
-                            message_schema: f.message_schema,
-                        })
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::MessageHandler {
+                                queue: f.queue,
+                                message_schema: f.message_schema,
+                            })
                     }
                     "ScheduledJob" => {
                         #[derive(Deserialize)]
@@ -465,7 +458,9 @@ impl<'de> Deserialize<'de> for EntryKind {
                         }
                         serde_json::from_value::<F>(body)
                             .ok()
-                            .map(|f| Self::ScheduledJob { schedule: f.schedule })
+                            .map(|f| Self::ScheduledJob {
+                                schedule: f.schedule,
+                            })
                     }
                     "GraphQLResolver" => {
                         #[derive(Deserialize)]
@@ -473,10 +468,12 @@ impl<'de> Deserialize<'de> for EntryKind {
                             type_name: String,
                             field: String,
                         }
-                        serde_json::from_value::<F>(body).ok().map(|f| Self::GraphQLResolver {
-                            type_name: f.type_name,
-                            field: f.field,
-                        })
+                        serde_json::from_value::<F>(body)
+                            .ok()
+                            .map(|f| Self::GraphQLResolver {
+                                type_name: f.type_name,
+                                field: f.field,
+                            })
                     }
                     "WebSocket" => {
                         #[derive(Deserialize)]
@@ -692,9 +689,7 @@ impl fmt::Display for InconclusiveReason {
             Self::ReversedDifferential => f.write_str(
                 "reversed differential (benign payload fired, vulnerable payload did not)",
             ),
-            Self::UnrelatedCrash => {
-                f.write_str("harness crashed outside the instrumented sink")
-            }
+            Self::UnrelatedCrash => f.write_str("harness crashed outside the instrumented sink"),
             Self::BackendInsufficient {
                 backend,
                 oracle_kind,
@@ -2248,8 +2243,12 @@ mod tests {
                 type_name: "Query".into(),
                 field: "user".into(),
             },
-            EntryKind::WebSocket { path: "/ws/feed".into() },
-            EntryKind::Middleware { name: "auth_filter".into() },
+            EntryKind::WebSocket {
+                path: "/ws/feed".into(),
+            },
+            EntryKind::Middleware {
+                name: "auth_filter".into(),
+            },
             EntryKind::Migration {
                 version: Some("0042_user_table".into()),
             },

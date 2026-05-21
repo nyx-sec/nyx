@@ -73,13 +73,12 @@ impl FrameworkAdapter for RedirectPhpAdapter {
             return None;
         }
         let has_location_token = file_contains_location_header_token(file_bytes);
-        let matches_call = super::any_callee_matches(summary, |name| {
-            match callee_last_segment(name) {
+        let matches_call =
+            super::any_callee_matches(summary, |name| match callee_last_segment(name) {
                 "redirect" | "withRedirect" | "RedirectResponse" => true,
                 "header" => has_location_token,
                 _ => false,
-            }
-        });
+            });
         let matches_source = source_imports_php_web(file_bytes);
         if matches_call && matches_source {
             Some(FrameworkBinding {
@@ -109,17 +108,18 @@ mod tests {
 
     #[test]
     fn fires_on_header_location() {
-        let src: &[u8] =
-            b"<?php\nfunction run($v) { header(\"Location: \" . $v); exit; }\n";
+        let src: &[u8] = b"<?php\nfunction run($v) { header(\"Location: \" . $v); exit; }\n";
         let tree = parse_php(src);
         let summary = FuncSummary {
             name: "run".into(),
             callees: vec![crate::summary::CalleeSite::bare("header")],
             ..Default::default()
         };
-        assert!(RedirectPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RedirectPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -130,9 +130,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(RedirectPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -149,9 +151,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("header")],
             ..Default::default()
         };
-        assert!(RedirectPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -171,8 +175,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(RedirectPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

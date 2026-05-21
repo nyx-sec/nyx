@@ -29,7 +29,7 @@
 #[cfg(feature = "dynamic")]
 mod repro_hermetic_tests {
     use nyx_scanner::dynamic::repro;
-    use nyx_scanner::dynamic::repro::{replay_bundle, ReplayResult};
+    use nyx_scanner::dynamic::repro::{ReplayResult, replay_bundle};
     use nyx_scanner::dynamic::sandbox::{SandboxOptions, SandboxOutcome};
     use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
     use nyx_scanner::evidence::{AttemptSummary, VerifyResult, VerifyStatus};
@@ -110,7 +110,8 @@ mod repro_hermetic_tests {
             b"' OR 1=1-- NYX",
             "sqli-or-1",
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let lock_path = artifact.root.join("toolchain.lock");
         assert!(lock_path.exists(), "toolchain.lock missing from bundle");
@@ -135,10 +136,16 @@ mod repro_hermetic_tests {
             b"' OR 1=1-- NYX",
             "sqli-or-1",
             None,
-        ).unwrap();
-        let lock2: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(artifact2.root.join("toolchain.lock")).unwrap()).unwrap();
-        assert_eq!(lock["files"], lock2["files"], "lock file hashes must be deterministic");
+        )
+        .unwrap();
+        let lock2: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(artifact2.root.join("toolchain.lock")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            lock["files"], lock2["files"],
+            "lock file hashes must be deterministic"
+        );
 
         unsafe { std::env::remove_var("NYX_REPRO_BASE") };
     }
@@ -162,7 +169,8 @@ mod repro_hermetic_tests {
             b"payload",
             "label",
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Simulate "no language toolchain installed" by stripping PATH
         // down to /usr/bin (where `sh`, `grep`, `cat` live) before
@@ -188,15 +196,14 @@ mod repro_hermetic_tests {
         // running the (broken) harness.  Detect that and skip — Phase
         // 28 acceptance is about the refusal path, not the host-has-it
         // path.
-        let host_has_python =
-            std::process::Command::new("sh")
-                .arg("-c")
-                .arg("command -v python3")
-                .env_clear()
-                .env("PATH", &minimal_path)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+        let host_has_python = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("command -v python3")
+            .env_clear()
+            .env("PATH", &minimal_path)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
         if host_has_python {
             eprintln!("skip: host has python3 in minimal PATH; cannot simulate clean CI image");
             return;
@@ -234,14 +241,16 @@ mod repro_hermetic_tests {
         std::fs::write(
             bundle.join("reproduce.sh"),
             "#!/bin/sh\necho 'host toolchain missing' >&2\nexit 3\n",
-        ).unwrap();
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(
                 bundle.join("reproduce.sh"),
                 std::fs::Permissions::from_mode(0o755),
-            ).unwrap();
+            )
+            .unwrap();
         }
         assert_eq!(replay_bundle(&bundle, &[]), ReplayResult::ToolchainMismatch);
     }
@@ -254,14 +263,16 @@ mod repro_hermetic_tests {
         std::fs::write(
             bundle.join("reproduce.sh"),
             "#!/bin/sh\necho 'PASS: simulated green'\nexit 0\n",
-        ).unwrap();
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(
                 bundle.join("reproduce.sh"),
                 std::fs::Permissions::from_mode(0o755),
-            ).unwrap();
+            )
+            .unwrap();
         }
         assert_eq!(replay_bundle(&bundle, &[]), ReplayResult::Pass);
     }
@@ -284,11 +295,15 @@ mod repro_hermetic_tests {
             &SandboxOptions::default(),
             &make_outcome(),
             &make_verdict(),
-            "# harness", "# entry", b"payload", "label", None,
-        ).unwrap();
+            "# harness",
+            "# entry",
+            b"payload",
+            "label",
+            None,
+        )
+        .unwrap();
 
-        let pinned =
-            nyx_scanner::dynamic::toolchain::pinned_image_ref(&spec.toolchain_id);
+        let pinned = nyx_scanner::dynamic::toolchain::pinned_image_ref(&spec.toolchain_id);
         if pinned.is_some() {
             assert!(
                 artifact.root.join("docker_pull.sh").exists(),

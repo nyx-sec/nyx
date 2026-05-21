@@ -28,11 +28,9 @@ mod dynamic_sandbox_cli {
     fn unsafe_sandbox_with_docker_backend_is_rejected() {
         let mut cmd = scan_cmd_with_fresh_env();
         cmd.args(["--unsafe-sandbox", "--backend", "docker"]);
-        cmd.assert()
-            .failure()
-            .stderr(predicate::str::contains(
-                "--unsafe-sandbox and --backend docker are mutually exclusive",
-            ));
+        cmd.assert().failure().stderr(predicate::str::contains(
+            "--unsafe-sandbox and --backend docker are mutually exclusive",
+        ));
     }
 
     /// `--unsafe-sandbox` alone (no explicit --backend) must NOT trigger the

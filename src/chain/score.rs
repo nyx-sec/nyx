@@ -178,8 +178,13 @@ mod tests {
 
     #[test]
     fn category_weights_strictly_ordered() {
-        assert!(category_weight(ImpactCategory::BrowserToLocalRce) > category_weight(ImpactCategory::Rce));
-        assert!(category_weight(ImpactCategory::Rce) > category_weight(ImpactCategory::SessionHijack));
+        assert!(
+            category_weight(ImpactCategory::BrowserToLocalRce)
+                > category_weight(ImpactCategory::Rce)
+        );
+        assert!(
+            category_weight(ImpactCategory::Rce) > category_weight(ImpactCategory::SessionHijack)
+        );
         assert!(
             category_weight(ImpactCategory::SessionHijack)
                 > category_weight(ImpactCategory::InternalNetworkAccess)

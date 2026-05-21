@@ -139,9 +139,11 @@ mod tests {
         let src: &[u8] = b"const Handlebars = require('handlebars');\nfunction render(body) {\n  return Handlebars.compile(body)({});\n}\n";
         let tree = parse_js(src);
         let summary = summary_for("render", &["body"], &[0]);
-        assert!(JsHandlebarsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            JsHandlebarsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -152,9 +154,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(JsHandlebarsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            JsHandlebarsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -162,9 +166,11 @@ mod tests {
         let src: &[u8] = b"// uses Handlebars\nfunction render(body) {\n  return Handlebars.compile(\"static\")({});\n}\n";
         let tree = parse_js(src);
         let summary = summary_for("render", &["body"], &[0]);
-        assert!(JsHandlebarsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            JsHandlebarsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -172,8 +178,10 @@ mod tests {
         let src: &[u8] = b"const Handlebars = require('handlebars');\nfunction render(body) {\n  return Handlebars.compile(body)({});\n}\n";
         let tree = parse_js(src);
         let summary = summary_for("render", &["body"], &[]);
-        assert!(JsHandlebarsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            JsHandlebarsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

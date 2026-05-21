@@ -13,20 +13,14 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::corpus::{payloads_for_lang, resolve_benign_control_lang};
-use nyx_scanner::dynamic::oracle::{oracle_fired, Oracle, ProbePredicate};
+use nyx_scanner::dynamic::oracle::{Oracle, ProbePredicate, oracle_fired};
 use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::labels::Cap;
 use nyx_scanner::symbol::Lang;
 use std::time::Duration;
 
-const LANGS: &[Lang] = &[
-    Lang::Java,
-    Lang::Python,
-    Lang::Php,
-    Lang::Go,
-    Lang::Rust,
-];
+const LANGS: &[Lang] = &[Lang::Java, Lang::Python, Lang::Php, Lang::Go, Lang::Rust];
 
 fn outcome() -> SandboxOutcome {
     SandboxOutcome {
@@ -72,19 +66,17 @@ fn corpus_registers_crypto_for_each_supported_lang() {
 fn crypto_payloads_pair_benign_controls_per_lang() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::CRYPTO, *lang);
-        let vuln = slice
-            .iter()
-            .find(|p| !p.is_benign)
-            .expect("vuln payload");
-        let resolved = resolve_benign_control_lang(vuln, Cap::CRYPTO, *lang)
-            .expect("benign control resolves");
+        let vuln = slice.iter().find(|p| !p.is_benign).expect("vuln payload");
+        let resolved =
+            resolve_benign_control_lang(vuln, Cap::CRYPTO, *lang).expect("benign control resolves");
         assert!(resolved.is_benign);
         match &vuln.oracle {
             Oracle::SinkProbe { predicates } => {
-                assert!(predicates.iter().any(|p| matches!(
-                    p,
-                    ProbePredicate::WeakKeyEntropy { max_bits: 16 }
-                )));
+                assert!(
+                    predicates
+                        .iter()
+                        .any(|p| matches!(p, ProbePredicate::WeakKeyEntropy { max_bits: 16 }))
+                );
             }
             other => panic!("expected SinkProbe, got {other:?}"),
         }
@@ -119,7 +111,13 @@ fn weak_key_entropy_clears_with_no_probe() {
 
 #[test]
 fn crypto_unsupported_for_other_langs() {
-    for lang in [Lang::C, Lang::Cpp, Lang::Ruby, Lang::JavaScript, Lang::TypeScript] {
+    for lang in [
+        Lang::C,
+        Lang::Cpp,
+        Lang::Ruby,
+        Lang::JavaScript,
+        Lang::TypeScript,
+    ] {
         assert!(
             payloads_for_lang(Cap::CRYPTO, lang).is_empty(),
             "CRYPTO has unexpected payloads for {lang:?}",

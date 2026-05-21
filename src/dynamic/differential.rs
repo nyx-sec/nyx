@@ -113,7 +113,10 @@ mod tests {
 
     #[test]
     fn rule_a_both_fire_is_collision() {
-        assert_eq!(evaluate(true, true), DifferentialVerdict::OracleCollisionSuspected);
+        assert_eq!(
+            evaluate(true, true),
+            DifferentialVerdict::OracleCollisionSuspected
+        );
     }
 
     #[test]
@@ -128,7 +131,10 @@ mod tests {
 
     #[test]
     fn rule_d_only_benign_fires_is_reversed() {
-        assert_eq!(evaluate(false, true), DifferentialVerdict::ReversedDifferential);
+        assert_eq!(
+            evaluate(false, true),
+            DifferentialVerdict::ReversedDifferential
+        );
     }
 
     #[test]

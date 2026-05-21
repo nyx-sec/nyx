@@ -21,17 +21,16 @@ mod hardening_tests {
 
     use nyx_scanner::dynamic::harness::BuiltHarness;
     use nyx_scanner::dynamic::sandbox::process_macos::{
-        clear_profile_path_cache_for_tests, profile_for_caps, profile_path,
-        sandbox_exec_available, HardeningLevel, SANDBOX_EXEC_BIN_ENV, SB_DENY_DEFAULT_ENV,
-        SB_SEED_DIR_ENV,
+        HardeningLevel, SANDBOX_EXEC_BIN_ENV, SB_DENY_DEFAULT_ENV, SB_SEED_DIR_ENV,
+        clear_profile_path_cache_for_tests, profile_for_caps, profile_path, sandbox_exec_available,
     };
     use nyx_scanner::dynamic::sandbox::{
         self, HardeningRecord, ProcessHardeningProfile, SandboxBackend, SandboxOptions,
     };
 
-    fn macos_outcome(out: &sandbox::SandboxOutcome)
-        -> Option<&nyx_scanner::dynamic::sandbox::process_macos::HardeningOutcome>
-    {
+    fn macos_outcome(
+        out: &sandbox::SandboxOutcome,
+    ) -> Option<&nyx_scanner::dynamic::sandbox::process_macos::HardeningOutcome> {
         match out.hardening_outcome.as_ref()? {
             HardeningRecord::Macos(o) => Some(o),
             #[allow(unreachable_patterns)]
@@ -120,8 +119,7 @@ except Exception as exc:
     /// the harness workdir at run time so the sandbox-exec narrow
     /// `/Users/<user>/Library/...` denies cannot accidentally shadow a
     /// home-relative script-load path.
-    const XXE_PROBE_SOURCE: &str =
-        include_str!("dynamic_fixtures/hardening/xxe_probe.py");
+    const XXE_PROBE_SOURCE: &str = include_str!("dynamic_fixtures/hardening/xxe_probe.py");
 
     fn write_xxe_probe(workdir: &Path) -> PathBuf {
         let path = workdir.join("xxe_probe.py");
@@ -427,10 +425,8 @@ except Exception as exc:
         }
 
         use nyx_scanner::commands::scan::Diag;
-        use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
-        use nyx_scanner::evidence::{
-            Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus,
-        };
+        use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
+        use nyx_scanner::evidence::{Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus};
         use nyx_scanner::labels::Cap;
         use nyx_scanner::patterns::{FindingCategory, Severity};
         use nyx_scanner::utils::config::Config;
@@ -443,10 +439,7 @@ except Exception as exc:
         std::fs::copy(&fixture_src, &dst).expect("stage fixture into tempdir");
 
         unsafe {
-            std::env::set_var(
-                "NYX_REPRO_BASE",
-                tmp.path().join("repro").to_str().unwrap(),
-            );
+            std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
             std::env::set_var(
                 "NYX_TELEMETRY_PATH",
                 tmp.path().join("events.jsonl").to_str().unwrap(),
@@ -562,10 +555,8 @@ except Exception as exc:
         }
 
         use nyx_scanner::commands::scan::Diag;
-        use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
-        use nyx_scanner::evidence::{
-            Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus,
-        };
+        use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
+        use nyx_scanner::evidence::{Confidence, Evidence, FlowStep, FlowStepKind, VerifyStatus};
         use nyx_scanner::labels::Cap;
         use nyx_scanner::patterns::{FindingCategory, Severity};
         use nyx_scanner::utils::config::Config;
@@ -578,10 +569,7 @@ except Exception as exc:
         std::fs::copy(&fixture_src, &dst).expect("stage fixture into tempdir");
 
         unsafe {
-            std::env::set_var(
-                "NYX_REPRO_BASE",
-                tmp.path().join("repro").to_str().unwrap(),
-            );
+            std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
             std::env::set_var(
                 "NYX_TELEMETRY_PATH",
                 tmp.path().join("events.jsonl").to_str().unwrap(),
@@ -786,7 +774,7 @@ except Exception as exc:
     /// downstream replay reads the same fields back.
     #[test]
     fn hardening_summary_round_trips_through_json() {
-        use nyx_scanner::evidence::{HardeningSummary, HardeningPrimitive};
+        use nyx_scanner::evidence::{HardeningPrimitive, HardeningSummary};
         let summary = HardeningSummary {
             backend: "macos-process".into(),
             level: "sandboxed".into(),

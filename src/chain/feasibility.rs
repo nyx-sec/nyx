@@ -69,7 +69,10 @@ impl Feasibility {
     /// in the doc's table can fire.  Phase 25's scoring pass uses this
     /// flavour.
     pub fn for_finding(diag: &Diag) -> Feasibility {
-        let verdict = diag.evidence.as_ref().and_then(|e| e.dynamic_verdict.as_ref());
+        let verdict = diag
+            .evidence
+            .as_ref()
+            .and_then(|e| e.dynamic_verdict.as_ref());
         Self::bucket_from_verdict(verdict, diag.confidence)
     }
 
@@ -82,9 +85,7 @@ impl Feasibility {
     ) -> Feasibility {
         match verdict.map(|v| v.status) {
             Some(VerifyStatus::Confirmed) => Feasibility::Confirmed,
-            Some(VerifyStatus::Inconclusive)
-                if static_confidence == Some(Confidence::High) =>
-            {
+            Some(VerifyStatus::Inconclusive) if static_confidence == Some(Confidence::High) => {
                 Feasibility::InconclusiveHighConf
             }
             _ => Feasibility::Unverified,

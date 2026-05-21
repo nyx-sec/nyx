@@ -67,9 +67,9 @@ mod xss;
 mod xxe;
 
 pub use registry::{
-    audit_marker_collisions, benign_payload_for, benign_payload_for_lang, materialise_bytes,
-    payloads_for, payloads_for_lang, resolve_benign_control, resolve_benign_control_lang,
-    CORPUS, CORPUS_UNSUPPORTED_LANG_NEUTRAL,
+    CORPUS, CORPUS_UNSUPPORTED_LANG_NEUTRAL, audit_marker_collisions, benign_payload_for,
+    benign_payload_for_lang, materialise_bytes, payloads_for, payloads_for_lang,
+    resolve_benign_control, resolve_benign_control_lang,
 };
 
 /// Re-exported canonical [`Oracle`] type.

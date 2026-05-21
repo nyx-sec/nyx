@@ -793,7 +793,10 @@ fn main() {{
 }
 
 fn read_entry_source(entry_file: &str) -> String {
-    let candidates = [PathBuf::from(entry_file), PathBuf::from(".").join(entry_file)];
+    let candidates = [
+        PathBuf::from(entry_file),
+        PathBuf::from(".").join(entry_file),
+    ];
     for path in &candidates {
         if let Ok(s) = std::fs::read_to_string(path) {
             return s;
@@ -1079,29 +1082,28 @@ fn class_derives_default(entry_src: &str, class: &str) -> bool {
             let window_start = decl_pos.saturating_sub(256);
             let window = &entry_src[window_start..decl_pos];
             if let Some(derive_pos) = window.rfind("#[derive(")
-                && let Some(end_rel) = window[derive_pos..].find(")]") {
-                    let end = derive_pos + end_rel;
-                    let derive_list = &window[derive_pos + "#[derive(".len()..end];
-                    let between = &window[end + ")]".len()..];
-                    // The derive attribute must directly precede the
-                    // declaration — no other item / statement may sit
-                    // between `#[derive(...)]` and the `struct` /
-                    // `enum` token.  Forbidden tokens (`;`, `{`, `}`,
-                    // `=`, or another item keyword) signal the derive
-                    // belongs to an earlier declaration.
-                    let between_clean = strip_attrs_and_comments(between);
-                    let forbidden = ['{', '}', ';', '='];
-                    let item_keyword = ["struct", "enum", "fn", "impl", "trait", "type", "mod"]
-                        .iter()
-                        .any(|kw| word_in_text(&between_clean, kw));
-                    let attaches_to_decl = !between_clean.chars().any(|c| forbidden.contains(&c))
-                        && !item_keyword;
-                    if attaches_to_decl
-                        && derive_list.split(',').any(|t| t.trim() == "Default")
-                    {
-                        return true;
-                    }
+                && let Some(end_rel) = window[derive_pos..].find(")]")
+            {
+                let end = derive_pos + end_rel;
+                let derive_list = &window[derive_pos + "#[derive(".len()..end];
+                let between = &window[end + ")]".len()..];
+                // The derive attribute must directly precede the
+                // declaration — no other item / statement may sit
+                // between `#[derive(...)]` and the `struct` /
+                // `enum` token.  Forbidden tokens (`;`, `{`, `}`,
+                // `=`, or another item keyword) signal the derive
+                // belongs to an earlier declaration.
+                let between_clean = strip_attrs_and_comments(between);
+                let forbidden = ['{', '}', ';', '='];
+                let item_keyword = ["struct", "enum", "fn", "impl", "trait", "type", "mod"]
+                    .iter()
+                    .any(|kw| word_in_text(&between_clean, kw));
+                let attaches_to_decl =
+                    !between_clean.chars().any(|c| forbidden.contains(&c)) && !item_keyword;
+                if attaches_to_decl && derive_list.split(',').any(|t| t.trim() == "Default") {
+                    return true;
                 }
+            }
         }
         search_from = decl_pos + 1;
     }
@@ -1143,8 +1145,7 @@ fn word_in_text(text: &str, kw: &str) -> bool {
     let mut i = 0usize;
     while i + kw_bytes.len() <= bytes.len() {
         if &bytes[i..i + kw_bytes.len()] == kw_bytes {
-            let before_ok = i == 0
-                || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
+            let before_ok = i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_';
             let after_idx = i + kw_bytes.len();
             let after_ok = after_idx >= bytes.len()
                 || (!bytes[after_idx].is_ascii_alphanumeric() && bytes[after_idx] != b'_');
@@ -1319,15 +1320,10 @@ fn actix_invocation(spec: &HarnessSpec, func: &str) -> (String, String) {
             format!("    std::env::set_var({name:?}, &payload);\n"),
             format!("let _ = entry::{func}(\"\");"),
         ),
-        PayloadSlot::HttpBody => (
-            String::new(),
-            format!("let _ = entry::{func}(&payload);"),
-        ),
+        PayloadSlot::HttpBody => (String::new(), format!("let _ = entry::{func}(&payload);")),
         PayloadSlot::QueryParam(name) => (
             String::new(),
-            format!(
-                "let _ = entry::{func}(&format!(\"{name}={{}}\", payload));",
-            ),
+            format!("let _ = entry::{func}(&format!(\"{name}={{}}\", payload));",),
         ),
         _ => (String::new(), format!("let _ = entry::{func}(&payload);")),
     }
@@ -1399,8 +1395,14 @@ mod tests {
         let cargo = harness.extra_files.iter().find(|(n, _)| n == "Cargo.toml");
         assert!(cargo.is_some(), "Cargo.toml must be in extra_files");
         let cargo_content = &cargo.unwrap().1;
-        assert!(cargo_content.contains("rusqlite"), "SQL_QUERY cap needs rusqlite dep");
-        assert!(cargo_content.contains("bundled"), "rusqlite must use bundled feature");
+        assert!(
+            cargo_content.contains("rusqlite"),
+            "SQL_QUERY cap needs rusqlite dep"
+        );
+        assert!(
+            cargo_content.contains("bundled"),
+            "rusqlite must use bundled feature"
+        );
     }
 
     #[test]
@@ -1408,8 +1410,15 @@ mod tests {
         let mut spec = make_spec(PayloadSlot::Param(0));
         spec.expected_cap = Cap::CODE_EXEC;
         let harness = emit(&spec).unwrap();
-        let cargo = harness.extra_files.iter().find(|(n, _)| n == "Cargo.toml").unwrap();
-        assert!(!cargo.1.contains("rusqlite"), "CODE_EXEC must not have rusqlite dep");
+        let cargo = harness
+            .extra_files
+            .iter()
+            .find(|(n, _)| n == "Cargo.toml")
+            .unwrap();
+        assert!(
+            !cargo.1.contains("rusqlite"),
+            "CODE_EXEC must not have rusqlite dep"
+        );
     }
 
     #[test]
@@ -1433,7 +1442,8 @@ mod tests {
 
     #[test]
     fn class_derives_default_matches_explicit_impl() {
-        let src = "struct UserService;\nimpl Default for UserService { fn default() -> Self { Self } }";
+        let src =
+            "struct UserService;\nimpl Default for UserService { fn default() -> Self { Self } }";
         assert!(class_derives_default(src, "UserService"));
     }
 
@@ -1487,9 +1497,11 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!RustEmitter.entry_kinds_supported().is_empty());
-        assert!(RustEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::Function));
+        assert!(
+            RustEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::Function)
+        );
     }
 
     #[test]
@@ -1516,7 +1528,8 @@ mod tests {
         // shape; the legacy [`RustShape::AxumHandler`] fires only on
         // weak detectors (`IntoResponse` / `Json(` without `use
         // axum::`).
-        let src = "use axum::extract::Query; pub fn handler(payload: &str) -> String { String::new() }";
+        let src =
+            "use axum::extract::Query; pub fn handler(payload: &str) -> String { String::new() }";
         let spec = make_spec_with(EntryKind::HttpRoute, "handler", "src/entry.rs");
         assert_eq!(RustShape::detect(&spec, src), RustShape::AxumRoute);
     }

@@ -68,9 +68,11 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(PhpUnserializeAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PhpUnserializeAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -81,8 +83,10 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(PhpUnserializeAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpUnserializeAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

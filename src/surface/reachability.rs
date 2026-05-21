@@ -77,9 +77,7 @@ pub fn populate_reaches_edges(
             .index
             .iter()
             .filter(|(k, _)| k.name == ep.handler_name)
-            .filter(|(k, _)| {
-                file_part_of_namespace(&k.namespace) == ep.handler_location.file
-            })
+            .filter(|(k, _)| file_part_of_namespace(&k.namespace) == ep.handler_location.file)
             .map(|(_, idx)| *idx)
             .collect::<Vec<_>>();
 
@@ -217,9 +215,6 @@ mod tests {
             "src/file.ts"
         );
         // Last `::` wins, matching `namespace_with_package`'s shape.
-        assert_eq!(
-            file_part_of_namespace("@a/b::@c/d::lib/x.ts"),
-            "lib/x.ts"
-        );
+        assert_eq!(file_part_of_namespace("@a/b::@c/d::lib/x.ts"), "lib/x.ts");
     }
 }

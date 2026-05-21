@@ -71,7 +71,12 @@ pub fn compile(allowed_nrs: &[u32], audit_arch: u32) -> Vec<SockFilter> {
     // (1) jeq audit_arch ? next : KILL
     //     KILL is at the very end; computed below after we know the size.
     let arch_check_idx = program.len();
-    program.push(SockFilter { code: BPF_JMP | BPF_JEQ | BPF_K, jt: 0, jf: 0, k: audit_arch });
+    program.push(SockFilter {
+        code: BPF_JMP | BPF_JEQ | BPF_K,
+        jt: 0,
+        jf: 0,
+        k: audit_arch,
+    });
 
     // (2) ld [nr]
     program.push(SockFilter {
@@ -90,7 +95,12 @@ pub fn compile(allowed_nrs: &[u32], audit_arch: u32) -> Vec<SockFilter> {
     //     plus the KILL ret) to land on the ALLOW ret.  Computed below.
     let first_check_idx = program.len();
     for &nr in allowed_nrs {
-        program.push(SockFilter { code: BPF_JMP | BPF_JEQ | BPF_K, jt: 0, jf: 0, k: nr });
+        program.push(SockFilter {
+            code: BPF_JMP | BPF_JEQ | BPF_K,
+            jt: 0,
+            jf: 0,
+            k: nr,
+        });
     }
 
     // (KILL) ret KILL_PROCESS
@@ -103,7 +113,12 @@ pub fn compile(allowed_nrs: &[u32], audit_arch: u32) -> Vec<SockFilter> {
     });
     // (ALLOW) ret ALLOW
     let allow_idx = program.len();
-    program.push(SockFilter { code: BPF_RET | BPF_K, jt: 0, jf: 0, k: SECCOMP_RET_ALLOW });
+    program.push(SockFilter {
+        code: BPF_RET | BPF_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ALLOW,
+    });
 
     // Patch arch check: jt=0 (next on match), jf=N (KILL on mismatch).
     let arch_jf = (kill_idx - arch_check_idx - 1) as u8;

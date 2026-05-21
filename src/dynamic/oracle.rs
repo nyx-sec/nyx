@@ -397,7 +397,9 @@ pub enum Oracle {
     /// declaration `const`-friendly (Phase 06 deferred the
     /// `Vec<ProbePredicate>` shape the plan listed because the corpus is
     /// declared in static memory; a `Vec` would require runtime init).
-    SinkProbe { predicates: &'static [ProbePredicate] },
+    SinkProbe {
+        predicates: &'static [ProbePredicate],
+    },
     /// Phase 08 sink-site crash oracle.  Fires iff at least one drained
     /// probe has [`ProbeKind::Crash { signal }`] with `signal ∈ signals`.
     /// A process-level abort that did not reach the sink handler leaves no
@@ -584,9 +586,7 @@ pub fn oracle_fired_with_stubs(
                 return false;
             }
             let idor_ok = cross.iter().all(|p| match p {
-                ProbePredicate::IdorBoundaryCrossed => {
-                    probes_satisfy_idor_crossed(probes)
-                }
+                ProbePredicate::IdorBoundaryCrossed => probes_satisfy_idor_crossed(probes),
                 _ => true,
             });
             if !idor_ok {
@@ -745,12 +745,15 @@ fn stdout_template_equals(stdout: &[u8], expected: u64) -> bool {
         }
         let parsed: serde_json::Result<serde_json::Value> = serde_json::from_str(trimmed);
         let Ok(v) = parsed else { continue };
-        let Some(render) = v.get("render") else { continue };
+        let Some(render) = v.get("render") else {
+            continue;
+        };
         let Some(s) = render.as_str() else { continue };
         if let Ok(n) = s.trim().parse::<u64>()
-            && n == expected {
-                return true;
-            }
+            && n == expected
+        {
+            return true;
+        }
     }
     false
 }
@@ -759,9 +762,9 @@ fn stdout_template_equals(stdout: &[u8], expected: u64) -> bool {
 /// [`ProbeKind::Deserialize`] record matching `require_invoked`.
 fn probes_satisfy_deserialize(probes: &[SinkProbe], require_invoked: bool) -> bool {
     probes.iter().any(|p| match &p.kind {
-        ProbeKind::Deserialize { gadget_chain_invoked } => {
-            *gadget_chain_invoked == require_invoked
-        }
+        ProbeKind::Deserialize {
+            gadget_chain_invoked,
+        } => *gadget_chain_invoked == require_invoked,
         _ => false,
     })
 }
@@ -795,8 +798,7 @@ fn probes_satisfy_count_gt(probes: &[SinkProbe], n: u32) -> bool {
 fn probes_satisfy_header_injected(probes: &[SinkProbe], header_name: &str) -> bool {
     probes.iter().any(|p| match &p.kind {
         ProbeKind::HeaderEmit { name, value } => {
-            (header_name == "*" || name.eq_ignore_ascii_case(header_name))
-                && value.contains("\r\n")
+            (header_name == "*" || name.eq_ignore_ascii_case(header_name)) && value.contains("\r\n")
         }
         _ => false,
     })
@@ -813,9 +815,10 @@ fn probes_satisfy_header_injected(probes: &[SinkProbe], header_name: &str) -> bo
 /// `//host/...` references are parsed as off-origin.
 fn probes_satisfy_redirect_off_origin(probes: &[SinkProbe], allowlist: &[&str]) -> bool {
     probes.iter().any(|p| match &p.kind {
-        ProbeKind::Redirect { location, request_host } => {
-            redirect_is_off_origin(location, request_host, allowlist)
-        }
+        ProbeKind::Redirect {
+            location,
+            request_host,
+        } => redirect_is_off_origin(location, request_host, allowlist),
         _ => false,
     })
 }
@@ -861,7 +864,10 @@ fn probes_satisfy_weak_key(probes: &[SinkProbe], max_bits: u32) -> bool {
 /// [`ProbePredicate::IdorBoundaryCrossed`] (Phase 11 — Track J.9).
 fn probes_satisfy_idor_crossed(probes: &[SinkProbe]) -> bool {
     probes.iter().any(|p| match &p.kind {
-        ProbeKind::IdorAccess { caller_id, owner_id } => caller_id != owner_id,
+        ProbeKind::IdorAccess {
+            caller_id,
+            owner_id,
+        } => caller_id != owner_id,
         _ => false,
     })
 }
@@ -877,9 +883,7 @@ fn probes_satisfy_outbound_off_list(probes: &[SinkProbe], allowlist: &[&str]) ->
             if h.is_empty() {
                 return false;
             }
-            !allowlist
-                .iter()
-                .any(|a| h == a.trim().to_ascii_lowercase())
+            !allowlist.iter().any(|a| h == a.trim().to_ascii_lowercase())
         }
         _ => false,
     })
@@ -899,9 +903,7 @@ pub(crate) fn redirect_is_off_origin(
         return false;
     };
     let host_lower = host.to_ascii_lowercase();
-    if !request_host.is_empty()
-        && host_lower == request_host.trim().to_ascii_lowercase()
-    {
+    if !request_host.is_empty() && host_lower == request_host.trim().to_ascii_lowercase() {
         return false;
     }
     !allowlist
@@ -929,14 +931,15 @@ fn extract_redirect_host(location: &str) -> Option<String> {
         return None;
     };
     // Strip path / query / fragment from the host segment.
-    let end = rest
-        .find(['/', '?', '#'])
-        .unwrap_or(rest.len());
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..end];
     // Strip userinfo + port.  Bracketed IPv6 authorities (`[::1]` or
     // `[::1]:8080`) must keep the brackets together — splitting on the
     // last `:` inside the literal would slice the address apart.
-    let after_userinfo = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let after_userinfo = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
     let host_only = if let Some(rest) = after_userinfo.strip_prefix('[') {
         match rest.find(']') {
             Some(end) => &after_userinfo[..end + 2],
@@ -1077,7 +1080,10 @@ mod tests {
         let oracle = Oracle::SinkProbe {
             predicates: &[
                 ProbePredicate::CalleeEquals("os.system"),
-                ProbePredicate::ArgContains { index: 0, needle: "; echo" },
+                ProbePredicate::ArgContains {
+                    index: 0,
+                    needle: "; echo",
+                },
             ],
         };
         let probes = vec![probe(
@@ -1100,13 +1106,13 @@ mod tests {
         let oracle = Oracle::SinkProbe {
             predicates: &[
                 ProbePredicate::CalleeEquals("os.system"),
-                ProbePredicate::ArgContains { index: 0, needle: "NEVER_PRESENT" },
+                ProbePredicate::ArgContains {
+                    index: 0,
+                    needle: "NEVER_PRESENT",
+                },
             ],
         };
-        let probes = vec![probe(
-            "os.system",
-            vec![ProbeArg::String("hello".into())],
-        )];
+        let probes = vec![probe("os.system", vec![ProbeArg::String("hello".into())])];
         assert!(!oracle_fired(&oracle, &outcome(), &probes));
     }
 
@@ -1158,7 +1164,10 @@ mod tests {
     #[test]
     fn arg_equals_predicate() {
         let oracle = Oracle::SinkProbe {
-            predicates: &[ProbePredicate::ArgEquals { index: 0, value: "exact" }],
+            predicates: &[ProbePredicate::ArgEquals {
+                index: 0,
+                value: "exact",
+            }],
         };
         let hit = vec![probe("f", vec![ProbeArg::String("exact".into())])];
         let miss = vec![probe("f", vec![ProbeArg::String("inexact".into())])];
@@ -1306,7 +1315,10 @@ mod tests {
                 allowlist: &["example.com", "cdn.example.com"],
             }],
         };
-        let probes = vec![redirect_probe("https://cdn.example.com/asset", "example.com")];
+        let probes = vec![redirect_probe(
+            "https://cdn.example.com/asset",
+            "example.com",
+        )];
         assert!(!oracle_fired(&oracle, &outcome(), &probes));
     }
 
@@ -1315,7 +1327,10 @@ mod tests {
         let oracle = Oracle::SinkProbe {
             predicates: &[ProbePredicate::RedirectHostNotIn { allowlist: &[] }],
         };
-        let probes = vec![redirect_probe("https://example.com/dashboard", "example.com")];
+        let probes = vec![redirect_probe(
+            "https://example.com/dashboard",
+            "example.com",
+        )];
         assert!(!oracle_fired(&oracle, &outcome(), &probes));
     }
 

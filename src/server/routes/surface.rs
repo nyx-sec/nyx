@@ -26,14 +26,13 @@ async fn get_surface(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 
     // Building the surface map can do filesystem IO + tree-sitter
     // parsing; keep it off the async runtime.
-    let join_result = tokio::task::spawn_blocking(move || {
-        load_or_build(&scan_root, &database_dir, &cfg)
-    })
-    .await
-    .map_err(|e| ApiError::internal(format!("surface map task failed: {e}")))?;
+    let join_result =
+        tokio::task::spawn_blocking(move || load_or_build(&scan_root, &database_dir, &cfg))
+            .await
+            .map_err(|e| ApiError::internal(format!("surface map task failed: {e}")))?;
 
-    let mut map = join_result
-        .map_err(|e| ApiError::internal(format!("failed to build surface map: {e}")))?;
+    let mut map =
+        join_result.map_err(|e| ApiError::internal(format!("failed to build surface map: {e}")))?;
     let bytes = map
         .to_json()
         .map_err(|e| ApiError::internal(format!("encode surface map: {e}")))?;

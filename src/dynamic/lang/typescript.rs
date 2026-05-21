@@ -15,7 +15,9 @@
 //! runtime ignores.
 
 use crate::dynamic::environment::{Environment, RuntimeArtifacts};
-use crate::dynamic::lang::{js_shared, ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter};
+use crate::dynamic::lang::{
+    ChainStepHarness, ChainStepTerminal, HarnessSource, LangEmitter, js_shared,
+};
 use crate::dynamic::spec::{EntryKindTag, HarnessSpec};
 use crate::evidence::UnsupportedReason;
 
@@ -87,9 +89,11 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty_and_includes_http_route() {
         assert!(!TypeScriptEmitter.entry_kinds_supported().is_empty());
-        assert!(TypeScriptEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::HttpRoute));
+        assert!(
+            TypeScriptEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::HttpRoute)
+        );
     }
 
     #[test]
@@ -101,7 +105,9 @@ mod tests {
 
     #[test]
     fn typescript_emit_stages_entry_at_entry_js_for_node_resolution() {
-        let h = TypeScriptEmitter.emit(&make_spec(EntryKind::Function)).unwrap();
+        let h = TypeScriptEmitter
+            .emit(&make_spec(EntryKind::Function))
+            .unwrap();
         // TS fixtures use ES-compatible syntax; the workdir layout matches
         // JavaScript so Node's CJS `require('./entry')` resolves without an
         // extension-loader hook.  See js_shared::entry_subpath_for_shape.

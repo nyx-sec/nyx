@@ -29,9 +29,9 @@ use crate::summary::GlobalSummaries;
 use crate::surface::{
     SurfaceMap, dangerous, datastore, external,
     lang::{
-        go_gin, go_http, java_quarkus, java_servlet, java_spring, js_express, js_koa,
-        php_laravel, php_slim, python_django, python_fastapi, python_flask,
-        ruby_rails, ruby_sinatra, rust_actix, rust_axum, ts_next,
+        go_gin, go_http, java_quarkus, java_servlet, java_spring, js_express, js_koa, php_laravel,
+        php_slim, python_django, python_fastapi, python_flask, ruby_rails, ruby_sinatra,
+        rust_actix, rust_axum, ts_next,
     },
     reachability,
 };
@@ -63,12 +63,8 @@ pub fn build_surface_map(inputs: &SurfaceBuildInputs<'_>) -> SurfaceMap {
                 .as_mut()
                 .and_then(|p| p.parse(&bytes, None))
                 .map(|tree| {
-                    let mut all = python_flask::detect_flask_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    );
+                    let mut all =
+                        python_flask::detect_flask_routes(&tree, &bytes, path, inputs.scan_root);
                     all.extend(python_fastapi::detect_fastapi_routes(
                         &tree,
                         &bytes,
@@ -165,12 +161,8 @@ pub fn build_surface_map(inputs: &SurfaceBuildInputs<'_>) -> SurfaceMap {
                 .as_mut()
                 .and_then(|p| p.parse(&bytes, None))
                 .map(|tree| {
-                    let mut all = php_laravel::detect_laravel_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    );
+                    let mut all =
+                        php_laravel::detect_laravel_routes(&tree, &bytes, path, inputs.scan_root);
                     all.extend(php_slim::detect_slim_routes(
                         &tree,
                         &bytes,
@@ -185,12 +177,8 @@ pub fn build_surface_map(inputs: &SurfaceBuildInputs<'_>) -> SurfaceMap {
                 .as_mut()
                 .and_then(|p| p.parse(&bytes, None))
                 .map(|tree| {
-                    let mut all = ruby_sinatra::detect_sinatra_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    );
+                    let mut all =
+                        ruby_sinatra::detect_sinatra_routes(&tree, &bytes, path, inputs.scan_root);
                     all.extend(ruby_rails::detect_rails_routes(
                         &tree,
                         &bytes,
@@ -435,13 +423,15 @@ def evaluator():
         let files = vec![py];
         let inputs = empty_inputs(&files, Some(dir.path()), &gs, &cg, &cfg);
         let map = build_surface_map(&inputs);
-        assert!(map
-            .nodes
-            .iter()
-            .any(|n| matches!(n, SurfaceNode::DangerousLocal(_))));
-        assert!(map
-            .edges
-            .iter()
-            .any(|e| matches!(e.kind, crate::surface::EdgeKind::Reaches)));
+        assert!(
+            map.nodes
+                .iter()
+                .any(|n| matches!(n, SurfaceNode::DangerousLocal(_)))
+        );
+        assert!(
+            map.edges
+                .iter()
+                .any(|e| matches!(e.kind, crate::surface::EdgeKind::Reaches))
+        );
     }
 }

@@ -88,7 +88,12 @@ fn fixture_findings() -> Vec<Diag> {
         d
     };
     vec![
-        mk(10, "cfg-cors-allow-all", Cap::HEADER_INJECTION, Severity::Medium),
+        mk(
+            10,
+            "cfg-cors-allow-all",
+            Cap::HEADER_INJECTION,
+            Severity::Medium,
+        ),
         mk(15, "cfg-auth-gap", Cap::UNAUTHORIZED_ID, Severity::Medium),
         mk(25, "taint-shell-exec", Cap::CODE_EXEC, Severity::High),
     ]
@@ -129,7 +134,11 @@ fn cors_plus_noauth_plus_websocket_emits_one_critical_chain() {
             min_score: 0.0,
         },
     );
-    assert_eq!(chains.len(), 1, "expected exactly one chain, got {chains:?}");
+    assert_eq!(
+        chains.len(),
+        1,
+        "expected exactly one chain, got {chains:?}"
+    );
     let chain = &chains[0];
     assert_eq!(chain.implied_impact, ImpactCategory::BrowserToLocalRce);
     assert_eq!(chain.severity, ChainSeverity::Critical);
@@ -213,11 +222,7 @@ fn sarif_output_validates_against_v210_shape() {
             min_score: 0.0,
         },
     );
-    let sarif = build_sarif_with_chains(
-        &findings,
-        &chains,
-        std::path::Path::new("."),
-    );
+    let sarif = build_sarif_with_chains(&findings, &chains, std::path::Path::new("."));
 
     // Surface-level v2.1.0 invariants — the SARIF schema requires
     // these fields and we want a tripwire if any disappear.

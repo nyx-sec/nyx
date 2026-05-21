@@ -13,7 +13,10 @@ use crate::symbol::Lang;
 
 fn callee_is_lodash_merge(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "merge" | "mergeWith" | "defaultsDeep" | "set" | "setWith")
+    matches!(
+        last,
+        "merge" | "mergeWith" | "defaultsDeep" | "set" | "setWith"
+    )
 }
 
 /// True when `receiver` looks like a lodash module handle (`_`, `lodash`,
@@ -152,9 +155,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("merge")],
             ..Default::default()
         };
-        assert!(PpLodashMergeJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PpLodashMergeJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -165,9 +170,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(PpLodashMergeJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpLodashMergeJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -193,9 +200,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(PpLodashMergeJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpLodashMergeJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -213,9 +222,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(PpLodashMergeJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PpLodashMergeJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -233,9 +244,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("merge")],
             ..Default::default()
         };
-        assert!(PpLodashMergeJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpLodashMergeJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -249,8 +262,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("merge")],
             ..Default::default()
         };
-        assert!(PpLodashMergeJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpLodashMergeJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -18,7 +18,7 @@ mod common;
 
 #[cfg(feature = "dynamic")]
 mod javascript_fixture_tests {
-    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
+    use crate::common::fixture_harness::{Prerequisite, run_shape_fixture_lang_or_skip};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
@@ -89,9 +89,16 @@ mod javascript_fixture_tests {
     fn commonjs_export_vuln_is_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "commonjs_export", "vuln.js", "runPing", Cap::CODE_EXEC, 11,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "commonjs_export",
+            "vuln.js",
+            "runPing",
+            Cap::CODE_EXEC,
+            11,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_confirmed("commonjs_export", &r);
     }
 
@@ -99,9 +106,16 @@ mod javascript_fixture_tests {
     fn commonjs_export_benign_not_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "commonjs_export", "benign.js", "runPing", Cap::CODE_EXEC, 11,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "commonjs_export",
+            "benign.js",
+            "runPing",
+            Cap::CODE_EXEC,
+            11,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_not_confirmed("commonjs_export", &r);
     }
 
@@ -111,9 +125,16 @@ mod javascript_fixture_tests {
     fn async_function_vuln_is_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "async_function", "vuln.js", "runPing", Cap::CODE_EXEC, 15,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "async_function",
+            "vuln.js",
+            "runPing",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_confirmed("async_function", &r);
     }
 
@@ -121,9 +142,16 @@ mod javascript_fixture_tests {
     fn async_function_benign_not_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "async_function", "benign.js", "runPing", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "async_function",
+            "benign.js",
+            "runPing",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_not_confirmed("async_function", &r);
     }
 
@@ -133,9 +161,16 @@ mod javascript_fixture_tests {
     fn esm_default_vuln_is_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "esm_default", "vuln.js", "runPing", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "esm_default",
+            "vuln.js",
+            "runPing",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_confirmed("esm_default", &r);
     }
 
@@ -143,9 +178,16 @@ mod javascript_fixture_tests {
     fn esm_default_benign_not_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "esm_default", "benign.js", "runPing", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "esm_default",
+            "benign.js",
+            "runPing",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_not_confirmed("esm_default", &r);
     }
 
@@ -158,9 +200,16 @@ mod javascript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("express"),
             ],
-            "express", "vuln.js", "ping", Cap::CODE_EXEC, 15,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "express",
+            "vuln.js",
+            "ping",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_confirmed("express", &r);
     }
 
@@ -171,9 +220,16 @@ mod javascript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("express"),
             ],
-            "express", "benign.js", "ping", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "express",
+            "benign.js",
+            "ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_not_confirmed("express", &r);
     }
 
@@ -186,9 +242,16 @@ mod javascript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("koa"),
             ],
-            "koa", "vuln.js", "ping", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "koa",
+            "vuln.js",
+            "ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_confirmed("koa", &r);
     }
 
@@ -199,9 +262,16 @@ mod javascript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("koa"),
             ],
-            "koa", "benign.js", "ping", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "koa",
+            "benign.js",
+            "ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_not_confirmed("koa", &r);
     }
 
@@ -214,9 +284,16 @@ mod javascript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("next"),
             ],
-            "next_route", "vuln.js", "handler", Cap::CODE_EXEC, 17,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "next_route",
+            "vuln.js",
+            "handler",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_confirmed("next_route", &r);
     }
 
@@ -227,9 +304,16 @@ mod javascript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("next"),
             ],
-            "next_route", "benign.js", "handler", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "next_route",
+            "benign.js",
+            "handler",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_not_confirmed("next_route", &r);
     }
 
@@ -242,9 +326,16 @@ mod javascript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("jsdom"),
             ],
-            "browser_event", "vuln.js", "clickHandler", Cap::HTML_ESCAPE, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "browser_event",
+            "vuln.js",
+            "clickHandler",
+            Cap::HTML_ESCAPE,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_confirmed("browser_event", &r);
     }
 
@@ -255,9 +346,16 @@ mod javascript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("jsdom"),
             ],
-            "browser_event", "benign.js", "clickHandler", Cap::HTML_ESCAPE, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "browser_event",
+            "benign.js",
+            "clickHandler",
+            Cap::HTML_ESCAPE,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_not_confirmed("browser_event", &r);
     }
 }

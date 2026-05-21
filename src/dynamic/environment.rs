@@ -33,12 +33,12 @@
 //! source file.  The 10 MiB ceiling protects against runaway full-tree
 //! copy regressions called out in the Phase 09 acceptance.
 
-use crate::callgraph::{callers_of, CallGraph};
+use crate::callgraph::{CallGraph, callers_of};
 use crate::dynamic::spec::HarnessSpec;
 use crate::dynamic::toolchain::{self, ToolchainResolution};
 use crate::summary::GlobalSummaries;
 use crate::symbol::{FuncKey, Lang};
-use crate::utils::project::{detect_frameworks, DetectedFramework};
+use crate::utils::project::{DetectedFramework, detect_frameworks};
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -139,7 +139,12 @@ pub fn extract_env_var_references(entry_file: &Path, lang: Lang) -> Vec<String> 
         ],
         Lang::JavaScript | Lang::TypeScript => &["process.env.", "process.env["],
         Lang::Java => &["System.getenv(", "getenv("],
-        Lang::Rust => &["std::env::var(", "env::var(", "env::var_os(", "std::env::var_os("],
+        Lang::Rust => &[
+            "std::env::var(",
+            "env::var(",
+            "env::var_os(",
+            "std::env::var_os(",
+        ],
         Lang::Go => &["os.Getenv(", "os.LookupEnv("],
         Lang::Php => &["getenv(", "$_ENV[", "$_SERVER["],
         Lang::Ruby => &["ENV[", "ENV.fetch(", "ENV.fetch "],
@@ -161,9 +166,12 @@ pub fn extract_env_var_references(entry_file: &Path, lang: Lang) -> Vec<String> 
                 _ => extract_quoted_arg(tail),
             };
             if let Some(name) = name
-                && !name.is_empty() && is_env_var_name(&name) && seen.insert(name.clone()) {
-                    out.push(name);
-                }
+                && !name.is_empty()
+                && is_env_var_name(&name)
+                && seen.insert(name.clone())
+            {
+                out.push(name);
+            }
         }
     }
     out
@@ -199,7 +207,9 @@ fn extract_quoted_arg(s: &str) -> Option<String> {
     if i >= bytes.len() {
         return None;
     }
-    std::str::from_utf8(&bytes[start..i]).ok().map(|s| s.to_owned())
+    std::str::from_utf8(&bytes[start..i])
+        .ok()
+        .map(|s| s.to_owned())
 }
 
 /// Extract a bare identifier (e.g. `FOO` in `process.env.FOO`).  Stops at
@@ -241,11 +251,7 @@ fn is_env_var_name(s: &str) -> bool {
 ///
 /// Returned in deterministic source-order so two runs against the same
 /// inputs produce byte-identical env layouts.
-pub fn build_secret_bag(
-    entry_file: &Path,
-    lang: Lang,
-    spec_hash: &str,
-) -> Vec<(String, String)> {
+pub fn build_secret_bag(entry_file: &Path, lang: Lang, spec_hash: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for name in extract_env_var_references(entry_file, lang) {
         let val = derive_secret(spec_hash, &name);
@@ -288,9 +294,33 @@ const CONFIG_FILE_CANDIDATES: &[&str] = &[
 /// user's pinned dependency set.  Order is significant only insofar as
 /// the first match wins for [`CapturedDeps::lockfile_origin`].
 const MANIFEST_FILES_BY_LANG: &[(Lang, &[&str])] = &[
-    (Lang::Python, &["requirements.txt", "pyproject.toml", "Pipfile", "Pipfile.lock"]),
-    (Lang::JavaScript, &["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"]),
-    (Lang::TypeScript, &["package.json", "package-lock.json", "yarn.lock", "tsconfig.json"]),
+    (
+        Lang::Python,
+        &[
+            "requirements.txt",
+            "pyproject.toml",
+            "Pipfile",
+            "Pipfile.lock",
+        ],
+    ),
+    (
+        Lang::JavaScript,
+        &[
+            "package.json",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+        ],
+    ),
+    (
+        Lang::TypeScript,
+        &[
+            "package.json",
+            "package-lock.json",
+            "yarn.lock",
+            "tsconfig.json",
+        ],
+    ),
     (Lang::Rust, &["Cargo.toml", "Cargo.lock"]),
     (Lang::Go, &["go.mod", "go.sum"]),
     (Lang::Java, &["pom.xml", "build.gradle", "build.gradle.kts"]),
@@ -470,7 +500,8 @@ pub fn capture_project_dependencies_with_context(
     let manifests = collect_manifest_files(spec.lang, project_root);
     let lockfile = manifests.first().cloned();
 
-    let source_closure = compute_source_closure(&entry_file, project_root, spec, summaries, callgraph);
+    let source_closure =
+        compute_source_closure(&entry_file, project_root, spec, summaries, callgraph);
 
     CapturedDeps {
         project_root: project_root.to_path_buf(),
@@ -575,13 +606,8 @@ pub fn stage_workdir_full(
             Some(r) => r,
             None => continue,
         };
-        running_bytes = copy_into_workdir(
-            manifest,
-            workdir,
-            &rel,
-            running_bytes,
-            &mut staged_sources,
-        )?;
+        running_bytes =
+            copy_into_workdir(manifest, workdir, &rel, running_bytes, &mut staged_sources)?;
         if lockfile_in_workdir.is_none() {
             lockfile_in_workdir = Some(workdir.join(&rel));
         }
@@ -596,8 +622,7 @@ pub fn stage_workdir_full(
             Some(r) => r,
             None => PathBuf::from(cfg.file_name().unwrap_or_default()),
         };
-        running_bytes =
-            copy_into_workdir(cfg, workdir, &rel, running_bytes, &mut staged_sources)?;
+        running_bytes = copy_into_workdir(cfg, workdir, &rel, running_bytes, &mut staged_sources)?;
     }
 
     // Phase 11 — Track D.4: populate the per-spec secret bag for every
@@ -642,14 +667,12 @@ fn copy_into_workdir(
     };
     let size = metadata.len();
     if running_bytes.saturating_add(size) > MAX_WORKDIR_BYTES {
-        return Err(io::Error::other(
-            format!(
-                "staged workdir would exceed {} bytes (next file `{}` = {} bytes)",
-                MAX_WORKDIR_BYTES,
-                rel.display(),
-                size
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "staged workdir would exceed {} bytes (next file `{}` = {} bytes)",
+            MAX_WORKDIR_BYTES,
+            rel.display(),
+            size
+        )));
     }
     let dest = workdir.join(rel);
     if let Some(parent) = dest.parent() {
@@ -669,8 +692,14 @@ fn resolve_under_root(project_root: &Path, entry_file: &str) -> PathBuf {
 }
 
 fn rel_under_root(path: &Path, root: &Path) -> Option<PathBuf> {
-    let abs_path = path.canonicalize().ok().unwrap_or_else(|| path.to_path_buf());
-    let abs_root = root.canonicalize().ok().unwrap_or_else(|| root.to_path_buf());
+    let abs_path = path
+        .canonicalize()
+        .ok()
+        .unwrap_or_else(|| path.to_path_buf());
+    let abs_root = root
+        .canonicalize()
+        .ok()
+        .unwrap_or_else(|| root.to_path_buf());
     abs_path
         .strip_prefix(&abs_root)
         .ok()
@@ -729,9 +758,11 @@ fn collect_config_files(entry_file: &Path, project_root: &Path) -> Vec<PathBuf> 
         let mut v = Vec::new();
         v.push(project_root.to_path_buf());
         if let Some(parent) = entry_file.parent()
-            && parent != project_root && parent.starts_with(project_root) {
-                v.push(parent.to_path_buf());
-            }
+            && parent != project_root
+            && parent.starts_with(project_root)
+        {
+            v.push(parent.to_path_buf());
+        }
         v
     };
     for dir in &dirs {
@@ -1253,7 +1284,11 @@ import './local-thing';
             "from flask import Flask, request\nimport os\nimport requests\n",
         )
         .unwrap();
-        fs::write(root.join("requirements.txt"), "Flask==2.3.0\nrequests>=2.28\n").unwrap();
+        fs::write(
+            root.join("requirements.txt"),
+            "Flask==2.3.0\nrequests>=2.28\n",
+        )
+        .unwrap();
         let spec = fake_spec("app.py", Lang::Python);
         let captured = capture_project_dependencies(root, &spec);
         assert!(captured.direct_deps.contains(&"flask".to_owned()));

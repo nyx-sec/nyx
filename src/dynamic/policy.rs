@@ -211,7 +211,9 @@ impl Scrubber {
             return true;
         }
         let lower = text.to_ascii_lowercase();
-        PII_LITERAL_SUBSTRINGS.iter().any(|needle| lower.contains(*needle))
+        PII_LITERAL_SUBSTRINGS
+            .iter()
+            .any(|needle| lower.contains(*needle))
     }
 
     /// Scrub `text`, returning a new `String` whose value is either the
@@ -572,7 +574,10 @@ mod tests {
     #[test]
     fn truncate_at_exact_boundary_unchanged() {
         let bytes = vec![0u8; PAYLOAD_CAPTURE_LIMIT_BYTES];
-        assert_eq!(truncate_payload_bytes(&bytes).len(), PAYLOAD_CAPTURE_LIMIT_BYTES);
+        assert_eq!(
+            truncate_payload_bytes(&bytes).len(),
+            PAYLOAD_CAPTURE_LIMIT_BYTES
+        );
     }
 
     #[test]

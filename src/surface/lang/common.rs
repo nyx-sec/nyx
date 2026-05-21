@@ -106,10 +106,7 @@ pub fn python_imports_any(bytes: &[u8], modules: &[&str]) -> bool {
         let pkg = if let Some(rest) = line.strip_prefix("from ") {
             rest.split_whitespace().next().unwrap_or("")
         } else if let Some(rest) = line.strip_prefix("import ") {
-            rest.split([',', ' ', ';'])
-                .next()
-                .unwrap_or("")
-                .trim()
+            rest.split([',', ' ', ';']).next().unwrap_or("").trim()
         } else {
             continue;
         };
@@ -237,7 +234,10 @@ mod tests {
 
     #[test]
     fn leaf_matches_handles_dot_and_colon_paths() {
-        assert!(leaf_matches("flask_login.login_required", &["login_required"]));
+        assert!(leaf_matches(
+            "flask_login.login_required",
+            &["login_required"]
+        ));
         assert!(leaf_matches("Auth::JwtRequired", &["JwtRequired"]));
         assert!(!leaf_matches("OtherDecorator", &["login_required"]));
     }
@@ -246,7 +246,10 @@ mod tests {
     fn python_imports_any_matches_actual_imports() {
         assert!(python_imports_any(b"from flask import Flask\n", &["flask"]));
         assert!(python_imports_any(b"import flask\n", &["flask"]));
-        assert!(python_imports_any(b"from flask.app import Flask\n", &["flask"]));
+        assert!(python_imports_any(
+            b"from flask.app import Flask\n",
+            &["flask"]
+        ));
         assert!(python_imports_any(b"import django.urls\n", &["django"]));
         // Comment-only mention must not match.
         assert!(!python_imports_any(b"# flask is great\n", &["flask"]));
@@ -260,10 +263,7 @@ mod tests {
     fn rust_uses_any_matches_use_statements() {
         assert!(rust_uses_any(b"use actix_web::web;\n", &["actix_web"]));
         assert!(rust_uses_any(b"use actix_web;\n", &["actix_web"]));
-        assert!(rust_uses_any(
-            b"pub use axum::Router;\n",
-            &["axum"]
-        ));
+        assert!(rust_uses_any(b"pub use axum::Router;\n", &["axum"]));
         assert!(rust_uses_any(
             b"pub(crate) use axum::extract::Path;\n",
             &["axum"]

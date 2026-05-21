@@ -68,9 +68,7 @@ fn match_actix_function(func: Node, bytes: &[u8], file_rel: &str) -> Option<Surf
     let mut route_path = String::new();
     for attr in attrs {
         let raw = attr.utf8_text(bytes).ok()?;
-        let inner = raw
-            .trim_start_matches(['#', '!'])
-            .trim_matches(['[', ']']);
+        let inner = raw.trim_start_matches(['#', '!']).trim_matches(['[', ']']);
         for (name, default_method) in ROUTE_MACROS {
             let prefix = format!("{}(", name);
             if inner.starts_with(&prefix) {

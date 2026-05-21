@@ -862,8 +862,8 @@ fn go_http_stub_captures_attempted_outbound_via_shim_recorder() {
 
     // Go fragments need wrapping: the file under tests/dynamic_fixtures
     // is a body-only fragment, not a standalone program.
-    let fragment = std::fs::read_to_string(fixture_path("go/http/vuln/main.go"))
-        .expect("read go fragment");
+    let fragment =
+        std::fs::read_to_string(fixture_path("go/http/vuln/main.go")).expect("read go fragment");
     let combined = wrap_go_fragment(&fragment, go_probe_shim());
 
     let script_path = workdir.path().join("driver_http.go");
@@ -918,8 +918,8 @@ fn go_http_shim_recorder_is_noop_without_log_env() {
     let stub = HttpStub::start(workdir.path()).expect("HttpStub::start");
 
     let endpoint = stub.endpoint();
-    let fragment = std::fs::read_to_string(fixture_path("go/http/vuln/main.go"))
-        .expect("read go fragment");
+    let fragment =
+        std::fs::read_to_string(fixture_path("go/http/vuln/main.go")).expect("read go fragment");
     let combined = wrap_go_fragment(&fragment, go_probe_shim());
 
     let script_path = workdir.path().join("driver_http_no_log.go");
@@ -1589,8 +1589,11 @@ fn rust_http_shim_recorder_is_noop_without_log_env() {
 
     let crate_dir = workdir.path().join("driver_no_log");
     std::fs::create_dir_all(&crate_dir).expect("create crate dir");
-    std::fs::write(crate_dir.join("Cargo.toml"), rust_stub_cargo_toml("http_no_log"))
-        .expect("write Cargo.toml");
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        rust_stub_cargo_toml("http_no_log"),
+    )
+    .expect("write Cargo.toml");
     std::fs::write(crate_dir.join("main.rs"), source).expect("write main.rs");
 
     let output = Command::new("cargo")
@@ -1702,8 +1705,11 @@ fn rust_sql_shim_recorder_is_noop_without_log_env() {
 
     let crate_dir = workdir.path().join("driver_sql_no_log");
     std::fs::create_dir_all(&crate_dir).expect("create crate dir");
-    std::fs::write(crate_dir.join("Cargo.toml"), rust_stub_cargo_toml("sql_no_log"))
-        .expect("write Cargo.toml");
+    std::fs::write(
+        crate_dir.join("Cargo.toml"),
+        rust_stub_cargo_toml("sql_no_log"),
+    )
+    .expect("write Cargo.toml");
     std::fs::write(crate_dir.join("main.rs"), source).expect("write main.rs");
 
     let output = Command::new("cargo")

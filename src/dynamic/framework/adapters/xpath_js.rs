@@ -142,9 +142,11 @@ mod tests {
             }\nmodule.exports = { run };\n";
         let tree = parse_js(src);
         let summary = summary_for("run", &["name"], &[0]);
-        assert!(XpathJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XpathJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -155,9 +157,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(XpathJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XpathJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -168,8 +172,10 @@ mod tests {
             }\nmodule.exports = { run };\n";
         let tree = parse_js(src);
         let summary = summary_for("run", &["name"], &[0]);
-        assert!(XpathJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XpathJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

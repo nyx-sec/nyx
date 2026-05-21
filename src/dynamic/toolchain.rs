@@ -115,10 +115,12 @@ fn try_rust_toolchain_toml(root: &Path) -> Option<ToolchainResolution> {
         if line.starts_with('[') {
             in_toolchain = false;
         }
-        if in_toolchain && line.starts_with("channel")
-            && let Some(ver) = extract_version_from_toml_value(line) {
-                return Some(map_rust_version(&ver, RustPinOrigin::RustToolchainToml));
-            }
+        if in_toolchain
+            && line.starts_with("channel")
+            && let Some(ver) = extract_version_from_toml_value(line)
+        {
+            return Some(map_rust_version(&ver, RustPinOrigin::RustToolchainToml));
+        }
     }
     None
 }
@@ -138,9 +140,10 @@ fn try_cargo_toml_rust_version(root: &Path) -> Option<ToolchainResolution> {
     for line in content.lines() {
         let line = line.trim();
         if line.starts_with("rust-version")
-            && let Some(ver) = extract_version_from_toml_value(line) {
-                return Some(map_rust_version(&ver, RustPinOrigin::CargoToml));
-            }
+            && let Some(ver) = extract_version_from_toml_value(line)
+        {
+            return Some(map_rust_version(&ver, RustPinOrigin::CargoToml));
+        }
     }
     None
 }
@@ -181,7 +184,7 @@ fn map_rust_version(version: &str, origin: RustPinOrigin) -> ToolchainResolution
         return ToolchainResolution {
             toolchain_id: "rust-nightly".to_owned(),
             pin_origin,
-            toolchain_drift: true,  // nightly != stable reference image
+            toolchain_drift: true, // nightly != stable reference image
             version_string: version.to_owned(),
         };
     }
@@ -246,10 +249,14 @@ fn try_pyproject_toml(root: &Path) -> Option<ToolchainResolution> {
     // Look for `requires-python = ">=3.11"` or `python = "3.11"`.
     for line in content.lines() {
         let line = line.trim();
-        if (line.starts_with("requires-python") || (line.starts_with("python") && line.contains('=') && !line.starts_with("python_requires")))
-            && let Some(ver) = extract_version_from_toml_value(line) {
-                return Some(map_version(&ver, PinOrigin::PyprojectToml));
-            }
+        if (line.starts_with("requires-python")
+            || (line.starts_with("python")
+                && line.contains('=')
+                && !line.starts_with("python_requires")))
+            && let Some(ver) = extract_version_from_toml_value(line)
+        {
+            return Some(map_version(&ver, PinOrigin::PyprojectToml));
+        }
     }
     None
 }
@@ -266,10 +273,12 @@ fn try_pipfile(root: &Path) -> Option<ToolchainResolution> {
         if line.starts_with('[') {
             in_requires = false;
         }
-        if in_requires && line.starts_with("python_version")
-            && let Some(ver) = extract_version_from_toml_value(line) {
-                return Some(map_version(&ver, PinOrigin::Pipfile));
-            }
+        if in_requires
+            && line.starts_with("python_version")
+            && let Some(ver) = extract_version_from_toml_value(line)
+        {
+            return Some(map_version(&ver, PinOrigin::Pipfile));
+        }
     }
     None
 }
@@ -331,9 +340,7 @@ fn map_version(version: &str, origin: PinOrigin) -> ToolchainResolution {
         ("3", Some("12")) => ("python-3.12".to_owned(), false),
         ("3", Some("13")) => ("python-3.13".to_owned(), false),
         // Older 3.x → nearest supported is 3.8
-        ("3", Some(m)) if m.parse::<u32>().is_ok_and(|v| v < 8) => {
-            ("python-3.8".to_owned(), true)
-        }
+        ("3", Some(m)) if m.parse::<u32>().is_ok_and(|v| v < 8) => ("python-3.8".to_owned(), true),
         // Newer 3.x beyond catalog → use 3.13 as closest
         ("3", Some(_)) => ("python-3.13".to_owned(), true),
         ("3", None) => ("python-3".to_owned(), false),
@@ -531,12 +538,8 @@ fn map_go_version(version: &str, origin: PinOrigin) -> ToolchainResolution {
         ("1", Some("21")) => ("go-1.21".to_owned(), false),
         ("1", Some("22")) => ("go-1.22".to_owned(), false),
         ("1", Some("23")) => ("go-1.23".to_owned(), false),
-        ("1", Some(m)) if m.parse::<u32>().is_ok_and(|v| v >= 24) => {
-            (format!("go-1.{m}"), true)
-        }
-        ("1", Some(m)) if m.parse::<u32>().is_ok_and(|v| v < 21) => {
-            (format!("go-1.{m}"), true)
-        }
+        ("1", Some(m)) if m.parse::<u32>().is_ok_and(|v| v >= 24) => (format!("go-1.{m}"), true),
+        ("1", Some(m)) if m.parse::<u32>().is_ok_and(|v| v < 21) => (format!("go-1.{m}"), true),
         _ => ("go-stable".to_owned(), false),
     };
 
@@ -570,14 +573,19 @@ fn try_pom_xml(root: &Path) -> Option<ToolchainResolution> {
     // Look for <java.version>21</java.version> or <maven.compiler.source>21</...>
     for line in content.lines() {
         let trimmed = line.trim();
-        for tag in &["<java.version>", "<maven.compiler.source>", "<maven.compiler.release>"] {
+        for tag in &[
+            "<java.version>",
+            "<maven.compiler.source>",
+            "<maven.compiler.release>",
+        ] {
             if trimmed.starts_with(tag)
-                && let Some(inner) = trimmed.strip_prefix(tag) {
-                    let version = inner.split('<').next().unwrap_or("").trim();
-                    if !version.is_empty() {
-                        return Some(map_java_version(version, PinOrigin::PomXml));
-                    }
+                && let Some(inner) = trimmed.strip_prefix(tag)
+            {
+                let version = inner.split('<').next().unwrap_or("").trim();
+                if !version.is_empty() {
+                    return Some(map_java_version(version, PinOrigin::PomXml));
                 }
+            }
         }
     }
     None
@@ -592,10 +600,12 @@ fn try_build_gradle(root: &Path) -> Option<ToolchainResolution> {
             let trimmed = line.trim();
             // Groovy: sourceCompatibility = '21' or JavaVersion.VERSION_21
             // Kotlin: sourceCompatibility = JavaVersion.VERSION_21
-            if (trimmed.starts_with("sourceCompatibility") || trimmed.starts_with("languageVersion"))
-                && let Some(ver) = extract_java_version_from_gradle_line(trimmed) {
-                    return Some(map_java_version(&ver, PinOrigin::BuildGradle));
-                }
+            if (trimmed.starts_with("sourceCompatibility")
+                || trimmed.starts_with("languageVersion"))
+                && let Some(ver) = extract_java_version_from_gradle_line(trimmed)
+            {
+                return Some(map_java_version(&ver, PinOrigin::BuildGradle));
+            }
         }
     }
     None
@@ -606,7 +616,8 @@ fn extract_java_version_from_gradle_line(line: &str) -> Option<String> {
     // and: languageVersion.set(JavaLanguageVersion.of(21))
     let after_eq = line.split_once('=').map(|x| x.1).unwrap_or(line);
     // Try to find a number in the value.
-    let digits: String = after_eq.chars()
+    let digits: String = after_eq
+        .chars()
         .skip_while(|c| !c.is_ascii_digit())
         .take_while(|c| c.is_ascii_digit())
         .collect();
@@ -614,9 +625,7 @@ fn extract_java_version_from_gradle_line(line: &str) -> Option<String> {
         // Try "VERSION_21" pattern.
         if let Some(pos) = after_eq.find("VERSION_") {
             let rest = &after_eq[pos + 8..];
-            let digits: String = rest.chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if !digits.is_empty() {
                 return Some(digits);
             }
@@ -681,10 +690,12 @@ fn try_composer_json(root: &Path) -> Option<ToolchainResolution> {
         if json_line_has_key(trimmed, "require") {
             in_require = true;
         }
-        if in_require && trimmed.contains("\"php\"")
-            && let Some(ver) = extract_version_from_json_value(trimmed) {
-                return Some(map_php_version(&ver, PinOrigin::ComposerJson));
-            }
+        if in_require
+            && trimmed.contains("\"php\"")
+            && let Some(ver) = extract_version_from_json_value(trimmed)
+        {
+            return Some(map_php_version(&ver, PinOrigin::ComposerJson));
+        }
         // Stop at closing brace of require block.
         if in_require && (trimmed == "}," || trimmed == "}") {
             in_require = false;
@@ -763,7 +774,11 @@ mod tests {
     #[test]
     fn pyproject_requires_python() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("pyproject.toml"), "[project]\nrequires-python = \">=3.11\"\n").unwrap();
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nrequires-python = \">=3.11\"\n",
+        )
+        .unwrap();
         let r = resolve_python(dir.path());
         assert_eq!(r.toolchain_id, "python-3.11");
         assert_eq!(r.pin_origin, PinOrigin::PyprojectToml);
@@ -772,7 +787,11 @@ mod tests {
     #[test]
     fn pipfile_python_version() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("Pipfile"), "[requires]\npython_version = \"3.10\"\n").unwrap();
+        fs::write(
+            dir.path().join("Pipfile"),
+            "[requires]\npython_version = \"3.10\"\n",
+        )
+        .unwrap();
         let r = resolve_python(dir.path());
         assert_eq!(r.toolchain_id, "python-3.10");
         assert_eq!(r.pin_origin, PinOrigin::Pipfile);
@@ -793,7 +812,8 @@ mod tests {
         fs::write(
             dir.path().join("rust-toolchain.toml"),
             "[toolchain]\nchannel = \"stable\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let r = resolve_rust(dir.path());
         assert_eq!(r.toolchain_id, "rust-stable");
         assert!(!r.toolchain_drift);
@@ -816,7 +836,8 @@ mod tests {
         fs::write(
             dir.path().join("Cargo.toml"),
             "[package]\nname = \"foo\"\nrust-version = \"1.75\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let r = resolve_rust(dir.path());
         assert_eq!(r.pin_origin, PinOrigin::CargoToml);
         assert!(r.toolchain_id.starts_with("rust-1"));
@@ -848,7 +869,8 @@ mod tests {
         fs::write(
             dir.path().join("package.json"),
             r#"{"engines": {"node": ">=18.0.0"}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         let r = resolve_node(dir.path());
         assert_eq!(r.toolchain_id, "node-18");
     }
@@ -866,7 +888,11 @@ mod tests {
     #[test]
     fn go_mod_version() {
         let dir = TempDir::new().unwrap();
-        fs::write(dir.path().join("go.mod"), "module example.com/app\n\ngo 1.22\n").unwrap();
+        fs::write(
+            dir.path().join("go.mod"),
+            "module example.com/app\n\ngo 1.22\n",
+        )
+        .unwrap();
         let r = resolve_go(dir.path());
         assert_eq!(r.toolchain_id, "go-1.22");
         assert!(!r.toolchain_drift);
@@ -902,7 +928,8 @@ mod tests {
         fs::write(
             dir.path().join("build.gradle"),
             "sourceCompatibility = '17'\ntargetCompatibility = '17'\n",
-        ).unwrap();
+        )
+        .unwrap();
         let r = resolve_java(dir.path());
         assert_eq!(r.toolchain_id, "java-17");
         assert_eq!(r.pin_origin, PinOrigin::BuildGradle);
@@ -924,7 +951,8 @@ mod tests {
         fs::write(
             dir.path().join("composer.json"),
             r#"{"require": {"php": ">=8.1"}}"#,
-        ).unwrap();
+        )
+        .unwrap();
         let r = resolve_php(dir.path());
         assert_eq!(r.toolchain_id, "php-8.1");
         assert_eq!(r.pin_origin, PinOrigin::ComposerJson);
@@ -982,7 +1010,10 @@ mod tests {
     #[test]
     fn json_line_has_key_rejects_key_in_value() {
         assert!(!json_line_has_key(r#"    "type": "require","#, "require"));
-        assert!(!json_line_has_key(r#"    "desc": "engines config","#, "engines"));
+        assert!(!json_line_has_key(
+            r#"    "desc": "engines config","#,
+            "engines"
+        ));
     }
 
     #[test]

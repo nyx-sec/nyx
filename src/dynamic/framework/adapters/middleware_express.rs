@@ -15,10 +15,7 @@ const ADAPTER_NAME: &str = "middleware-express";
 
 fn callee_is_express(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(
-        last,
-        "use" | "next" | "json" | "urlencoded" | "static"
-    )
+    matches!(last, "use" | "next" | "json" | "urlencoded" | "static")
 }
 
 fn source_imports_express(file_bytes: &[u8]) -> bool {
@@ -27,11 +24,7 @@ fn source_imports_express(file_bytes: &[u8]) -> bool {
     // import.  Many non-middleware Express fixtures import the framework
     // but never declare middleware; gating on the registration shape
     // keeps the adapter focused on the function the brief targets.
-    const NEEDLES: &[&[u8]] = &[
-        b"app.use(",
-        b"router.use(",
-        b"express.Router()",
-    ];
+    const NEEDLES: &[&[u8]] = &[b"app.use(", b"router.use(", b"express.Router()"];
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))

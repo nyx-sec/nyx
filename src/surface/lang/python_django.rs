@@ -60,7 +60,13 @@ pub fn detect_django_routes(
     let file_rel = rel_file(path, scan_root);
     let mut out = Vec::new();
     let function_index = collect_function_definitions(tree.root_node(), bytes);
-    detect_url_dispatch(tree.root_node(), bytes, &file_rel, &function_index, &mut out);
+    detect_url_dispatch(
+        tree.root_node(),
+        bytes,
+        &file_rel,
+        &function_index,
+        &mut out,
+    );
     detect_class_based_views(tree.root_node(), bytes, &file_rel, &mut out);
     out
 }
@@ -178,16 +184,9 @@ fn parse_url_call(call: Node, bytes: &[u8]) -> Option<(String, String)> {
     Some((route?, handler?))
 }
 
-fn detect_class_based_views(
-    root: Node,
-    bytes: &[u8],
-    file_rel: &str,
-    out: &mut Vec<SurfaceNode>,
-) {
+fn detect_class_based_views(root: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<SurfaceNode>) {
     fn recurse(node: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<SurfaceNode>) {
-        if node.kind() == "class_definition"
-            && class_is_django_view(node, bytes)
-        {
+        if node.kind() == "class_definition" && class_is_django_view(node, bytes) {
             let class_auth = class_has_auth_permission(node, bytes);
             // Walk the body for HTTP-named methods.
             if let Some(body) = node.child_by_field_name("body") {

@@ -21,13 +21,9 @@
 
 mod common;
 
-use nyx_scanner::dynamic::oracle::{
-    oracle_fired, probe_crash_signal, Oracle, Signal, SignalSet,
-};
+use nyx_scanner::dynamic::oracle::{Oracle, Signal, SignalSet, oracle_fired, probe_crash_signal};
 use nyx_scanner::dynamic::policy;
-use nyx_scanner::dynamic::probe::{
-    ProbeArg, ProbeChannel, ProbeKind, ProbeWitness, SinkProbe,
-};
+use nyx_scanner::dynamic::probe::{ProbeArg, ProbeChannel, ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::evidence::InconclusiveReason;
 use std::time::Duration;
@@ -116,7 +112,10 @@ fn case_b_outside_sink_crash_does_not_fire_and_is_unrelated() {
     let dir = TempDir::new().unwrap();
     let channel = ProbeChannel::for_workdir(dir.path()).unwrap();
     let probes = channel.drain();
-    assert!(probes.is_empty(), "no probe written from outside-sink abort");
+    assert!(
+        probes.is_empty(),
+        "no probe written from outside-sink abort"
+    );
 
     let oracle = Oracle::SinkCrash {
         signals: SignalSet::all(),
@@ -131,8 +130,7 @@ fn case_b_outside_sink_crash_does_not_fire_and_is_unrelated() {
     // outcome + no probe with a crash signal.  Lock the predicate
     // here so the runner's wiring in src/dynamic/runner.rs stays in
     // sync with what the test labels expect.
-    let process_crashed =
-        crashed_outcome().exit_code.is_none() && !crashed_outcome().timed_out;
+    let process_crashed = crashed_outcome().exit_code.is_none() && !crashed_outcome().timed_out;
     let has_sink_crash_probe = probes.iter().any(|p| probe_crash_signal(p).is_some());
     let is_sink_crash_oracle = matches!(oracle, Oracle::SinkCrash { .. });
     assert!(is_sink_crash_oracle && process_crashed && !has_sink_crash_probe);
@@ -209,7 +207,10 @@ fn case_c_witness_capture_is_bounded_and_scrubbed() {
 
     assert_eq!(witness.cwd, "/tmp/nyx-run-1");
     assert_eq!(witness.callee, "exec");
-    assert_eq!(witness.args_repr, vec!["arg0".to_owned(), "arg1".to_owned()]);
+    assert_eq!(
+        witness.args_repr,
+        vec!["arg0".to_owned(), "arg1".to_owned()]
+    );
 }
 
 #[test]
@@ -266,13 +267,11 @@ fn signal_wire_format_accepts_canonical_and_short_aliases() {
     // The per-language shims write SIGSEGV / SIGABRT / etc. as the
     // signal value; downstream JSON consumers and the host-side oracle
     // both need to deserialise the same wire format.
-    let canonical =
-        serde_json::from_str::<Signal>("\"SIGSEGV\"").expect("canonical SIG name");
+    let canonical = serde_json::from_str::<Signal>("\"SIGSEGV\"").expect("canonical SIG name");
     assert_eq!(canonical, Signal::Sigsegv);
     let short = serde_json::from_str::<Signal>("\"SEGV\"").expect("short alias");
     assert_eq!(short, Signal::Sigsegv);
-    let title =
-        serde_json::from_str::<Signal>("\"Sigsegv\"").expect("derive-default alias");
+    let title = serde_json::from_str::<Signal>("\"Sigsegv\"").expect("derive-default alias");
     assert_eq!(title, Signal::Sigsegv);
 }
 
@@ -310,10 +309,10 @@ fn signal_set_const_construction_is_order_independent() {
 
 mod e2e_phase_08 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::SandboxOptions;
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::labels::Cap;
     use nyx_scanner::symbol::Lang;
@@ -387,7 +386,9 @@ mod e2e_phase_08 {
 
     #[test]
     fn setup_fault_routes_to_unrelated_crash() {
-        let Some(outcome) = run("setup_fault.c") else { return };
+        let Some(outcome) = run("setup_fault.c") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_none(),
             "setup_fault must not Confirm — handler is never installed: {outcome:?}",
@@ -408,7 +409,9 @@ mod e2e_phase_08 {
 
     #[test]
     fn sink_fault_confirms_via_sink_crash_probe() {
-        let Some(outcome) = run("sink_fault.c") else { return };
+        let Some(outcome) = run("sink_fault.c") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "sink_fault must Confirm via SinkCrash + differential: {outcome:?}",

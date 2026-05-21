@@ -69,10 +69,7 @@ fn make_servlet_stubs(pkg: &str) -> Vec<(String, String)> {
             format!("{http_path}/HttpServletResponse.java"),
             http_servlet_response(&http),
         ),
-        (
-            format!("{http_path}/HttpSession.java"),
-            http_session(&http),
-        ),
+        (format!("{http_path}/HttpSession.java"), http_session(&http)),
         (format!("{http_path}/Cookie.java"), cookie(&http)),
     ]
 }

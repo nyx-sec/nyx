@@ -14,12 +14,12 @@
 mod common;
 
 use nyx_scanner::dynamic::corpus::{
-    audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
-    resolve_benign_control_lang, Oracle,
+    Oracle, audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
+    resolve_benign_control_lang,
 };
 use nyx_scanner::dynamic::framework::registry::adapters_for;
 use nyx_scanner::dynamic::lang;
-use nyx_scanner::dynamic::oracle::{oracle_fired, ProbePredicate};
+use nyx_scanner::dynamic::oracle::{ProbePredicate, oracle_fired};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot};
 use nyx_scanner::labels::Cap;
@@ -72,13 +72,7 @@ fn corpus_registers_ssti_for_every_supported_lang() {
 fn ssti_unsupported_caps_unchanged_for_other_langs() {
     // Phase 04 only fills Python/Ruby/PHP/Java/JS — TypeScript / Rust /
     // C / Cpp / Go remain empty.
-    for lang in [
-        Lang::Rust,
-        Lang::C,
-        Lang::Cpp,
-        Lang::Go,
-        Lang::TypeScript,
-    ] {
+    for lang in [Lang::Rust, Lang::C, Lang::Cpp, Lang::Go, Lang::TypeScript] {
         assert!(
             payloads_for_lang(Cap::SSTI, lang).is_empty(),
             "unexpected SSTI payloads registered for {lang:?}",
@@ -91,8 +85,7 @@ fn benign_control_resolves_within_lang_slice() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::SSTI, *lang);
         let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
-        let resolved =
-            resolve_benign_control_lang(vuln, Cap::SSTI, *lang).expect("paired control");
+        let resolved = resolve_benign_control_lang(vuln, Cap::SSTI, *lang).expect("paired control");
         assert!(resolved.is_benign);
         let direct = benign_payload_for_lang(Cap::SSTI, *lang).unwrap();
         assert_eq!(direct.label, resolved.label);
@@ -106,9 +99,9 @@ fn payload_oracle_carries_template_eval_predicate() {
         let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
         match &vuln.oracle {
             Oracle::SinkProbe { predicates } => {
-                let has_predicate = predicates.iter().any(|p| {
-                    matches!(p, ProbePredicate::TemplateEvalEqual { expected: 49 })
-                });
+                let has_predicate = predicates
+                    .iter()
+                    .any(|p| matches!(p, ProbePredicate::TemplateEvalEqual { expected: 49 }));
                 assert!(
                     has_predicate,
                     "{lang:?} vuln payload missing TemplateEvalEqual{{expected:49}}",
@@ -205,8 +198,8 @@ fn lang_emitter_dispatches_to_ssti_harness() {
         ),
     ] {
         let spec = make_spec(lang, entry_file, entry_name);
-        let harness = lang::emit(&spec)
-            .unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
+        let harness =
+            lang::emit(&spec).unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
         assert!(
             harness.source.contains(marker),
             "{lang:?} ssti harness must splice {marker:?}",
@@ -277,10 +270,13 @@ fn framework_adapters_detect_ssti_sink() {
             .push(nyx_scanner::summary::CalleeSite::bare(sink_callee));
         let registry_slice = adapters_for(lang);
         assert!(!registry_slice.is_empty(), "{lang:?} adapter slice empty");
-        let binding =
-            nyx_scanner::dynamic::framework::detect_binding(&summary, tree.root_node(), &bytes, lang);
-        let b =
-            binding.unwrap_or_else(|| panic!("{lang:?} adapter must detect the SSTI fixture"));
+        let binding = nyx_scanner::dynamic::framework::detect_binding(
+            &summary,
+            tree.root_node(),
+            &bytes,
+            lang,
+        );
+        let b = binding.unwrap_or_else(|| panic!("{lang:?} adapter must detect the SSTI fixture"));
         assert_eq!(b.kind, EntryKind::Function);
         assert!(!b.adapter.is_empty());
     }
@@ -292,9 +288,7 @@ fn ts_language_for(lang: Lang) -> tree_sitter::Language {
         Lang::Ruby => tree_sitter::Language::from(tree_sitter_ruby::LANGUAGE),
         Lang::Php => tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP),
         Lang::Java => tree_sitter::Language::from(tree_sitter_java::LANGUAGE),
-        Lang::JavaScript => {
-            tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE)
-        }
+        Lang::JavaScript => tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE),
         other => panic!("unsupported test lang {other:?}"),
     }
 }
@@ -338,10 +332,10 @@ fn slug(lang: Lang) -> &'static str {
 
 mod e2e_phase_04 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -454,7 +448,9 @@ mod e2e_phase_04 {
 
     #[test]
     fn python_jinja2_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Python Jinja2 SSTI vuln must Confirm via run_spec; got {outcome:?}",
@@ -468,7 +464,9 @@ mod e2e_phase_04 {
 
     #[test]
     fn ruby_erb_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else { return };
+        let Some(outcome) = run(Lang::Ruby, "vuln.rb", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Ruby ERB SSTI vuln must Confirm via run_spec; got {outcome:?}",
@@ -482,7 +480,9 @@ mod e2e_phase_04 {
 
     #[test]
     fn php_twig_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "PHP Twig SSTI vuln must Confirm via run_spec; got {outcome:?}",
@@ -496,7 +496,9 @@ mod e2e_phase_04 {
 
     #[test]
     fn js_handlebars_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else { return };
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "JS Handlebars SSTI vuln must Confirm via run_spec; got {outcome:?}",
@@ -510,7 +512,9 @@ mod e2e_phase_04 {
 
     #[test]
     fn java_thymeleaf_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Java, "vuln.java", "run") else { return };
+        let Some(outcome) = run(Lang::Java, "vuln.java", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Java Thymeleaf SSTI vuln must Confirm via run_spec; got {outcome:?}",

@@ -389,7 +389,12 @@ pub fn handle_command(
             )?;
         }
         #[cfg(feature = "dynamic")]
-        Commands::VerifyFeedback { finding_id, wrong, right, upload } => {
+        Commands::VerifyFeedback {
+            finding_id,
+            wrong,
+            right,
+            upload,
+        } => {
             handle_verify_feedback(&finding_id, wrong.as_deref(), right, upload)?;
         }
         #[cfg(not(feature = "dynamic"))]
@@ -477,8 +482,8 @@ fn handle_verify_feedback(
     right: bool,
     upload: bool,
 ) -> crate::errors::NyxResult<()> {
-    use std::io::Write;
     use std::fs::OpenOptions;
+    use std::io::Write;
 
     let _ = upload; // Upload not yet implemented (reserved).
 

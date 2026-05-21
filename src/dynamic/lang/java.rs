@@ -275,7 +275,6 @@ impl JavaShape {
 // the JDK accepts whitespace / newline / modifier variation that no
 // single template captures.)
 
-
 // ── Probe shim (Phase 06 + Phase 08) ─────────────────────────────────────────
 
 /// Source of the `__nyx_probe` shim for the Java harness (Phase 06 —
@@ -617,7 +616,11 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if let crate::evidence::EntryKind::ScheduledJob { schedule } = &spec.entry_kind {
         let entry_source = read_entry_source(&spec.entry_file);
         let entry_class = derive_entry_class(&entry_source);
-        return Ok(emit_scheduled_job_harness(spec, schedule.as_deref(), &entry_class));
+        return Ok(emit_scheduled_job_harness(
+            spec,
+            schedule.as_deref(),
+            &entry_class,
+        ));
     }
 
     // Phase 21 (Track M.3): Middleware short-circuit (Spring HandlerInterceptor / Filter).
@@ -1754,9 +1757,9 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> 
         JavaShape::StaticMain => format!(
             "            String[] mainArgs = new String[] {{ payload }};\n            {entry_class}.main(mainArgs);"
         ),
-        JavaShape::ServletDoGet => format!(
-            "            invokeServlet({entry_class}.class, \"doGet\", payload, \"GET\");"
-        ),
+        JavaShape::ServletDoGet => {
+            format!("            invokeServlet({entry_class}.class, \"doGet\", payload, \"GET\");")
+        }
         JavaShape::ServletDoPost => format!(
             "            invokeServlet({entry_class}.class, \"doPost\", payload, \"POST\");"
         ),
@@ -1772,20 +1775,18 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: JavaShape, entry_class: &str) -> 
                     "            System.out.println(\"NYX_SPRING_TEST=1\");\n            invokeReflective({entry_class}.class, \"{method}\", payload);"
                 )
             } else {
-                format!(
-                    "            invokeReflective({entry_class}.class, \"{method}\", payload);"
-                )
+                format!("            invokeReflective({entry_class}.class, \"{method}\", payload);")
             }
         }
-        JavaShape::QuarkusRoute => format!(
-            "            invokeReflective({entry_class}.class, \"{method}\", payload);"
-        ),
-        JavaShape::MicronautRoute => format!(
-            "            invokeReflective({entry_class}.class, \"{method}\", payload);"
-        ),
-        JavaShape::JunitTest => format!(
-            "            invokeJunitTest({entry_class}.class, \"{method}\");"
-        ),
+        JavaShape::QuarkusRoute => {
+            format!("            invokeReflective({entry_class}.class, \"{method}\", payload);")
+        }
+        JavaShape::MicronautRoute => {
+            format!("            invokeReflective({entry_class}.class, \"{method}\", payload);")
+        }
+        JavaShape::JunitTest => {
+            format!("            invokeJunitTest({entry_class}.class, \"{method}\");")
+        }
     }
 }
 
@@ -1794,9 +1795,9 @@ fn shape_helpers(shape: JavaShape) -> &'static str {
     match shape {
         JavaShape::StaticMethod | JavaShape::StaticMain => "",
         JavaShape::ServletDoGet | JavaShape::ServletDoPost => SERVLET_HELPER,
-        JavaShape::SpringController
-        | JavaShape::QuarkusRoute
-        | JavaShape::MicronautRoute => REFLECTIVE_HELPER,
+        JavaShape::SpringController | JavaShape::QuarkusRoute | JavaShape::MicronautRoute => {
+            REFLECTIVE_HELPER
+        }
         JavaShape::JunitTest => JUNIT_HELPER,
     }
 }
@@ -2522,15 +2523,21 @@ mod tests {
     #[test]
     fn entry_kinds_supported_is_non_empty() {
         assert!(!JavaEmitter.entry_kinds_supported().is_empty());
-        assert!(JavaEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::Function));
-        assert!(JavaEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::HttpRoute));
-        assert!(JavaEmitter
-            .entry_kinds_supported()
-            .contains(&EntryKindTag::CliSubcommand));
+        assert!(
+            JavaEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::Function)
+        );
+        assert!(
+            JavaEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::HttpRoute)
+        );
+        assert!(
+            JavaEmitter
+                .entry_kinds_supported()
+                .contains(&EntryKindTag::CliSubcommand)
+        );
     }
 
     #[test]
@@ -2602,7 +2609,8 @@ mod tests {
 
     #[test]
     fn shape_detect_junit_test() {
-        let src = "import org.junit.jupiter.api.Test;\npublic class V { @Test public void testRun() {} }";
+        let src =
+            "import org.junit.jupiter.api.Test;\npublic class V { @Test public void testRun() {} }";
         let spec = make_spec_with(EntryKind::Function, "testRun", "V.java");
         assert_eq!(JavaShape::detect(&spec, src), JavaShape::JunitTest);
     }
@@ -2689,7 +2697,11 @@ mod tests {
         let mut spec = make_spec_with(EntryKind::HttpRoute, "doGet", &entry_file);
         spec.payload_slot = PayloadSlot::QueryParam("payload".into());
         let harness = emit(&spec).unwrap();
-        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        let paths: Vec<&str> = harness
+            .extra_files
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .collect();
         assert!(
             paths.contains(&"javax/servlet/http/HttpServletRequest.java"),
             "doGet bundle missing javax HttpServletRequest stub; got {paths:?}"
@@ -2714,7 +2726,11 @@ mod tests {
         spec.payload_slot = PayloadSlot::HttpBody;
         let harness = emit(&spec).unwrap();
         assert!(!harness.extra_files.is_empty(), "doPost bundle is empty");
-        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        let paths: Vec<&str> = harness
+            .extra_files
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .collect();
         assert!(paths.contains(&"javax/servlet/http/HttpServlet.java"));
         assert!(paths.contains(&"jakarta/servlet/http/HttpServlet.java"));
     }
@@ -2729,7 +2745,11 @@ mod tests {
         assert!(
             harness.extra_files.is_empty(),
             "non-servlet shape unexpectedly ships extra files: {:?}",
-            harness.extra_files.iter().map(|(p, _)| p).collect::<Vec<_>>()
+            harness
+                .extra_files
+                .iter()
+                .map(|(p, _)| p)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -2756,7 +2776,11 @@ mod tests {
         );
         let spec = make_spec_with(EntryKind::HttpRoute, "doGet", &entry_file);
         let harness = emit(&spec).unwrap();
-        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        let paths: Vec<&str> = harness
+            .extra_files
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .collect();
         // Servlet stubs are present (same as the non-OWASP servlet case).
         assert!(paths.contains(&"javax/servlet/http/HttpServletRequest.java"));
         // OWASP helpers + esapi + spring stubs are appended.
@@ -2779,7 +2803,11 @@ mod tests {
         );
         let spec = make_spec_with(EntryKind::HttpRoute, "doGet", &entry_file);
         let harness = emit(&spec).unwrap();
-        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        let paths: Vec<&str> = harness
+            .extra_files
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .collect();
         assert!(
             !paths.iter().any(|p| p.starts_with("org/owasp/")),
             "plain servlet entry unexpectedly bundles OWASP stubs: {paths:?}"
@@ -2803,7 +2831,11 @@ mod tests {
         );
         let spec = make_spec_with(EntryKind::Function, "run", &entry_file);
         let harness = emit(&spec).unwrap();
-        let paths: Vec<&str> = harness.extra_files.iter().map(|(p, _)| p.as_str()).collect();
+        let paths: Vec<&str> = harness
+            .extra_files
+            .iter()
+            .map(|(p, _)| p.as_str())
+            .collect();
         assert!(paths.contains(&"org/owasp/benchmark/helpers/Utils.java"));
         // No servlet stubs for a non-servlet shape.
         assert!(!paths.iter().any(|p| p.starts_with("javax/servlet/")));
@@ -2965,7 +2997,10 @@ mod tests {
             "Java chain step must keep its NYX_PREV_OUTPUT forwarder"
         );
         let shim_pos = step.source.find("__nyx_probe").unwrap();
-        let driver_pos = step.source.find("System.getenv(\"NYX_PREV_OUTPUT\")").unwrap();
+        let driver_pos = step
+            .source
+            .find("System.getenv(\"NYX_PREV_OUTPUT\")")
+            .unwrap();
         assert!(
             shim_pos < driver_pos,
             "probe shim must come before the driver so the shim's helpers are in scope when a sink rewrite splices in"
@@ -2983,10 +3018,7 @@ mod tests {
         // Drive the public `detect_shape(spec)` wrapper end-to-end:
         // write a representative source to a tempfile, then assert the
         // wrapper reads it and produces the expected JavaShape variant.
-        let dir = std::env::temp_dir().join(format!(
-            "nyx_detect_shape_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("nyx_detect_shape_{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let cases: &[(&str, &str, &str, EntryKind, JavaShape)] = &[
             (

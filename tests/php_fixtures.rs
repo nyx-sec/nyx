@@ -14,7 +14,7 @@ mod common;
 #[cfg(feature = "dynamic")]
 mod php_fixture_tests {
     use nyx_scanner::commands::scan::Diag;
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{
         Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
         VerifyStatus,
@@ -456,7 +456,7 @@ mod php_fixture_tests {
 
 #[cfg(feature = "dynamic")]
 mod phase15_shape_tests {
-    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
+    use crate::common::fixture_harness::{Prerequisite, run_shape_fixture_lang_or_skip};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
@@ -506,7 +506,15 @@ mod phase15_shape_tests {
         // return; };`.
         run_shape_fixture_lang_or_skip(
             &[Prerequisite::CommandAvailable("php")],
-            Lang::Php, "php", shape, file, func, cap, sink_line, kind, slot,
+            Lang::Php,
+            "php",
+            shape,
+            file,
+            func,
+            cap,
+            sink_line,
+            kind,
+            slot,
         )
     }
 
@@ -515,8 +523,13 @@ mod phase15_shape_tests {
     #[test]
     fn route_closure_vuln_is_confirmed() {
         let Some(r) = run(
-            "route_closure", "vuln.php", "run", Cap::CODE_EXEC, 10,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "route_closure",
+            "vuln.php",
+            "run",
+            Cap::CODE_EXEC,
+            10,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -526,8 +539,13 @@ mod phase15_shape_tests {
     #[test]
     fn route_closure_benign_not_confirmed() {
         let Some(r) = run(
-            "route_closure", "benign.php", "run", Cap::CODE_EXEC, 11,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "route_closure",
+            "benign.php",
+            "run",
+            Cap::CODE_EXEC,
+            11,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -539,8 +557,13 @@ mod phase15_shape_tests {
     #[test]
     fn cli_script_vuln_is_confirmed() {
         let Some(r) = run(
-            "cli_script", "vuln.php", "main", Cap::CODE_EXEC, 8,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "cli_script",
+            "vuln.php",
+            "main",
+            Cap::CODE_EXEC,
+            8,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         ) else {
             return;
         };
@@ -550,8 +573,13 @@ mod phase15_shape_tests {
     #[test]
     fn cli_script_benign_not_confirmed() {
         let Some(r) = run(
-            "cli_script", "benign.php", "main", Cap::CODE_EXEC, 11,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "cli_script",
+            "benign.php",
+            "main",
+            Cap::CODE_EXEC,
+            11,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         ) else {
             return;
         };
@@ -563,8 +591,13 @@ mod phase15_shape_tests {
     #[test]
     fn top_level_script_vuln_is_confirmed() {
         let Some(r) = run(
-            "top_level_script", "vuln.php", "", Cap::CODE_EXEC, 8,
-            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "top_level_script",
+            "vuln.php",
+            "",
+            Cap::CODE_EXEC,
+            8,
+            EntryKind::Function,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };
@@ -574,8 +607,13 @@ mod phase15_shape_tests {
     #[test]
     fn top_level_script_benign_not_confirmed() {
         let Some(r) = run(
-            "top_level_script", "benign.php", "", Cap::CODE_EXEC, 10,
-            EntryKind::Function, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "top_level_script",
+            "benign.php",
+            "",
+            Cap::CODE_EXEC,
+            10,
+            EntryKind::Function,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };

@@ -13,7 +13,7 @@ mod common;
 
 #[cfg(feature = "dynamic")]
 mod phase15_shape_tests {
-    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
+    use crate::common::fixture_harness::{Prerequisite, run_shape_fixture_lang_or_skip};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
@@ -77,8 +77,13 @@ mod phase15_shape_tests {
     #[test]
     fn sinatra_route_vuln_is_confirmed() {
         let Some(r) = run(
-            "sinatra_route", "vuln.rb", "run", Cap::CODE_EXEC, 7,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "sinatra_route",
+            "vuln.rb",
+            "run",
+            Cap::CODE_EXEC,
+            7,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -88,8 +93,13 @@ mod phase15_shape_tests {
     #[test]
     fn sinatra_route_benign_not_confirmed() {
         let Some(r) = run(
-            "sinatra_route", "benign.rb", "run", Cap::CODE_EXEC, 10,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "sinatra_route",
+            "benign.rb",
+            "run",
+            Cap::CODE_EXEC,
+            10,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -101,8 +111,13 @@ mod phase15_shape_tests {
     #[test]
     fn rails_action_vuln_is_confirmed() {
         let Some(r) = run(
-            "rails_action", "vuln.rb", "index", Cap::CODE_EXEC, 17,
-            EntryKind::HttpRoute, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "rails_action",
+            "vuln.rb",
+            "index",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::HttpRoute,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };
@@ -112,8 +127,13 @@ mod phase15_shape_tests {
     #[test]
     fn rails_action_benign_not_confirmed() {
         let Some(r) = run(
-            "rails_action", "benign.rb", "index", Cap::CODE_EXEC, 20,
-            EntryKind::HttpRoute, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "rails_action",
+            "benign.rb",
+            "index",
+            Cap::CODE_EXEC,
+            20,
+            EntryKind::HttpRoute,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };
@@ -125,8 +145,13 @@ mod phase15_shape_tests {
     #[test]
     fn rack_middleware_vuln_is_confirmed() {
         let Some(r) = run(
-            "rack_middleware", "vuln.rb", "call", Cap::CODE_EXEC, 9,
-            EntryKind::HttpRoute, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "rack_middleware",
+            "vuln.rb",
+            "call",
+            Cap::CODE_EXEC,
+            9,
+            EntryKind::HttpRoute,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };
@@ -136,8 +161,13 @@ mod phase15_shape_tests {
     #[test]
     fn rack_middleware_benign_not_confirmed() {
         let Some(r) = run(
-            "rack_middleware", "benign.rb", "call", Cap::CODE_EXEC, 11,
-            EntryKind::HttpRoute, PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
+            "rack_middleware",
+            "benign.rb",
+            "call",
+            Cap::CODE_EXEC,
+            11,
+            EntryKind::HttpRoute,
+            PayloadSlot::EnvVar("NYX_PAYLOAD".into()),
         ) else {
             return;
         };
@@ -149,8 +179,13 @@ mod phase15_shape_tests {
     #[test]
     fn controller_method_vuln_is_confirmed() {
         let Some(r) = run(
-            "controller_method", "vuln.rb", "authenticate", Cap::CODE_EXEC, 7,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "controller_method",
+            "vuln.rb",
+            "authenticate",
+            Cap::CODE_EXEC,
+            7,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -160,8 +195,13 @@ mod phase15_shape_tests {
     #[test]
     fn controller_method_benign_not_confirmed() {
         let Some(r) = run(
-            "controller_method", "benign.rb", "authenticate", Cap::CODE_EXEC, 10,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "controller_method",
+            "benign.rb",
+            "authenticate",
+            Cap::CODE_EXEC,
+            10,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };

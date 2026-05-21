@@ -128,9 +128,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("to")],
             ..Default::default()
         };
-        assert!(RedirectRustAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RedirectRustAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -141,9 +143,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(RedirectRustAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectRustAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -166,9 +170,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(RedirectRustAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectRustAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -189,9 +195,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(RedirectRustAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RedirectRustAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -211,8 +219,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(RedirectRustAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectRustAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -98,14 +98,20 @@ mod tests {
     #[test]
     fn browser_local_rce_is_critical() {
         assert_eq!(
-            chain_severity(ImpactCategory::BrowserToLocalRce, &[edge(Feasibility::Confirmed)]),
+            chain_severity(
+                ImpactCategory::BrowserToLocalRce,
+                &[edge(Feasibility::Confirmed)]
+            ),
             ChainSeverity::Critical,
         );
     }
 
     #[test]
     fn session_hijack_downgrades_on_all_unverified() {
-        let confirmed = chain_severity(ImpactCategory::SessionHijack, &[edge(Feasibility::Confirmed)]);
+        let confirmed = chain_severity(
+            ImpactCategory::SessionHijack,
+            &[edge(Feasibility::Confirmed)],
+        );
         assert_eq!(confirmed, ChainSeverity::High);
         let unverified = chain_severity(
             ImpactCategory::SessionHijack,

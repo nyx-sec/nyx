@@ -210,23 +210,14 @@ mod tests {
 
     #[test]
     fn stable_hash_changes_with_member_order() {
-        let a = ChainFinding::compute_stable_hash(
-            &[member(1), member(2)],
-            ImpactCategory::Rce,
-        );
-        let b = ChainFinding::compute_stable_hash(
-            &[member(2), member(1)],
-            ImpactCategory::Rce,
-        );
+        let a = ChainFinding::compute_stable_hash(&[member(1), member(2)], ImpactCategory::Rce);
+        let b = ChainFinding::compute_stable_hash(&[member(2), member(1)], ImpactCategory::Rce);
         assert_ne!(a, b);
     }
 
     #[test]
     fn stable_hash_changes_with_impact() {
-        let a = ChainFinding::compute_stable_hash(
-            &[member(1), member(2)],
-            ImpactCategory::Rce,
-        );
+        let a = ChainFinding::compute_stable_hash(&[member(1), member(2)], ImpactCategory::Rce);
         let b = ChainFinding::compute_stable_hash(
             &[member(1), member(2)],
             ImpactCategory::BrowserToLocalRce,

@@ -141,9 +141,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("JSON.parse")],
             ..Default::default()
         };
-        assert!(PpJsonDeepAssignJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            PpJsonDeepAssignJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -155,9 +157,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("JSON.parse")],
             ..Default::default()
         };
-        assert!(PpJsonDeepAssignJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpJsonDeepAssignJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -176,8 +180,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("JSON.parse")],
             ..Default::default()
         };
-        assert!(PpJsonDeepAssignJsAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            PpJsonDeepAssignJsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

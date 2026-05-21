@@ -11,7 +11,7 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::framework::{detect_binding, HttpMethod, ParamSource};
+use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
 use nyx_scanner::symbol::Lang;
@@ -45,10 +45,12 @@ fn express_vuln_fixture_binds_route() {
     let route = binding.route.as_ref().expect("route");
     assert_eq!(route.path, "/run");
     assert_eq!(route.method, HttpMethod::GET);
-    assert!(binding
-        .request_params
-        .iter()
-        .any(|p| p.name == "req" && matches!(p.source, ParamSource::Implicit)));
+    assert!(
+        binding
+            .request_params
+            .iter()
+            .any(|p| p.name == "req" && matches!(p.source, ParamSource::Implicit))
+    );
 }
 
 #[test]
@@ -77,10 +79,12 @@ fn koa_vuln_fixture_binds_router_route() {
     let route = binding.route.as_ref().expect("route");
     assert_eq!(route.path, "/run");
     assert_eq!(route.method, HttpMethod::GET);
-    assert!(binding
-        .request_params
-        .iter()
-        .any(|p| p.name == "ctx" && matches!(p.source, ParamSource::Implicit)));
+    assert!(
+        binding
+            .request_params
+            .iter()
+            .any(|p| p.name == "ctx" && matches!(p.source, ParamSource::Implicit))
+    );
 }
 
 #[test]
@@ -107,14 +111,18 @@ fn fastify_vuln_fixture_binds_route() {
     let route = binding.route.as_ref().expect("route");
     assert_eq!(route.path, "/run");
     assert_eq!(route.method, HttpMethod::GET);
-    assert!(binding
-        .request_params
-        .iter()
-        .any(|p| p.name == "request" && matches!(p.source, ParamSource::Implicit)));
-    assert!(binding
-        .request_params
-        .iter()
-        .any(|p| p.name == "reply" && matches!(p.source, ParamSource::Implicit)));
+    assert!(
+        binding
+            .request_params
+            .iter()
+            .any(|p| p.name == "request" && matches!(p.source, ParamSource::Implicit))
+    );
+    assert!(
+        binding
+            .request_params
+            .iter()
+            .any(|p| p.name == "reply" && matches!(p.source, ParamSource::Implicit))
+    );
 }
 
 #[test]
@@ -176,7 +184,6 @@ fn express_adapter_runs_before_fastify_for_express_files() {
         app.get('/x', h);\n";
     let tree = parse_js(src);
     let summary = summary_for("h", "synthetic.js");
-    let binding =
-        detect_binding(&summary, tree.root_node(), src, Lang::JavaScript).expect("fires");
+    let binding = detect_binding(&summary, tree.root_node(), src, Lang::JavaScript).expect("fires");
     assert_eq!(binding.adapter, "js-express");
 }

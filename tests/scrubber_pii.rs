@@ -8,7 +8,7 @@
 
 #[cfg(feature = "dynamic")]
 mod scrubber_pii_tests {
-    use nyx_scanner::dynamic::policy::{Scrubber, SCRUB_HASH_PREFIX};
+    use nyx_scanner::dynamic::policy::{SCRUB_HASH_PREFIX, Scrubber};
     use nyx_scanner::dynamic::probe::ProbeWitness;
 
     #[test]
@@ -68,7 +68,8 @@ mod scrubber_pii_tests {
     #[test]
     fn scrubber_recognises_pem_block() {
         let s = Scrubber::project_default();
-        let value = "-----BEGIN RSA PRIVATE KEY-----\nMIIEoQIBAAKCAQ\n-----END RSA PRIVATE KEY-----";
+        let value =
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEoQIBAAKCAQ\n-----END RSA PRIVATE KEY-----";
         assert!(s.matches_any(value));
         let out = s.scrub_string(value);
         assert!(!out.contains("MIIEoQIBAAKCAQ"));
@@ -126,10 +127,14 @@ mod scrubber_pii_tests {
         );
 
         let serialised = serde_json::to_string(&witness).unwrap();
-        assert!(!serialised.contains("deadbeef-feedface"),
-            "raw secret leaked into serialised witness: {serialised}");
-        assert!(serialised.contains(SCRUB_HASH_PREFIX),
-            "expected scrubbed-hash marker; got {serialised}");
+        assert!(
+            !serialised.contains("deadbeef-feedface"),
+            "raw secret leaked into serialised witness: {serialised}"
+        );
+        assert!(
+            serialised.contains(SCRUB_HASH_PREFIX),
+            "expected scrubbed-hash marker; got {serialised}"
+        );
     }
 
     #[test]
@@ -137,12 +142,9 @@ mod scrubber_pii_tests {
         // An env var keyed past the deny-list (so scrub_env keeps the
         // value verbatim) but whose textual value contains a secret
         // pattern must still be hashed by the Phase 28 scrubber pass.
-        let env: Vec<(String, String)> = vec![
-            ("USER_DATA".to_owned(), "AKIAFAKETEST00000000".to_owned()),
-        ];
-        let witness = ProbeWitness::from_inputs(
-            env, "/x", b"", "fn", vec![],
-        );
+        let env: Vec<(String, String)> =
+            vec![("USER_DATA".to_owned(), "AKIAFAKETEST00000000".to_owned())];
+        let witness = ProbeWitness::from_inputs(env, "/x", b"", "fn", vec![]);
         let value = witness.env_snapshot.get("USER_DATA").unwrap();
         assert!(value.starts_with(SCRUB_HASH_PREFIX), "got {value}");
     }

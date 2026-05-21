@@ -96,10 +96,11 @@ fn walk_class<'a>(
         return;
     }
     if node.kind() == "class"
-        && let Some(method) = find_method_in_class(node, bytes, target) {
-            *out = Some((node, method));
-            return;
-        }
+        && let Some(method) = find_method_in_class(node, bytes, target)
+    {
+        *out = Some((node, method));
+        return;
+    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         walk_class(child, bytes, target, out);
@@ -109,7 +110,11 @@ fn walk_class<'a>(
 /// Find a `method` node named `target` directly inside a `class`
 /// body.  Returns `None` when the class has no body or no method of
 /// that name.
-pub fn find_method_in_class<'a>(class: Node<'a>, bytes: &'a [u8], target: &str) -> Option<Node<'a>> {
+pub fn find_method_in_class<'a>(
+    class: Node<'a>,
+    bytes: &'a [u8],
+    target: &str,
+) -> Option<Node<'a>> {
     let body = named_child_of_kind(class, "body_statement")?;
     let mut cur = body.walk();
     for member in body.named_children(&mut cur) {
@@ -117,9 +122,10 @@ pub fn find_method_in_class<'a>(class: Node<'a>, bytes: &'a [u8], target: &str) 
             continue;
         }
         if let Some(name) = method_identifier(member, bytes)
-            && name == target {
-                return Some(member);
-            }
+            && name == target
+        {
+            return Some(member);
+        }
     }
     None
 }
@@ -349,7 +355,10 @@ pub fn bind_path_params(formals: &[String], path: &str) -> Vec<ParamBinding> {
 }
 
 fn is_implicit_formal(name: &str) -> bool {
-    matches!(name, "env" | "request" | "req" | "params" | "response" | "res")
+    matches!(
+        name,
+        "env" | "request" | "req" | "params" | "response" | "res"
+    )
 }
 
 /// Read the first positional symbol argument (`:foo`) from an
@@ -489,8 +498,7 @@ mod tests {
 
     #[test]
     fn class_includes_detects_hanami_v2() {
-        let src: &[u8] =
-            b"class A\n  include Hanami::Action\n  def call(req)\n  end\nend\n";
+        let src: &[u8] = b"class A\n  include Hanami::Action\n  def call(req)\n  end\nend\n";
         let tree = parse(src);
         let mut cur = tree.root_node().walk();
         let class = tree

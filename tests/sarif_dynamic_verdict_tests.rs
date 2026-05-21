@@ -82,8 +82,7 @@ fn sarif_confirmed_verdict_sets_partial_fingerprint() {
     let result = sarif_result(diag_with_verdict(verdict));
 
     assert_eq!(
-        result["partialFingerprints"]["dynamic_verdict_status"],
-        "Confirmed",
+        result["partialFingerprints"]["dynamic_verdict_status"], "Confirmed",
         "partialFingerprints.dynamic_verdict_status must be 'Confirmed'"
     );
     assert!(
@@ -92,8 +91,7 @@ fn sarif_confirmed_verdict_sets_partial_fingerprint() {
         result["properties"]["nyx_dynamic_verdict"]
     );
     assert_eq!(
-        result["properties"]["nyx_dynamic_verdict"]["status"],
-        "Confirmed",
+        result["properties"]["nyx_dynamic_verdict"]["status"], "Confirmed",
         "nyx_dynamic_verdict.status must be 'Confirmed'"
     );
 }
@@ -118,8 +116,7 @@ fn sarif_not_confirmed_verdict_sets_partial_fingerprint() {
     let result = sarif_result(diag_with_verdict(verdict));
 
     assert_eq!(
-        result["partialFingerprints"]["dynamic_verdict_status"],
-        "NotConfirmed",
+        result["partialFingerprints"]["dynamic_verdict_status"], "NotConfirmed",
         "partialFingerprints.dynamic_verdict_status must be 'NotConfirmed'"
     );
     assert!(
@@ -148,8 +145,7 @@ fn sarif_unsupported_verdict_sets_partial_fingerprint() {
     let result = sarif_result(diag_with_verdict(verdict));
 
     assert_eq!(
-        result["partialFingerprints"]["dynamic_verdict_status"],
-        "Unsupported",
+        result["partialFingerprints"]["dynamic_verdict_status"], "Unsupported",
         "partialFingerprints.dynamic_verdict_status must be 'Unsupported'"
     );
     assert!(
@@ -157,8 +153,7 @@ fn sarif_unsupported_verdict_sets_partial_fingerprint() {
         "properties.nyx_dynamic_verdict must be an object"
     );
     assert_eq!(
-        result["properties"]["nyx_dynamic_verdict"]["reason"],
-        "NoPayloadsForCap",
+        result["properties"]["nyx_dynamic_verdict"]["reason"], "NoPayloadsForCap",
         "nyx_dynamic_verdict must carry the unsupported reason"
     );
 }
@@ -183,8 +178,7 @@ fn sarif_inconclusive_verdict_sets_partial_fingerprint() {
     let result = sarif_result(diag_with_verdict(verdict));
 
     assert_eq!(
-        result["partialFingerprints"]["dynamic_verdict_status"],
-        "Inconclusive",
+        result["partialFingerprints"]["dynamic_verdict_status"], "Inconclusive",
         "partialFingerprints.dynamic_verdict_status must be 'Inconclusive'"
     );
     assert!(
@@ -192,8 +186,7 @@ fn sarif_inconclusive_verdict_sets_partial_fingerprint() {
         "properties.nyx_dynamic_verdict must be an object"
     );
     assert_eq!(
-        result["properties"]["nyx_dynamic_verdict"]["inconclusive_reason"],
-        "BuildFailed",
+        result["properties"]["nyx_dynamic_verdict"]["inconclusive_reason"], "BuildFailed",
         "nyx_dynamic_verdict must carry the inconclusive reason"
     );
 }
@@ -204,12 +197,14 @@ fn sarif_no_dynamic_verdict_omits_both_keys() {
     let result = sarif_result(diag);
 
     assert!(
-        result["partialFingerprints"].is_null() || result["partialFingerprints"] == serde_json::Value::Null,
+        result["partialFingerprints"].is_null()
+            || result["partialFingerprints"] == serde_json::Value::Null,
         "partialFingerprints must be absent when no dynamic verdict: {}",
         result["partialFingerprints"]
     );
     assert!(
-        result["properties"]["nyx_dynamic_verdict"].is_null() || result["properties"]["nyx_dynamic_verdict"] == serde_json::Value::Null,
+        result["properties"]["nyx_dynamic_verdict"].is_null()
+            || result["properties"]["nyx_dynamic_verdict"] == serde_json::Value::Null,
         "properties.nyx_dynamic_verdict must be absent when no dynamic verdict"
     );
 }
@@ -234,8 +229,7 @@ fn sarif_confirmed_verdict_nyx_dynamic_verdict_contains_triggered_payload() {
     let result = sarif_result(diag_with_verdict(verdict));
 
     assert_eq!(
-        result["properties"]["nyx_dynamic_verdict"]["triggered_payload"],
-        "cmd-injection-semicolon",
+        result["properties"]["nyx_dynamic_verdict"]["triggered_payload"], "cmd-injection-semicolon",
         "triggered_payload must appear in nyx_dynamic_verdict"
     );
 }
@@ -268,8 +262,7 @@ fn sarif_all_four_statuses_produce_partial_fingerprint() {
         let result = sarif_result(diag_with_verdict(verdict));
 
         assert_eq!(
-            result["partialFingerprints"]["dynamic_verdict_status"],
-            expected_str,
+            result["partialFingerprints"]["dynamic_verdict_status"], expected_str,
             "status {expected_str}: partialFingerprints.dynamic_verdict_status mismatch"
         );
         assert!(

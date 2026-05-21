@@ -17,13 +17,7 @@ fn callee_is_sequelize_migration(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
     matches!(
         last,
-        "up"
-            | "down"
-            | "createTable"
-            | "addColumn"
-            | "dropTable"
-            | "removeColumn"
-            | "addIndex"
+        "up" | "down" | "createTable" | "addColumn" | "dropTable" | "removeColumn" | "addIndex"
     )
 }
 

@@ -20,10 +20,10 @@
 mod spec_strategies {
     use nyx_scanner::commands::scan::Diag;
     use nyx_scanner::dynamic::spec::{
-        derive_from_callgraph_entry, derive_from_func_summary, derive_from_rule_namespace,
         EntryKind, EntryKindTag, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        derive_from_callgraph_entry, derive_from_func_summary, derive_from_rule_namespace,
     };
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{
         Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
         VerifyStatus,
@@ -98,7 +98,10 @@ mod spec_strategies {
         );
         let mut ev = Evidence::default();
         ev.flow_steps = vec![
-            source_step("tests/dynamic_fixtures/spec_strategies/flow_steps_taint.py", "handle_request"),
+            source_step(
+                "tests/dynamic_fixtures/spec_strategies/flow_steps_taint.py",
+                "handle_request",
+            ),
             sink_step("tests/dynamic_fixtures/spec_strategies/flow_steps_taint.py"),
         ];
         ev.sink_caps = Cap::SHELL_ESCAPE.bits();
@@ -132,11 +135,7 @@ mod spec_strategies {
 
     #[test]
     fn from_rule_namespace_called_directly_returns_some() {
-        let mut diag = make_diag(
-            "java.deser.readobject",
-            "src/Main.java",
-            12,
-        );
+        let mut diag = make_diag("java.deser.readobject", "src/Main.java", 12);
         let mut ev = Evidence::default();
         ev.sink_caps = Cap::DESERIALIZE.bits();
         diag.evidence = Some(ev.clone());
@@ -212,9 +211,8 @@ mod spec_strategies {
             hierarchy_edges: vec![],
             entry_kind: None,
         };
-        let spec =
-            derive_from_func_summary(&diag, diag.evidence.as_ref().unwrap(), Some(&summary))
-                .expect("summary strategy must succeed");
+        let spec = derive_from_func_summary(&diag, diag.evidence.as_ref().unwrap(), Some(&summary))
+            .expect("summary strategy must succeed");
         assert_eq!(spec.derivation, SpecDerivationStrategy::FromFuncSummaryWalk);
         assert!(matches!(spec.payload_slot, PayloadSlot::Param(1)));
         assert_eq!(spec.entry_name, "read_path");
@@ -240,11 +238,7 @@ mod spec_strategies {
 
     #[test]
     fn from_callgraph_entry_called_directly_returns_some() {
-        let mut diag = make_diag(
-            "rs.cli.subcommand_parse",
-            "src/main.rs",
-            10,
-        );
+        let mut diag = make_diag("rs.cli.subcommand_parse", "src/main.rs", 10);
         let mut ev = Evidence::default();
         ev.sink_caps = Cap::SHELL_ESCAPE.bits();
         diag.evidence = Some(ev.clone());
@@ -305,7 +299,10 @@ mod spec_strategies {
         );
         let mut ev = Evidence::default();
         ev.flow_steps = vec![
-            source_step("tests/dynamic_fixtures/spec_strategies/flow_steps_taint.py", "handle_request"),
+            source_step(
+                "tests/dynamic_fixtures/spec_strategies/flow_steps_taint.py",
+                "handle_request",
+            ),
             sink_step("tests/dynamic_fixtures/spec_strategies/flow_steps_taint.py"),
         ];
         ev.sink_caps = Cap::SHELL_ESCAPE.bits();
@@ -379,9 +376,7 @@ mod spec_strategies {
                     "hint must name the attempted entry kind; got {hint:?}"
                 );
             }
-            other => panic!(
-                "expected InconclusiveReason::EntryKindUnsupported, got {other:?}"
-            ),
+            other => panic!("expected InconclusiveReason::EntryKindUnsupported, got {other:?}"),
         }
     }
 }

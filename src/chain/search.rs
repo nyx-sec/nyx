@@ -120,8 +120,16 @@ pub fn find_chains_with_reach(
             .filter(|e| edge_reaches_entry(e, entry, reach))
             .collect();
         candidates.sort_by(|a, b| {
-            (a.finding.stable_hash, &a.finding.rule_id, &a.finding.location)
-                .cmp(&(b.finding.stable_hash, &b.finding.rule_id, &b.finding.location))
+            (
+                a.finding.stable_hash,
+                &a.finding.rule_id,
+                &a.finding.location,
+            )
+                .cmp(&(
+                    b.finding.stable_hash,
+                    &b.finding.rule_id,
+                    &b.finding.location,
+                ))
         });
         for sink in &sinks {
             // Scope candidates to the sink: same-file match (legacy),
@@ -139,13 +147,9 @@ pub fn find_chains_with_reach(
                 })
                 .copied()
                 .collect();
-            if let Some(chain) = compose_chain(
-                entry,
-                sink,
-                &scoped,
-                cfg.max_depth,
-                local_listener_present,
-            ) && chain.score >= cfg.min_score
+            if let Some(chain) =
+                compose_chain(entry, sink, &scoped, cfg.max_depth, local_listener_present)
+                && chain.score >= cfg.min_score
             {
                 chains.push(chain);
             }
@@ -201,15 +205,9 @@ fn is_loopback_label(s: &str) -> bool {
         || lower.contains("://localhost")
 }
 
-fn edge_reaches_entry(
-    edge: &ChainEdge,
-    entry: &EntryPoint,
-    reach: Option<&FileReachMap>,
-) -> bool {
+fn edge_reaches_entry(edge: &ChainEdge, entry: &EntryPoint, reach: Option<&FileReachMap>) -> bool {
     let route_method_match = match &edge.reach {
-        Reach::Reachable { route, method, .. } => {
-            *route == entry.route && *method == entry.method
-        }
+        Reach::Reachable { route, method, .. } => *route == entry.route && *method == entry.method,
         Reach::Unreachable => return false,
     };
     if !route_method_match {
@@ -265,8 +263,7 @@ fn compose_chain(
     let bound = scoped.len().min(max_depth);
     let path: Vec<&ChainEdge> = scoped[..bound].to_vec();
     let sink_cap = sole_cap(sink.cap_bits)?;
-    let (impact, member_impacts) =
-        resolve_impact(&path, sink_cap, entry, local_listener_present)?;
+    let (impact, member_impacts) = resolve_impact(&path, sink_cap, entry, local_listener_present)?;
     let mut chain = build_chain(entry, sink, &path, impact, &member_impacts);
     // SSRF + LocalListener refinement (Phase 24 deferred close): when
     // the implied impact is `InternalNetworkAccess` AND the SurfaceMap
@@ -394,9 +391,7 @@ fn build_chain(
 /// member edge has `Feasibility::Confirmed` the composite verdict
 /// inherits that confirmation; otherwise `None` (Phase 26 will run a
 /// real composite re-verification pass).
-fn composite_dynamic_verdict(
-    _path: &[ChainEdge],
-) -> Option<crate::evidence::VerifyResult> {
+fn composite_dynamic_verdict(_path: &[ChainEdge]) -> Option<crate::evidence::VerifyResult> {
     None
 }
 
@@ -649,7 +644,9 @@ mod tests {
             )
         };
         let mut surface_no_listener = SurfaceMap::new();
-        surface_no_listener.nodes.push(entry("app.py", "/fetch", false));
+        surface_no_listener
+            .nodes
+            .push(entry("app.py", "/fetch", false));
         surface_no_listener
             .nodes
             .push(sink("app.py", 20, "requests.get", Cap::SSRF));
@@ -662,7 +659,10 @@ mod tests {
             },
         );
         assert_eq!(baseline.len(), 1);
-        assert_eq!(baseline[0].implied_impact, ImpactCategory::InternalNetworkAccess);
+        assert_eq!(
+            baseline[0].implied_impact,
+            ImpactCategory::InternalNetworkAccess
+        );
 
         let mut surface_with_listener = surface_no_listener.clone();
         surface_with_listener
@@ -681,7 +681,10 @@ mod tests {
             },
         );
         assert_eq!(boosted.len(), 1);
-        assert_eq!(boosted[0].implied_impact, ImpactCategory::InternalNetworkAccess);
+        assert_eq!(
+            boosted[0].implied_impact,
+            ImpactCategory::InternalNetworkAccess
+        );
         let ratio = boosted[0].score / baseline[0].score;
         assert!(
             (ratio - LOCAL_LISTENER_BOOST).abs() < 1e-9,
@@ -693,9 +696,7 @@ mod tests {
     fn score_threshold_drops_low_score_chains() {
         let mut surface = SurfaceMap::new();
         surface.nodes.push(entry("app.py", "/r", false));
-        surface
-            .nodes
-            .push(sink("app.py", 20, "open", Cap::FILE_IO));
+        surface.nodes.push(sink("app.py", 20, "open", Cap::FILE_IO));
         let e = edge_with(
             "app.py",
             10,
@@ -724,12 +725,9 @@ mod tests {
         surface.nodes.push(entry("routes.py", "/exec", false));
         // Sink lives in a helper file the entry handler transitively
         // reaches, not the entry file itself.
-        surface.nodes.push(sink(
-            "helper.py",
-            20,
-            "os.system",
-            Cap::CODE_EXEC,
-        ));
+        surface
+            .nodes
+            .push(sink("helper.py", 20, "os.system", Cap::CODE_EXEC));
         let e = edge_with(
             "routes.py",
             10,
@@ -798,15 +796,9 @@ mod tests {
         surface.nodes.push(entry("a.js", "/run", false));
         surface.nodes.push(entry("b.js", "/run", false));
         surface.nodes.push(entry("c.py", "/run", false));
-        surface
-            .nodes
-            .push(sink("a.js", 7, "eval", Cap::CODE_EXEC));
-        surface
-            .nodes
-            .push(sink("b.js", 7, "eval", Cap::CODE_EXEC));
-        surface
-            .nodes
-            .push(sink("c.py", 7, "eval", Cap::CODE_EXEC));
+        surface.nodes.push(sink("a.js", 7, "eval", Cap::CODE_EXEC));
+        surface.nodes.push(sink("b.js", 7, "eval", Cap::CODE_EXEC));
+        surface.nodes.push(sink("c.py", 7, "eval", Cap::CODE_EXEC));
         let edges = vec![
             edge_with(
                 "a.js",
@@ -845,7 +837,11 @@ mod tests {
         let mut hashes: Vec<u64> = chains.iter().map(|c| c.stable_hash).collect();
         hashes.sort();
         hashes.dedup();
-        assert_eq!(hashes.len(), 3, "surviving chains must have distinct hashes");
+        assert_eq!(
+            hashes.len(),
+            3,
+            "surviving chains must have distinct hashes"
+        );
     }
 
     /// File-affinity gate on `edge_reaches_entry`: an entry only
@@ -858,12 +854,8 @@ mod tests {
         let mut surface = SurfaceMap::new();
         surface.nodes.push(entry("a.js", "/run", false));
         surface.nodes.push(entry("b.js", "/run", false));
-        surface
-            .nodes
-            .push(sink("a.js", 7, "eval", Cap::CODE_EXEC));
-        surface
-            .nodes
-            .push(sink("b.js", 7, "eval", Cap::CODE_EXEC));
+        surface.nodes.push(sink("a.js", 7, "eval", Cap::CODE_EXEC));
+        surface.nodes.push(sink("b.js", 7, "eval", Cap::CODE_EXEC));
         // Single finding lives in a.js only.  Both entries match
         // route+method but only entry@a.js shares the file.
         let edges = vec![edge_with(

@@ -81,7 +81,11 @@ fn sample_probe(callee: &str, arg: &str, label: &str) -> SinkProbe {
 
 #[test]
 fn build_outcome_confirmed_carries_both_traces() {
-    let vuln = vec![sample_probe("os.system", "; echo NYX_PWN_CMDI", "cmdi-echo-marker")];
+    let vuln = vec![sample_probe(
+        "os.system",
+        "; echo NYX_PWN_CMDI",
+        "cmdi-echo-marker",
+    )];
     let benign = vec![sample_probe("os.system", "benign_safe_cmdi", "cmdi-benign")];
     let outcome = build_outcome(
         "cmdi-echo-marker",
@@ -106,7 +110,10 @@ fn build_outcome_oracle_collision_keeps_both_traces() {
     let vuln = vec![sample_probe("os.system", "a", "v")];
     let benign = vec![sample_probe("os.system", "b", "b")];
     let outcome = build_outcome("v", true, &vuln, "b", true, &benign);
-    assert_eq!(outcome.verdict, DifferentialVerdict::OracleCollisionSuspected);
+    assert_eq!(
+        outcome.verdict,
+        DifferentialVerdict::OracleCollisionSuspected
+    );
     assert_eq!(outcome.vuln_probes.len(), 1);
     assert_eq!(outcome.benign_probes.len(), 1);
 }

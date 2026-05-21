@@ -236,9 +236,18 @@ mod tests {
 
     #[test]
     fn flask_login_required_resolves_case_insensitively() {
-        assert!(is_router_auth_marker(AuthFramework::Flask, "login_required"));
-        assert!(is_router_auth_marker(AuthFramework::Flask, "Login_Required"));
-        assert!(!is_router_auth_marker(AuthFramework::Flask, "something_else"));
+        assert!(is_router_auth_marker(
+            AuthFramework::Flask,
+            "login_required"
+        ));
+        assert!(is_router_auth_marker(
+            AuthFramework::Flask,
+            "Login_Required"
+        ));
+        assert!(!is_router_auth_marker(
+            AuthFramework::Flask,
+            "something_else"
+        ));
     }
 
     #[test]

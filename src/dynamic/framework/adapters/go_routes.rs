@@ -83,22 +83,13 @@ fn contains_any(haystack: &[u8], needles: &[&[u8]]) -> bool {
 
 /// Find a top-level `function_declaration` or a `method_declaration`
 /// whose name equals `target`.  Returns the matching node.
-pub fn find_go_function<'a>(
-    root: Node<'a>,
-    bytes: &'a [u8],
-    target: &str,
-) -> Option<Node<'a>> {
+pub fn find_go_function<'a>(root: Node<'a>, bytes: &'a [u8], target: &str) -> Option<Node<'a>> {
     let mut hit: Option<Node<'a>> = None;
     walk_go(root, bytes, target, &mut hit);
     hit
 }
 
-fn walk_go<'a>(
-    node: Node<'a>,
-    bytes: &'a [u8],
-    target: &str,
-    out: &mut Option<Node<'a>>,
-) {
+fn walk_go<'a>(node: Node<'a>, bytes: &'a [u8], target: &str, out: &mut Option<Node<'a>>) {
     if out.is_some() {
         return;
     }
@@ -136,9 +127,10 @@ pub fn go_formal_names(func: Node<'_>, bytes: &[u8]) -> Vec<String> {
         let mut pc = p.walk();
         for c in p.named_children(&mut pc) {
             if c.kind() == "identifier"
-                && let Ok(text) = c.utf8_text(bytes) {
-                    out.push(text.to_owned());
-                }
+                && let Ok(text) = c.utf8_text(bytes)
+            {
+                out.push(text.to_owned());
+            }
         }
     }
     out
@@ -428,8 +420,7 @@ mod tests {
         let src: &[u8] =
             b"package main\nfunc init() { r := gin.New(); r.GET(\"/u/:id\", Show) }\nfunc Show(c interface{}) {}\n";
         let tree = parse(src);
-        let (method, path) =
-            find_route_for_callee(tree.root_node(), src, "Show").expect("hit");
+        let (method, path) = find_route_for_callee(tree.root_node(), src, "Show").expect("hit");
         assert_eq!(method, HttpMethod::GET);
         assert_eq!(path, "/u/:id");
     }
@@ -439,8 +430,7 @@ mod tests {
         let src: &[u8] =
             b"package main\nfunc init() { r := chi.NewRouter(); r.Get(\"/x\", controllers.Show) }\n";
         let tree = parse(src);
-        let (method, path) =
-            find_route_for_callee(tree.root_node(), src, "Show").expect("hit");
+        let (method, path) = find_route_for_callee(tree.root_node(), src, "Show").expect("hit");
         assert_eq!(method, HttpMethod::GET);
         assert_eq!(path, "/x");
     }

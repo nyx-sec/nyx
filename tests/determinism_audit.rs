@@ -15,7 +15,7 @@
 
 use nyx_scanner::commands::scan::Diag;
 use nyx_scanner::dynamic::telemetry::{self, SamplingPolicy};
-use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
 use nyx_scanner::evidence::{Confidence, Evidence, VerifyStatus};
 use nyx_scanner::patterns::{FindingCategory, Severity};
 use serde_json::Value;
@@ -99,10 +99,7 @@ fn ten_runs_produce_byte_identical_telemetry_minus_timestamps() {
         // Drop `differential` and any future timestamped field by
         // round-tripping through serde; structural equality is the
         // contract.
-        verdict_jsons.insert(
-            serde_json::to_string(&result)
-                .expect("VerifyResult serialises"),
-        );
+        verdict_jsons.insert(serde_json::to_string(&result).expect("VerifyResult serialises"));
     }
     assert_eq!(
         verdict_jsons.len(),
@@ -243,10 +240,7 @@ fn confirmed_run_is_byte_identical_across_runs() {
     // every run reads + writes the same absolute paths (the per-run path
     // would otherwise leak into VerifyResult and break determinism).
     unsafe {
-        std::env::set_var(
-            "NYX_REPRO_BASE",
-            tmp.path().join("repro").to_str().unwrap(),
-        );
+        std::env::set_var("NYX_REPRO_BASE", tmp.path().join("repro").to_str().unwrap());
         std::env::set_var(
             "NYX_TELEMETRY_PATH",
             tmp.path().join("events.jsonl").to_str().unwrap(),
@@ -370,10 +364,7 @@ fn policy_deny_excerpt_is_stable_across_runs() {
             .inconclusive_reason
             .expect("expected PolicyDeniedDynamic on deny path")
         {
-            nyx_scanner::evidence::InconclusiveReason::PolicyDeniedDynamic {
-                excerpt,
-                ..
-            } => {
+            nyx_scanner::evidence::InconclusiveReason::PolicyDeniedDynamic { excerpt, .. } => {
                 excerpts.insert(excerpt);
             }
             other => panic!("expected PolicyDeniedDynamic, got {other:?}"),

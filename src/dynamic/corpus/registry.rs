@@ -23,12 +23,12 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use super::{CapCorpus, CuratedPayload, Oracle};
 use super::{
     cmdi, crypto, data_exfil, deserialize, fmt_string, header_injection, json_parse, ldap,
     open_redirect, path_trav, prototype_pollution, sqli, ssrf, ssti, unauthorized_id, xpath, xss,
     xxe,
 };
-use super::{CapCorpus, CuratedPayload, Oracle};
 use crate::dynamic::oracle::ProbePredicate;
 use crate::labels::Cap;
 use crate::symbol::Lang;
@@ -93,7 +93,11 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::HTML_ESCAPE, Lang::Rust, xss::rust::PAYLOADS),
     (Cap::FMT_STRING, Lang::C, fmt_string::c::PAYLOADS),
     (Cap::DESERIALIZE, Lang::Java, deserialize::java::PAYLOADS),
-    (Cap::DESERIALIZE, Lang::Python, deserialize::python::PAYLOADS),
+    (
+        Cap::DESERIALIZE,
+        Lang::Python,
+        deserialize::python::PAYLOADS,
+    ),
     (Cap::DESERIALIZE, Lang::Php, deserialize::php::PAYLOADS),
     (Cap::DESERIALIZE, Lang::Ruby, deserialize::ruby::PAYLOADS),
     (Cap::SSTI, Lang::Python, ssti::python_jinja2::PAYLOADS),
@@ -113,20 +117,68 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::XPATH_INJECTION, Lang::Python, xpath::python::PAYLOADS),
     (Cap::XPATH_INJECTION, Lang::Php, xpath::php::PAYLOADS),
     (Cap::XPATH_INJECTION, Lang::JavaScript, xpath::js::PAYLOADS),
-    (Cap::HEADER_INJECTION, Lang::Java, header_injection::java::PAYLOADS),
-    (Cap::HEADER_INJECTION, Lang::Python, header_injection::python::PAYLOADS),
-    (Cap::HEADER_INJECTION, Lang::Php, header_injection::php::PAYLOADS),
-    (Cap::HEADER_INJECTION, Lang::Ruby, header_injection::ruby::PAYLOADS),
-    (Cap::HEADER_INJECTION, Lang::JavaScript, header_injection::js::PAYLOADS),
-    (Cap::HEADER_INJECTION, Lang::Go, header_injection::go::PAYLOADS),
-    (Cap::HEADER_INJECTION, Lang::Rust, header_injection::rust::PAYLOADS),
-    (Cap::OPEN_REDIRECT, Lang::Java, open_redirect::java::PAYLOADS),
-    (Cap::OPEN_REDIRECT, Lang::Python, open_redirect::python::PAYLOADS),
+    (
+        Cap::HEADER_INJECTION,
+        Lang::Java,
+        header_injection::java::PAYLOADS,
+    ),
+    (
+        Cap::HEADER_INJECTION,
+        Lang::Python,
+        header_injection::python::PAYLOADS,
+    ),
+    (
+        Cap::HEADER_INJECTION,
+        Lang::Php,
+        header_injection::php::PAYLOADS,
+    ),
+    (
+        Cap::HEADER_INJECTION,
+        Lang::Ruby,
+        header_injection::ruby::PAYLOADS,
+    ),
+    (
+        Cap::HEADER_INJECTION,
+        Lang::JavaScript,
+        header_injection::js::PAYLOADS,
+    ),
+    (
+        Cap::HEADER_INJECTION,
+        Lang::Go,
+        header_injection::go::PAYLOADS,
+    ),
+    (
+        Cap::HEADER_INJECTION,
+        Lang::Rust,
+        header_injection::rust::PAYLOADS,
+    ),
+    (
+        Cap::OPEN_REDIRECT,
+        Lang::Java,
+        open_redirect::java::PAYLOADS,
+    ),
+    (
+        Cap::OPEN_REDIRECT,
+        Lang::Python,
+        open_redirect::python::PAYLOADS,
+    ),
     (Cap::OPEN_REDIRECT, Lang::Php, open_redirect::php::PAYLOADS),
-    (Cap::OPEN_REDIRECT, Lang::Ruby, open_redirect::ruby::PAYLOADS),
-    (Cap::OPEN_REDIRECT, Lang::JavaScript, open_redirect::js::PAYLOADS),
+    (
+        Cap::OPEN_REDIRECT,
+        Lang::Ruby,
+        open_redirect::ruby::PAYLOADS,
+    ),
+    (
+        Cap::OPEN_REDIRECT,
+        Lang::JavaScript,
+        open_redirect::js::PAYLOADS,
+    ),
     (Cap::OPEN_REDIRECT, Lang::Go, open_redirect::go::PAYLOADS),
-    (Cap::OPEN_REDIRECT, Lang::Rust, open_redirect::rust::PAYLOADS),
+    (
+        Cap::OPEN_REDIRECT,
+        Lang::Rust,
+        open_redirect::rust::PAYLOADS,
+    ),
     (
         Cap::PROTOTYPE_POLLUTION,
         Lang::JavaScript,
@@ -142,16 +194,48 @@ const ENTRIES: &[(Cap, Lang, &[CuratedPayload])] = &[
     (Cap::CRYPTO, Lang::Php, crypto::php::PAYLOADS),
     (Cap::CRYPTO, Lang::Go, crypto::go::PAYLOADS),
     (Cap::CRYPTO, Lang::Rust, crypto::rust::PAYLOADS),
-    (Cap::JSON_PARSE, Lang::JavaScript, json_parse::javascript::PAYLOADS),
+    (
+        Cap::JSON_PARSE,
+        Lang::JavaScript,
+        json_parse::javascript::PAYLOADS,
+    ),
     (Cap::JSON_PARSE, Lang::Python, json_parse::python::PAYLOADS),
     (Cap::JSON_PARSE, Lang::Ruby, json_parse::ruby::PAYLOADS),
-    (Cap::UNAUTHORIZED_ID, Lang::Python, unauthorized_id::python::PAYLOADS),
-    (Cap::UNAUTHORIZED_ID, Lang::Ruby, unauthorized_id::ruby::PAYLOADS),
-    (Cap::UNAUTHORIZED_ID, Lang::Java, unauthorized_id::java::PAYLOADS),
-    (Cap::UNAUTHORIZED_ID, Lang::Php, unauthorized_id::php::PAYLOADS),
-    (Cap::UNAUTHORIZED_ID, Lang::JavaScript, unauthorized_id::js::PAYLOADS),
-    (Cap::UNAUTHORIZED_ID, Lang::Go, unauthorized_id::go::PAYLOADS),
-    (Cap::UNAUTHORIZED_ID, Lang::Rust, unauthorized_id::rust::PAYLOADS),
+    (
+        Cap::UNAUTHORIZED_ID,
+        Lang::Python,
+        unauthorized_id::python::PAYLOADS,
+    ),
+    (
+        Cap::UNAUTHORIZED_ID,
+        Lang::Ruby,
+        unauthorized_id::ruby::PAYLOADS,
+    ),
+    (
+        Cap::UNAUTHORIZED_ID,
+        Lang::Java,
+        unauthorized_id::java::PAYLOADS,
+    ),
+    (
+        Cap::UNAUTHORIZED_ID,
+        Lang::Php,
+        unauthorized_id::php::PAYLOADS,
+    ),
+    (
+        Cap::UNAUTHORIZED_ID,
+        Lang::JavaScript,
+        unauthorized_id::js::PAYLOADS,
+    ),
+    (
+        Cap::UNAUTHORIZED_ID,
+        Lang::Go,
+        unauthorized_id::go::PAYLOADS,
+    ),
+    (
+        Cap::UNAUTHORIZED_ID,
+        Lang::Rust,
+        unauthorized_id::rust::PAYLOADS,
+    ),
     (Cap::DATA_EXFIL, Lang::Python, data_exfil::python::PAYLOADS),
     (Cap::DATA_EXFIL, Lang::Ruby, data_exfil::ruby::PAYLOADS),
     (Cap::DATA_EXFIL, Lang::Java, data_exfil::java::PAYLOADS),
@@ -355,7 +439,7 @@ pub fn audit_marker_collisions() -> Vec<(&'static str, &'static str, &'static st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dynamic::corpus::{benign_payload_for, CORPUS_VERSION};
+    use crate::dynamic::corpus::{CORPUS_VERSION, benign_payload_for};
 
     #[test]
     fn supported_caps_have_payloads() {
@@ -404,8 +488,14 @@ mod tests {
     #[test]
     fn phase_11_caps_pair_benign_controls_per_lang() {
         let cases: &[(Cap, &[Lang])] = &[
-            (Cap::CRYPTO, &[Lang::Java, Lang::Python, Lang::Php, Lang::Go, Lang::Rust]),
-            (Cap::JSON_PARSE, &[Lang::JavaScript, Lang::Python, Lang::Ruby]),
+            (
+                Cap::CRYPTO,
+                &[Lang::Java, Lang::Python, Lang::Php, Lang::Go, Lang::Rust],
+            ),
+            (
+                Cap::JSON_PARSE,
+                &[Lang::JavaScript, Lang::Python, Lang::Ruby],
+            ),
             (
                 Cap::UNAUTHORIZED_ID,
                 &[
@@ -434,10 +524,7 @@ mod tests {
         for (cap, langs) in cases {
             for lang in *langs {
                 let slice = payloads_for_lang(*cap, *lang);
-                assert!(
-                    !slice.is_empty(),
-                    "({cap:?}, {lang:?}) must have payloads",
-                );
+                assert!(!slice.is_empty(), "({cap:?}, {lang:?}) must have payloads",);
                 let vuln = slice
                     .iter()
                     .find(|p| !p.is_benign)
@@ -596,7 +683,10 @@ mod tests {
     #[test]
     fn ssrf_has_oob_nonce_slot() {
         let has_oob = payloads_for(Cap::SSRF).iter().any(|p| p.oob_nonce_slot);
-        assert!(has_oob, "SSRF corpus must include an OOB-nonce-slot payload");
+        assert!(
+            has_oob,
+            "SSRF corpus must include an OOB-nonce-slot payload"
+        );
     }
 
     #[test]
@@ -617,8 +707,7 @@ mod tests {
             .find(|p| p.oob_nonce_slot)
             .expect("must have OOB payload");
         let url = "http://127.0.0.1:54321/mynonce";
-        let bytes =
-            materialise_bytes(p, Some(url)).expect("OOB payload materialises with URL");
+        let bytes = materialise_bytes(p, Some(url)).expect("OOB payload materialises with URL");
         assert_eq!(&*bytes, url.as_bytes());
     }
 
@@ -637,7 +726,11 @@ mod tests {
             (Cap::SQL_QUERY, "sqli-tautology", "sqli-benign"),
             (Cap::SQL_QUERY, "sqli-union-nyx", "sqli-benign"),
             (Cap::CODE_EXEC, "cmdi-echo-marker", "cmdi-benign"),
-            (Cap::FILE_IO, "path-traversal-passwd", "path-traversal-benign"),
+            (
+                Cap::FILE_IO,
+                "path-traversal-passwd",
+                "path-traversal-benign",
+            ),
             (Cap::SSRF, "ssrf-file-scheme", "ssrf-benign"),
             (Cap::HTML_ESCAPE, "xss-script-marker", "xss-benign-text"),
         ];
@@ -723,7 +816,10 @@ mod tests {
         let mut entries_by_cap: HashMap<u32, Vec<(Lang, &'static [CuratedPayload])>> =
             HashMap::new();
         for &(cap, lang, slice) in CORPUS.entries {
-            entries_by_cap.entry(cap.bits()).or_default().push((lang, slice));
+            entries_by_cap
+                .entry(cap.bits())
+                .or_default()
+                .push((lang, slice));
         }
         for (cap_bits, langs) in &entries_by_cap {
             if langs.len() != 1 {
@@ -899,9 +995,8 @@ mod tests {
                 .iter()
                 .find(|p| !p.is_benign)
                 .expect("each lang must have an LDAP vuln payload");
-            let resolved =
-                super::resolve_benign_control_lang(vuln, Cap::LDAP_INJECTION, lang)
-                    .expect("lang-aware benign control must resolve");
+            let resolved = super::resolve_benign_control_lang(vuln, Cap::LDAP_INJECTION, lang)
+                .expect("lang-aware benign control must resolve");
             assert!(resolved.is_benign);
         }
     }
@@ -941,9 +1036,8 @@ mod tests {
                 .iter()
                 .find(|p| !p.is_benign)
                 .expect("each lang must have an XPath vuln payload");
-            let resolved =
-                super::resolve_benign_control_lang(vuln, Cap::XPATH_INJECTION, lang)
-                    .expect("lang-aware benign control must resolve");
+            let resolved = super::resolve_benign_control_lang(vuln, Cap::XPATH_INJECTION, lang)
+                .expect("lang-aware benign control must resolve");
             assert!(resolved.is_benign);
         }
     }
@@ -992,9 +1086,8 @@ mod tests {
                 .iter()
                 .find(|p| !p.is_benign)
                 .expect("each lang must have a HEADER_INJECTION vuln payload");
-            let resolved =
-                super::resolve_benign_control_lang(vuln, Cap::HEADER_INJECTION, lang)
-                    .expect("lang-aware benign control must resolve");
+            let resolved = super::resolve_benign_control_lang(vuln, Cap::HEADER_INJECTION, lang)
+                .expect("lang-aware benign control must resolve");
             assert!(resolved.is_benign);
         }
     }
@@ -1036,9 +1129,8 @@ mod tests {
                 .iter()
                 .find(|p| !p.is_benign)
                 .expect("each lang must have a PROTOTYPE_POLLUTION vuln payload");
-            let resolved =
-                super::resolve_benign_control_lang(vuln, Cap::PROTOTYPE_POLLUTION, lang)
-                    .expect("lang-aware benign control must resolve");
+            let resolved = super::resolve_benign_control_lang(vuln, Cap::PROTOTYPE_POLLUTION, lang)
+                .expect("lang-aware benign control must resolve");
             assert!(resolved.is_benign);
         }
     }

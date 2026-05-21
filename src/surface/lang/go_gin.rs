@@ -21,8 +21,8 @@ use tree_sitter::{Node, Tree};
 pub use crate::auth_analysis::auth_markers::GIN_MIDDLEWARES as AUTH_MIDDLEWARES;
 
 const VERBS: &[&str] = &[
-    "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "Any",
-    "Get", "Post", "Put", "Delete", "Patch", "Options", "Head",
+    "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "Any", "Get", "Post", "Put",
+    "Delete", "Patch", "Options", "Head",
 ];
 
 pub fn detect_gin_routes(
@@ -73,7 +73,9 @@ fn match_gin_call(call: Node, bytes: &[u8], file_rel: &str) -> Option<SurfaceNod
         .children(&mut cursor)
         .filter(|n| !matches!(n.kind(), "(" | ")" | ","))
         .collect();
-    let route = positional.first().and_then(|n| string_node_value(*n, bytes))?;
+    let route = positional
+        .first()
+        .and_then(|n| string_node_value(*n, bytes))?;
     let handler_node = positional.iter().rev().find(|n| {
         matches!(
             n.kind(),

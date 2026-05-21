@@ -259,7 +259,6 @@ impl ClassMethodIndex {
                 .unwrap_or_default(),
         }
     }
-
 }
 
 // ── Type hierarchy index ────────────────────────────────────────────────
@@ -955,10 +954,9 @@ impl FileReachMap {
 
     fn normalize<'a>(&self, path: &'a str) -> std::borrow::Cow<'a, str> {
         match self.scan_root.as_deref() {
-            Some(root) => std::borrow::Cow::Owned(crate::symbol::normalize_namespace(
-                path,
-                Some(root),
-            )),
+            Some(root) => {
+                std::borrow::Cow::Owned(crate::symbol::normalize_namespace(path, Some(root)))
+            }
             None => std::borrow::Cow::Borrowed(path),
         }
     }
@@ -2926,7 +2924,10 @@ mod tests {
         let transitive = callers_transitive(&cg, &sink_key);
         let caller_names: std::collections::HashSet<String> =
             transitive.iter().map(|k| k.name.clone()).collect();
-        assert!(caller_names.contains("process"), "process should reach sink");
+        assert!(
+            caller_names.contains("process"),
+            "process should reach sink"
+        );
         assert!(caller_names.contains("handle"), "handle should reach sink");
         assert_eq!(transitive.len(), 2, "sink itself must be excluded");
 

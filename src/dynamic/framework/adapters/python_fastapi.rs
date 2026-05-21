@@ -62,8 +62,14 @@ fn decorator_route_shape(decorator: Node<'_>, bytes: &[u8]) -> Option<(HttpMetho
     if target.kind() != "attribute" {
         return None;
     }
-    let object = target.child_by_field_name("object")?.utf8_text(bytes).ok()?;
-    let attr = target.child_by_field_name("attribute")?.utf8_text(bytes).ok()?;
+    let object = target
+        .child_by_field_name("object")?
+        .utf8_text(bytes)
+        .ok()?;
+    let attr = target
+        .child_by_field_name("attribute")?
+        .utf8_text(bytes)
+        .ok()?;
     if !receiver_looks_like_fastapi(object) {
         return None;
     }
@@ -389,8 +395,10 @@ mod tests {
     fn skips_when_fastapi_not_imported() {
         let src: &[u8] = b"from flask import Flask\napp = Flask(__name__)\n@app.get(\"/x\")\ndef x():\n    return 1\n";
         let tree = parse(src);
-        assert!(PythonFastApiAdapter
-            .detect(&summary("x"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonFastApiAdapter
+                .detect(&summary("x"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

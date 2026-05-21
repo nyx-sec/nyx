@@ -122,15 +122,16 @@ fn walk<'a>(
         && let Some(name) = node
             .child_by_field_name("name")
             .and_then(|n| n.utf8_text(bytes).ok())
-        && name == target {
-            let klass = if node.kind() == "method_declaration" {
-                here_class
-            } else {
-                None
-            };
-            *out = Some((node, klass));
-            return;
-        }
+        && name == target
+    {
+        let klass = if node.kind() == "method_declaration" {
+            here_class
+        } else {
+            None
+        };
+        *out = Some((node, klass));
+        return;
+    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         walk(child, bytes, target, here_class, out);
@@ -511,10 +512,7 @@ fn laravel_callable_matches(
     }
 }
 
-fn parse_array_callable<'a>(
-    array: Node<'a>,
-    bytes: &'a [u8],
-) -> Option<(Option<String>, String)> {
+fn parse_array_callable<'a>(array: Node<'a>, bytes: &'a [u8]) -> Option<(Option<String>, String)> {
     let mut cur = array.walk();
     let elements: Vec<Node<'a>> = array
         .named_children(&mut cur)
@@ -544,10 +542,7 @@ fn split_laravel_callable(literal: &str) -> (Option<String>, String) {
 
 fn leaf(qualified: &str) -> &str {
     let last_backslash = qualified.rsplit('\\').next().unwrap_or(qualified);
-    last_backslash
-        .rsplit("::")
-        .next()
-        .unwrap_or(last_backslash)
+    last_backslash.rsplit("::").next().unwrap_or(last_backslash)
 }
 
 fn verb_method(verb: &str) -> Option<HttpMethod> {
@@ -711,18 +706,12 @@ mod tests {
             extract_php_path_placeholders("/u/{id}/p/{slug?}"),
             vec!["id", "slug"]
         );
-        assert_eq!(
-            extract_php_path_placeholders("/u/{id:[0-9]+}"),
-            vec!["id"]
-        );
+        assert_eq!(extract_php_path_placeholders("/u/{id:[0-9]+}"), vec!["id"]);
     }
 
     #[test]
     fn extracts_codeigniter_placeholders() {
-        assert_eq!(
-            extract_php_path_placeholders("users/(:num)"),
-            vec!["num"]
-        );
+        assert_eq!(extract_php_path_placeholders("users/(:num)"), vec!["num"]);
         assert_eq!(
             extract_php_path_placeholders("p/(:any)/c/(:segment)"),
             vec!["any", "segment"]
@@ -778,20 +767,16 @@ mod tests {
     fn finds_laravel_static_route_with_string_callable() {
         let src: &[u8] = b"<?php\nRoute::get('/users/{id}', 'UserController@show');\nclass UserController {\n  public function show($id) { return $id; }\n}\n";
         let tree = parse(src);
-        let hit = find_laravel_static_route(
-            tree.root_node(),
-            src,
-            "show",
-            Some("UserController"),
-        )
-        .unwrap();
+        let hit = find_laravel_static_route(tree.root_node(), src, "show", Some("UserController"))
+            .unwrap();
         assert_eq!(hit.0, HttpMethod::GET);
         assert_eq!(hit.1, "/users/{id}");
     }
 
     #[test]
     fn finds_laravel_static_route_with_closure() {
-        let src: &[u8] = b"<?php\nRoute::post('/users', function ($payload) { return $payload; });\n";
+        let src: &[u8] =
+            b"<?php\nRoute::post('/users', function ($payload) { return $payload; });\n";
         let tree = parse(src);
         let hit = find_laravel_static_route(tree.root_node(), src, "anything", None).unwrap();
         assert_eq!(hit.0, HttpMethod::POST);
@@ -802,13 +787,8 @@ mod tests {
     fn finds_codeigniter_member_route() {
         let src: &[u8] = b"<?php\n$routes->get('users/(:num)', 'UserController::show');\n";
         let tree = parse(src);
-        let hit = find_codeigniter_route(
-            tree.root_node(),
-            src,
-            "show",
-            Some("UserController"),
-        )
-        .unwrap();
+        let hit =
+            find_codeigniter_route(tree.root_node(), src, "show", Some("UserController")).unwrap();
         assert_eq!(hit.0, HttpMethod::GET);
         assert_eq!(hit.1, "users/(:num)");
     }

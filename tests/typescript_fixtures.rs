@@ -10,7 +10,7 @@ mod common;
 
 #[cfg(feature = "dynamic")]
 mod typescript_fixture_tests {
-    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
+    use crate::common::fixture_harness::{Prerequisite, run_shape_fixture_lang_or_skip};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
@@ -79,9 +79,16 @@ mod typescript_fixture_tests {
     fn commonjs_export_vuln_is_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "commonjs_export", "vuln.ts", "runPing", Cap::CODE_EXEC, 11,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "commonjs_export",
+            "vuln.ts",
+            "runPing",
+            Cap::CODE_EXEC,
+            11,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_confirmed("commonjs_export", &r);
     }
 
@@ -89,9 +96,16 @@ mod typescript_fixture_tests {
     fn commonjs_export_benign_not_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "commonjs_export", "benign.ts", "runPing", Cap::CODE_EXEC, 11,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "commonjs_export",
+            "benign.ts",
+            "runPing",
+            Cap::CODE_EXEC,
+            11,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_not_confirmed("commonjs_export", &r);
     }
 
@@ -101,9 +115,16 @@ mod typescript_fixture_tests {
     fn async_function_vuln_is_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "async_function", "vuln.ts", "runPing", Cap::CODE_EXEC, 15,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "async_function",
+            "vuln.ts",
+            "runPing",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_confirmed("async_function", &r);
     }
 
@@ -111,9 +132,16 @@ mod typescript_fixture_tests {
     fn async_function_benign_not_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "async_function", "benign.ts", "runPing", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "async_function",
+            "benign.ts",
+            "runPing",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_not_confirmed("async_function", &r);
     }
 
@@ -123,9 +151,16 @@ mod typescript_fixture_tests {
     fn esm_default_vuln_is_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "esm_default", "vuln.ts", "runPing", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "esm_default",
+            "vuln.ts",
+            "runPing",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_confirmed("esm_default", &r);
     }
 
@@ -133,9 +168,16 @@ mod typescript_fixture_tests {
     fn esm_default_benign_not_confirmed() {
         let Some(r) = run(
             NODE_REQ,
-            "esm_default", "benign.ts", "runPing", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "esm_default",
+            "benign.ts",
+            "runPing",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_not_confirmed("esm_default", &r);
     }
 
@@ -148,9 +190,16 @@ mod typescript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("express"),
             ],
-            "express", "vuln.ts", "ping", Cap::CODE_EXEC, 15,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "express",
+            "vuln.ts",
+            "ping",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_confirmed("express", &r);
     }
 
@@ -161,9 +210,16 @@ mod typescript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("express"),
             ],
-            "express", "benign.ts", "ping", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "express",
+            "benign.ts",
+            "ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_not_confirmed("express", &r);
     }
 
@@ -176,9 +232,16 @@ mod typescript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("koa"),
             ],
-            "koa", "vuln.ts", "ping", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "koa",
+            "vuln.ts",
+            "ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_confirmed("koa", &r);
     }
 
@@ -189,9 +252,16 @@ mod typescript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("koa"),
             ],
-            "koa", "benign.ts", "ping", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "koa",
+            "benign.ts",
+            "ping",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_not_confirmed("koa", &r);
     }
 
@@ -204,9 +274,16 @@ mod typescript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("next"),
             ],
-            "next_route", "vuln.ts", "handler", Cap::CODE_EXEC, 17,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "next_route",
+            "vuln.ts",
+            "handler",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_confirmed("next_route", &r);
     }
 
@@ -217,9 +294,16 @@ mod typescript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("next"),
             ],
-            "next_route", "benign.ts", "handler", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("host".into()),
-        ) else { return; };
+            "next_route",
+            "benign.ts",
+            "handler",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("host".into()),
+        ) else {
+            return;
+        };
         assert_not_confirmed("next_route", &r);
     }
 
@@ -232,9 +316,16 @@ mod typescript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("jsdom"),
             ],
-            "browser_event", "vuln.ts", "clickHandler", Cap::HTML_ESCAPE, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "browser_event",
+            "vuln.ts",
+            "clickHandler",
+            Cap::HTML_ESCAPE,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_confirmed("browser_event", &r);
     }
 
@@ -245,9 +336,16 @@ mod typescript_fixture_tests {
                 Prerequisite::CommandAvailable("node"),
                 Prerequisite::NodeModuleAvailable("jsdom"),
             ],
-            "browser_event", "benign.ts", "clickHandler", Cap::HTML_ESCAPE, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
-        ) else { return; };
+            "browser_event",
+            "benign.ts",
+            "clickHandler",
+            Cap::HTML_ESCAPE,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
+        ) else {
+            return;
+        };
         assert_not_confirmed("browser_event", &r);
     }
 }

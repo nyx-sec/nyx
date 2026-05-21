@@ -49,17 +49,15 @@ fn class_route_prefix(class: Node<'_>, bytes: &[u8]) -> String {
     let mut prefix = String::new();
     iter_annotations(class, bytes, |ann, name| {
         if name == "RequestMapping"
-            && let Some(p) = annotation_string_arg(ann, bytes) {
-                prefix = p;
-            }
+            && let Some(p) = annotation_string_arg(ann, bytes)
+        {
+            prefix = p;
+        }
     });
     prefix
 }
 
-fn method_route(
-    method: Node<'_>,
-    bytes: &[u8],
-) -> Option<(HttpMethod, String)> {
+fn method_route(method: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, String)> {
     let mut hit: Option<(HttpMethod, String)> = None;
     iter_annotations(method, bytes, |ann, name| {
         if hit.is_some() {
@@ -100,7 +98,10 @@ impl FrameworkAdapter for JavaSpringAdapter {
         // Quarkus / JAX-RS files often re-use `@Path` but the brief
         // routes those through `java-quarkus`; skip when the file
         // looks like Quarkus and is not also a Spring controller.
-        if source_imports_quarkus(file_bytes) && !file_bytes.windows(15).any(|w| w == b"@RestController") && !file_bytes.windows(11).any(|w| w == b"@Controller") {
+        if source_imports_quarkus(file_bytes)
+            && !file_bytes.windows(15).any(|w| w == b"@RestController")
+            && !file_bytes.windows(11).any(|w| w == b"@Controller")
+        {
             return None;
         }
         let (class, method) = find_class_with_method(ast, file_bytes, &summary.name)?;
@@ -210,26 +211,32 @@ mod tests {
         let src: &[u8] =
             b"@RequestMapping(\"/api\")\npublic class C {\n  @GetMapping(\"/x\")\n  public String x() { return \"\"; }\n}\n";
         let tree = parse(src);
-        assert!(JavaSpringAdapter
-            .detect(&summary("x"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaSpringAdapter
+                .detect(&summary("x"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_quarkus_file() {
         let src: &[u8] = b"import io.quarkus.runtime.Quarkus;\nimport jakarta.ws.rs.GET;\nimport jakarta.ws.rs.Path;\n@Path(\"/run\")\npublic class Q {\n  @GET\n  public String run() { return \"\"; }\n}\n";
         let tree = parse(src);
-        assert!(JavaSpringAdapter
-            .detect(&summary("run"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaSpringAdapter
+                .detect(&summary("run"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_plain_function() {
         let src: &[u8] = b"public class C { public int add(int a, int b) { return a + b; } }\n";
         let tree = parse(src);
-        assert!(JavaSpringAdapter
-            .detect(&summary("add"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaSpringAdapter
+                .detect(&summary("add"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

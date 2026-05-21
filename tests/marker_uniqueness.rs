@@ -95,7 +95,9 @@ fn no_marker_is_substring_of_another_caps_payload() {
                 continue;
             }
             for payload in payloads_for(cap).iter().filter(|p| !p.is_benign) {
-                let payload_contains_marker = payload.bytes.windows(marker_bytes.len())
+                let payload_contains_marker = payload
+                    .bytes
+                    .windows(marker_bytes.len())
                     .any(|w| w == marker_bytes);
 
                 if payload_contains_marker {
@@ -215,7 +217,8 @@ fn all_vuln_payloads_have_non_empty_oracle_marker() {
                 assert!(
                     marker.len() >= 4,
                     "payload {:?} for {cap:?} has very short marker {:?} (< 4 chars) — collision risk",
-                    payload.label, marker
+                    payload.label,
+                    marker
                 );
             }
         }

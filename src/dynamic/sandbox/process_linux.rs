@@ -119,8 +119,14 @@ impl HardeningOutcome {
             self.chroot,
             self.seccomp,
         ];
-        let applied = primitives.iter().filter(|s| matches!(s, PrimitiveStatus::Applied)).count();
-        let failed = primitives.iter().filter(|s| matches!(s, PrimitiveStatus::Failed(_))).count();
+        let applied = primitives
+            .iter()
+            .filter(|s| matches!(s, PrimitiveStatus::Applied))
+            .count();
+        let failed = primitives
+            .iter()
+            .filter(|s| matches!(s, PrimitiveStatus::Failed(_)))
+            .count();
         match (applied, failed) {
             (_, 0) => HardeningLevel::Full,
             (0, _) => HardeningLevel::None,
@@ -147,7 +153,10 @@ impl StatusPipe {
         if ret != 0 {
             return Err(std::io::Error::last_os_error());
         }
-        Ok(Self { write_fd: fds[1], read_fd: fds[0] })
+        Ok(Self {
+            write_fd: fds[1],
+            read_fd: fds[0],
+        })
     }
 }
 
@@ -289,7 +298,10 @@ fn last_errno() -> i32 {
 }
 
 fn apply_rlimit(resource: i32, bytes: u64) -> PrimitiveStatus {
-    let rl = Rlimit { cur: bytes, max: bytes };
+    let rl = Rlimit {
+        cur: bytes,
+        max: bytes,
+    };
     let ret = unsafe { setrlimit(resource, &rl) };
     if ret == 0 {
         PrimitiveStatus::Applied
@@ -498,7 +510,9 @@ impl OutcomeCollector {
         close_fd(self.write_fd);
         let read_fd = self.read_fd;
         let handle = std::thread::spawn(move || drain_outcome(read_fd));
-        OutcomeJoiner { handle: Some(handle) }
+        OutcomeJoiner {
+            handle: Some(handle),
+        }
     }
 
     /// Call when `cmd.spawn()` failed.  Closes both ends so neither fd
@@ -607,10 +621,8 @@ fn build_plan(opts: &SandboxOptions, workdir: &Path) -> PreExecPlan {
     // prove that the corresponding seccomp slice carries its weight.
     let ablation = opts.ablation;
     let extras: Vec<&'static str> = ablation_extras(ablation);
-    let nrs = seccomp::allowed_syscall_numbers_with_extras(
-        opts.seccomp_caps,
-        extras.iter().copied(),
-    );
+    let nrs =
+        seccomp::allowed_syscall_numbers_with_extras(opts.seccomp_caps, extras.iter().copied());
     let program = seccomp::bpf::compile(&nrs, seccomp::syscalls::AUDIT_ARCH);
 
     let profile = match opts.process_hardening {
@@ -718,7 +730,8 @@ fn nul_terminate(bytes: &[u8]) -> Vec<u8> {
 }
 
 fn canonicalize_workdir(workdir: &Path) -> Vec<u8> {
-    let canonical: PathBuf = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let canonical: PathBuf =
+        std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
     let mut bytes = canonical.into_os_string().into_encoded_bytes();
     if !bytes.ends_with(&[0]) {
         bytes.push(0);
@@ -797,20 +810,30 @@ mod tests {
         let plan = build_plan(&opts, std::path::Path::new("/tmp"));
         // The arch check + ld nr + KILL + ALLOW alone are 5 instructions;
         // the BASE allowlist adds dozens more.
-        assert!(plan.seccomp_program.len() > 5, "BPF program too small: {}", plan.seccomp_program.len());
+        assert!(
+            plan.seccomp_program.len() > 5,
+            "BPF program too small: {}",
+            plan.seccomp_program.len()
+        );
         assert_eq!(plan.profile, ProcessHardeningProfileTag::Strict);
     }
 
     #[test]
     fn rlimit_as_bytes_floors_at_4_gib() {
-        let opts = SandboxOptions { memory_mib: 1, ..SandboxOptions::default() };
+        let opts = SandboxOptions {
+            memory_mib: 1,
+            ..SandboxOptions::default()
+        };
         let plan = build_plan(&opts, std::path::Path::new("/tmp"));
         assert_eq!(plan.rlimit_as_bytes, 4096_u64 * 1024 * 1024);
     }
 
     #[test]
     fn rlimit_as_bytes_scales_with_memory_mib() {
-        let opts = SandboxOptions { memory_mib: 1024, ..SandboxOptions::default() };
+        let opts = SandboxOptions {
+            memory_mib: 1024,
+            ..SandboxOptions::default()
+        };
         let plan = build_plan(&opts, std::path::Path::new("/tmp"));
         // 1024 MiB * 8 = 8192 MiB
         assert_eq!(plan.rlimit_as_bytes, 8192_u64 * 1024 * 1024);
@@ -865,8 +888,14 @@ mod tests {
         // Every entry's source must be NUL-terminated for the `mount(2)`
         // call, and every dest must exist on disk.
         for m in &plan.bind_mounts {
-            assert!(m.source_nul.ends_with(&[0]), "source path must be NUL-terminated");
-            assert!(m.dest_nul.ends_with(&[0]), "dest path must be NUL-terminated");
+            assert!(
+                m.source_nul.ends_with(&[0]),
+                "source path must be NUL-terminated"
+            );
+            assert!(
+                m.dest_nul.ends_with(&[0]),
+                "dest path must be NUL-terminated"
+            );
             let dest_str = std::str::from_utf8(&m.dest_nul[..m.dest_nul.len() - 1])
                 .expect("dest path must be valid UTF-8");
             assert!(
@@ -920,8 +949,16 @@ mod tests {
             ..AblationMask::default()
         }));
         assert_eq!(flags & CLONE_NEWUSER, 0, "CLONE_NEWUSER must be dropped");
-        assert_eq!(flags & CLONE_NEWPID, CLONE_NEWPID, "CLONE_NEWPID must persist");
-        assert_eq!(flags & CLONE_NEWNS, CLONE_NEWNS, "CLONE_NEWNS must persist (bind-mount target)");
+        assert_eq!(
+            flags & CLONE_NEWPID,
+            CLONE_NEWPID,
+            "CLONE_NEWPID must persist"
+        );
+        assert_eq!(
+            flags & CLONE_NEWNS,
+            CLONE_NEWNS,
+            "CLONE_NEWNS must persist (bind-mount target)"
+        );
     }
 
     #[test]
@@ -931,7 +968,11 @@ mod tests {
             ..AblationMask::default()
         }));
         assert_eq!(flags & CLONE_NEWPID, 0, "CLONE_NEWPID must be dropped");
-        assert_eq!(flags & CLONE_NEWUSER, CLONE_NEWUSER, "CLONE_NEWUSER must persist");
+        assert_eq!(
+            flags & CLONE_NEWUSER,
+            CLONE_NEWUSER,
+            "CLONE_NEWUSER must persist"
+        );
     }
 
     #[test]
@@ -1054,8 +1095,8 @@ mod tests {
             ..SandboxOptions::default()
         };
         let plan = build_plan(&opts, std::path::Path::new("/tmp"));
-        let socket_nr = seccomp::syscalls::syscall_number("socket")
-            .expect("socket in per-arch syscall map");
+        let socket_nr =
+            seccomp::syscalls::syscall_number("socket").expect("socket in per-arch syscall map");
         // BPF compile emits one JEQ per allowed syscall (+ a fixed arch
         // prelude + a default-deny tail), so encoding socket as a JEQ
         // instruction's k-field is the load-bearing signal.
@@ -1080,8 +1121,8 @@ mod tests {
             ..SandboxOptions::default()
         };
         let plan = build_plan(&opts, std::path::Path::new("/tmp"));
-        let setuid_nr = seccomp::syscalls::syscall_number("setuid")
-            .expect("setuid in per-arch syscall map");
+        let setuid_nr =
+            seccomp::syscalls::syscall_number("setuid").expect("setuid in per-arch syscall map");
         let program = plan.seccomp_program.as_slice();
         let landed = program.iter().any(|insn| insn.k == setuid_nr);
         assert!(
@@ -1104,8 +1145,8 @@ mod tests {
             ..SandboxOptions::default()
         };
         let plan = build_plan(&opts, std::path::Path::new("/tmp"));
-        let socket_nr = seccomp::syscalls::syscall_number("socket")
-            .expect("socket in per-arch syscall map");
+        let socket_nr =
+            seccomp::syscalls::syscall_number("socket").expect("socket in per-arch syscall map");
         let landed = plan.seccomp_program.iter().any(|insn| insn.k == socket_nr);
         assert!(
             !landed,
@@ -1148,5 +1189,4 @@ mod tests {
             outcome.no_new_privs,
         );
     }
-
 }

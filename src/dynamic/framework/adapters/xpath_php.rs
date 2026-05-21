@@ -143,9 +143,11 @@ mod tests {
             }\n";
         let tree = parse_php(src);
         let summary = summary_for("run", &["name"], &[0]);
-        assert!(XpathPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XpathPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -156,9 +158,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(XpathPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XpathPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -172,8 +176,10 @@ mod tests {
             }\n";
         let tree = parse_php(src);
         let summary = summary_for("run", &["name"], &[0]);
-        assert!(XpathPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XpathPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

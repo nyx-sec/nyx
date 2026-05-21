@@ -129,8 +129,10 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(KafkaPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            KafkaPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

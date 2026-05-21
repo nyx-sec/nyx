@@ -23,12 +23,7 @@ fn callee_is_xml_parser(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
     matches!(
         last,
-        "XMLParser"
-            | "parse"
-            | "fromstring"
-            | "parseString"
-            | "XMLPullParser"
-            | "iterparse"
+        "XMLParser" | "parse" | "fromstring" | "parseString" | "XMLPullParser" | "iterparse"
     )
 }
 
@@ -126,9 +121,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("fromstring")],
             ..Default::default()
         };
-        assert!(XxePythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XxePythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -139,9 +136,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(XxePythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxePythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -156,9 +155,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("fromstring")],
             ..Default::default()
         };
-        assert!(XxePythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxePythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -171,8 +172,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("fromstring")],
             ..Default::default()
         };
-        assert!(XxePythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxePythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

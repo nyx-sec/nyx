@@ -16,8 +16,8 @@
 mod common;
 
 use nyx_scanner::dynamic::corpus::{
-    audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
-    resolve_benign_control_lang, Oracle,
+    Oracle, audit_marker_collisions, benign_payload_for_lang, payloads_for_lang,
+    resolve_benign_control_lang,
 };
 use nyx_scanner::dynamic::framework::registry::adapters_for;
 use nyx_scanner::dynamic::lang;
@@ -57,7 +57,10 @@ fn make_spec(lang: Lang, entry_file: &str, entry_name: &str) -> HarnessSpec {
 fn corpus_registers_ldap_for_every_supported_lang() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::LDAP_INJECTION, *lang);
-        assert!(!slice.is_empty(), "LDAP_INJECTION has no payloads for {lang:?}");
+        assert!(
+            !slice.is_empty(),
+            "LDAP_INJECTION has no payloads for {lang:?}"
+        );
         let has_vuln = slice.iter().any(|p| !p.is_benign);
         let has_benign = slice.iter().any(|p| p.is_benign);
         assert!(has_vuln, "{lang:?} LDAP missing vuln payload");
@@ -104,10 +107,9 @@ fn payload_oracle_carries_ldap_result_count_predicate() {
         match &vuln.oracle {
             Oracle::SinkProbe { predicates } => {
                 assert!(
-                    predicates.iter().any(|p| matches!(
-                        p,
-                        ProbePredicate::QueryResultCountGreaterThan { n: 1 }
-                    )),
+                    predicates
+                        .iter()
+                        .any(|p| matches!(p, ProbePredicate::QueryResultCountGreaterThan { n: 1 })),
                     "{lang:?} vuln payload missing QueryResultCountGreaterThan {{ n: 1 }}",
                 );
             }
@@ -146,7 +148,9 @@ fn marker_collisions_clean_with_phase_06_additions() {
 
 #[test]
 fn probe_kind_ldap_serdes() {
-    let original = ProbeKind::Ldap { entries_returned: 3 };
+    let original = ProbeKind::Ldap {
+        entries_returned: 3,
+    };
     let json = serde_json::to_string(&original).unwrap();
     assert!(json.contains("Ldap"));
     assert!(json.contains("entries_returned"));
@@ -181,8 +185,8 @@ fn lang_emitter_dispatches_to_ldap_harness() {
         ),
     ] {
         let spec = make_spec(lang, entry_file, entry_name);
-        let harness = lang::emit(&spec)
-            .unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
+        let harness =
+            lang::emit(&spec).unwrap_or_else(|e| panic!("emit failed for {lang:?}: {e:?}"));
         assert!(
             harness.source.contains("entries_returned"),
             "{lang:?} ldap harness must carry the entries_returned probe field",
@@ -246,8 +250,7 @@ fn framework_adapters_detect_ldap_sink() {
             &bytes,
             lang,
         );
-        let b = binding
-            .unwrap_or_else(|| panic!("{lang:?} adapter must detect the LDAP fixture"));
+        let b = binding.unwrap_or_else(|| panic!("{lang:?} adapter must detect the LDAP fixture"));
         assert_eq!(b.kind, EntryKind::Function);
         assert!(!b.adapter.is_empty());
     }
@@ -279,7 +282,10 @@ fn stub_ldap_server_returns_three_for_wildcard_filter() {
     let stub = LdapStub::start().expect("ldap stub starts");
     let mal = LdapStub::evaluate("(|(uid=alice)(uid=*))");
     let benign = LdapStub::evaluate("(uid=alice)");
-    assert!(mal.len() > 1, "malicious filter must match > 1 entry, got {mal:?}");
+    assert!(
+        mal.len() > 1,
+        "malicious filter must match > 1 entry, got {mal:?}"
+    );
     assert_eq!(benign.len(), 1, "benign filter must match exactly 1 entry");
     assert_eq!(stub.kind(), StubKind::Ldap);
 }
@@ -302,10 +308,10 @@ fn stub_kind_for_cap_routes_ldap_injection() {
 
 mod e2e_phase_06 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::{SandboxBackend, SandboxOptions};
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -413,7 +419,9 @@ mod e2e_phase_06 {
 
     #[test]
     fn java_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else { return };
+        let Some(outcome) = run(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Java LDAP vuln must Confirm via run_spec; got {outcome:?}",
@@ -427,7 +435,9 @@ mod e2e_phase_06 {
 
     #[test]
     fn python_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else { return };
+        let Some(outcome) = run(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "Python LDAP vuln must Confirm via run_spec; got {outcome:?}",
@@ -441,7 +451,9 @@ mod e2e_phase_06 {
 
     #[test]
     fn php_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else { return };
+        let Some(outcome) = run(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
         assert!(
             outcome.triggered_by.is_some(),
             "PHP LDAP vuln must Confirm via run_spec; got {outcome:?}",

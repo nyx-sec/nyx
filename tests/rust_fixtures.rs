@@ -12,18 +12,21 @@ mod common;
 #[cfg(feature = "dynamic")]
 mod rust_fixture_tests {
     use crate::common::fixture_harness::{
-        run_fixture_and_compare_to_golden, CopyStrategy, FixtureSpec, Prerequisite,
+        CopyStrategy, FixtureSpec, Prerequisite, run_fixture_and_compare_to_golden,
     };
     use nyx_scanner::commands::scan::Diag;
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
-    use nyx_scanner::evidence::{
-        Confidence, Evidence, FlowStep, FlowStepKind,
-    };
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
+    use nyx_scanner::evidence::{Confidence, Evidence, FlowStep, FlowStepKind};
     use nyx_scanner::labels::Cap;
     use nyx_scanner::patterns::{FindingCategory, Severity};
     use std::path::{Path, PathBuf};
 
-    fn spec(fixture: &'static str, func: &'static str, cap: Cap, sink_line: u32) -> FixtureSpec<'static> {
+    fn spec(
+        fixture: &'static str,
+        func: &'static str,
+        cap: Cap,
+        sink_line: u32,
+    ) -> FixtureSpec<'static> {
         FixtureSpec {
             lang_dir: "rust",
             fixture,
@@ -290,7 +293,7 @@ mod rust_fixture_tests {
 
 #[cfg(feature = "dynamic")]
 mod phase16_shape_tests {
-    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
+    use crate::common::fixture_harness::{Prerequisite, run_shape_fixture_lang_or_skip};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
@@ -357,8 +360,13 @@ mod phase16_shape_tests {
     #[test]
     fn actix_route_vuln_is_confirmed() {
         let Some(r) = run(
-            "actix_route", "vuln.rs", "handler", Cap::CODE_EXEC, 16,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "actix_route",
+            "vuln.rs",
+            "handler",
+            Cap::CODE_EXEC,
+            16,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -368,8 +376,13 @@ mod phase16_shape_tests {
     #[test]
     fn actix_route_benign_not_confirmed() {
         let Some(r) = run(
-            "actix_route", "benign.rs", "handler", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "actix_route",
+            "benign.rs",
+            "handler",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -381,8 +394,13 @@ mod phase16_shape_tests {
     #[test]
     fn axum_handler_vuln_is_confirmed() {
         let Some(r) = run(
-            "axum_handler", "vuln.rs", "handler", Cap::CODE_EXEC, 15,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "axum_handler",
+            "vuln.rs",
+            "handler",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -392,8 +410,13 @@ mod phase16_shape_tests {
     #[test]
     fn axum_handler_benign_not_confirmed() {
         let Some(r) = run(
-            "axum_handler", "benign.rs", "handler", Cap::CODE_EXEC, 13,
-            EntryKind::HttpRoute, PayloadSlot::Param(0),
+            "axum_handler",
+            "benign.rs",
+            "handler",
+            Cap::CODE_EXEC,
+            13,
+            EntryKind::HttpRoute,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -405,8 +428,13 @@ mod phase16_shape_tests {
     #[test]
     fn clap_cli_vuln_is_confirmed() {
         let Some(r) = run(
-            "clap_cli", "vuln.rs", "run", Cap::CODE_EXEC, 17,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "clap_cli",
+            "vuln.rs",
+            "run",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         ) else {
             return;
         };
@@ -416,8 +444,13 @@ mod phase16_shape_tests {
     #[test]
     fn clap_cli_benign_not_confirmed() {
         let Some(r) = run(
-            "clap_cli", "benign.rs", "run", Cap::CODE_EXEC, 13,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "clap_cli",
+            "benign.rs",
+            "run",
+            Cap::CODE_EXEC,
+            13,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         ) else {
             return;
         };
@@ -429,8 +462,13 @@ mod phase16_shape_tests {
     #[test]
     fn libfuzzer_target_vuln_is_confirmed() {
         let Some(r) = run(
-            "libfuzzer_target", "vuln.rs", "fuzz_target", Cap::CODE_EXEC, 15,
-            EntryKind::LibraryApi, PayloadSlot::Param(0),
+            "libfuzzer_target",
+            "vuln.rs",
+            "fuzz_target",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::LibraryApi,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -440,8 +478,13 @@ mod phase16_shape_tests {
     #[test]
     fn libfuzzer_target_benign_not_confirmed() {
         let Some(r) = run(
-            "libfuzzer_target", "benign.rs", "fuzz_target", Cap::CODE_EXEC, 13,
-            EntryKind::LibraryApi, PayloadSlot::Param(0),
+            "libfuzzer_target",
+            "benign.rs",
+            "fuzz_target",
+            Cap::CODE_EXEC,
+            13,
+            EntryKind::LibraryApi,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };

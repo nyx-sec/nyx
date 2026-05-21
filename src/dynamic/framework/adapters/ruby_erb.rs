@@ -26,7 +26,10 @@ fn callee_last_segment(name: &str) -> &str {
 }
 
 fn is_erb_entry(name: &str) -> bool {
-    matches!(callee_last_segment(name), "result" | "result_with_hash" | "new")
+    matches!(
+        callee_last_segment(name),
+        "result" | "result_with_hash" | "new"
+    )
 }
 
 fn ast_confirms_tainted_call(root: Node<'_>, bytes: &[u8], summary: &FuncSummary) -> bool {
@@ -61,7 +64,10 @@ fn walk(node: Node<'_>, bytes: &[u8], summary: &FuncSummary, found: &mut bool) {
 fn first_positional_arg<'a>(args: Node<'a>) -> Option<Node<'a>> {
     let mut cur = args.walk();
     for arg in args.named_children(&mut cur) {
-        if matches!(arg.kind(), "pair" | "hash_splat_argument" | "block_argument") {
+        if matches!(
+            arg.kind(),
+            "pair" | "hash_splat_argument" | "block_argument"
+        ) {
             continue;
         }
         return Some(arg);
@@ -93,9 +99,7 @@ impl FrameworkAdapter for RubyErbAdapter {
             || file_bytes
                 .windows(b"require \"erb\"".len())
                 .any(|w| w == b"require \"erb\"")
-            || file_bytes
-                .windows(b"Erubi".len())
-                .any(|w| w == b"Erubi");
+            || file_bytes.windows(b"Erubi".len()).any(|w| w == b"Erubi");
         if !cheap_filter {
             return None;
         }
@@ -139,9 +143,11 @@ mod tests {
         let src: &[u8] = b"require 'erb'\ndef render(body)\n  ERB.new(body).result\nend\n";
         let tree = parse_ruby(src);
         let summary = summary_for("render", &["body"], &[0]);
-        assert!(RubyErbAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RubyErbAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -152,9 +158,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(RubyErbAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubyErbAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -163,9 +171,11 @@ mod tests {
             b"# require 'erb' is mentioned\ndef render(body)\n  ERB.new(\"static\").result\nend\n";
         let tree = parse_ruby(src);
         let summary = summary_for("render", &["body"], &[0]);
-        assert!(RubyErbAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubyErbAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -173,8 +183,10 @@ mod tests {
         let src: &[u8] = b"require 'erb'\ndef render(body)\n  ERB.new(body).result\nend\n";
         let tree = parse_ruby(src);
         let summary = summary_for("render", &["body"], &[]);
-        assert!(RubyErbAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RubyErbAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

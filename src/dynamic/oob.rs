@@ -63,7 +63,11 @@ impl OobListener {
             accept_loop(listener, hits_clone, shutdown_clone);
         });
 
-        Ok(Self { port, hits, shutdown })
+        Ok(Self {
+            port,
+            hits,
+            shutdown,
+        })
     }
 
     /// Port the listener is bound to.
@@ -86,10 +90,7 @@ impl OobListener {
 
     /// Returns `true` if `nonce` was received by the listener.
     pub fn was_nonce_hit(&self, nonce: &str) -> bool {
-        self.hits
-            .lock()
-            .map(|h| h.contains(nonce))
-            .unwrap_or(false)
+        self.hits.lock().map(|h| h.contains(nonce)).unwrap_or(false)
     }
 
     /// Polls until `nonce` is recorded or `timeout` elapses.
@@ -144,9 +145,10 @@ fn handle_connection(stream: TcpStream, hits: Arc<Mutex<HashSet<String>>>) {
     let mut first_line = String::new();
     if reader.read_line(&mut first_line).is_ok()
         && let Some(nonce) = parse_nonce_from_request_line(&first_line)
-            && let Ok(mut h) = hits.lock() {
-                h.insert(nonce);
-            }
+        && let Ok(mut h) = hits.lock()
+    {
+        h.insert(nonce);
+    }
     // Drain remaining headers so the client doesn't get ECONNRESET.
     loop {
         let mut line = String::new();
@@ -158,7 +160,8 @@ fn handle_connection(stream: TcpStream, hits: Arc<Mutex<HashSet<String>>>) {
         }
     }
     let mut w = &stream;
-    let _ = w.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nok");
+    let _ =
+        w.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Type: text/plain\r\n\r\nok");
 }
 
 /// Extract the nonce from a `GET /{nonce} HTTP/1.1` request line.

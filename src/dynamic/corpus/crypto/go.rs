@@ -11,7 +11,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         bytes: b"NYX_CRYPTO_WEAK",
         label: "crypto-go-weak-random",
         oracle: Oracle::SinkProbe {
-            predicates: &[ProbePredicate::WeakKeyEntropy { max_bits: WEAK_BITS }],
+            predicates: &[ProbePredicate::WeakKeyEntropy {
+                max_bits: WEAK_BITS,
+            }],
         },
         is_benign: false,
         provenance: PayloadProvenance::Curated,
@@ -19,7 +21,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         deprecated_at_corpus_version: None,
         fixture_paths: &["tests/dynamic_fixtures/crypto/go/vuln.go"],
         oob_nonce_slot: false,
-        probe_predicates: &[ProbePredicate::WeakKeyEntropy { max_bits: WEAK_BITS }],
+        probe_predicates: &[ProbePredicate::WeakKeyEntropy {
+            max_bits: WEAK_BITS,
+        }],
         benign_control: Some(PayloadRef {
             label: "crypto-go-benign",
         }),
@@ -29,7 +33,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         bytes: b"NYX_CRYPTO_STRONG",
         label: "crypto-go-benign",
         oracle: Oracle::SinkProbe {
-            predicates: &[ProbePredicate::WeakKeyEntropy { max_bits: WEAK_BITS }],
+            predicates: &[ProbePredicate::WeakKeyEntropy {
+                max_bits: WEAK_BITS,
+            }],
         },
         is_benign: true,
         provenance: PayloadProvenance::Curated,

@@ -13,7 +13,7 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::corpus::registry::{
-    sound_oracle_unavailable_hint, CORPUS_SOUND_ORACLE_UNAVAILABLE,
+    CORPUS_SOUND_ORACLE_UNAVAILABLE, sound_oracle_unavailable_hint,
 };
 use nyx_scanner::labels::Cap;
 

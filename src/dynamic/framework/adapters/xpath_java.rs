@@ -27,7 +27,10 @@ const ADAPTER_NAME: &str = "xpath-java";
 
 fn callee_is_xpath_eval(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "evaluate" | "compile" | "selectNodes" | "selectSingleNode")
+    matches!(
+        last,
+        "evaluate" | "compile" | "selectNodes" | "selectSingleNode"
+    )
 }
 
 fn source_imports_xpath(file_bytes: &[u8]) -> bool {
@@ -158,9 +161,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(XpathJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XpathJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -176,8 +181,10 @@ mod tests {
             }\n}\n";
         let tree = parse_java(src);
         let summary = summary_for("run", &["name"], &[0]);
-        assert!(XpathJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XpathJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

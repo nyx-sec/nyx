@@ -16,7 +16,7 @@
 
 #![cfg(feature = "dynamic")]
 
-use nyx_scanner::dynamic::framework::{detect_binding, HttpMethod, ParamSource};
+use nyx_scanner::dynamic::framework::{HttpMethod, ParamSource, detect_binding};
 use nyx_scanner::evidence::EntryKind;
 use nyx_scanner::summary::FuncSummary;
 use nyx_scanner::symbol::Lang;
@@ -143,10 +143,12 @@ fn servlet_doget_vuln_fixture_binds_route() {
     // path defaults to `"/"`.
     assert_eq!(route.path, "/");
     // The (req, resp) pair should classify as Implicit.
-    assert!(binding
-        .request_params
-        .iter()
-        .all(|p| matches!(p.source, ParamSource::Implicit)));
+    assert!(
+        binding
+            .request_params
+            .iter()
+            .all(|p| matches!(p.source, ParamSource::Implicit))
+    );
 }
 
 #[test]

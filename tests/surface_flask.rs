@@ -101,7 +101,11 @@ fn surface_map_captures_five_flask_routes() {
         let ep = map.entry_for_route(method, route).unwrap_or_else(|| {
             panic!("missing route {method:?} {route}; map = {entries:#?}");
         });
-        assert_eq!(ep.framework, Framework::Flask, "framework mismatch on {route}");
+        assert_eq!(
+            ep.framework,
+            Framework::Flask,
+            "framework mismatch on {route}"
+        );
         assert_eq!(ep.handler_name, handler, "handler mismatch on {route}");
         assert_eq!(
             ep.auth_required, auth,

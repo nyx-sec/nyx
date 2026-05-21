@@ -14,7 +14,7 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::corpus::{payloads_for_lang, resolve_benign_control_lang};
-use nyx_scanner::dynamic::oracle::{oracle_fired, Oracle, ProbePredicate};
+use nyx_scanner::dynamic::oracle::{Oracle, ProbePredicate, oracle_fired};
 use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::labels::Cap;
@@ -76,10 +76,11 @@ fn data_exfil_payloads_pair_benign_per_lang() {
             .expect("benign control resolves");
         assert!(resolved.is_benign);
         match &vuln.oracle {
-            Oracle::SinkProbe { predicates } => assert!(predicates.iter().any(|p| matches!(
-                p,
-                ProbePredicate::OutboundHostNotIn { .. }
-            ))),
+            Oracle::SinkProbe { predicates } => assert!(
+                predicates
+                    .iter()
+                    .any(|p| matches!(p, ProbePredicate::OutboundHostNotIn { .. }))
+            ),
             other => panic!("expected SinkProbe, got {other:?}"),
         }
     }

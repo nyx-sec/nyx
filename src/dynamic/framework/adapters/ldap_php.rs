@@ -173,9 +173,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("ldap_search")],
             ..Default::default()
         };
-        assert!(LdapPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            LdapPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -186,9 +188,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(LdapPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            LdapPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -203,8 +207,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("ldap_search")],
             ..Default::default()
         };
-        assert!(LdapPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            LdapPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

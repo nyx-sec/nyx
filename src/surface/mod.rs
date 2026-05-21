@@ -342,9 +342,10 @@ impl SurfaceMap {
 /// scan root or when path stripping fails.
 pub fn relative_path_string(path: &Path, scan_root: Option<&Path>) -> String {
     if let Some(root) = scan_root
-        && let Ok(rel) = path.strip_prefix(root) {
-            return rel.to_string_lossy().replace('\\', "/");
-        }
+        && let Ok(rel) = path.strip_prefix(root)
+    {
+        return rel.to_string_lossy().replace('\\', "/");
+    }
     path.to_string_lossy().replace('\\', "/")
 }
 

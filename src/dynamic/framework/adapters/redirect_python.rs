@@ -114,9 +114,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("redirect")],
             ..Default::default()
         };
-        assert!(RedirectPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RedirectPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -127,9 +129,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(RedirectPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -148,8 +152,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(RedirectPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

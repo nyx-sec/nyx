@@ -77,11 +77,15 @@ pub fn run(
     _opts: &SandboxOptions,
 ) -> Result<SandboxOutcome, SandboxError> {
     if !firecracker_available() {
-        return Err(SandboxError::BackendUnavailable(SandboxBackend::Firecracker));
+        return Err(SandboxError::BackendUnavailable(
+            SandboxBackend::Firecracker,
+        ));
     }
     // Binary present but no VM logic yet.  Surface BackendUnavailable
     // explicitly so callers do not mistakenly think the run succeeded.
-    Err(SandboxError::BackendUnavailable(SandboxBackend::Firecracker))
+    Err(SandboxError::BackendUnavailable(
+        SandboxBackend::Firecracker,
+    ))
 }
 
 #[cfg(test)]
@@ -122,7 +126,9 @@ mod tests {
         let result = run(&harness, b"", &opts);
         assert!(matches!(
             result,
-            Err(SandboxError::BackendUnavailable(SandboxBackend::Firecracker))
+            Err(SandboxError::BackendUnavailable(
+                SandboxBackend::Firecracker
+            ))
         ));
     }
 }

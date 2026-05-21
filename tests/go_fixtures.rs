@@ -14,7 +14,7 @@ mod common;
 #[cfg(feature = "dynamic")]
 mod go_fixture_tests {
     use nyx_scanner::commands::scan::Diag;
-    use nyx_scanner::dynamic::verify::{verify_finding, VerifyOptions};
+    use nyx_scanner::dynamic::verify::{VerifyOptions, verify_finding};
     use nyx_scanner::evidence::{
         Confidence, Evidence, FlowStep, FlowStepKind, InconclusiveReason, UnsupportedReason,
         VerifyStatus,
@@ -456,7 +456,7 @@ mod go_fixture_tests {
 
 #[cfg(feature = "dynamic")]
 mod phase15_shape_tests {
-    use crate::common::fixture_harness::{run_shape_fixture_lang_or_skip, Prerequisite};
+    use crate::common::fixture_harness::{Prerequisite, run_shape_fixture_lang_or_skip};
     use nyx_scanner::dynamic::spec::PayloadSlot;
     use nyx_scanner::evidence::{EntryKind, VerifyResult, VerifyStatus};
     use nyx_scanner::labels::Cap;
@@ -506,7 +506,15 @@ mod phase15_shape_tests {
         // return; };`.
         run_shape_fixture_lang_or_skip(
             &[Prerequisite::CommandAvailable("go")],
-            Lang::Go, "go", shape, file, func, cap, sink_line, kind, slot,
+            Lang::Go,
+            "go",
+            shape,
+            file,
+            func,
+            cap,
+            sink_line,
+            kind,
+            slot,
         )
     }
 
@@ -515,8 +523,13 @@ mod phase15_shape_tests {
     #[test]
     fn handler_func_vuln_is_confirmed() {
         let Some(r) = run(
-            "handler_func", "vuln.go", "Handle", Cap::CODE_EXEC, 17,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+            "handler_func",
+            "vuln.go",
+            "Handle",
+            Cap::CODE_EXEC,
+            17,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("payload".into()),
         ) else {
             return;
         };
@@ -526,8 +539,13 @@ mod phase15_shape_tests {
     #[test]
     fn handler_func_benign_not_confirmed() {
         let Some(r) = run(
-            "handler_func", "benign.go", "Handle", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+            "handler_func",
+            "benign.go",
+            "Handle",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("payload".into()),
         ) else {
             return;
         };
@@ -539,8 +557,13 @@ mod phase15_shape_tests {
     #[test]
     fn gin_handler_vuln_is_confirmed() {
         let Some(r) = run(
-            "gin_handler", "vuln.go", "Handle", Cap::CODE_EXEC, 16,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+            "gin_handler",
+            "vuln.go",
+            "Handle",
+            Cap::CODE_EXEC,
+            16,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("payload".into()),
         ) else {
             return;
         };
@@ -550,8 +573,13 @@ mod phase15_shape_tests {
     #[test]
     fn gin_handler_benign_not_confirmed() {
         let Some(r) = run(
-            "gin_handler", "benign.go", "Handle", Cap::CODE_EXEC, 14,
-            EntryKind::HttpRoute, PayloadSlot::QueryParam("payload".into()),
+            "gin_handler",
+            "benign.go",
+            "Handle",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::HttpRoute,
+            PayloadSlot::QueryParam("payload".into()),
         ) else {
             return;
         };
@@ -563,8 +591,13 @@ mod phase15_shape_tests {
     #[test]
     fn flag_cli_vuln_is_confirmed() {
         let Some(r) = run(
-            "flag_cli", "vuln.go", "Run", Cap::CODE_EXEC, 19,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "flag_cli",
+            "vuln.go",
+            "Run",
+            Cap::CODE_EXEC,
+            19,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         ) else {
             return;
         };
@@ -574,8 +607,13 @@ mod phase15_shape_tests {
     #[test]
     fn flag_cli_benign_not_confirmed() {
         let Some(r) = run(
-            "flag_cli", "benign.go", "Run", Cap::CODE_EXEC, 15,
-            EntryKind::CliSubcommand, PayloadSlot::Argv(0),
+            "flag_cli",
+            "benign.go",
+            "Run",
+            Cap::CODE_EXEC,
+            15,
+            EntryKind::CliSubcommand,
+            PayloadSlot::Argv(0),
         ) else {
             return;
         };
@@ -587,8 +625,13 @@ mod phase15_shape_tests {
     #[test]
     fn fuzz_variadic_vuln_is_confirmed() {
         let Some(r) = run(
-            "fuzz_variadic", "vuln.go", "FuzzHandle", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "fuzz_variadic",
+            "vuln.go",
+            "FuzzHandle",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };
@@ -598,8 +641,13 @@ mod phase15_shape_tests {
     #[test]
     fn fuzz_variadic_benign_not_confirmed() {
         let Some(r) = run(
-            "fuzz_variadic", "benign.go", "FuzzHandle", Cap::CODE_EXEC, 14,
-            EntryKind::Function, PayloadSlot::Param(0),
+            "fuzz_variadic",
+            "benign.go",
+            "FuzzHandle",
+            Cap::CODE_EXEC,
+            14,
+            EntryKind::Function,
+            PayloadSlot::Param(0),
         ) else {
             return;
         };

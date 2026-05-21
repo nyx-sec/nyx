@@ -25,7 +25,10 @@ const ADAPTER_NAME: &str = "xpath-python";
 
 fn callee_is_xpath_eval(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "xpath" | "evaluate" | "find" | "findall" | "iterfind" | "XPath")
+    matches!(
+        last,
+        "xpath" | "evaluate" | "find" | "findall" | "iterfind" | "XPath"
+    )
 }
 
 fn source_imports_lxml(file_bytes: &[u8]) -> bool {
@@ -141,9 +144,11 @@ mod tests {
                 return tree.xpath(\"//user[@name='\" + name + \"']\")\n";
         let tree = parse_python(src);
         let summary = summary_for("run", &["name"], &[0]);
-        assert!(XpathPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            XpathPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -154,9 +159,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(XpathPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XpathPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -168,8 +175,10 @@ mod tests {
                 return q(tree, name=name)\n";
         let tree = parse_python(src);
         let summary = summary_for("run", &["name"], &[0]);
-        assert!(XpathPythonAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XpathPythonAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

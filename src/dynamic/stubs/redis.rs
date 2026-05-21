@@ -46,7 +46,11 @@ impl RedisStub {
         let shutdown_clone = Arc::clone(&shutdown);
         std::thread::spawn(move || accept_loop(listener, events_clone, shutdown_clone));
 
-        Ok(Self { port, events, shutdown })
+        Ok(Self {
+            port,
+            events,
+            shutdown,
+        })
     }
 
     /// Port the listener is bound to.
@@ -181,7 +185,10 @@ fn read_command(reader: &mut BufReader<TcpStream>) -> Option<Vec<String>> {
 }
 
 fn command_to_event(parts: &[String]) -> StubEvent {
-    let (cmd, args) = parts.split_first().map(|(c, a)| (c.as_str(), a)).unwrap_or(("", &[][..]));
+    let (cmd, args) = parts
+        .split_first()
+        .map(|(c, a)| (c.as_str(), a))
+        .unwrap_or(("", &[][..]));
     let summary = if args.is_empty() {
         cmd.to_owned()
     } else {
@@ -250,7 +257,8 @@ mod tests {
         let stub = RedisStub::start().unwrap();
         let mut s = TcpStream::connect(format!("127.0.0.1:{}", stub.port())).unwrap();
         // `GET sessions`
-        s.write_all(b"*2\r\n$3\r\nGET\r\n$8\r\nsessions\r\n").unwrap();
+        s.write_all(b"*2\r\n$3\r\nGET\r\n$8\r\nsessions\r\n")
+            .unwrap();
         s.flush().unwrap();
         let mut reply = [0u8; 5];
         let _ = s.read_exact(&mut reply);

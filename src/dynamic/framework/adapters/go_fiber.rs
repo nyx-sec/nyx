@@ -126,8 +126,10 @@ mod tests {
     fn skips_when_fiber_not_imported() {
         let src: &[u8] = b"package main\nfunc Show() {}\n";
         let tree = parse(src);
-        assert!(GoFiberAdapter
-            .detect(&summary("Show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            GoFiberAdapter
+                .detect(&summary("Show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

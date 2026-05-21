@@ -11,7 +11,7 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::corpus::{payloads_for_lang, resolve_benign_control_lang};
-use nyx_scanner::dynamic::oracle::{oracle_fired, Oracle, ProbePredicate};
+use nyx_scanner::dynamic::oracle::{Oracle, ProbePredicate, oracle_fired};
 use nyx_scanner::dynamic::probe::{ProbeKind, ProbeWitness, SinkProbe};
 use nyx_scanner::dynamic::sandbox::SandboxOutcome;
 use nyx_scanner::labels::Cap;
@@ -68,7 +68,9 @@ fn json_parse_pairs_benign_per_lang_via_canary_predicate() {
         match &vuln.oracle {
             Oracle::SinkProbe { predicates } => assert!(predicates.iter().any(|p| matches!(
                 p,
-                ProbePredicate::PrototypeCanaryTouched { canary: "__nyx_canary" }
+                ProbePredicate::PrototypeCanaryTouched {
+                    canary: "__nyx_canary"
+                }
             ))),
             other => panic!("expected SinkProbe, got {other:?}"),
         }
@@ -82,8 +84,16 @@ fn canary_predicate_fires_only_on_canary_property() {
             canary: "__nyx_canary",
         }],
     };
-    assert!(oracle_fired(&oracle, &outcome(), &[canary_probe("__nyx_canary")]));
-    assert!(!oracle_fired(&oracle, &outcome(), &[canary_probe("__data__")]));
+    assert!(oracle_fired(
+        &oracle,
+        &outcome(),
+        &[canary_probe("__nyx_canary")]
+    ));
+    assert!(!oracle_fired(
+        &oracle,
+        &outcome(),
+        &[canary_probe("__data__")]
+    ));
     assert!(!oracle_fired(&oracle, &outcome(), &[]));
 }
 

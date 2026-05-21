@@ -257,8 +257,7 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
     if !supported.is_empty() && !supported.contains(&spec.entry_kind.tag()) {
         return Err(UnsupportedReason::EntryKindUnsupported);
     }
-    dispatch(spec.lang, |e| e.emit(spec))
-        .unwrap_or(Err(UnsupportedReason::LangUnsupported))
+    dispatch(spec.lang, |e| e.emit(spec)).unwrap_or(Err(UnsupportedReason::LangUnsupported))
 }
 
 /// Public free-fn dispatcher for the supported entry kinds of `lang`.
@@ -276,9 +275,7 @@ pub fn entry_kinds_supported(lang: Lang) -> &'static [EntryKindTag] {
 /// callers do not need to special-case that path.
 pub fn entry_kind_hint(lang: Lang, attempted: EntryKindTag) -> String {
     dispatch(lang, |e| e.entry_kind_hint(attempted)).unwrap_or_else(|| {
-        format!(
-            "no harness emitter is registered for {lang:?}; attempted {attempted}"
-        )
+        format!("no harness emitter is registered for {lang:?}; attempted {attempted}")
     })
 }
 
@@ -384,13 +381,13 @@ mod tests {
             T::WebSocket
         );
         assert_eq!(
-            EntryKind::Middleware { name: "auth".into() }.tag(),
+            EntryKind::Middleware {
+                name: "auth".into()
+            }
+            .tag(),
             T::Middleware
         );
-        assert_eq!(
-            EntryKind::Migration { version: None }.tag(),
-            T::Migration
-        );
+        assert_eq!(EntryKind::Migration { version: None }.tag(), T::Migration);
         assert_eq!(EntryKind::Unknown.tag(), T::Unknown);
     }
 
@@ -418,16 +415,14 @@ mod tests {
                 // juniper (Rust), gqlgen (Go).  TypeScript shares the JS
                 // emitter so it inherits resolver dispatch.
                 (
-                    Lang::Python
-                    | Lang::JavaScript
-                    | Lang::TypeScript
-                    | Lang::Rust
-                    | Lang::Go,
+                    Lang::Python | Lang::JavaScript | Lang::TypeScript | Lang::Rust | Lang::Go,
                     T::GraphQLResolver,
                 ) => true,
                 // WebSocket: socketio + channels (Python), ws (JS),
                 // actioncable (Ruby).
-                (Lang::Python | Lang::JavaScript | Lang::TypeScript | Lang::Ruby, T::WebSocket) => true,
+                (Lang::Python | Lang::JavaScript | Lang::TypeScript | Lang::Ruby, T::WebSocket) => {
+                    true
+                }
                 // Middleware: express (JS), django (Python), rails (Ruby),
                 // spring (Java), laravel (PHP).
                 (
@@ -442,11 +437,7 @@ mod tests {
                 // Migration: rails (Ruby), django + flask (Python),
                 // laravel (PHP), sequelize + prisma (JS).
                 (
-                    Lang::Python
-                    | Lang::JavaScript
-                    | Lang::TypeScript
-                    | Lang::Ruby
-                    | Lang::Php,
+                    Lang::Python | Lang::JavaScript | Lang::TypeScript | Lang::Ruby | Lang::Php,
                     T::Migration,
                 ) => true,
                 _ => false,
@@ -505,13 +496,7 @@ mod tests {
             Lang::TypeScript,
             Lang::Go,
         ];
-        let unsupported_langs = [
-            Lang::Php,
-            Lang::Ruby,
-            Lang::Rust,
-            Lang::C,
-            Lang::Cpp,
-        ];
+        let unsupported_langs = [Lang::Php, Lang::Ruby, Lang::Rust, Lang::C, Lang::Cpp];
         for lang in supported_langs {
             let supported = entry_kinds_supported(lang);
             assert!(

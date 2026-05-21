@@ -34,7 +34,7 @@ pub mod syscalls;
 use std::collections::BTreeSet;
 
 use crate::dynamic::sandbox::seccomp::bpf::{SockFilter, SockFprog};
-use crate::dynamic::sandbox::seccomp::syscalls::{syscall_number, AUDIT_ARCH};
+use crate::dynamic::sandbox::seccomp::syscalls::{AUDIT_ARCH, syscall_number};
 
 include!(concat!(env!("OUT_DIR"), "/seccomp_policy.rs"));
 
@@ -174,15 +174,15 @@ mod tests {
 
     #[test]
     fn base_table_is_non_empty() {
-        assert!(!BASE.is_empty(), "seccomp BASE allowlist must include stdio + startup syscalls");
+        assert!(
+            !BASE.is_empty(),
+            "seccomp BASE allowlist must include stdio + startup syscalls"
+        );
     }
 
     #[test]
     fn cap_table_includes_known_caps() {
-        let known: Vec<&str> = CAP
-            .iter()
-            .map(|(_, _)| "_")
-            .collect();
+        let known: Vec<&str> = CAP.iter().map(|(_, _)| "_").collect();
         // We declared SQL_QUERY, FILE_IO, SSRF, CODE_EXEC, HTML_ESCAPE,
         // DESERIALIZE, HEADER_INJECTION, OPEN_REDIRECT in the toml; the
         // build script emits one entry per `[cap.X]` table.  The exact

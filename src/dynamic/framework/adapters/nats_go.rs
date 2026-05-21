@@ -18,11 +18,7 @@ fn callee_is_nats(name: &str) -> bool {
 }
 
 fn source_imports_nats(file_bytes: &[u8]) -> bool {
-    const NEEDLES: &[&[u8]] = &[
-        b"github.com/nats-io/nats.go",
-        b"nats.Connect",
-        b"nats.Msg",
-    ];
+    const NEEDLES: &[&[u8]] = &[b"github.com/nats-io/nats.go", b"nats.Connect", b"nats.Msg"];
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))

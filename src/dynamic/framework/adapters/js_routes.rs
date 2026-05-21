@@ -140,22 +140,13 @@ pub fn strip_quotes(raw: &str) -> &str {
 /// arrow function whose binding name equals `target`.  Returns the
 /// `formal_parameters` (or `formal_parameter` for shorthand arrows)
 /// node so callers can enumerate parameter names.
-pub fn find_function_params<'a>(
-    root: Node<'a>,
-    bytes: &[u8],
-    target: &str,
-) -> Option<Node<'a>> {
+pub fn find_function_params<'a>(root: Node<'a>, bytes: &[u8], target: &str) -> Option<Node<'a>> {
     let mut hit: Option<Node<'a>> = None;
     walk_for_params(root, bytes, target, &mut hit);
     hit
 }
 
-fn walk_for_params<'a>(
-    node: Node<'a>,
-    bytes: &[u8],
-    target: &str,
-    out: &mut Option<Node<'a>>,
-) {
+fn walk_for_params<'a>(node: Node<'a>, bytes: &[u8], target: &str, out: &mut Option<Node<'a>>) {
     if out.is_some() {
         return;
     }
@@ -311,15 +302,7 @@ pub fn bind_path_params(formals: &[String], path: &str) -> Vec<ParamBinding> {
 fn is_implicit_formal(name: &str) -> bool {
     matches!(
         name,
-        "req"
-            | "request"
-            | "res"
-            | "response"
-            | "reply"
-            | "ctx"
-            | "context"
-            | "next"
-            | "done"
+        "req" | "request" | "res" | "response" | "reply" | "ctx" | "context" | "next" | "done"
     )
 }
 
@@ -349,9 +332,7 @@ pub fn extract_path_placeholders(path: &str) -> Vec<String> {
             b':' => {
                 let start = i + 1;
                 let mut j = start;
-                while j < bytes.len()
-                    && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_')
-                {
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
                     j += 1;
                 }
                 if j > start {
@@ -456,10 +437,11 @@ fn walk_for_registration<'a>(
             && receiver_accepts(last_segment(object_text))
             && let Some(args) = node.child_by_field_name("arguments")
             && call_args_reference_target(args, bytes, target)
-                && let Some(path) = first_string_arg(args, bytes) {
-                    *out = Some((method, path));
-                    return;
-                }
+            && let Some(path) = first_string_arg(args, bytes)
+        {
+            *out = Some((method, path));
+            return;
+        }
         // Fastify options-object: `fastify.route({ method, url, handler })`.
         if prop_text == "route"
             && receiver_accepts(last_segment(object_text))
@@ -507,11 +489,7 @@ pub fn first_string_arg(args: Node<'_>, bytes: &[u8]) -> Option<String> {
 /// Parse a Fastify options-object call `fastify.route({ method, url,
 /// handler })` returning the bound `(method, url)` when the
 /// `handler:` property references `target`.
-fn parse_options_route(
-    args: Node<'_>,
-    bytes: &[u8],
-    target: &str,
-) -> Option<(HttpMethod, String)> {
+fn parse_options_route(args: Node<'_>, bytes: &[u8], target: &str) -> Option<(HttpMethod, String)> {
     let mut cur = args.walk();
     for c in args.named_children(&mut cur) {
         if c.kind() != "object" {
@@ -525,7 +503,9 @@ fn parse_options_route(
             if pair.kind() != "pair" {
                 continue;
             }
-            let Some(key) = pair.child_by_field_name("key").and_then(|n| n.utf8_text(bytes).ok())
+            let Some(key) = pair
+                .child_by_field_name("key")
+                .and_then(|n| n.utf8_text(bytes).ok())
             else {
                 continue;
             };

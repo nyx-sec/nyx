@@ -103,13 +103,20 @@ fn cmd_list(toml_path: &Path) -> ExitCode {
     let entries = match read_catalogue(toml_path) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("nyx-image-builder: cannot read {}: {e}", toml_path.display());
+            eprintln!(
+                "nyx-image-builder: cannot read {}: {e}",
+                toml_path.display()
+            );
             return ExitCode::FAILURE;
         }
     };
 
     for e in &entries {
-        let digest = if e.digest.is_empty() { "<unpinned>" } else { &e.digest };
+        let digest = if e.digest.is_empty() {
+            "<unpinned>"
+        } else {
+            &e.digest
+        };
         println!("{:<20} {:<40} {}", e.toolchain_id, e.base, digest);
     }
     ExitCode::SUCCESS
@@ -119,7 +126,10 @@ fn cmd_build(toml_path: &Path, args: &[String]) -> ExitCode {
     let entries = match read_catalogue(toml_path) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("nyx-image-builder: cannot read {}: {e}", toml_path.display());
+            eprintln!(
+                "nyx-image-builder: cannot read {}: {e}",
+                toml_path.display()
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -172,7 +182,10 @@ fn cmd_build(toml_path: &Path, args: &[String]) -> ExitCode {
         let original = match std::fs::read_to_string(toml_path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("nyx-image-builder build: cannot read {}: {e}", toml_path.display());
+                eprintln!(
+                    "nyx-image-builder build: cannot read {}: {e}",
+                    toml_path.display()
+                );
                 return ExitCode::FAILURE;
             }
         };
@@ -185,9 +198,16 @@ fn cmd_build(toml_path: &Path, args: &[String]) -> ExitCode {
                 );
                 return ExitCode::FAILURE;
             }
-            eprintln!("==> updated {} ({} entries)", toml_path.display(), updates.len());
+            eprintln!(
+                "==> updated {} ({} entries)",
+                toml_path.display(),
+                updates.len()
+            );
         } else {
-            eprintln!("==> {} unchanged (digests already pinned)", toml_path.display());
+            eprintln!(
+                "==> {} unchanged (digests already pinned)",
+                toml_path.display()
+            );
         }
     }
 
@@ -202,7 +222,10 @@ fn cmd_verify(toml_path: &Path) -> ExitCode {
     let entries = match read_catalogue(toml_path) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("nyx-image-builder: cannot read {}: {e}", toml_path.display());
+            eprintln!(
+                "nyx-image-builder: cannot read {}: {e}",
+                toml_path.display()
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -212,7 +235,10 @@ fn cmd_verify(toml_path: &Path) -> ExitCode {
 
     for entry in &entries {
         if entry.digest.is_empty() {
-            eprintln!("MISS {}: digest unpinned in {}", entry.toolchain_id, IMAGES_TOML);
+            eprintln!(
+                "MISS {}: digest unpinned in {}",
+                entry.toolchain_id, IMAGES_TOML
+            );
             unpinned += 1;
             continue;
         }
@@ -272,11 +298,7 @@ fn docker_pull(image: &str) -> bool {
 fn resolve_image_digest(image: &str) -> Option<String> {
     // Try RepoDigests first.
     let repo = Command::new(docker_bin())
-        .args([
-            "inspect",
-            "--format={{index .RepoDigests 0}}",
-            image,
-        ])
+        .args(["inspect", "--format={{index .RepoDigests 0}}", image])
         .output()
         .ok()?;
     if repo.status.success() {
@@ -350,8 +372,12 @@ fn parse_catalogue(src: &str) -> Vec<ImageEntry> {
             }
             continue;
         }
-        let Some(slot) = current.as_mut() else { continue };
-        let Some((key, value)) = line.split_once('=') else { continue };
+        let Some(slot) = current.as_mut() else {
+            continue;
+        };
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
         let key = key.trim();
         let value = value.trim().trim_matches('"').trim_matches('\'');
         match key {

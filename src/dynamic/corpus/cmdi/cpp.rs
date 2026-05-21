@@ -22,7 +22,9 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         ],
         oob_nonce_slot: false,
         probe_predicates: &[],
-        benign_control: Some(PayloadRef { label: "cmdi-benign-cpp" }),
+        benign_control: Some(PayloadRef {
+            label: "cmdi-benign-cpp",
+        }),
         no_benign_control_rationale: None,
     },
     CuratedPayload {

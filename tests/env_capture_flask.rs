@@ -23,8 +23,8 @@
 #![cfg(feature = "dynamic")]
 
 use nyx_scanner::dynamic::environment::{
-    capture_project_dependencies, capture_project_dependencies_with_context,
-    stage_workdir_full, MAX_WORKDIR_BYTES,
+    MAX_WORKDIR_BYTES, capture_project_dependencies, capture_project_dependencies_with_context,
+    stage_workdir_full,
 };
 use nyx_scanner::dynamic::lang::materialize_runtime;
 use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy};
@@ -108,7 +108,11 @@ fn capture_returns_three_deps_plus_flask() {
     assert!(!captured.toolchain.toolchain_drift);
 
     // Manifests resolved: requirements.txt and pyproject.toml.
-    assert!(captured.lockfile.is_some(), "lockfile = {:?}", captured.lockfile);
+    assert!(
+        captured.lockfile.is_some(),
+        "lockfile = {:?}",
+        captured.lockfile
+    );
     let manifest_names: Vec<String> = captured
         .manifests
         .iter()
@@ -255,7 +259,7 @@ fn callgraph_context_extends_source_closure() {
     // reverse-edge walk discovered (here just one file because the
     // fixture is single-file).
     use nyx_scanner::ast::analyse_file_fused;
-    use nyx_scanner::callgraph::{build_call_graph};
+    use nyx_scanner::callgraph::build_call_graph;
     use nyx_scanner::summary::GlobalSummaries;
     use nyx_scanner::utils::config::{AnalysisMode, Config};
 
@@ -268,8 +272,8 @@ fn callgraph_context_extends_source_closure() {
     let root = fixture_root();
     let app = root.join("app.py");
     let bytes = std::fs::read(&app).unwrap();
-    let result = analyse_file_fused(&bytes, &app, &cfg, None, Some(&root))
-        .expect("analyse fixture");
+    let result =
+        analyse_file_fused(&bytes, &app, &cfg, None, Some(&root)).expect("analyse fixture");
     let root_str = root.to_string_lossy();
     let mut gs = GlobalSummaries::new();
     for s in result.summaries {

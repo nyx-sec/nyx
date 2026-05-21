@@ -205,9 +205,11 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(LdapSpringAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            LdapSpringAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -225,8 +227,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("search")],
             ..Default::default()
         };
-        assert!(LdapSpringAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            LdapSpringAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

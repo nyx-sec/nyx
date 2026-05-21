@@ -19,9 +19,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 8,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/ssti/ruby_erb/vuln.rb",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/ssti/ruby_erb/vuln.rb"],
         oob_nonce_slot: false,
         probe_predicates: &[ProbePredicate::TemplateEvalEqual { expected: 49 }],
         benign_control: Some(PayloadRef {
@@ -39,9 +37,7 @@ pub const PAYLOADS: &[CuratedPayload] = &[
         provenance: PayloadProvenance::Curated,
         since_corpus_version: 8,
         deprecated_at_corpus_version: None,
-        fixture_paths: &[
-            "tests/dynamic_fixtures/ssti/ruby_erb/benign.rb",
-        ],
+        fixture_paths: &["tests/dynamic_fixtures/ssti/ruby_erb/benign.rb"],
         oob_nonce_slot: false,
         probe_predicates: &[],
         benign_control: None,

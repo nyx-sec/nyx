@@ -90,8 +90,10 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(JavaDeserializeAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaDeserializeAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -106,9 +106,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("header")],
             ..Default::default()
         };
-        assert!(HeaderPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            HeaderPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -119,15 +121,16 @@ mod tests {
             name: "add".into(),
             ..Default::default()
         };
-        assert!(HeaderPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_value_url_encoded() {
-        let src: &[u8] =
-            b"<?php\nfunction run($v) { header('Set-Cookie: ' . urlencode($v)); }\n";
+        let src: &[u8] = b"<?php\nfunction run($v) { header('Set-Cookie: ' . urlencode($v)); }\n";
         let tree = parse_php(src);
         let summary = FuncSummary {
             name: "run".into(),
@@ -137,8 +140,10 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(HeaderPhpAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            HeaderPhpAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

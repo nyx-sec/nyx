@@ -45,10 +45,7 @@ fn class_path_prefix(class: Node<'_>, bytes: &[u8]) -> Option<String> {
     hit
 }
 
-fn method_verb_and_path(
-    method: Node<'_>,
-    bytes: &[u8],
-) -> Option<(HttpMethod, String)> {
+fn method_verb_and_path(method: Node<'_>, bytes: &[u8]) -> Option<(HttpMethod, String)> {
     let mut hit: Option<(HttpMethod, String)> = None;
     iter_annotations(method, bytes, |ann, name| {
         if hit.is_some() {
@@ -155,17 +152,21 @@ mod tests {
     fn skips_non_micronaut_file() {
         let src: &[u8] = b"@Controller\npublic class C {\n  @GetMapping(\"/x\")\n  public String x() { return \"\"; }\n}\n";
         let tree = parse(src);
-        assert!(JavaMicronautAdapter
-            .detect(&summary("x"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaMicronautAdapter
+                .detect(&summary("x"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_method_without_micronaut_verb() {
         let src: &[u8] = b"import io.micronaut.http.annotation.Controller;\n@Controller(\"/api\")\npublic class V {\n  public String helper() { return \"\"; }\n}\n";
         let tree = parse(src);
-        assert!(JavaMicronautAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JavaMicronautAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

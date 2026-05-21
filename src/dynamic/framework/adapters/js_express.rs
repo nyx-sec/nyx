@@ -107,10 +107,18 @@ mod tests {
         let route = binding.route.as_ref().unwrap();
         assert_eq!(route.method, HttpMethod::GET);
         assert_eq!(route.path, "/users/:id");
-        assert!(binding.request_params.iter().any(|p| p.name == "req"
-            && matches!(p.source, ParamSource::Implicit)));
-        assert!(binding.request_params.iter().any(|p| p.name == "res"
-            && matches!(p.source, ParamSource::Implicit)));
+        assert!(
+            binding
+                .request_params
+                .iter()
+                .any(|p| p.name == "req" && matches!(p.source, ParamSource::Implicit))
+        );
+        assert!(
+            binding
+                .request_params
+                .iter()
+                .any(|p| p.name == "res" && matches!(p.source, ParamSource::Implicit))
+        );
     }
 
     #[test]
@@ -147,9 +155,11 @@ mod tests {
             function handler(ctx) { ctx.body = 'ok'; }\n\
             app.get('/x', handler);\n";
         let tree = parse_js(src);
-        assert!(JsExpressAdapter
-            .detect(&summary("handler"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JsExpressAdapter
+                .detect(&summary("handler"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -159,8 +169,10 @@ mod tests {
             function other(req, res) { res.send('x'); }\n\
             app.get('/x', other);\n";
         let tree = parse_js(src);
-        assert!(JsExpressAdapter
-            .detect(&summary("missing"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JsExpressAdapter
+                .detect(&summary("missing"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

@@ -41,7 +41,7 @@
 //! Signals the accept thread to shut down and connects to itself to
 //! wake the blocking `accept()`.
 
-use super::{monotonic_ns, StubEvent, StubKind, StubProvider};
+use super::{StubEvent, StubKind, StubProvider, monotonic_ns};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -105,10 +105,7 @@ impl LdapStub {
             detail: {
                 let mut d = BTreeMap::new();
                 d.insert("filter".to_owned(), filter.to_owned());
-                d.insert(
-                    "entries_returned".to_owned(),
-                    entries_returned.to_string(),
-                );
+                d.insert("entries_returned".to_owned(), entries_returned.to_string());
                 d
             },
         };
@@ -170,11 +167,7 @@ fn accept_loop(
     }
 }
 
-fn handle_connection(
-    mut stream: TcpStream,
-    max_bytes: usize,
-    events: &Arc<Mutex<Vec<StubEvent>>>,
-) {
+fn handle_connection(mut stream: TcpStream, max_bytes: usize, events: &Arc<Mutex<Vec<StubEvent>>>) {
     let mut reader = match stream.try_clone() {
         Ok(s) => BufReader::new(s),
         Err(_) => return,
@@ -240,7 +233,10 @@ fn match_filter(filter: &str) -> Vec<&'static str> {
 
 #[derive(Debug)]
 enum Filter<'a> {
-    Eq { attr: &'a str, pattern: &'a str },
+    Eq {
+        attr: &'a str,
+        pattern: &'a str,
+    },
     And(Vec<Filter<'a>>),
     Or(Vec<Filter<'a>>),
     /// Anything we did not recognise — treated as match-everything by

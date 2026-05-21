@@ -147,23 +147,20 @@ pub fn diags_to_baseline_entries(diags: &[Diag]) -> Vec<BaselineEntry> {
 /// `path`, and `rule_id` — no source code snippets or flow steps.
 pub fn write_baseline(path: &Path, diags: &[Diag]) -> crate::errors::NyxResult<()> {
     let entries = diags_to_baseline_entries(diags);
-    let json = serde_json::to_string_pretty(&entries).map_err(|e| {
-        crate::errors::NyxError::Msg(format!("baseline serialize error: {e}"))
-    })?;
+    let json = serde_json::to_string_pretty(&entries)
+        .map_err(|e| crate::errors::NyxError::Msg(format!("baseline serialize error: {e}")))?;
     if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                crate::errors::NyxError::Msg(format!(
-                    "cannot create baseline dir {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            crate::errors::NyxError::Msg(format!(
+                "cannot create baseline dir {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
     std::fs::write(path, json).map_err(|e| {
-        crate::errors::NyxError::Msg(format!(
-            "cannot write baseline {}: {e}",
-            path.display()
-        ))
+        crate::errors::NyxError::Msg(format!("cannot write baseline {}: {e}", path.display()))
     })
 }
 
@@ -183,9 +180,7 @@ fn classify_transition(
             Transition::FlippedNotConfirmed
         }
         // NotConfirmed → Confirmed: regression
-        (Some(VerifyStatus::NotConfirmed), Some(VerifyStatus::Confirmed)) => {
-            Transition::Regressed
-        }
+        (Some(VerifyStatus::NotConfirmed), Some(VerifyStatus::Confirmed)) => Transition::Regressed,
         // None / Inconclusive / Unsupported → Confirmed
         (_, Some(VerifyStatus::Confirmed)) => Transition::FlippedConfirmed,
         // Everything else: treat as unchanged (e.g. Confirmed → Inconclusive
@@ -380,9 +375,7 @@ pub fn format_diff_console(diff: &VerdictDiff) -> String {
             }
             Transition::FlippedConfirmed => {
                 non_unchanged += 1;
-                lines.push(format!(
-                    "  + {hash_str}: new Confirmed at {loc}"
-                ));
+                lines.push(format!("  + {hash_str}: new Confirmed at {loc}"));
             }
             Transition::Unchanged => {}
         }
@@ -402,7 +395,7 @@ pub fn format_diff_console(diff: &VerdictDiff) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::scan::{compute_stable_hash, Diag};
+    use crate::commands::scan::{Diag, compute_stable_hash};
     use crate::evidence::{Evidence, VerifyResult, VerifyStatus};
     use crate::patterns::{FindingCategory, Severity};
 
@@ -471,7 +464,10 @@ mod tests {
         )];
         let diff = compute_verdict_diff(&[], &current);
         assert_eq!(diff.entries[0].transition, Transition::New);
-        assert_eq!(diff.entries[0].current_status, Some(VerifyStatus::Confirmed));
+        assert_eq!(
+            diff.entries[0].current_status,
+            Some(VerifyStatus::Confirmed)
+        );
     }
 
     #[test]
@@ -620,7 +616,10 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         write_baseline(tmp.path(), &[d]).unwrap();
         let content = std::fs::read_to_string(tmp.path()).unwrap();
-        assert!(!content.contains("SECRET CODE"), "baseline must not contain source code");
+        assert!(
+            !content.contains("SECRET CODE"),
+            "baseline must not contain source code"
+        );
     }
 
     #[test]

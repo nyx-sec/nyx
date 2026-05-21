@@ -161,9 +161,11 @@ mod tests {
             name: "run".into(),
             ..Default::default()
         };
-        assert!(XxeJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxeJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -180,9 +182,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("parse")],
             ..Default::default()
         };
-        assert!(XxeJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxeJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -200,8 +204,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("parse")],
             ..Default::default()
         };
-        assert!(XxeJavaAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            XxeJavaAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

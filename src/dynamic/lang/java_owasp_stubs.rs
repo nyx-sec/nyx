@@ -78,14 +78,8 @@ pub fn owasp_stub_files() -> Vec<(String, String)> {
             "org/owasp/benchmark/helpers/ThingInterface.java".to_owned(),
             thing_interface_stub(),
         ),
-        (
-            "org/owasp/esapi/ESAPI.java".to_owned(),
-            esapi_stub(),
-        ),
-        (
-            "org/owasp/esapi/Encoder.java".to_owned(),
-            encoder_stub(),
-        ),
+        ("org/owasp/esapi/ESAPI.java".to_owned(), esapi_stub()),
+        ("org/owasp/esapi/Encoder.java".to_owned(), encoder_stub()),
         (
             "org/springframework/dao/DataAccessException.java".to_owned(),
             data_access_exception_stub(),
@@ -344,10 +338,7 @@ mod tests {
 
     #[test]
     fn bundle_includes_owasp_helpers() {
-        let paths: Vec<String> = owasp_stub_files()
-            .into_iter()
-            .map(|(p, _)| p)
-            .collect();
+        let paths: Vec<String> = owasp_stub_files().into_iter().map(|(p, _)| p).collect();
         for required in &[
             "org/owasp/benchmark/helpers/Utils.java",
             "org/owasp/benchmark/helpers/DatabaseHelper.java",
@@ -457,6 +448,10 @@ mod tests {
         // count drift here usually means a stub was added without
         // updating the assertion or a stub got accidentally dropped.
         let files = owasp_stub_files();
-        assert_eq!(files.len(), 13, "expected 9 owasp + 4 springframework stubs");
+        assert_eq!(
+            files.len(),
+            13,
+            "expected 9 owasp + 4 springframework stubs"
+        );
     }
 }

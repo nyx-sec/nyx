@@ -114,18 +114,22 @@ mod tests {
     fn skips_when_actix_not_imported() {
         let src: &[u8] = b"#[get(\"/u\")]\nfn show() {}\n";
         let tree = parse(src);
-        assert!(RustActixAdapter
-            .detect(&summary("show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RustActixAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_attribute_missing() {
         let src: &[u8] = b"use actix_web::App;\nfn helper(x: String) {}\n";
         let tree = parse(src);
-        assert!(RustActixAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RustActixAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -170,8 +174,10 @@ mod tests {
             async fn show() -> String { String::new() }\n\
             async fn other() -> String { String::new() }\n";
         let tree = parse(src);
-        assert!(RustActixAdapter
-            .detect(&summary("show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            RustActixAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

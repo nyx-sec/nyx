@@ -129,7 +129,10 @@ fn bench_sandbox_run_payload(c: &mut Criterion) {
     let spec = make_sqli_spec();
     let harness = harness::build(&spec).expect("harness build");
     let payloads = payloads_for(Cap::SQL_QUERY);
-    let payload = payloads.iter().find(|p| !p.is_benign).expect("sqli payload");
+    let payload = payloads
+        .iter()
+        .find(|p| !p.is_benign)
+        .expect("sqli payload");
     let opts = SandboxOptions {
         timeout: std::time::Duration::from_secs(10),
         ..SandboxOptions::default()
@@ -192,10 +195,19 @@ fn bench_docker_exec_warm(c: &mut Criterion) {
     let container = "nyx-bench-exec-warm";
     let _ = std::process::Command::new("docker")
         .args([
-            "run", "-d", "--rm", "--name", container,
-            "--cap-drop=ALL", "--security-opt", "no-new-privileges:true",
-            "--network", "none",
-            "python:3-slim", "sleep", "300",
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container,
+            "--cap-drop=ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--network",
+            "none",
+            "python:3-slim",
+            "sleep",
+            "300",
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -239,7 +251,10 @@ fn bench_docker_payload_cost(c: &mut Criterion) {
     let spec = make_sqli_spec();
     let built = harness::build(&spec).expect("harness build");
     let payloads = payloads_for(Cap::SQL_QUERY);
-    let payload = payloads.iter().find(|p| !p.is_benign).expect("sqli payload");
+    let payload = payloads
+        .iter()
+        .find(|p| !p.is_benign)
+        .expect("sqli payload");
     let opts = SandboxOptions {
         timeout: std::time::Duration::from_secs(30),
         backend: SandboxBackend::Docker,

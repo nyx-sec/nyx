@@ -111,7 +111,8 @@ mod tests {
 
     #[test]
     fn fires_on_gin_redirect() {
-        let src: &[u8] = b"package vuln\n\nimport (\n\t\"net/http\"\n\t\"github.com/gin-gonic/gin\"\n)\n\
+        let src: &[u8] =
+            b"package vuln\n\nimport (\n\t\"net/http\"\n\t\"github.com/gin-gonic/gin\"\n)\n\
             func Run(c *gin.Context, v string) {\n\tc.Redirect(http.StatusFound, v)\n}\n";
         let tree = parse_go(src);
         let summary = FuncSummary {
@@ -119,9 +120,11 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("Redirect")],
             ..Default::default()
         };
-        assert!(RedirectGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_some());
+        assert!(
+            RedirectGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_some()
+        );
     }
 
     #[test]
@@ -132,9 +135,11 @@ mod tests {
             name: "Add".into(),
             ..Default::default()
         };
-        assert!(RedirectGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -153,9 +158,11 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(RedirectGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -168,8 +175,10 @@ mod tests {
             callees: vec![crate::summary::CalleeSite::bare("Redirect")],
             ..Default::default()
         };
-        assert!(RedirectGoAdapter
-            .detect(&summary, tree.root_node(), src)
-            .is_none());
+        assert!(
+            RedirectGoAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none()
+        );
     }
 }

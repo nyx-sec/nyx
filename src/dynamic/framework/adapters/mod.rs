@@ -11,6 +11,16 @@
 //! the route / framework adapters; the per-cap sink adapters live
 //! here so the per-language verticals can ship independently.
 
+pub mod go_chi;
+pub mod go_echo;
+pub mod go_fiber;
+pub mod go_gin;
+pub mod go_routes;
+pub mod graphql_apollo;
+pub mod graphql_gqlgen;
+pub mod graphql_graphene;
+pub mod graphql_juniper;
+pub mod graphql_relay;
 pub mod header_go;
 pub mod header_java;
 pub mod header_js;
@@ -18,11 +28,6 @@ pub mod header_php;
 pub mod header_python;
 pub mod header_ruby;
 pub mod header_rust;
-pub mod go_chi;
-pub mod go_echo;
-pub mod go_fiber;
-pub mod go_gin;
-pub mod go_routes;
 pub mod java_deserialize;
 pub mod java_micronaut;
 pub mod java_quarkus;
@@ -36,11 +41,6 @@ pub mod js_handlebars;
 pub mod js_koa;
 pub mod js_nest;
 pub mod js_routes;
-pub mod graphql_apollo;
-pub mod graphql_gqlgen;
-pub mod graphql_graphene;
-pub mod graphql_juniper;
-pub mod graphql_relay;
 pub mod kafka_java;
 pub mod kafka_python;
 pub mod ldap_php;
@@ -117,6 +117,15 @@ pub mod xxe_php;
 pub mod xxe_python;
 pub mod xxe_ruby;
 
+pub use go_chi::GoChiAdapter;
+pub use go_echo::GoEchoAdapter;
+pub use go_fiber::GoFiberAdapter;
+pub use go_gin::GoGinAdapter;
+pub use graphql_apollo::GraphqlApolloAdapter;
+pub use graphql_gqlgen::GraphqlGqlgenAdapter;
+pub use graphql_graphene::GraphqlGrapheneAdapter;
+pub use graphql_juniper::GraphqlJuniperAdapter;
+pub use graphql_relay::GraphqlRelayAdapter;
 pub use header_go::HeaderGoAdapter;
 pub use header_java::HeaderJavaAdapter;
 pub use header_js::HeaderJsAdapter;
@@ -124,10 +133,6 @@ pub use header_php::HeaderPhpAdapter;
 pub use header_python::HeaderPythonAdapter;
 pub use header_ruby::HeaderRubyAdapter;
 pub use header_rust::HeaderRustAdapter;
-pub use go_chi::GoChiAdapter;
-pub use go_echo::GoEchoAdapter;
-pub use go_fiber::GoFiberAdapter;
-pub use go_gin::GoGinAdapter;
 pub use java_deserialize::JavaDeserializeAdapter;
 pub use java_micronaut::JavaMicronautAdapter;
 pub use java_quarkus::JavaQuarkusAdapter;
@@ -139,11 +144,6 @@ pub use js_fastify::JsFastifyAdapter;
 pub use js_handlebars::JsHandlebarsAdapter;
 pub use js_koa::JsKoaAdapter;
 pub use js_nest::{JsNestAdapter, TsNestAdapter};
-pub use graphql_apollo::GraphqlApolloAdapter;
-pub use graphql_gqlgen::GraphqlGqlgenAdapter;
-pub use graphql_graphene::GraphqlGrapheneAdapter;
-pub use graphql_juniper::GraphqlJuniperAdapter;
-pub use graphql_relay::GraphqlRelayAdapter;
 pub use kafka_java::KafkaJavaAdapter;
 pub use kafka_python::KafkaPythonAdapter;
 pub use ldap_php::LdapPhpAdapter;
@@ -221,10 +221,7 @@ fn any_callee_matches(
     summary: &crate::summary::FuncSummary,
     predicate: impl Fn(&str) -> bool,
 ) -> bool {
-    summary
-        .callees
-        .iter()
-        .any(|c| predicate(c.name.as_str()))
+    summary.callees.iter().any(|c| predicate(c.name.as_str()))
 }
 
 /// True when any callee in `summary.callees` matches `name_pred` AND
@@ -270,10 +267,7 @@ fn any_callee_matches_with_receiver(
 /// Per-language sigil stripping covers PHP (`$x`), Ruby (`@x`), and
 /// Java/Python/JS (no sigil).  Leading whitespace is also trimmed so
 /// adapters can pass the raw `utf8_text` of the argument node.
-pub(super) fn arg_is_tainted_param(
-    summary: &crate::summary::FuncSummary,
-    arg_text: &str,
-) -> bool {
+pub(super) fn arg_is_tainted_param(summary: &crate::summary::FuncSummary, arg_text: &str) -> bool {
     fn strip(s: &str) -> &str {
         s.trim()
             .trim_start_matches('$')
@@ -281,15 +275,10 @@ pub(super) fn arg_is_tainted_param(
             .trim_start_matches('&')
     }
     let needle = strip(arg_text);
-    let Some(idx) = summary
-        .param_names
-        .iter()
-        .position(|p| strip(p) == needle)
-    else {
+    let Some(idx) = summary.param_names.iter().position(|p| strip(p) == needle) else {
         return false;
     };
-    summary.tainted_sink_params.contains(&idx)
-        || summary.propagating_params.contains(&idx)
+    summary.tainted_sink_params.contains(&idx) || summary.propagating_params.contains(&idx)
 }
 
 /// True when any descendant identifier in `node`'s subtree resolves to

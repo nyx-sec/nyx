@@ -153,10 +153,7 @@ fn arg_is_auth_marker(node: Node, bytes: &[u8]) -> bool {
 fn receiver_is_express(object: Node, bytes: &[u8], has_express_witness: bool) -> bool {
     fn name_matches_strong(text: &str) -> bool {
         let lower = text.to_ascii_lowercase();
-        lower == "app"
-            || lower == "server"
-            || lower.ends_with("_app")
-            || lower.ends_with("api")
+        lower == "app" || lower == "server" || lower.ends_with("_app") || lower.ends_with("api")
     }
     fn name_matches_router(text: &str) -> bool {
         let lower = text.to_ascii_lowercase();
@@ -239,7 +236,10 @@ mod tests {
         let src = "const Router = require('@koa/router');\nconst router = new Router();\nrouter.get('/users', async ctx => {});\n";
         let (tree, bytes) = parse(src);
         let nodes = detect_express_routes(&tree, &bytes, &PathBuf::from("server.js"), None);
-        assert!(nodes.is_empty(), "express probe FP'd on koa-only file: {nodes:?}");
+        assert!(
+            nodes.is_empty(),
+            "express probe FP'd on koa-only file: {nodes:?}"
+        );
     }
 
     #[test]

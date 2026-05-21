@@ -6,9 +6,7 @@
 //! `skip_serializing_if = "Option::is_none"`).
 
 use nyx_scanner::commands::scan::Diag;
-use nyx_scanner::evidence::{
-    AttemptSummary, Evidence, VerifyResult, VerifyStatus,
-};
+use nyx_scanner::evidence::{AttemptSummary, Evidence, VerifyResult, VerifyStatus};
 use nyx_scanner::patterns::{FindingCategory, Severity};
 
 fn base_diag() -> Diag {

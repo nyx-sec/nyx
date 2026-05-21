@@ -64,15 +64,15 @@ pub mod redis;
 pub mod sql;
 pub mod xpath_document;
 
-pub use broker_kafka::{kafka_source, KAFKA_PUBLISH_MARKER};
-pub use broker_nats::{nats_source, NATS_PUBLISH_MARKER};
-pub use broker_pubsub::{pubsub_source, PUBSUB_PUBLISH_MARKER};
-pub use broker_rabbit::{rabbit_source, RABBIT_PUBLISH_MARKER};
-pub use broker_sqs::{sqs_source, SQS_PUBLISH_MARKER};
+pub use broker_kafka::{KAFKA_PUBLISH_MARKER, kafka_source};
+pub use broker_nats::{NATS_PUBLISH_MARKER, nats_source};
+pub use broker_pubsub::{PUBSUB_PUBLISH_MARKER, pubsub_source};
+pub use broker_rabbit::{RABBIT_PUBLISH_MARKER, rabbit_source};
+pub use broker_sqs::{SQS_PUBLISH_MARKER, sqs_source};
 pub use filesystem::FilesystemStub;
 pub use http::HttpStub;
 pub use ldap_server::LdapStub;
-pub use mocks::{mock_source, MockKind};
+pub use mocks::{MockKind, mock_source};
 pub use redis::RedisStub;
 pub use sql::SqlStub;
 
@@ -330,8 +330,8 @@ impl StubHarness {
 /// so a per-stub event log keeps insertion order even when multiple
 /// stubs interleave writes.
 pub(crate) fn monotonic_ns() -> u64 {
-    use std::time::Instant;
     use std::sync::OnceLock;
+    use std::time::Instant;
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     let origin = *ORIGIN.get_or_init(Instant::now);
     origin.elapsed().as_nanos() as u64
@@ -407,11 +407,8 @@ mod tests {
     #[test]
     fn dedup_repeated_kinds_during_start() {
         let dir = TempDir::new().unwrap();
-        let h = StubHarness::start(
-            &[StubKind::Sql, StubKind::Sql, StubKind::Sql],
-            dir.path(),
-        )
-        .unwrap();
+        let h =
+            StubHarness::start(&[StubKind::Sql, StubKind::Sql, StubKind::Sql], dir.path()).unwrap();
         assert_eq!(h.len(), 1, "repeated kinds must be deduped");
     }
 

@@ -91,17 +91,19 @@ fn walk_url_registrations(
     {
         let last = callee.rsplit_once('.').map(|(_, s)| s).unwrap_or(callee);
         if matches!(last, "path" | "re_path" | "url")
-            && let Some(args) = node.child_by_field_name("arguments") {
-                let positional = positional_args(args);
-                if positional.len() >= 2 {
-                    let view_arg = positional[1];
-                    if view_arg_references(view_arg, bytes, target, class_target)
-                        && let Some(template) = first_string_arg(args, bytes) {
-                            *out = Some(template);
-                            return;
-                        }
+            && let Some(args) = node.child_by_field_name("arguments")
+        {
+            let positional = positional_args(args);
+            if positional.len() >= 2 {
+                let view_arg = positional[1];
+                if view_arg_references(view_arg, bytes, target, class_target)
+                    && let Some(template) = first_string_arg(args, bytes)
+                {
+                    *out = Some(template);
+                    return;
                 }
             }
+        }
     }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
@@ -137,12 +139,15 @@ fn view_arg_references(
         .and_then(|s| s.rfind('(').map(|i| &s[..i]))
         .and_then(|s| s.strip_suffix(".as_view"))
         && let Some(ct) = class_target
-            && class.rsplit_once('.').map(|(_, s)| s).unwrap_or(class) == ct
-        {
-            return true;
-        }
+        && class.rsplit_once('.').map(|(_, s)| s).unwrap_or(class) == ct
+    {
+        return true;
+    }
     let stripped = trimmed.trim_end_matches("()");
-    let last = stripped.rsplit_once('.').map(|(_, s)| s).unwrap_or(stripped);
+    let last = stripped
+        .rsplit_once('.')
+        .map(|(_, s)| s)
+        .unwrap_or(stripped);
     last == target || stripped == target
 }
 
@@ -191,12 +196,8 @@ impl FrameworkAdapter for PythonDjangoAdapter {
         //   - urls.py registration referencing the function
         //   - urls.py `ClassName.as_view()` registration referencing the enclosing class
         //   - class-based view method name (path falls back to `/`)
-        let url_template = url_template_for(
-            ast,
-            file_bytes,
-            &summary.name,
-            cbv_class_name.as_deref(),
-        );
+        let url_template =
+            url_template_for(ast, file_bytes, &summary.name, cbv_class_name.as_deref());
 
         let (method, path) = if let Some(m) = cbv_method {
             (m, url_template.unwrap_or_else(|| "/".to_owned()))
@@ -288,18 +289,23 @@ mod tests {
     fn skips_when_django_not_imported() {
         let src: &[u8] = b"def list_users(request):\n    return None\n";
         let tree = parse(src);
-        assert!(PythonDjangoAdapter
-            .detect(&summary("list_users"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonDjangoAdapter
+                .detect(&summary("list_users"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_plain_helper_function() {
-        let src: &[u8] = b"from django.http import HttpResponse\ndef helper(x):\n    return HttpResponse(x)\n";
+        let src: &[u8] =
+            b"from django.http import HttpResponse\ndef helper(x):\n    return HttpResponse(x)\n";
         let tree = parse(src);
-        assert!(PythonDjangoAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonDjangoAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
@@ -314,8 +320,10 @@ mod tests {
         // pipeline surfaces `SpecDerivationFailed`.
         let src: &[u8] = b"from django.http import HttpResponse\ndef authenticated(request, perm):\n    return HttpResponse(perm)\n";
         let tree = parse(src);
-        assert!(PythonDjangoAdapter
-            .detect(&summary("authenticated"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PythonDjangoAdapter
+                .detect(&summary("authenticated"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

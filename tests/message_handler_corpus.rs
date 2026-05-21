@@ -17,7 +17,7 @@
 mod common;
 
 use nyx_scanner::dynamic::framework::registry::adapters_for;
-use nyx_scanner::dynamic::framework::{detect_binding, FrameworkBinding};
+use nyx_scanner::dynamic::framework::{FrameworkBinding, detect_binding};
 use nyx_scanner::dynamic::lang;
 use nyx_scanner::dynamic::spec::{EntryKind, EntryKindTag, HarnessSpec, PayloadSlot};
 use nyx_scanner::labels::Cap;
@@ -32,13 +32,7 @@ const SUPPORTED_LANGS: &[Lang] = &[
     Lang::Go,
 ];
 
-const UNSUPPORTED_LANGS: &[Lang] = &[
-    Lang::Php,
-    Lang::Ruby,
-    Lang::Rust,
-    Lang::C,
-    Lang::Cpp,
-];
+const UNSUPPORTED_LANGS: &[Lang] = &[Lang::Php, Lang::Ruby, Lang::Rust, Lang::C, Lang::Cpp];
 
 fn entry_file(broker_lang: &str) -> &'static str {
     // Phase 20 fixtures live at tests/dynamic_fixtures/message_handler/{broker_lang}/{vuln,benign}.
@@ -222,29 +216,29 @@ fn kafka_python_adapter_binds_message_handler_kind() {
 
 #[test]
 fn kafka_java_adapter_binds_message_handler_kind() {
-    let b = detect_for(Lang::Java, entry_file("kafka_java"), "onMessage")
-        .expect("kafka-java detect");
+    let b =
+        detect_for(Lang::Java, entry_file("kafka_java"), "onMessage").expect("kafka-java detect");
     assert!(matches!(b.kind, EntryKind::MessageHandler { .. }));
 }
 
 #[test]
 fn sqs_python_adapter_binds_message_handler_kind() {
-    let b = detect_for(Lang::Python, entry_file("sqs_python"), "handler")
-        .expect("sqs-python detect");
+    let b =
+        detect_for(Lang::Python, entry_file("sqs_python"), "handler").expect("sqs-python detect");
     assert!(matches!(b.kind, EntryKind::MessageHandler { .. }));
 }
 
 #[test]
 fn sqs_java_adapter_binds_message_handler_kind() {
-    let b = detect_for(Lang::Java, entry_file("sqs_java"), "handleMessage")
-        .expect("sqs-java detect");
+    let b =
+        detect_for(Lang::Java, entry_file("sqs_java"), "handleMessage").expect("sqs-java detect");
     assert!(matches!(b.kind, EntryKind::MessageHandler { .. }));
 }
 
 #[test]
 fn sqs_node_adapter_binds_message_handler_kind() {
-    let b = detect_for(Lang::JavaScript, entry_file("sqs_node"), "handler")
-        .expect("sqs-node detect");
+    let b =
+        detect_for(Lang::JavaScript, entry_file("sqs_node"), "handler").expect("sqs-node detect");
     assert!(matches!(b.kind, EntryKind::MessageHandler { .. }));
 }
 
@@ -257,8 +251,7 @@ fn pubsub_python_adapter_binds_message_handler_kind() {
 
 #[test]
 fn pubsub_go_adapter_binds_message_handler_kind() {
-    let b = detect_for(Lang::Go, entry_file("pubsub_go"), "OnMessage")
-        .expect("pubsub-go detect");
+    let b = detect_for(Lang::Go, entry_file("pubsub_go"), "OnMessage").expect("pubsub-go detect");
     assert!(matches!(b.kind, EntryKind::MessageHandler { .. }));
 }
 
@@ -271,24 +264,20 @@ fn rabbit_python_adapter_binds_message_handler_kind() {
 
 #[test]
 fn rabbit_java_adapter_binds_message_handler_kind() {
-    let b = detect_for(Lang::Java, entry_file("rabbit_java"), "onMessage")
-        .expect("rabbit-java detect");
+    let b =
+        detect_for(Lang::Java, entry_file("rabbit_java"), "onMessage").expect("rabbit-java detect");
     assert!(matches!(b.kind, EntryKind::MessageHandler { .. }));
 }
 
 #[test]
 fn nats_go_adapter_binds_message_handler_kind() {
-    let b = detect_for(Lang::Go, entry_file("nats_go"), "OnMessage")
-        .expect("nats-go detect");
+    let b = detect_for(Lang::Go, entry_file("nats_go"), "OnMessage").expect("nats-go detect");
     assert!(matches!(b.kind, EntryKind::MessageHandler { .. }));
 }
 
 #[test]
 fn registry_slices_include_phase_20_adapters() {
-    let java_names: Vec<&'static str> = adapters_for(Lang::Java)
-        .iter()
-        .map(|a| a.name())
-        .collect();
+    let java_names: Vec<&'static str> = adapters_for(Lang::Java).iter().map(|a| a.name()).collect();
     assert!(java_names.contains(&"kafka-java"));
     assert!(java_names.contains(&"sqs-java"));
     assert!(java_names.contains(&"rabbit-java"));
@@ -302,10 +291,7 @@ fn registry_slices_include_phase_20_adapters() {
     assert!(python_names.contains(&"pubsub-python"));
     assert!(python_names.contains(&"rabbit-python"));
 
-    let go_names: Vec<&'static str> = adapters_for(Lang::Go)
-        .iter()
-        .map(|a| a.name())
-        .collect();
+    let go_names: Vec<&'static str> = adapters_for(Lang::Go).iter().map(|a| a.name()).collect();
     assert!(go_names.contains(&"pubsub-go"));
     assert!(go_names.contains(&"nats-go"));
 
@@ -327,10 +313,10 @@ fn registry_slices_include_phase_20_adapters() {
 
 mod e2e_phase_20 {
     use crate::common::fixture_harness::FIXTURE_LOCK;
-    use nyx_scanner::dynamic::runner::{run_spec, RunError, RunOutcome};
+    use nyx_scanner::dynamic::runner::{RunError, RunOutcome, run_spec};
     use nyx_scanner::dynamic::sandbox::SandboxOptions;
     use nyx_scanner::dynamic::spec::{
-        default_toolchain_id, EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy,
+        EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy, default_toolchain_id,
     };
     use nyx_scanner::evidence::DifferentialVerdict;
     use nyx_scanner::labels::Cap;
@@ -468,9 +454,7 @@ mod e2e_phase_20 {
                 );
                 None
             }
-            Err(e) => panic!(
-                "run_spec({lang:?} {fixture_dir}/{fixture_file}) errored: {e:?}",
-            ),
+            Err(e) => panic!("run_spec({lang:?} {fixture_dir}/{fixture_file}) errored: {e:?}",),
         }
     }
 
@@ -497,8 +481,7 @@ mod e2e_phase_20 {
 
     #[test]
     fn sqs_python_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::Python, "sqs_python", "vuln.py", "handler", "jobs")
-        else {
+        let Some(outcome) = run(Lang::Python, "sqs_python", "vuln.py", "handler", "jobs") else {
             return;
         };
         assert!(outcome.triggered_by.is_some());
@@ -540,8 +523,7 @@ mod e2e_phase_20 {
 
     #[test]
     fn sqs_node_vuln_confirms_via_run_spec() {
-        let Some(outcome) = run(Lang::JavaScript, "sqs_node", "vuln.js", "handler", "jobs")
-        else {
+        let Some(outcome) = run(Lang::JavaScript, "sqs_node", "vuln.js", "handler", "jobs") else {
             return;
         };
         assert!(

@@ -77,11 +77,7 @@ pub fn source_imports_micronaut(bytes: &[u8]) -> bool {
 pub fn source_imports_servlet(bytes: &[u8]) -> bool {
     let has_canonical = contains_any(
         bytes,
-        &[
-            b"javax.servlet",
-            b"jakarta.servlet",
-            b"extends HttpServlet",
-        ],
+        &[b"javax.servlet", b"jakarta.servlet", b"extends HttpServlet"],
     );
     if has_canonical {
         return true;
@@ -113,12 +109,7 @@ pub fn find_class_with_method<'a>(
     hit
 }
 
-fn walk<'a>(
-    node: Node<'a>,
-    bytes: &[u8],
-    target: &str,
-    out: &mut Option<(Node<'a>, Node<'a>)>,
-) {
+fn walk<'a>(node: Node<'a>, bytes: &[u8], target: &str, out: &mut Option<(Node<'a>, Node<'a>)>) {
     if out.is_some() {
         return;
     }
@@ -126,21 +117,22 @@ fn walk<'a>(
         && let Some(body) = node
             .child_by_field_name("body")
             .or_else(|| named_child_of_kind(node, "class_body"))
-        {
-            let mut cur = body.walk();
-            for member in body.children(&mut cur) {
-                if member.kind() != "method_declaration" {
-                    continue;
-                }
-                if let Some(name) = member
-                    .child_by_field_name("name")
-                    .and_then(|n| n.utf8_text(bytes).ok())
-                    && name == target {
-                        *out = Some((node, member));
-                        return;
-                    }
+    {
+        let mut cur = body.walk();
+        for member in body.children(&mut cur) {
+            if member.kind() != "method_declaration" {
+                continue;
+            }
+            if let Some(name) = member
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(bytes).ok())
+                && name == target
+            {
+                *out = Some((node, member));
+                return;
             }
         }
+    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         walk(child, bytes, target, out);
@@ -173,7 +165,10 @@ pub fn annotation_string_arg(ann: Node<'_>, bytes: &[u8]) -> Option<String> {
     // Try `value = "…"` / `path = "…"` first so the keyword form is
     // not accidentally captured by the bare-string scan.
     for key in ["value", "path"] {
-        if let Some(start) = raw.find(&format!("{key} = ")).or_else(|| raw.find(&format!("{key}="))) {
+        if let Some(start) = raw
+            .find(&format!("{key} = "))
+            .or_else(|| raw.find(&format!("{key}=")))
+        {
             let after = &raw[start..];
             if let Some(open) = after.find('"') {
                 let rest = &after[open + 1..];
@@ -300,16 +295,17 @@ pub fn extract_path_placeholders(path: &str) -> Vec<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'{'
-            && let Some(end) = bytes[i + 1..].iter().position(|&b| b == b'}') {
-                let inner = &path[i + 1..i + 1 + end];
-                let inner_name = inner.split(':').next().unwrap_or(inner).trim();
-                let name = inner_name.strip_prefix('*').unwrap_or(inner_name);
-                if !name.is_empty() && !out.iter().any(|n| n == name) {
-                    out.push(name.to_owned());
-                }
-                i += end + 2;
-                continue;
+            && let Some(end) = bytes[i + 1..].iter().position(|&b| b == b'}')
+        {
+            let inner = &path[i + 1..i + 1 + end];
+            let inner_name = inner.split(':').next().unwrap_or(inner).trim();
+            let name = inner_name.strip_prefix('*').unwrap_or(inner_name);
+            if !name.is_empty() && !out.iter().any(|n| n == name) {
+                out.push(name.to_owned());
             }
+            i += end + 2;
+            continue;
+        }
         i += 1;
     }
     out
@@ -469,8 +465,7 @@ mod tests {
 
     #[test]
     fn class_extends_detects_servlet() {
-        let src: &[u8] =
-            b"public class V extends HttpServlet { public void doGet() {} }\n";
+        let src: &[u8] = b"public class V extends HttpServlet { public void doGet() {} }\n";
         let tree = parse(src);
         let (class, _) = find_class_with_method(tree.root_node(), src, "doGet").unwrap();
         assert!(class_extends(class, src, "HttpServlet"));

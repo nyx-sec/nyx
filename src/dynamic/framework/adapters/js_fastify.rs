@@ -148,8 +148,10 @@ mod tests {
             function h(req, res) {}\n\
             app.get('/x', h);\n";
         let tree = parse_js(src);
-        assert!(JsFastifyAdapter
-            .detect(&summary("h"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            JsFastifyAdapter
+                .detect(&summary("h"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }

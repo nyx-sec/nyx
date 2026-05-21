@@ -11,9 +11,9 @@
 //! inner name (after the `:`) for each so a `$id` formal whose name
 //! matches the placeholder binds as [`super::super::ParamSource::PathSegment`].
 
-use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
 #[cfg(test)]
 use crate::dynamic::framework::HttpMethod;
+use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding, RouteShape};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
 use crate::symbol::Lang;
@@ -49,8 +49,7 @@ impl FrameworkAdapter for PhpCodeIgniterAdapter {
         let (func_node, class) = find_php_function(ast, file_bytes, &summary.name)?;
         let controller = class.and_then(|c| php_class_name(c, file_bytes));
 
-        let (method, path) =
-            find_codeigniter_route(ast, file_bytes, &summary.name, controller)?;
+        let (method, path) = find_codeigniter_route(ast, file_bytes, &summary.name, controller)?;
 
         let formals = php_formal_names(func_node, file_bytes);
         let request_params = bind_php_path_params(&formals, &path);
@@ -120,17 +119,21 @@ mod tests {
     fn skips_when_codeigniter_not_imported() {
         let src: &[u8] = b"<?php\n$routes->get('users/(:num)', 'UserController::show');\n";
         let tree = parse(src);
-        assert!(PhpCodeIgniterAdapter
-            .detect(&summary("show"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpCodeIgniterAdapter
+                .detect(&summary("show"), tree.root_node(), src)
+                .is_none()
+        );
     }
 
     #[test]
     fn skips_when_callable_does_not_reference_method() {
         let src: &[u8] = b"<?php\nuse CodeIgniter\\Router\\RouteCollection;\n$routes->get('users/(:num)', 'UserController::show');\nclass UserController extends BaseController {\n  public function helper($x) { return $x; }\n}\n";
         let tree = parse(src);
-        assert!(PhpCodeIgniterAdapter
-            .detect(&summary("helper"), tree.root_node(), src)
-            .is_none());
+        assert!(
+            PhpCodeIgniterAdapter
+                .detect(&summary("helper"), tree.root_node(), src)
+                .is_none()
+        );
     }
 }
