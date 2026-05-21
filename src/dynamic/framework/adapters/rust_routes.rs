@@ -493,6 +493,156 @@ fn axum_callable_matches(node: Node<'_>, bytes: &[u8], target: &str) -> bool {
     }
 }
 
+/// Walk `root` looking for an actix-web chained-builder route registration
+/// (`App::new().route("/path", web::get().to(handler))` or
+/// `web::resource("/path").route(web::get().to(handler))`) that wires
+/// `target` as the handler.  Returns `(method, path)` on first match.
+pub fn find_actix_route_chain<'a>(
+    root: Node<'a>,
+    bytes: &'a [u8],
+    target: &str,
+) -> Option<(HttpMethod, String)> {
+    let mut hit: Option<(HttpMethod, String)> = None;
+    walk_actix_chain(root, bytes, target, &mut hit);
+    hit
+}
+
+fn walk_actix_chain<'a>(
+    node: Node<'a>,
+    bytes: &'a [u8],
+    target: &str,
+    out: &mut Option<(HttpMethod, String)>,
+) {
+    if out.is_some() {
+        return;
+    }
+    if node.kind() == "call_expression"
+        && let Some(found) = try_actix_route_call(node, bytes, target)
+    {
+        *out = Some(found);
+        return;
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_actix_chain(child, bytes, target, out);
+    }
+}
+
+fn try_actix_route_call<'a>(
+    call: Node<'a>,
+    bytes: &'a [u8],
+    target: &str,
+) -> Option<(HttpMethod, String)> {
+    let func = call.child_by_field_name("function")?;
+    if func.kind() != "field_expression" {
+        return None;
+    }
+    let field = func.child_by_field_name("field")?.utf8_text(bytes).ok()?;
+    if field != "route" {
+        return None;
+    }
+    let args = call.child_by_field_name("arguments")?;
+    let positional: Vec<Node<'_>> = {
+        let mut cur = args.walk();
+        args.named_children(&mut cur)
+            .filter(|c| !matches!(c.kind(), "line_comment" | "block_comment"))
+            .collect()
+    };
+    let (path, verb_node) = match positional.len() {
+        2 => {
+            let path = rust_string_literal(positional[0], bytes)?;
+            (path, positional[1])
+        }
+        1 => {
+            let receiver = func.child_by_field_name("value")?;
+            let path = find_actix_resource_path(receiver, bytes)?;
+            (path, positional[0])
+        }
+        _ => return None,
+    };
+    let (method, handler) = parse_actix_web_verb_to(verb_node, bytes)?;
+    if !axum_callable_matches(handler, bytes, target) {
+        return None;
+    }
+    Some((method, path))
+}
+
+/// Parse `web::get().to(handler)` / `web::post().to(handler)` /
+/// `web::method(Method::PATCH).to(handler)` shapes.  Returns
+/// `(method, handler_node)` on the first matching `.to(...)` call.
+fn parse_actix_web_verb_to<'a>(
+    node: Node<'a>,
+    bytes: &'a [u8],
+) -> Option<(HttpMethod, Node<'a>)> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let func = node.child_by_field_name("function")?;
+    if func.kind() != "field_expression" {
+        return None;
+    }
+    let field = func.child_by_field_name("field")?.utf8_text(bytes).ok()?;
+    if field != "to" {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let handler = {
+        let mut cur = args.walk();
+        args.named_children(&mut cur)
+            .find(|c| !matches!(c.kind(), "line_comment" | "block_comment"))?
+    };
+    let recv = func.child_by_field_name("value")?;
+    if recv.kind() != "call_expression" {
+        return None;
+    }
+    let recv_func = recv.child_by_field_name("function")?;
+    let leaf = match recv_func.kind() {
+        "scoped_identifier" => recv_func
+            .child_by_field_name("name")?
+            .utf8_text(bytes)
+            .ok()?,
+        "identifier" => recv_func.utf8_text(bytes).ok()?,
+        _ => return None,
+    };
+    let method = verb_from_ident(leaf)?;
+    Some((method, handler))
+}
+
+/// Walk a receiver-chain backwards looking for the first
+/// `web::resource(path)` / `web::scope(path)` call.  Used when an actix
+/// route is registered via `web::resource("/x").route(web::get().to(h))`
+/// (no path argument on the `route` call itself).
+fn find_actix_resource_path(node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    let mut cur = node;
+    loop {
+        if cur.kind() == "call_expression" {
+            let func = cur.child_by_field_name("function")?;
+            let leaf = match func.kind() {
+                "scoped_identifier" => func
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(bytes).ok())
+                    .unwrap_or(""),
+                "identifier" => func.utf8_text(bytes).ok().unwrap_or(""),
+                "field_expression" => {
+                    cur = func.child_by_field_name("value")?;
+                    continue;
+                }
+                _ => "",
+            };
+            if matches!(leaf, "resource" | "scope") {
+                let args = cur.child_by_field_name("arguments")?;
+                let mut cur_arg = args.walk();
+                let first = args
+                    .named_children(&mut cur_arg)
+                    .find(|c| !matches!(c.kind(), "line_comment" | "block_comment"))?;
+                return rust_string_literal(first, bytes);
+            }
+            return None;
+        }
+        return None;
+    }
+}
+
 /// Walk `root` looking for a `warp::path!("users" / u32)` macro
 /// invocation that bridges to `target` via `.map(target)` /
 /// `.and_then(target)`.  Returns `(method, path)` on first match.
