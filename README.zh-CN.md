@@ -117,7 +117,7 @@ cd nyx && cargo build --release
 
 ## 语言支持
 
-全部 10 种语言都通过 tree-sitter 解析并跑完整流水线，但规则深度与引擎覆盖并不均衡。在 [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) 的 507 案例语料上，所有十种语言的基准 F1 均为 100%，因此 F1 已无法单独区分梯度。分级反映规则深度、门控汇覆盖、以及合成语料未充分覆盖的结构性惯用法：
+全部 10 种语言都通过 tree-sitter 解析并跑完整流水线，但规则深度与引擎覆盖并不均衡。在 [`tests/benchmark/ground_truth.json`](tests/benchmark/ground_truth.json) 的合成语料上，所有十种语言在最近一次基线测量中 F1 均为 100%（见 [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md)），因此 F1 已无法单独区分梯度。分级反映规则深度、门控汇覆盖、以及合成语料未充分覆盖的结构性惯用法：
 
 | 梯度 | 语言 | F1 | 适合用作 CI 门禁吗？ |
 |---|---|---|---|
@@ -125,7 +125,7 @@ cd nyx && cargo build --release
 | **Beta** | Java、PHP、Ruby、Rust、Go | 100% | 适合，需轻度 FP 分诊 |
 | **预览** | C、C++ | 合成语料 100% | 不适合。已跟踪 STL 容器流、builder 链、内联类成员函数；尚未覆盖深度指针别名与函数指针。建议与 clang-tidy 或 Clang Static Analyzer 搭配使用 |
 
-聚合规则级 F1：100.0%（P=1.000，R=1.000）。所有真实 CVE 用例均触发，语料无未关闭的 FP。各维度详情与已知盲区见 [语言成熟度页面](https://elicpeter.github.io/nyx/language-maturity.html)。
+所有真实 CVE 用例均触发，语料在记录基线下无未关闭的 FP（P=R=F1=1.000）。各维度详情与已知盲区见 [语言成熟度页面](https://elicpeter.github.io/nyx/language-maturity.html)。
 
 ### 通过真实 CVE 验证
 
@@ -213,7 +213,7 @@ cap      = "html_escape"
 
 ## 状态
 
-正在积极开发中。API、检测器行为、配置项可能在版本间发生变化。507 案例语料上的规则级 F1 是 CI 回归下限；分语言详情见 [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md)。
+正在积极开发中。API、检测器行为、配置项可能在版本间发生变化。合成语料上的规则级 F1 是 CI 回归下限；分语言详情见 [`tests/benchmark/RESULTS.md`](tests/benchmark/RESULTS.md)。
 
 污点分析是过程间的。持久化的每函数 SSA 摘要带有按返回路径的变换与参数粒度的指向集，调用图 SCC（包括跨文件 SCC）迭代到联合不动点。默认 `balanced` 画像还会对文件内被调用做 k=1 上下文敏感内联。Symex（含跨文件与过程间帧）以及按需后向遍历是可选项。可分别用 `--symex` 与 `--backwards-analysis` 单独开启，或通过 `--engine-profile deep` 一并开启。
 

@@ -4,7 +4,7 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
-A focused release on three fronts: an attack-surface map and chain composer that turn the flat finding list into a route-to-sink graph, a sandboxed dynamic verifier that re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / NotConfirmed / Inconclusive / Unsupported verdict, and a 106-adapter framework registry that grounds the surface map and dynamic harnesses in real-world HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points.
+A focused release on three fronts: an attack-surface map and chain composer that turn the flat finding list into a route-to-sink graph, a sandboxed dynamic verifier that re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / NotConfirmed / Inconclusive / Unsupported verdict, and a framework adapter registry (103 entries across 8 languages) that grounds the surface map and dynamic harnesses in real-world HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points.
 
 ### Attack-surface map
 
@@ -14,7 +14,7 @@ A focused release on three fronts: an attack-surface map and chain composer that
 
 ### Framework adapter registry
 
-`src/dynamic/framework/` ships a `FrameworkAdapter` trait with 106 concrete adapters across 8 languages. Each adapter binds a route / handler / consumer pattern to a `FrameworkBinding` so the surface map and dynamic verifier can locate entry points without re-walking the AST.
+`src/dynamic/framework/` ships a `FrameworkAdapter` trait with concrete adapters across 8 languages (103 entries today, growing per release). Each adapter binds a route / handler / consumer pattern to a `FrameworkBinding` so the surface map and dynamic verifier can locate entry points without re-walking the AST.
 
 - **HTTP routers.** Flask, Django, FastAPI, Starlette (Python); Express, Koa, NestJS, Fastify (JS/TS); Spring, Quarkus, Micronaut, Jakarta Servlet (Java); Gin, Echo, Fiber, Chi (Go); Axum, Actix, Rocket, Warp (Rust); Rails, Sinatra, Hanami (Ruby); Laravel, Symfony, CodeIgniter (PHP).
 - **New `EntryKind` variants.** `ClassMethod`, `MessageHandler`, `ScheduledJob`, `GraphQLResolver`, `WebSocket`, `Middleware`, `Migration` join the existing `RouteHandler` / `Function` set so the surface map shows non-HTTP entry surfaces.
