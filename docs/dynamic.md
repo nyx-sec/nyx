@@ -47,8 +47,8 @@ each vulnerability class (SQL injection, XSS, command injection, SSRF, etc.) per
 language.
 
 A finding with `dynamic_verdict.status: NotConfirmed` was attempted but no
-payload fired. This is not a false-positive signal — it means the corpus did not
-have a payload that matched the specific sink variant or the execution path was
+payload fired. This is not a false-positive signal. It means the corpus did not
+have a payload that matched the specific sink variant, or the execution path was
 not reachable in the test harness.
 
 A finding with `dynamic_verdict.status: Unsupported` could not be attempted.
@@ -58,7 +58,7 @@ not yet supported by the harness layer.
 ### Confidence gate
 
 Only `Confidence >= Medium` findings are verified by default (§5.1). To also
-verify low-confidence findings — for corpus building or backfill — pass
+verify low-confidence findings (for corpus building or backfill), pass
 `--verify-all-confidence`:
 
 ```
@@ -77,7 +77,7 @@ If you want static-only scans permanently, set `verify = false` in `nyx.toml`:
 verify = false
 ```
 
-This survives upgrades — the M7 default flip only changes the inherited default
+This survives upgrades. The M7 default flip only changes the inherited default
 for projects that have not explicitly set the field.
 
 ## Sandbox backends
@@ -181,7 +181,7 @@ sample_rate_other = 1.0       # 0.0–1.0 for NotConfirmed / Unsupported
 ```
 
 `sample_rate_other < 1.0` downsamples NotConfirmed and Unsupported verdicts
-deterministically — the decision is seeded by the finding's `spec_hash`, so a
+deterministically. The decision is seeded by the finding's `spec_hash`, so a
 given finding makes the same keep-or-drop call across reruns. Confirmed and
 Inconclusive verdicts ignore the rate and are always retained (they gate the
 false-Confirmed budget and drive the spec-derivation roadmap).

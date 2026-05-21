@@ -98,14 +98,14 @@ const fn assert_corpus_version_str_matches_u32() {
 
     if bytes.len() != len {
         panic!(
-            "CORPUS_VERSION &str length disagrees with crate::dynamic::corpus::CORPUS_VERSION u32 — update both in lockstep"
+            "CORPUS_VERSION &str length disagrees with crate::dynamic::corpus::CORPUS_VERSION u32; update both in lockstep"
         );
     }
     let mut i: usize = 0;
     while i < len {
         if bytes[i] != buf[i] {
             panic!(
-                "CORPUS_VERSION &str differs from crate::dynamic::corpus::CORPUS_VERSION u32 — update both in lockstep"
+                "CORPUS_VERSION &str differs from crate::dynamic::corpus::CORPUS_VERSION u32; update both in lockstep"
             );
         }
         i += 1;
@@ -176,24 +176,18 @@ impl TelemetryEvent {
     /// Telemetry event for findings that never got a `HarnessSpec`.
     ///
     /// Used by `verify_finding` when spec derivation fails (lang unresolvable,
-    /// path empty, sink redacted, etc.).  Without this path the events log
-    /// silently drops every spec-derivation failure, which breaks the Phase 02
+    /// path empty, sink redacted, etc.). Without this path the events log
+    /// silently drops every spec-derivation failure, which breaks the
     /// `lang_unknown_count` aggregation acceptance.
     ///
     /// `lang` is best-effort sniffed from `diag.path`'s extension via
-    /// [`crate::symbol::Lang::from_extension`].  When the extension is
+    /// [`crate::symbol::Lang::from_extension`]. When the extension is
     /// unknown or absent, `lang` is the literal string `"unknown"`.
     pub fn no_spec(
         diag: &Diag,
         status: VerifyStatus,
         inconclusive_reason: Option<InconclusiveReason>,
     ) -> Self {
-        let lang = Path::new(&diag.path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(crate::symbol::Lang::from_extension)
-            .map(|l| l.as_str().to_owned())
-            .unwrap_or_else(|| "unknown".to_owned());
         let cap = diag
             .evidence
             .as_ref()
@@ -207,7 +201,7 @@ impl TelemetryEvent {
             ts: chrono::Utc::now().to_rfc3339(),
             finding_id: format!("{:016x}", diag.stable_hash),
             spec_hash: String::new(),
-            lang,
+            lang: lang_from_path(&diag.path),
             cap,
             status: format!("{status:?}"),
             toolchain_id: String::new(),
@@ -222,8 +216,8 @@ impl TelemetryEvent {
     /// Telemetry event for a verdict reached without a [`Diag`] handle.
     ///
     /// Used by `verify_finding` when emitting an
-    /// `Inconclusive(EntryKindUnsupported)` from inside `build_verdict` —
-    /// the diag is not threaded that far, but the spec's `entry_file` and
+    /// `Inconclusive(EntryKindUnsupported)` from inside `build_verdict`.
+    /// The diag is not threaded that far, but the spec's `entry_file` and
     /// the inconclusive reason carry enough signal to populate the event.
     /// `cap` and `finding_id` default to empty / `0`; downstream consumers
     /// already handle that path for `no_spec` events.
@@ -232,12 +226,6 @@ impl TelemetryEvent {
         status: VerifyStatus,
         inconclusive_reason: Option<InconclusiveReason>,
     ) -> Self {
-        let lang = Path::new(path)
-            .extension()
-            .and_then(|e| e.to_str())
-            .and_then(crate::symbol::Lang::from_extension)
-            .map(|l| l.as_str().to_owned())
-            .unwrap_or_else(|| "unknown".to_owned());
         Self {
             schema_version: SCHEMA_VERSION,
             nyx_version: NYX_VERSION,
@@ -246,7 +234,7 @@ impl TelemetryEvent {
             ts: chrono::Utc::now().to_rfc3339(),
             finding_id: String::new(),
             spec_hash: String::new(),
-            lang,
+            lang: lang_from_path(path),
             cap: "0".to_owned(),
             status: format!("{status:?}"),
             toolchain_id: String::new(),
@@ -259,6 +247,17 @@ impl TelemetryEvent {
     }
 }
 
+/// Sniff a language slug from a file extension. Returns `"unknown"` when
+/// the extension is missing or unrecognized.
+fn lang_from_path(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(crate::symbol::Lang::from_extension)
+        .map(|l| l.as_str().to_owned())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 /// Sampling decision for telemetry writes (Phase 27, Track H.2).
 ///
 /// Confirmed and Inconclusive verdicts are calibration-critical (false-Confirmed
@@ -267,7 +266,7 @@ impl TelemetryEvent {
 /// log growth on high-volume scans.
 ///
 /// The decision is seeded by `spec_hash` so the *same* finding makes the *same*
-/// keep-or-drop call across reruns — without this, two scans of the same project
+/// keep-or-drop call across reruns. Without this, two scans of the same project
 /// would produce non-comparable event logs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SamplingPolicy {
@@ -341,7 +340,7 @@ impl SamplingPolicy {
 /// - The log directory cannot be created
 /// - The write fails (telemetry must never affect verdict)
 ///
-/// Applies the default-`keep_all` sampling policy — every event is written.
+/// Applies the default-`keep_all` sampling policy (every event is written).
 /// Call sites that want sampling go through [`emit_with_policy`] instead.
 pub fn emit(event: &TelemetryEvent) {
     emit_with_policy(event, &SamplingPolicy::keep_all());
@@ -453,7 +452,7 @@ pub enum TelemetryReadError {
 /// Returns each line as a `serde_json::Value` so callers can dispatch on the
 /// `kind` discriminator themselves.  Rejects any record whose `schema_version`
 /// does not match [`SCHEMA_VERSION`] (this is the explicit failure mode the
-/// M7 ship gate Gate 2 consumes — a v0 record from an older release must not
+/// M7 ship gate Gate 2 consumes; a v0 record from an older release must not
 /// silently parse as if the schema had never changed).
 ///
 /// Blank lines are skipped.  Any malformed JSON or missing `schema_version`
@@ -505,10 +504,10 @@ pub fn read_events(path: &Path) -> Result<Vec<serde_json::Value>, TelemetryReadE
 /// Scan the `verify_feedback` records in an events log for the given
 /// finding id and return the matching `VerifyResult::wrong` value.
 ///
-/// * `Some(true)` — most-recent feedback for this finding was
+/// * `Some(true)`: most-recent feedback for this finding was
 ///   `wrong:<reason>`.
-/// * `Some(false)` — most-recent feedback was `right`.
-/// * `None` — no feedback recorded for this finding.
+/// * `Some(false)`: most-recent feedback was `right`.
+/// * `None`: no feedback recorded for this finding.
 ///
 /// Multiple records for the same finding collapse to the **last** one
 /// in file order: callers run `nyx verify-feedback` more than once when
@@ -559,7 +558,7 @@ pub struct RankDeltaEvent {
     pub schema_version: u32,
     pub nyx_version: &'static str,
     pub corpus_version: &'static str,
-    /// Always `"rank_delta"` — distinguishes from verdict events in the log.
+    /// Always `"rank_delta"`. Distinguishes from verdict events in the log.
     pub kind: &'static str,
     pub ts: String,
     pub finding_id: String,

@@ -490,7 +490,7 @@ pub enum Commands {
         ///
         /// By default only `Confidence >= Medium` findings are verified (§5.1).
         /// Pass this flag to run verification on all findings regardless of
-        /// confidence — intended for corpus-building and backfill runs.
+        /// confidence. Intended for corpus-building and backfill runs.
         #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
         #[arg(long, help_heading = "Dynamic")]
         verify_all_confidence: bool,
@@ -544,7 +544,7 @@ pub enum Commands {
         /// Write a stripped baseline JSON to FILE after scanning.
         ///
         /// The file contains only stable_hash, dynamic_verdict, severity, path,
-        /// and rule_id — no source code. A CI job can persist this file to
+        /// and rule_id (no source code). A CI job can persist this file to
         /// compare future scans against without leaking source.
         #[arg(long, value_name = "FILE", help_heading = "Baseline")]
         baseline_write: Option<String>,
