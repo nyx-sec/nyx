@@ -12,16 +12,11 @@ use crate::summary::FuncSummary;
 use crate::symbol::Lang;
 
 fn callee_is_object_assign(name: &str) -> bool {
-    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "assign" | "create")
-        && (name == "Object.assign" || name == "Object.create" || name == "assign" || name == "create")
+    matches!(name, "Object.assign" | "assign")
 }
 
 fn source_uses_object_assign(file_bytes: &[u8]) -> bool {
-    const NEEDLES: &[&[u8]] = &[
-        b"Object.assign",
-        b"Object.create",
-    ];
+    const NEEDLES: &[&[u8]] = &[b"Object.assign"];
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
@@ -57,6 +52,9 @@ impl FrameworkAdapter for PpObjectAssignJsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if super::source_filters_proto_keys(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_object_assign);
         let matches_source = source_uses_object_assign(file_bytes);
         if matches_call && matches_source {
@@ -86,6 +84,9 @@ impl FrameworkAdapter for PpObjectAssignTsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if super::source_filters_proto_keys(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_object_assign);
         let matches_source = source_uses_object_assign(file_bytes);
         if matches_call && matches_source {
@@ -127,6 +128,40 @@ mod tests {
         let tree = parse_js(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(PpObjectAssignJsAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_object_create_null_mitigation() {
+        let src: &[u8] =
+            b"function run(payload) { return Object.create(null); }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("Object.create")],
+            ..Default::default()
+        };
+        assert!(PpObjectAssignJsAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_proto_key_filter_present() {
+        let src: &[u8] = b"function run(payload) {\n\
+              for (const k of Object.keys(payload)) {\n\
+                if (k === '__proto__' || k === 'constructor') continue;\n\
+              }\n\
+              return Object.assign({}, payload);\n\
+            }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("Object.assign")],
             ..Default::default()
         };
         assert!(PpObjectAssignJsAdapter

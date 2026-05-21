@@ -65,6 +65,9 @@ impl FrameworkAdapter for PpLodashMergeJsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if super::source_filters_proto_keys(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_lodash_merge);
         let matches_source = source_imports_lodash(file_bytes);
         if matches_call && matches_source {
@@ -94,6 +97,9 @@ impl FrameworkAdapter for PpLodashMergeTsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if super::source_filters_proto_keys(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_lodash_merge);
         let matches_source = source_imports_lodash(file_bytes);
         if matches_call && matches_source {
@@ -136,6 +142,42 @@ mod tests {
         let tree = parse_js(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(PpLodashMergeJsAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_proto_key_filter_present() {
+        let src: &[u8] = b"const _ = require('lodash');\n\
+            function run(payload) {\n\
+              for (const k of Object.keys(payload)) {\n\
+                if (k === '__proto__' || k === 'constructor') continue;\n\
+              }\n\
+              return _.merge({}, payload);\n\
+            }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("merge")],
+            ..Default::default()
+        };
+        assert!(PpLodashMergeJsAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_object_prototype_frozen() {
+        let src: &[u8] = b"const _ = require('lodash');\n\
+            Object.freeze(Object.prototype);\n\
+            function run(payload) { return _.merge({}, payload); }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("merge")],
             ..Default::default()
         };
         assert!(PpLodashMergeJsAdapter

@@ -75,6 +75,9 @@ impl FrameworkAdapter for PpJsonDeepAssignJsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if super::source_filters_proto_keys(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_json_parse);
         let matches_source = source_has_deep_merge_helper(file_bytes);
         if matches_call && matches_source {
@@ -104,6 +107,9 @@ impl FrameworkAdapter for PpJsonDeepAssignTsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
+        if super::source_filters_proto_keys(file_bytes) {
+            return None;
+        }
         let matches_call = super::any_callee_matches(summary, callee_is_json_parse);
         let matches_source = source_has_deep_merge_helper(file_bytes);
         if matches_call && matches_source {
@@ -143,6 +149,27 @@ mod tests {
     #[test]
     fn skips_json_parse_without_merge() {
         let src: &[u8] = b"function run(payload) { return JSON.parse(payload); }\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("JSON.parse")],
+            ..Default::default()
+        };
+        assert!(PpJsonDeepAssignJsAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_proto_key_filter_present() {
+        let src: &[u8] = b"function deepMerge(t, s) {\n\
+              for (const k of Object.keys(s)) {\n\
+                if (k === '__proto__' || k === 'constructor') continue;\n\
+                t[k] = s[k];\n\
+              }\n\
+              return t;\n\
+            }\n\
+            function run(payload) { return deepMerge({}, JSON.parse(payload)); }\n";
         let tree = parse_js(src);
         let summary = FuncSummary {
             name: "run".into(),

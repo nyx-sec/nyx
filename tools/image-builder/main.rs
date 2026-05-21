@@ -334,19 +334,19 @@ fn parse_catalogue(src: &str) -> Vec<ImageEntry> {
             continue;
         }
         if line == "[[image]]" {
-            if let Some(prev) = current.take() {
-                if !prev.toolchain_id.is_empty() {
-                    entries.push(prev);
-                }
+            if let Some(prev) = current.take()
+                && !prev.toolchain_id.is_empty()
+            {
+                entries.push(prev);
             }
             current = Some(ImageEntry::default());
             continue;
         }
         if line.starts_with("[[") || line.starts_with('[') {
-            if let Some(prev) = current.take() {
-                if !prev.toolchain_id.is_empty() {
-                    entries.push(prev);
-                }
+            if let Some(prev) = current.take()
+                && !prev.toolchain_id.is_empty()
+            {
+                entries.push(prev);
             }
             continue;
         }
@@ -361,10 +361,10 @@ fn parse_catalogue(src: &str) -> Vec<ImageEntry> {
             _ => {}
         }
     }
-    if let Some(prev) = current.take() {
-        if !prev.toolchain_id.is_empty() {
-            entries.push(prev);
-        }
+    if let Some(prev) = current.take()
+        && !prev.toolchain_id.is_empty()
+    {
+        entries.push(prev);
     }
     entries
 }
@@ -415,19 +415,15 @@ fn rewrite_digests(src: &str, updates: &[(String, String)]) -> String {
                 current_tid = Some(value);
             }
 
-            if parse_toml_string_value(trimmed, "digest").is_some() {
-                if let Some(tid) = &current_tid {
-                    if let Some((_, new_digest)) =
-                        updates.iter().find(|(id, _)| id == tid)
-                    {
-                        // Preserve indentation.
-                        let indent_len = raw.len() - raw.trim_start().len();
-                        out.push_str(&raw[..indent_len]);
-                        out.push_str(&format!("digest = \"{new_digest}\""));
-                        out.push('\n');
-                        continue;
-                    }
-                }
+            if parse_toml_string_value(trimmed, "digest").is_some()
+                && let Some(tid) = &current_tid
+                && let Some((_, new_digest)) = updates.iter().find(|(id, _)| id == tid)
+            {
+                let indent_len = raw.len() - raw.trim_start().len();
+                out.push_str(&raw[..indent_len]);
+                out.push_str(&format!("digest = \"{new_digest}\""));
+                out.push('\n');
+                continue;
             }
         }
 

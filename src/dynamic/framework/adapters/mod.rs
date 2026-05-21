@@ -463,3 +463,26 @@ pub(super) fn strip_sigils(s: &str) -> &str {
         .trim_start_matches('@')
         .trim_start_matches('&')
 }
+
+/// True when the source file visibly mitigates prototype-pollution
+/// through a known guard pattern: a quoted `'__proto__'` / `"__proto__"`
+/// comparison (canonical per-key filter), or a global
+/// `Object.freeze(Object.prototype)` / `Object.seal(Object.prototype)`
+/// mitigation. Used by the Phase 10 `pp-lodash-merge` /
+/// `pp-object-assign` / `pp-json-deep-assign` adapters to skip binding
+/// when the surrounding code already neutralises the gadget.
+///
+/// The quoted-string form deliberately excludes backtick-wrapped
+/// `__proto__` in doc comments so fixtures that mention the key in
+/// prose still bind correctly.
+pub(super) fn source_filters_proto_keys(file_bytes: &[u8]) -> bool {
+    const NEEDLES: &[&[u8]] = &[
+        b"'__proto__'",
+        b"\"__proto__\"",
+        b"Object.freeze(Object.prototype",
+        b"Object.seal(Object.prototype",
+    ];
+    NEEDLES
+        .iter()
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}

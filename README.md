@@ -7,7 +7,7 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)](https://www.rust-lang.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/elicpeter/nyx/ci.yml?branch=master)](https://github.com/elicpeter/nyx/actions)
-[![Docs](https://img.shields.io/badge/docs-elicpeter.github.io%2Fnyx-blue)](https://elicpeter.github.io/nyx/)
+[![Docs](https://img.shields.io/badge/docs-nyxscan.dev%2Fdocs-blue)](https://nyxscan.dev/docs/)
 
 English · [简体中文](./README.zh-CN.md)
 </div>
@@ -46,7 +46,7 @@ Everything stays on your machine: loopback-only bind, host-header enforcement, C
 | **Config** | Live config editor; reload without restart |
 
 
-`nyx serve` flags: `--port <N>` (default `9700`), `--host <addr>` (loopback only: `127.0.0.1`, `localhost`, or `::1`), `--no-browser`. See `[server]` in `nyx.conf` for persistent settings, and the [Browser UI guide](https://elicpeter.github.io/nyx/serve.html) for the page-by-page UI tour and security model.
+`nyx serve` flags: `--port <N>` (default `9700`), `--host <addr>` (loopback only: `127.0.0.1`, `localhost`, or `::1`), `--no-browser`. See `[server]` in `nyx.conf` for persistent settings, and the [Browser UI guide](https://nyxscan.dev/docs/serve.html) for the page-by-page UI tour and security model.
 
 ---
 
@@ -71,7 +71,7 @@ nyx scan --mode ast
 nyx scan --engine-profile deep
 ```
 
-Forward cross-file taint runs in every profile. Symex and the demand-driven backwards walk are opt-in. Turn them on either via `--engine-profile deep`, or individually (`--symex`, `--backwards-analysis`). See the [CLI reference](https://elicpeter.github.io/nyx/cli.html#engine-depth-profile) for the full toggle matrix.
+Forward cross-file taint runs in every profile. Symex and the demand-driven backwards walk are opt-in. Turn them on either via `--engine-profile deep`, or individually (`--symex`, `--backwards-analysis`). See the [CLI reference](https://nyxscan.dev/docs/cli.html#engine-depth-profile) for the full toggle matrix.
 
 ### GitHub Action
 
@@ -125,7 +125,7 @@ All 10 languages parse via tree-sitter and run through the full pipeline, but ru
 | **Beta** | Java, PHP, Ruby, Rust, Go | 100% | Yes, with light FP triage |
 | **Preview** | C, C++ | 100% on synthetic corpus | No. STL container flow, builder chains, and inline class member functions are tracked, but deep pointer aliasing and function pointers are not. Pair with clang-tidy or Clang Static Analyzer |
 
-Aggregate rule-level F1: 100.0% (P=1.000, R=1.000). All real-CVE fixtures fire and the corpus carries zero open FPs. Per-dimension detail and known blind spots live on the [Language maturity page](https://elicpeter.github.io/nyx/language-maturity.html).
+Aggregate rule-level F1: 100.0% (P=1.000, R=1.000). All real-CVE fixtures fire and the corpus carries zero open FPs. Per-dimension detail and known blind spots live on the [Language maturity page](https://nyxscan.dev/docs/language-maturity.html).
 
 ### Validated against real CVEs
 
@@ -188,7 +188,7 @@ Two passes over the filesystem, with an optional SQLite index to skip unchanged 
 3. **Pass 2**: re-analyze each file with cross-file context under bounded context sensitivity (k=1 inlining for intra-file callees, SCC fixpoint capped at 64 iterations, and summary fallback for callees above the inline body-size cap). A forward dataflow worklist propagates taint through the SSA lattice with guaranteed convergence. Call-graph SCCs iterate to fixed-point (within the cap) so mutually recursive functions get accurate summaries.
 4. **Rank, dedupe, emit**: findings are scored by severity × evidence strength × source-kind exploitability, then emitted to console, JSON, or SARIF.
 
-Detector families: taint (cross-file source→sink, with cap-specific rule classes for SQLi, XSS, command/code exec, deserialization, SSRF, path traversal, format string, crypto, LDAP injection, XPath injection, HTTP header / response splitting, open redirect, server-side template injection, XXE, prototype pollution, data exfiltration, and the auth fold-in), CFG structural (auth gaps, unguarded sinks, resource leaks), state model (use-after-close, double-close, must-leak, unauthed-access), AST patterns (tree-sitter structural match). Full detector docs: [Detectors](https://elicpeter.github.io/nyx/detectors.html).
+Detector families: taint (cross-file source→sink, with cap-specific rule classes for SQLi, XSS, command/code exec, deserialization, SSRF, path traversal, format string, crypto, LDAP injection, XPath injection, HTTP header / response splitting, open redirect, server-side template injection, XXE, prototype pollution, data exfiltration, and the auth fold-in), CFG structural (auth gaps, unguarded sinks, resource leaks), state model (use-after-close, double-close, must-leak, unauthed-access), AST patterns (tree-sitter structural match). Full detector docs: [Detectors](https://nyxscan.dev/docs/detectors.html).
 
 ---
 
@@ -213,7 +213,7 @@ kind     = "sanitizer"
 cap      = "html_escape"
 ```
 
-Or add rules interactively: `nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`. Caps: `env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `data_exfil`, `code_exec`, `crypto`, `unauthorized_id`, `ldap_injection`, `xpath_injection`, `header_injection`, `open_redirect`, `ssti`, `xxe`, `prototype_pollution`, `all`. Full schema: [Configuration](https://elicpeter.github.io/nyx/configuration.html). Run `nyx rules list` to browse the registry from the terminal.
+Or add rules interactively: `nyx config add-rule --lang javascript --matcher escapeHtml --kind sanitizer --cap html_escape`. Caps: `env_var`, `html_escape`, `shell_escape`, `url_encode`, `json_parse`, `file_io`, `fmt_string`, `sql_query`, `deserialize`, `ssrf`, `data_exfil`, `code_exec`, `crypto`, `unauthorized_id`, `ldap_injection`, `xpath_injection`, `header_injection`, `open_redirect`, `ssti`, `xxe`, `prototype_pollution`, `all`. Full schema: [Configuration](https://nyxscan.dev/docs/configuration.html). Run `nyx rules list` to browse the registry from the terminal.
 
 ---
 
