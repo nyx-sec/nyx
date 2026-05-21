@@ -985,12 +985,42 @@ STDOUT.flush
 pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let body = format!(
-        r#"# Nyx dynamic harness — XXE REXML (Phase 05 / Track J.3).
+        r##"# Nyx dynamic harness — XXE REXML (Phase 05 / Track J.3).
 require 'json'
+require 'net/http'
 require 'rexml/document'
 require 'stringio'
+require 'uri'
 
 {shim}
+
+# Build the XML document fed into REXML.  Two shapes (Phase 05 OOB
+# closure, 2026-05-21):
+#   - URL-form NYX_PAYLOAD (`http://...` / `https://...`): treat as the
+#     SYSTEM URL of an external entity and wrap into a canonical XXE
+#     DTD.  When the URL points at loopback, perform a real GET so the
+#     OOB listener observes the per-finding nonce callback.
+#   - Anything else: treat as the full XML document (existing shape).
+def _nyx_build_xxe_document(payload)
+  if payload.start_with?('http://') || payload.start_with?('https://')
+    if payload.start_with?('http://127.0.0.1') ||
+       payload.start_with?('http://host-gateway') ||
+       payload.start_with?('http://localhost')
+      begin
+        uri = URI.parse(payload)
+        Net::HTTP.start(uri.host, uri.port, open_timeout: 2, read_timeout: 2) do |http|
+          http.request_get(uri.request_uri)
+        end
+      rescue StandardError
+        # best-effort OOB fetch
+      end
+    end
+    escaped = payload.gsub('&', '&amp;').gsub('"', '&quot;').gsub('<', '&lt;')
+    "<?xml version=\"1.0\"?>\n<!DOCTYPE data [\n  <!ENTITY xxe SYSTEM \"#{{escaped}}\">\n]>\n<data>&xxe;</data>"
+  else
+    payload
+  end
+end
 
 def _nyx_libxml_parse(payload)
   # Real parser hook: REXML parses `<!ENTITY name SYSTEM "uri">` declarations
@@ -998,7 +1028,7 @@ def _nyx_libxml_parse(payload)
   # detect every external-entity reference the parser registered.
   expanded = false
   begin
-    doc = REXML::Document.new(payload)
+    doc = REXML::Document.new(_nyx_build_xxe_document(payload))
     if doc.doctype
       doc.doctype.entities.each_value do |ent|
         s = ent.to_s
@@ -1042,7 +1072,7 @@ _nyx_xxe_probe(payload, expanded)
 STDOUT.puts '__NYX_SINK_HIT__'
 STDOUT.puts JSON.generate({{"entity_expanded" => expanded}})
 STDOUT.flush
-"#
+"##
     );
     HarnessSource {
         source: body,

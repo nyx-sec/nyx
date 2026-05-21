@@ -1452,9 +1452,31 @@ pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
         r#"#!/usr/bin/env python3
 """Nyx dynamic harness — XXE xml.parsers.expat (Phase 05 / Track J.3)."""
 import os, json, sys, time
+import urllib.request as _nyx_urlreq
 import xml.parsers.expat as _nyx_expat
 
 {probe}
+
+# Build the XML document fed into expat.  Two shapes:
+#   - URL-form NYX_PAYLOAD (`http://...` or `https://...`): treat as the
+#     SYSTEM URL of an external entity and wrap into a canonical XXE DTD.
+#     The OOB-nonce payload variant emits a loopback URL here so the
+#     external-ref hook performs a real HTTP GET that the OOB listener
+#     observes (Phase 05 OOB closure, 2026-05-21).
+#   - Anything else: treat NYX_PAYLOAD as the full XML document
+#     (existing Phase 05 shape).
+def _nyx_xxe_document(payload):
+    p = payload if isinstance(payload, str) else payload.decode("utf-8", "replace")
+    if p.startswith("http://") or p.startswith("https://"):
+        url = p.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+        return (
+            "<?xml version=\"1.0\"?>\n"
+            "<!DOCTYPE data [\n"
+            "  <!ENTITY xxe SYSTEM \"" + url + "\">\n"
+            "]>\n"
+            "<data>&xxe;</data>"
+        )
+    return p
 
 def _nyx_xxe_parse(payload):
     expanded = [False]
@@ -1469,9 +1491,18 @@ def _nyx_xxe_parse(payload):
 
     def _external_ref(context, base, system_id, public_id):
         # Real parser hook: fired by expat for every `<!ENTITY x SYSTEM "...">`
-        # reference inside element bodies / DTD.  Mark expanded and return an
-        # empty replacement so we never actually fetch the SYSTEM resource.
+        # reference inside element bodies / DTD.  Mark expanded.  When the
+        # SYSTEM URL points at loopback HTTP, perform a real GET so the OOB
+        # listener can observe the callback (Phase 05 OOB closure).  Any
+        # other scheme returns an empty replacement (no fetch).
         expanded[0] = True
+        if system_id and (system_id.startswith("http://127.0.0.1")
+                          or system_id.startswith("http://host-gateway")
+                          or system_id.startswith("http://localhost")):
+            try:
+                _nyx_urlreq.urlopen(system_id, timeout=2).read()
+            except Exception:
+                pass
         sub = parser.ExternalEntityParserCreate(context, "utf-8")
         try:
             sub.Parse("", 1)
@@ -1480,9 +1511,9 @@ def _nyx_xxe_parse(payload):
         return 1
 
     parser.ExternalEntityRefHandler = _external_ref
-    payload_bytes = payload.encode("utf-8", "replace") if isinstance(payload, str) else payload
+    doc = _nyx_xxe_document(payload)
     try:
-        parser.Parse(payload_bytes, 1)
+        parser.Parse(doc.encode("utf-8", "replace"), 1)
     except _nyx_expat.ExpatError:
         # Malformed XML still counts as a parser invocation; expanded
         # flag reflects whatever the hook saw before the error.

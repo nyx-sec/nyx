@@ -848,9 +848,14 @@ mod tests {
     fn xxe_payloads_pair_benign_controls_per_lang() {
         for lang in [Lang::Java, Lang::Python, Lang::Php, Lang::Ruby, Lang::Go] {
             let slice = payloads_for_lang(Cap::XXE, lang);
+            // Skip OOB-nonce variants: they self-confirm via the per-finding
+            // listener callback (see `xxe-<lang>-oob-nonce` in
+            // `src/dynamic/corpus/xxe/<lang>.rs`) and carry no paired benign
+            // control because a benign URL structurally cannot hit the nonce
+            // path.  The doctype-entity vuln is the one that pairs.
             let vuln = slice
                 .iter()
-                .find(|p| !p.is_benign)
+                .find(|p| !p.is_benign && !p.oob_nonce_slot)
                 .expect("each lang must have an XXE vuln payload");
             let resolved = super::resolve_benign_control_lang(vuln, Cap::XXE, lang)
                 .expect("lang-aware benign control must resolve");

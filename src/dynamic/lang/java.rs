@@ -952,6 +952,8 @@ pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.StringReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.xml.sax.EntityResolver;
@@ -963,6 +965,21 @@ public class NyxHarness {{
 
     static boolean nyxLastExpanded = false;
 
+    // Build the XML document fed into the parser.  Two shapes (Phase 05
+    // OOB closure, 2026-05-21):
+    //   - URL-form NYX_PAYLOAD (`http://...` / `https://...`): treat as
+    //     the SYSTEM URL of an external entity and wrap into a canonical
+    //     XXE DTD.  The entity-resolver hook will perform the loopback
+    //     GET so the OOB listener observes the per-finding nonce.
+    //   - Anything else: treat as the full XML document (existing shape).
+    static String nyxBuildXxeDocument(String payload) {{
+        if (payload.startsWith("http://") || payload.startsWith("https://")) {{
+            String escaped = payload.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;");
+            return "<?xml version=\"1.0\"?>\n<!DOCTYPE data [\n  <!ENTITY xxe SYSTEM \"" + escaped + "\">\n]>\n<data>&xxe;</data>";
+        }}
+        return payload;
+    }}
+
     static void nyxXmlParse(String payload) {{
         nyxLastExpanded = false;
         try {{
@@ -971,20 +988,36 @@ public class NyxHarness {{
             // entity resolution enabled" target: leave the factory at
             // default settings (which historically permit doctype +
             // external entities) and rely on the EntityResolver hook
-            // to short-circuit the actual fetch.
+            // to control fetch behaviour.
             DocumentBuilder db = dbf.newDocumentBuilder();
             db.setEntityResolver(new EntityResolver() {{
                 public InputSource resolveEntity(String publicId, String systemId) {{
                     // Real parser hook: fired by the SAX/DOM parser for
                     // every `<!ENTITY x SYSTEM "...">` reference.  Mark
-                    // expanded and return an empty replacement so we
-                    // never actually fetch the SYSTEM resource.
+                    // expanded.  When the SYSTEM URL points at loopback
+                    // HTTP, perform a real GET so the OOB listener can
+                    // observe the callback (Phase 05 OOB closure).  Any
+                    // other scheme returns an empty replacement (no fetch).
                     nyxLastExpanded = true;
+                    if (systemId != null && (systemId.startsWith("http://127.0.0.1")
+                            || systemId.startsWith("http://host-gateway")
+                            || systemId.startsWith("http://localhost"))) {{
+                        try {{
+                            HttpURLConnection conn = (HttpURLConnection) new URL(systemId).openConnection();
+                            conn.setConnectTimeout(2000);
+                            conn.setReadTimeout(2000);
+                            conn.getInputStream().close();
+                            conn.disconnect();
+                        }} catch (Exception ignored) {{
+                            // best-effort OOB fetch
+                        }}
+                    }}
                     return new InputSource(new StringReader(""));
                 }}
             }});
             try {{
-                db.parse(new InputSource(new StringReader(payload)));
+                String doc = nyxBuildXxeDocument(payload);
+                db.parse(new InputSource(new StringReader(doc)));
             }} catch (SAXException | IOException e) {{
                 // Malformed XML still counts as a parser invocation;
                 // expanded flag reflects whatever the hook saw before

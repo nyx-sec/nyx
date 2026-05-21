@@ -645,6 +645,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -653,6 +654,33 @@ import (
 )
 
 {shim}
+
+// nyxBuildXxeDocument builds the XML document fed into the decoder.
+// Two shapes (Phase 05 OOB closure, 2026-05-21):
+//   - URL-form NYX_PAYLOAD (`http://...` / `https://...`): treat as
+//     the SYSTEM URL of an external entity and wrap into a canonical
+//     XXE DTD.  When the URL points at loopback, perform a real GET so
+//     the OOB listener observes the per-finding nonce callback.
+//   - Anything else: treat as the full XML document (existing Phase 05
+//     shape).
+func nyxBuildXxeDocument(payload string) string {{
+	if strings.HasPrefix(payload, "http://") || strings.HasPrefix(payload, "https://") {{
+		if strings.HasPrefix(payload, "http://127.0.0.1") ||
+			strings.HasPrefix(payload, "http://host-gateway") ||
+			strings.HasPrefix(payload, "http://localhost") {{
+			client := &http.Client{{Timeout: 2 * time.Second}}
+			if resp, err := client.Get(payload); err == nil {{
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}}
+		}}
+		escaped := strings.ReplaceAll(payload, "&", "&amp;")
+		escaped = strings.ReplaceAll(escaped, "\"", "&quot;")
+		escaped = strings.ReplaceAll(escaped, "<", "&lt;")
+		return "<?xml version=\"1.0\"?>\n<!DOCTYPE data [\n  <!ENTITY xxe SYSTEM \"" + escaped + "\">\n]>\n<data>&xxe;</data>"
+	}}
+	return payload
+}}
 
 func nyxXmlParse(payload string) bool {{
 	// Real parser hook: walk Go's encoding/xml.Decoder token stream.
@@ -664,7 +692,8 @@ func nyxXmlParse(payload string) bool {{
 	// resolution boundary firing.
 	expanded := false
 	sawSystem := false
-	decoder := xml.NewDecoder(strings.NewReader(payload))
+	doc := nyxBuildXxeDocument(payload)
+	decoder := xml.NewDecoder(strings.NewReader(doc))
 	for {{
 		tok, err := decoder.Token()
 		if err != nil {{

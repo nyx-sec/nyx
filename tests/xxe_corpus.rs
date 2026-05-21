@@ -83,7 +83,12 @@ fn xxe_unsupported_caps_unchanged_for_other_langs() {
 fn benign_control_resolves_within_lang_slice() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::XXE, *lang);
-        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        // Skip the OOB-nonce variant — it self-confirms via
+        // [`Oracle::OobCallback`] and carries no paired benign control.
+        let vuln = slice
+            .iter()
+            .find(|p| !p.is_benign && !p.oob_nonce_slot)
+            .unwrap();
         let resolved =
             resolve_benign_control_lang(vuln, Cap::XXE, *lang).expect("paired control");
         assert!(resolved.is_benign);
@@ -96,7 +101,13 @@ fn benign_control_resolves_within_lang_slice() {
 fn payload_oracle_carries_xxe_entity_expanded_predicate() {
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::XXE, *lang);
-        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        // The doctype-entity vuln carries the XxeEntityExpanded predicate.
+        // The OOB-nonce variant uses [`Oracle::OobCallback`] and is exercised
+        // by `python_xxe_oob_loopback_records_callback` instead.
+        let vuln = slice
+            .iter()
+            .find(|p| !p.is_benign && !p.oob_nonce_slot)
+            .unwrap();
         match &vuln.oracle {
             Oracle::SinkProbe { predicates } => {
                 assert!(
@@ -117,10 +128,15 @@ fn vuln_payload_bytes_contain_doctype_entity_declaration() {
     // The whole differential rule rests on the vuln payload carrying
     // an `<!ENTITY … SYSTEM "…">` decl and the benign control NOT
     // carrying one — pin both invariants so a future corpus tweak
-    // does not silently break the oracle.
+    // does not silently break the oracle.  The OOB-nonce variant's
+    // `bytes` field is unused (the runner materialises a URL at call
+    // time and the harness wraps it into the DTD), so skip it here.
     for lang in LANGS {
         let slice = payloads_for_lang(Cap::XXE, *lang);
-        let vuln = slice.iter().find(|p| !p.is_benign).unwrap();
+        let vuln = slice
+            .iter()
+            .find(|p| !p.is_benign && !p.oob_nonce_slot)
+            .unwrap();
         let benign = slice.iter().find(|p| p.is_benign).unwrap();
         let vuln_text = std::str::from_utf8(vuln.bytes).unwrap();
         let benign_text = std::str::from_utf8(benign.bytes).unwrap();
@@ -429,16 +445,42 @@ mod e2e_phase_05 {
             backend: SandboxBackend::Process,
             ..SandboxOptions::default()
         };
-        match run_spec(&spec, &opts) {
-            Ok(outcome) => Some(outcome),
-            Err(RunError::BuildFailed { stderr, attempts }) => {
-                eprintln!(
-                    "SKIP {lang:?} {fixture}: harness build failed after {attempts} attempts: {stderr}",
-                );
-                None
+        // JVM startup occasionally fails under heavy cross-binary nextest
+        // load with "Error occurred during initialization of VM: Properties
+        // init: Could not determine current working directory."  This is a
+        // macOS getcwd() race under massive fork() churn, not a regression.
+        // Retry up to 3 times; the second attempt almost always succeeds.
+        for attempt in 0..3 {
+            match run_spec(&spec, &opts) {
+                Ok(outcome) => {
+                    if is_jvm_cwd_flake(&outcome) && attempt < 2 {
+                        eprintln!(
+                            "RETRY {lang:?} {fixture}: JVM cwd flake on attempt {attempt}",
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        continue;
+                    }
+                    return Some(outcome);
+                }
+                Err(RunError::BuildFailed { stderr, attempts }) => {
+                    eprintln!(
+                        "SKIP {lang:?} {fixture}: harness build failed after {attempts} attempts: {stderr}",
+                    );
+                    return None;
+                }
+                Err(e) => panic!("run_spec({lang:?} {fixture}) errored: {e:?}"),
             }
-            Err(e) => panic!("run_spec({lang:?} {fixture}) errored: {e:?}"),
         }
+        None
+    }
+
+    fn is_jvm_cwd_flake(outcome: &RunOutcome) -> bool {
+        outcome.attempts.iter().any(|a| {
+            let stdout = std::str::from_utf8(&a.outcome.stdout).unwrap_or("");
+            let stderr = std::str::from_utf8(&a.outcome.stderr).unwrap_or("");
+            stdout.contains("Could not determine current working directory")
+                || stderr.contains("Could not determine current working directory")
+        })
     }
 
     #[test]
@@ -509,5 +551,117 @@ mod e2e_phase_05 {
             .as_ref()
             .expect("Confirmed run must carry a DifferentialOutcome");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    /// Phase 05 OOB-loopback observation: when an [`nyx_scanner::dynamic::oob::OobListener`]
+    /// is attached and the runner exercises the `xxe-<lang>-oob-nonce`
+    /// payload, the parser's external-entity hook performs a real HTTP
+    /// GET against the loopback nonce URL and the listener records the
+    /// hit.  Asserts the observation half of the Phase 05 OOB closure;
+    /// the verdict-tier promotion (Confirmed → Confirmed+ProvenOob) is
+    /// broader runner-rework tracked separately in
+    /// `.pitboss/play/deferred.md`.
+    fn run_oob(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
+        use nyx_scanner::dynamic::oob::OobListener;
+        use nyx_scanner::dynamic::sandbox::NetworkPolicy;
+        use std::sync::Arc;
+
+        let bin = toolchain_for(lang);
+        if !command_available(bin) {
+            eprintln!("SKIP {lang:?} {fixture} (oob): missing toolchain {bin}");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let listener = Arc::new(OobListener::bind().expect("bind OOB listener on loopback"));
+        let (mut spec, _tmp) = build_spec(lang, fixture, entry_name);
+        // Use a distinct workdir from the non-OOB e2e tests so the probe
+        // channel files do not collide (both tests use the same fixture, so
+        // the default spec_hash would resolve to the same
+        // `/tmp/nyx-harness/<spec_hash>/__nyx_probes.jsonl` and the two runs
+        // could clobber each other's drains under parallel nextest).
+        spec.spec_hash = format!("{}-oob", spec.spec_hash);
+        spec.finding_id = spec.spec_hash.clone();
+        if matches!(lang, Lang::Java) {
+            let workdir = std::path::PathBuf::from("/tmp/nyx-harness").join(&spec.spec_hash);
+            let _ = std::fs::remove_dir_all(&workdir);
+        }
+
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            network_policy: NetworkPolicy::OobOutbound {
+                listener: Arc::clone(&listener),
+            },
+            ..SandboxOptions::default()
+        };
+
+        for attempt in 0..3 {
+            match run_spec(&spec, &opts) {
+                Ok(outcome) => {
+                    if is_jvm_cwd_flake(&outcome) && attempt < 2 {
+                        eprintln!(
+                            "RETRY {lang:?} {fixture} (oob): JVM cwd flake on attempt {attempt}",
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        continue;
+                    }
+                    return Some(outcome);
+                }
+                Err(RunError::BuildFailed { stderr, attempts }) => {
+                    eprintln!(
+                        "SKIP {lang:?} {fixture} (oob): build failed after {attempts}: {stderr}",
+                    );
+                    return None;
+                }
+                Err(e) => panic!("run_spec({lang:?} {fixture} oob) errored: {e:?}"),
+            }
+        }
+        None
+    }
+
+    fn assert_oob_recorded(outcome: &RunOutcome, label: &str) {
+        let oob_attempt = outcome
+            .attempts
+            .iter()
+            .find(|a| a.payload_label == label)
+            .unwrap_or_else(|| {
+                panic!(
+                    "OOB payload {label:?} must run when listener is attached; outcome={outcome:?}"
+                )
+            });
+        assert!(
+            oob_attempt.outcome.oob_callback_seen,
+            "parser external-entity hook must fetch loopback URL so OOB listener records the nonce; got attempt={oob_attempt:?}",
+        );
+    }
+
+    #[test]
+    fn python_xxe_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Python, "vuln.py", "run") else { return };
+        assert_oob_recorded(&outcome, "xxe-python-oob-nonce");
+    }
+
+    #[test]
+    fn java_xxe_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Java, "Vuln.java", "run") else { return };
+        assert_oob_recorded(&outcome, "xxe-java-oob-nonce");
+    }
+
+    #[test]
+    fn php_xxe_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Php, "vuln.php", "run") else { return };
+        assert_oob_recorded(&outcome, "xxe-php-oob-nonce");
+    }
+
+    #[test]
+    fn ruby_xxe_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Ruby, "vuln.rb", "run") else { return };
+        assert_oob_recorded(&outcome, "xxe-ruby-oob-nonce");
+    }
+
+    #[test]
+    fn go_xxe_oob_loopback_records_callback() {
+        let Some(outcome) = run_oob(Lang::Go, "vuln.go", "run") else { return };
+        assert_oob_recorded(&outcome, "xxe-go-oob-nonce");
     }
 }

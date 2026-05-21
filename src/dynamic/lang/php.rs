@@ -685,13 +685,38 @@ pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
 // Nyx dynamic harness — XXE simplexml_load_string (Phase 05 / Track J.3).
 {shim}
 
+// Build the XML document fed into the parser.  Two shapes (Phase 05 OOB
+// closure, 2026-05-21):
+//   - URL-form NYX_PAYLOAD (`http://...` / `https://...`): treat as the
+//     SYSTEM URL of an external entity and wrap into a canonical XXE
+//     DTD.  The external-entity loader hook below performs the loopback
+//     GET so the OOB listener observes the per-finding nonce.
+//   - Anything else: treat as the full XML document (existing shape).
+function _nyx_build_xxe_document(string $payload): string {{
+    if (str_starts_with($payload, 'http://') || str_starts_with($payload, 'https://')) {{
+        $escaped = str_replace(['&', '"', '<'], ['&amp;', '&quot;', '&lt;'], $payload);
+        return "<?xml version=\"1.0\"?>\n<!DOCTYPE data [\n  <!ENTITY xxe SYSTEM \"" . $escaped . "\">\n]>\n<data>&xxe;</data>";
+    }}
+    return $payload;
+}}
+
 function _nyx_libxml_parse(string $payload): bool {{
     $expanded = false;
     // Real parser hook: libxml calls this for every <!ENTITY name SYSTEM "uri">
-    // reference resolved in the document.  We mark expanded and
-    // return null so the parser does not actually fetch the resource.
+    // reference resolved in the document.  Mark expanded.  When the
+    // SYSTEM URL points at loopback HTTP, perform a real fetch so the
+    // OOB listener observes the callback (Phase 05 OOB closure); other
+    // schemes return null so the parser substitutes empty.
     libxml_set_external_entity_loader(function ($public, $system, $context) use (&$expanded) {{
         $expanded = true;
+        if (is_string($system) && (
+            str_starts_with($system, 'http://127.0.0.1')
+            || str_starts_with($system, 'http://host-gateway')
+            || str_starts_with($system, 'http://localhost')
+        )) {{
+            $ctx = stream_context_create(['http' => ['timeout' => 2, 'ignore_errors' => true]]);
+            @file_get_contents($system, false, $ctx);
+        }}
         return null;
     }});
     $prev_errors = libxml_use_internal_errors(true);
@@ -699,7 +724,8 @@ function _nyx_libxml_parse(string $payload): bool {{
     // the resolved body) and LIBXML_DTDLOAD allows the parser to load
     // the DTD declarations — the combination real XXE-vulnerable PHP
     // code passes to `simplexml_load_string`.
-    @simplexml_load_string($payload, 'SimpleXMLElement', LIBXML_NOENT | LIBXML_DTDLOAD);
+    $doc = _nyx_build_xxe_document($payload);
+    @simplexml_load_string($doc, 'SimpleXMLElement', LIBXML_NOENT | LIBXML_DTDLOAD);
     libxml_clear_errors();
     libxml_use_internal_errors($prev_errors);
     // Reset the loader to default so nothing leaks across runs.
