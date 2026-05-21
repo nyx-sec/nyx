@@ -19,8 +19,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::js_routes::{
-    bind_path_params, find_function_params, find_route_registration, function_formal_names,
-    source_imports_express,
+    bind_path_params, extract_route_middleware, find_function_params, find_route_registration,
+    function_formal_names, source_imports_express,
 };
 
 pub struct JsExpressAdapter;
@@ -61,13 +61,14 @@ impl FrameworkAdapter for JsExpressAdapter {
             .map(|p| function_formal_names(p, file_bytes))
             .unwrap_or_default();
         let request_params = bind_path_params(&formals, &path);
+        let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -145,7 +146,40 @@ mod tests {
         let binding = JsExpressAdapter
             .detect(&summary("handler"), tree.root_node(), src)
             .expect("binding");
-        assert_eq!(binding.route.unwrap().method, HttpMethod::DELETE);
+        assert_eq!(binding.route.as_ref().unwrap().method, HttpMethod::DELETE);
+        let names: Vec<_> = binding.middleware.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["authz"]);
+    }
+
+    #[test]
+    fn records_chained_middleware_and_global_app_use() {
+        let src: &[u8] = b"const express = require('express');\n\
+            const app = express();\n\
+            app.use(helmet());\n\
+            app.use(logger);\n\
+            function authz(req, res, next) { next(); }\n\
+            function validate(req, res, next) { next(); }\n\
+            function handler(req, res) { res.send('ok'); }\n\
+            app.post('/save', authz, validate, handler);\n";
+        let tree = parse_js(src);
+        let binding = JsExpressAdapter
+            .detect(&summary("handler"), tree.root_node(), src)
+            .expect("binding");
+        let names: Vec<_> = binding.middleware.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["helmet", "logger", "authz", "validate"]);
+    }
+
+    #[test]
+    fn middleware_empty_when_route_has_no_chain() {
+        let src: &[u8] = b"const express = require('express');\n\
+            const app = express();\n\
+            function handler(req, res) { res.send('ok'); }\n\
+            app.get('/x', handler);\n";
+        let tree = parse_js(src);
+        let binding = JsExpressAdapter
+            .detect(&summary("handler"), tree.root_node(), src)
+            .expect("binding");
+        assert!(binding.middleware.is_empty());
     }
 
     #[test]

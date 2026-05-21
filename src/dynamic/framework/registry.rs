@@ -66,6 +66,7 @@ static JAVA: &[&dyn FrameworkAdapter] = &[
     &super::adapters::KafkaJavaAdapter,
     &super::adapters::LdapSpringAdapter,
     &super::adapters::MiddlewareSpringAdapter,
+    &super::adapters::MigrationFlywayAdapter,
     &super::adapters::RabbitJavaAdapter,
     &super::adapters::RedirectJavaAdapter,
     &super::adapters::ScheduledQuartzAdapter,

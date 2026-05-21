@@ -220,6 +220,7 @@ mod tests {
         // / `Middleware` / `Migration` — distributed across the
         // language slices.  Per-lang deltas vs the Phase 20 baseline:
         //   Java: +2 (ScheduledQuartz, MiddlewareSpring)        14 → 16
+        //         +1 follow-up (MigrationFlyway)                16 → 17
         //   Php:  +2 (MiddlewareLaravel, MigrationLaravel)      10 → 12
         //   Python: +7 (GraphqlGraphene, MiddlewareDjango,
         //              MigrationDjango, MigrationFlask,
@@ -237,8 +238,8 @@ mod tests {
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
-            16,
-            "Java must have Phase 20 baseline (14) + M.3 Quartz/Spring-middleware (2)",
+            17,
+            "Java must have Phase 20 baseline (14) + M.3 Quartz/Spring-middleware (2) + Flyway (1)",
         );
         for adapter in java_registered {
             assert_eq!(adapter.lang(), Lang::Java);

@@ -9,7 +9,7 @@
 //! on whether a placeholder of the same name appears in the path
 //! template.
 
-use crate::dynamic::framework::{HttpMethod, ParamBinding, ParamSource};
+use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource};
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known Express import
@@ -486,6 +486,155 @@ pub fn first_string_arg(args: Node<'_>, bytes: &[u8]) -> Option<String> {
     None
 }
 
+/// Walk `root` collecting middleware names attached to a route
+/// registration.  Two sites are inspected:
+///
+/// 1.  The positional `<receiver>.<verb>(<path>, mw1, mw2, …, handler)`
+///     chain on the matching route call — every identifier-shaped
+///     positional argument between the path string and `target`
+///     becomes a [`MiddlewareShape`].
+/// 2.  Every preceding `<receiver>.use(<mw>)` call at the top level —
+///     `<mw>` may be a bare identifier (`app.use(authMw)`) or a
+///     call expression (`app.use(authMw())`), and the recorded name
+///     is the identifier / called-function last segment.
+///
+/// Names are recorded in source order: global `app.use(...)` first
+/// (because they fire before the route), then per-route chained
+/// middleware.  Duplicate names are kept — repeated registrations are
+/// real, e.g. `app.use(logger); app.use(logger);`.
+pub fn extract_route_middleware(
+    root: Node<'_>,
+    bytes: &[u8],
+    target: &str,
+    receiver_accepts: &dyn Fn(&str) -> bool,
+) -> Vec<MiddlewareShape> {
+    let mut global: Vec<MiddlewareShape> = Vec::new();
+    let mut route_chain: Vec<MiddlewareShape> = Vec::new();
+    walk_for_middleware(
+        root,
+        bytes,
+        target,
+        receiver_accepts,
+        &mut global,
+        &mut route_chain,
+    );
+    global.extend(route_chain);
+    global
+}
+
+fn walk_for_middleware<'a>(
+    node: Node<'a>,
+    bytes: &[u8],
+    target: &str,
+    receiver_accepts: &dyn Fn(&str) -> bool,
+    global: &mut Vec<MiddlewareShape>,
+    route_chain: &mut Vec<MiddlewareShape>,
+) {
+    if node.kind() == "call_expression"
+        && let Some(callee) = node.child_by_field_name("function")
+        && callee.kind() == "member_expression"
+        && let Some(object) = callee.child_by_field_name("object")
+        && let Some(property) = callee.child_by_field_name("property")
+        && let Some(object_text) = object.utf8_text(bytes).ok()
+        && let Some(prop_text) = property.utf8_text(bytes).ok()
+        && receiver_accepts(last_segment(object_text))
+        && let Some(args) = node.child_by_field_name("arguments")
+    {
+        if prop_text == "use" {
+            for name in collect_use_arg_names(args, bytes) {
+                global.push(MiddlewareShape { name });
+            }
+        } else if http_verb_from_method(prop_text).is_some()
+            && call_args_reference_target(args, bytes, target)
+        {
+            for name in collect_chain_middleware_names(args, bytes, target) {
+                route_chain.push(MiddlewareShape { name });
+            }
+        }
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_for_middleware(child, bytes, target, receiver_accepts, global, route_chain);
+    }
+}
+
+/// Pull middleware names from a positional `(<path>, mw1, mw2, …,
+/// handler)` arguments node.  Skips the leading string-literal path,
+/// stops at the named handler reference, and ignores object-literal
+/// option arguments (Fastify's `{ schema, preHandler, … }` shape is
+/// handled separately by [`collect_options_middleware_names`]).
+fn collect_chain_middleware_names(args: Node<'_>, bytes: &[u8], target: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen_path_literal = false;
+    let mut cur = args.walk();
+    for c in args.named_children(&mut cur) {
+        match c.kind() {
+            "string" | "template_string" if !seen_path_literal => {
+                seen_path_literal = true;
+            }
+            "identifier" => {
+                if let Ok(text) = c.utf8_text(bytes) {
+                    if text == target {
+                        break;
+                    }
+                    out.push(text.to_owned());
+                }
+            }
+            "member_expression" => {
+                if let Ok(text) = c.utf8_text(bytes) {
+                    let last = last_segment(text);
+                    if last == target {
+                        break;
+                    }
+                    out.push(last.to_owned());
+                }
+            }
+            "call_expression" => {
+                // Inline middleware factory call like `auth({ role: 'admin' })`.
+                if let Some(fn_node) = c.child_by_field_name("function")
+                    && let Ok(text) = fn_node.utf8_text(bytes)
+                {
+                    out.push(last_segment(text).to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Pull middleware names from a `<receiver>.use(<mw>, [<mw>, …])` call.
+/// Each positional argument that resolves to an identifier or a call
+/// expression contributes one entry; string-named middleware modules
+/// (`app.use('/admin', adminRouter)`) skip the path string.
+fn collect_use_arg_names(args: Node<'_>, bytes: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = args.walk();
+    for c in args.named_children(&mut cur) {
+        match c.kind() {
+            "identifier" => {
+                if let Ok(text) = c.utf8_text(bytes) {
+                    out.push(text.to_owned());
+                }
+            }
+            "member_expression" => {
+                if let Ok(text) = c.utf8_text(bytes) {
+                    out.push(last_segment(text).to_owned());
+                }
+            }
+            "call_expression" => {
+                if let Some(fn_node) = c.child_by_field_name("function")
+                    && let Ok(text) = fn_node.utf8_text(bytes)
+                {
+                    out.push(last_segment(text).to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Parse a Fastify options-object call `fastify.route({ method, url,
 /// handler })` returning the bound `(method, url)` when the
 /// `handler:` property references `target`.
@@ -627,6 +776,48 @@ mod tests {
             find_route_registration(tree.root_node(), src, "handler", &recv).unwrap();
         assert_eq!(method, HttpMethod::POST);
         assert_eq!(path, "/save");
+    }
+
+    #[test]
+    fn extract_middleware_picks_up_chain_args() {
+        let src: &[u8] = b"app.post('/save', authz, validate, handler);\n";
+        let tree = parse_js(src);
+        let recv = |n: &str| n == "app";
+        let mw = extract_route_middleware(tree.root_node(), src, "handler", &recv);
+        let names: Vec<_> = mw.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["authz", "validate"]);
+    }
+
+    #[test]
+    fn extract_middleware_records_app_use_in_order() {
+        let src: &[u8] = b"app.use(helmet());\napp.use(logger);\napp.get('/x', handler);\n";
+        let tree = parse_js(src);
+        let recv = |n: &str| n == "app";
+        let mw = extract_route_middleware(tree.root_node(), src, "handler", &recv);
+        let names: Vec<_> = mw.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["helmet", "logger"]);
+    }
+
+    #[test]
+    fn extract_middleware_returns_empty_on_no_chain() {
+        let src: &[u8] = b"app.get('/x', handler);\n";
+        let tree = parse_js(src);
+        let recv = |n: &str| n == "app";
+        let mw = extract_route_middleware(tree.root_node(), src, "handler", &recv);
+        assert!(mw.is_empty());
+    }
+
+    #[test]
+    fn extract_middleware_skips_member_expression_path_alias() {
+        let src: &[u8] =
+            b"app.post('/save', mw.csrf, mw.auth, controller.save);\n";
+        let tree = parse_js(src);
+        let recv = |n: &str| n == "app";
+        let mw = extract_route_middleware(tree.root_node(), src, "save", &recv);
+        let names: Vec<_> = mw.iter().map(|m| m.name.as_str()).collect();
+        // `controller.save` is the handler; everything before is middleware.
+        // We record the last segment of each member expression.
+        assert_eq!(names, vec!["csrf", "auth"]);
     }
 
     #[test]
