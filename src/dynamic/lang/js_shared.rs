@@ -1977,13 +1977,14 @@ const _res = {{
 /// Fastify core.
 fn emit_fastify(spec: &HarnessSpec) -> String {
     let (method, payload_key, body_kind) = resolve_http_payload(&spec.payload_slot);
+    let route_path = framework_route_path(spec);
     format!(
         r#"// Shape: Fastify route — boot via app.inject() (light-my-request equivalent).
 let _app = _entry.app || _entry.default || _entry;
 const _kind = {body_kind:?};
 const _payload_key = {payload_key:?};
 const _method = {method:?};
-let _path = '/';
+let _path = {route_path:?};
 let _query;
 let _bodyArg = undefined;
 let _headers = {{}};
@@ -2041,6 +2042,7 @@ fn emit_nest(spec: &HarnessSpec) -> String {
     let entry_fn = &spec.entry_name;
     let (method, payload_key, body_kind) = resolve_http_payload(&spec.payload_slot);
     let method_lower = method.to_ascii_lowercase();
+    let route_path = framework_route_path(spec);
     format!(
         r#"// Shape: NestJS controller — boot via Test.createTestingModule + supertest.
 require('reflect-metadata');
@@ -2062,7 +2064,7 @@ const _kind = {body_kind:?};
 const _payload_key = {payload_key:?};
 const _method_lc = {method_lower:?};
 const _entry_name = {entry_fn:?};
-let _path = '/';
+let _path = {route_path:?};
 if (_kind === 'env') {{
     process.env[_payload_key] = payload;
 }} else if (_kind === 'param') {{
@@ -2230,6 +2232,22 @@ fn build_call_args(spec: &HarnessSpec) -> (String, String) {
     }
 }
 
+/// Pull the route path string from the spec's stamped framework
+/// binding, falling back to `"/"` when no adapter has bound (legacy
+/// pre-stamp path) or when the binding does not carry an HTTP route.
+///
+/// Used by the Fastify (`app.inject`) and Nest (`supertest`) emitters,
+/// both of which actually route requests through the framework's
+/// matcher rather than calling the handler directly — Express, Koa,
+/// and Next.js dispatch the handler bare so the path is irrelevant.
+fn framework_route_path(spec: &HarnessSpec) -> String {
+    spec.framework
+        .as_ref()
+        .and_then(|f| f.route.as_ref())
+        .map(|r| r.path.clone())
+        .unwrap_or_else(|| "/".to_owned())
+}
+
 /// Resolve `(http_method, payload_key, body_kind)` for the HTTP-shaped
 /// emitters.  `body_kind` is one of `"query"`, `"body"`, `"env"`, or
 /// `"param"`.
@@ -2384,6 +2402,93 @@ mod tests {
         let src = generate_for_shape(&spec, JsShape::BrowserEvent, "entry.js");
         assert!(src.contains("new _JSDOM"));
         assert!(src.contains("globalThis.document"));
+    }
+
+    fn make_spec_with_route(
+        kind: EntryKind,
+        name: &str,
+        slot: PayloadSlot,
+        route_path: &str,
+    ) -> HarnessSpec {
+        use crate::dynamic::framework::{FrameworkBinding, HttpMethod, RouteShape};
+        let mut spec = make_spec(kind, name, slot);
+        spec.framework = Some(FrameworkBinding {
+            adapter: "test-adapter".into(),
+            kind: EntryKind::HttpRoute,
+            route: Some(RouteShape {
+                method: HttpMethod::GET,
+                path: route_path.into(),
+            }),
+            request_params: vec![],
+            response_writer: None,
+            middleware: vec![],
+        });
+        spec
+    }
+
+    #[test]
+    fn framework_route_path_defaults_to_slash_when_unstamped() {
+        let spec = make_spec(
+            EntryKind::HttpRoute,
+            "runCmd",
+            PayloadSlot::QueryParam("cmd".into()),
+        );
+        assert_eq!(framework_route_path(&spec), "/");
+    }
+
+    #[test]
+    fn framework_route_path_returns_binding_path_when_stamped() {
+        let spec = make_spec_with_route(
+            EntryKind::HttpRoute,
+            "runCmd",
+            PayloadSlot::QueryParam("cmd".into()),
+            "/run",
+        );
+        assert_eq!(framework_route_path(&spec), "/run");
+    }
+
+    #[test]
+    fn emit_fastify_threads_route_path_from_binding() {
+        let spec = make_spec_with_route(
+            EntryKind::HttpRoute,
+            "runCmd",
+            PayloadSlot::QueryParam("cmd".into()),
+            "/run",
+        );
+        let src = generate_for_shape(&spec, JsShape::Fastify, "entry.js");
+        assert!(
+            src.contains("let _path = \"/run\""),
+            "fastify emit must use route path from binding: {src}",
+        );
+    }
+
+    #[test]
+    fn emit_fastify_falls_back_to_slash_when_unstamped() {
+        let spec = make_spec(
+            EntryKind::HttpRoute,
+            "runCmd",
+            PayloadSlot::QueryParam("cmd".into()),
+        );
+        let src = generate_for_shape(&spec, JsShape::Fastify, "entry.js");
+        assert!(
+            src.contains("let _path = \"/\""),
+            "fastify emit must default to / when no binding: {src}",
+        );
+    }
+
+    #[test]
+    fn emit_nest_threads_route_path_from_binding() {
+        let spec = make_spec_with_route(
+            EntryKind::HttpRoute,
+            "runCmd",
+            PayloadSlot::QueryParam("cmd".into()),
+            "/run",
+        );
+        let src = generate_for_shape(&spec, JsShape::Nest, "entry.js");
+        assert!(
+            src.contains("let _path = \"/run\""),
+            "nest emit must use route path from binding: {src}",
+        );
     }
 
     #[test]
