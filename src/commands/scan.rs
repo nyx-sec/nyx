@@ -1314,7 +1314,7 @@ fn topo_refine_enabled() -> bool {
 /// files that contain a caller of a changed key in the next iteration.
 /// This reduces per-iteration cost from O(|batch.files|) to
 /// O(|dirty_files|), which is typically a small fraction of the
-/// batch for SCCs larger than 4–8 functions.
+/// batch for SCCs larger than 4 to 8 functions.
 ///
 /// When `call_graph` is missing an edge (e.g. a summary was inserted
 /// after graph construction), we conservatively fall back to
@@ -1914,14 +1914,14 @@ fn run_topo_batches(
 }
 
 // --------------------------------------------------------------------------------------------
-// Two‑pass scanning (no index)
+// Two-pass scanning (no index)
 // --------------------------------------------------------------------------------------------
 
-/// Walk the filesystem and perform a two‑pass scan:
+/// Walk the filesystem and perform a two-pass scan:
 ///
-///  **Pass 1** – Parse every file and extract function summaries.
-///  **Pass 2** – Re‑parse every file and run taint analysis with the
-///               merged cross‑file summaries.
+///  **Pass 1**: parse every file and extract function summaries.
+///  **Pass 2**: re-parse every file and run taint analysis with the
+///              merged cross-file summaries.
 ///
 /// AST pattern queries are run during pass 2 (they don't depend on summaries).
 pub(crate) fn scan_filesystem(
@@ -2423,20 +2423,20 @@ pub(crate) fn scan_filesystem_with_observer(
 }
 
 // --------------------------------------------------------------------------------------------
-// Two‑pass scanning (with index)
+// Two-pass scanning (with index)
 // --------------------------------------------------------------------------------------------
 
-/// Indexed two‑pass scan:
+/// Indexed two-pass scan:
 ///
-///  **Pass 1** – For every file that needs scanning, extract summaries and
-///               persist them to the database.  Unchanged files keep their
-///               existing summaries.
-///  **Pass 2** – Load *all* summaries from the DB, merge them, and re‑run
-///               taint analysis on every file with the full cross‑file view.
-///               Files whose *own* code has not changed AND whose
-///               dependencies have not changed can serve cached issues
-///               instead.  (Today we conservatively re‑analyse every file in
-///               pass 2; caching will be refined in approach 2 / 3.)
+///  **Pass 1**: for every file that needs scanning, extract summaries and
+///              persist them to the database. Unchanged files keep their
+///              existing summaries.
+///  **Pass 2**: load *all* summaries from the DB, merge them, and re-run
+///              taint analysis on every file with the full cross-file view.
+///              Files whose *own* code has not changed AND whose
+///              dependencies have not changed can serve cached issues
+///              instead. (Today we conservatively re-analyse every file in
+///              pass 2; caching will be refined later.)
 pub fn scan_with_index_parallel(
     project: &str,
     pool: Arc<Pool<SqliteConnectionManager>>,

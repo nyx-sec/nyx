@@ -50,13 +50,13 @@
 //!
 //! Each [`commands::scan::Diag`] carries:
 //!
-//! - `path`, `line`, `col` — source location of the sink
-//! - `id` — rule identifier (e.g. `taint-unsanitised-flow`, `cfg-auth-gap`)
-//! - `severity` — Critical / High / Medium / Low / Info
-//! - `confidence` — Low / Medium / High; capped at Medium when an engine
+//! - `path`, `line`, `col`: source location of the sink
+//! - `id`: rule identifier (e.g. `taint-unsanitised-flow`, `cfg-auth-gap`)
+//! - `severity`: Critical / High / Medium / Low / Info
+//! - `confidence`: Low / Medium / High; capped at Medium when an engine
 //!   budget was hit
-//! - `rank_score` — deterministic attack-surface score for truncation ordering
-//! - `evidence` — optional [`evidence::Evidence`] with source/sink spans,
+//! - `rank_score`: deterministic attack-surface score for truncation ordering
+//! - `evidence`: optional [`evidence::Evidence`] with source/sink spans,
 //!   flow steps, and [`engine_notes::EngineNote`] values describing precision loss
 //!
 //! Engine notes communicate when a bound was hit. A finding carrying

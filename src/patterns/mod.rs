@@ -193,8 +193,8 @@ impl SeverityFilter {
 
 /// Pattern confidence tier.
 ///
-/// * **A** – Structural presence alone is high-signal (e.g. `gets()`, `eval()`).
-/// * **B** – Requires a simple heuristic guard in the query (e.g. SQL with
+/// * **A**: structural presence alone is high-signal (e.g. `gets()`, `eval()`).
+/// * **B**: requires a simple heuristic guard in the query (e.g. SQL with
 ///   concatenated arg, file-open with non-literal path).
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PatternTier {

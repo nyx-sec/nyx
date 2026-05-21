@@ -1,4 +1,4 @@
-//! Phase 23 — `nyx surface` subcommand.
+//! `nyx surface` subcommand.
 //!
 //! Walks the project tree, builds a [`SurfaceMap`] from the framework
 //! probes (plus any persisted data-store / external-service /
@@ -6,10 +6,10 @@
 //! map in the format requested by the user.
 //!
 //! Output formats:
-//!   * `text` — indented tree per entry-point, grouped by file
-//!   * `json` — canonical JSON (byte-identical to the SQLite payload)
-//!   * `dot`  — graphviz source, ready to pipe through `dot -Tsvg`
-//!   * `svg`  — graphviz source rendered via the local `dot` binary
+//!   * `text`: indented tree per entry-point, grouped by file
+//!   * `json`: canonical JSON (byte-identical to the SQLite payload)
+//!   * `dot`: graphviz source, ready to pipe through `dot -Tsvg`
+//!   * `svg`: graphviz source rendered via the local `dot` binary
 //!
 //! The command is read-only: it never persists to SQLite and never
 //! modifies the project tree.  It tries to load a previously persisted

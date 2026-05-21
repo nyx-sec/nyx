@@ -16,8 +16,8 @@ Run `nyx config path` to see the exact directory on your system.
 
 ## File Precedence
 
-1. **`nyx.conf`** -- Default config (auto-created from built-in template on first run)
-2. **`nyx.local`** -- User overrides (loaded on top of defaults)
+1. **`nyx.conf`**: default config (auto-created from built-in template on first run)
+2. **`nyx.local`**: user overrides (loaded on top of defaults)
 
 Both files are optional. CLI flags take precedence over both.
 
@@ -40,7 +40,7 @@ excluded_extensions = ["jpg", "png", "exe"]
 excluded_extensions = ["foo", "jpg"]
 
 # Effective result:
-# ["exe", "foo", "jpg", "png"]  -- sorted, deduped union
+# ["exe", "foo", "jpg", "png"]  (sorted, deduped union)
 ```
 
 ---
@@ -423,9 +423,9 @@ State analysis requires `mode = "full"` or `mode = "taint"`. It has no effect in
 ### Engine-version mismatch is handled automatically
 
 Nyx stores the scanner's `CARGO_PKG_VERSION` in the project index database.
-When the version recorded in the DB differs from the running binary; or the
-row is missing entirely; every cached summary, SSA body, and file-hash row
-is wiped on the next open so the next scan rebuilds the index against the new
+When the version recorded in the DB differs from the running binary, or the
+row is missing entirely, every cached summary, SSA body, and file-hash row
+is wiped on the next open. The next scan rebuilds the index against the new
 engine. No flag is needed; CI pipelines keep working across upgrades.
 
 The rebuild is logged at `info` level:
@@ -468,4 +468,4 @@ On the next scan Nyx builds a fresh index from scratch.
 
 ## Reserved Fields
 
-Some config fields are defined but not yet implemented. They are marked `(RESERVED)` in the default config and accept values without effect. This allows forward-compatible config files; settings will activate when the feature is implemented without requiring config changes.
+Some config fields are defined but not yet implemented. They are marked `(RESERVED)` in the default config and accept values without effect. Config files stay forward-compatible: settings start having an effect when the feature ships, with no edit needed.
