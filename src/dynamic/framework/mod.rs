@@ -238,8 +238,8 @@ mod tests {
         let java_registered = registry::adapters_for(Lang::Java);
         assert_eq!(
             java_registered.len(),
-            17,
-            "Java must have Phase 20 baseline (14) + M.3 Quartz/Spring-middleware (2) + Flyway (1)",
+            18,
+            "Java must have Phase 20 baseline (14) + M.3 Quartz/Spring-middleware (2) + Flyway (1) + Liquibase (1)",
         );
         for adapter in java_registered {
             assert_eq!(adapter.lang(), Lang::Java);
@@ -274,8 +274,8 @@ mod tests {
         let js_registered = registry::adapters_for(Lang::JavaScript);
         assert_eq!(
             js_registered.len(),
-            19,
-            "JavaScript must have Phase 20 baseline (12) + M.3 Phase-21 (7)",
+            20,
+            "JavaScript must have Phase 20 baseline (12) + M.3 Phase-21 (7) + Knex (1)",
         );
         for adapter in js_registered {
             assert_eq!(adapter.lang(), Lang::JavaScript);
@@ -292,8 +292,8 @@ mod tests {
         let go_registered = registry::adapters_for(Lang::Go);
         assert_eq!(
             go_registered.len(),
-            10,
-            "Go must have Phase 20 baseline (9) + M.3 gqlgen (1)",
+            11,
+            "Go must have Phase 20 baseline (9) + M.3 gqlgen (1) + golang-migrate (1)",
         );
         for adapter in go_registered {
             assert_eq!(adapter.lang(), Lang::Go);
@@ -301,8 +301,8 @@ mod tests {
         let rust_registered = registry::adapters_for(Lang::Rust);
         assert_eq!(
             rust_registered.len(),
-            7,
-            "Rust must have Phase 20 baseline (6) + M.3 juniper (1)",
+            8,
+            "Rust must have Phase 20 baseline (6) + M.3 juniper (1) + refinery (1)",
         );
         for adapter in rust_registered {
             assert_eq!(adapter.lang(), Lang::Rust);
