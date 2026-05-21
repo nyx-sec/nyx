@@ -173,8 +173,15 @@ fn class_method_java_emits_reflective_dispatch() {
 fn class_method_go_uses_reflect_receivers_registry() {
     let spec = make_spec(Lang::Go);
     let h = lang::emit(&spec).expect("emit ok");
-    assert!(h.source.contains("entry.NyxReceivers"));
+    assert!(h.source.contains("entry.NyxAutoReceivers"));
     assert!(h.source.contains("MethodByName"));
+    let registry = h
+        .extra_files
+        .iter()
+        .find(|(name, _)| name == "entry/nyx_auto_registry.go")
+        .expect("auto registry emitted");
+    assert!(registry.1.contains("NyxAutoReceivers"));
+    assert!(registry.1.contains("UserService{}"));
 }
 
 #[test]

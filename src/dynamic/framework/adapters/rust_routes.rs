@@ -207,18 +207,38 @@ pub fn extract_rust_path_placeholders(path: &str) -> Vec<String> {
 /// [`ParamSource::PathSegment`]; `req` / `request` / `state` formals
 /// fall to [`ParamSource::Implicit`]; every other formal becomes a
 /// [`ParamSource::QueryParam`].
+///
+/// warp's `warp::path!("users" / u32)` macro reconstructs placeholders
+/// as type names (`u32`) rather than parameter names because the
+/// segments are positional. When the placeholder list contains
+/// typed-anonymous segments (Rust primitive type names like `u32` /
+/// `String` / `Uuid`), the n-th typed-anonymous placeholder binds
+/// positionally to the n-th non-implicit formal so handler signatures
+/// like `fn show(id: u32)` bind `id` as a path segment instead of a
+/// query param.
 pub fn bind_rust_path_params(formals: &[String], path: &str) -> Vec<ParamBinding> {
     let placeholders = extract_rust_path_placeholders(path);
+    let typed_anon_count = placeholders
+        .iter()
+        .filter(|p| is_typed_anonymous_placeholder(p))
+        .count();
+    let mut non_implicit_seen = 0usize;
     formals
         .iter()
         .enumerate()
         .map(|(idx, name)| {
             let source = if is_implicit_formal(name) {
                 ParamSource::Implicit
-            } else if placeholders.iter().any(|p| p == name) {
-                ParamSource::PathSegment(name.clone())
             } else {
-                ParamSource::QueryParam(name.clone())
+                let positional_slot = non_implicit_seen;
+                non_implicit_seen += 1;
+                if placeholders.iter().any(|p| p == name) {
+                    ParamSource::PathSegment(name.clone())
+                } else if positional_slot < typed_anon_count {
+                    ParamSource::PathSegment(name.clone())
+                } else {
+                    ParamSource::QueryParam(name.clone())
+                }
             };
             ParamBinding {
                 index: idx,
@@ -231,6 +251,30 @@ pub fn bind_rust_path_params(formals: &[String], path: &str) -> Vec<ParamBinding
 
 fn is_implicit_formal(name: &str) -> bool {
     matches!(name, "req" | "request" | "state" | "ctx" | "cx" | "headers")
+}
+
+fn is_typed_anonymous_placeholder(name: &str) -> bool {
+    matches!(
+        name,
+        "u8" | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "bool"
+            | "char"
+            | "String"
+            | "str"
+            | "Uuid"
+    )
 }
 
 /// Parse Rust framework verb names (`get` / `post` / `put` / `patch`
@@ -868,5 +912,37 @@ mod tests {
         let (_method, path) =
             find_warp_route(tree.root_node(), src, "show").expect("hit");
         assert!(path.contains("users"));
+    }
+
+    #[test]
+    fn warp_typed_anonymous_placeholder_binds_positionally() {
+        let formals = vec!["id".to_string()];
+        let bindings = bind_rust_path_params(&formals, "/users/{u32}");
+        assert!(matches!(bindings[0].source, ParamSource::PathSegment(_)));
+    }
+
+    #[test]
+    fn warp_multi_typed_anonymous_placeholders_bind_positionally() {
+        let formals = vec!["user_id".to_string(), "post_slug".to_string()];
+        let bindings =
+            bind_rust_path_params(&formals, "/users/{u32}/posts/{String}");
+        assert!(matches!(bindings[0].source, ParamSource::PathSegment(_)));
+        assert!(matches!(bindings[1].source, ParamSource::PathSegment(_)));
+    }
+
+    #[test]
+    fn warp_typed_anonymous_count_caps_positional_binding() {
+        let formals = vec!["id".to_string(), "extra".to_string()];
+        let bindings = bind_rust_path_params(&formals, "/users/{u32}");
+        assert!(matches!(bindings[0].source, ParamSource::PathSegment(_)));
+        assert!(matches!(bindings[1].source, ParamSource::QueryParam(_)));
+    }
+
+    #[test]
+    fn warp_implicit_formals_skip_positional_binding() {
+        let formals = vec!["req".to_string(), "id".to_string()];
+        let bindings = bind_rust_path_params(&formals, "/users/{u32}");
+        assert!(matches!(bindings[0].source, ParamSource::Implicit));
+        assert!(matches!(bindings[1].source, ParamSource::PathSegment(_)));
     }
 }

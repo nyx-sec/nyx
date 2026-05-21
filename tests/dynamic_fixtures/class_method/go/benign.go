@@ -9,7 +9,3 @@ func (UserService) Run(input string) string {
 	out, _ := exec.Command("/bin/echo", input).Output()
 	return string(out)
 }
-
-var NyxReceivers = map[string]interface{}{
-	"UserService": UserService{},
-}
