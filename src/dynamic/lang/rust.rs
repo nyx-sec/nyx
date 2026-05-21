@@ -1078,8 +1078,8 @@ fn class_derives_default(entry_src: &str, class: &str) -> bool {
         if boundary_ok {
             let window_start = decl_pos.saturating_sub(256);
             let window = &entry_src[window_start..decl_pos];
-            if let Some(derive_pos) = window.rfind("#[derive(") {
-                if let Some(end_rel) = window[derive_pos..].find(")]") {
+            if let Some(derive_pos) = window.rfind("#[derive(")
+                && let Some(end_rel) = window[derive_pos..].find(")]") {
                     let end = derive_pos + end_rel;
                     let derive_list = &window[derive_pos + "#[derive(".len()..end];
                     let between = &window[end + ")]".len()..];
@@ -1102,7 +1102,6 @@ fn class_derives_default(entry_src: &str, class: &str) -> bool {
                         return true;
                     }
                 }
-            }
         }
         search_from = decl_pos + 1;
     }

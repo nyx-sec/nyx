@@ -64,12 +64,11 @@ fn visit_routes<'a>(
     if out.is_some() {
         return;
     }
-    if node.kind() == "call" {
-        if let Some(found) = try_route_mapping(node, bytes, controller, action) {
+    if node.kind() == "call"
+        && let Some(found) = try_route_mapping(node, bytes, controller, action) {
             *out = Some(found);
             return;
         }
-    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         visit_routes(child, bytes, controller, action, out);
@@ -125,7 +124,7 @@ fn rails_controller_path(class_name: &str) -> String {
     // for module-namespaced controllers (`Api::Users` → `api/users`).
     let segments: Vec<String> = stripped
         .split("::")
-        .map(|seg| snake_case(seg))
+        .map(snake_case)
         .filter(|s| !s.is_empty())
         .collect();
     segments.join("/")

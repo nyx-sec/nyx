@@ -938,57 +938,64 @@ fn ssti_thymeleaf_pom() -> &'static str {
 
 /// Phase 05 — Track J.3 XXE harness for Java (`DocumentBuilderFactory`).
 ///
-/// Reads `NYX_PAYLOAD`, scans for `<!ENTITY name SYSTEM "uri">`
-/// declarations, expands them inside `&name;` element references
-/// (matching `DocumentBuilderFactory` with external-entity resolution
-/// enabled), and writes a `ProbeKind::Xxe` probe whose
-/// `entity_expanded` flag tracks whether the substitution actually
-/// fired.  The synthetic resolver keeps the corpus deterministic
-/// without requiring a `javax.xml.parsers` classpath in the sandbox.
+/// Reads `NYX_PAYLOAD`, parses it with `javax.xml.parsers.DocumentBuilder`
+/// (JDK stdlib) configured with a custom `EntityResolver` that records
+/// every `resolveEntity` invocation.  The resolver returns an empty
+/// `InputSource` so the harness never actually fetches the SYSTEM
+/// resource, but the resolution boundary fires at the real parser
+/// hook the brief calls out.  Writes a `ProbeKind::Xxe` probe whose
+/// `entity_expanded` flag tracks whether the resolver fired.
 pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let source = format!(
         r#"// Nyx dynamic harness — XXE DocumentBuilderFactory (Phase 05 / Track J.3).
 import java.io.FileWriter;
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.io.StringReader;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import org.xml.sax.EntityResolver;
+import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
 
 public class NyxHarness {{
 {shim}
 
     static boolean nyxLastExpanded = false;
 
-    static String nyxXmlParse(String payload) {{
-        Pattern doctype = Pattern.compile(
-            "<!ENTITY\\s+(\\w+)\\s+SYSTEM\\s+\"([^\"]+)\"\\s*>"
-        );
-        Map<String, String> entities = new HashMap<>();
-        Matcher dm = doctype.matcher(payload);
-        while (dm.find()) {{
-            entities.put(dm.group(1), "<" + dm.group(2) + ">");
-        }}
+    static void nyxXmlParse(String payload) {{
         nyxLastExpanded = false;
-        Pattern ref = Pattern.compile("&(\\w+);");
-        Matcher rm = ref.matcher(payload);
-        StringBuffer out = new StringBuffer(payload.length());
-        while (rm.find()) {{
-            String name = rm.group(1);
-            String body = entities.get(name);
-            if (body != null) {{
-                nyxLastExpanded = true;
-                rm.appendReplacement(out, Matcher.quoteReplacement(body));
-            }} else {{
-                rm.appendReplacement(out, Matcher.quoteReplacement(rm.group(0)));
+        try {{
+            DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+            // Mirror the brief's "DocumentBuilderFactory with external
+            // entity resolution enabled" target: leave the factory at
+            // default settings (which historically permit doctype +
+            // external entities) and rely on the EntityResolver hook
+            // to short-circuit the actual fetch.
+            DocumentBuilder db = dbf.newDocumentBuilder();
+            db.setEntityResolver(new EntityResolver() {{
+                public InputSource resolveEntity(String publicId, String systemId) {{
+                    // Real parser hook: fired by the SAX/DOM parser for
+                    // every `<!ENTITY x SYSTEM "...">` reference.  Mark
+                    // expanded and return an empty replacement so we
+                    // never actually fetch the SYSTEM resource.
+                    nyxLastExpanded = true;
+                    return new InputSource(new StringReader(""));
+                }}
+            }});
+            try {{
+                db.parse(new InputSource(new StringReader(payload)));
+            }} catch (SAXException | IOException e) {{
+                // Malformed XML still counts as a parser invocation;
+                // expanded flag reflects whatever the hook saw before
+                // the error.
             }}
+        }} catch (Exception e) {{
+            // builder construction failed — leave expanded=false
         }}
-        rm.appendTail(out);
-        return out.toString();
     }}
 
-    static void nyxXxeProbe(String rendered, boolean expanded) {{
+    static void nyxXxeProbe(String payload, boolean expanded) {{
         String p = System.getenv("NYX_PROBE_PATH");
         if (p == null || p.isEmpty()) return;
         long now = System.nanoTime();
@@ -996,14 +1003,14 @@ public class NyxHarness {{
         if (pid == null) pid = "";
         StringBuilder line = new StringBuilder(256);
         line.append("{{\"sink_callee\":\"DocumentBuilder.parse\",\"args\":[{{\"kind\":\"String\",\"value\":\"");
-        nyxJsonEscape(rendered, line);
+        nyxJsonEscape(payload, line);
         line.append("\"}}],");
         line.append("\"captured_at_ns\":").append(now).append(',');
         line.append("\"payload_id\":\"");
         nyxJsonEscape(pid, line);
         line.append("\",\"kind\":{{\"kind\":\"Xxe\",\"entity_expanded\":").append(expanded ? "true" : "false").append("}},");
         line.append("\"witness\":");
-        line.append(nyxWitnessJson("DocumentBuilder.parse", new String[]{{rendered}}));
+        line.append(nyxWitnessJson("DocumentBuilder.parse", new String[]{{payload}}));
         line.append("}}\n");
         try (FileWriter fw = new FileWriter(p, true)) {{
             fw.write(line.toString());
@@ -1015,13 +1022,11 @@ public class NyxHarness {{
     public static void main(String[] args) {{
         String payload = System.getenv("NYX_PAYLOAD");
         if (payload == null) payload = "";
-        String rendered = nyxXmlParse(payload);
-        nyxXxeProbe(rendered, nyxLastExpanded);
+        nyxXmlParse(payload);
+        nyxXxeProbe(payload, nyxLastExpanded);
         System.out.println("__NYX_SINK_HIT__");
         StringBuilder body = new StringBuilder(64);
-        body.append("{{\"render\":\"");
-        nyxJsonEscape(rendered, body);
-        body.append("\",\"entity_expanded\":").append(nyxLastExpanded ? "true" : "false").append("}}");
+        body.append("{{\"entity_expanded\":").append(nyxLastExpanded ? "true" : "false").append("}}");
         System.out.println(body.toString());
     }}
 }}

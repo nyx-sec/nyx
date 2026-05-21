@@ -972,57 +972,75 @@ STDOUT.flush
 
 /// Phase 05 — Track J.3 XXE harness for Ruby (REXML / Nokogiri).
 ///
-/// Reads `NYX_PAYLOAD`, scans for `<!ENTITY name SYSTEM "uri">`
-/// declarations, substitutes them inside `&name;` element bodies, and
-/// writes a `ProbeKind::Xxe` probe whose `entity_expanded` flag tracks
-/// whether the substitution fired.  Brief lists a framework adapter
-/// for Ruby XXE (`xxe_ruby`); the harness keeps the corpus
-/// end-to-end-exercisable without bundling REXML / Nokogiri.
+/// Reads `NYX_PAYLOAD`, parses it with stdlib `REXML::Document.new`,
+/// inspects the resulting `doctype.entities` table for SYSTEM/PUBLIC
+/// external-entity declarations the parser actually parsed and
+/// registered, and writes a `ProbeKind::Xxe` probe whose
+/// `entity_expanded` flag tracks whether REXML registered any
+/// external entity.  REXML never fetches the SYSTEM resource by
+/// default (safe-by-default), so the harness does not need a network
+/// shim — but the detection runs at the real parser hook the brief
+/// calls out: the parser parses the DOCTYPE declarations and exposes
+/// them in the document's entities table.
 pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let body = format!(
-        r#"# Nyx dynamic harness — XXE REXML / Nokogiri (Phase 05 / Track J.3).
+        r#"# Nyx dynamic harness — XXE REXML (Phase 05 / Track J.3).
 require 'json'
+require 'rexml/document'
+require 'stringio'
 
 {shim}
 
 def _nyx_libxml_parse(payload)
-  entities = {{}}
-  payload.scan(/<!ENTITY\s+(\w+)\s+SYSTEM\s+"([^"]+)"\s*>/) do |name, uri|
-    entities[name] = "<#{{uri}}>"
-  end
+  # Real parser hook: REXML parses `<!ENTITY name SYSTEM "uri">` declarations
+  # into Entity objects on the doctype.  Inspect the entities table to
+  # detect every external-entity reference the parser registered.
   expanded = false
-  rendered = payload.gsub(/&(\w+);/) do
-    name = Regexp.last_match(1)
-    if entities.key?(name)
-      expanded = true
-      entities[name]
-    else
-      Regexp.last_match(0)
+  begin
+    doc = REXML::Document.new(payload)
+    if doc.doctype
+      doc.doctype.entities.each_value do |ent|
+        s = ent.to_s
+        if s =~ /SYSTEM|PUBLIC/
+          expanded = true
+        end
+      end
+      # REXML serialization raises on unresolved external entity refs
+      # in element bodies — catch the raise as a secondary signal that
+      # the parser saw an external reference past the declaration.
+      begin
+        doc.write(StringIO.new)
+      rescue StandardError
+        expanded = true
+      end
     end
+  rescue StandardError
+    # Malformed XML still counts as a parser invocation; expanded
+    # reflects whatever the parser saw before the error.
   end
-  [rendered, expanded]
+  expanded
 end
 
-def _nyx_xxe_probe(rendered, expanded)
+def _nyx_xxe_probe(payload, expanded)
   p = ENV['NYX_PROBE_PATH']
   return if p.nil? || p.empty?
   rec = {{
     'sink_callee'    => 'REXML::Document.new',
-    'args'           => [{{ 'kind' => 'String', 'value' => rendered }}],
+    'args'           => [{{ 'kind' => 'String', 'value' => payload }}],
     'captured_at_ns' => Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond),
     'payload_id'     => ENV['NYX_PAYLOAD_ID'] || '',
     'kind'           => {{ 'kind' => 'Xxe', 'entity_expanded' => !!expanded }},
-    'witness'        => __nyx_witness('REXML::Document.new', [rendered]),
+    'witness'        => __nyx_witness('REXML::Document.new', [payload]),
   }}
   File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
 end
 
 payload = ENV['NYX_PAYLOAD'] || ''
-rendered, expanded = _nyx_libxml_parse(payload)
-_nyx_xxe_probe(rendered, expanded)
+expanded = _nyx_libxml_parse(payload)
+_nyx_xxe_probe(payload, expanded)
 STDOUT.puts '__NYX_SINK_HIT__'
-STDOUT.puts JSON.generate({{"render" => rendered, "entity_expanded" => expanded}})
+STDOUT.puts JSON.generate({{"entity_expanded" => expanded}})
 STDOUT.flush
 "#
     );

@@ -17,7 +17,7 @@ use crate::dynamic::lang;
 use crate::dynamic::spec::HarnessSpec;
 use crate::evidence::UnsupportedReason;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A built harness ready to hand off to the sandbox.
 #[derive(Debug, Clone)]
@@ -109,7 +109,7 @@ fn stage_harness(
 /// changed.
 ///
 /// Best-effort: silently skips if the file cannot be found or copied.
-fn copy_entry_file(spec: &HarnessSpec, workdir: &PathBuf, entry_subpath: Option<&str>) {
+fn copy_entry_file(spec: &HarnessSpec, workdir: &Path, entry_subpath: Option<&str>) {
     let candidates = [
         PathBuf::from(&spec.entry_file),
         PathBuf::from(".").join(&spec.entry_file),

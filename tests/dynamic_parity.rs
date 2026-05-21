@@ -127,11 +127,10 @@ mod parity_tests {
         // BackendUnavailable into Unsupported OR Inconclusive depending on
         // where the error surfaces, so the skip predicate looks at the
         // reason text, not the verdict status.
-        if let Some(ref r) = docker_result.reason {
-            if format!("{r:?}").contains("BackendUnavailable") {
+        if let Some(ref r) = docker_result.reason
+            && format!("{r:?}").contains("BackendUnavailable") {
                 return; // Docker absent — skip comparison.
             }
-        }
 
         assert_eq!(
             process_result.status, docker_result.status,

@@ -667,14 +667,17 @@ echo json_encode(["render" => $rendered]) . "\n";
     }
 }
 
-/// Phase 05 — Track J.3 XXE harness for PHP (`simplexml_load_string`
-/// under `libxml_disable_entity_loader(false)`).
+/// Phase 05 — Track J.3 XXE harness for PHP (`simplexml_load_string`).
 ///
-/// Reads `NYX_PAYLOAD`, scans for `<!ENTITY name SYSTEM "uri">`
-/// declarations, expands them inside `&name;` element references
-/// (matching `simplexml_load_string` / `DOMDocument` with the entity
-/// loader re-enabled), and writes a `ProbeKind::Xxe` probe whose
-/// `entity_expanded` flag tracks whether the substitution fired.
+/// Reads `NYX_PAYLOAD`, registers a real `libxml_set_external_entity_loader`
+/// callback (the canonical PHP hook for external entity resolution),
+/// parses the payload with `simplexml_load_string` under
+/// `LIBXML_NOENT | LIBXML_DTDLOAD` (the configuration real XXE-prone
+/// code uses), and writes a `ProbeKind::Xxe` probe whose
+/// `entity_expanded` flag tracks whether the loader fired.  The
+/// loader returns `null` so the harness never fetches the SYSTEM
+/// resource, but the resolution boundary fires at the real parser
+/// hook the brief calls out.
 pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let body = format!(
@@ -682,43 +685,47 @@ pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
 // Nyx dynamic harness — XXE simplexml_load_string (Phase 05 / Track J.3).
 {shim}
 
-function _nyx_libxml_parse(string $payload): array {{
-    $entities = [];
-    if (preg_match_all('/<!ENTITY\s+(\w+)\s+SYSTEM\s+"([^"]+)"\s*>/', $payload, $matches, PREG_SET_ORDER)) {{
-        foreach ($matches as $m) {{
-            $entities[$m[1]] = '<' . $m[2] . '>';
-        }}
-    }}
+function _nyx_libxml_parse(string $payload): bool {{
     $expanded = false;
-    $rendered = preg_replace_callback('/&(\w+);/', function ($m) use ($entities, &$expanded) {{
-        if (array_key_exists($m[1], $entities)) {{
-            $expanded = true;
-            return $entities[$m[1]];
-        }}
-        return $m[0];
-    }}, $payload) ?? $payload;
-    return [$rendered, $expanded];
+    // Real parser hook: libxml calls this for every <!ENTITY name SYSTEM "uri">
+    // reference resolved in the document.  We mark expanded and
+    // return null so the parser does not actually fetch the resource.
+    libxml_set_external_entity_loader(function ($public, $system, $context) use (&$expanded) {{
+        $expanded = true;
+        return null;
+    }});
+    $prev_errors = libxml_use_internal_errors(true);
+    // LIBXML_NOENT enables entity substitution (turning `&xxe;` into
+    // the resolved body) and LIBXML_DTDLOAD allows the parser to load
+    // the DTD declarations — the combination real XXE-vulnerable PHP
+    // code passes to `simplexml_load_string`.
+    @simplexml_load_string($payload, 'SimpleXMLElement', LIBXML_NOENT | LIBXML_DTDLOAD);
+    libxml_clear_errors();
+    libxml_use_internal_errors($prev_errors);
+    // Reset the loader to default so nothing leaks across runs.
+    libxml_set_external_entity_loader(null);
+    return $expanded;
 }}
 
-function _nyx_xxe_probe(string $rendered, bool $expanded): void {{
+function _nyx_xxe_probe(string $payload, bool $expanded): void {{
     $p = getenv('NYX_PROBE_PATH');
     if ($p === false || $p === '') return;
     $rec = [
         'sink_callee'    => 'simplexml_load_string',
-        'args'           => [['kind' => 'String', 'value' => $rendered]],
+        'args'           => [['kind' => 'String', 'value' => $payload]],
         'captured_at_ns' => (int) hrtime(true),
         'payload_id'     => (string) (getenv('NYX_PAYLOAD_ID') ?: ''),
         'kind'           => ['kind' => 'Xxe', 'entity_expanded' => $expanded],
-        'witness'        => __nyx_witness('simplexml_load_string', [$rendered]),
+        'witness'        => __nyx_witness('simplexml_load_string', [$payload]),
     ];
     @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
 }}
 
 $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
-[$rendered, $expanded] = _nyx_libxml_parse($payload);
-_nyx_xxe_probe($rendered, $expanded);
+$expanded = _nyx_libxml_parse($payload);
+_nyx_xxe_probe($payload, $expanded);
 echo "__NYX_SINK_HIT__\n";
-echo json_encode(["render" => $rendered, "entity_expanded" => $expanded]) . "\n";
+echo json_encode(["entity_expanded" => $expanded]) . "\n";
 "#
     );
     HarnessSource {

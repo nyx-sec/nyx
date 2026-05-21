@@ -27,34 +27,36 @@ use nyx_scanner::patterns::{FindingCategory, Severity};
 /// and a synthetic per-name summary, so the framework adapter registry
 /// resolves a binding when the fixture's source matches an adapter.
 fn make_diag(path: &str, handler: &str, line: usize, cap: Cap, rule_id: &str) -> Diag {
-    let mut ev = Evidence::default();
-    ev.flow_steps = vec![
-        FlowStep {
-            step: 0,
-            kind: FlowStepKind::Source,
-            file: path.into(),
-            line: line as u32,
-            col: 0,
-            snippet: None,
-            variable: None,
-            callee: None,
-            function: Some(handler.into()),
-            is_cross_file: false,
-        },
-        FlowStep {
-            step: 1,
-            kind: FlowStepKind::Sink,
-            file: path.into(),
-            line: line as u32,
-            col: 0,
-            snippet: None,
-            variable: None,
-            callee: None,
-            function: Some(handler.into()),
-            is_cross_file: false,
-        },
-    ];
-    ev.sink_caps = cap.bits();
+    let ev = Evidence {
+        flow_steps: vec![
+            FlowStep {
+                step: 0,
+                kind: FlowStepKind::Source,
+                file: path.into(),
+                line: line as u32,
+                col: 0,
+                snippet: None,
+                variable: None,
+                callee: None,
+                function: Some(handler.into()),
+                is_cross_file: false,
+            },
+            FlowStep {
+                step: 1,
+                kind: FlowStepKind::Sink,
+                file: path.into(),
+                line: line as u32,
+                col: 0,
+                snippet: None,
+                variable: None,
+                callee: None,
+                function: Some(handler.into()),
+                is_cross_file: false,
+            },
+        ],
+        sink_caps: cap.bits(),
+        ..Evidence::default()
+    };
     Diag {
         path: path.into(),
         line,

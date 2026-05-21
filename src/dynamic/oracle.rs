@@ -747,11 +747,10 @@ fn stdout_template_equals(stdout: &[u8], expected: u64) -> bool {
         let Ok(v) = parsed else { continue };
         let Some(render) = v.get("render") else { continue };
         let Some(s) = render.as_str() else { continue };
-        if let Ok(n) = s.trim().parse::<u64>() {
-            if n == expected {
+        if let Ok(n) = s.trim().parse::<u64>()
+            && n == expected {
                 return true;
             }
-        }
     }
     false
 }
@@ -931,7 +930,7 @@ fn extract_redirect_host(location: &str) -> Option<String> {
     };
     // Strip path / query / fragment from the host segment.
     let end = rest
-        .find(|c: char| matches!(c, '/' | '?' | '#'))
+        .find(['/', '?', '#'])
         .unwrap_or(rest.len());
     let authority = &rest[..end];
     // Strip userinfo + port.  Bracketed IPv6 authorities (`[::1]` or

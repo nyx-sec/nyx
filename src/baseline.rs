@@ -150,8 +150,8 @@ pub fn write_baseline(path: &Path, diags: &[Diag]) -> crate::errors::NyxResult<(
     let json = serde_json::to_string_pretty(&entries).map_err(|e| {
         crate::errors::NyxError::Msg(format!("baseline serialize error: {e}"))
     })?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 crate::errors::NyxError::Msg(format!(
                     "cannot create baseline dir {}: {e}",
@@ -159,7 +159,6 @@ pub fn write_baseline(path: &Path, diags: &[Diag]) -> crate::errors::NyxResult<(
                 ))
             })?;
         }
-    }
     std::fs::write(path, json).map_err(|e| {
         crate::errors::NyxError::Msg(format!(
             "cannot write baseline {}: {e}",

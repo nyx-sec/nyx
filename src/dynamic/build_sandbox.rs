@@ -791,11 +791,10 @@ fn collect_class_files(root: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().map(|e| e == "class").unwrap_or(false) {
-                if let Ok(rel) = path.strip_prefix(root) {
+            } else if path.extension().map(|e| e == "class").unwrap_or(false)
+                && let Ok(rel) = path.strip_prefix(root) {
                     out.push(rel.to_path_buf());
                 }
-            }
         }
     }
     out.sort();

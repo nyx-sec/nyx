@@ -142,12 +142,13 @@ fn flask_eval_verdict() -> VerifyResult {
 }
 
 fn flask_eval_sandbox_options() -> SandboxOptions {
-    let mut opts = SandboxOptions::default();
-    opts.backend = SandboxBackend::Docker;
-    opts.env_passthrough = vec!["NYX_PAYLOAD".into()];
-    opts.timeout = Duration::from_secs(30);
-    opts.memory_mib = 256;
-    opts
+    SandboxOptions {
+        backend: SandboxBackend::Docker,
+        env_passthrough: vec!["NYX_PAYLOAD".into()],
+        timeout: Duration::from_secs(30),
+        memory_mib: 256,
+        ..SandboxOptions::default()
+    }
 }
 
 fn workspace_root() -> PathBuf {

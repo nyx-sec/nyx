@@ -122,8 +122,7 @@ fn walk<'a>(
         && let Some(name) = node
             .child_by_field_name("name")
             .and_then(|n| n.utf8_text(bytes).ok())
-    {
-        if name == target {
+        && name == target {
             let klass = if node.kind() == "method_declaration" {
                 here_class
             } else {
@@ -132,7 +131,6 @@ fn walk<'a>(
             *out = Some((node, klass));
             return;
         }
-    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         walk(child, bytes, target, here_class, out);

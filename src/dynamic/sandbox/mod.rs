@@ -277,16 +277,13 @@ pub struct SandboxOptions {
 ///   Each primitive is best-effort; failures degrade to
 ///   [`HardeningLevel::Partial`] without aborting the run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ProcessHardeningProfile {
+    #[default]
     Standard,
     Strict,
 }
 
-impl Default for ProcessHardeningProfile {
-    fn default() -> Self {
-        ProcessHardeningProfile::Standard
-    }
-}
 
 /// Phase 20 follow-up (Track E.4 ablation harness): selectively skip or
 /// loosen individual Strict-profile primitives so the escape-fixture
@@ -419,7 +416,9 @@ impl HostPort {
 ///   with no egress filter.  Reserved for diagnostic / dev-only runs;
 ///   the verifier never sets this in production.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub enum NetworkPolicy {
+    #[default]
     None,
     StubsOnly { allow: Vec<HostPort> },
     OobOutbound { listener: Arc<OobListener> },
@@ -461,11 +460,6 @@ impl NetworkPolicy {
     }
 }
 
-impl Default for NetworkPolicy {
-    fn default() -> Self {
-        NetworkPolicy::None
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxBackend {
@@ -882,8 +876,8 @@ fn rewrite_extra_env_for_container(
     extra_env
         .iter()
         .map(|(k, v)| {
-            if k == "NYX_FS_ROOT" {
-                if let Some(idx) = fs_stub_roots
+            if k == "NYX_FS_ROOT"
+                && let Some(idx) = fs_stub_roots
                     .iter()
                     .position(|p| p.as_os_str() == std::ffi::OsStr::new(v))
                 {
@@ -892,7 +886,6 @@ fn rewrite_extra_env_for_container(
                         format!("{}/{idx}", docker::STUB_MOUNT_ROOT),
                     );
                 }
-            }
             (k.clone(), v.clone())
         })
         .collect()
@@ -1163,12 +1156,11 @@ fn exec_in_container(
     // fixture the process backend confirms.  Falls through silently for
     // non-UTF-8 payloads (a `docker -e` argument must be valid UTF-8),
     // leaving consumers to decode `NYX_PAYLOAD_B64` themselves.
-    if let Ok(s) = std::str::from_utf8(payload_bytes) {
-        if !s.contains('\0') {
+    if let Ok(s) = std::str::from_utf8(payload_bytes)
+        && !s.contains('\0') {
             cmd_args.push("-e".into());
             cmd_args.push(format!("NYX_PAYLOAD={s}"));
         }
-    }
     // Forward harness-specific env vars.
     for (k, v) in &harness.env {
         cmd_args.push("-e".into());
@@ -1750,7 +1742,7 @@ fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
 
 fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };

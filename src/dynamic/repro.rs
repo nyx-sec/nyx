@@ -90,6 +90,7 @@ impl std::fmt::Display for ReproError {
 ///
 /// `harness_source` is the generated harness source code.
 /// `entry_source` is the extracted entry-point source (may be empty).
+#[allow(clippy::too_many_arguments)]
 pub fn write(
     spec: &HarnessSpec,
     opts: &SandboxOptions,
@@ -635,7 +636,7 @@ fn repro_readme(spec: &HarnessSpec, verdict: &VerifyResult) -> String {
          The expected outcome is in `expected/outcome.json`.\n",
         finding_id = spec.finding_id,
         status = verdict.status,
-        cap = format!("{:?}", spec.expected_cap),
+        cap = format_args!("{:?}", spec.expected_cap),
         entry = spec.entry_name,
     )
 }

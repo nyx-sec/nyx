@@ -91,17 +91,14 @@ pub fn find_python_function<'a>(
 }
 
 fn walk<'a>(node: Node<'a>, bytes: &[u8], target: &str) -> Option<(Node<'a>, Option<Node<'a>>)> {
-    if node.kind() == "function_definition" {
-        if let Some(name) = node
+    if node.kind() == "function_definition"
+        && let Some(name) = node
             .child_by_field_name("name")
             .and_then(|n| n.utf8_text(bytes).ok())
-        {
-            if name == target {
+            && name == target {
                 let decorated = node.parent().filter(|p| p.kind() == "decorated_definition");
                 return Some((node, decorated));
             }
-        }
-    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         if let Some(found) = walk(child, bytes, target) {

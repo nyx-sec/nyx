@@ -142,11 +142,10 @@ pub fn rust_formal_names(func: Node<'_>, bytes: &[u8]) -> Vec<String> {
 fn push_pattern_name(pat: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
     match pat.kind() {
         "identifier" => {
-            if let Ok(text) = pat.utf8_text(bytes) {
-                if text != "_" {
+            if let Ok(text) = pat.utf8_text(bytes)
+                && text != "_" {
                     out.push(text.to_owned());
                 }
-            }
         }
         "mut_pattern" | "ref_pattern" => {
             let mut cur = pat.walk();
@@ -316,11 +315,10 @@ pub fn find_method_attribute<'a>(
     // try those too.
     let mut cur = func.walk();
     for c in func.children(&mut cur) {
-        if c.kind() == "attribute_item" {
-            if let Some(hit) = read_route_attribute(c, bytes) {
+        if c.kind() == "attribute_item"
+            && let Some(hit) = read_route_attribute(c, bytes) {
                 return Some(hit);
             }
-        }
     }
     None
 }
@@ -528,27 +526,23 @@ fn walk_warp<'a>(
         let mut verb = HttpMethod::GET;
         let mut hit_target = false;
         while let Some(p) = parent {
-            match p.kind() {
-                "call_expression" => {
-                    if let Some(func) = p.child_by_field_name("function")
-                        && func.kind() == "field_expression"
-                        && let Some(field) = func.child_by_field_name("field")
-                        && let Ok(field_text) = field.utf8_text(bytes)
-                        && matches!(field_text, "map" | "and_then" | "untuple_one")
-                    {
-                        let args = p.child_by_field_name("arguments");
-                        if let Some(args) = args {
-                            let mut cur = args.walk();
-                            for c in args.named_children(&mut cur) {
-                                if axum_callable_matches(c, bytes, target) {
-                                    hit_target = true;
-                                }
+            if p.kind() == "call_expression"
+                && let Some(func) = p.child_by_field_name("function")
+                    && func.kind() == "field_expression"
+                    && let Some(field) = func.child_by_field_name("field")
+                    && let Ok(field_text) = field.utf8_text(bytes)
+                    && matches!(field_text, "map" | "and_then" | "untuple_one")
+                {
+                    let args = p.child_by_field_name("arguments");
+                    if let Some(args) = args {
+                        let mut cur = args.walk();
+                        for c in args.named_children(&mut cur) {
+                            if axum_callable_matches(c, bytes, target) {
+                                hit_target = true;
                             }
                         }
                     }
                 }
-                _ => {}
-            }
             // Detect verb-filter calls (`warp::get()`, `warp::post()`).
             let mut cur = p.walk();
             for child in p.children(&mut cur) {

@@ -33,7 +33,7 @@ fn scan_with_hashes(dir: &Path) -> Vec<nyx_scanner::commands::scan::Diag> {
 
 /// Attach a simulated dynamic verdict to every finding in the list.
 fn set_verdict(
-    diags: &mut Vec<nyx_scanner::commands::scan::Diag>,
+    diags: &mut [nyx_scanner::commands::scan::Diag],
     status: VerifyStatus,
 ) {
     for d in diags.iter_mut() {

@@ -1,45 +1,44 @@
-/// Dynamic verification benchmarks (§8.4).
-///
-/// Tracks the per-scan cost anchors:
-///
-/// 1. `harness_build_cold` — fresh workdir, spec → BuiltHarness (source gen + disk write).
-/// 2. `harness_build_warm` — same spec, workdir already staged (file write skipped).
-/// 3. `sandbox_run_payload` — single payload run via process backend against
-///    sqli_positive.py (subprocess + settrace overhead, no networking).
-/// 4. `docker_image_build` — cold image pull/build for the python:3-slim base.
-/// 5. `docker_exec_warm` — `docker exec` into a running container (no cold start).
-/// 6. `docker_payload_cost` — per-payload sandbox cost via docker backend end-to-end.
-/// 7. `composite_chain_reverify_dispatch` — `reverify_top_chains` on a
-///    synthetic 3-member chain with no member diags. Measures the no-derive
-///    dispatch path (chain_step_specs miss, early-exit build/run loops,
-///    Inconclusive verdict allocation, severity downgrade).
-/// 8. `composite_chain_reverify_stub_confirmed` — same chain shape, stubbed
-///    reverifier returning `Confirmed`. Measures the apply-verdict happy path
-///    (no severity bucket change).
-/// 9. `composite_chain_reverify_top_n_slice` — 5-chain slice with `top_n=3`.
-///    Measures the slice traversal cost so a regression that walks the full
-///    slice instead of the prefix is visible.
-/// 10. `composite_chain_reverify_replay_stable` — same chain shape as
-///     `stub_confirmed`, but with `VerifyOptions::replay_stable_check=true`
-///     and a stub that stamps `replay_stable=Some(true)`. Anchors the
-///     apply-verdict allocation cost when the telemetry stability field
-///     is populated; a regression that adds per-chain work behind the
-///     replay opt-in (e.g. an extra run_chain_steps call leaking out of
-///     the live path into the stub layer) shows up here.
-///
-/// Wall-clock budget anchors for the composite reverify path (per the
-/// Phase 26 acceptance literal): the live process backend stays under
-/// 400ms per 3-member chain, the docker backend under 1500ms. Those
-/// live-run numbers are covered by the
-/// `flask_eval_chain_reverify_populates_dynamic_verdict` integration
-/// test in `tests/chain_emission_e2e.rs`; the microbenches here anchor
-/// the dispatch + verdict-application overhead so regressions on the
-/// API-shape half land in the criterion baseline.
-///
-/// Baselines committed to `benches/dynamic_bench_baseline.json`.
-/// Run: `cargo bench --features dynamic -- dynamic`
-///
-/// Docker benchmarks are no-ops when docker is unavailable (skipped, not failed).
+//! Dynamic verification benchmarks (§8.4).
+//!
+//! Tracks the per-scan cost anchors:
+//!
+//! 1. `harness_build_cold` — fresh workdir, spec → BuiltHarness (source gen + disk write).
+//! 2. `harness_build_warm` — same spec, workdir already staged (file write skipped).
+//! 3. `sandbox_run_payload` — single payload run via process backend against
+//!    sqli_positive.py (subprocess + settrace overhead, no networking).
+//! 4. `docker_image_build` — cold image pull/build for the python:3-slim base.
+//! 5. `docker_exec_warm` — `docker exec` into a running container (no cold start).
+//! 6. `docker_payload_cost` — per-payload sandbox cost via docker backend end-to-end.
+//! 7. `composite_chain_reverify_dispatch` — `reverify_top_chains` on a
+//!    synthetic 3-member chain with no member diags. Measures the no-derive
+//!    dispatch path (chain_step_specs miss, early-exit build/run loops,
+//!    Inconclusive verdict allocation, severity downgrade).
+//! 8. `composite_chain_reverify_stub_confirmed` — same chain shape, stubbed
+//!    reverifier returning `Confirmed`. Measures the apply-verdict happy path
+//!    (no severity bucket change).
+//! 9. `composite_chain_reverify_top_n_slice` — 5-chain slice with `top_n=3`.
+//!    Measures the slice traversal cost so a regression that walks the full
+//!    slice instead of the prefix is visible.
+//! 10. `composite_chain_reverify_replay_stable` — same chain shape as
+//!     `stub_confirmed`, but with `VerifyOptions::replay_stable_check=true`
+//!     and a stub that stamps `replay_stable=Some(true)`. Anchors the
+//!     apply-verdict allocation cost when the telemetry stability field
+//!     is populated; a regression that adds per-chain work behind the
+//!     replay opt-in (e.g. an extra run_chain_steps call leaking out of
+//!     the live path into the stub layer) shows up here.
+//!
+//! Wall-clock budget anchors for the composite reverify path: the live
+//! process backend stays under 400ms per 3-member chain, the docker
+//! backend under 1500ms. Those live-run numbers are covered by the
+//! `flask_eval_chain_reverify_populates_dynamic_verdict` integration
+//! test in `tests/chain_emission_e2e.rs`; the microbenches here anchor
+//! the dispatch + verdict-application overhead so regressions on the
+//! API-shape half land in the criterion baseline.
+//!
+//! Baselines committed to `benches/dynamic_bench_baseline.json`.
+//! Run: `cargo bench --features dynamic -- dynamic`
+//!
+//! Docker benchmarks are no-ops when docker is unavailable (skipped, not failed).
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
@@ -137,7 +136,7 @@ fn bench_sandbox_run_payload(c: &mut Criterion) {
     };
 
     c.bench_function("sandbox_run_payload", |b| {
-        b.iter(|| sandbox::run(&harness, &payload.bytes, &opts).expect("sandbox run"));
+        b.iter(|| sandbox::run(&harness, payload.bytes, &opts).expect("sandbox run"));
     });
 }
 
@@ -249,7 +248,7 @@ fn bench_docker_payload_cost(c: &mut Criterion) {
 
     c.bench_function("docker_payload_cost", |b| {
         b.iter(|| {
-            let _ = sandbox::run(&built, &payload.bytes, &opts);
+            let _ = sandbox::run(&built, payload.bytes, &opts);
         });
     });
 }
@@ -637,6 +636,7 @@ fn bench_composite_chain_reverify_replay_stable(c: &mut Criterion) {
 }
 
 #[cfg(feature = "dynamic")]
+#[allow(dead_code)]
 fn bench_noop(_c: &mut Criterion) {}
 
 // When dynamic feature is off, provide a stub so the binary still links.

@@ -38,11 +38,10 @@ fn verb_for(name: &str) -> Option<HttpMethod> {
 fn class_path_prefix(class: Node<'_>, bytes: &[u8]) -> String {
     let mut prefix = String::new();
     iter_annotations(class, bytes, |ann, name| {
-        if name == "Path" {
-            if let Some(p) = annotation_string_arg(ann, bytes) {
+        if name == "Path"
+            && let Some(p) = annotation_string_arg(ann, bytes) {
                 prefix = p;
             }
-        }
     });
     prefix
 }
@@ -57,11 +56,10 @@ fn method_verb_and_path(
         if let Some(v) = verb_for(name) {
             verb = Some(v);
         }
-        if name == "Path" {
-            if let Some(p) = annotation_string_arg(ann, bytes) {
+        if name == "Path"
+            && let Some(p) = annotation_string_arg(ann, bytes) {
                 path = p;
             }
-        }
     });
     Some((verb?, path))
 }

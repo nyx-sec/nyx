@@ -48,11 +48,10 @@ fn class_is_controller(class: Node<'_>, bytes: &[u8]) -> bool {
 fn class_route_prefix(class: Node<'_>, bytes: &[u8]) -> String {
     let mut prefix = String::new();
     iter_annotations(class, bytes, |ann, name| {
-        if name == "RequestMapping" {
-            if let Some(p) = annotation_string_arg(ann, bytes) {
+        if name == "RequestMapping"
+            && let Some(p) = annotation_string_arg(ann, bytes) {
                 prefix = p;
             }
-        }
     });
     prefix
 }

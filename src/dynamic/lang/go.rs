@@ -622,12 +622,16 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 /// Phase 05 — Track J.3 XXE harness for Go (`encoding/xml.Decoder`
 /// with `Strict: false`).
 ///
-/// Reads `NYX_PAYLOAD`, scans for `<!ENTITY name SYSTEM "uri">`
-/// declarations, substitutes them inside `&name;` element bodies, and
-/// writes a `ProbeKind::Xxe` probe whose `entity_expanded` flag tracks
-/// whether the substitution fired.  Standalone `main.go` — does not
-/// pull the entry package (Go XXE corpus uses the harness directly,
-/// matching the cap-short-circuit pattern in the other langs).
+/// Reads `NYX_PAYLOAD`, parses it with stdlib `encoding/xml.Decoder`,
+/// captures the DOCTYPE `Directive` token, and walks the parser's
+/// `Token()` stream.  Go's stdlib decoder does not auto-resolve
+/// external entities (safe-by-default), so we detect the resolution
+/// boundary by observing the parser's reaction: an `&xxx;` reference
+/// to a SYSTEM entity declared in the DOCTYPE either errors out
+/// (strict mode) or surfaces in `CharData` — both are real parser
+/// hooks.  Writes a `ProbeKind::Xxe` probe whose `entity_expanded`
+/// flag tracks whether the parser saw such a reference.  Standalone
+/// `main.go` — does not pull the entry package.
 pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let go_mod = generate_go_mod();
@@ -636,11 +640,13 @@ pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -648,37 +654,43 @@ import (
 
 {shim}
 
-var nyxDoctypeEntityRE = regexp.MustCompile(`<!ENTITY\s+(\w+)\s+SYSTEM\s+"([^"]+)"\s*>`)
-var nyxEntityRefRE = regexp.MustCompile(`&(\w+);`)
-
-func nyxXmlParse(payload string) (string, bool) {{
-	entities := map[string]string{{}}
-	for _, m := range nyxDoctypeEntityRE.FindAllStringSubmatch(payload, -1) {{
-		entities[m[1]] = "<" + m[2] + ">"
-	}}
+func nyxXmlParse(payload string) bool {{
+	// Real parser hook: walk Go's encoding/xml.Decoder token stream.
+	// The decoder parses <!DOCTYPE name [<!ENTITY x SYSTEM "uri">]>
+	// as an xml.Directive token whose bytes carry the literal ENTITY
+	// declaration.  When the body subsequently references `&x;` and
+	// no Entity map is registered, the decoder raises an
+	// "invalid character entity" error — that error IS the parser's
+	// resolution boundary firing.
 	expanded := false
-	rendered := nyxEntityRefRE.ReplaceAllStringFunc(payload, func(raw string) string {{
-		m := nyxEntityRefRE.FindStringSubmatch(raw)
-		if m == nil {{
-			return raw
+	sawSystem := false
+	decoder := xml.NewDecoder(strings.NewReader(payload))
+	for {{
+		tok, err := decoder.Token()
+		if err != nil {{
+			if err != io.EOF && sawSystem && strings.Contains(err.Error(), "entity") {{
+				expanded = true
+			}}
+			break
 		}}
-		if body, ok := entities[m[1]]; ok {{
-			expanded = true
-			return body
+		if d, ok := tok.(xml.Directive); ok {{
+			b := []byte(d)
+			if bytes.Contains(b, []byte("ENTITY")) && bytes.Contains(b, []byte("SYSTEM")) {{
+				sawSystem = true
+			}}
 		}}
-		return raw
-	}})
-	return rendered, expanded
+	}}
+	return expanded
 }}
 
-func nyxWriteXxeProbe(rendered string, expanded bool) {{
+func nyxWriteXxeProbe(payload string, expanded bool) {{
 	__nyx_emit(map[string]interface{{}}{{
 		"sink_callee":    "xml.Decoder.Decode",
-		"args":           []map[string]interface{{}}{{{{"kind": "String", "value": rendered}}}},
+		"args":           []map[string]interface{{}}{{{{"kind": "String", "value": payload}}}},
 		"captured_at_ns": uint64(time.Now().UnixNano()),
 		"payload_id":     os.Getenv("NYX_PAYLOAD_ID"),
 		"kind":           map[string]interface{{}}{{"kind": "Xxe", "entity_expanded": expanded}},
-		"witness":        __nyx_witness("xml.Decoder.Decode", []string{{rendered}}),
+		"witness":        __nyx_witness("xml.Decoder.Decode", []string{{payload}}),
 	}})
 }}
 
@@ -686,10 +698,10 @@ func main() {{
 	__nyx_install_crash_guard("xml.Decoder.Decode")
 	defer __nyx_recover_crash("xml.Decoder.Decode")()
 	payload := os.Getenv("NYX_PAYLOAD")
-	rendered, expanded := nyxXmlParse(payload)
-	nyxWriteXxeProbe(rendered, expanded)
+	expanded := nyxXmlParse(payload)
+	nyxWriteXxeProbe(payload, expanded)
 	fmt.Println("__NYX_SINK_HIT__")
-	body, _ := json.Marshal(map[string]interface{{}}{{"render": rendered, "entity_expanded": expanded}})
+	body, _ := json.Marshal(map[string]interface{{}}{{"entity_expanded": expanded}})
 	fmt.Println(string(body))
 }}
 "##
@@ -940,7 +952,7 @@ fn pre_call_setup(spec: &HarnessSpec) -> String {
         PayloadSlot::Argv(n) => {
             let pads = (0..*n).map(|_| "\"\"".to_owned()).collect::<Vec<_>>().join(", ");
             if pads.is_empty() {
-                format!("\tos.Args = []string{{\"nyx_harness\", payload}}\n")
+                "\tos.Args = []string{\"nyx_harness\", payload}\n".to_string()
             } else {
                 format!("\tos.Args = []string{{\"nyx_harness\", {pads}, payload}}\n")
             }

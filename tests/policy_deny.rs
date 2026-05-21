@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! Phase 30 (Track C — security): coverage for
 //! [`crate::dynamic::policy::evaluate`] deny rules.
 //!

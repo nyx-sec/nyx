@@ -211,6 +211,7 @@ impl std::fmt::Display for EngineProfile {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Scan project for vulnerabilities
     Scan {

@@ -256,7 +256,7 @@ pub struct FixtureSpec<'a> {
 ///
 /// Captures the fields a regression test must pin: status + typed reasons
 /// + whether a payload triggered. Excludes machine-dependent fields
-/// (`finding_id`, `detail`, `attempts`, `toolchain_match`).
+///   (`finding_id`, `detail`, `attempts`, `toolchain_match`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoldenVerdict {
     pub status: VerifyStatus,

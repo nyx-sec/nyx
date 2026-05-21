@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! Phase 04 acceptance: callgraph-aware
 //! [`SpecDerivationStrategy::FromCallgraphEntry`].
 //!

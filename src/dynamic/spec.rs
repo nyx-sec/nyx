@@ -312,11 +312,10 @@ impl HarnessSpec {
         // priority — calling them here would short-circuit the more precise
         // strategies (FromFlowSteps / FromRuleNamespace / FromFuncSummaryAuto)
         // whenever the rule id happens to contain `.http.` / `.cli.`.
-        if let (Some(s), Some(cg)) = (summaries, callgraph) {
-            if let Some(spec) = derive_from_callgraph_walk_only(diag, evidence, s, cg) {
+        if let (Some(s), Some(cg)) = (summaries, callgraph)
+            && let Some(spec) = derive_from_callgraph_walk_only(diag, evidence, s, cg) {
                 return Ok(spec);
             }
-        }
 
         // Try each strategy in priority order; first non-None wins.
         if let Some(spec) = derive_from_flow_steps(diag, evidence, summaries) {
@@ -520,11 +519,10 @@ pub fn derive_from_rule_namespace_with(
     // Cross-check: the diag's file extension must agree with the rule's
     // language prefix when both are available. Disagreement is a stronger
     // signal of a mis-rooted finding than a missing extension.
-    if let Some(path_lang) = lang_from_path(&diag.path) {
-        if path_lang != lang {
+    if let Some(path_lang) = lang_from_path(&diag.path)
+        && path_lang != lang {
             return None;
         }
-    }
 
     let entry_function = resolve_enclosing_function(diag, evidence, summaries, lang)
         .unwrap_or_else(|| "<unknown>".to_owned());
@@ -750,8 +748,8 @@ pub fn derive_from_callgraph_entry_full(
 
     // Step 0: callgraph-aware reverse-edge walk to the nearest entry-point
     // ancestor. Only fires when both summaries *and* callgraph are present.
-    if let (Some(s), Some(cg)) = (summaries, callgraph) {
-        if let Some(found) = find_entry_via_callgraph(diag, evidence, s, cg, lang) {
+    if let (Some(s), Some(cg)) = (summaries, callgraph)
+        && let Some(found) = find_entry_via_callgraph(diag, evidence, s, cg, lang) {
             let entry_kind = found
                 .summary
                 .entry_kind
@@ -778,7 +776,6 @@ pub fn derive_from_callgraph_entry_full(
             spec.spec_hash = compute_spec_hash(&spec);
             return Some(spec);
         }
-    }
 
     // Step 1: try summary-based classification of the enclosing function.
     let summary_kind = enclosing_function_from_flow_steps(evidence)
@@ -936,14 +933,13 @@ fn find_entry_via_callgraph<'a>(
                 continue;
             }
             let caller_key = &callgraph.graph[caller_node];
-            if let Some(caller_summary) = summaries.get(caller_key) {
-                if is_entry_point(caller_summary, callgraph) {
+            if let Some(caller_summary) = summaries.get(caller_key)
+                && is_entry_point(caller_summary, callgraph) {
                     return Some(EntryHit {
                         key: caller_key.clone(),
                         summary: caller_summary,
                     });
                 }
-            }
             queue.push_back(caller_node);
         }
     }
@@ -973,11 +969,10 @@ fn entry_kind_from_summary(_kind: &crate::entry_points::EntryKind) -> EntryKind 
 /// resolve when the extension is well-known.
 fn lang_from_path(path: &str) -> Option<Lang> {
     let p = Path::new(path);
-    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-        if let Some(lang) = Lang::from_extension(ext) {
+    if let Some(ext) = p.extension().and_then(|e| e.to_str())
+        && let Some(lang) = Lang::from_extension(ext) {
             return Some(lang);
         }
-    }
     // Fall back to a shebang / content sniff over the file head.
     let head = read_file_head(p, 200);
     if head.is_empty() {
@@ -1308,16 +1303,14 @@ fn lang_slug(lang: Lang) -> &'static str {
 /// outermost callable that receives the tainted input.
 pub fn outermost_entry(steps: &[crate::evidence::FlowStep]) -> Option<EntryRef> {
     for step in steps {
-        if matches!(step.kind, FlowStepKind::Source) {
-            if let Some(ref func) = step.function {
-                if !func.is_empty() {
+        if matches!(step.kind, FlowStepKind::Source)
+            && let Some(ref func) = step.function
+                && !func.is_empty() {
                     return Some(EntryRef {
                         file: step.file.clone(),
                         function: func.clone(),
                     });
                 }
-            }
-        }
     }
     None
 }
@@ -1340,10 +1333,9 @@ pub fn default_toolchain_id(lang: Lang) -> &'static str {
 
 /// Blake3 hash of the spec's key fields, truncated to 8 bytes and hex-encoded.
 ///
-/// Inputs (in order):
-///   `SPEC_FORMAT_VERSION` (u32 LE), entry_file, entry_name, payload_slot tag
-///   + value, expected_cap bits (u32 LE), sorted constraint_hints,
-///   toolchain_id, `CORPUS_VERSION` (u32 LE).
+/// Inputs (in order): [`SPEC_FORMAT_VERSION`] (u32 LE), entry_file,
+/// entry_name, payload_slot tag + value, expected_cap bits (u32 LE),
+/// sorted constraint_hints, toolchain_id, [`CORPUS_VERSION`] (u32 LE).
 ///
 /// Bump [`SPEC_FORMAT_VERSION`] when the inputs or semantics change.
 fn compute_spec_hash(spec: &HarnessSpec) -> String {

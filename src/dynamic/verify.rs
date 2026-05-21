@@ -713,8 +713,8 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
     // Verdict cache lookup (§12 Q5): skip execution when a valid cached result exists.
     let entry_hash = compute_entry_content_hash(&spec.entry_file);
     let import_digest = transitive_import_digest_placeholder();
-    if let Some(ref db_path) = opts.db_path {
-        if let Some(cached) = lookup_verdict_cache(
+    if let Some(ref db_path) = opts.db_path
+        && let Some(cached) = lookup_verdict_cache(
             db_path,
             &spec.spec_hash,
             &entry_hash,
@@ -723,7 +723,6 @@ pub fn verify_finding(diag: &Diag, opts: &VerifyOptions) -> VerifyResult {
         ) {
             return cached;
         }
-    }
 
     // Phase 10 (Track D.3): spawn the boundary stubs the spec
     // demands *before* the sandbox runs.  When `stubs_required` is
@@ -998,14 +997,14 @@ fn build_verdict(
                 );
 
                 // If repro write fails, downgrade to NonReproducible.
-                if repro_result.is_err() {
+                if let Err(err) = repro_result {
                     return VerifyResult {
                         finding_id: finding_id.to_owned(),
                         status: VerifyStatus::Inconclusive,
                         triggered_payload: None,
                         reason: None,
                         inconclusive_reason: Some(InconclusiveReason::NonReproducible),
-                        detail: Some(format!("repro write failed: {}", repro_result.unwrap_err())),
+                        detail: Some(format!("repro write failed: {err}")),
                         attempts,
                         toolchain_match: Some(toolchain_match.to_owned()),
                         differential: run.differential,

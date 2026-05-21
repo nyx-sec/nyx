@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! Marker uniqueness test (§4.1, §17.4).
 //!
 //! Asserts that no `NYX_PWN_*` marker from one cap's corpus is a substring

@@ -1438,65 +1438,76 @@ if __name__ == "__main__":
 
 /// Phase 05 — Track J.3 XXE harness for Python (`lxml.etree`).
 ///
-/// Reads `NYX_PAYLOAD`, runs a regex-based DOCTYPE/ENTITY scanner that
-/// substitutes any `<!ENTITY name SYSTEM "uri">` body inside `&name;`
-/// element references (matching `lxml.etree.XMLParser(resolve_entities=
-/// True)` semantics) and writes a `ProbeKind::Xxe` probe whose
-/// `entity_expanded` flag tracks whether the substitution actually
-/// fired.  The synthetic resolver keeps the corpus deterministic
-/// without bundling lxml in the sandbox image; the harness still
-/// exercises the probe-channel, oracle, and differential plumbing
-/// end-to-end.
+/// Reads `NYX_PAYLOAD`, parses it with `xml.parsers.expat` (the stdlib
+/// XML parser backing `xml.etree.ElementTree` and `lxml`), installs a
+/// real `ExternalEntityRefHandler` to detect external-entity resolution
+/// at the parser hook, and writes a `ProbeKind::Xxe` probe whose
+/// `entity_expanded` flag tracks whether the handler actually fired.
+/// The handler returns an empty replacement so the harness never
+/// fetches the SYSTEM resource (sandbox safety) but the resolution
+/// boundary is exercised at the parser level.
 pub fn emit_xxe_harness(_spec: &HarnessSpec) -> HarnessSource {
     let probe = probe_shim();
     let body = format!(
         r#"#!/usr/bin/env python3
-"""Nyx dynamic harness — XXE lxml (Phase 05 / Track J.3)."""
-import os, json, re, sys, time
+"""Nyx dynamic harness — XXE xml.parsers.expat (Phase 05 / Track J.3)."""
+import os, json, sys, time
+import xml.parsers.expat as _nyx_expat
 
 {probe}
 
-_NYX_DOCTYPE_ENTITY = re.compile(
-    r'<!ENTITY\s+(\w+)\s+SYSTEM\s+"([^"]+)"\s*>'
-)
+def _nyx_xxe_parse(payload):
+    expanded = [False]
+    parser = _nyx_expat.ParserCreate()
+    # Enable parameter-entity parsing so `%name;` references in the DTD
+    # also flow through the external-ref hook, matching what lxml does
+    # under `resolve_entities=True`.
+    try:
+        parser.SetParamEntityParsing(_nyx_expat.XML_PARAM_ENTITY_PARSING_ALWAYS)
+    except Exception:
+        pass
 
-def _nyx_lxml_parse(payload):
-    # Parse the payload with `resolve_entities=True` semantics: bind
-    # `<!ENTITY name SYSTEM "uri">` declarations into a map then
-    # substitute `&name;` references inside element bodies.
-    entities = {{}}
-    for m in _NYX_DOCTYPE_ENTITY.finditer(payload):
-        entities[m.group(1)] = '<' + m.group(2) + '>'
-    expanded = False
-    def _sub(match):
-        nonlocal expanded
-        name = match.group(1)
-        if name in entities:
-            expanded = True
-            return entities[name]
-        return match.group(0)
-    rendered = re.sub(r'&(\w+);', _sub, payload)
-    return rendered, expanded
+    def _external_ref(context, base, system_id, public_id):
+        # Real parser hook: fired by expat for every `<!ENTITY x SYSTEM "...">`
+        # reference inside element bodies / DTD.  Mark expanded and return an
+        # empty replacement so we never actually fetch the SYSTEM resource.
+        expanded[0] = True
+        sub = parser.ExternalEntityParserCreate(context, "utf-8")
+        try:
+            sub.Parse("", 1)
+        except _nyx_expat.ExpatError:
+            pass
+        return 1
 
-def _nyx_xxe_probe(rendered, expanded):
+    parser.ExternalEntityRefHandler = _external_ref
+    payload_bytes = payload.encode("utf-8", "replace") if isinstance(payload, str) else payload
+    try:
+        parser.Parse(payload_bytes, 1)
+    except _nyx_expat.ExpatError:
+        # Malformed XML still counts as a parser invocation; expanded
+        # flag reflects whatever the hook saw before the error.
+        pass
+    return expanded[0]
+
+def _nyx_xxe_probe(payload, expanded):
     rec = {{
         "sink_callee": "lxml.etree.XMLParser.parse",
-        "args": [{{"kind": "String", "value": rendered}}],
+        "args": [{{"kind": "String", "value": payload}}],
         "captured_at_ns": time.time_ns(),
         "payload_id": os.environ.get("NYX_PAYLOAD_ID", ""),
         "kind": {{"kind": "Xxe", "entity_expanded": bool(expanded)}},
-        "witness": __nyx_witness("lxml.etree.XMLParser.parse", [rendered]),
+        "witness": __nyx_witness("lxml.etree.XMLParser.parse", [payload]),
     }}
     __nyx_emit(rec)
 
 def _nyx_run():
     payload = os.environ.get("NYX_PAYLOAD", "")
-    rendered, expanded = _nyx_lxml_parse(payload)
-    _nyx_xxe_probe(rendered, expanded)
+    expanded = _nyx_xxe_parse(payload)
+    _nyx_xxe_probe(payload, expanded)
     # Sink-hit sentinel flips SandboxOutcome.sink_hit so the runner's
     # `vuln_fired && sink_hit` gate clears regardless of expansion.
     print("__NYX_SINK_HIT__", flush=True)
-    sys.stdout.write(json.dumps({{"render": rendered, "entity_expanded": expanded}}) + "\n")
+    sys.stdout.write(json.dumps({{"entity_expanded": bool(expanded)}}) + "\n")
     sys.stdout.flush()
 
 if __name__ == "__main__":

@@ -24,11 +24,13 @@ use std::collections::BTreeSet;
 const RUN_COUNT: usize = 10;
 
 fn deny_diag(stable_hash: u64) -> Diag {
-    let mut ev = Evidence::default();
     // Triggers the credentials deny rule via the AWS-key regex from
     // `crate::utils::redact::contains_secret`.  The deny rule fires
     // deterministically because the rule lookup table is `const`.
-    ev.notes = vec!["secret=AKIAFAKEDETERM00000000".to_owned()];
+    let ev = Evidence {
+        notes: vec!["secret=AKIAFAKEDETERM00000000".to_owned()],
+        ..Evidence::default()
+    };
     Diag {
         path: "src/handler.py".to_owned(),
         line: 42,
@@ -84,9 +86,11 @@ fn ten_runs_produce_byte_identical_telemetry_minus_timestamps() {
 
     let diag = deny_diag(0x0123_4567_89ab_cdef);
 
-    let mut opts = VerifyOptions::default();
-    opts.telemetry_policy = SamplingPolicy::keep_all();
-    opts.trace_verbose = false;
+    let opts = VerifyOptions {
+        telemetry_policy: SamplingPolicy::keep_all(),
+        trace_verbose: false,
+        ..VerifyOptions::default()
+    };
 
     let mut verdict_jsons: BTreeSet<String> = BTreeSet::new();
     for _ in 0..RUN_COUNT {

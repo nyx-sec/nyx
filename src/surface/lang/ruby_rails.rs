@@ -40,8 +40,8 @@ pub fn detect_rails_routes(
 
 fn detect_routes_dsl(root: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<SurfaceNode>) {
     fn recurse(node: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<SurfaceNode>) {
-        if matches!(node.kind(), "call" | "method_call") {
-            if let Some(method_node) = node.child_by_field_name("method")
+        if matches!(node.kind(), "call" | "method_call")
+            && let Some(method_node) = node.child_by_field_name("method")
                 && let Ok(method_text) = method_node.utf8_text(bytes)
                 && let Some((_, method)) = VERBS.iter().find(|(v, _)| *v == method_text)
             {
@@ -73,7 +73,6 @@ fn detect_routes_dsl(root: Node, bytes: &[u8], file_rel: &str, out: &mut Vec<Sur
                     }
                 }
             }
-        }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             recurse(child, bytes, file_rel, out);

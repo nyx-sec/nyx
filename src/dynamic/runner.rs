@@ -197,14 +197,13 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             // non-fatal failures (Io / Unsupported), falling back to system python3.
             match build_sandbox::prepare_python(spec, &harness.workdir) {
                 Ok(build_result) => {
-                    if let Some(cmd0) = harness.command.first_mut() {
-                        if cmd0 == "python3" || cmd0 == "python" {
+                    if let Some(cmd0) = harness.command.first_mut()
+                        && (cmd0 == "python3" || cmd0 == "python") {
                             let venv_python = build_result.venv_path.join("bin").join("python3");
                             if venv_python.exists() {
                                 *cmd0 = venv_python.to_string_lossy().into_owned();
                             }
                         }
-                    }
                 }
                 Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
                     return Err(RunError::BuildFailed { stderr, attempts });
@@ -241,11 +240,8 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         }
         Lang::JavaScript | Lang::TypeScript => {
             // npm install for dependency resolution (no deps in basic fixtures).
-            match build_sandbox::prepare_node(spec, &harness.workdir) {
-                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
-                    return Err(RunError::BuildFailed { stderr, attempts });
-                }
-                _ => {}
+            if let Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) = build_sandbox::prepare_node(spec, &harness.workdir) {
+                return Err(RunError::BuildFailed { stderr, attempts });
             }
         }
         Lang::Go => {
@@ -288,11 +284,8 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
         }
         Lang::Php => {
             // composer install if composer.json is present.
-            match build_sandbox::prepare_php(spec, &harness.workdir) {
-                Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) => {
-                    return Err(RunError::BuildFailed { stderr, attempts });
-                }
-                _ => {}
+            if let Err(build_sandbox::BuildError::BuildFailed { stderr, attempts }) = build_sandbox::prepare_php(spec, &harness.workdir) {
+                return Err(RunError::BuildFailed { stderr, attempts });
             }
         }
         Lang::C => {
@@ -358,11 +351,10 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
     // create the file is non-fatal: the legacy `Oracle::OutputContains`
     // oracle still works without a channel.
     let mut effective_opts = opts.clone();
-    if effective_opts.probe_channel.is_none() {
-        if let Ok(ch) = ProbeChannel::for_workdir(&harness.workdir) {
+    if effective_opts.probe_channel.is_none()
+        && let Ok(ch) = ProbeChannel::for_workdir(&harness.workdir) {
             effective_opts.probe_channel = Some(Arc::new(ch));
         }
-    }
     let probe_channel: Option<Arc<ProbeChannel>> = effective_opts.probe_channel.clone();
 
     // Run only vuln (non-benign) payloads in the main loop.

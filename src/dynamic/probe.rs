@@ -113,9 +113,11 @@ impl ProbeArg {
 /// sink no longer satisfies the oracle.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind")]
+#[derive(Default)]
 pub enum ProbeKind {
     /// Standard sink observation: arguments were captured before the sink
     /// returned normally (or raised a non-crash exception).
+    #[default]
     Normal,
     /// Sink invocation was interrupted by a fatal signal that the
     /// sink-site handler intercepted.  The captured `signal` is the one
@@ -305,11 +307,6 @@ pub enum ProbeKind {
     },
 }
 
-impl Default for ProbeKind {
-    fn default() -> Self {
-        ProbeKind::Normal
-    }
-}
 
 /// Bounded forensic snapshot captured alongside a [`SinkProbe`]
 /// (Phase 08 — Track C.5).

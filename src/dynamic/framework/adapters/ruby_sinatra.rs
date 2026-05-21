@@ -40,12 +40,11 @@ fn collect_routes(root: Node<'_>, bytes: &[u8]) -> Vec<SinatraRoute> {
 }
 
 fn visit(node: Node<'_>, bytes: &[u8], out: &mut Vec<SinatraRoute>) {
-    if node.kind() == "call" {
-        if let Some(route) = try_route(node, bytes) {
+    if node.kind() == "call"
+        && let Some(route) = try_route(node, bytes) {
             out.push(route);
             return;
         }
-    }
     // Sinatra routes live at top level or directly under a `class App <
     // Sinatra::Base` body — never inside a helper method's body.  Skip
     // descent through `method` / `singleton_method` so a stray `get '/x'
@@ -101,11 +100,10 @@ fn block_parameter_names(block: Node<'_>, bytes: &[u8]) -> Vec<String> {
         }
         let mut bc = child.walk();
         for p in child.named_children(&mut bc) {
-            if p.kind() == "identifier" {
-                if let Ok(t) = p.utf8_text(bytes) {
+            if p.kind() == "identifier"
+                && let Ok(t) = p.utf8_text(bytes) {
                     out.push(t.to_owned());
                 }
-            }
         }
     }
     out

@@ -98,19 +98,14 @@ pub fn load_or_build(
     database_dir: &Path,
     config: &Config,
 ) -> NyxResult<SurfaceMap> {
-    if let Ok((project, db_path)) = get_project_info(scan_root, database_dir) {
-        if db_path.exists() {
-            if let Ok(pool) = Indexer::init(&db_path) {
-                if let Ok(idx) = Indexer::from_pool(&project, &pool) {
-                    if let Ok(Some(map)) = idx.load_surface_map() {
-                        if !map.nodes.is_empty() {
+    if let Ok((project, db_path)) = get_project_info(scan_root, database_dir)
+        && db_path.exists()
+            && let Ok(pool) = Indexer::init(&db_path)
+                && let Ok(idx) = Indexer::from_pool(&project, &pool)
+                    && let Ok(Some(map)) = idx.load_surface_map()
+                        && !map.nodes.is_empty() {
                             return Ok(map);
                         }
-                    }
-                }
-            }
-        }
-    }
     build_from_filesystem(scan_root, config)
 }
 

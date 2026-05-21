@@ -181,11 +181,10 @@ pub fn pick_chain_cap(bits: u32) -> Option<Cap> {
     let mut remaining = bits;
     while remaining != 0 {
         let bit = 1u32 << remaining.trailing_zeros();
-        if let Some(cap) = Cap::from_bits(bit) {
-            if lookup_impact(cap, None).is_some() {
+        if let Some(cap) = Cap::from_bits(bit)
+            && lookup_impact(cap, None).is_some() {
                 return Some(cap);
             }
-        }
         remaining &= !bit;
     }
     lowest_cap(bits)
@@ -198,8 +197,8 @@ fn locate_reach(
 ) -> Reach {
     // Pass 1: file-local match (legacy behaviour, always applies).
     for node in &surface.nodes {
-        if let SurfaceNode::EntryPoint(ep) = node {
-            if ep.handler_location.file == loc.file {
+        if let SurfaceNode::EntryPoint(ep) = node
+            && ep.handler_location.file == loc.file {
                 return Reach::Reachable {
                     location: ep.location.clone(),
                     method: ep.method,
@@ -207,15 +206,14 @@ fn locate_reach(
                     auth_required: ep.auth_required,
                 };
             }
-        }
     }
     // Pass 2: transitive caller match via the call graph.  Only fires
     // when `reach` is supplied — keeps the legacy file-local behaviour
     // for callers that have not yet wired the call-graph reach map.
     if let Some(reach) = reach {
         for node in &surface.nodes {
-            if let SurfaceNode::EntryPoint(ep) = node {
-                if reach.reaches(&ep.handler_location.file, &loc.file) {
+            if let SurfaceNode::EntryPoint(ep) = node
+                && reach.reaches(&ep.handler_location.file, &loc.file) {
                     return Reach::Reachable {
                         location: ep.location.clone(),
                         method: ep.method,
@@ -223,7 +221,6 @@ fn locate_reach(
                         auth_required: ep.auth_required,
                     };
                 }
-            }
         }
     }
     Reach::Unreachable

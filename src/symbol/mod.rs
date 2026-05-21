@@ -114,11 +114,10 @@ impl Lang {
     /// Used by [`crate::dynamic::spec`] so spec derivation no longer rejects
     /// CLI entry points and other extensionless / non-canonical files.
     pub fn from_path_or_content(path: &Path, head_bytes: &[u8]) -> Option<Lang> {
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            if let Some(lang) = Self::from_extension(ext) {
+        if let Some(ext) = path.extension().and_then(|e| e.to_str())
+            && let Some(lang) = Self::from_extension(ext) {
                 return Some(lang);
             }
-        }
         if let Some(lang) = lang_from_shebang(head_bytes) {
             return Some(lang);
         }

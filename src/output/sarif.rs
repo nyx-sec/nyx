@@ -315,11 +315,10 @@ pub fn build_sarif_with_chains(
             // this finding participates in (if any).  Stable across
             // reruns because both the finding's `stable_hash` and the
             // chain's `stable_hash` are byte-deterministic.
-            if d.stable_hash != 0 {
-                if let Some(chain_hash) = chain_member_of.get(&d.stable_hash) {
+            if d.stable_hash != 0
+                && let Some(chain_hash) = chain_member_of.get(&d.stable_hash) {
                     props.insert("chain_member_of".into(), json!(chain_hash));
                 }
-            }
 
             result["properties"] = Value::Object(props);
 

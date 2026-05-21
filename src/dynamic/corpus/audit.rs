@@ -179,8 +179,8 @@ pub fn audit_benign_label_uniqueness_runtime() -> Result<(), String> {
             if !p.is_benign {
                 continue;
             }
-            if let Some(prev_lang) = bucket.insert(p.label, lang) {
-                if prev_lang != lang {
+            if let Some(prev_lang) = bucket.insert(p.label, lang)
+                && prev_lang != lang {
                     return Err(format!(
                         "benign label {:?} for cap {:#x} is registered in both \
                          {:?} and {:?} — lang-agnostic resolve_benign_control \
@@ -191,7 +191,6 @@ pub fn audit_benign_label_uniqueness_runtime() -> Result<(), String> {
                         lang,
                     ));
                 }
-            }
         }
     }
     Ok(())

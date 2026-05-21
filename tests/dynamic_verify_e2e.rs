@@ -189,8 +189,10 @@ mod verify_e2e {
 
         let diag = taint_diag_with_cap(Cap::CRYPTO);
         let trace = Arc::new(VerifyTrace::new());
-        let mut opts = VerifyOptions::default();
-        opts.trace_sink = Some(Arc::clone(&trace));
+        let opts = VerifyOptions {
+            trace_sink: Some(Arc::clone(&trace)),
+            ..VerifyOptions::default()
+        };
 
         let _result = verify_finding(&diag, &opts);
 

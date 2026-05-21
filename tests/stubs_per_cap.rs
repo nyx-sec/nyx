@@ -48,8 +48,7 @@ fn read_fixture(stub_dir: &str, name: &str) -> String {
 /// begin with `//`; the payload is the surviving line.
 fn extract_payload(s: &str) -> String {
     s.lines()
-        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
-        .last()
+        .rfind(|l| !l.trim().is_empty() && !l.trim_start().starts_with("//"))
         .unwrap_or("")
         .trim()
         .to_owned()

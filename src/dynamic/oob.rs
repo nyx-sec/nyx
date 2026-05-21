@@ -142,13 +142,11 @@ fn handle_connection(stream: TcpStream, hits: Arc<Mutex<HashSet<String>>>) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut reader = BufReader::new(&stream);
     let mut first_line = String::new();
-    if reader.read_line(&mut first_line).is_ok() {
-        if let Some(nonce) = parse_nonce_from_request_line(&first_line) {
-            if let Ok(mut h) = hits.lock() {
+    if reader.read_line(&mut first_line).is_ok()
+        && let Some(nonce) = parse_nonce_from_request_line(&first_line)
+            && let Ok(mut h) = hits.lock() {
                 h.insert(nonce);
             }
-        }
-    }
     // Drain remaining headers so the client doesn't get ECONNRESET.
     loop {
         let mut line = String::new();

@@ -13,6 +13,7 @@
 //! Path placeholder vocabulary:
 //!   - gin / echo / chi use `:id` and (chi) `{id}` interchangeably.
 //!   - fiber uses `:id` and `+` / `*` greedy wildcards.
+//!
 //! [`extract_go_path_placeholders`] supports both syntaxes.
 
 use crate::dynamic::framework::{HttpMethod, ParamBinding, ParamSource};
@@ -134,11 +135,10 @@ pub fn go_formal_names(func: Node<'_>, bytes: &[u8]) -> Vec<String> {
         }
         let mut pc = p.walk();
         for c in p.named_children(&mut pc) {
-            if c.kind() == "identifier" {
-                if let Ok(text) = c.utf8_text(bytes) {
+            if c.kind() == "identifier"
+                && let Ok(text) = c.utf8_text(bytes) {
                     out.push(text.to_owned());
                 }
-            }
         }
     }
     out

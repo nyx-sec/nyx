@@ -226,11 +226,10 @@ fn accept_loop(
         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
 
-        if let Some(ev) = handle_connection(stream, MAX_REQUEST_BYTES) {
-            if let Ok(mut g) = events.lock() {
+        if let Some(ev) = handle_connection(stream, MAX_REQUEST_BYTES)
+            && let Ok(mut g) = events.lock() {
                 g.push(ev);
             }
-        }
     }
 }
 
@@ -261,21 +260,18 @@ fn handle_connection(mut stream: TcpStream, max_bytes: usize) -> Option<StubEven
         if let Some(rest) = trimmed
             .to_ascii_lowercase()
             .strip_prefix("content-length:")
-        {
-            if let Ok(n) = rest.trim().parse::<usize>() {
+            && let Ok(n) = rest.trim().parse::<usize>() {
                 content_length = n.min(max_bytes);
             }
-        }
         headers.push(trimmed.to_owned());
     }
 
     // Body, capped at content_length (already clamped to max_bytes).
     let mut body = vec![0u8; content_length];
-    if content_length > 0 {
-        if reader.read_exact(&mut body).is_err() {
+    if content_length > 0
+        && reader.read_exact(&mut body).is_err() {
             body.clear();
         }
-    }
 
     // Always reply 200 OK with no body.
     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");

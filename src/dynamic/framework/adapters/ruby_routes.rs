@@ -95,12 +95,11 @@ fn walk_class<'a>(
     if out.is_some() {
         return;
     }
-    if node.kind() == "class" {
-        if let Some(method) = find_method_in_class(node, bytes, target) {
+    if node.kind() == "class"
+        && let Some(method) = find_method_in_class(node, bytes, target) {
             *out = Some((node, method));
             return;
         }
-    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         walk_class(child, bytes, target, out);
@@ -117,11 +116,10 @@ pub fn find_method_in_class<'a>(class: Node<'a>, bytes: &'a [u8], target: &str) 
         if member.kind() != "method" {
             continue;
         }
-        if let Some(name) = method_identifier(member, bytes) {
-            if name == target {
+        if let Some(name) = method_identifier(member, bytes)
+            && name == target {
                 return Some(member);
             }
-        }
     }
     None
 }

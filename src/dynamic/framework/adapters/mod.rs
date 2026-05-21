@@ -258,8 +258,8 @@ pub(super) fn arg_is_tainted_param(
     else {
         return false;
     };
-    summary.tainted_sink_params.iter().any(|&i| i == idx)
-        || summary.propagating_params.iter().any(|&i| i == idx)
+    summary.tainted_sink_params.contains(&idx)
+        || summary.propagating_params.contains(&idx)
 }
 
 /// True when any descendant identifier in `node`'s subtree resolves to

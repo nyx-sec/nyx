@@ -160,11 +160,10 @@ pub fn extract_env_var_references(entry_file: &Path, lang: Lang) -> Vec<String> 
                 }
                 _ => extract_quoted_arg(tail),
             };
-            if let Some(name) = name {
-                if !name.is_empty() && is_env_var_name(&name) && seen.insert(name.clone()) {
+            if let Some(name) = name
+                && !name.is_empty() && is_env_var_name(&name) && seen.insert(name.clone()) {
                     out.push(name);
                 }
-            }
         }
     }
     out
@@ -643,8 +642,7 @@ fn copy_into_workdir(
     };
     let size = metadata.len();
     if running_bytes.saturating_add(size) > MAX_WORKDIR_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             format!(
                 "staged workdir would exceed {} bytes (next file `{}` = {} bytes)",
                 MAX_WORKDIR_BYTES,
@@ -730,11 +728,10 @@ fn collect_config_files(entry_file: &Path, project_root: &Path) -> Vec<PathBuf> 
     let dirs: Vec<PathBuf> = {
         let mut v = Vec::new();
         v.push(project_root.to_path_buf());
-        if let Some(parent) = entry_file.parent() {
-            if parent != project_root && parent.starts_with(project_root) {
+        if let Some(parent) = entry_file.parent()
+            && parent != project_root && parent.starts_with(project_root) {
                 v.push(parent.to_path_buf());
             }
-        }
         v
     };
     for dir in &dirs {

@@ -114,8 +114,8 @@ fn walk<'a>(
     if out.is_some() {
         return;
     }
-    if node.kind() == "class_declaration" {
-        if let Some(body) = node
+    if node.kind() == "class_declaration"
+        && let Some(body) = node
             .child_by_field_name("body")
             .or_else(|| named_child_of_kind(node, "class_body"))
         {
@@ -127,15 +127,12 @@ fn walk<'a>(
                 if let Some(name) = member
                     .child_by_field_name("name")
                     .and_then(|n| n.utf8_text(bytes).ok())
-                {
-                    if name == target {
+                    && name == target {
                         *out = Some((node, member));
                         return;
                     }
-                }
             }
         }
-    }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
         walk(child, bytes, target, out);
@@ -287,8 +284,8 @@ pub fn extract_path_placeholders(path: &str) -> Vec<String> {
     let bytes = path.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'{' {
-            if let Some(end) = bytes[i + 1..].iter().position(|&b| b == b'}') {
+        if bytes[i] == b'{'
+            && let Some(end) = bytes[i + 1..].iter().position(|&b| b == b'}') {
                 let inner = &path[i + 1..i + 1 + end];
                 let name = inner.split(':').next().unwrap_or(inner).trim();
                 if !name.is_empty() && !out.iter().any(|n| n == name) {
@@ -297,7 +294,6 @@ pub fn extract_path_placeholders(path: &str) -> Vec<String> {
                 i += end + 2;
                 continue;
             }
-        }
         i += 1;
     }
     out

@@ -53,9 +53,9 @@ fn is_app_router_route(path: &Path) -> bool {
 }
 
 fn is_pages_api_route(path: &Path) -> bool {
-    let mut comps = path.components().peekable();
+    let comps = path.components().peekable();
     let mut saw_pages = false;
-    while let Some(c) = comps.next() {
+    for c in comps {
         if c.as_os_str().to_string_lossy() == "pages" {
             saw_pages = true;
         } else if saw_pages && c.as_os_str().to_string_lossy() == "api" {

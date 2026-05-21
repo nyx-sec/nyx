@@ -48,17 +48,14 @@ fn walk_routes(node: Node<'_>, bytes: &[u8], target: &str, out: &mut Option<(Htt
             .and_then(|n| n.utf8_text(bytes).ok())
     {
         let last = callee.rsplit_once('.').map(|(_, s)| s).unwrap_or(callee);
-        if matches!(last, "Route" | "WebSocketRoute") {
-            if let Some(args) = node.child_by_field_name("arguments") {
-                if let Some(path) = first_string_arg(args, bytes) {
-                    if endpoint_references(args, bytes, target) {
+        if matches!(last, "Route" | "WebSocketRoute")
+            && let Some(args) = node.child_by_field_name("arguments")
+                && let Some(path) = first_string_arg(args, bytes)
+                    && endpoint_references(args, bytes, target) {
                         let method = methods_kwarg(args, bytes).unwrap_or(HttpMethod::GET);
                         *out = Some((method, path));
                         return;
                     }
-                }
-            }
-        }
     }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
@@ -77,13 +74,11 @@ fn endpoint_references(args: Node<'_>, bytes: &[u8], target: &str) -> bool {
             let Ok(name_text) = name.utf8_text(bytes) else {
                 continue;
             };
-            if name_text == "endpoint" {
-                if let Some(value) = arg.child_by_field_name("value") {
-                    if identifier_matches(value, bytes, target) {
+            if name_text == "endpoint"
+                && let Some(value) = arg.child_by_field_name("value")
+                    && identifier_matches(value, bytes, target) {
                         return true;
                     }
-                }
-            }
         } else {
             seen_positional += 1;
             // Second positional argument is the endpoint when no

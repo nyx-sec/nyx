@@ -249,11 +249,10 @@ pub fn lookup_impact(source: Cap, adjacent: Option<Cap>) -> Option<ImpactCategor
     // Third pass: if `adjacent` is given but the pair didn't hit,
     // try the standalone rule on adjacent_cap so a CODE_EXEC + UNRELATED
     // pair still reaches `Rce`.
-    if let Some(adj) = adjacent {
-        if let Some(cat) = standalone_lookup(adj) {
+    if let Some(adj) = adjacent
+        && let Some(cat) = standalone_lookup(adj) {
             return Some(cat);
         }
-    }
     None
 }
 

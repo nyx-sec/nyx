@@ -373,11 +373,10 @@ pub fn materialize_node(env: &Environment) -> RuntimeArtifacts {
         }
     }
     for fw in &env.frameworks {
-        if let Some(name) = node_framework_pkg_name(*fw) {
-            if seen.insert(name.to_owned()) {
+        if let Some(name) = node_framework_pkg_name(*fw)
+            && seen.insert(name.to_owned()) {
                 deps.push((name.to_owned(), "*"));
             }
-        }
     }
     deps.sort_by(|a, b| a.0.cmp(&b.0));
 

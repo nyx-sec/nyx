@@ -385,10 +385,10 @@ fn parse_image_catalogue(src: &str) -> Vec<ImageEntry> {
         }
 
         if line == "[[image]]" {
-            if let Some(prev) = current.take() {
-                if !prev.toolchain_id.is_empty() {
-                    entries.push(prev);
-                }
+            if let Some(prev) = current.take()
+                && !prev.toolchain_id.is_empty()
+            {
+                entries.push(prev);
             }
             current = Some(ImageEntry::default());
             continue;
@@ -396,10 +396,10 @@ fn parse_image_catalogue(src: &str) -> Vec<ImageEntry> {
 
         if line.starts_with("[[") || line.starts_with('[') {
             // Any other section ends accumulation.
-            if let Some(prev) = current.take() {
-                if !prev.toolchain_id.is_empty() {
-                    entries.push(prev);
-                }
+            if let Some(prev) = current.take()
+                && !prev.toolchain_id.is_empty()
+            {
+                entries.push(prev);
             }
             continue;
         }
@@ -416,10 +416,10 @@ fn parse_image_catalogue(src: &str) -> Vec<ImageEntry> {
         }
     }
 
-    if let Some(prev) = current.take() {
-        if !prev.toolchain_id.is_empty() {
-            entries.push(prev);
-        }
+    if let Some(prev) = current.take()
+        && !prev.toolchain_id.is_empty()
+    {
+        entries.push(prev);
     }
 
     entries

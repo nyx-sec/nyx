@@ -90,20 +90,18 @@ fn walk_url_registrations(
             .and_then(|n| n.utf8_text(bytes).ok())
     {
         let last = callee.rsplit_once('.').map(|(_, s)| s).unwrap_or(callee);
-        if matches!(last, "path" | "re_path" | "url") {
-            if let Some(args) = node.child_by_field_name("arguments") {
+        if matches!(last, "path" | "re_path" | "url")
+            && let Some(args) = node.child_by_field_name("arguments") {
                 let positional = positional_args(args);
                 if positional.len() >= 2 {
                     let view_arg = positional[1];
-                    if view_arg_references(view_arg, bytes, target, class_target) {
-                        if let Some(template) = first_string_arg(args, bytes) {
+                    if view_arg_references(view_arg, bytes, target, class_target)
+                        && let Some(template) = first_string_arg(args, bytes) {
                             *out = Some(template);
                             return;
                         }
-                    }
                 }
             }
-        }
     }
     let mut cur = node.walk();
     for child in node.children(&mut cur) {
@@ -138,13 +136,11 @@ fn view_arg_references(
         .strip_suffix(')')
         .and_then(|s| s.rfind('(').map(|i| &s[..i]))
         .and_then(|s| s.strip_suffix(".as_view"))
-    {
-        if let Some(ct) = class_target
+        && let Some(ct) = class_target
             && class.rsplit_once('.').map(|(_, s)| s).unwrap_or(class) == ct
         {
             return true;
         }
-    }
     let stripped = trimmed.trim_end_matches("()");
     let last = stripped.rsplit_once('.').map(|(_, s)| s).unwrap_or(stripped);
     last == target || stripped == target

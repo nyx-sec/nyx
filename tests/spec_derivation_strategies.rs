@@ -1,3 +1,4 @@
+#![allow(clippy::field_reassign_with_default)]
 //! Phase 01, Track A.1: integration coverage for
 //! `HarnessSpec::from_finding_opts` strategy fall-through.
 //!

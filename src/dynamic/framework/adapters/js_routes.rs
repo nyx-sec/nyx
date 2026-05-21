@@ -455,14 +455,11 @@ fn walk_for_registration<'a>(
         if let Some(method) = http_verb_from_method(prop_text)
             && receiver_accepts(last_segment(object_text))
             && let Some(args) = node.child_by_field_name("arguments")
-        {
-            if call_args_reference_target(args, bytes, target) {
-                if let Some(path) = first_string_arg(args, bytes) {
+            && call_args_reference_target(args, bytes, target)
+                && let Some(path) = first_string_arg(args, bytes) {
                     *out = Some((method, path));
                     return;
                 }
-            }
-        }
         // Fastify options-object: `fastify.route({ method, url, handler })`.
         if prop_text == "route"
             && receiver_accepts(last_segment(object_text))
