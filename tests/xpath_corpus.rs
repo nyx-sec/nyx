@@ -424,7 +424,8 @@ mod e2e_phase_07 {
             Lang::Java => "java",
             Lang::Python => "python3",
             Lang::Php => "php",
-            _ => unreachable!("e2e_phase_07 covers Java/Python/PHP"),
+            Lang::JavaScript => "node",
+            _ => unreachable!("e2e_phase_07 covers Java/Python/PHP/JS"),
         }
     }
 
@@ -433,6 +434,7 @@ mod e2e_phase_07 {
             Lang::Java => "java",
             Lang::Python => "python",
             Lang::Php => "php",
+            Lang::JavaScript => "js",
             _ => unreachable!(),
         }
     }
@@ -542,6 +544,20 @@ mod e2e_phase_07 {
         assert!(
             outcome.triggered_by.is_some(),
             "PHP XPath vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn javascript_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::JavaScript, "vuln.js", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "JavaScript XPath vuln must Confirm via run_spec; got {outcome:?}",
         );
         let diff = outcome
             .differential

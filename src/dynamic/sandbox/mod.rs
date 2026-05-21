@@ -775,7 +775,20 @@ pub fn run(
             }
         }
         SandboxBackend::Auto => {
-            if docker_available() && harness_is_interpreted(&harness.command) {
+            // Docker containers run the interpreter image's bare runtime
+            // (python:3-slim, node:20-slim, ruby:3-slim, ...) with no
+            // network access under NetworkPolicy::None.  Harness shapes
+            // that depend on packages declared via requirements.txt /
+            // package.json / Gemfile / composer.json can be served from
+            // the host build cache by prepare_*, but the container has
+            // no way to fetch them at exec time.  Route to the process
+            // backend in that case so the harness picks up the host
+            // venv / node_modules / vendor dir already prepared.
+            let needs_host_deps = harness_needs_host_deps(harness);
+            if docker_available()
+                && harness_is_interpreted(&harness.command)
+                && !needs_host_deps
+            {
                 run_docker(harness, payload_bytes, opts)
             } else if docker_available() && harness_is_native_binary(&harness.command) {
                 run_native_binary_docker(harness, payload_bytes, opts)
@@ -786,6 +799,33 @@ pub fn run(
         SandboxBackend::Process => run_process(harness, payload_bytes, opts),
         SandboxBackend::Firecracker => run_firecracker(harness, payload_bytes, opts),
     }
+}
+
+/// True when the harness workdir carries a dependency manifest that the
+/// docker backend has no mechanism to materialise inside the container.
+///
+/// `prepare_python` / `prepare_node` / `prepare_php` / etc. resolve these
+/// against the host build cache before the run, so the process backend
+/// already has a fully-populated venv / node_modules / vendor dir to
+/// invoke.  The docker backend, on the other hand, mounts the workdir
+/// into a bare interpreter image (python:3-slim, node:20-slim, ...) and
+/// runs under `--network=none`, leaving no path for an in-container
+/// `pip install` / `npm install` / `composer install` to fetch the deps.
+/// Routing those shapes to the process backend keeps the verifier honest
+/// on dev hosts where docker is available but the bare image lacks the
+/// third-party libs the entry source imports.
+fn harness_needs_host_deps(harness: &BuiltHarness) -> bool {
+    const MANIFESTS: &[&str] = &[
+        "requirements.txt",
+        "Pipfile.lock",
+        "pyproject.toml",
+        "package.json",
+        "Gemfile",
+        "composer.json",
+    ];
+    MANIFESTS
+        .iter()
+        .any(|name| harness.workdir.join(name).exists())
 }
 
 /// Phase 20 (Track E.4): dispatch the Firecracker backend.

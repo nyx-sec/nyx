@@ -723,6 +723,8 @@ fn emit_middleware_harness(handler: &str, name: &str) -> HarnessSource {
         r#"{preamble}
 puts "__NYX_MIDDLEWARE__: " + {name:?}
 
+require 'stringio'
+
 # Rack-shape middleware: class with #call(env).
 env = {{
   'REQUEST_METHOD' => 'POST',
@@ -731,7 +733,6 @@ env = {{
   'rack.input' => StringIO.new($nyx_payload),
   'nyx.payload' => $nyx_payload,
 }}
-require 'stringio'
 
 if Object.const_defined?({handler:?})
   cls = Object.const_get({handler:?})
@@ -1233,7 +1234,8 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: RubyShape, entry_fn: &str) -> Str
         RubyShape::RackMiddleware => {
             let cls = entry_class_from_spec(spec);
             format!(
-                r#"  cls = Object.const_defined?({cls:?}) ? Object.const_get({cls:?}) : nil
+                r#"  require 'stringio'
+  cls = Object.const_defined?({cls:?}) ? Object.const_get({cls:?}) : nil
   if cls
     inner = cls.respond_to?(:new) ? (cls.method(:new).arity == 0 ? cls.new : cls.new(nil)) : nil
     env = {{
@@ -1243,7 +1245,6 @@ fn invoke_for_shape(spec: &HarnessSpec, shape: RubyShape, entry_fn: &str) -> Str
       'rack.input' => StringIO.new(($nyx_request[:body] rescue '')),
       'nyx.payload' => $nyx_payload,
     }}
-    require 'stringio'
     status, headers, body = inner.call(env)
     Array(body).each {{ |chunk| print(chunk.to_s) }}
   end"#,

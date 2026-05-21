@@ -354,7 +354,8 @@ mod e2e_phase_05 {
             Lang::Python => "python3",
             Lang::Php => "php",
             Lang::Ruby => "ruby",
-            _ => unreachable!("e2e_phase_05 covers Java/Python/PHP/Ruby"),
+            Lang::Go => "go",
+            _ => unreachable!("e2e_phase_05 covers Java/Python/PHP/Ruby/Go"),
         }
     }
 
@@ -364,6 +365,7 @@ mod e2e_phase_05 {
             Lang::Python => "python",
             Lang::Php => "php",
             Lang::Ruby => "ruby",
+            Lang::Go => "go",
             _ => unreachable!(),
         }
     }
@@ -487,6 +489,20 @@ mod e2e_phase_05 {
         assert!(
             outcome.triggered_by.is_some(),
             "Ruby XXE vuln must Confirm via run_spec; got {outcome:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+    }
+
+    #[test]
+    fn go_vuln_confirms_via_run_spec() {
+        let Some(outcome) = run(Lang::Go, "vuln.go", "run") else { return };
+        assert!(
+            outcome.triggered_by.is_some(),
+            "Go XXE vuln must Confirm via run_spec; got {outcome:?}",
         );
         let diff = outcome
             .differential

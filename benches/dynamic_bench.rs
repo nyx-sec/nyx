@@ -44,7 +44,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 
 #[cfg(feature = "dynamic")]
-use nyx_scanner::dynamic::spec::{EntryKind, HarnessSpec, PayloadSlot, SpecDerivationStrategy};
+use nyx_scanner::dynamic::spec::{
+    EntryKind, HarnessSpec, JavaToolchain, PayloadSlot, SpecDerivationStrategy,
+};
 #[cfg(feature = "dynamic")]
 use nyx_scanner::labels::Cap;
 #[cfg(feature = "dynamic")]
@@ -68,6 +70,7 @@ fn make_rust_sqli_spec() -> HarnessSpec {
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: JavaToolchain::default(),
     }
 }
 
@@ -89,6 +92,7 @@ fn make_sqli_spec() -> HarnessSpec {
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: JavaToolchain::default(),
     }
 }
 
@@ -288,6 +292,7 @@ fn make_js_sqli_spec() -> HarnessSpec {
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: JavaToolchain::default(),
     }
 }
 
@@ -309,6 +314,7 @@ fn make_go_sqli_spec() -> HarnessSpec {
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: JavaToolchain::default(),
     }
 }
 
@@ -330,6 +336,7 @@ fn make_java_sqli_spec() -> HarnessSpec {
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: JavaToolchain::default(),
     }
 }
 
@@ -351,6 +358,7 @@ fn make_php_sqli_spec() -> HarnessSpec {
         derivation: SpecDerivationStrategy::FromFlowSteps,
         stubs_required: vec![],
         framework: None,
+        java_toolchain: JavaToolchain::default(),
     }
 }
 
