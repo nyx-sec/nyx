@@ -4,18 +4,73 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [Unreleased]
 
-### Dynamic verification overhaul
+A focused release on three fronts: an attack-surface map and chain composer that turn the flat finding list into a route-to-sink graph, a sandboxed dynamic verifier that re-runs every Medium-or-higher finding against a payload corpus and stamps a Confirmed / NotConfirmed / Inconclusive / Unsupported verdict, and a 106-adapter framework registry that grounds the surface map and dynamic harnesses in real-world HTTP, message-broker, scheduled-job, GraphQL, WebSocket, middleware, and migration entry points.
 
-End-to-end delivery of the surface map + chain composer + dynamic verifier work tracked in the pitboss plan.  Together these three pieces turn a static finding list into a verified attack-surface graph and post the published headline metrics in `docs/dynamic.md`.
+### Attack-surface map
 
-- **Attack-surface map.** `nyx surface` (Phase 23) emits a JSON / web-renderable graph of every entry point, datastore, external service, and dangerous local sink the project exposes.  Built from the existing pass-1 summaries (no second walk of the codebase) and persisted alongside the index so the frontend can reload without rescanning.  Per-framework router probes cover Flask, FastAPI, Django, Express, Koa, Spring, Servlet, Quarkus, Gin, Actix, Axum, Rails, and Laravel.
-- **Chain composer.** `nyx scan` (Phase 24–26) now lifts taint findings into `ChainFinding` records that connect a route entry point to a downstream sink via the call graph + surface map.  The lattice composer scores (impact × evidence) per chain and the top-N are queued for composite reverification.  Output is wired into the `findings.json` / SARIF emitters and the `nyx serve` UI so chains rank above isolated findings.
-- **Dynamic verifier.** Every `Confidence >= Medium` finding (Phase 06–22) is now executed against a curated payload corpus inside a sandboxed harness, with the verdict (`Confirmed` / `NotConfirmed` / `Inconclusive` / `Unsupported`) stamped onto `Evidence.dynamic_verdict`.  Backends: in-process (`Standard` / `Strict` hardening), docker (Phase 19 image-builder catalogue), firecracker stub (Phase 20 trait).  Per-language emitters cover Python, JS/TS, Go, Java, PHP, Ruby, Rust, C, and C++.  Curated payload corpus, abstract-interpretation + symex sanitizer suppression (Phase 17–22), stub harness with SQL / HTTP / Redis / filesystem boundary intercepts (Phase 10), and reproducible repro bundles at `~/.cache/nyx/dynamic/repro/<spec_hash>/` (Phase 27–28).
-- **Telemetry + repro.** `events.jsonl` is now schema-versioned (envelope: `schema_version`, `nyx_version`, `corpus_version`, `kind`, `ts`).  Repro bundles are hermetic (Phase 28): every bundle emits `reproduce.sh` + `expected/{verdict.json,outcome.json,trace.jsonl}` and a `docker_pull.sh` when the toolchain is pinned in `tools/image-builder/images.toml`.  PII / secret scrubbing runs on every persisted artefact via `src/utils/redact.rs`.
-- **Determinism + policy.** `src/policy.rs` exposes a YAML-driven deny list (Phase 30) consulted before harness build, with deny-decision excerpts redacted via the same scrubber.  `crate::dynamic::rand::SpecRng` is seeded from each `HarnessSpec`'s hash and audited by `scripts/check_no_unseeded_rand.sh`.  `VerifyTrace` (Phase 30) carries every per-step decision into the repro bundle for offline triage.
-- **Headline gate.** `scripts/m7_ship_gate.sh` runs five gates against `tests/eval_corpus/budget.toml` (Phase 31 headline targets: Unsupported < 20% per `(cap, lang)` cell, False-Confirmed < 2% per cap, repro stability ≥ 95%, wall-clock ≤ 2× static-only, sandbox-escape suite green).  `tests/eval_corpus/run_full.sh` is the canonical orchestrator and writes a stable `tests/eval_corpus/results.json` for the gate + the published metrics table in `docs/dynamic.md`.
+- **`nyx surface` subcommand.** Prints the project's entry points, datastores, external services, and dangerous local sinks as text, JSON, Graphviz `dot`, or rendered SVG. Loads the persisted `SurfaceMap` from the most recent indexed scan when available, or rebuilds inline from source. `--build` forces a full pass-1 + call-graph walk so DataStore / ExternalService / DangerousLocal nodes populate on an unscanned project.
+- **Surface page in `nyx serve`.** New `SurfacePage` renders the same graph in the browser UI, with ELK layout, sidebar navigation, and a wide-canvas SVG viewer. Persists alongside the index so the frontend reloads without a rescan.
+- **Chain findings.** `ChainFinding` records connect a route entry point to a downstream sink via the call graph + surface map. The composer scores `(impact × evidence)` per chain, queues the top-N for composite reverification, and wires the result into `findings.json` / SARIF / the dashboard. Chains rank above isolated findings.
 
-The default-on flip is gated on `m7_ship_gate.sh` exit 0 against the eval corpus.  Engine follow-ups blocking the gate are tracked in `.pitboss/play/deferred.md` (per-language probe-shim splicing for Go / PHP / Ruby / Rust / C / C++, composite chain reverifier live execution path, telemetry repro-stability stamping, and image-builder catalogue digest population).
+### Framework adapter registry
+
+`src/dynamic/framework/` ships a `FrameworkAdapter` trait with 106 concrete adapters across 8 languages. Each adapter binds a route / handler / consumer pattern to a `FrameworkBinding` so the surface map and dynamic verifier can locate entry points without re-walking the AST.
+
+- **HTTP routers.** Flask, Django, FastAPI, Starlette (Python); Express, Koa, NestJS, Fastify (JS/TS); Spring, Quarkus, Micronaut, Jakarta Servlet (Java); Gin, Echo, Fiber, Chi (Go); Axum, Actix, Rocket, Warp (Rust); Rails, Sinatra, Hanami (Ruby); Laravel, Symfony, CodeIgniter (PHP).
+- **New `EntryKind` variants.** `ClassMethod`, `MessageHandler`, `ScheduledJob`, `GraphQLResolver`, `WebSocket`, `Middleware`, `Migration` join the existing `RouteHandler` / `Function` set so the surface map shows non-HTTP entry surfaces.
+- **Message broker handlers.** Kafka, AWS SQS, Google Pub/Sub, NATS, and RabbitMQ consumers across Python, Node, Java, and Go.
+- **Scheduled jobs.** Celery (Python), Sidekiq (Ruby), Quartz (Java), plain cron expression recognition.
+- **GraphQL resolvers.** Apollo, Relay, gqlgen, Juniper, Graphene.
+- **WebSocket handlers.** ws, Socket.IO, ActionCable, Django Channels.
+- **Middleware + migrations.** Express, Laravel, Spring, Django, Rails middleware; Django, Flask, Laravel, Rails, Prisma, Sequelize migration scripts.
+- **Sanitizer-aware adapter strengthening.** Every XXE, header-injection, open-redirect, SSTI, LDAP, XPath, and deserialization adapter rejects bindings when the surrounding source visibly hardens the parser (`disallow-doctype-decl`, `resolve_entities=False`, `libxml_disable_entity_loader`), routes the value through a known encoder (`LdapEncoder.filterEncode`, `escape_filter_chars`, `ldap_escape`), or validates the URL through an allowlist. Cuts adapter FPs without losing the genuinely dangerous calls.
+
+### Dynamic verification
+
+- **`nyx scan --verify`.** Every finding with `Confidence >= Medium` is re-executed inside a sandboxed harness against a curated payload corpus. The verdict (`Confirmed` / `NotConfirmed` / `Inconclusive` / `Unsupported`) lands on `Evidence.dynamic_verdict` and shows up in console output, JSON, SARIF, and the dashboard via a new `VerdictBadge` component on the finding detail page.
+- **Backends.** In-process (`Standard` and `Strict` hardening), Docker (with a published image-builder catalogue), and a Firecracker trait stub for future microVM execution. The Docker backend ships native binary support for Rust and Go so harnesses no longer need to drag a toolchain into every image.
+- **Language coverage.** Per-language harness emitters for Python, JS/TS, Go, Java, PHP, Ruby, Rust, C, and C++. Stub harness intercepts SQL, HTTP, Redis, and filesystem boundaries so the verdict reflects the sink, not the network.
+- **Abstract-interpretation and symex sanitizer suppression.** Symbolic execution and the interval/string abstract domain are now consulted at verdict time, so a payload that the static engine would call dangerous but symex can prove never reaches the sink lands as NotConfirmed.
+- **Repro bundles.** Every verified finding writes a hermetic bundle to `~/.cache/nyx/dynamic/repro/<spec_hash>/` with `reproduce.sh`, `expected/{verdict.json,outcome.json,trace.jsonl}`, and a `docker_pull.sh` when the toolchain is pinned in `tools/image-builder/images.toml`. `--verbose` flushes the per-step `VerifyTrace` to stderr for live triage.
+
+### Determinism, policy, telemetry
+
+- **YAML policy deny list.** `src/policy.rs` is consulted before harness build. Network egress, filesystem writes outside the sandbox root, and process spawns can be denied per-rule; deny decisions land in the trace, redacted via the shared scrubber.
+- **Seeded RNG.** `dynamic::rand::SpecRng` is seeded from each `HarnessSpec` hash so two runs of the same spec produce identical payloads. `scripts/check_no_unseeded_rand.sh` audits the tree for unseeded `rand` usage on every CI run.
+- **`VerifyTrace` observability.** Every per-step decision (probe selection, payload mutation, oracle check, deny verdict) writes to the trace stream and the repro bundle.
+- **Schema-versioned telemetry.** `events.jsonl` carries `schema_version`, `nyx_version`, `corpus_version`, `kind`, and `ts` on every envelope. PII and secret scrubbing runs on every persisted artefact via `src/utils/redact.rs`.
+- **`NYX_NO_TELEMETRY=1`** disables event persistence outright.
+
+### CVE corpus and ground truth
+
+- **New `Cap` corpora.** Vulnerable + patched fixtures landed for the seven new cap classes (LDAP injection, XPath injection, header injection, open redirect, SSTI, XXE, prototype pollution) plus deserialization, crypto, JSON parsing, unauthorized-id, and data exfiltration. Every cap now carries at least one positive / negative / adversarial / unsupported fixture quad per supported language.
+- **OWASP Benchmark v1.2 importer.** `tests/eval_corpus/owasp_gt_convert.py` converts the OWASP Java Benchmark expected-results manifest into Nyx ground truth and lands a 16k-line `owasp_benchmark_v1.2.json` for evaluation.
+- **NIST SARD importer.** `tests/eval_corpus/sard_gt_convert.py` converts SARD test cases into the same format so cross-dataset recall numbers stay comparable.
+- **`scripts/m7_ship_gate.sh`** runs five gates against `tests/eval_corpus/budget.toml`: Unsupported under 20% per `(cap, lang)` cell, False-Confirmed under 2% per cap, repro stability at or above 95%, wall-clock no more than 2× static-only, sandbox-escape suite green. `tests/eval_corpus/run_full.sh` is the canonical orchestrator and writes `tests/eval_corpus/results.json` for the gate plus the published metrics table in `docs/dynamic.md`.
+
+### Engine
+
+- **DB fast-fail preflight.** `Indexer::init` reads the first 16 bytes of any candidate SQLite file and rejects anything without the standard `SQLite format 3\0` magic. Stops a misnamed JSON / text file from corrupting the index path with a SQLite error halfway through migration.
+- **Symbolic-execution coverage.** Symex now recognises a wider set of string operations (`substr`, `replace`, `to_lower`, `to_upper`, `trim`, `strlen`) per the value/transfer pipeline, and the abstract-interpretation framework reasons about interval and prefix/suffix string facts during the dynamic verdict pass.
+
+### CLI
+
+- **`nyx scan --verify`** (off by default; opt-in for now) and `--backend {process,docker,firecracker}` select the dynamic-verification harness.
+- **`nyx scan --verify-all-confidence`** drops the Medium cutoff and re-verifies everything.
+- **`nyx scan --unsafe-sandbox`** disables hardening (development only, never for CI).
+- **`nyx scan --verify-feedback`** writes a `feedback_wrong_for_finding` event so wrong verdicts get logged for offline triage.
+- **`nyx scan --explain-engine`** prints the effective engine configuration and exits without scanning.
+- **`nyx surface`** (described above) with `--format {text,json,dot,svg}` and `--build`.
+
+### Frontend
+
+- **Surface page** with ELK auto-layout and the shared node-style palette.
+- **Verdict badge** on finding detail, plus a dynamic-verdict section that surfaces the verdict, the payload that triggered it, and a link to the repro bundle.
+- **Scan compare** gains a dynamic-verdict diff column so two scans can be compared on what was confirmed versus what was downgraded.
+
+### License
+
+- **Internal license grants documentation** at `LICENSE-GRANTS.md`. Grant 1 covers Nyx Pro derived works (renamed to reflect the Nyctos rebrand). The repo stays GPL-3.0-or-later; the grants document scope of internal product licensing.
 
 ## [0.7.0] - 2026-05-11
 
