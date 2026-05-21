@@ -550,6 +550,10 @@ fn walk_for_middleware<'a>(
             for name in collect_chain_middleware_names(args, bytes, target) {
                 route_chain.push(MiddlewareShape { name });
             }
+        } else if prop_text == "route" {
+            for name in collect_options_middleware_names(args, bytes, target) {
+                route_chain.push(MiddlewareShape { name });
+            }
         }
     }
     let mut cur = node.walk();
@@ -633,6 +637,93 @@ fn collect_use_arg_names(args: Node<'_>, bytes: &[u8]) -> Vec<String> {
         }
     }
     out
+}
+
+/// Collect middleware names from a Fastify options-object call
+/// `fastify.route({ method, url, onRequest, preHandler, handler })`.
+/// Inspects the pre-handler hook keys (`onRequest`, `preParsing`,
+/// `preValidation`, `preHandler`) — each value may be a function
+/// reference (identifier or `member_expression`), a factory call, or
+/// an array literal of any of those.  Returns the captured names in
+/// source order across the four hook keys.  Only fires when the
+/// object's `handler:` property references `target`; otherwise an
+/// unrelated route's hooks would leak into the binding.
+fn collect_options_middleware_names(args: Node<'_>, bytes: &[u8], target: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = args.walk();
+    for c in args.named_children(&mut cur) {
+        if c.kind() != "object" {
+            continue;
+        }
+        let mut handler_matches = false;
+        let mut hook_names: Vec<String> = Vec::new();
+        let mut oc = c.walk();
+        for pair in c.named_children(&mut oc) {
+            if pair.kind() != "pair" {
+                continue;
+            }
+            let Some(key_raw) = pair
+                .child_by_field_name("key")
+                .and_then(|n| n.utf8_text(bytes).ok())
+            else {
+                continue;
+            };
+            let Some(value) = pair.child_by_field_name("value") else {
+                continue;
+            };
+            let key = key_raw.trim_matches(['\'', '"', '`']);
+            match key {
+                "handler" => {
+                    if view_arg_references(value, bytes, target) {
+                        handler_matches = true;
+                    }
+                }
+                "onRequest" | "preParsing" | "preValidation" | "preHandler" => {
+                    collect_hook_value_names(value, bytes, &mut hook_names);
+                }
+                _ => {}
+            }
+        }
+        if handler_matches {
+            out.extend(hook_names);
+        }
+    }
+    out
+}
+
+/// Recursively collect identifier / member-expression / call / array
+/// references from a Fastify hook value into `out`.  Used by
+/// [`collect_options_middleware_names`] — supports the three documented
+/// hook value shapes: a single function reference
+/// (`preHandler: authz`), a factory call (`preHandler: authz()`), or
+/// an array of references (`preHandler: [authz, validate]`).
+fn collect_hook_value_names(value: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    match value.kind() {
+        "identifier" => {
+            if let Ok(text) = value.utf8_text(bytes) {
+                out.push(text.to_owned());
+            }
+        }
+        "member_expression" => {
+            if let Ok(text) = value.utf8_text(bytes) {
+                out.push(last_segment(text).to_owned());
+            }
+        }
+        "call_expression" => {
+            if let Some(fn_node) = value.child_by_field_name("function")
+                && let Ok(text) = fn_node.utf8_text(bytes)
+            {
+                out.push(last_segment(text).to_owned());
+            }
+        }
+        "array" => {
+            let mut cur = value.walk();
+            for c in value.named_children(&mut cur) {
+                collect_hook_value_names(c, bytes, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Parse a Fastify options-object call `fastify.route({ method, url,
@@ -818,6 +909,36 @@ mod tests {
         // `controller.save` is the handler; everything before is middleware.
         // We record the last segment of each member expression.
         assert_eq!(names, vec!["csrf", "auth"]);
+    }
+
+    #[test]
+    fn extract_middleware_picks_up_fastify_options_pre_handler() {
+        let src: &[u8] = b"fastify.route({\n\
+            method: 'POST',\n\
+            url: '/items',\n\
+            onRequest: tokenAuth,\n\
+            preHandler: [authz, validate],\n\
+            handler: handler,\n\
+        });\n";
+        let tree = parse_js(src);
+        let recv = |n: &str| n == "fastify";
+        let mw = extract_route_middleware(tree.root_node(), src, "handler", &recv);
+        let names: Vec<_> = mw.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["tokenAuth", "authz", "validate"]);
+    }
+
+    #[test]
+    fn extract_middleware_ignores_fastify_options_with_different_handler() {
+        let src: &[u8] = b"fastify.route({\n\
+            method: 'POST',\n\
+            url: '/items',\n\
+            preHandler: authz,\n\
+            handler: other,\n\
+        });\n";
+        let tree = parse_js(src);
+        let recv = |n: &str| n == "fastify";
+        let mw = extract_route_middleware(tree.root_node(), src, "handler", &recv);
+        assert!(mw.is_empty());
     }
 
     #[test]

@@ -19,7 +19,8 @@
 //! tree-sitter parser is picked from `summary.lang`.
 
 use crate::dynamic::framework::{
-    FrameworkAdapter, FrameworkBinding, HttpMethod, ParamBinding, ParamSource, RouteShape,
+    FrameworkAdapter, FrameworkBinding, HttpMethod, MiddlewareShape, ParamBinding, ParamSource,
+    RouteShape,
 };
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
@@ -28,7 +29,7 @@ use tree_sitter::Node;
 
 use super::js_routes::{
     bind_path_params, extract_path_placeholders, function_formal_names, http_verb_from_method,
-    source_imports_nest, strip_quotes,
+    last_segment, source_imports_nest, strip_quotes,
 };
 
 pub struct JsNestAdapter;
@@ -94,6 +95,7 @@ fn detect_nest(
         .unwrap_or_default();
     let mut request_params = bind_path_params(&formals, &full_path);
     refine_with_param_decorators(method_node, file_bytes, &mut request_params, &full_path);
+    let middleware = collect_nest_middleware(class_node, method_node, file_bytes);
     Some(FrameworkBinding {
         adapter: adapter_name.to_owned(),
         kind: EntryKind::HttpRoute,
@@ -103,7 +105,7 @@ fn detect_nest(
         }),
         request_params,
         response_writer: None,
-        middleware: Vec::new(),
+        middleware,
     })
 }
 
@@ -311,6 +313,115 @@ fn decorator_first_string_arg(decorator: Node<'_>, bytes: &[u8]) -> Option<Strin
         }
     }
     None
+}
+
+/// Collect Nest middleware names from `@UseGuards(...)` /
+/// `@UseInterceptors(...)` / `@UseFilters(...)` / `@UsePipes(...)`
+/// decorators on the class **and** on the method.  Class-level
+/// decorators fire before the method-level ones at runtime, so they
+/// are recorded first in the returned vector.  Each decorator may
+/// carry one or more positional arguments (e.g.
+/// `@UseGuards(AuthGuard, RoleGuard)`); the recorded names are the
+/// last segment of each identifier / member-expression argument so
+/// `mod.AuthGuard` collapses to `AuthGuard`.  Call-expression
+/// arguments (`@UseGuards(authGuard())`) record the called function's
+/// last segment.
+fn collect_nest_middleware(
+    class_node: Node<'_>,
+    method_node: Node<'_>,
+    bytes: &[u8],
+) -> Vec<MiddlewareShape> {
+    let mut out: Vec<MiddlewareShape> = Vec::new();
+    for name in collect_use_decorators_for_node(class_node, bytes) {
+        out.push(MiddlewareShape { name });
+    }
+    for name in collect_use_decorators_for_node(method_node, bytes) {
+        out.push(MiddlewareShape { name });
+    }
+    out
+}
+
+/// Walk `node`'s own `decorator` field children plus its preceding
+/// `decorator` siblings, pulling argument names from any `@UseGuards`
+/// / `@UseInterceptors` / `@UseFilters` / `@UsePipes` decorator
+/// encountered.  The two-source scan mirrors
+/// [`class_has_controller`] / [`method_verb_and_path`] so the helper
+/// behaves consistently across tree-sitter grammar variants that
+/// either nest decorators inside the class/method node or hoist them
+/// to preceding siblings.
+fn collect_use_decorators_for_node(node: Node<'_>, bytes: &[u8]) -> Vec<String> {
+    const USE_DECORATORS: &[&str] = &["UseGuards", "UseInterceptors", "UseFilters", "UsePipes"];
+    let mut field_form: Vec<String> = Vec::new();
+    let mut cur = node.walk();
+    for d in node.children_by_field_name("decorator", &mut cur) {
+        for &use_name in USE_DECORATORS {
+            if decorator_text_is(d, bytes, use_name) {
+                collect_decorator_arg_names(d, bytes, &mut field_form);
+            }
+        }
+    }
+    let mut sibling_form_groups: Vec<Vec<String>> = Vec::new();
+    let mut prev = node.prev_named_sibling();
+    while let Some(sib) = prev {
+        if sib.kind() == "decorator" {
+            for &use_name in USE_DECORATORS {
+                if decorator_text_is(sib, bytes, use_name) {
+                    let mut group: Vec<String> = Vec::new();
+                    collect_decorator_arg_names(sib, bytes, &mut group);
+                    sibling_form_groups.push(group);
+                }
+            }
+            prev = sib.prev_named_sibling();
+            continue;
+        }
+        break;
+    }
+    let mut sibling_form: Vec<String> = Vec::new();
+    for group in sibling_form_groups.into_iter().rev() {
+        sibling_form.extend(group);
+    }
+    sibling_form.extend(field_form);
+    sibling_form
+}
+
+/// Append each positional argument's display name from a decorator's
+/// underlying `call_expression`.  Identifiers contribute themselves;
+/// member expressions contribute the last `.`-segment; call
+/// expressions contribute the called function's last segment.  Other
+/// argument kinds (string literals, object literals) are skipped.
+fn collect_decorator_arg_names(decorator: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    let mut cur = decorator.walk();
+    for c in decorator.children(&mut cur) {
+        if c.kind() != "call_expression" {
+            continue;
+        }
+        let Some(args) = c.child_by_field_name("arguments") else {
+            continue;
+        };
+        let mut ac = args.walk();
+        for a in args.named_children(&mut ac) {
+            match a.kind() {
+                "identifier" => {
+                    if let Ok(text) = a.utf8_text(bytes) {
+                        out.push(text.to_owned());
+                    }
+                }
+                "member_expression" => {
+                    if let Ok(text) = a.utf8_text(bytes) {
+                        out.push(last_segment(text).to_owned());
+                    }
+                }
+                "call_expression" => {
+                    if let Some(fn_node) = a.child_by_field_name("function")
+                        && let Ok(text) = fn_node.utf8_text(bytes)
+                    {
+                        out.push(last_segment(text).to_owned());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Refine the per-formal binding shape using Nest's parameter
@@ -547,6 +658,61 @@ mod tests {
             ParamSource::QueryParam(name) => assert_eq!(name, "q"),
             other => panic!("expected QueryParam, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn records_method_use_guards_decorator() {
+        let src: &[u8] = b"import { Controller, Get, UseGuards } from '@nestjs/common';\n\
+            import { AuthGuard } from './auth.guard';\n\
+            @Controller('users')\n\
+            export class UsersController {\n\
+              @Get(':id')\n\
+              @UseGuards(AuthGuard)\n\
+              getUser(id: string) { return id; }\n\
+            }\n";
+        let tree = parse_ts(src);
+        let binding = TsNestAdapter
+            .detect(&summary("getUser", "typescript"), tree.root_node(), src)
+            .expect("binding");
+        let names: Vec<_> = binding.middleware.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["AuthGuard"]);
+    }
+
+    #[test]
+    fn records_class_and_method_use_decorators_in_order() {
+        let src: &[u8] = b"import { Controller, Post, UseGuards, UseInterceptors } from '@nestjs/common';\n\
+            import { AuthGuard } from './auth.guard';\n\
+            import { LoggingInterceptor } from './logging.interceptor';\n\
+            import { RoleGuard } from './role.guard';\n\
+            @Controller('admin')\n\
+            @UseGuards(AuthGuard)\n\
+            @UseInterceptors(LoggingInterceptor)\n\
+            export class AdminController {\n\
+              @Post('drop')\n\
+              @UseGuards(RoleGuard)\n\
+              drop(payload: string) { return payload; }\n\
+            }\n";
+        let tree = parse_ts(src);
+        let binding = TsNestAdapter
+            .detect(&summary("drop", "typescript"), tree.root_node(), src)
+            .expect("binding");
+        let names: Vec<_> = binding.middleware.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["AuthGuard", "LoggingInterceptor", "RoleGuard"]);
+    }
+
+    #[test]
+    fn middleware_empty_when_no_use_decorators() {
+        let src: &[u8] = b"import { Controller, Get } from '@nestjs/common';\n\
+            @Controller('open')\n\
+            export class OpenController {\n\
+              @Get('list')\n\
+              list() { return []; }\n\
+            }\n";
+        let tree = parse_ts(src);
+        let binding = TsNestAdapter
+            .detect(&summary("list", "typescript"), tree.root_node(), src)
+            .expect("binding");
+        assert!(binding.middleware.is_empty());
     }
 
     #[test]

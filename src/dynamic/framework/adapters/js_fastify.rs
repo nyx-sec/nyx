@@ -21,8 +21,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::js_routes::{
-    bind_path_params, find_function_params, find_route_registration, function_formal_names,
-    source_imports_fastify,
+    bind_path_params, extract_route_middleware, find_function_params, find_route_registration,
+    function_formal_names, source_imports_fastify,
 };
 
 pub struct JsFastifyAdapter;
@@ -63,13 +63,14 @@ impl FrameworkAdapter for JsFastifyAdapter {
             .map(|p| function_formal_names(p, file_bytes))
             .unwrap_or_default();
         let request_params = bind_path_params(&formals, &path);
+        let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
             route: Some(RouteShape { method, path }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -139,6 +140,53 @@ mod tests {
             .detect(&summary("handler"), tree.root_node(), src)
             .expect("binding");
         assert_eq!(binding.route.unwrap().path, "/inner");
+    }
+
+    #[test]
+    fn records_chained_middleware_and_global_use() {
+        let src: &[u8] = b"const fastify = require('fastify')();\n\
+            fastify.use(helmet());\n\
+            function authz(request, reply, done) { done(); }\n\
+            function handler(request, reply) { reply.send('ok'); }\n\
+            fastify.post('/save', authz, handler);\n";
+        let tree = parse_js(src);
+        let binding = JsFastifyAdapter
+            .detect(&summary("handler"), tree.root_node(), src)
+            .expect("binding");
+        let names: Vec<_> = binding.middleware.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["helmet", "authz"]);
+    }
+
+    #[test]
+    fn records_options_object_pre_handler_hooks() {
+        let src: &[u8] = b"const fastify = require('fastify')();\n\
+            async function handler(request, reply) { reply.send('ok'); }\n\
+            fastify.route({\n\
+                method: 'PUT',\n\
+                url: '/items/:id',\n\
+                onRequest: tokenAuth,\n\
+                preHandler: [authz, validate],\n\
+                handler: handler,\n\
+            });\n";
+        let tree = parse_js(src);
+        let binding = JsFastifyAdapter
+            .detect(&summary("handler"), tree.root_node(), src)
+            .expect("binding");
+        assert_eq!(binding.route.as_ref().unwrap().method, HttpMethod::PUT);
+        let names: Vec<_> = binding.middleware.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["tokenAuth", "authz", "validate"]);
+    }
+
+    #[test]
+    fn middleware_empty_when_route_has_no_chain() {
+        let src: &[u8] = b"const fastify = require('fastify')();\n\
+            function handler(request, reply) { reply.send('ok'); }\n\
+            fastify.get('/x', handler);\n";
+        let tree = parse_js(src);
+        let binding = JsFastifyAdapter
+            .detect(&summary("handler"), tree.root_node(), src)
+            .expect("binding");
+        assert!(binding.middleware.is_empty());
     }
 
     #[test]

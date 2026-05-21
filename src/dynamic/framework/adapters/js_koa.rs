@@ -17,8 +17,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::js_routes::{
-    bind_path_params, find_function_params, find_route_registration, function_formal_names,
-    last_segment, source_imports_koa, view_arg_references,
+    bind_path_params, extract_route_middleware, find_function_params, find_route_registration,
+    function_formal_names, last_segment, source_imports_koa, view_arg_references,
 };
 
 pub struct JsKoaAdapter;
@@ -102,13 +102,14 @@ impl FrameworkAdapter for JsKoaAdapter {
         if let Some((method, path)) = find_route_registration(ast, file_bytes, &summary.name, &recv)
         {
             let request_params = formals_for(&path);
+            let middleware = extract_route_middleware(ast, file_bytes, &summary.name, &recv);
             return Some(FrameworkBinding {
                 adapter: ADAPTER_NAME.to_owned(),
                 kind: EntryKind::HttpRoute,
                 route: Some(RouteShape { method, path }),
                 request_params,
                 response_writer: None,
-                middleware: Vec::new(),
+                middleware,
             });
         }
         // Fall back to `app.use(handler)` middleware registration.  No
@@ -190,6 +191,40 @@ mod tests {
             .expect("middleware binding");
         assert_eq!(binding.middleware.len(), 1);
         assert_eq!(binding.middleware[0].name, "koa.use");
+    }
+
+    #[test]
+    fn records_chained_middleware_and_global_app_use() {
+        let src: &[u8] = b"const Koa = require('koa');\n\
+            const Router = require('@koa/router');\n\
+            const app = new Koa();\n\
+            const router = new Router();\n\
+            app.use(helmet());\n\
+            app.use(logger);\n\
+            async function authz(ctx, next) { await next(); }\n\
+            async function validate(ctx, next) { await next(); }\n\
+            async function handler(ctx) { ctx.body = 'ok'; }\n\
+            router.post('/save', authz, validate, handler);\n";
+        let tree = parse_js(src);
+        let binding = JsKoaAdapter
+            .detect(&summary("handler"), tree.root_node(), src)
+            .expect("binding");
+        let names: Vec<_> = binding.middleware.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["helmet", "logger", "authz", "validate"]);
+    }
+
+    #[test]
+    fn middleware_empty_when_route_has_no_chain() {
+        let src: &[u8] = b"const Koa = require('koa');\n\
+            const Router = require('@koa/router');\n\
+            const router = new Router();\n\
+            async function handler(ctx) { ctx.body = 'ok'; }\n\
+            router.get('/x', handler);\n";
+        let tree = parse_js(src);
+        let binding = JsKoaAdapter
+            .detect(&summary("handler"), tree.root_node(), src)
+            .expect("binding");
+        assert!(binding.middleware.is_empty());
     }
 
     #[test]
