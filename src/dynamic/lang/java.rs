@@ -674,20 +674,33 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
 /// Phase 03 — Track J.1 deserialize harness for Java.
 ///
-/// Emits a `NyxHarness.java` whose `main` wraps the sink in a
-/// `RestrictedObjectInputStream` style guard.  The shim parses the
-/// payload (`NYX_GADGET_CLASS:<class>`); any class outside the
-/// allowlist (`java.lang.Integer`, `java.lang.String`) writes a
+/// Forges a minimal valid Java serialization stream for the marker
+/// class name carried by `NYX_PAYLOAD`, then runs it through a
+/// `RestrictedObjectInputStream` subclass whose `resolveClass` override
+/// enforces a static allowlist (`java.lang.Integer`, `java.lang.String`).
+/// When `resolveClass` sees a non-allowlisted class it writes a
 /// [`crate::dynamic::probe::ProbeKind::Deserialize`] probe with
-/// `gadget_chain_invoked: true` to `NYX_PROBE_PATH` and aborts the
-/// chain — this is the resolveClass-driven boundary the brief calls
-/// out.
+/// `gadget_chain_invoked: true` and throws `InvalidClassException` to
+/// abort — matching the JEP-290 / Look-Ahead-OIS hardening pattern
+/// real applications use.  The blob is built from raw stream bytes
+/// (TC_OBJECT → TC_CLASSDESC → class name → SUID → flags → no
+/// fields → TC_ENDBLOCKDATA → TC_NULL super) so the resolveClass
+/// boundary fires for both vuln and benign payloads; downstream
+/// instantiation failures (e.g. `serialVersionUID` mismatch on the
+/// allow-listed payload) are caught and treated as non-probe paths.
 pub fn emit_deserialize_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let source = format!(
         r#"// Nyx dynamic harness — deserialize (Phase 03 / Track J.1).
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InvalidClassException;
+import java.io.ObjectInputStream;
+import java.io.ObjectStreamClass;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -720,16 +733,59 @@ public class NyxHarness {{
         }}
     }}
 
+    static class NyxRestrictedOIS extends ObjectInputStream {{
+        NyxRestrictedOIS(InputStream in) throws IOException {{ super(in); }}
+        @Override
+        protected Class<?> resolveClass(ObjectStreamClass desc)
+                throws IOException, ClassNotFoundException {{
+            String name = desc.getName();
+            if (!NYX_ALLOWLIST.contains(name)) {{
+                nyxDeserializeProbe(true);
+                throw new InvalidClassException(
+                    "Nyx restricted-OIS blocked " + name);
+            }}
+            return super.resolveClass(desc);
+        }}
+    }}
+
+    static byte[] nyxForgeClassDescriptor(String className) throws IOException {{
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream dos = new DataOutputStream(baos);
+        dos.writeShort((short) 0xACED); // STREAM_MAGIC
+        dos.writeShort((short) 0x0005); // STREAM_VERSION
+        dos.writeByte(0x73);             // TC_OBJECT
+        dos.writeByte(0x72);             // TC_CLASSDESC
+        dos.writeUTF(className);
+        dos.writeLong(0L);               // serialVersionUID
+        dos.writeByte(0x02);             // SC_SERIALIZABLE
+        dos.writeShort(0);               // 0 fields
+        dos.writeByte(0x78);             // TC_ENDBLOCKDATA
+        dos.writeByte(0x70);             // TC_NULL (no super class)
+        return baos.toByteArray();
+    }}
+
     public static void main(String[] args) {{
         String payload = System.getenv("NYX_PAYLOAD");
         if (payload == null) payload = "";
         String prefix = "NYX_GADGET_CLASS:";
         if (payload.startsWith(prefix)) {{
             String cls = payload.substring(prefix.length());
-            if (!NYX_ALLOWLIST.contains(cls)) {{
-                // RestrictedObjectInputStream.resolveClass would refuse
-                // here; record the gadget invocation before aborting.
-                nyxDeserializeProbe(true);
+            try {{
+                byte[] blob = nyxForgeClassDescriptor(cls);
+                NyxRestrictedOIS ois = new NyxRestrictedOIS(
+                    new ByteArrayInputStream(blob));
+                try {{
+                    ois.readObject();
+                }} finally {{
+                    try {{ ois.close(); }} catch (IOException ignored) {{}}
+                }}
+            }} catch (InvalidClassException e) {{
+                // Restricted block — probe already written above.
+            }} catch (Throwable t) {{
+                // Allow-listed but downstream instantiation fails (the
+                // minimal stream omits the field bytes the real class
+                // expects).  resolveClass already fired; treat as a
+                // non-probe path.
             }}
         }}
         // Sink-reachability sentinel — runner's `vuln_fired && sink_hit`

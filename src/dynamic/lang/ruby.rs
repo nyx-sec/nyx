@@ -856,12 +856,43 @@ def _nyx_deserialize_probe(invoked)
   File.open(p, 'a') {{ |f| f.write(rec.to_json + "\n") }}
 end
 
+# Forge a Marshal v4.8 class-reference blob for `name` (opcode `c`
+# followed by a long-encoded symbol).  Marshal.load resolves the class
+# via `Object.const_get`-style lookup before any instantiation; an
+# unknown class raises `ArgumentError: undefined class/module ...` —
+# the same boundary `Marshal.const_defined?`-style hardening checks.
+def _nyx_forge_marshal_class_ref(name)
+  bytes = name.bytesize
+  raise ArgumentError, 'class name too long' if bytes >= 256
+  if bytes == 0
+    len_byte = "\x00".b
+  elsif bytes < 123
+    len_byte = [bytes + 5].pack('C')
+  else
+    len_byte = "\x01".b + [bytes].pack('C')
+  end
+  "\x04\x08c".b + len_byte + name.b
+end
+
 allowlist = ['Integer', 'String', 'Array']
 payload = ENV['NYX_PAYLOAD'] || ''
 if payload.start_with?('NYX_GADGET_CLASS:')
   cls = payload[('NYX_GADGET_CLASS:'.length)..]
-  unless allowlist.include?(cls)
-    _nyx_deserialize_probe(true)
+  begin
+    Marshal.load(_nyx_forge_marshal_class_ref(cls))
+  rescue ArgumentError => e
+    # `undefined class/module <ns>` — the Marshal class-resolution
+    # boundary refused the lookup.  Real hardening would surface this
+    # via a `Marshal.const_defined?` pre-check + reject; we record the
+    # gadget-class invocation here.
+    if e.message.start_with?('undefined class/module')
+      _nyx_deserialize_probe(true)
+    end
+  rescue TypeError, NameError
+    # Allow-listed class that exists at load time (e.g. `Integer`)
+    # resolves cleanly via `Object.const_get` and Marshal returns the
+    # class object — no rescue path.  Other unexpected errors fall
+    # through without writing a probe.
   end
 end
 # Sink-reachability sentinel — runner's `vuln_fired && sink_hit`

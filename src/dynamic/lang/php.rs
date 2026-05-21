@@ -522,12 +522,18 @@ pub fn emit(spec: &HarnessSpec) -> Result<HarnessSource, UnsupportedReason> {
 
 /// Phase 03 — Track J.1 deserialize harness for PHP.
 ///
-/// Wraps a call to `unserialize($input, ['allowed_classes' => false])`.
-/// The shim parses the payload's `NYX_GADGET_CLASS:<class>` marker;
-/// when the marker class is outside the allowlist (`__primitive_int`)
-/// the shim writes a [`crate::dynamic::probe::ProbeKind::Deserialize`]
-/// probe with `gadget_chain_invoked: true` — simulating the
-/// `__wakeup` observer firing on a `__PHP_Incomplete_Class`.
+/// Forges a minimal valid PHP serialized object blob
+/// (`O:<len>:"<class>":0:{{}}`) from the marker carried by
+/// `NYX_PAYLOAD`, then runs it through `unserialize` with the
+/// `allowed_classes` option set to a static allowlist
+/// (`__primitive_int`, `__primitive_string`).  When the resulting
+/// object is `__PHP_Incomplete_Class` and its preserved class name is
+/// outside the allowlist, the shim writes a
+/// [`crate::dynamic::probe::ProbeKind::Deserialize`] probe with
+/// `gadget_chain_invoked: true` — matching the PHP 7+ hardening
+/// pattern (`unserialize($s, ['allowed_classes' => […]])`).  Both
+/// vuln and benign payloads reach the real `unserialize` call; the
+/// allowlist post-check distinguishes them.
 pub fn emit_deserialize_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let body = format!(
@@ -549,15 +555,32 @@ function _nyx_deserialize_probe(bool $invoked): void {{
     @file_put_contents($p, json_encode($rec) . "\n", FILE_APPEND);
 }}
 
+function _nyx_incomplete_class_name(object $o): string {{
+    // __PHP_Incomplete_Class stores the original class name on a
+    // private-named property; casting to array surfaces it under the
+    // documented `__PHP_Incomplete_Class_Name` key.
+    $arr = (array) $o;
+    return (string) ($arr['__PHP_Incomplete_Class_Name'] ?? '');
+}}
+
 $payload = (string) (getenv('NYX_PAYLOAD') ?: '');
 $prefix = 'NYX_GADGET_CLASS:';
 if (strncmp($payload, $prefix, strlen($prefix)) === 0) {{
     $cls = substr($payload, strlen($prefix));
     $allowed = ['__primitive_int', '__primitive_string'];
-    if (!in_array($cls, $allowed, true)) {{
-        _nyx_deserialize_probe(true);
+    $blob = 'O:' . strlen($cls) . ':"' . $cls . '":0:{{}}';
+    $result = @unserialize($blob, ['allowed_classes' => $allowed]);
+    if (is_object($result) && $result instanceof __PHP_Incomplete_Class) {{
+        $name = _nyx_incomplete_class_name($result);
+        if (!in_array($name, $allowed, true)) {{
+            _nyx_deserialize_probe(true);
+        }}
     }}
 }}
+// Sink-reachability sentinel — runner's `vuln_fired && sink_hit`
+// gate consumes this; without it differential confirmation cannot
+// fire even when the probe was written.
+echo "__NYX_SINK_HIT__\n";
 "#
     );
     HarnessSource {
