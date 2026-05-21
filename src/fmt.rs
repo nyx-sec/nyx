@@ -192,7 +192,7 @@ pub fn render_welcome() -> String {
     for line in LOGO {
         out.push_str(&format!(
             "  {}\n",
-            style(line).true_color(114, 243, 215).bold()
+            style(line).true_color(46, 160, 103).bold()
         ));
     }
 

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="275" viewBox="0 0 900 275" role="img" aria-labelledby="title desc">
+  <title id="title">NYX</title>
+  <desc id="desc">NYX security scanner.</desc>
+  <defs>
+    <style>
+      .banner {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        font-size: 38px;
+        font-weight: 800;
+        letter-spacing: 0;
+        white-space: pre;
+      }
+    </style>
+  </defs>
+
+  <g transform="translate(146 48)" xml:space="preserve">
+    <text class="banner" x="0" y="0" fill="#2ea067" xml:space="preserve">███╗   ██╗██╗   ██╗██╗  ██╗</text>
+    <text class="banner" x="0" y="43" fill="#2ea067" xml:space="preserve">████╗  ██║╚██╗ ██╔╝╚██╗██╔╝</text>
+    <text class="banner" x="0" y="86" fill="#2ea067" xml:space="preserve">██╔██╗ ██║ ╚████╔╝  ╚███╔╝</text>
+    <text class="banner" x="0" y="129" fill="#2ea067" xml:space="preserve">██║╚██╗██║  ╚██╔╝   ██╔██╗</text>
+    <text class="banner" x="0" y="172" fill="#2ea067" xml:space="preserve">██║ ╚████║   ██║   ██╔╝ ██╗</text>
+    <text class="banner" x="0" y="215" fill="#2ea067" xml:space="preserve">╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝</text>
+  </g>
+</svg>

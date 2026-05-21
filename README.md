@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/nyx-wordmark.svg" alt="nyx" height="110"/>
+  <img src="assets/nyx-readme-header.png" alt="NYX" width="640"/>
 
 **A local-first security scanner with a browser UI. Scan your repo and triage in your browser, with no cloud and no account.**
 
@@ -234,12 +234,12 @@ Limitations:
 
 ## Documentation
 
-Browse the full docs site at **[elicpeter.github.io/nyx](https://elicpeter.github.io/nyx/)**.
+Browse the full docs site at **[nyxscan.dev/docs](https://nyxscan.dev/docs/)**.
 
-- [Quick Start](https://elicpeter.github.io/nyx/quickstart.html) · [CLI Reference](https://elicpeter.github.io/nyx/cli.html) · [Installation](https://elicpeter.github.io/nyx/installation.html)
-- [`nyx serve`](https://elicpeter.github.io/nyx/serve.html) · [Output Formats](https://elicpeter.github.io/nyx/output.html) · [Configuration](https://elicpeter.github.io/nyx/configuration.html)
-- [How it works](https://elicpeter.github.io/nyx/how-it-works.html) · [Detectors](https://elicpeter.github.io/nyx/detectors.html) ([Taint](https://elicpeter.github.io/nyx/detectors/taint.html), [CFG](https://elicpeter.github.io/nyx/detectors/cfg.html), [State](https://elicpeter.github.io/nyx/detectors/state.html), [AST Patterns](https://elicpeter.github.io/nyx/detectors/patterns.html))
-- [Rule Reference](https://elicpeter.github.io/nyx/rules.html) · [Language Maturity](https://elicpeter.github.io/nyx/language-maturity.html) · [Advanced Analysis](https://elicpeter.github.io/nyx/advanced-analysis.html) · [Auth Analysis](https://elicpeter.github.io/nyx/auth.html)
+- [Quick Start](https://nyxscan.dev/docs/quickstart.html) · [CLI Reference](https://nyxscan.dev/docs/cli.html) · [Installation](https://nyxscan.dev/docs/installation.html)
+- [`nyx serve`](https://nyxscan.dev/docs/serve.html) · [Output Formats](https://nyxscan.dev/docs/output.html) · [Configuration](https://nyxscan.dev/docs/configuration.html)
+- [How it works](https://nyxscan.dev/docs/how-it-works.html) · [Detectors](https://nyxscan.dev/docs/detectors.html) ([Taint](https://nyxscan.dev/docs/detectors/taint.html), [CFG](https://nyxscan.dev/docs/detectors/cfg.html), [State](https://nyxscan.dev/docs/detectors/state.html), [AST Patterns](https://nyxscan.dev/docs/detectors/patterns.html))
+- [Rule Reference](https://nyxscan.dev/docs/rules.html) · [Language Maturity](https://nyxscan.dev/docs/language-maturity.html) · [Advanced Analysis](https://nyxscan.dev/docs/advanced-analysis.html) · [Auth Analysis](https://nyxscan.dev/docs/auth.html)
 
 ---
 

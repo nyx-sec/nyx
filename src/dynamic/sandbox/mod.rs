@@ -837,7 +837,7 @@ fn run_firecracker(
 ) -> Result<SandboxOutcome, SandboxError> {
     #[cfg(feature = "firecracker")]
     {
-        return firecracker::run(_harness, _payload_bytes, _opts);
+        firecracker::run(_harness, _payload_bytes, _opts)
     }
     #[cfg(not(feature = "firecracker"))]
     {

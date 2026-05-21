@@ -70,7 +70,7 @@ A focused release on three fronts: an attack-surface map and chain composer that
 
 ### License
 
-- **Internal license grants documentation** at `LICENSE-GRANTS.md`. Grant 1 covers Nyx Pro derived works (renamed to reflect the Nyctos rebrand). The repo stays GPL-3.0-or-later; the grants document scope of internal product licensing.
+- **Internal license grants documentation** at `LICENSE-GRANTS.md`. Grant 1 covers Nyctos derived works. The repo stays GPL-3.0-or-later; the grants document scope of internal product licensing.
 
 ## [0.7.0] - 2026-05-11
 
