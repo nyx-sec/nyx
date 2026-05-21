@@ -764,6 +764,17 @@ pub struct AttemptSummary {
 pub enum DifferentialVerdict {
     /// Vulnerable payload fired the oracle and the benign control did not.
     Confirmed,
+    /// Stronger tier of [`DifferentialVerdict::Confirmed`]: in addition to
+    /// the in-process oracle firing, an out-of-band callback to the
+    /// per-finding nonce was observed by the
+    /// [`crate::dynamic::oob::OobListener`].  Emitted when the runner
+    /// exercised a payload with
+    /// [`crate::dynamic::corpus::CuratedPayload::oob_nonce_slot`] = `true`
+    /// and the listener saw the nonce.  Such payloads are structurally
+    /// self-confirming (a benign URL cannot hit a per-finding nonce), so
+    /// the verdict is treated as terminal positive evidence even when
+    /// `benign_control` is `None`.
+    ConfirmedProvenOob,
     /// Both vulnerable and benign payloads fired the oracle — the oracle
     /// cannot discriminate; downgrade to
     /// [`InconclusiveReason::OracleCollisionSuspected`].

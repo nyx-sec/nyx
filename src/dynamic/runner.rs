@@ -485,8 +485,25 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
             };
             match resolved {
                 None => {
-                    no_benign_control = true;
-                    false
+                    // Phase 05 OOB closure: OOB-nonce payloads with
+                    // `benign_control = None` are structurally self-
+                    // confirming when the listener observed the callback.
+                    // A benign URL cannot hit a per-finding nonce, so the
+                    // OOB observation is independent network-level
+                    // evidence the sink fired.  Skip the no-benign-control
+                    // downgrade and emit
+                    // [`DifferentialVerdict::ConfirmedProvenOob`].
+                    if payload.oob_nonce_slot && outcome.oob_callback_seen {
+                        let outcome_record = differential::build_oob_self_confirmed_outcome(
+                            payload.label,
+                            &vuln_probes,
+                        );
+                        differential_outcome = Some(outcome_record);
+                        true
+                    } else {
+                        no_benign_control = true;
+                        false
+                    }
                 }
                 Some(benign) => {
                     let benign_bytes = materialise_bytes(benign, None)
@@ -512,7 +529,7 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                         &benign_probes,
                         &benign_stub_events,
                     );
-                    let outcome_record = differential::build_outcome(
+                    let mut outcome_record = differential::build_outcome(
                         payload.label,
                         vuln_fired,
                         &vuln_probes,
@@ -520,7 +537,23 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                         benign_fired,
                         &benign_probes,
                     );
-                    let confirmed = outcome_record.verdict == DifferentialVerdict::Confirmed;
+                    // Phase 05 OOB closure: when an OOB-nonce payload also
+                    // carries a paired benign control, promote
+                    // `Confirmed` → `ConfirmedProvenOob` whenever the
+                    // listener observed the per-finding nonce.  The
+                    // upgrade preserves the differential trace (benign
+                    // run still recorded) and surfaces the stronger
+                    // network-level evidence to operators.
+                    if outcome_record.verdict == DifferentialVerdict::Confirmed
+                        && payload.oob_nonce_slot
+                        && outcome.oob_callback_seen
+                    {
+                        outcome_record.verdict = DifferentialVerdict::ConfirmedProvenOob;
+                    }
+                    let confirmed = matches!(
+                        outcome_record.verdict,
+                        DifferentialVerdict::Confirmed | DifferentialVerdict::ConfirmedProvenOob
+                    );
                     differential_outcome = Some(outcome_record);
                     confirmed
                 }

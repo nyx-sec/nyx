@@ -66,6 +66,29 @@ pub fn build_outcome(
     }
 }
 
+/// Build a self-confirming [`DifferentialOutcome`] for OOB-nonce payloads.
+///
+/// When a payload carries
+/// [`crate::dynamic::corpus::CuratedPayload::oob_nonce_slot`] = `true` and
+/// the [`crate::dynamic::oob::OobListener`] observed the per-finding nonce
+/// callback, the OOB observation is independent network-level evidence
+/// that the sink fired.  A benign URL structurally cannot hit a per-
+/// finding nonce, so no paired benign control is required.  The runner
+/// emits this outcome with [`DifferentialVerdict::ConfirmedProvenOob`]
+/// in place of the usual two-payload differential rule.
+pub fn build_oob_self_confirmed_outcome(
+    vuln_label: &str,
+    vuln_probes: &[SinkProbe],
+) -> DifferentialOutcome {
+    DifferentialOutcome {
+        verdict: DifferentialVerdict::ConfirmedProvenOob,
+        vuln_label: vuln_label.to_owned(),
+        benign_label: String::new(),
+        vuln_probes: vuln_probes.iter().map(sink_probe_to_record).collect(),
+        benign_probes: Vec::new(),
+    }
+}
+
 fn sink_probe_to_record(p: &SinkProbe) -> DifferentialProbeRecord {
     use crate::dynamic::probe::ProbeArg;
     DifferentialProbeRecord {
@@ -106,6 +129,25 @@ mod tests {
     #[test]
     fn rule_d_only_benign_fires_is_reversed() {
         assert_eq!(evaluate(false, true), DifferentialVerdict::ReversedDifferential);
+    }
+
+    #[test]
+    fn oob_self_confirmed_outcome_carries_only_vuln_trace() {
+        use crate::dynamic::probe::{ProbeArg, ProbeKind, ProbeWitness, SinkProbe};
+        let vuln = vec![SinkProbe {
+            sink_callee: "lxml.etree.XMLParser.parse".into(),
+            args: vec![ProbeArg::String("<!DOCTYPE … &xxe;".into())],
+            captured_at_ns: 1,
+            payload_id: "xxe-python-oob-nonce".into(),
+            kind: ProbeKind::Normal,
+            witness: ProbeWitness::empty(),
+        }];
+        let outcome = build_oob_self_confirmed_outcome("xxe-python-oob-nonce", &vuln);
+        assert_eq!(outcome.verdict, DifferentialVerdict::ConfirmedProvenOob);
+        assert_eq!(outcome.vuln_label, "xxe-python-oob-nonce");
+        assert!(outcome.benign_label.is_empty());
+        assert_eq!(outcome.vuln_probes.len(), 1);
+        assert!(outcome.benign_probes.is_empty());
     }
 
     #[test]

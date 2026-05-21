@@ -1117,6 +1117,7 @@ fn build_verdict(
                         }
                     }
                     crate::evidence::DifferentialVerdict::Confirmed
+                    | crate::evidence::DifferentialVerdict::ConfirmedProvenOob
                     | crate::evidence::DifferentialVerdict::NotConfirmed => VerifyResult {
                         finding_id: finding_id.to_owned(),
                         status: VerifyStatus::NotConfirmed,

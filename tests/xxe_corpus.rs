@@ -557,10 +557,12 @@ mod e2e_phase_05 {
     /// is attached and the runner exercises the `xxe-<lang>-oob-nonce`
     /// payload, the parser's external-entity hook performs a real HTTP
     /// GET against the loopback nonce URL and the listener records the
-    /// hit.  Asserts the observation half of the Phase 05 OOB closure;
-    /// the verdict-tier promotion (Confirmed → Confirmed+ProvenOob) is
-    /// broader runner-rework tracked separately in
-    /// `.pitboss/play/deferred.md`.
+    /// hit.  Asserts both halves of the Phase 05 OOB closure: the
+    /// callback observation AND the verdict-tier promotion from
+    /// `Confirmed` to `ConfirmedProvenOob` (the runner's
+    /// `build_oob_self_confirmed_outcome` path treats the OOB-nonce
+    /// payload as self-confirming since a benign URL structurally
+    /// cannot hit a per-finding nonce).
     fn run_oob(lang: Lang, fixture: &str, entry_name: &str) -> Option<RunOutcome> {
         use nyx_scanner::dynamic::oob::OobListener;
         use nyx_scanner::dynamic::sandbox::NetworkPolicy;
@@ -632,6 +634,24 @@ mod e2e_phase_05 {
         assert!(
             oob_attempt.outcome.oob_callback_seen,
             "parser external-entity hook must fetch loopback URL so OOB listener records the nonce; got attempt={oob_attempt:?}",
+        );
+        // Phase 05 OOB closure: the listener observation must promote the
+        // verdict tier from `Confirmed` to `ConfirmedProvenOob`.  The
+        // payload carries `oob_nonce_slot: true` + `benign_control: None`
+        // so the runner's self-confirming path emits the upgraded verdict
+        // and sets `triggered_by` on the OOB attempt itself.
+        assert!(
+            oob_attempt.triggered,
+            "OOB attempt must mark triggered=true under the self-confirming OOB path; got attempt={oob_attempt:?}",
+        );
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("self-confirming OOB run must carry a DifferentialOutcome");
+        assert_eq!(
+            diff.verdict,
+            DifferentialVerdict::ConfirmedProvenOob,
+            "OOB callback observation must promote verdict tier; got diff={diff:?}",
         );
     }
 
