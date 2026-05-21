@@ -16,13 +16,13 @@ pub struct RedirectPhpAdapter;
 
 const ADAPTER_NAME: &str = "redirect-php";
 
-fn callee_is_redirect(name: &str) -> bool {
+fn callee_last_segment(name: &str) -> &str {
     let last = name.rsplit_once("::").map(|(_, s)| s).unwrap_or(name);
-    let last = last.rsplit_once('.').map(|(_, s)| s).unwrap_or(last);
-    matches!(
-        last,
-        "redirect" | "withRedirect" | "RedirectResponse" | "header"
-    )
+    last.rsplit_once('.').map(|(_, s)| s).unwrap_or(last)
+}
+
+fn file_contains_location_header_token(file_bytes: &[u8]) -> bool {
+    file_bytes.windows(9).any(|w| w == b"Location:")
 }
 
 fn source_imports_php_web(file_bytes: &[u8]) -> bool {
@@ -72,7 +72,14 @@ impl FrameworkAdapter for RedirectPhpAdapter {
         if url_routed_through_validator(file_bytes) {
             return None;
         }
-        let matches_call = super::any_callee_matches(summary, callee_is_redirect);
+        let has_location_token = file_contains_location_header_token(file_bytes);
+        let matches_call = super::any_callee_matches(summary, |name| {
+            match callee_last_segment(name) {
+                "redirect" | "withRedirect" | "RedirectResponse" => true,
+                "header" => has_location_token,
+                _ => false,
+            }
+        });
         let matches_source = source_imports_php_web(file_bytes);
         if matches_call && matches_source {
             Some(FrameworkBinding {
@@ -121,6 +128,25 @@ mod tests {
         let tree = parse_php(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(RedirectPhpAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_header_call_lacks_location_token() {
+        // Symfony import present, but `header("Content-Type: text/html")`
+        // is not a redirect.  No `Location:` substring means the
+        // `header` callee no longer fires the redirect adapter.
+        let src: &[u8] = b"<?php\n\
+            use Symfony\\Component\\HttpFoundation\\Response;\n\
+            function emit_content_type() { header(\"Content-Type: text/html\"); }\n";
+        let tree = parse_php(src);
+        let summary = FuncSummary {
+            name: "emit_content_type".into(),
+            callees: vec![crate::summary::CalleeSite::bare("header")],
             ..Default::default()
         };
         assert!(RedirectPhpAdapter

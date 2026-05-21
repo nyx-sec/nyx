@@ -15,10 +15,19 @@ pub struct RedirectRustAdapter;
 
 const ADAPTER_NAME: &str = "redirect-rust";
 
-fn callee_is_redirect(name: &str) -> bool {
+fn callee_last_segment(name: &str) -> &str {
     let last = name.rsplit_once("::").map(|(_, s)| s).unwrap_or(name);
-    let last = last.rsplit_once('.').map(|(_, s)| s).unwrap_or(last);
-    matches!(last, "to" | "redirect" | "temporary" | "permanent" | "Found")
+    last.rsplit_once('.').map(|(_, s)| s).unwrap_or(last)
+}
+
+fn receiver_looks_like_redirect(recv: &str) -> bool {
+    // Real CFG-derived method calls populate receiver text; accept only
+    // when the receiver visibly references a Redirect-shaped type
+    // (`Redirect`, `axum::response::Redirect`, `HttpResponse::Found`).
+    // None-receiver callees (synthetic test fixtures, free functions)
+    // are handled by `any_callee_matches_with_receiver` itself and pass
+    // through without consulting this predicate.
+    recv.contains("Redirect") || recv.contains("Found")
 }
 
 fn source_imports_rust_web(file_bytes: &[u8]) -> bool {
@@ -72,7 +81,16 @@ impl FrameworkAdapter for RedirectRustAdapter {
         if url_routed_through_validator(file_bytes) {
             return None;
         }
-        let matches_call = super::any_callee_matches(summary, callee_is_redirect);
+        let matches_call = super::any_callee_matches_with_receiver(
+            summary,
+            |name| {
+                matches!(
+                    callee_last_segment(name),
+                    "to" | "redirect" | "temporary" | "permanent" | "Found"
+                )
+            },
+            receiver_looks_like_redirect,
+        );
         let matches_source = source_imports_rust_web(file_bytes);
         if matches_call && matches_source {
             Some(FrameworkBinding {
@@ -126,6 +144,54 @@ mod tests {
         assert!(RedirectRustAdapter
             .detect(&summary, tree.root_node(), src)
             .is_none());
+    }
+
+    #[test]
+    fn skips_to_call_with_non_redirect_receiver() {
+        // Axum import + a chain that calls `.to(...)` on a non-Redirect
+        // value (e.g. `String::to_owned` collisions surface as
+        // `.to(...)` on a `Cow<str>` receiver).  Receiver text on the
+        // CalleeSite carries `Cow`, not `Redirect`, so the adapter must
+        // skip.
+        let src: &[u8] = b"use axum::response::Redirect;\n\
+            use std::borrow::Cow;\n\n\
+            fn run(v: Cow<str>) -> String { v.to(&\"target\".to_owned()) }\n";
+        let tree = parse_rust(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite {
+                name: "to".into(),
+                receiver: Some("v".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(RedirectRustAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn fires_on_redirect_receiver_text() {
+        // Real CFG-derived receiver carries the type identifier; accept
+        // when receiver text contains `Redirect` (e.g. `Redirect::to(v)`
+        // resolves to a `Redirect`-prefixed root receiver after the
+        // `root_member_receiver` drill-down).
+        let src: &[u8] = b"use axum::response::Redirect;\n\
+            fn run(v: String) -> Redirect { Redirect::to(&v) }\n";
+        let tree = parse_rust(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite {
+                name: "to".into(),
+                receiver: Some("Redirect".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(RedirectRustAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_some());
     }
 
     #[test]

@@ -1730,21 +1730,34 @@ if (_kind === 'query') {{
     _req.params[_payload_key] = payload;
 }}
 let _captured = '';
+let _resolveResponded;
+const _responded = new Promise(function (r) {{ _resolveResponded = r; }});
+const _markResponded = function () {{
+    if (_resolveResponded) {{
+        const _r = _resolveResponded;
+        _resolveResponded = null;
+        _r();
+    }}
+}};
 const _res = {{
     statusCode: 200,
     headers: {{}},
     status: function (c) {{ this.statusCode = c; return this; }},
     set: function (k, v) {{ this.headers[k] = v; return this; }},
     setHeader: function (k, v) {{ this.headers[k] = v; }},
-    send: function (b) {{ _captured += String(b == null ? '' : b); return this; }},
-    end: function (b) {{ if (b != null) _captured += String(b); return this; }},
-    json: function (o) {{ _captured += JSON.stringify(o); return this; }},
+    send: function (b) {{ _captured += String(b == null ? '' : b); _markResponded(); return this; }},
+    end: function (b) {{ if (b != null) _captured += String(b); _markResponded(); return this; }},
+    json: function (o) {{ _captured += JSON.stringify(o); _markResponded(); return this; }},
     write: function (b) {{ _captured += String(b == null ? '' : b); return this; }},
 }};
 (async () => {{
     try {{
         const _result = _handler(_req, _res, function () {{}});
         if (_result && typeof _result.then === 'function') await _result;
+        // Handlers that finish via an async callback (e.g. child_process.exec)
+        // populate _captured after the handler return. Wait up to 3s for a
+        // res.send / res.end / res.json call before flushing stdout.
+        await Promise.race([_responded, new Promise(function (r) {{ setTimeout(r, 3000); }})]);
         process.stdout.write(_captured + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
@@ -1766,16 +1779,31 @@ if (typeof _mw !== 'function') {{
 }}
 const _kind = {body_kind:?};
 const _payload_key = {payload_key:?};
+let _resolveResponded;
+const _responded = new Promise(function (r) {{ _resolveResponded = r; }});
+const _markResponded = function () {{
+    if (_resolveResponded) {{
+        const _r = _resolveResponded;
+        _resolveResponded = null;
+        _r();
+    }}
+}};
 const _ctx = {{
     method: {method:?},
     query: {{}},
     request: {{ body: {{}}, query: {{}}, header: {{}} }},
     params: {{}},
     headers: {{}},
-    body: '',
+    _body: '',
     status: 200,
     set: function (k, v) {{ this.headers[k] = v; }},
 }};
+Object.defineProperty(_ctx, 'body', {{
+    get: function () {{ return this._body; }},
+    set: function (v) {{ this._body = v; _markResponded(); }},
+    enumerable: true,
+    configurable: true,
+}});
 if (_kind === 'query') {{
     _ctx.query[_payload_key] = payload;
     _ctx.request.query[_payload_key] = payload;
@@ -1789,6 +1817,9 @@ if (_kind === 'query') {{
 (async () => {{
     try {{
         await _mw(_ctx, async function () {{}});
+        // Wait up to 3s for an async ctx.body assignment (e.g. from a
+        // child_process.exec callback) before flushing stdout.
+        await Promise.race([_responded, new Promise(function (r) {{ setTimeout(r, 3000); }})]);
         process.stdout.write(String(_ctx.body == null ? '' : _ctx.body) + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
@@ -1825,20 +1856,33 @@ if (_kind === 'query') {{
     process.env[_payload_key] = payload;
 }}
 let _captured = '';
+let _resolveResponded;
+const _responded = new Promise(function (r) {{ _resolveResponded = r; }});
+const _markResponded = function () {{
+    if (_resolveResponded) {{
+        const _r = _resolveResponded;
+        _resolveResponded = null;
+        _r();
+    }}
+}};
 const _res = {{
     statusCode: 200,
     headers: {{}},
     status: function (c) {{ this.statusCode = c; return this; }},
     setHeader: function (k, v) {{ this.headers[k] = v; }},
-    send: function (b) {{ _captured += String(b == null ? '' : b); return this; }},
-    end: function (b) {{ if (b != null) _captured += String(b); return this; }},
-    json: function (o) {{ _captured += JSON.stringify(o); return this; }},
+    send: function (b) {{ _captured += String(b == null ? '' : b); _markResponded(); return this; }},
+    end: function (b) {{ if (b != null) _captured += String(b); _markResponded(); return this; }},
+    json: function (o) {{ _captured += JSON.stringify(o); _markResponded(); return this; }},
     write: function (b) {{ _captured += String(b == null ? '' : b); return this; }},
 }};
 (async () => {{
     try {{
         const _result = _handler(_req, _res);
         if (_result && typeof _result.then === 'function') await _result;
+        // Handlers that finish via an async callback (e.g. child_process.exec)
+        // populate _captured after the handler return. Wait up to 3s for a
+        // res.send / res.end / res.json call before flushing stdout.
+        await Promise.race([_responded, new Promise(function (r) {{ setTimeout(r, 3000); }})]);
         process.stdout.write(_captured + '\n');
     }} catch (e) {{
         process.stderr.write('NYX_EXCEPTION: ' + (e.constructor ? e.constructor.name : 'Error') + ': ' + e.message + '\n');
