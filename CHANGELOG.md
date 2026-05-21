@@ -55,7 +55,7 @@ A focused release on three fronts: an attack-surface map and chain composer that
 
 ### CLI
 
-- **`nyx scan --verify`** (off by default; opt-in for now) and `--backend {process,docker,firecracker}` select the dynamic-verification harness.
+- **`nyx scan --verify`** (enabled by default in standard builds) and `--backend {process,docker,firecracker}` select the dynamic-verification harness.
 - **`nyx scan --verify-all-confidence`** drops the Medium cutoff and re-verifies everything.
 - **`nyx scan --unsafe-sandbox`** disables hardening (development only, never for CI).
 - **`nyx scan --verify-feedback`** writes a `feedback_wrong_for_finding` event so wrong verdicts get logged for offline triage.

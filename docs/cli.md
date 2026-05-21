@@ -154,7 +154,7 @@ nyx scan --engine-profile deep --no-smt --explain-engine
 
 ### Dynamic verification
 
-Available with `--features dynamic`. See [dynamic.md](dynamic.md) for the full pipeline and verdict semantics.
+Available in default builds, or in custom builds with `--features dynamic`. See [dynamic.md](dynamic.md) for the full pipeline and verdict semantics.
 
 | Flag | Default | Description |
 |------|---------|-------------|

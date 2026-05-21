@@ -26,8 +26,8 @@
 //! All submodules are read-only consumers of the static engine's output.
 //! Nothing in this tree mutates SSA, taint, or label state.
 //!
-//! Off by default. Enable with `--features dynamic`. Heavy deps (container
-//! runtime client, fuzzer harness) live behind the same gate.
+//! Included in default builds. Custom `--no-default-features` builds can enable
+//! it with `--features dynamic`.
 //!
 //! # Spec derivation strategies
 //!

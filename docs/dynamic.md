@@ -3,6 +3,9 @@
 Nyx re-runs findings in generated harnesses when verification is enabled. By
 default, `nyx scan` verifies each `Confidence >= Medium` finding, tries
 payloads in a sandbox, and writes the result to `evidence.dynamic_verdict`.
+Default Nyx builds include the `dynamic` feature; custom
+`--no-default-features` builds run static-only unless rebuilt with
+`--features dynamic`.
 
 Dynamic verification is a second signal, not a replacement for review. A
 confirmed verdict means Nyx triggered the sink in its harness. `NotConfirmed`

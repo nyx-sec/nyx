@@ -256,8 +256,9 @@ pub struct ScannerConfig {
     /// `Evidence::dynamic_verdict`. Use `--no-verify` (CLI) or set
     /// `verify = false` in `nyx.toml` to disable.
     ///
-    /// Requires the binary to be built with `--features dynamic`; without
-    /// that feature the setting has no effect.
+    /// Included in default builds. Custom `--no-default-features` builds need
+    /// `--features dynamic`; without that feature the CLI warns and runs
+    /// static-only.
     ///
     /// Migration note: existing `nyx.toml` files that already set
     /// `verify = false` keep the opt-out behaviour; only the inherited

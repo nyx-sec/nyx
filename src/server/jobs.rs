@@ -239,7 +239,7 @@ impl JobManager {
                         Some(&log_collector),
                     )?;
                     let pool = Indexer::init(&db_path)?;
-                    scan::scan_with_index_parallel_observer(
+                    let mut diags = scan::scan_with_index_parallel_observer(
                         &project_name,
                         pool,
                         &config,
@@ -250,7 +250,23 @@ impl JobManager {
                         Some(&log_collector),
                         None,
                         None,
-                    )
+                    )?;
+                    for diag in &mut diags {
+                        diag.stable_hash = scan::compute_stable_hash(diag);
+                    }
+                    #[cfg(feature = "dynamic")]
+                    {
+                        let _verify_opts = scan::verify_findings_for_scan(
+                            &mut diags,
+                            &project_name,
+                            &db_path,
+                            &scan_root,
+                            &config,
+                            false,
+                            true,
+                        );
+                    }
+                    Ok(diags)
                 });
             let elapsed = start.elapsed().as_secs_f64();
 
@@ -273,6 +289,16 @@ impl JobManager {
                     // server scan path bypasses handle, so do it here.
                     for d in &mut diags {
                         d.stable_hash = scan::compute_stable_hash(d);
+                    }
+                    let dynamic_summary = scan::DynamicVerificationSummary::from_diags(&diags);
+                    if !dynamic_summary.is_empty() {
+                        log_collector.info(
+                            format!(
+                                "Dynamic verification: {}",
+                                scan::format_dynamic_verification_summary(&dynamic_summary)
+                            ),
+                            None,
+                        );
                     }
                     log_collector.info(format!("Scan completed: {} findings", diags.len()), None);
                     (JobStatus::Completed, Some(Arc::new(diags)), None)

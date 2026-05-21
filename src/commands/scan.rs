@@ -236,6 +236,116 @@ pub fn compute_stable_hash(diag: &Diag) -> u64 {
     u64::from_le_bytes(bytes[..8].try_into().unwrap())
 }
 
+/// Aggregate status counts for dynamic verification verdicts attached to
+/// findings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DynamicVerificationSummary {
+    pub total: usize,
+    pub confirmed: usize,
+    pub not_confirmed: usize,
+    pub inconclusive: usize,
+    pub unsupported: usize,
+}
+
+impl DynamicVerificationSummary {
+    pub fn from_diags(diags: &[Diag]) -> Self {
+        let mut summary = Self::default();
+        for diag in diags {
+            let Some(verdict) = diag
+                .evidence
+                .as_ref()
+                .and_then(|ev| ev.dynamic_verdict.as_ref())
+            else {
+                continue;
+            };
+            summary.total += 1;
+            match verdict.status {
+                crate::evidence::VerifyStatus::Confirmed => summary.confirmed += 1,
+                crate::evidence::VerifyStatus::NotConfirmed => summary.not_confirmed += 1,
+                crate::evidence::VerifyStatus::Inconclusive => summary.inconclusive += 1,
+                crate::evidence::VerifyStatus::Unsupported => summary.unsupported += 1,
+            }
+        }
+        summary
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.total == 0
+    }
+}
+
+/// Human-readable dynamic summary used by both CLI and server scan logs.
+pub fn format_dynamic_verification_summary(summary: &DynamicVerificationSummary) -> String {
+    let noun = if summary.total == 1 {
+        "verdict"
+    } else {
+        "verdicts"
+    };
+    format!(
+        "{} {} ({} confirmed, {} not confirmed, {} inconclusive, {} unsupported)",
+        summary.total,
+        noun,
+        summary.confirmed,
+        summary.not_confirmed,
+        summary.inconclusive,
+        summary.unsupported
+    )
+}
+
+/// Apply dynamic verification to a completed scan.
+///
+/// Returns the configured verifier options so callers that perform later
+/// composite-chain re-verification can reuse preloaded summaries and callgraph
+/// context.
+#[cfg(feature = "dynamic")]
+pub(crate) fn verify_findings_for_scan(
+    diags: &mut [Diag],
+    project_name: &str,
+    db_path: &Path,
+    scan_path: &Path,
+    config: &Config,
+    verbose: bool,
+    use_index_db: bool,
+) -> Option<crate::dynamic::verify::VerifyOptions> {
+    if !config.scanner.verify {
+        return None;
+    }
+
+    let mut opts = crate::dynamic::verify::VerifyOptions::from_config(config);
+    // Phase 30 (Track C observability): surface the per-finding
+    // [`crate::dynamic::trace::VerifyTrace`] on stderr when the operator
+    // passes `--verbose`.
+    opts.trace_verbose = verbose;
+
+    if use_index_db && db_path.exists() {
+        opts.db_path = Some(db_path.to_path_buf());
+        // Preload cross-file summaries once so the spec-derivation pipeline
+        // can resolve the enclosing function and callgraph entry context
+        // without re-hitting SQLite per finding. Best-effort: a load failure
+        // logs and falls through to the substring heuristics.
+        opts.summaries = load_verify_summaries(project_name, db_path, scan_path);
+        if let Some(ref summaries) = opts.summaries {
+            opts.callgraph = Some(load_verify_callgraph(summaries));
+        }
+    }
+
+    let telemetry_log = crate::dynamic::telemetry::log_path();
+    for diag in diags {
+        let mut result = crate::dynamic::verify::verify_finding(diag, &opts);
+        if result.status == crate::dynamic::report::VerifyStatus::Confirmed
+            && let Some(ref log_path) = telemetry_log
+        {
+            result.wrong =
+                crate::dynamic::telemetry::feedback_wrong_for_finding(log_path, &result.finding_id);
+        }
+        if let Some(ref mut ev) = diag.evidence {
+            ev.dynamic_verdict = Some(result);
+        }
+    }
+
+    Some(opts)
+}
+
 /// Rollup data for grouped findings (e.g. 38 occurrences of `rs.quality.unwrap`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RollupData {
@@ -562,53 +672,23 @@ pub fn handle(
     // below can reuse the same preloaded summaries / callgraph without
     // a second SQLite round-trip.
     #[cfg(feature = "dynamic")]
-    let verify_opts: Option<crate::dynamic::verify::VerifyOptions> = if config.scanner.verify {
-        let mut opts = crate::dynamic::verify::VerifyOptions::from_config(config);
-        // Phase 30 (Track C observability): surface the per-finding
-        // [`crate::dynamic::trace::VerifyTrace`] on stderr when the
-        // operator passes `--verbose`.
-        opts.trace_verbose = verbose;
-        // Enable the verdict cache (§12 Q5) when an index DB is in use.
-        // When index_mode is Off, the DB is never created, so no cache.
-        if index_mode != IndexMode::Off && db_path.exists() {
-            opts.db_path = Some(db_path.clone());
-            // Preload cross-file summaries once so the spec-derivation
-            // pipeline can resolve the enclosing function's `FuncSummary`
-            // (strategy 3) and its static `entry_kind` (strategy 4)
-            // without re-hitting SQLite per finding. Best-effort: a load
-            // failure logs and falls through to the substring heuristics.
-            opts.summaries = load_verify_summaries(&project_name, &db_path, &scan_path);
-            // Build the whole-program callgraph from the preloaded summaries
-            // so strategy 4 can walk reverse edges to a route handler / CLI
-            // entry when the sink lives in a leaf helper.
-            if let Some(ref s) = opts.summaries {
-                opts.callgraph = Some(load_verify_callgraph(s));
-            }
-        }
-        // Phase 29 follow-up: resolve the telemetry events log path once
-        // per scan so the per-finding `wrong:` stamp is a cheap fs read,
-        // not a directories-crate lookup each iteration.  `None` (no
-        // log path resolvable on this host) leaves every `wrong` as
-        // `None` — the eval-corpus tabulator treats that as "no signal."
-        let telemetry_log = crate::dynamic::telemetry::log_path();
-        for diag in &mut diags {
-            let mut result = crate::dynamic::verify::verify_finding(diag, &opts);
-            if result.status == crate::dynamic::report::VerifyStatus::Confirmed {
-                if let Some(ref log_path) = telemetry_log {
-                    result.wrong = crate::dynamic::telemetry::feedback_wrong_for_finding(
-                        log_path,
-                        &result.finding_id,
-                    );
-                }
-            }
-            if let Some(ref mut ev) = diag.evidence {
-                ev.dynamic_verdict = Some(result);
-            }
-        }
-        Some(opts)
-    } else {
-        None
-    };
+    let verify_opts: Option<crate::dynamic::verify::VerifyOptions> = verify_findings_for_scan(
+        &mut diags,
+        &project_name,
+        &db_path,
+        &scan_path,
+        config,
+        verbose,
+        index_mode != IndexMode::Off,
+    );
+
+    #[cfg(not(feature = "dynamic"))]
+    if config.scanner.verify && !suppress_status {
+        eprintln!(
+            "{}: dynamic verification is enabled, but this binary was built without dynamic support; running static-only. Rebuild with `cargo build --features dynamic` or set `[scanner] verify = false`.",
+            style("warning").yellow().bold()
+        );
+    }
 
     // ── Baseline write (§M6.5): persist current findings as stripped baseline
     if let Some(bw_path) = baseline_write {
@@ -3470,6 +3550,58 @@ fn apply_suppressions(diags: &mut [Diag]) {
                 diags[i].suppression = Some(meta);
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  dynamic verification summary tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod dynamic_summary_tests {
+    use super::*;
+    use crate::evidence::{Evidence, VerifyResult, VerifyStatus};
+
+    fn diag_with_status(status: VerifyStatus) -> Diag {
+        Diag {
+            evidence: Some(Evidence {
+                dynamic_verdict: Some(VerifyResult {
+                    finding_id: "abc123".into(),
+                    status,
+                    triggered_payload: None,
+                    reason: None,
+                    inconclusive_reason: None,
+                    detail: None,
+                    attempts: vec![],
+                    toolchain_match: None,
+                    differential: None,
+                    replay_stable: None,
+                    wrong: None,
+                    hardening_outcome: None,
+                }),
+                ..Evidence::default()
+            }),
+            ..Diag::default()
+        }
+    }
+
+    #[test]
+    fn dynamic_summary_counts_verdict_statuses() {
+        let diags = vec![
+            diag_with_status(VerifyStatus::Confirmed),
+            diag_with_status(VerifyStatus::NotConfirmed),
+            diag_with_status(VerifyStatus::Inconclusive),
+            diag_with_status(VerifyStatus::Unsupported),
+            Diag::default(),
+        ];
+
+        let summary = DynamicVerificationSummary::from_diags(&diags);
+
+        assert_eq!(summary.total, 4);
+        assert_eq!(summary.confirmed, 1);
+        assert_eq!(summary.not_confirmed, 1);
+        assert_eq!(summary.inconclusive, 1);
+        assert_eq!(summary.unsupported, 1);
     }
 }
 

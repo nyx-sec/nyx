@@ -14,7 +14,7 @@
 //! pipeline before reaching this layer.
 
 use crate::chain::finding::ChainFinding;
-use crate::commands::scan::Diag;
+use crate::commands::scan::{Diag, DynamicVerificationSummary};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
@@ -42,6 +42,7 @@ pub fn build_findings_json(
     let mut out = json!({
         "findings": findings,
         "chains": chains_array,
+        "dynamic_verification": DynamicVerificationSummary::from_diags(diags),
     });
     if let Some(diff) = verdict_diff {
         out["verdict_diff"] = diff.clone();

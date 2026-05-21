@@ -52,6 +52,18 @@ pub fn render_console(
         }
     }
 
+    let dynamic_summary = crate::commands::scan::DynamicVerificationSummary::from_diags(diags);
+    if !dynamic_summary.is_empty() {
+        out.push_str(&format!(
+            "{} {}\n\n",
+            style("Dynamic verification:").cyan().bold(),
+            style(crate::commands::scan::format_dynamic_verification_summary(
+                &dynamic_summary
+            ))
+            .dim()
+        ));
+    }
+
     let suppressed_count = diags.iter().filter(|d| d.suppressed).count();
     let active_count = diags.len() - suppressed_count;
 

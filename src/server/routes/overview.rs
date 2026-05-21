@@ -837,6 +837,9 @@ fn compute_scanner_quality(
         call_resolution_rate,
         symex_verified_rate,
         symex_breakdown: breakdown,
+        dynamic_verification: crate::commands::scan::DynamicVerificationSummary::from_diags(
+            findings,
+        ),
     })
 }
 

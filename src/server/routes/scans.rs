@@ -40,8 +40,8 @@ struct StartScanRequest {
     /// `false` - force off even if config says on.
     /// absent  - inherit config default.
     ///
-    /// Requires `--features dynamic`; `true` returns 400 when the
-    /// feature is absent.
+    /// Included in default builds; custom builds without `dynamic` return 400
+    /// when verification is requested.
     verify: Option<bool>,
     /// Also verify `Confidence < Medium` findings. Default false.
     verify_all_confidence: Option<bool>,
@@ -124,6 +124,13 @@ async fn start_scan(
     }
     if req.verify_all_confidence == Some(true) {
         config.scanner.verify_all_confidence = true;
+    }
+
+    #[cfg(not(feature = "dynamic"))]
+    if config.scanner.verify || config.scanner.verify_all_confidence {
+        return Err(bad_request(
+            "dynamic verification is enabled, but this binary was built without dynamic support; rebuild with `cargo build --features dynamic` or skip dynamic verification for this scan",
+        ));
     }
 
     let event_tx = state.event_tx.clone();

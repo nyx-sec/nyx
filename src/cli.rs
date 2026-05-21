@@ -471,8 +471,8 @@ pub enum Commands {
         ///
         /// Dynamic verification is on by default. This flag is a no-op when
         /// verification is already enabled via config. Use `--no-verify` to
-        /// disable it for a single run. Requires the binary to be built with
-        /// `--features dynamic`; without that feature this flag is silently ignored.
+        /// disable it for a single run. Default builds include dynamic support;
+        /// custom `--no-default-features` builds need `--features dynamic`.
         #[cfg_attr(not(feature = "dynamic"), arg(hide = true))]
         #[arg(long, help_heading = "Dynamic", conflicts_with = "no_verify")]
         verify: bool,

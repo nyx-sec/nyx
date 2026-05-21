@@ -26,6 +26,14 @@ export interface VerifyResult {
   toolchain_match?: string;
 }
 
+export interface DynamicVerificationSummary {
+  total: number;
+  confirmed: number;
+  not_confirmed: number;
+  inconclusive: number;
+  unsupported: number;
+}
+
 export interface FlowStep {
   step: number;
   kind: FlowStepKind;
@@ -351,6 +359,7 @@ export interface ScannerQuality {
   call_resolution_rate: number;
   symex_verified_rate: number;
   symex_breakdown: Record<string, number>;
+  dynamic_verification: DynamicVerificationSummary;
 }
 
 export interface IssueCategoryBucket {

@@ -717,6 +717,8 @@ pub struct ScannerQuality {
     pub symex_verified_rate: f64,
     /// Count broken down by symbolic verdict label.
     pub symex_breakdown: HashMap<String, usize>,
+    /// Dynamic verifier verdict counts from the latest scan.
+    pub dynamic_verification: crate::commands::scan::DynamicVerificationSummary,
 }
 
 /// One issue-category bucket (rule-family derived). Broader than OWASP, with
