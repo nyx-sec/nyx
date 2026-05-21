@@ -248,10 +248,18 @@ fn framework_adapters_detect_ssti_sink() {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&ts_lang).unwrap();
         let tree = parser.parse(&bytes, None).unwrap();
+        // Each vuln fixture's `run` function takes `body` as its
+        // single param and pipes it into the SSTI engine.  Seed the
+        // summary with `body` at index 0 and mark that index as a
+        // tainted sink participant so the strengthened AST gate
+        // (added with the comment-substring FP fix) fires.
         let mut summary = FuncSummary {
             name: "run".into(),
             file_path: fixture.to_owned(),
             lang: slug(lang).into(),
+            param_count: 1,
+            param_names: vec!["body".into()],
+            tainted_sink_params: vec![0],
             ..Default::default()
         };
         // Seed the canonical sink callee per language so the

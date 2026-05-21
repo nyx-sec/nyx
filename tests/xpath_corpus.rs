@@ -329,10 +329,18 @@ fn framework_adapters_detect_xpath_sink() {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&ts_lang).unwrap();
         let tree = parser.parse(&bytes, None).unwrap();
+        // Each vuln fixture's `run` function takes `name` as its
+        // single param and concats it into the XPath expression.
+        // The strengthened adapters (one-hop local-assignment chase
+        // plus tainted-param participation) need the summary to
+        // mark index 0 as a tainted sink participant.
         let mut summary = FuncSummary {
             name: "run".into(),
             file_path: fixture.to_owned(),
             lang: slug(lang).into(),
+            param_count: 1,
+            param_names: vec!["name".into()],
+            tainted_sink_params: vec![0],
             ..Default::default()
         };
         summary

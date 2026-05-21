@@ -8,11 +8,19 @@
 //! surrounding source pulls in one of the matching package symbols —
 //! `org.springframework.ldap.*`, `javax.naming.directory.*`,
 //! `com.unboundid.ldap.*`.
+//!
+//! Strengthened to walk the AST and reject the binding when any of
+//! the search call's argument subtrees flows through a known LDAP
+//! filter encoder (`LdapEncoder.filterEncode`, `Filter.encodeValue`,
+//! `LdapUtils.encodeForLDAP`, `encodeForLdapFilter`).  That removes
+//! the FP where the developer already wrapped the user input in a
+//! sanitiser but the adapter still stamped a binding.
 
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
 use crate::summary::FuncSummary;
 use crate::symbol::Lang;
+use tree_sitter::Node;
 
 pub struct LdapSpringAdapter;
 
@@ -23,6 +31,19 @@ fn callee_is_ldap_search(name: &str) -> bool {
     matches!(
         last,
         "search" | "find" | "findAll" | "findOne" | "lookup" | "searchAll"
+    )
+}
+
+fn callee_is_ldap_sanitiser(name: &str) -> bool {
+    let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
+    matches!(
+        last,
+        "filterEncode"
+            | "encodeValue"
+            | "encodeForLDAP"
+            | "encodeForLdapFilter"
+            | "forLDAPFilter"
+            | "forLDAP"
     )
 }
 
@@ -42,6 +63,70 @@ fn source_imports_ldap(file_bytes: &[u8]) -> bool {
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
 }
 
+/// True when any `method_invocation` in the file is a recognised LDAP
+/// search whose argument list does NOT pass through a known LDAP
+/// filter encoder.  Bare-search calls (no encoder anywhere) keep
+/// firing; pre-sanitised calls bail out.
+fn ast_confirms_unsanitised_search(root: Node<'_>, bytes: &[u8]) -> bool {
+    let mut found_unsanitised = false;
+    let mut saw_any_search = false;
+    walk(root, bytes, &mut found_unsanitised, &mut saw_any_search);
+    // Conservative: when no AST search call was found at all, fall
+    // through and let the cheap-filter / callee branch decide.  When
+    // AST search calls were seen, require at least one without a
+    // sanitiser wrap.
+    found_unsanitised || !saw_any_search
+}
+
+fn walk(node: Node<'_>, bytes: &[u8], unsanitised: &mut bool, saw_any: &mut bool) {
+    if *unsanitised {
+        return;
+    }
+    if node.kind() == "method_invocation"
+        && let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+        && callee_is_ldap_search(name)
+    {
+        *saw_any = true;
+        if let Some(args) = node.child_by_field_name("arguments")
+            && !args_contain_sanitiser(args, bytes)
+        {
+            *unsanitised = true;
+            return;
+        }
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk(child, bytes, unsanitised, saw_any);
+    }
+}
+
+fn args_contain_sanitiser(args: Node<'_>, bytes: &[u8]) -> bool {
+    let mut hit = false;
+    scan_for_sanitiser(args, bytes, &mut hit);
+    hit
+}
+
+fn scan_for_sanitiser(node: Node<'_>, bytes: &[u8], hit: &mut bool) {
+    if *hit {
+        return;
+    }
+    if node.kind() == "method_invocation"
+        && let Some(name) = node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(bytes).ok())
+        && callee_is_ldap_sanitiser(name)
+    {
+        *hit = true;
+        return;
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        scan_for_sanitiser(child, bytes, hit);
+    }
+}
+
 impl FrameworkAdapter for LdapSpringAdapter {
     fn name(&self) -> &'static str {
         ADAPTER_NAME
@@ -54,36 +139,30 @@ impl FrameworkAdapter for LdapSpringAdapter {
     fn detect(
         &self,
         summary: &FuncSummary,
-        _ast: tree_sitter::Node<'_>,
+        ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_ldap_search);
-        let matches_source = source_imports_ldap(file_bytes);
-        if matches_call && matches_source {
-            return Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::Function,
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            });
+        if !source_imports_ldap(file_bytes) {
+            return None;
         }
-        if matches_source
-            && file_bytes
+        let matches_call = super::any_callee_matches(summary, callee_is_ldap_search)
+            || file_bytes
                 .windows(b".search(".len())
-                .any(|w| w == b".search(")
-        {
-            return Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::Function,
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            });
+                .any(|w| w == b".search(");
+        if !matches_call {
+            return None;
         }
-        None
+        if !ast_confirms_unsanitised_search(ast, file_bytes) {
+            return None;
+        }
+        Some(FrameworkBinding {
+            adapter: ADAPTER_NAME.to_owned(),
+            kind: EntryKind::Function,
+            route: None,
+            request_params: Vec::new(),
+            response_writer: None,
+            middleware: Vec::new(),
+        })
     }
 }
 
@@ -124,6 +203,26 @@ mod tests {
         let tree = parse_java(src);
         let summary = FuncSummary {
             name: "add".into(),
+            ..Default::default()
+        };
+        assert!(LdapSpringAdapter
+            .detect(&summary, tree.root_node(), src)
+            .is_none());
+    }
+
+    #[test]
+    fn skips_when_filter_arg_is_sanitised() {
+        // The user input is wrapped in LdapEncoder.filterEncode before
+        // it reaches LdapTemplate.search; the binding must not fire.
+        let src: &[u8] = b"import org.springframework.ldap.core.LdapTemplate;\n\
+            import org.springframework.ldap.support.LdapEncoder;\n\
+            public class V {\n  public Object run(String uid, LdapTemplate t) {\n\
+                return t.search(\"ou=people\", \"(uid=\" + LdapEncoder.filterEncode(uid) + \")\", null);\n\
+            }\n}\n";
+        let tree = parse_java(src);
+        let summary = FuncSummary {
+            name: "run".into(),
+            callees: vec![crate::summary::CalleeSite::bare("search")],
             ..Default::default()
         };
         assert!(LdapSpringAdapter

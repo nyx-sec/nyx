@@ -509,19 +509,17 @@ mod escape_tests {
         let opts = escape_opts();
 
         // First run — starts a new container.
-        let r1 = sandbox::run(&harness, &noop_payload(), &opts);
+        let r1 = sandbox::run(&harness, noop_payload(), &opts);
         // Second run — should exec into the running container.
-        let r2 = sandbox::run(&harness, &noop_payload(), &opts);
+        let r2 = sandbox::run(&harness, noop_payload(), &opts);
 
         // Both should succeed (blocked, not escaped — dns_leak exits 1).
         // The important thing is neither panics or returns an unexpected error.
-        match r1 {
-            Err(SandboxError::BackendUnavailable(_)) => return,
-            _ => {}
+        if let Err(SandboxError::BackendUnavailable(_)) = r1 {
+            return;
         }
-        match r2 {
-            Err(SandboxError::BackendUnavailable(_)) => return,
-            _ => {}
+        if let Err(SandboxError::BackendUnavailable(_)) = r2 {
+            return;
         }
 
         // Verify the container is still running (not torn down between calls).

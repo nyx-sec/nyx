@@ -226,3 +226,240 @@ fn any_callee_matches(
         .iter()
         .any(|c| predicate(c.name.as_str()))
 }
+
+/// True when `arg_text` resolves to a function parameter whose 0-based
+/// index participates in taint flow — either listed in
+/// `summary.tainted_sink_params` (param reaches an internal sink) or
+/// `summary.propagating_params` (param flows to the return value).
+///
+/// Used by the Phase 04 SSTI / Phase 05 XXE / Phase 06 LDAP adapters to
+/// reject substring matches in comments by confirming the call's first
+/// argument is a real tainted variable rather than a string literal or
+/// an unrelated local.
+///
+/// Per-language sigil stripping covers PHP (`$x`), Ruby (`@x`), and
+/// Java/Python/JS (no sigil).  Leading whitespace is also trimmed so
+/// adapters can pass the raw `utf8_text` of the argument node.
+pub(super) fn arg_is_tainted_param(
+    summary: &crate::summary::FuncSummary,
+    arg_text: &str,
+) -> bool {
+    fn strip(s: &str) -> &str {
+        s.trim()
+            .trim_start_matches('$')
+            .trim_start_matches('@')
+            .trim_start_matches('&')
+    }
+    let needle = strip(arg_text);
+    let Some(idx) = summary
+        .param_names
+        .iter()
+        .position(|p| strip(p) == needle)
+    else {
+        return false;
+    };
+    summary.tainted_sink_params.iter().any(|&i| i == idx)
+        || summary.propagating_params.iter().any(|&i| i == idx)
+}
+
+/// True when any descendant identifier in `node`'s subtree resolves to
+/// a function parameter whose 0-based index participates in taint flow
+/// (same membership rule as [`arg_is_tainted_param`]).
+///
+/// Used by Phase 07 XPath adapters where the sink call's expression
+/// argument is typically a concat (`"//user[@name='" + name + "'"`)
+/// rather than a bare identifier — the walker collects every
+/// identifier-shaped leaf and checks each against the summary's
+/// tainted-param set.  Pure-literal expressions and concats over
+/// unrelated locals fall through.
+///
+/// `function_scope` is the enclosing function-body subtree.  When a
+/// direct identifier in `node` is not itself a tainted param, the
+/// walker chases its local assignment within `function_scope` and
+/// inspects the RHS for tainted-param references (one hop, enough to
+/// cover the common `expr = "..." + name + "..."; eval(expr)` shape
+/// without dragging full intra-procedural data flow into the
+/// adapter).
+pub(super) fn subtree_contains_tainted_param(
+    node: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    summary: &crate::summary::FuncSummary,
+    function_scope: Option<tree_sitter::Node<'_>>,
+) -> bool {
+    if summary.tainted_sink_params.is_empty() && summary.propagating_params.is_empty() {
+        return false;
+    }
+    let mut hit = false;
+    walk_for_param(node, bytes, summary, function_scope, &mut hit);
+    hit
+}
+
+fn walk_for_param(
+    node: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    summary: &crate::summary::FuncSummary,
+    function_scope: Option<tree_sitter::Node<'_>>,
+    hit: &mut bool,
+) {
+    if *hit {
+        return;
+    }
+    if matches!(
+        node.kind(),
+        "identifier"
+            | "variable_name"
+            | "simple_identifier"
+            | "name"
+            | "type_identifier"
+            | "scoped_identifier"
+            | "field_identifier"
+            | "property_identifier"
+    ) && let Ok(text) = node.utf8_text(bytes)
+    {
+        if arg_is_tainted_param(summary, text) {
+            *hit = true;
+            return;
+        }
+        if let Some(scope) = function_scope
+            && let Some(rhs) = find_local_assignment_rhs(scope, bytes, text)
+        {
+            let mut inner = false;
+            walk_for_param_no_chase(rhs, bytes, summary, &mut inner);
+            if inner {
+                *hit = true;
+                return;
+            }
+        }
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_for_param(child, bytes, summary, function_scope, hit);
+    }
+}
+
+fn walk_for_param_no_chase(
+    node: tree_sitter::Node<'_>,
+    bytes: &[u8],
+    summary: &crate::summary::FuncSummary,
+    hit: &mut bool,
+) {
+    if *hit {
+        return;
+    }
+    if matches!(
+        node.kind(),
+        "identifier"
+            | "variable_name"
+            | "simple_identifier"
+            | "name"
+            | "type_identifier"
+            | "scoped_identifier"
+            | "field_identifier"
+            | "property_identifier"
+    ) && let Ok(text) = node.utf8_text(bytes)
+        && arg_is_tainted_param(summary, text)
+    {
+        *hit = true;
+        return;
+    }
+    let mut cur = node.walk();
+    for child in node.children(&mut cur) {
+        walk_for_param_no_chase(child, bytes, summary, hit);
+    }
+}
+
+fn find_local_assignment_rhs<'a>(
+    scope: tree_sitter::Node<'a>,
+    bytes: &[u8],
+    name: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    fn strip(s: &str) -> &str {
+        s.trim()
+            .trim_start_matches('$')
+            .trim_start_matches('@')
+            .trim_start_matches('&')
+    }
+    let needle = strip(name);
+    let mut hit: Option<tree_sitter::Node<'a>> = None;
+    visit(scope, bytes, needle, &mut hit);
+    return hit;
+
+    fn visit<'a>(
+        node: tree_sitter::Node<'a>,
+        bytes: &[u8],
+        needle: &str,
+        hit: &mut Option<tree_sitter::Node<'a>>,
+    ) {
+        if hit.is_some() {
+            return;
+        }
+        match node.kind() {
+            // Python `expr = rhs` / Ruby `expr = rhs` /
+            // JS `expr = rhs` (no `let`).
+            "assignment" | "assignment_expression" => {
+                let lhs = node
+                    .child_by_field_name("left")
+                    .or_else(|| node.named_child(0));
+                let rhs = node
+                    .child_by_field_name("right")
+                    .or_else(|| node.named_child(1));
+                if let (Some(lhs), Some(rhs)) = (lhs, rhs)
+                    && let Ok(text) = lhs.utf8_text(bytes)
+                    && strip_sigils(text) == needle
+                {
+                    *hit = Some(rhs);
+                    return;
+                }
+            }
+            // JS `let/const expr = rhs` / TS variant.
+            "variable_declarator" => {
+                let name_node = node
+                    .child_by_field_name("name")
+                    .or_else(|| node.named_child(0));
+                let value = node
+                    .child_by_field_name("value")
+                    .or_else(|| node.named_child(1));
+                if let (Some(n), Some(v)) = (name_node, value)
+                    && let Ok(text) = n.utf8_text(bytes)
+                    && strip_sigils(text) == needle
+                {
+                    *hit = Some(v);
+                    return;
+                }
+            }
+            // Java `Type expr = rhs;`.
+            "local_variable_declaration" => {
+                let mut cur = node.walk();
+                for child in node.named_children(&mut cur) {
+                    if child.kind() == "variable_declarator" {
+                        let n = child
+                            .child_by_field_name("name")
+                            .or_else(|| child.named_child(0));
+                        let v = child
+                            .child_by_field_name("value")
+                            .or_else(|| child.named_child(1));
+                        if let (Some(n), Some(v)) = (n, v)
+                            && let Ok(text) = n.utf8_text(bytes)
+                            && strip_sigils(text) == needle
+                        {
+                            *hit = Some(v);
+                            return;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        let mut cur = node.walk();
+        for child in node.children(&mut cur) {
+            visit(child, bytes, needle, hit);
+        }
+    }
+}
+
+pub(super) fn strip_sigils(s: &str) -> &str {
+    s.trim()
+        .trim_start_matches('$')
+        .trim_start_matches('@')
+        .trim_start_matches('&')
+}
