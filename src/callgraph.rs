@@ -29,7 +29,6 @@ use std::path::{Path, PathBuf};
 pub struct CallEdge {
     /// The raw callee string as it appeared in source (e.g. `"env::var"`).
     /// Preserved for diagnostics, **not** the normalized form used for resolution.
-    #[allow(dead_code)] // used for future diagnostics and path display
     pub call_site: String,
 }
 
@@ -56,7 +55,6 @@ pub struct AmbiguousCallee {
 pub struct CallGraph {
     pub graph: DiGraph<FuncKey, CallEdge>,
     /// `FuncKey → NodeIndex` for quick lookup.
-    #[allow(dead_code)] // used for future topo-ordered analysis and call-graph queries
     pub index: HashMap<FuncKey, NodeIndex>,
     /// Callee strings that could not be resolved to any [`FuncKey`].
     pub unresolved_not_found: Vec<UnresolvedCallee>,
@@ -262,19 +260,6 @@ impl ClassMethodIndex {
         }
     }
 
-    /// Number of distinct `(lang, container, method)` keys.  Exposed
-    /// for diagnostics / tests; production code uses [`Self::resolve`].
-    #[allow(dead_code)]
-    pub fn container_keys_len(&self) -> usize {
-        self.by_container.len()
-    }
-
-    /// Number of distinct `(lang, method)` keys.  Exposed for
-    /// diagnostics / tests.
-    #[allow(dead_code)]
-    pub fn name_keys_len(&self) -> usize {
-        self.by_name.len()
-    }
 }
 
 // ── Type hierarchy index ────────────────────────────────────────────────
@@ -294,11 +279,6 @@ impl ClassMethodIndex {
 pub struct TypeHierarchyIndex {
     /// `(lang, super_type)` → distinct sub-type / impl container names.
     by_super: HashMap<(Lang, String), SmallVec<[String; 4]>>,
-    /// `(lang, sub_type)` → super-types this type extends / implements.
-    /// Future use for `super.method()` resolution; populated for
-    /// completeness today.
-    #[allow(dead_code)]
-    by_sub: HashMap<(Lang, String), SmallVec<[String; 2]>>,
 }
 
 impl TypeHierarchyIndex {
@@ -309,7 +289,6 @@ impl TypeHierarchyIndex {
     /// summary) collapse via the membership check.
     pub fn build(summaries: &GlobalSummaries) -> Self {
         let mut by_super: HashMap<(Lang, String), SmallVec<[String; 4]>> = HashMap::new();
-        let mut by_sub: HashMap<(Lang, String), SmallVec<[String; 2]>> = HashMap::new();
 
         for (key, summary) in summaries.iter() {
             let lang = key.lang;
@@ -321,14 +300,10 @@ impl TypeHierarchyIndex {
                 if !subs.iter().any(|s| s == sub) {
                     subs.push(sub.clone());
                 }
-                let sups = by_sub.entry((lang, sub.clone())).or_default();
-                if !sups.iter().any(|s| s == sup) {
-                    sups.push(sup.clone());
-                }
             }
         }
 
-        TypeHierarchyIndex { by_super, by_sub }
+        TypeHierarchyIndex { by_super }
     }
 
     /// Return the distinct sub-type / impl container names for
@@ -338,16 +313,6 @@ impl TypeHierarchyIndex {
     pub fn subs_of(&self, lang: Lang, super_type: &str) -> &[String] {
         self.by_super
             .get(&(lang, super_type.to_string()))
-            .map(|v| v.as_slice())
-            .unwrap_or_default()
-    }
-
-    /// Return the recorded super-types of `sub_type`.  Empty when
-    /// `sub_type` has no recorded super-types in this language.
-    #[allow(dead_code)]
-    pub fn supers_of(&self, lang: Lang, sub_type: &str) -> &[String] {
-        self.by_sub
-            .get(&(lang, sub_type.to_string()))
             .map(|v| v.as_slice())
             .unwrap_or_default()
     }

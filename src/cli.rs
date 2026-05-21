@@ -359,7 +359,6 @@ pub enum Commands {
         #[arg(long, help_heading = "Output")]
         require_converged: bool,
 
-        // ── Analysis engine toggles (override [analysis.engine] config) ───
         /// Enable path-constraint solving (default: on)
         #[arg(
             long,
@@ -448,7 +447,6 @@ pub enum Commands {
         #[arg(long, help_heading = "Limits")]
         max_pointsto: Option<u32>,
 
-        // ── Deprecated aliases (hidden) ─────────────────────────────────
         /// Deprecated: use --index off
         #[arg(long, hide = true)]
         no_index: bool,
@@ -532,7 +530,6 @@ pub enum Commands {
         )]
         harden: Option<String>,
 
-        // Baseline / patch-validation
         /// Read a previous scan's JSON output (or a stripped .nyx/baseline.json)
         /// and diff it against the current scan on stable_hash.
         ///
