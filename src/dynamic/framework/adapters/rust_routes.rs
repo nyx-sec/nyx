@@ -232,9 +232,8 @@ pub fn bind_rust_path_params(formals: &[String], path: &str) -> Vec<ParamBinding
             } else {
                 let positional_slot = non_implicit_seen;
                 non_implicit_seen += 1;
-                if placeholders.iter().any(|p| p == name) {
-                    ParamSource::PathSegment(name.clone())
-                } else if positional_slot < typed_anon_count {
+                let is_named_match = placeholders.iter().any(|p| p == name);
+                if is_named_match || positional_slot < typed_anon_count {
                     ParamSource::PathSegment(name.clone())
                 } else {
                     ParamSource::QueryParam(name.clone())

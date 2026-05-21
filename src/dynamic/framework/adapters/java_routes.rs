@@ -68,21 +68,29 @@ pub fn source_imports_micronaut(bytes: &[u8]) -> bool {
 }
 
 /// True when `bytes` carries any of the well-known Java Servlet API
-/// import stanzas or a class extending `HttpServlet`.  The bare
-/// `HttpServletRequest` / `HttpServletResponse` stub-class names also
-/// fire so the Phase 14 default-package fixture path lights up the
-/// adapter without a Jakarta servlet jar.
+/// import stanzas or a class extending `HttpServlet`.  Files that name
+/// the bare `HttpServletRequest` / `HttpServletResponse` types as stub
+/// classes only mention one of the two; the Phase 14 default-package
+/// fixture path uses both in the same file, so requiring both type
+/// tokens together keeps the fixture path lit while rejecting
+/// single-token stub helper files.
 pub fn source_imports_servlet(bytes: &[u8]) -> bool {
-    contains_any(
+    let has_canonical = contains_any(
         bytes,
         &[
             b"javax.servlet",
             b"jakarta.servlet",
-            b"HttpServletRequest",
-            b"HttpServletResponse",
             b"extends HttpServlet",
         ],
-    )
+    );
+    if has_canonical {
+        return true;
+    }
+    contains(bytes, b"HttpServletRequest") && contains(bytes, b"HttpServletResponse")
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn contains_any(haystack: &[u8], needles: &[&[u8]]) -> bool {
@@ -377,6 +385,29 @@ mod tests {
         let (class, method) = find_class_with_method(tree.root_node(), src, "run").unwrap();
         assert_eq!(class.kind(), "class_declaration");
         assert_eq!(method.kind(), "method_declaration");
+    }
+
+    #[test]
+    fn source_imports_servlet_rejects_lone_stub_files() {
+        let req_stub: &[u8] = b"public class HttpServletRequest {\n  private String body;\n  public String getBody() { return body; }\n}\n";
+        let resp_stub: &[u8] = b"public class HttpServletResponse {\n  private int status;\n  public int getStatus() { return status; }\n}\n";
+        assert!(!source_imports_servlet(req_stub));
+        assert!(!source_imports_servlet(resp_stub));
+    }
+
+    #[test]
+    fn source_imports_servlet_accepts_canonical_imports() {
+        let canonical: &[u8] =
+            b"import jakarta.servlet.http.HttpServletRequest;\npublic class V {}\n";
+        let extends: &[u8] = b"public class V extends HttpServlet {}\n";
+        assert!(source_imports_servlet(canonical));
+        assert!(source_imports_servlet(extends));
+    }
+
+    #[test]
+    fn source_imports_servlet_accepts_default_package_fixture() {
+        let vuln: &[u8] = b"public class V {\n  public void doGet(HttpServletRequest req, HttpServletResponse resp) {}\n}\n";
+        assert!(source_imports_servlet(vuln));
     }
 
     #[test]
