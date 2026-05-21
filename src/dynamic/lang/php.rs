@@ -853,7 +853,31 @@ function _nyx_match_one(string $filt, string $uid): bool {{
     return _nyx_attr_match($pattern, $uid);
 }}
 
-function _nyx_ldap_count(string $filt, array $users): int {{
+function _nyx_ldap_count_via_stub(string $filt): ?int {{
+    $ep = getenv('NYX_LDAP_ENDPOINT');
+    if ($ep === false || $ep === '') return null;
+    $sep = strrpos($ep, ':');
+    if ($sep === false || $sep === 0 || $sep === strlen($ep) - 1) return null;
+    $host = substr($ep, 0, $sep);
+    $port = (int) substr($ep, $sep + 1);
+    if ($port <= 0) return null;
+    $errno = 0;
+    $errstr = '';
+    $sock = @fsockopen($host, $port, $errno, $errstr, 2.0);
+    if ($sock === false) return null;
+    stream_set_timeout($sock, 2);
+    @fwrite($sock, 'SEARCH ' . $filt . "\n");
+    $line = @fgets($sock);
+    @fclose($sock);
+    if ($line === false) return null;
+    $line = rtrim($line, "\r\n");
+    if (!str_starts_with($line, 'COUNT ')) return null;
+    $tail = trim(substr($line, strlen('COUNT ')));
+    if ($tail === '' || !ctype_digit($tail)) return null;
+    return (int) $tail;
+}}
+
+function _nyx_ldap_count_local(string $filt, array $users): int {{
     $f = trim($filt);
     if ($f === '') return 0;
     if (!(str_starts_with($f, '(') && str_ends_with($f, ')'))) return count($users);
@@ -864,6 +888,12 @@ function _nyx_ldap_count(string $filt, array $users): int {{
         if (_nyx_match_one($f, $u)) $count++;
     }}
     return $count;
+}}
+
+function _nyx_ldap_count(string $filt, array $users): int {{
+    $via_stub = _nyx_ldap_count_via_stub($filt);
+    if ($via_stub !== null) return $via_stub;
+    return _nyx_ldap_count_local($filt, $users);
 }}
 
 function _nyx_ldap_probe(string $filt, int $entries_returned): void {{
@@ -1831,6 +1861,47 @@ mod tests {
         assert!(
             shim_pos < driver_pos,
             "probe shim must come before the driver so the shim's helpers are in scope when a sink rewrite splices in"
+        );
+    }
+
+    fn make_ldap_spec() -> HarnessSpec {
+        let mut s = make_spec(PayloadSlot::Param(0));
+        s.expected_cap = Cap::LDAP_INJECTION;
+        s.entry_name = "run".into();
+        s
+    }
+
+    #[test]
+    fn emit_ldap_harness_routes_through_stub_when_endpoint_set() {
+        let h = emit_ldap_harness(&make_ldap_spec());
+        assert!(
+            h.source.contains("NYX_LDAP_ENDPOINT"),
+            "PHP LDAP harness must read NYX_LDAP_ENDPOINT to route through the stub",
+        );
+        assert!(
+            h.source.contains("fsockopen("),
+            "PHP LDAP harness must open a TCP socket against the stub endpoint",
+        );
+        assert!(
+            h.source.contains("'SEARCH '"),
+            "PHP LDAP harness must write SEARCH <filter> over the wire",
+        );
+        assert!(
+            h.source.contains("'COUNT '"),
+            "PHP LDAP harness must parse the COUNT <n> reply line",
+        );
+    }
+
+    #[test]
+    fn emit_ldap_harness_retains_local_matcher_fallback() {
+        let h = emit_ldap_harness(&make_ldap_spec());
+        assert!(
+            h.source.contains("_nyx_ldap_count_local"),
+            "PHP LDAP harness must keep the in-process matcher as a fallback for hosts without the stub",
+        );
+        assert!(
+            h.source.contains("_nyx_ldap_count_via_stub"),
+            "PHP LDAP harness must dispatch through the stub-route helper",
         );
     }
 }

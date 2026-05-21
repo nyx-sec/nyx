@@ -1571,7 +1571,7 @@ pub fn emit_ldap_harness(_spec: &HarnessSpec) -> HarnessSource {
     let body = format!(
         r#"#!/usr/bin/env python3
 """Nyx dynamic harness — LDAP_INJECTION ldap.search_s (Phase 06 / Track J.4)."""
-import os, json, sys, time
+import os, json, socket, sys, time
 
 {probe}
 
@@ -1644,7 +1644,46 @@ def _nyx_match_one(filt, uid):
     return _nyx_attr_match(pattern, uid)
 
 
-def _nyx_ldap_count(filt):
+def _nyx_ldap_count_via_stub(filt):
+    """Route through the in-sandbox LDAP stub when NYX_LDAP_ENDPOINT is set.
+
+    Returns the parsed `COUNT <n>` reply on success, or ``None`` when the
+    env var is unset, the address fails to parse, or the socket exchange
+    errors — caller falls back to the in-process matcher.
+    """
+    ep = os.environ.get("NYX_LDAP_ENDPOINT", "")
+    if not ep:
+        return None
+    sep = ep.rfind(":")
+    if sep <= 0 or sep >= len(ep) - 1:
+        return None
+    host = ep[:sep]
+    try:
+        port = int(ep[sep + 1:])
+    except ValueError:
+        return None
+    try:
+        with socket.create_connection((host, port), timeout=2.0) as sock:
+            sock.sendall(("SEARCH " + filt + "\n").encode("utf-8"))
+            buf = sock.makefile("rb")
+            line = buf.readline()
+            if not line:
+                return None
+            try:
+                line_s = line.decode("utf-8", "replace").rstrip("\r\n")
+            except Exception:
+                return None
+            if not line_s.startswith("COUNT "):
+                return None
+            try:
+                return int(line_s[len("COUNT "):].strip())
+            except ValueError:
+                return None
+    except (OSError, socket.timeout):
+        return None
+
+
+def _nyx_ldap_count_local(filt):
     f = (filt or "").strip()
     if not f:
         return 0
@@ -1653,6 +1692,13 @@ def _nyx_ldap_count(filt):
     if _nyx_inner_has_break(f[1:-1]):
         return len(_NYX_LDAP_USERS)
     return sum(1 for u in _NYX_LDAP_USERS if _nyx_match_one(f, u))
+
+
+def _nyx_ldap_count(filt):
+    via_stub = _nyx_ldap_count_via_stub(filt)
+    if via_stub is not None:
+        return via_stub
+    return _nyx_ldap_count_local(filt)
 
 
 def _nyx_ldap_probe(filt, entries_returned):
@@ -2864,5 +2910,46 @@ mod tests {
         s.entry_kind = kind;
         s.entry_name = name.to_owned();
         s
+    }
+
+    fn make_ldap_spec() -> HarnessSpec {
+        let mut s = make_spec(PayloadSlot::Param(0));
+        s.expected_cap = Cap::LDAP_INJECTION;
+        s.entry_name = "run".into();
+        s
+    }
+
+    #[test]
+    fn emit_ldap_harness_routes_through_stub_when_endpoint_set() {
+        let h = emit_ldap_harness(&make_ldap_spec());
+        assert!(
+            h.source.contains("NYX_LDAP_ENDPOINT"),
+            "Python LDAP harness must read NYX_LDAP_ENDPOINT to route through the stub",
+        );
+        assert!(
+            h.source.contains("socket.create_connection"),
+            "Python LDAP harness must open a TCP socket against the stub endpoint",
+        );
+        assert!(
+            h.source.contains("SEARCH "),
+            "Python LDAP harness must write SEARCH <filter> over the wire",
+        );
+        assert!(
+            h.source.contains("COUNT "),
+            "Python LDAP harness must parse the COUNT <n> reply line",
+        );
+    }
+
+    #[test]
+    fn emit_ldap_harness_retains_local_matcher_fallback() {
+        let h = emit_ldap_harness(&make_ldap_spec());
+        assert!(
+            h.source.contains("_nyx_ldap_count_local"),
+            "Python LDAP harness must keep the in-process matcher as a fallback for hosts without the stub",
+        );
+        assert!(
+            h.source.contains("_nyx_ldap_count_via_stub"),
+            "Python LDAP harness must dispatch through the stub-route helper",
+        );
     }
 }

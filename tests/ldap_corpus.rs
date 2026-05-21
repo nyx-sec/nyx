@@ -464,4 +464,113 @@ mod e2e_phase_06 {
             .expect("Confirmed run must carry a DifferentialOutcome");
         assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
     }
+
+    // ── Tier (a): socket-route exercise ──────────────────────────────
+    //
+    // When `NYX_LDAP_ENDPOINT` is injected into the sandbox env the
+    // per-language harness must route its `(uid=…)` search through the
+    // in-sandbox LDAP stub over the documented `SEARCH <filter>\n` /
+    // `COUNT <n>\n…` wire protocol instead of evaluating the filter
+    // in-process.  The fallback inline matcher stays in place so a
+    // call site that runs without the stub still produces a verdict;
+    // this test pins the socket-route path itself.
+    use nyx_scanner::dynamic::stubs::StubProvider;
+    use nyx_scanner::dynamic::stubs::ldap_server::LdapStub;
+
+    fn run_with_ldap_stub(
+        lang: Lang,
+        fixture: &str,
+        entry_name: &str,
+    ) -> Option<(RunOutcome, Vec<nyx_scanner::dynamic::stubs::StubEvent>)> {
+        let bin = toolchain_for(lang);
+        if !command_available(bin) {
+            eprintln!("SKIP {lang:?} {fixture}: missing toolchain {bin}");
+            return None;
+        }
+        let _guard = FIXTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let stub = LdapStub::start().expect("ldap stub starts");
+        let endpoint = stub.endpoint();
+        let (mut spec, _tmp) = build_spec(lang, fixture, entry_name);
+        spec.stubs_required = vec![nyx_scanner::dynamic::stubs::StubKind::Ldap];
+        let opts = SandboxOptions {
+            backend: SandboxBackend::Process,
+            extra_env: vec![(
+                nyx_scanner::dynamic::stubs::ldap_server::LDAP_ENDPOINT_ENV_VAR.to_owned(),
+                endpoint,
+            )],
+            ..SandboxOptions::default()
+        };
+        let outcome = match run_spec(&spec, &opts) {
+            Ok(o) => o,
+            Err(RunError::BuildFailed { stderr, attempts }) => {
+                eprintln!(
+                    "SKIP {lang:?} {fixture}: harness build failed after {attempts} attempts: {stderr}",
+                );
+                return None;
+            }
+            Err(e) => panic!("run_spec({lang:?} {fixture}) errored: {e:?}"),
+        };
+        let events = stub.drain_events();
+        Some((outcome, events))
+    }
+
+    #[test]
+    fn java_vuln_routes_searches_through_stub() {
+        let Some((outcome, events)) = run_with_ldap_stub(Lang::Java, "Vuln.java", "run") else {
+            return;
+        };
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+        assert!(
+            !events.is_empty(),
+            "Java harness must route SEARCH through stub; got no events",
+        );
+        assert!(
+            events.iter().any(|e| e.summary.starts_with("SEARCH (uid=")),
+            "Java harness stub events must carry a `(uid=…)` filter; got {events:?}",
+        );
+    }
+
+    #[test]
+    fn python_vuln_routes_searches_through_stub() {
+        let Some((outcome, events)) = run_with_ldap_stub(Lang::Python, "vuln.py", "run") else {
+            return;
+        };
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+        assert!(
+            !events.is_empty(),
+            "Python harness must route SEARCH through stub; got no events",
+        );
+        assert!(
+            events.iter().any(|e| e.summary.starts_with("SEARCH (uid=")),
+            "Python harness stub events must carry a `(uid=…)` filter; got {events:?}",
+        );
+    }
+
+    #[test]
+    fn php_vuln_routes_searches_through_stub() {
+        let Some((outcome, events)) = run_with_ldap_stub(Lang::Php, "vuln.php", "run") else {
+            return;
+        };
+        let diff = outcome
+            .differential
+            .as_ref()
+            .expect("Confirmed run must carry a DifferentialOutcome");
+        assert_eq!(diff.verdict, DifferentialVerdict::Confirmed);
+        assert!(
+            !events.is_empty(),
+            "PHP harness must route SEARCH through stub; got no events",
+        );
+        assert!(
+            events.iter().any(|e| e.summary.starts_with("SEARCH (uid=")),
+            "PHP harness stub events must carry a `(uid=…)` filter; got {events:?}",
+        );
+    }
 }

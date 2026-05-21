@@ -249,6 +249,8 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.ArrayList;
+import java.util.List;
 public class HttpServletResponse {{
     public static final int SC_OK = 200;
     public static final int SC_NOT_FOUND = 404;
@@ -257,9 +259,17 @@ public class HttpServletResponse {{
     public static final int SC_INTERNAL_SERVER_ERROR = 500;
     public static final int SC_MOVED_PERMANENTLY = 301;
     public static final int SC_MOVED_TEMPORARILY = 302;
+    // Phase 08 (Track J.6): permissive header-capture buffer the Nyx
+    // harness drains after invoking the fixture's sink call.  The buffer
+    // records every `setHeader` / `addHeader` write verbatim (including
+    // CRLF metacharacters); it does NOT mimic Tomcat 9+'s CRLF rejection
+    // so the differential rule can compare a real-fixture sanitiser path
+    // against an unsanitised one.
+    private static final List<String[]> nyxCapturedHeaders = new ArrayList<>();
     private final StringWriter sw = new StringWriter();
     private final PrintWriter pw = new PrintWriter(sw);
     private int status = SC_OK;
+    private String redirectLocation = null;
     public HttpServletResponse() {{}}
     public PrintWriter getWriter() throws IOException {{ return pw; }}
     public String getBody() {{ pw.flush(); return sw.toString(); }}
@@ -274,10 +284,32 @@ public class HttpServletResponse {{
     public int getStatus() {{ return status; }}
     public void sendError(int sc) throws IOException {{ this.status = sc; }}
     public void sendError(int sc, String msg) throws IOException {{ this.status = sc; }}
-    public void sendRedirect(String location) throws IOException {{ this.status = SC_MOVED_TEMPORARILY; }}
+    public void sendRedirect(String location) throws IOException {{
+        this.status = SC_MOVED_TEMPORARILY;
+        this.redirectLocation = location;
+    }}
+    public String getRedirectedUrl() {{ return redirectLocation; }}
     public void addCookie(Cookie cookie) {{}}
-    public void setHeader(String name, String value) {{}}
-    public void addHeader(String name, String value) {{}}
+    public void setHeader(String name, String value) {{
+        synchronized (nyxCapturedHeaders) {{
+            nyxCapturedHeaders.add(new String[]{{ name, value }});
+        }}
+    }}
+    public void addHeader(String name, String value) {{
+        synchronized (nyxCapturedHeaders) {{
+            nyxCapturedHeaders.add(new String[]{{ name, value }});
+        }}
+    }}
+    /** Drain every header recorded by {{@link #setHeader}} / {{@link #addHeader}} since
+     *  the last drain.  Used by the Nyx HEADER_INJECTION harness; returns
+     *  pairs in insertion order. */
+    public static List<String[]> nyxDrainHeaders() {{
+        synchronized (nyxCapturedHeaders) {{
+            List<String[]> snap = new ArrayList<>(nyxCapturedHeaders);
+            nyxCapturedHeaders.clear();
+            return snap;
+        }}
+    }}
     public void setIntHeader(String name, int value) {{}}
     public void addIntHeader(String name, int value) {{}}
     public void setDateHeader(String name, long date) {{}}
@@ -428,6 +460,46 @@ mod tests {
             assert!(
                 resp.contains(method),
                 "javax HttpServletResponse stub missing `{method}`"
+            );
+        }
+    }
+
+    #[test]
+    fn http_servlet_response_captures_headers_for_phase_08() {
+        // Phase 08 (Track J.6): the response stub records every
+        // setHeader / addHeader write into a static buffer the
+        // HEADER_INJECTION harness drains after invoking the fixture's
+        // sink call.  Tomcat-style CRLF rejection is intentionally NOT
+        // modeled so the differential rule can compare a real-fixture
+        // sanitiser path against an unsanitised one.
+        for pkg in &["javax.servlet.http", "jakarta.servlet.http"] {
+            let resp = http_servlet_response(pkg);
+            for marker in &[
+                "nyxCapturedHeaders",
+                "nyxDrainHeaders",
+                "synchronized (nyxCapturedHeaders)",
+            ] {
+                assert!(
+                    resp.contains(marker),
+                    "{pkg} HttpServletResponse stub missing `{marker}`",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn http_servlet_response_keeps_redirect_capture_for_phase_09() {
+        // Phase 09 (Track J.7): the response stub records the most
+        // recent sendRedirect target so the OPEN_REDIRECT harness can
+        // mirror the Phase 08 header-capture pattern when the bootstrap
+        // path lands.  Pin the capture wiring up-front so a future
+        // refactor cannot silently drop it.
+        for pkg in &["javax.servlet.http", "jakarta.servlet.http"] {
+            let resp = http_servlet_response(pkg);
+            assert!(
+                resp.contains("redirectLocation")
+                    && resp.contains("getRedirectedUrl"),
+                "{pkg} HttpServletResponse stub missing redirect-capture wiring",
             );
         }
     }

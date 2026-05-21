@@ -1099,8 +1099,13 @@ pub fn emit_ldap_harness(_spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let source = format!(
         r#"// Nyx dynamic harness — LDAP_INJECTION LdapTemplate.search (Phase 06 / Track J.4).
+import java.io.BufferedReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -1132,7 +1137,49 @@ public class NyxHarness {{
         return false;
     }}
 
+    /// When `NYX_LDAP_ENDPOINT` is set to `host:port`, route the search
+    /// through the in-sandbox LDAP stub over its plain-text protocol
+    /// (`SEARCH <filter>\n` → `COUNT <n>\n…`) and return the parsed
+    /// count.  Returns `-1` when the env var is unset, the address
+    /// fails to parse, or the socket exchange errors — caller falls
+    /// back to the in-process matcher.
+    static int nyxLdapCountViaStub(String filter) {{
+        String ep = System.getenv("NYX_LDAP_ENDPOINT");
+        if (ep == null || ep.isEmpty()) return -1;
+        int colon = ep.lastIndexOf(':');
+        if (colon <= 0 || colon >= ep.length() - 1) return -1;
+        String host = ep.substring(0, colon);
+        int port;
+        try {{
+            port = Integer.parseInt(ep.substring(colon + 1));
+        }} catch (NumberFormatException nfe) {{
+            return -1;
+        }}
+        try (Socket sock = new Socket(host, port)) {{
+            sock.setSoTimeout(2000);
+            OutputStream os = sock.getOutputStream();
+            os.write(("SEARCH " + filter + "\n").getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            BufferedReader br = new BufferedReader(new InputStreamReader(sock.getInputStream(), StandardCharsets.UTF_8));
+            String line = br.readLine();
+            if (line == null || !line.startsWith("COUNT ")) return -1;
+            try {{
+                return Integer.parseInt(line.substring("COUNT ".length()).trim());
+            }} catch (NumberFormatException nfe) {{
+                return -1;
+            }}
+        }} catch (IOException ioe) {{
+            return -1;
+        }}
+    }}
+
     static int nyxLdapCount(String filter) {{
+        int viaStub = nyxLdapCountViaStub(filter);
+        if (viaStub >= 0) return viaStub;
+        return nyxLdapCountLocal(filter);
+    }}
+
+    static int nyxLdapCountLocal(String filter) {{
         String f = filter == null ? "" : filter.trim();
         if (f.isEmpty()) return 0;
         if (!f.startsWith("(") || !f.endsWith(")")) return NYX_LDAP_USERS.length;
@@ -1165,7 +1212,7 @@ public class NyxHarness {{
     }}
 
     static boolean nyxLdapMatch(String filter, String uid) {{
-        return nyxLdapCount(filter) > 0
+        return nyxLdapCountLocal(filter) > 0
             ? nyxLdapMatchOne(filter, uid)
             : false;
     }}
@@ -1405,11 +1452,85 @@ public class NyxHarness {{
 pub fn emit_header_injection_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let extra_files = servlet_stubs_for_entry(&spec.entry_file);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let servlet_pkg = if entry_source.contains("jakarta.servlet") {
+        "jakarta.servlet.http"
+    } else {
+        "javax.servlet.http"
+    };
+    let entry_class = derive_entry_class(&entry_source);
+    let entry_fqn = derive_entry_qualifier(&entry_source, &entry_class);
+    let entry_method = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let has_servlet_stubs = !extra_files.is_empty();
+    let header_name = "Set-Cookie";
+
+    // Tier-(a) path drives the fixture's real `setHeader` call through
+    // the captured-header buffer on the servlet stub.  When the entry
+    // file does not import a servlet API the stub is not shipped and
+    // we fall back to the legacy synthetic probe so the harness still
+    // produces a verdict on hosts that do not link the stub.
+    let main_body = if has_servlet_stubs {
+        format!(
+            r#"        // Phase 08 tier-(a): instantiate the captured-header response
+        // wrapper, reflectively invoke the fixture's sink call, then
+        // drain every recorded (name, value) pair and emit one
+        // ProbeKind::HeaderEmit per pair so the oracle sees the bytes
+        // the fixture actually passed to setHeader/addHeader.
+        {servlet_pkg}.HttpServletResponse response = new {servlet_pkg}.HttpServletResponse();
+        boolean fixtureInvoked = false;
+        try {{
+            Class<?> entry = Class.forName("{entry_fqn}");
+            Method m = entry.getDeclaredMethod(
+                "{entry_method}",
+                {servlet_pkg}.HttpServletResponse.class,
+                String.class);
+            m.setAccessible(true);
+            m.invoke(null, response, payload);
+            fixtureInvoked = true;
+        }} catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException e) {{
+            // Fixture shape did not match (response, value) — fall
+            // through to the synthetic probe so the verdict path stays
+            // intact for legacy entry shapes.
+        }} catch (InvocationTargetException ite) {{
+            // The fixture itself threw; treat that as evidence the sink
+            // path was reached and continue to drain captured headers.
+            fixtureInvoked = true;
+        }}
+        java.util.List<String[]> captured =
+            {servlet_pkg}.HttpServletResponse.nyxDrainHeaders();
+        if (fixtureInvoked && !captured.isEmpty()) {{
+            for (String[] pair : captured) {{
+                nyxHeaderProbe(pair[0], pair[1]);
+            }}
+        }} else {{
+            // Fixture either rejected the invocation or set no
+            // headers — fall back to the synthetic probe so a benign
+            // fixture that strips CRLF still produces a verdict.
+            nyxHeaderProbe("{header_name}", payload);
+        }}"#
+        )
+    } else {
+        format!(
+            r#"        // No servlet stub available — synthetic probe path.
+        nyxHeaderProbe("{header_name}", payload);"#
+        )
+    };
+
+    let imports = if has_servlet_stubs {
+        "import java.lang.reflect.InvocationTargetException;\nimport java.lang.reflect.Method;\n"
+    } else {
+        ""
+    };
+
     let source = format!(
         r#"// Nyx dynamic harness — HEADER_INJECTION HttpServletResponse.setHeader (Phase 08 / Track J.6).
 import java.io.FileWriter;
 import java.io.IOException;
-
+{imports}
 public class NyxHarness {{
 {shim}
 
@@ -1447,17 +1568,8 @@ public class NyxHarness {{
     public static void main(String[] args) {{
         String payload = System.getenv("NYX_PAYLOAD");
         if (payload == null) payload = "";
-        String name = "Set-Cookie";
-        String value = payload;
-        nyxHeaderProbe(name, value);
+{main_body}
         System.out.println("__NYX_SINK_HIT__");
-        StringBuilder body = new StringBuilder(64);
-        body.append("{{\"name\":\"");
-        nyxJsonEscape(name, body);
-        body.append("\",\"value\":\"");
-        nyxJsonEscape(value, body);
-        body.append("\"}}");
-        System.out.println(body.toString());
     }}
 }}
 "#
@@ -1487,11 +1599,72 @@ public class NyxHarness {{
 pub fn emit_open_redirect_harness(spec: &HarnessSpec) -> HarnessSource {
     let shim = probe_shim();
     let extra_files = servlet_stubs_for_entry(&spec.entry_file);
+    let entry_source = read_entry_source(&spec.entry_file);
+    let servlet_pkg = if entry_source.contains("jakarta.servlet") {
+        "jakarta.servlet.http"
+    } else {
+        "javax.servlet.http"
+    };
+    let entry_class = derive_entry_class(&entry_source);
+    let entry_fqn = derive_entry_qualifier(&entry_source, &entry_class);
+    let entry_method = if spec.entry_name.is_empty() {
+        "run".to_owned()
+    } else {
+        spec.entry_name.clone()
+    };
+    let has_servlet_stubs = !extra_files.is_empty();
+
+    // Tier-(a) path drives the fixture's real `sendRedirect` call
+    // through the captured-location field on the servlet stub.  Falls
+    // back to the legacy synthetic probe when the entry source does
+    // not import a servlet API so the verdict path stays intact.
+    let main_body = if has_servlet_stubs {
+        format!(
+            r#"        // Phase 09 tier-(a): instantiate the captured-redirect response
+        // wrapper, reflectively invoke the fixture's sink call, then
+        // read the captured `Location:` value via getRedirectedUrl()
+        // and emit a single ProbeKind::Redirect probe.
+        {servlet_pkg}.HttpServletResponse response = new {servlet_pkg}.HttpServletResponse();
+        boolean fixtureInvoked = false;
+        try {{
+            Class<?> entry = Class.forName("{entry_fqn}");
+            Method m = entry.getDeclaredMethod(
+                "{entry_method}",
+                {servlet_pkg}.HttpServletResponse.class,
+                String.class);
+            m.setAccessible(true);
+            m.invoke(null, response, payload);
+            fixtureInvoked = true;
+        }} catch (ClassNotFoundException | NoSuchMethodException | IllegalAccessException e) {{
+            // Fixture shape did not match (response, value) — fall
+            // through to the synthetic probe.
+        }} catch (InvocationTargetException ite) {{
+            // Fixture itself threw; the sink path was reached so keep
+            // the captured location if any.
+            fixtureInvoked = true;
+        }}
+        String captured = response.getRedirectedUrl();
+        if (fixtureInvoked && captured != null) {{
+            nyxRedirectProbe(captured, requestHost);
+        }} else {{
+            nyxRedirectProbe(payload, requestHost);
+        }}"#
+        )
+    } else {
+        r#"        nyxRedirectProbe(payload, requestHost);"#.to_owned()
+    };
+
+    let imports = if has_servlet_stubs {
+        "import java.lang.reflect.InvocationTargetException;\nimport java.lang.reflect.Method;\n"
+    } else {
+        ""
+    };
+
     let source = format!(
         r#"// Nyx dynamic harness — OPEN_REDIRECT HttpServletResponse.sendRedirect (Phase 09 / Track J.7).
 import java.io.FileWriter;
 import java.io.IOException;
-
+{imports}
 public class NyxHarness {{
 {shim}
 
@@ -1528,16 +1701,8 @@ public class NyxHarness {{
         String payload = System.getenv("NYX_PAYLOAD");
         if (payload == null) payload = "";
         String requestHost = "example.com";
-        String location = payload;
-        nyxRedirectProbe(location, requestHost);
+{main_body}
         System.out.println("__NYX_SINK_HIT__");
-        StringBuilder body = new StringBuilder(64);
-        body.append("{{\"location\":\"");
-        nyxJsonEscape(location, body);
-        body.append("\",\"request_host\":\"");
-        nyxJsonEscape(requestHost, body);
-        body.append("\"}}");
-        System.out.println(body.toString());
     }}
 }}
 "#
@@ -3056,6 +3221,209 @@ mod tests {
             let spec = make_spec_with(kind.clone(), entry_name, path.to_str().unwrap());
             assert_eq!(detect_shape(&spec), *expected, "case {name}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn make_ldap_spec() -> HarnessSpec {
+        let mut s = make_spec(PayloadSlot::Param(0));
+        s.expected_cap = Cap::LDAP_INJECTION;
+        s.entry_name = "run".into();
+        s
+    }
+
+    #[test]
+    fn emit_ldap_harness_routes_through_stub_when_endpoint_set() {
+        let h = emit_ldap_harness(&make_ldap_spec());
+        assert!(
+            h.source.contains("NYX_LDAP_ENDPOINT"),
+            "Java LDAP harness must read NYX_LDAP_ENDPOINT to route through the stub",
+        );
+        assert!(
+            h.source.contains("new Socket(host, port)"),
+            "Java LDAP harness must open a TCP socket against the stub endpoint",
+        );
+        assert!(
+            h.source.contains("SEARCH "),
+            "Java LDAP harness must write SEARCH <filter> over the wire",
+        );
+        assert!(
+            h.source.contains("COUNT "),
+            "Java LDAP harness must parse the COUNT <n> reply line",
+        );
+    }
+
+    #[test]
+    fn emit_ldap_harness_retains_local_matcher_fallback() {
+        let h = emit_ldap_harness(&make_ldap_spec());
+        assert!(
+            h.source.contains("nyxLdapCountLocal"),
+            "Java LDAP harness must keep the in-process matcher as a fallback for hosts without the stub",
+        );
+        assert!(
+            h.source.contains("nyxLdapCountViaStub"),
+            "Java LDAP harness must dispatch through the stub-route helper",
+        );
+    }
+
+    fn write_servlet_fixture(dir: &std::path::Path, body: &str) -> String {
+        let path = dir.join("Vuln.java");
+        std::fs::write(&path, body).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn emit_header_injection_harness_drives_fixture_through_stub_when_servlet_present() {
+        let dir = std::env::temp_dir().join("nyx_phase08_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "import javax.servlet.http.HttpServletResponse;\n\
+             public class Vuln {\n  public static void run(HttpServletResponse r, String v) {\n    r.setHeader(\"Set-Cookie\", v);\n  }\n}\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_header_injection_harness(&spec);
+        assert!(
+            !h.extra_files.is_empty(),
+            "servlet-importing fixture must trigger stub-file emission",
+        );
+        assert!(
+            h.source.contains("HttpServletResponse response = new javax.servlet.http.HttpServletResponse()"),
+            "Java HEADER_INJECTION harness must instantiate the captured-header response wrapper",
+        );
+        assert!(
+            h.source.contains("Class.forName(\"Vuln\")"),
+            "Java HEADER_INJECTION harness must reflectively load the fixture entry class",
+        );
+        assert!(
+            h.source.contains("nyxDrainHeaders()"),
+            "Java HEADER_INJECTION harness must drain captured headers after invoking the fixture",
+        );
+        assert!(
+            h.source.contains("for (String[] pair : captured)"),
+            "Java HEADER_INJECTION harness must emit one probe per captured (name, value) pair",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_uses_jakarta_namespace_for_jakarta_imports() {
+        let dir = std::env::temp_dir().join("nyx_phase08_test_jakarta_ns");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "import jakarta.servlet.http.HttpServletResponse;\n\
+             public class Vuln {\n  public static void run(HttpServletResponse r, String v) {\n    r.setHeader(\"Set-Cookie\", v);\n  }\n}\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_header_injection_harness(&spec);
+        assert!(
+            h.source.contains("jakarta.servlet.http.HttpServletResponse"),
+            "Java HEADER_INJECTION harness must follow the entry source's servlet namespace",
+        );
+        assert!(
+            !h.source.contains("javax.servlet.http.HttpServletResponse response"),
+            "Jakarta entry must not instantiate javax response wrapper",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_header_injection_harness_falls_back_to_synthetic_probe_without_servlet() {
+        let dir = std::env::temp_dir().join("nyx_phase08_test_no_servlet");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "public class Vuln { public static void run(String v) { System.out.println(v); } }\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::HEADER_INJECTION;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_header_injection_harness(&spec);
+        assert!(
+            h.extra_files.is_empty(),
+            "non-servlet fixture must not ship servlet stubs",
+        );
+        assert!(
+            !h.source.contains("nyxDrainHeaders()"),
+            "non-servlet fixture must skip the stub-driven capture path",
+        );
+        assert!(
+            h.source.contains("nyxHeaderProbe(\"Set-Cookie\", payload)"),
+            "non-servlet fixture must keep the synthetic-probe fallback",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_drives_fixture_through_stub_when_servlet_present() {
+        let dir = std::env::temp_dir().join("nyx_phase09_test_drive_fixture");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "import javax.servlet.http.HttpServletResponse;\n\
+             public class Vuln {\n  public static void run(HttpServletResponse r, String v) throws Exception {\n    r.sendRedirect(v);\n  }\n}\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_open_redirect_harness(&spec);
+        assert!(
+            !h.extra_files.is_empty(),
+            "servlet-importing fixture must trigger stub-file emission",
+        );
+        assert!(
+            h.source.contains("HttpServletResponse response = new javax.servlet.http.HttpServletResponse()"),
+            "Java OPEN_REDIRECT harness must instantiate the captured-redirect response wrapper",
+        );
+        assert!(
+            h.source.contains("Class.forName(\"Vuln\")"),
+            "Java OPEN_REDIRECT harness must reflectively load the fixture entry class",
+        );
+        assert!(
+            h.source.contains("response.getRedirectedUrl()"),
+            "Java OPEN_REDIRECT harness must read the captured Location: value from the stub",
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn emit_open_redirect_harness_falls_back_to_synthetic_probe_without_servlet() {
+        let dir = std::env::temp_dir().join("nyx_phase09_test_no_servlet");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = write_servlet_fixture(
+            &dir,
+            "public class Vuln { public static void run(String v) { System.out.println(v); } }\n",
+        );
+        let mut spec = make_spec(PayloadSlot::Param(0));
+        spec.expected_cap = Cap::OPEN_REDIRECT;
+        spec.entry_file = entry;
+        spec.entry_name = "run".into();
+        let h = emit_open_redirect_harness(&spec);
+        assert!(
+            h.extra_files.is_empty(),
+            "non-servlet fixture must not ship servlet stubs",
+        );
+        assert!(
+            !h.source.contains("response.getRedirectedUrl()"),
+            "non-servlet fixture must skip the stub-driven capture path",
+        );
+        assert!(
+            h.source.contains("nyxRedirectProbe(payload, requestHost)"),
+            "non-servlet fixture must keep the synthetic-probe fallback",
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
