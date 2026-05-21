@@ -29,6 +29,11 @@ function formatTriageState(state: string): string {
   return (state || 'open').replace(/_/g, ' ');
 }
 
+function formatVerificationStatus(status: string): string {
+  if (status === 'NotConfirmed') return 'Not confirmed';
+  return status || 'Unverified';
+}
+
 // ── Filter Bar ──────────────────────────────────────────────────────────────
 
 interface FilterSelectProps {
@@ -37,6 +42,7 @@ interface FilterSelectProps {
   values: string[] | undefined;
   current: string;
   onChange: (value: string) => void;
+  formatValue?: (value: string) => string;
 }
 
 function FilterSelect({
@@ -45,6 +51,7 @@ function FilterSelect({
   values,
   current,
   onChange,
+  formatValue,
 }: FilterSelectProps) {
   if (!values || values.length === 0) return null;
   return (
@@ -52,7 +59,7 @@ function FilterSelect({
       <option value="">All {label}</option>
       {values.map((v) => (
         <option key={v} value={v}>
-          {v}
+          {formatValue ? formatValue(v) : v}
         </option>
       ))}
     </select>
@@ -322,6 +329,7 @@ export function FindingsPage() {
       language: state.language || undefined,
       rule_id: state.rule_id || undefined,
       status: state.status || undefined,
+      verification: state.verification || undefined,
       search: state.search || undefined,
     }),
     [state],
@@ -621,6 +629,14 @@ export function FindingsPage() {
           current={state.status}
           onChange={(v) => handleFilterChange('status', v)}
         />
+        <FilterSelect
+          id="filter-verification"
+          label="Verification"
+          values={filters?.verification_statuses}
+          current={state.verification}
+          onChange={(v) => handleFilterChange('verification', v)}
+          formatValue={formatVerificationStatus}
+        />
         {hasActiveFilters && (
           <button className="btn btn-sm btn-clear" onClick={resetFilters}>
             Clear All
@@ -764,7 +780,7 @@ export function FindingsPage() {
                     </td>
                     <td>
                       <VerdictBadge
-                        verdict={f.evidence?.dynamic_verdict}
+                        verdict={f.dynamic_verdict ?? f.evidence?.dynamic_verdict}
                         compact
                       />
                     </td>

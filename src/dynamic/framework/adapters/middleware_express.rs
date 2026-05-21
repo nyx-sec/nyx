@@ -1,8 +1,12 @@
 //! Phase 21 (Track M.3) — Express middleware adapter (JS).
 //!
-//! Fires when the surrounding source imports Express and declares a
-//! middleware function — a `(req, res, next) => …` callable mounted
-//! via `app.use(...)` / `router.use(...)`.
+//! Fires when the surrounding source imports Express and the function
+//! under analysis is mounted via `app.use(<this_fn>)` /
+//! `router.use(<this_fn>)`.  An anonymous-mount or callee-only signal
+//! (`app.use(...)` with a non-matching function name) is no longer
+//! enough on its own — that needle stole every Express setup file into
+//! Middleware bindings regardless of which function the analyser was
+//! looking at (Phase 21 binding-stealing audit).
 
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
@@ -13,21 +17,36 @@ pub struct MiddlewareExpressAdapter;
 
 const ADAPTER_NAME: &str = "middleware-express";
 
-fn callee_is_express(name: &str) -> bool {
+fn callee_is_express_mount(name: &str) -> bool {
+    // `use` on Express's app/router registers middleware. Other Express
+    // helpers like `json`/`urlencoded`/`static` are body-parser
+    // factories that pair WITH `use` rather than identifying the
+    // function itself as middleware, so they no longer count.
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "use" | "next" | "json" | "urlencoded" | "static")
+    last == "use"
 }
 
-fn source_imports_express(file_bytes: &[u8]) -> bool {
-    // Phase 21 v1: require an explicit middleware-registration shape
-    // (`app.use(` / `router.use(`), not the bare `require('express')`
-    // import.  Many non-middleware Express fixtures import the framework
-    // but never declare middleware; gating on the registration shape
-    // keeps the adapter focused on the function the brief targets.
-    const NEEDLES: &[&[u8]] = &[b"app.use(", b"router.use(", b"express.Router()"];
-    NEEDLES
+fn function_is_mounted_as_middleware(file_bytes: &[u8], name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let needles: [Vec<u8>; 2] = [
+        format!("app.use({name})").into_bytes(),
+        format!("router.use({name})").into_bytes(),
+    ];
+    needles
         .iter()
-        .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+        .any(|n| file_bytes.windows(n.len()).any(|w| w == n.as_slice()))
+}
+
+fn function_has_middleware_signature(summary: &FuncSummary) -> bool {
+    // Express middleware contract: (req, res, next).  Adapters cannot
+    // rely on a generic mount-everything heuristic so the param shape
+    // becomes the secondary signal when no explicit `app.use(<name>)`
+    // line is present.
+    let names: Vec<&str> = summary.param_names.iter().map(|s| s.as_str()).collect();
+    matches!(names.as_slice(), ["req", "res", "next"])
+        || matches!(names.as_slice(), ["request", "response", "next"])
 }
 
 impl FrameworkAdapter for MiddlewareExpressAdapter {
@@ -45,22 +64,23 @@ impl FrameworkAdapter for MiddlewareExpressAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_express);
-        let matches_source = source_imports_express(file_bytes);
-        if matches_call || matches_source {
-            Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::Middleware {
-                    name: summary.name.clone(),
-                },
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            })
-        } else {
-            None
+        let mounted_by_name = function_is_mounted_as_middleware(file_bytes, &summary.name);
+        let has_mw_signature = function_has_middleware_signature(summary);
+        let body_mounts = super::any_callee_matches(summary, callee_is_express_mount);
+        let binds = mounted_by_name || has_mw_signature || body_mounts;
+        if !binds {
+            return None;
         }
+        Some(FrameworkBinding {
+            adapter: ADAPTER_NAME.to_owned(),
+            kind: EntryKind::Middleware {
+                name: summary.name.clone(),
+            },
+            route: None,
+            request_params: Vec::new(),
+            response_writer: None,
+            middleware: Vec::new(),
+        })
     }
 }
 
@@ -93,5 +113,27 @@ mod tests {
         if let EntryKind::Middleware { name } = binding.kind {
             assert_eq!(name, "audit");
         }
+    }
+
+    #[test]
+    fn does_not_bind_unrelated_helper_in_express_setup() {
+        // File mounts middleware `audit` but the analyser is asking
+        // about an unrelated helper `loadConfig` in the same file.
+        let src: &[u8] = b"const express = require('express');\n\
+            const app = express();\n\
+            function audit(req, res, next) { next(); }\n\
+            function loadConfig() { return { port: 3000 }; }\n\
+            app.use(audit);\n";
+        let tree = parse_js(src);
+        let summary = FuncSummary {
+            name: "loadConfig".into(),
+            ..Default::default()
+        };
+        assert!(
+            MiddlewareExpressAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none(),
+            "unrelated helper in an Express setup file must not bind as middleware",
+        );
     }
 }

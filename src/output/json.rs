@@ -82,6 +82,7 @@ mod tests {
     use crate::chain::finding::{ChainFinding, ChainSeverity, ChainSink};
     use crate::chain::impact::ImpactCategory;
     use crate::commands::scan::Diag;
+    use crate::evidence::{Evidence, VerifyResult, VerifyStatus};
     use crate::patterns::{FindingCategory, Severity};
     use crate::surface::SourceLocation;
 
@@ -156,5 +157,32 @@ mod tests {
     fn verdict_diff_preserved() {
         let v = build_findings_json(&[], &[], Some(&json!({"new": []})));
         assert!(v.get("verdict_diff").is_some());
+    }
+
+    #[test]
+    fn dynamic_verification_summary_is_included() {
+        let mut d = diag(7);
+        d.evidence = Some(Evidence {
+            dynamic_verdict: Some(VerifyResult {
+                finding_id: "abc123".into(),
+                status: VerifyStatus::Confirmed,
+                triggered_payload: None,
+                reason: None,
+                inconclusive_reason: None,
+                detail: None,
+                attempts: vec![],
+                toolchain_match: None,
+                differential: None,
+                replay_stable: None,
+                wrong: None,
+                hardening_outcome: None,
+            }),
+            ..Evidence::default()
+        });
+
+        let v = build_findings_json(&[d], &[], None);
+
+        assert_eq!(v["dynamic_verification"]["total"], json!(1));
+        assert_eq!(v["dynamic_verification"]["confirmed"], json!(1));
     }
 }

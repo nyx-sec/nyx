@@ -16,8 +16,8 @@ function verdictTooltip(verdict: VerifyResult): string {
         ? `Confirmed via payload: ${triggered_payload}`
         : 'Dynamically confirmed exploitable';
     case 'NotConfirmed':
-      return verdict.attempts.length > 0
-        ? `Not confirmed after ${verdict.attempts.length} payload attempt(s)`
+      return (verdict.attempts?.length ?? 0) > 0
+        ? `Not confirmed after ${verdict.attempts?.length ?? 0} payload attempt(s)`
         : 'Not confirmed';
     case 'Unsupported':
       return reason ? `Unsupported: ${reason}` : 'Dynamic verification not supported';

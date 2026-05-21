@@ -707,16 +707,21 @@ function HowToFix({ finding }: { finding: FindingView }) {
 
 export function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
   const [copied, setCopied] = useState(false);
+  const attempts = verdict.attempts ?? [];
   // The repro bundle is keyed by spec_hash (not finding_id) inside the Nyx
   // cache.  Rather than showing a path that may not match, surface the CLI
   // command that locates and opens the bundle regardless of the hash.
   const reproCmd = `nyx repro --finding ${verdict.finding_id}`;
 
   const copyCmd = () => {
-    navigator.clipboard.writeText(reproCmd).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(reproCmd).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      () => {},
+    );
   };
 
   return (
@@ -767,11 +772,11 @@ export function DynamicVerdictSection({ verdict }: { verdict: VerifyResult }) {
         </div>
       )}
 
-      {verdict.attempts.length > 0 && (
+      {attempts.length > 0 && (
         <div className="dynamic-attempts">
           <strong>Payload attempts:</strong>
           <ul className="dynamic-attempt-list">
-            {verdict.attempts.map((a, i) => (
+            {attempts.map((a, i) => (
               <li key={i} className={`attempt-row ${a.triggered ? 'triggered' : ''}`}>
                 <code>{a.payload_label}</code>
                 <span className="attempt-outcome">
@@ -953,6 +958,7 @@ export function FindingDetailPage() {
 
   const f = finding;
   const evidence = f.evidence;
+  const dynamicVerdict = evidence?.dynamic_verdict ?? f.dynamic_verdict;
   const isState = isStateFinding(f);
   const hasWhySection =
     f.message ||
@@ -1110,9 +1116,9 @@ export function FindingDetailPage() {
       )}
 
       {/* Dynamic Verification */}
-      {evidence?.dynamic_verdict && (
+      {dynamicVerdict && (
         <CollapsibleSection title="Dynamic Verification">
-          <DynamicVerdictSection verdict={evidence.dynamic_verdict} />
+          <DynamicVerdictSection verdict={dynamicVerdict} />
         </CollapsibleSection>
       )}
 

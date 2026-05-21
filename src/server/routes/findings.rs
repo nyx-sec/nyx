@@ -6,7 +6,7 @@ use crate::server::app::{AppState, CachedFindings};
 use crate::server::error::{ApiError, ApiResult};
 use crate::server::models::{
     FilterValues, FindingSummary, FindingView, collect_filter_values, finding_from_diag,
-    finding_from_diag_with_detail, overlay_triage_states, summarize_findings,
+    finding_from_diag_with_detail, dynamic_status_label, overlay_triage_states, summarize_findings,
 };
 use axum::extract::{Path, Query, State};
 use axum::routing::get;
@@ -139,6 +139,7 @@ struct FindingsQuery {
     language: Option<String>,
     confidence: Option<String>,
     status: Option<String>,
+    verification: Option<String>,
     sort_by: Option<String>,
     sort_dir: Option<String>,
     page: Option<usize>,
@@ -186,6 +187,17 @@ async fn list_findings(
     if let Some(ref status) = query.status {
         let status_lower = status.to_ascii_lowercase();
         views.retain(|f| f.status.to_ascii_lowercase() == status_lower);
+    }
+    if let Some(ref verification) = query.verification {
+        let verification_lower = verification.to_ascii_lowercase();
+        views.retain(|f| {
+            let status = f
+                .dynamic_verdict
+                .as_ref()
+                .map(|verdict| dynamic_status_label(verdict.status))
+                .unwrap_or("Unverified");
+            status.to_ascii_lowercase() == verification_lower
+        });
     }
     if let Some(ref search) = query.search {
         let needle = search.to_ascii_lowercase();

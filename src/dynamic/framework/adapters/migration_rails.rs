@@ -1,8 +1,13 @@
 //! Phase 21 (Track M.3) — Rails ActiveRecord migration adapter (Ruby).
 //!
 //! Fires when the surrounding source declares a class inheriting from
-//! `ActiveRecord::Migration[...]` or invokes the canonical migration
-//! DSL (`create_table`, `add_column`, `execute`).
+//! `ActiveRecord::Migration[...]` or carries the canonical migration
+//! marker the fixture uses (`# class Foo < ActiveRecord::Migration[…]`).
+//!
+//! Notably does NOT fire just because the file mentions `create_table` /
+//! `add_column` / `drop_table` — those tokens also appear in
+//! `db/schema.rb` snapshots, helper modules, and SQL ddl bodies that are
+//! not themselves migration classes (Phase 21 binding-stealing audit).
 
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
@@ -17,9 +22,7 @@ fn callee_is_rails_migration(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
     matches!(
         last,
-        "up" | "down"
-            | "change"
-            | "create_table"
+        "create_table"
             | "add_column"
             | "remove_column"
             | "drop_table"
@@ -28,17 +31,15 @@ fn callee_is_rails_migration(name: &str) -> bool {
     )
 }
 
-fn source_imports_rails_migration(file_bytes: &[u8]) -> bool {
-    const NEEDLES: &[&[u8]] = &[
-        b"ActiveRecord::Migration",
-        b"< ActiveRecord::Migration",
-        b"create_table ",
-        b"add_column ",
-        b"drop_table ",
-    ];
+fn source_has_migration_shape(file_bytes: &[u8]) -> bool {
+    const NEEDLES: &[&[u8]] = &[b"ActiveRecord::Migration", b"< ActiveRecord::Migration"];
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
+fn name_is_migration_entry(name: &str) -> bool {
+    matches!(name, "up" | "down" | "change")
 }
 
 fn extract_version(file_bytes: &[u8]) -> Option<String> {
@@ -68,22 +69,23 @@ impl FrameworkAdapter for MigrationRailsAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_rails_migration);
-        let matches_source = source_imports_rails_migration(file_bytes);
-        if matches_call || matches_source {
-            Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::Migration {
-                    version: extract_version(file_bytes),
-                },
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            })
-        } else {
-            None
+        let has_shape = source_has_migration_shape(file_bytes);
+        let name_matches = name_is_migration_entry(&summary.name);
+        let body_runs_ddl = super::any_callee_matches(summary, callee_is_rails_migration);
+        let binds = (name_matches || body_runs_ddl) && has_shape;
+        if !binds {
+            return None;
         }
+        Some(FrameworkBinding {
+            adapter: ADAPTER_NAME.to_owned(),
+            kind: EntryKind::Migration {
+                version: extract_version(file_bytes),
+            },
+            route: None,
+            request_params: Vec::new(),
+            response_writer: None,
+            middleware: Vec::new(),
+        })
     }
 }
 
@@ -113,5 +115,21 @@ mod tests {
         if let EntryKind::Migration { version } = binding.kind {
             assert_eq!(version.as_deref(), Some("7.0"));
         }
+    }
+
+    #[test]
+    fn does_not_bind_schema_dump() {
+        let src: &[u8] = b"ActiveRecord::Schema.define(version: 2024_01_01_000000) do\n  create_table :users do |t|\n    t.string :name\n  end\nend\n";
+        let tree = parse_ruby(src);
+        let summary = FuncSummary {
+            name: "define".into(),
+            ..Default::default()
+        };
+        assert!(
+            MigrationRailsAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none(),
+            "db/schema.rb dump must not bind as migration",
+        );
     }
 }

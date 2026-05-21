@@ -13,6 +13,7 @@ export interface FindingsURLState {
   language: string;
   rule_id: string;
   status: string;
+  verification: string;
   search: string;
 }
 
@@ -27,6 +28,7 @@ const FINDINGS_DEFAULTS: FindingsURLState = {
   language: '',
   rule_id: '',
   status: '',
+  verification: '',
   search: '',
 };
 
@@ -52,6 +54,7 @@ const FILTER_KEYS: ReadonlySet<string> = new Set([
   'language',
   'rule_id',
   'status',
+  'verification',
   'search',
 ]);
 

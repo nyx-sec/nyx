@@ -22,7 +22,7 @@ export interface VerifyResult {
   /** Typed InconclusiveReason (PascalCase string) */
   inconclusive_reason?: string;
   detail?: string;
-  attempts: AttemptSummary[];
+  attempts?: AttemptSummary[];
   toolchain_match?: string;
 }
 
@@ -134,6 +134,7 @@ export interface FindingView {
   triage_note?: string;
   code_context?: CodeContextView;
   evidence?: Evidence;
+  dynamic_verdict?: VerifyResult;
   guard_kind?: string;
   rank_reason?: [string, string][];
   sanitizer_status?: string;
@@ -155,6 +156,7 @@ export interface FilterValues {
   languages: string[];
   rules: string[];
   statuses: string[];
+  verification_statuses: string[];
 }
 
 // Scan types

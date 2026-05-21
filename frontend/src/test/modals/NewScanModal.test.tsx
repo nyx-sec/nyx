@@ -52,7 +52,11 @@ describe('NewScanModal', () => {
     await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledOnce());
     const payload = mockMutateAsync.mock.calls[0][0];
     expect(payload).not.toHaveProperty('verify');
-    expect(payload).toEqual({ engine_profile: 'balanced' });
+    expect(payload).toEqual({
+      engine_profile: 'balanced',
+      verify_backend: 'auto',
+      harden_profile: 'standard',
+    });
   });
 
   it('calls mutateAsync with verify: false when checkbox is checked', async () => {
@@ -62,5 +66,18 @@ describe('NewScanModal', () => {
     await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledOnce());
     const payload = mockMutateAsync.mock.calls[0][0];
     expect(payload).toEqual({ engine_profile: 'balanced', verify: false });
+  });
+
+  it('allows selecting the unsafe process verification backend', async () => {
+    render(<NewScanModal open={true} onClose={vi.fn()} />);
+    const selects = screen.getAllByRole('combobox');
+    fireEvent.change(selects[2], { target: { value: 'process' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Start scan' }));
+    await waitFor(() => expect(mockMutateAsync).toHaveBeenCalledOnce());
+    const payload = mockMutateAsync.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      verify_backend: 'process',
+      harden_profile: 'standard',
+    });
   });
 });

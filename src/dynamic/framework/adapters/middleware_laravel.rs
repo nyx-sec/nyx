@@ -3,6 +3,12 @@
 //! Fires when the surrounding source declares a class with a `handle`
 //! method whose signature matches Laravel's middleware contract
 //! (`$request, Closure $next`).
+//!
+//! Notably does NOT fire just because the file imports
+//! `Illuminate\Http\Request` or mentions `$middleware` — every typical
+//! Laravel controller imports the request facade, and `$middleware`
+//! appears in routes / kernel files unrelated to middleware classes
+//! (Phase 21 binding-stealing audit).
 
 use crate::dynamic::framework::{FrameworkAdapter, FrameworkBinding};
 use crate::evidence::EntryKind;
@@ -15,21 +21,24 @@ const ADAPTER_NAME: &str = "middleware-laravel";
 
 fn callee_is_laravel_middleware(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "handle" | "terminate" | "next" | "withMiddleware")
+    matches!(last, "terminate" | "withMiddleware")
 }
 
-fn source_imports_laravel_middleware(file_bytes: &[u8]) -> bool {
+fn source_has_middleware_shape(file_bytes: &[u8]) -> bool {
     const NEEDLES: &[&[u8]] = &[
-        b"Illuminate\\Http\\Request",
         b"Illuminate\\Foundation\\Http\\Middleware",
         b"function handle($request, Closure $next",
         b"function handle(Request $request, Closure $next",
+        b"function handle($request, $next",
         b"app/Http/Middleware",
-        b"$middleware",
     ];
     NEEDLES
         .iter()
         .any(|n| file_bytes.windows(n.len()).any(|w| w == *n))
+}
+
+fn name_is_middleware_entry(name: &str) -> bool {
+    matches!(name, "handle" | "terminate")
 }
 
 impl FrameworkAdapter for MiddlewareLaravelAdapter {
@@ -47,22 +56,24 @@ impl FrameworkAdapter for MiddlewareLaravelAdapter {
         _ast: tree_sitter::Node<'_>,
         file_bytes: &[u8],
     ) -> Option<FrameworkBinding> {
-        let matches_call = super::any_callee_matches(summary, callee_is_laravel_middleware);
-        let matches_source = source_imports_laravel_middleware(file_bytes);
-        if matches_call || matches_source {
-            Some(FrameworkBinding {
-                adapter: ADAPTER_NAME.to_owned(),
-                kind: EntryKind::Middleware {
-                    name: summary.name.clone(),
-                },
-                route: None,
-                request_params: Vec::new(),
-                response_writer: None,
-                middleware: Vec::new(),
-            })
-        } else {
-            None
+        let has_shape = source_has_middleware_shape(file_bytes);
+        let name_matches = name_is_middleware_entry(&summary.name);
+        let body_mounts_middleware =
+            super::any_callee_matches(summary, callee_is_laravel_middleware);
+        let binds = (name_matches && has_shape) || body_mounts_middleware;
+        if !binds {
+            return None;
         }
+        Some(FrameworkBinding {
+            adapter: ADAPTER_NAME.to_owned(),
+            kind: EntryKind::Middleware {
+                name: summary.name.clone(),
+            },
+            route: None,
+            request_params: Vec::new(),
+            response_writer: None,
+            middleware: Vec::new(),
+        })
     }
 }
 
@@ -90,5 +101,21 @@ mod tests {
             .expect("laravel middleware binds");
         assert_eq!(binding.adapter, "middleware-laravel");
         assert!(matches!(binding.kind, EntryKind::Middleware { .. }));
+    }
+
+    #[test]
+    fn does_not_bind_laravel_controller_method() {
+        let src: &[u8] = b"<?php\nuse Illuminate\\Http\\Request;\nclass UserController {\n  public function show(Request $request) { return $request->all(); }\n}\n";
+        let tree = parse_php(src);
+        let summary = FuncSummary {
+            name: "show".into(),
+            ..Default::default()
+        };
+        assert!(
+            MiddlewareLaravelAdapter
+                .detect(&summary, tree.root_node(), src)
+                .is_none(),
+            "controller method must not bind as middleware just because the file imports Request",
+        );
     }
 }

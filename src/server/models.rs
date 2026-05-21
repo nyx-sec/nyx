@@ -1,5 +1,5 @@
 use crate::commands::scan::Diag;
-use crate::evidence::{Confidence, Evidence};
+use crate::evidence::{Confidence, Evidence, VerifyResult, VerifyStatus};
 use crate::patterns::{FindingCategory, Severity};
 use crate::utils::path::{DEFAULT_UI_MAX_FILE_BYTES, open_repo_text_file};
 use serde::Serialize;
@@ -24,6 +24,15 @@ pub const VALID_TRIAGE_STATES: &[&str] = &[
     "accepted_risk",
     "suppressed",
     "fixed",
+];
+
+/// Valid dynamic verification states for findings.
+pub const VALID_DYNAMIC_VERIFICATION_STATES: &[&str] = &[
+    "Confirmed",
+    "NotConfirmed",
+    "Inconclusive",
+    "Unsupported",
+    "Unverified",
 ];
 
 /// Check if a string is a valid triage state.
@@ -63,6 +72,8 @@ pub struct FindingView {
     pub code_context: Option<CodeContextView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Evidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_verdict: Option<VerifyResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guard_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -199,6 +210,7 @@ pub struct FilterValues {
     pub languages: Vec<String>,
     pub rules: Vec<String>,
     pub statuses: Vec<String>,
+    pub verification_statuses: Vec<String>,
 }
 
 /// Collect distinct filter values from a slice of diagnostics.
@@ -209,6 +221,7 @@ pub fn collect_filter_values(findings: &[Diag]) -> FilterValues {
     let mut languages = BTreeSet::new();
     let mut rules = BTreeSet::new();
     let mut statuses = BTreeSet::new();
+    let mut verification_statuses = BTreeSet::new();
 
     for d in findings {
         severities.insert(d.severity.as_db_str().to_string());
@@ -221,11 +234,15 @@ pub fn collect_filter_values(findings: &[Diag]) -> FilterValues {
         }
         rules.insert(d.id.clone());
         statuses.insert(status_for_diag(d).to_string());
+        verification_statuses.insert(dynamic_status_for_diag(d).unwrap_or("Unverified").to_string());
     }
 
     // Always include all valid triage states so the filter dropdown is complete
     for s in VALID_TRIAGE_STATES {
         statuses.insert(s.to_string());
+    }
+    for s in VALID_DYNAMIC_VERIFICATION_STATES {
+        verification_statuses.insert(s.to_string());
     }
 
     FilterValues {
@@ -235,6 +252,7 @@ pub fn collect_filter_values(findings: &[Diag]) -> FilterValues {
         languages: languages.into_iter().collect(),
         rules: rules.into_iter().collect(),
         statuses: statuses.into_iter().collect(),
+        verification_statuses: verification_statuses.into_iter().collect(),
     }
 }
 
@@ -267,6 +285,24 @@ fn status_for_diag(d: &Diag) -> &'static str {
     }
 }
 
+/// Human-readable dynamic status used by API filters and table rows.
+pub fn dynamic_status_label(status: VerifyStatus) -> &'static str {
+    match status {
+        VerifyStatus::Confirmed => "Confirmed",
+        VerifyStatus::NotConfirmed => "NotConfirmed",
+        VerifyStatus::Inconclusive => "Inconclusive",
+        VerifyStatus::Unsupported => "Unsupported",
+    }
+}
+
+/// Dynamic verification status for a diagnostic, when a verdict exists.
+pub fn dynamic_status_for_diag(d: &Diag) -> Option<&'static str> {
+    d.evidence
+        .as_ref()
+        .and_then(|ev| ev.dynamic_verdict.as_ref())
+        .map(|verdict| dynamic_status_label(verdict.status))
+}
+
 pub(crate) fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
@@ -296,6 +332,10 @@ pub fn finding_from_diag(index: usize, d: &Diag) -> FindingView {
         triage_note: String::new(),
         code_context: None,
         evidence: None,
+        dynamic_verdict: d
+            .evidence
+            .as_ref()
+            .and_then(|ev| ev.dynamic_verdict.clone()),
         guard_kind: None,
         rank_reason: None,
         sanitizer_status: None,
