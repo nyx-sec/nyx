@@ -2504,6 +2504,139 @@ tr.selected td {
   color: var(--text);
 }
 
+/* ── Finding Detail: dynamic verification ─────────────────────────── */
+.badge-dyn-confirmed {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.badge-dyn-notconfirmed {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+.badge-dyn-inconclusive {
+  background: var(--sev-medium-bg);
+  color: var(--sev-medium);
+}
+.badge-dyn-unsupported {
+  background: var(--conf-low-bg);
+  color: var(--conf-low);
+}
+.dynamic-verdict-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+.dynamic-verdict-badge-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.dynamic-toolchain-match {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+.repro-panel,
+.dynamic-verdict-detail,
+.dynamic-attempts {
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: var(--space-3);
+}
+.repro-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.repro-label,
+.dynamic-attempts > strong,
+.dynamic-verdict-detail strong {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.repro-cmd {
+  flex: 1 1 220px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 4px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--terminal-bg);
+  color: var(--terminal-text);
+  font-size: 0.78rem;
+}
+.repro-copy-btn {
+  flex: 0 0 auto;
+}
+.dynamic-verdict-detail {
+  display: grid;
+  gap: var(--space-2);
+}
+.dynamic-verdict-detail-text {
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.dynamic-attempt-list {
+  list-style: none;
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+}
+.attempt-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.attempt-row.triggered {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+  background: var(--success-bg);
+}
+.attempt-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+}
+.attempt-outcome,
+.attempt-exit-code {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.attempt-row.triggered .attempt-outcome {
+  color: var(--success);
+  font-weight: var(--weight-semibold);
+}
+@media (max-width: 640px) {
+  .attempt-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+  .attempt-outcome,
+  .attempt-exit-code {
+    white-space: normal;
+  }
+}
+
 /* ── Code Viewer Modal ────────────────────────────────────────────── */
 .code-modal-overlay {
   position: fixed;

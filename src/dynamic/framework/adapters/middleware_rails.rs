@@ -75,8 +75,7 @@ impl FrameworkAdapter for MiddlewareRailsAdapter {
         }
         let has_middleware_shape = source_has_rack_middleware_shape(file_bytes);
         let name_matches = name_is_rack_entry(&summary.name);
-        let body_mounts_middleware =
-            super::any_callee_matches(summary, callee_is_rails_middleware);
+        let body_mounts_middleware = super::any_callee_matches(summary, callee_is_rails_middleware);
         let binds = (name_matches && has_middleware_shape) || body_mounts_middleware;
         if !binds {
             return None;

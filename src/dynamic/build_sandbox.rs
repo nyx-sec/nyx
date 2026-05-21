@@ -1389,7 +1389,7 @@ struct BuildContainerGuard {
 impl Drop for BuildContainerGuard {
     fn drop(&mut self) {
         let _ = std::process::Command::new(&self.docker)
-            .args(["stop", "--time=0", &self.name])
+            .args(["rm", "-f", &self.name])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();

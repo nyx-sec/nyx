@@ -234,7 +234,11 @@ pub fn collect_filter_values(findings: &[Diag]) -> FilterValues {
         }
         rules.insert(d.id.clone());
         statuses.insert(status_for_diag(d).to_string());
-        verification_statuses.insert(dynamic_status_for_diag(d).unwrap_or("Unverified").to_string());
+        verification_statuses.insert(
+            dynamic_status_for_diag(d)
+                .unwrap_or("Unverified")
+                .to_string(),
+        );
     }
 
     // Always include all valid triage states so the filter dropdown is complete

@@ -19,8 +19,8 @@
 //!   backend is intentionally weaker and is for dev iteration only.
 //!
 //! All public state on the sandbox is owned by the caller — there is no
-//! global runtime, no daemon. Containers are stopped and removed when the
-//! process exits.
+//! daemon. Containers are stopped and removed when the caller explicitly
+//! cleans up or when the process exits.
 
 use crate::dynamic::harness::BuiltHarness;
 use crate::dynamic::oob::OobListener;
@@ -679,28 +679,35 @@ fn container_registry() -> &'static dashmap::DashMap<String, String> {
     })
 }
 
-/// extern "C" fn registered via atexit(3).
-///
-/// Stops all containers in the registry with --time=0 (immediate SIGKILL).
-/// Runs on normal process exit and on `std::process::exit()`. Does not run
-/// on SIGKILL; the `sleep 300` in started containers bounds the leak window.
-#[cfg(unix)]
-extern "C" fn stop_all_containers() {
+/// Stop and remove every docker container currently tracked by the verifier.
+pub(crate) fn cleanup_docker_containers() {
     let Some(reg) = CONTAINER_REGISTRY.get() else {
         return;
     };
     let bin = std::env::var("NYX_DOCKER_BIN").unwrap_or_else(|_| "docker".to_owned());
-    for entry in reg.iter() {
+    let names: Vec<String> = reg.iter().map(|entry| entry.key().clone()).collect();
+    for name in names {
         // Remove OOB egress filter before stopping the container so stale
         // iptables rules don't accumulate across scans.
         #[cfg(target_os = "linux")]
-        remove_oob_egress_filter(entry.key());
+        remove_oob_egress_filter(&name);
         let _ = std::process::Command::new(&bin)
-            .args(["stop", "--time=0", entry.key()])
+            .args(["rm", "-f", &name])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
+        reg.remove(&name);
     }
+}
+
+/// extern "C" fn registered via atexit(3).
+///
+/// Stops all containers in the registry with an immediate force remove.
+/// Runs on normal process exit and on `std::process::exit()`. Does not run
+/// on SIGKILL; the `sleep 300` in started containers bounds the leak window.
+#[cfg(unix)]
+extern "C" fn stop_all_containers() {
+    cleanup_docker_containers();
 }
 
 #[cfg(unix)]

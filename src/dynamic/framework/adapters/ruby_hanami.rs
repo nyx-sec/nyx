@@ -30,11 +30,32 @@ fn class_is_hanami_action(class: Node<'_>, bytes: &[u8]) -> bool {
         || class_includes(class, bytes, "Hanami::Action")
 }
 
-/// Walk the file for a `# nyx-route: <METHOD> <path>` comment so
-/// fixtures can pin an explicit route without needing the Hanami
-/// routes DSL.  Defaults to `(GET, "/")` if no marker is found.
-fn pinned_route(file_bytes: &[u8], fallback_path: &str) -> (HttpMethod, String) {
-    let text = std::str::from_utf8(file_bytes).unwrap_or("");
+/// Resolve the route metadata for `class_name`.  Tries the inline
+/// Hanami v2 routes DSL first (`get "/run", to: "RunAction"` inside a
+/// `Hanami::Routes` / `routes do` block that co-exists with the
+/// action class in the same file), then the synthetic
+/// `# nyx-route: <METHOD> <path>` comment fixtures rely on, then
+/// finally a `(GET, fallback_path)` default.
+///
+/// Cross-file routes resolution (`config/routes.rb` + `app/actions/<slug>/<verb>.rb`)
+/// still needs a project-level file index on the adapter trait —
+/// `FrameworkAdapter::detect` only sees one file at a time.
+fn route_for_class(
+    file_bytes: &[u8],
+    class_name: &str,
+    fallback_path: &str,
+) -> (HttpMethod, String) {
+    if let Some(found) = parse_inline_route(file_bytes, class_name) {
+        return found;
+    }
+    if let Some(found) = pinned_comment_route(file_bytes) {
+        return found;
+    }
+    (HttpMethod::GET, fallback_path.to_owned())
+}
+
+fn pinned_comment_route(file_bytes: &[u8]) -> Option<(HttpMethod, String)> {
+    let text = std::str::from_utf8(file_bytes).ok()?;
     for line in text.lines() {
         let trim = line.trim_start();
         if let Some(rest) = trim.strip_prefix("# nyx-route:") {
@@ -42,11 +63,70 @@ fn pinned_route(file_bytes: &[u8], fallback_path: &str) -> (HttpMethod, String) 
             let mut parts = rest.split_ascii_whitespace();
             if let (Some(verb), Some(path)) = (parts.next(), parts.next()) {
                 let method = HttpMethod::from_ident(verb).unwrap_or(HttpMethod::GET);
-                return (method, path.to_owned());
+                return Some((method, path.to_owned()));
             }
         }
     }
-    (HttpMethod::GET, fallback_path.to_owned())
+    None
+}
+
+/// Parse the Hanami v2 routes DSL when the routes file and the action
+/// class co-exist in one file.  Recognises lines of the form
+/// `<verb> "<path>", to: "<target>"` (or single-quoted variants) and
+/// matches `<target>` against `class_name` either by exact match or by
+/// its `snake_case` form (Hanami's container-key convention,
+/// e.g. `to: "actions.run_action"`).
+fn parse_inline_route(file_bytes: &[u8], class_name: &str) -> Option<(HttpMethod, String)> {
+    let text = std::str::from_utf8(file_bytes).ok()?;
+    let snake = camel_to_snake(class_name);
+    for raw_line in text.lines() {
+        let line = raw_line.trim_start();
+        if let Some(parsed) = parse_route_line(line, class_name, &snake) {
+            return Some(parsed);
+        }
+    }
+    None
+}
+
+fn parse_route_line(line: &str, class_orig: &str, class_snake: &str) -> Option<(HttpMethod, String)> {
+    let (verb_tok, after) = line.split_once(char::is_whitespace)?;
+    let method = HttpMethod::from_ident(verb_tok)?;
+    let after = after.trim_start();
+    let (path, rest) = parse_quoted(after)?;
+    let to_idx = rest.find("to:")?;
+    let after_to = rest[to_idx + 3..].trim_start();
+    let (target, _) = parse_quoted(after_to)?;
+    let target_last = target.rsplit_once('.').map(|(_, s)| s).unwrap_or(&target);
+    if target_last == class_orig || target_last == class_snake {
+        return Some((method, path));
+    }
+    None
+}
+
+fn parse_quoted(s: &str) -> Option<(String, &str)> {
+    let quote = match s.as_bytes().first() {
+        Some(b'"') => '"',
+        Some(b'\'') => '\'',
+        _ => return None,
+    };
+    let rest = &s[1..];
+    let end = rest.find(quote)?;
+    Some((rest[..end].to_owned(), &rest[end + 1..]))
+}
+
+fn camel_to_snake(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for (i, ch) in s.char_indices() {
+        if ch.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn hanami_default_path(class_name: &str) -> String {
@@ -89,7 +169,7 @@ impl FrameworkAdapter for RubyHanamiAdapter {
         }
         let cls_name = class_name(class, file_bytes).unwrap_or("Entry");
         let default = hanami_default_path(cls_name);
-        let (http_method, path) = pinned_route(file_bytes, &default);
+        let (http_method, path) = route_for_class(file_bytes, cls_name, &default);
         let formals = method_formal_names(method, file_bytes);
         let request_params = bind_path_params(&formals, &path);
         Some(FrameworkBinding {
@@ -194,6 +274,86 @@ mod tests {
             .find(|p| p.name == "req")
             .unwrap();
         assert!(matches!(req.source, ParamSource::Implicit));
+    }
+
+    #[test]
+    fn picks_up_inline_routes_dsl_classname_to() {
+        // Hanami v2 routes DSL co-located with the action class. The
+        // routes block names the action class via `to: "RunAction"`;
+        // the adapter must pick up `POST /run` rather than the
+        // snake-case default.
+        let src: &[u8] = b"require 'hanami/routes'\n\
+            require 'hanami/action'\n\
+            class Routes < Hanami::Routes\n\
+              post \"/run\", to: \"RunAction\"\n\
+            end\n\
+            class RunAction < Hanami::Action\n\
+              def call(req)\n\
+                'ok'\n\
+              end\n\
+            end\n";
+        let tree = parse(src);
+        let binding = RubyHanamiAdapter
+            .detect(&summary("call"), tree.root_node(), src)
+            .expect("binding");
+        let route = binding.route.unwrap();
+        assert_eq!(route.method, HttpMethod::POST);
+        assert_eq!(route.path, "/run");
+    }
+
+    #[test]
+    fn picks_up_inline_routes_dsl_snake_case_to() {
+        // Hanami v2 supports `to: "actions.run_action"` container-key
+        // notation in addition to the bare class name.  The adapter
+        // should match `run_action` against the snake_case of
+        // `RunAction`.
+        let src: &[u8] = b"require 'hanami/routes'\n\
+            require 'hanami/action'\n\
+            class Routes < Hanami::Routes\n\
+              get \"/u/:id\", to: \"actions.run_action\"\n\
+            end\n\
+            class RunAction < Hanami::Action\n\
+              def call(req, id)\n\
+                id\n\
+              end\n\
+            end\n";
+        let tree = parse(src);
+        let binding = RubyHanamiAdapter
+            .detect(&summary("call"), tree.root_node(), src)
+            .expect("binding");
+        let route = binding.route.unwrap();
+        assert_eq!(route.method, HttpMethod::GET);
+        assert_eq!(route.path, "/u/:id");
+        let id = binding
+            .request_params
+            .iter()
+            .find(|p| p.name == "id")
+            .unwrap();
+        assert!(matches!(id.source, ParamSource::PathSegment(_)));
+    }
+
+    #[test]
+    fn inline_routes_dsl_wins_over_pinned_comment() {
+        // When both an inline routes-DSL line and a `# nyx-route:`
+        // comment are present, the routes-DSL line wins because it is
+        // the canonical source of truth.
+        let src: &[u8] = b"# nyx-route: GET /old\n\
+            require 'hanami/routes'\n\
+            class Routes < Hanami::Routes\n\
+              put \"/new\", to: \"PutAction\"\n\
+            end\n\
+            class PutAction < Hanami::Action\n\
+              def call(req)\n\
+                'ok'\n\
+              end\n\
+            end\n";
+        let tree = parse(src);
+        let binding = RubyHanamiAdapter
+            .detect(&summary("call"), tree.root_node(), src)
+            .expect("binding");
+        let route = binding.route.unwrap();
+        assert_eq!(route.method, HttpMethod::PUT);
+        assert_eq!(route.path, "/new");
     }
 
     #[test]

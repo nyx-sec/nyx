@@ -45,6 +45,10 @@ struct StartScanRequest {
     verify: Option<bool>,
     /// Also verify `Confidence < Medium` findings. Default false.
     verify_all_confidence: Option<bool>,
+    /// Dynamic verification backend: "auto" | "docker" | "process" | "firecracker".
+    verify_backend: Option<String>,
+    /// Process-backend hardening profile: "standard" | "strict".
+    harden_profile: Option<String>,
     #[allow(dead_code)]
     languages: Option<Vec<String>>,
     #[allow(dead_code)]
@@ -89,6 +93,38 @@ fn apply_engine_profile(
     Ok(())
 }
 
+fn apply_verify_backend(
+    config: &mut crate::utils::config::Config,
+    backend: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let backend = backend.to_ascii_lowercase();
+    match backend.as_str() {
+        "auto" | "docker" | "process" | "firecracker" => {
+            config.scanner.verify_backend = backend;
+            Ok(())
+        }
+        _ => Err(bad_request(
+            "verify_backend must be one of: auto, docker, process, firecracker",
+        )),
+    }
+}
+
+fn apply_harden_profile(
+    config: &mut crate::utils::config::Config,
+    profile: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let profile = profile.to_ascii_lowercase();
+    match profile.as_str() {
+        "standard" | "strict" => {
+            config.scanner.harden_profile = profile;
+            Ok(())
+        }
+        _ => Err(bad_request(
+            "harden_profile must be one of: standard, strict",
+        )),
+    }
+}
+
 async fn start_scan(
     State(state): State<AppState>,
     body: Option<Json<StartScanRequest>>,
@@ -124,6 +160,12 @@ async fn start_scan(
     }
     if req.verify_all_confidence == Some(true) {
         config.scanner.verify_all_confidence = true;
+    }
+    if let Some(ref backend) = req.verify_backend {
+        apply_verify_backend(&mut config, backend)?;
+    }
+    if let Some(ref profile) = req.harden_profile {
+        apply_harden_profile(&mut config, profile)?;
     }
 
     #[cfg(not(feature = "dynamic"))]

@@ -268,6 +268,8 @@ impl JobManager {
                     }
                     Ok(diags)
                 });
+            #[cfg(feature = "dynamic")]
+            crate::dynamic::sandbox::cleanup_docker_containers();
             let elapsed = start.elapsed().as_secs_f64();
 
             // Collect snapshots and do expensive work (post-processing,

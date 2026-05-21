@@ -21,7 +21,10 @@ const ADAPTER_NAME: &str = "migration-laravel";
 
 fn callee_is_laravel_migration_ddl(name: &str) -> bool {
     let last = name.rsplit_once('.').map(|(_, s)| s).unwrap_or(name);
-    matches!(last, "create" | "table" | "drop" | "statement" | "unprepared")
+    matches!(
+        last,
+        "create" | "table" | "drop" | "statement" | "unprepared"
+    )
 }
 
 fn source_has_migration_shape(file_bytes: &[u8]) -> bool {

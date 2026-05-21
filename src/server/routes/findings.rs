@@ -5,8 +5,8 @@ use crate::database::index::Indexer;
 use crate::server::app::{AppState, CachedFindings};
 use crate::server::error::{ApiError, ApiResult};
 use crate::server::models::{
-    FilterValues, FindingSummary, FindingView, collect_filter_values, finding_from_diag,
-    finding_from_diag_with_detail, dynamic_status_label, overlay_triage_states, summarize_findings,
+    FilterValues, FindingSummary, FindingView, collect_filter_values, dynamic_status_label,
+    finding_from_diag, finding_from_diag_with_detail, overlay_triage_states, summarize_findings,
 };
 use axum::extract::{Path, Query, State};
 use axum::routing::get;

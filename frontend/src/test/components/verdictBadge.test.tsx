@@ -24,7 +24,9 @@ describe('VerdictBadge', () => {
   it('renders Confirmed badge with flame and correct class', () => {
     render(
       <VerdictBadge
-        verdict={makeVerdict('Confirmed', { triggered_payload: 'sqli-tautology' })}
+        verdict={makeVerdict('Confirmed', {
+          triggered_payload: 'sqli-tautology',
+        })}
       />,
     );
     const badge = screen.getByTestId('verdict-badge-confirmed');
@@ -39,6 +41,17 @@ describe('VerdictBadge', () => {
     expect(badge).toBeInTheDocument();
     expect(badge.className).toContain('badge-dyn-notconfirmed');
     expect(badge.textContent).not.toContain('🔥');
+  });
+
+  it('renders when attempts are omitted by the API', () => {
+    render(
+      <VerdictBadge
+        verdict={{ finding_id: 'test-finding-id', status: 'NotConfirmed' }}
+      />,
+    );
+    expect(
+      screen.getByTestId('verdict-badge-notconfirmed'),
+    ).toBeInTheDocument();
   });
 
   it('renders Unsupported badge with correct class', () => {
@@ -68,7 +81,9 @@ describe('VerdictBadge', () => {
   it('tooltip contains payload for Confirmed', () => {
     render(
       <VerdictBadge
-        verdict={makeVerdict('Confirmed', { triggered_payload: 'sqli-payload' })}
+        verdict={makeVerdict('Confirmed', {
+          triggered_payload: 'sqli-payload',
+        })}
       />,
     );
     const badge = screen.getByTestId('verdict-badge-confirmed');
@@ -100,7 +115,9 @@ describe('VerdictBadge', () => {
       'Inconclusive',
     ];
     for (const status of statuses) {
-      const { unmount } = render(<VerdictBadge verdict={makeVerdict(status)} />);
+      const { unmount } = render(
+        <VerdictBadge verdict={makeVerdict(status)} />,
+      );
       expect(
         screen.getByTestId(`verdict-badge-${status.toLowerCase()}`),
       ).toBeInTheDocument();

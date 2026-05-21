@@ -28,7 +28,9 @@ describe('DynamicVerdictSection', () => {
   it('renders Confirmed badge', () => {
     render(
       <DynamicVerdictSection
-        verdict={makeVerdict('Confirmed', { triggered_payload: 'sqli-tautology' })}
+        verdict={makeVerdict('Confirmed', {
+          triggered_payload: 'sqli-tautology',
+        })}
       />,
     );
     expect(screen.getByTestId('verdict-badge-confirmed')).toBeInTheDocument();
@@ -36,7 +38,18 @@ describe('DynamicVerdictSection', () => {
 
   it('renders NotConfirmed badge', () => {
     render(<DynamicVerdictSection verdict={makeVerdict('NotConfirmed')} />);
-    expect(screen.getByTestId('verdict-badge-notconfirmed')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('verdict-badge-notconfirmed'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not crash when the API omits an empty attempts array', () => {
+    render(
+      <DynamicVerdictSection
+        verdict={{ finding_id: 'no-attempts', status: 'Confirmed' }}
+      />,
+    );
+    expect(screen.getByTestId('verdict-badge-confirmed')).toBeInTheDocument();
   });
 
   it('renders Unsupported badge', () => {
@@ -51,10 +64,14 @@ describe('DynamicVerdictSection', () => {
   it('renders Inconclusive badge', () => {
     render(
       <DynamicVerdictSection
-        verdict={makeVerdict('Inconclusive', { inconclusive_reason: 'BuildFailed' })}
+        verdict={makeVerdict('Inconclusive', {
+          inconclusive_reason: 'BuildFailed',
+        })}
       />,
     );
-    expect(screen.getByTestId('verdict-badge-inconclusive')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('verdict-badge-inconclusive'),
+    ).toBeInTheDocument();
   });
 
   it('shows repro panel only for Confirmed status', () => {
@@ -64,7 +81,11 @@ describe('DynamicVerdictSection', () => {
     expect(screen.getByTestId('repro-panel')).toBeInTheDocument();
     unmount();
 
-    for (const status of ['NotConfirmed', 'Unsupported', 'Inconclusive'] as const) {
+    for (const status of [
+      'NotConfirmed',
+      'Unsupported',
+      'Inconclusive',
+    ] as const) {
       const { unmount: u } = render(
         <DynamicVerdictSection verdict={makeVerdict(status)} />,
       );
@@ -92,8 +113,9 @@ describe('DynamicVerdictSection', () => {
     fireEvent.click(copyBtn);
 
     expect(navigator.clipboard.writeText).toHaveBeenCalledOnce();
-    const calledWith = (navigator.clipboard.writeText as ReturnType<typeof vi.fn>).mock
-      .calls[0][0] as string;
+    const calledWith = (
+      navigator.clipboard.writeText as ReturnType<typeof vi.fn>
+    ).mock.calls[0][0] as string;
     expect(calledWith).toContain(findingId);
     expect(calledWith).toContain('nyx repro');
   });
