@@ -15,6 +15,7 @@
 //! match.
 
 pub mod adapters;
+pub mod auth_markers;
 pub mod registry;
 
 use crate::evidence::EntryKind;
