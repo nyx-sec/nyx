@@ -17,8 +17,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::java_routes::{
-    annotation_string_arg, bind_java_params, class_extends, find_class_with_method,
-    iter_annotations, method_formal_types, source_imports_servlet,
+    annotation_string_arg, bind_java_params, class_extends, collect_security_annotations,
+    find_class_with_method, iter_annotations, method_formal_types, source_imports_servlet,
 };
 
 pub struct JavaServletAdapter;
@@ -81,6 +81,7 @@ impl FrameworkAdapter for JavaServletAdapter {
         }
         let path = web_servlet_path(class, file_bytes).unwrap_or_else(|| "/".to_owned());
         let request_params = bind_java_params(&formals, &path);
+        let middleware = collect_security_annotations(class, method, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
@@ -90,7 +91,7 @@ impl FrameworkAdapter for JavaServletAdapter {
             }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -178,5 +179,15 @@ mod tests {
                 .detect(&summary("doGet"), tree.root_node(), src)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn collects_class_level_preauthorize_middleware() {
+        let src: &[u8] = b"import jakarta.servlet.http.HttpServlet;\nimport jakarta.servlet.http.HttpServletRequest;\nimport jakarta.servlet.http.HttpServletResponse;\n@PreAuthorize(\"hasRole('USER')\")\n@WebServlet(\"/x\")\npublic class V extends HttpServlet {\n  public void doGet(HttpServletRequest req, HttpServletResponse resp) {}\n}\n";
+        let tree = parse(src);
+        let binding = JavaServletAdapter
+            .detect(&summary("doGet"), tree.root_node(), src)
+            .expect("binding");
+        assert!(binding.middleware.iter().any(|m| m.name == "@PreAuthorize"));
     }
 }

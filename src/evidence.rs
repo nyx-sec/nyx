@@ -770,6 +770,18 @@ pub enum DifferentialVerdict {
     /// the verdict is treated as terminal positive evidence even when
     /// `benign_control` is `None`.
     ConfirmedProvenOob,
+    /// Softer tier of [`DifferentialVerdict::Confirmed`]: the
+    /// differential rule still produced positive evidence, but the
+    /// handler's framework binding carries a middleware whose name was
+    /// recognised by
+    /// [`crate::dynamic::framework::auth_markers::classify`] as an
+    /// `InputValidation` or `OutputSanitization` layer.  The handler
+    /// likely runs behind a known-protective filter, so the verdict is
+    /// retained as Confirmed-class for triggering / reporting but is
+    /// distinguished at the enum level so operators can prioritise
+    /// findings without a known guard.  Guard names are persisted on
+    /// [`DifferentialOutcome::known_guards`].
+    ConfirmedWithKnownGuard,
     /// Both vulnerable and benign payloads fired the oracle — the oracle
     /// cannot discriminate; downgrade to
     /// [`InconclusiveReason::OracleCollisionSuspected`].
@@ -864,6 +876,13 @@ pub struct DifferentialOutcome {
     /// Probe records drained from the benign run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub benign_probes: Vec<DifferentialProbeRecord>,
+    /// Middleware names recognised as protective input-validation /
+    /// output-sanitization layers when the verdict was demoted to
+    /// [`DifferentialVerdict::ConfirmedWithKnownGuard`].  Populated by
+    /// [`crate::dynamic::middleware_demotion::apply_demotion`].  Empty
+    /// when no demotion applied.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_guards: Vec<String>,
 }
 
 /// Result of a dynamic verification attempt for one finding.

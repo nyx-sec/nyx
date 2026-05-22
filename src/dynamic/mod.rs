@@ -72,6 +72,7 @@ pub mod environment;
 pub mod framework;
 pub mod harness;
 pub mod lang;
+pub mod middleware_demotion;
 pub mod mount_filter;
 pub mod oob;
 pub mod oracle;

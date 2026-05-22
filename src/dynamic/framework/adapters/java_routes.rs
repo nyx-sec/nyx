@@ -9,7 +9,9 @@
 //! four adapters terse and makes the placeholder-binding semantics
 //! identical across frameworks.
 
-use crate::dynamic::framework::{HttpMethod, ParamBinding, ParamSource};
+use crate::dynamic::framework::auth_markers;
+use crate::dynamic::framework::{HttpMethod, MiddlewareShape, ParamBinding, ParamSource};
+use crate::symbol::Lang;
 use tree_sitter::Node;
 
 /// True when `bytes` carries any of the well-known Spring import
@@ -201,6 +203,38 @@ where
             visit(ann, name);
         }
     }
+}
+
+/// Collect Java-side security annotations attached to either the
+/// enclosing class or the handler method into the framework binding's
+/// `middleware` vec.  Class-level annotations land first (they apply
+/// to every handler in the class), method-level second.  Each
+/// recognised annotation is rendered as `@<AnnotationName>` so the
+/// stored name lines up with the
+/// [`crate::dynamic::framework::auth_markers`] Java exact-name table
+/// (`@PreAuthorize`, `@RolesAllowed`, `@Valid`, …).
+///
+/// `auth_markers::is_protective` decides whether to keep each name.
+/// Names the registry does not recognise are dropped silently —
+/// adapters that need broader inclusion can re-walk the same nodes
+/// with a wider predicate.
+pub fn collect_security_annotations(
+    class: Node<'_>,
+    method: Node<'_>,
+    bytes: &[u8],
+) -> Vec<MiddlewareShape> {
+    let mut out: Vec<MiddlewareShape> = Vec::new();
+    let mut push_if_known = |name: &str| {
+        let rendered = format!("@{name}");
+        if auth_markers::is_protective(Lang::Java, &rendered)
+            && !out.iter().any(|m| m.name == rendered)
+        {
+            out.push(MiddlewareShape { name: rendered });
+        }
+    };
+    iter_annotations(class, bytes, |_ann, name| push_if_known(name));
+    iter_annotations(method, bytes, |_ann, name| push_if_known(name));
+    out
 }
 
 /// True when the class declaration extends a class whose simple name

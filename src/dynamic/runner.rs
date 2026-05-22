@@ -12,6 +12,7 @@ use crate::dynamic::corpus::{
 };
 use crate::dynamic::differential;
 use crate::dynamic::harness::{self, HarnessError};
+use crate::dynamic::middleware_demotion;
 use crate::dynamic::oracle::{Oracle, oracle_fired_with_stubs, probe_crash_signal};
 use crate::dynamic::probe::{ProbeChannel, SinkProbe};
 use crate::dynamic::sandbox::{self, SandboxBackend, SandboxError, SandboxOptions, SandboxOutcome};
@@ -539,12 +540,19 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                     // downgrade and emit
                     // [`DifferentialVerdict::ConfirmedProvenOob`].
                     if payload.oob_nonce_slot && outcome.oob_callback_seen {
-                        let outcome_record = differential::build_oob_self_confirmed_outcome(
+                        let mut outcome_record = differential::build_oob_self_confirmed_outcome(
                             payload.label,
                             &vuln_probes,
                         );
+                        middleware_demotion::apply_demotion(
+                            &mut outcome_record,
+                            spec.framework.as_ref(),
+                            spec.lang,
+                        );
+                        let confirmed =
+                            middleware_demotion::is_triggering_verdict(outcome_record.verdict);
                         differential_outcome = Some(outcome_record);
-                        true
+                        confirmed
                     } else {
                         no_benign_control = true;
                         false
@@ -594,10 +602,13 @@ pub fn run_spec(spec: &HarnessSpec, opts: &SandboxOptions) -> Result<RunOutcome,
                     {
                         outcome_record.verdict = DifferentialVerdict::ConfirmedProvenOob;
                     }
-                    let confirmed = matches!(
-                        outcome_record.verdict,
-                        DifferentialVerdict::Confirmed | DifferentialVerdict::ConfirmedProvenOob
+                    middleware_demotion::apply_demotion(
+                        &mut outcome_record,
+                        spec.framework.as_ref(),
+                        spec.lang,
                     );
+                    let confirmed =
+                        middleware_demotion::is_triggering_verdict(outcome_record.verdict);
                     differential_outcome = Some(outcome_record);
                     confirmed
                 }

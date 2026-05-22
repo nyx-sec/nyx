@@ -14,8 +14,8 @@ use crate::symbol::Lang;
 use tree_sitter::Node;
 
 use super::java_routes::{
-    annotation_string_arg, bind_java_params, find_class_with_method, iter_annotations,
-    join_route_path, method_formal_types, source_imports_micronaut,
+    annotation_string_arg, bind_java_params, collect_security_annotations, find_class_with_method,
+    iter_annotations, join_route_path, method_formal_types, source_imports_micronaut,
 };
 
 pub struct JavaMicronautAdapter;
@@ -83,6 +83,7 @@ impl FrameworkAdapter for JavaMicronautAdapter {
         let path = join_route_path(&class_prefix, &method_path);
         let formals = method_formal_types(method, file_bytes);
         let request_params = bind_java_params(&formals, &path);
+        let middleware = collect_security_annotations(class, method, file_bytes);
         Some(FrameworkBinding {
             adapter: ADAPTER_NAME.to_owned(),
             kind: EntryKind::HttpRoute,
@@ -92,7 +93,7 @@ impl FrameworkAdapter for JavaMicronautAdapter {
             }),
             request_params,
             response_writer: None,
-            middleware: Vec::new(),
+            middleware,
         })
     }
 }
@@ -168,5 +169,15 @@ mod tests {
                 .detect(&summary("helper"), tree.root_node(), src)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn collects_secured_middleware() {
+        let src: &[u8] = b"import io.micronaut.http.annotation.Controller;\nimport io.micronaut.http.annotation.Get;\n@Controller(\"/api\")\npublic class V {\n  @Secured(\"USER\")\n  @Get(\"/x\")\n  public String run() { return \"\"; }\n}\n";
+        let tree = parse(src);
+        let binding = JavaMicronautAdapter
+            .detect(&summary("run"), tree.root_node(), src)
+            .expect("binding");
+        assert!(binding.middleware.iter().any(|m| m.name == "@Secured"));
     }
 }

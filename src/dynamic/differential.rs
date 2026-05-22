@@ -63,6 +63,7 @@ pub fn build_outcome(
         benign_label: benign_label.to_owned(),
         vuln_probes: vuln_probes.iter().map(sink_probe_to_record).collect(),
         benign_probes: benign_probes.iter().map(sink_probe_to_record).collect(),
+        known_guards: Vec::new(),
     }
 }
 
@@ -86,6 +87,7 @@ pub fn build_oob_self_confirmed_outcome(
         benign_label: String::new(),
         vuln_probes: vuln_probes.iter().map(sink_probe_to_record).collect(),
         benign_probes: Vec::new(),
+        known_guards: Vec::new(),
     }
 }
 
